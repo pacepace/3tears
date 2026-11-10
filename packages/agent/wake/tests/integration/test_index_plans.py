@@ -143,8 +143,8 @@ async def conn(pg_schema: tuple[str, str]) -> AsyncIterator[asyncpg.Connection]:
     )
     await connection.execute(
         "INSERT INTO webhook_subscriptions (conversation_id, subscription_id, user_id, agent_id, name,"
-        " verification_scheme, secret_ref) SELECT gen_random_uuid(), gen_random_uuid(), ($2::uuid[])[1 + g % 250],"
-        " ($1::uuid[])[1 + g % 500], 's' || g, 'generic_hmac_sha256', 'ref' FROM generate_series(1, 2000) g",
+        " verification_scheme, secret_ciphertext) SELECT gen_random_uuid(), gen_random_uuid(), ($2::uuid[])[1 + g % 250],"
+        " ($1::uuid[])[1 + g % 500], 's' || g, 'generic_hmac_sha256', 'x'::bytea FROM generate_series(1, 2000) g",
         agents,
         users,
     )

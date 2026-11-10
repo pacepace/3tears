@@ -1489,8 +1489,9 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 winner_row = await self.l3_pool.fetchrow(
                     """
                     SELECT row_scope, assignment_id FROM role_assignments
-                     WHERE row_scope = $6
-                       AND group_id = $1
+                     WHERE group_id = $1
+                       -- either scope: the natural-key index that absorbed the insert spans both
+                       AND row_scope IN ('platform', 'customer')
                        AND role_id = $2
                        AND scope_type = $3
                        AND scope_namespace_id IS NOT DISTINCT FROM $4
@@ -1503,7 +1504,6 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                     scope_type,
                     scope_id,
                     managed_by,
-                    row_scope,
                 )
                 if winner_row is None:
                     raise RuntimeError(

@@ -124,6 +124,9 @@ async def _create(conn: asyncpg.Connection, schema: TableSchema) -> None:
     :rtype: None
     """
     table = schema.to_sqlalchemy_table(MetaData())
+    # the defaults are the hub's to keep; seeding names every value a NOT NULL column needs
+    for column in table.columns:
+        column.server_default = None
     dialect = postgresql.dialect()  # type: ignore[no-untyped-call]
     await conn.execute(str(CreateTable(table).compile(dialect=dialect)))
     for index in table.indexes:

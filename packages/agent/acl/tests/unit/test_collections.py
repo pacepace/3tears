@@ -241,18 +241,19 @@ class TestGroupGetByName:
         assert result.name == "Tenant administrators"
         assert result.customer_id == cid
         pool.fetchrow.assert_awaited_once()
+        # a customer's group by the customer's own unique name index (customer_id, name)
         sql = pool.fetchrow.await_args.args[0]
-        assert "name = $1" in sql
-        assert "customer_id IS NOT DISTINCT FROM $2" in sql
-        assert pool.fetchrow.await_args.args[1] == "Tenant administrators"
-        assert pool.fetchrow.await_args.args[2] == cid
+        assert "customer_id = $1 AND name = $2" in sql
+        assert pool.fetchrow.await_args.args[1] == cid
+        assert pool.fetchrow.await_args.args[2] == "Tenant administrators"
 
     @pytest.mark.asyncio
     async def test_resolves_platform_scoped_group_with_none_customer(self) -> None:
         """a platform group resolves with ``customer_id=None`` (NULL partition).
 
-        ``IS NOT DISTINCT FROM`` rather than ``=`` is what makes this match: a
-        plain equality against NULL matches nothing.
+        ``customer_id IS NULL`` rather than ``=`` is what makes this match: a
+        plain equality against NULL matches nothing. It is also the predicate of
+        the platform's unique name index, so the read goes through it.
         """
         row = _group_row(customer_id=None, name="Platform administrators")
         row["customer_id"] = None
@@ -263,7 +264,9 @@ class TestGroupGetByName:
         result = await coll.get_by_name("Platform administrators", None)
         assert result is not None
         assert result.name == "Platform administrators"
-        assert pool.fetchrow.await_args.args[2] is None
+        sql = pool.fetchrow.await_args.args[0]
+        assert "name = $1 AND customer_id IS NULL" in sql
+        assert pool.fetchrow.await_args.args[1:] == ("Platform administrators",)
 
     @pytest.mark.asyncio
     async def test_returns_none_when_absent(self) -> None:
@@ -308,9 +311,11 @@ class TestGroupMemberLoadForUser:
         pool = AsyncMock()
         pool.fetch.return_value = []
         coll = make_collection(GroupMemberCollection, l3_pool=pool)
-        await coll.load_for_user(uuid7())
-        sql = pool.fetch.await_args.args[0]
-        assert "member_type = 'user'" in sql
+        user = uuid7()
+        await coll.load_for_user(user)
+        sql, member_type, members = pool.fetch.await_args.args
+        assert "member_type = $1" in sql
+        assert (member_type, members) == ("user", [user])
 
 
 class TestGroupMemberLoadForAgent:
@@ -1005,10 +1010,10 @@ class TestGroupMemberLoadForGroups:
             GroupMembership(group_id=parent, member_type=MemberType.GROUP, member_id=children[1], customer_id=customer)
         ]
         pool.fetch.assert_awaited_once()
-        sql, ids = pool.fetch.await_args.args
-        assert "member_type = 'group'" in sql
-        assert "member_id = ANY($1::uuid[])" in sql
-        assert ids == children
+        sql, member_type, ids = pool.fetch.await_args.args
+        assert "member_type = $1" in sql
+        assert "member_id = ANY($2::uuid[])" in sql
+        assert (member_type, ids) == ("group", children)
 
 
 class TestGroupMembershipCycleGuard:

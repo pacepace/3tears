@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from threetears.agent.acl import GroupCollection, GroupMemberCollection, RoleAssignmentCollection
+from threetears.agent.acl.collections import ASSIGNMENTS_OF_GROUPS_SQL
 from threetears.core.collections import CacheInvalidationMessage, CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
@@ -31,7 +32,10 @@ class _Pool:
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         if sql.startswith("SELECT member_type, member_id, id FROM group_members WHERE group_id = $1"):
             return list(self.members)
-        assert sql.startswith("SELECT row_scope, assignment_id FROM role_assignments WHERE group_id = $1"), sql
+        # the group's assignments by group, through the read the grant load shares
+        assert sql == ASSIGNMENTS_OF_GROUPS_SQL, sql
+        (group_ids,) = params
+        assert len(group_ids) == 1, params
         return list(self.assignments)
 
 
