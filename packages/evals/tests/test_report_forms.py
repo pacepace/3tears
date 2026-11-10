@@ -68,7 +68,7 @@ from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, TRIAL_PASS_NAME
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.report.figures import report_rulers
-from threetears.evals.analysis.report.words import judged_heading, reading_heading
+from threetears.evals.analysis.report.words import judged_label, reading_heading
 from threetears.evals.analysis.report_input import Contrast, Measure, ReportInput, Unanswered
 from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.kernel.chart_query import PlannedChart
@@ -1233,7 +1233,7 @@ def _aspect_row_measures(page: Report, tables: list[TableBlock]) -> dict[tuple[s
             "measure",
         )
         for name in bundle.measure_catalog
-    } | {judged_heading(cell.dimension): (cell.dimension, "judged") for one in surface.cells for cell in one.judged}
+    } | {judged_label(cell.dimension): (cell.dimension, "judged") for one in surface.cells for cell in one.judged}
     expected: dict[tuple[str, int], tuple[str, str]] = {}
     for table in tables:
         if table.name in by_table:
