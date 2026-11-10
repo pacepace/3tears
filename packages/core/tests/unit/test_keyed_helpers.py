@@ -128,8 +128,10 @@ class TestReadKeyed:
         assert len(rows) == 25
         assert [len(params[0]) for _, params in reader.statements] == [10, 10, 5]
         for sql, _ in reader.statements:
-            assert 't."a" = ANY($1::text[]) AND t."b" = ANY($2::text[]::bigint[])' in sql
+            # the keys joined as rows, batched on YugabyteDB; never a column = ANY its values (their cross product)
+            assert sql.startswith("/*+ YbBatchedNL(ANY_subquery t) */ "), sql
             assert '(t."a", t."b") IN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1)' in sql
+            assert "= ANY(" not in sql, sql
             assert "CAST(" not in sql
 
     async def test_by_pins_a_prefix_beside_the_keys(self, db: duckdb.DuckDBPyConnection) -> None:
@@ -266,27 +268,40 @@ class TestCounts:
     async def test_count_at_most_counts_no_further_than_its_bound(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if the count reads every row the key names (no LIMIT under it) or misreports ``more``."""
         reader = _Recording(db)
-        assert await count_at_most(reader, "t", by={"a": "k1"}, at_most=3) == BoundedCount(count=3, more=True)
-        assert await count_at_most(reader, "t", by={"a": "k1"}, at_most=10) == BoundedCount(count=10, more=False)
-        assert reader.statements[0][0].endswith("LIMIT $2) AS held") and reader.statements[0][1][-1] == 4
+        assert await count_at_most(reader, "t", order=["a", "b"], by={"a": "k1"}, at_most=3) == BoundedCount(
+            count=3, more=True
+        )
+        assert await count_at_most(reader, "t", order=["a", "b"], by={"a": "k1"}, at_most=10) == BoundedCount(
+            count=10, more=False
+        )
+        assert reader.statements[0][0].endswith('ORDER BY r."a", r."b" LIMIT $2) AS held')
+        assert reader.statements[0][1][-1] == 4
 
     async def test_count_at_most_of_a_table_s_first_rows_reads_no_further_than_its_bound(
         self, db: duckdb.DuckDBPyConnection
     ) -> None:
         """Flips if a count naming no key reads the table whole (no LIMIT under the count)."""
         reader = _Recording(db)
-        assert await count_at_most(reader, "t", at_most=30) == BoundedCount(count=30, more=True)
+        assert await count_at_most(reader, "t", order=["a", "b"], at_most=30) == BoundedCount(count=30, more=True)
         sql, params = reader.statements[0]
-        assert sql.endswith("LIMIT $1) AS held") and params == (31,)
+        assert sql.endswith('ORDER BY r."a", r."b" LIMIT $1) AS held') and params == (31,)
+
+    async def test_a_probe_names_the_key_it_walks(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a probe runs with no key to walk: a scan the planner stops at the LIMIT reads every row before."""
+        with pytest.raises(ValueError, match="order="):
+            await count_at_most(_Recording(db), "t", order=[], at_most=3)
+        with pytest.raises(ValueError, match="order="):
+            await holds_any(_Recording(db), "t", order=())
 
     async def test_probes_read_one_row(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a probe reads more than one row to answer whether any is held."""
         db.execute("CREATE TABLE empty_one (a VARCHAR PRIMARY KEY)")
         reader = _Recording(db)
-        assert await holds_any(reader, "t", by={"a": "k1"})
-        assert not await holds_any(reader, "t", by={"a": "nope"})
+        assert await holds_any(reader, "t", order=["a", "b"], by={"a": "k1"})
+        assert not await holds_any(reader, "t", order=["a", "b"], by={"a": "nope"})
         assert await empty_tables(reader, ["t", "empty_one"]) == ["empty_one"]
         assert all("LIMIT 1" in sql for sql, _ in reader.statements)
+        assert all('ORDER BY r."a", r."b" LIMIT 1' in sql for sql, _ in reader.statements[:2])
 
     async def test_counts_by_counts_each_key_in_bounded_batches(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a grouped count reads groups no key named, or binds every key in one statement."""
@@ -459,7 +474,9 @@ class TestWithoutArrays:
             1: 1,
             11: 1,
         }
-        assert await count_at_most(conn, "t", by={"a": "k1"}, at_most=3) == BoundedCount(count=3, more=True)
+        assert await count_at_most(conn, "t", order=["a", "b"], by={"a": "k1"}, at_most=3) == BoundedCount(
+            count=3, more=True
+        )
         seen: list[int] = []
         cursor = None
         while True:
@@ -473,9 +490,9 @@ class TestWithoutArrays:
         assert seen == list(range(3, 100, 10))
         swept = await delete_before("t", collection=_Collection(conn), key=["a", "b"], column="b", before=20, page=6)
         assert (swept.deleted, swept.statements) == (20, 4)
-        assert await count_at_most(conn, "t", at_most=50) == BoundedCount(count=50, more=True)
+        assert await count_at_most(conn, "t", order=["a", "b"], at_most=50) == BoundedCount(count=50, more=True)
         assert await delete_oldest(conn, "t", count=30) == 30
-        assert await count_at_most(conn, "t", at_most=100) == BoundedCount(count=50, more=False)
+        assert await count_at_most(conn, "t", order=["a", "b"], at_most=100) == BoundedCount(count=50, more=False)
         assert lite.execute("SELECT min(rowid) FROM t").fetchone() == (51,)
 
     async def test_delete_oldest_refuses_anything_but_a_local_cache(self) -> None:

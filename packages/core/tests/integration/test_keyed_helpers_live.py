@@ -19,7 +19,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 import pytest
@@ -129,6 +129,36 @@ class _WritePlans:
         return await self._conn.fetch(sql, *args)
 
 
+_KEY = ["state", "geo", "id"]
+
+
+def _node_types(plan: Any) -> list[str]:
+    node = plan.plan if isinstance(plan, StatementPlan) else plan
+    return [str(node.get("Node Type", "")), *(t for child in node.get("Plans", ()) for t in _node_types(child))]
+
+
+def _batched_on_yugabyte(plan: StatementPlan, seeded: _Seeded) -> None:
+    """on YugabyteDB the keys are joined by a batched nested loop: one storage request a batch, never one a key (the
+    hint every keyed join carries; this fails if the hint is ignored)."""
+    if seeded.yugabyte:
+        assert "YB Batched Nested Loop Join" in _node_types(plan), plan.plan
+
+
+async def _rolled_back(conn: asyncpg.Connection, run: Any) -> float:
+    """the best seconds of ``run()`` inside a transaction rolled back after each run: a write timed on the real table,
+    which each run finds as it was."""
+
+    async def once() -> None:
+        transaction = conn.transaction()
+        await transaction.start()
+        try:
+            await run()
+        finally:
+            await transaction.rollback()
+
+    return await best_seconds(once)
+
+
 def _plans_ok(recorder: PlanRecorder, seeded: _Seeded, *, scan_ratio: float | None = 1.1) -> None:
     # Postgres plans a small batch its own way (a bitmap scan, a sort); the rows-scanned ratio is the platform's
     # (YugabyteDB) contract, and every database's plan is held to no looped sequential scan
@@ -149,6 +179,11 @@ class TestReadKeyed:
         rows = await read_keyed(recorder, _TABLE, keys=batch, columns=["state", "geo", "id", "votes"])
         assert sorted((r["state"], r["geo"], r["id"]) for r in rows) == sorted(keys)
         _plans_ok(recorder, seeded)
+        # the keys found by the key's index, about one row read a key, on PostgreSQL and YugabyteDB alike
+        (plan,) = recorder.plans
+        assert plan_uses_index(plan, "results_pkey"), plan.plan
+        assert plan.rows_scanned <= 1.1 * len(keys), plan
+        _batched_on_yugabyte(plan, seeded)
         baseline = await _baseline(
             seeded.conn,
             f"SELECT state, geo, id, votes FROM {_TABLE} WHERE (state, geo, id) IN "
@@ -237,14 +272,19 @@ class TestCounts:
         assert problem is None, problem
 
     async def test_bounded_counts_and_probes_read_no_further_than_their_bound(self, seeded: _Seeded) -> None:
-        """Flips if a bounded count or a probe reads every row its key names."""
-        recorder = PlanRecorder(seeded.conn)
-        bounded = await count_at_most(recorder, _TABLE, by={"state": "S30"}, at_most=100)
-        assert (bounded.count, bounded.more) == (100, True)
-        assert await holds_any(recorder, _TABLE, by={"state": "S30"})
-        assert not await holds_any(recorder, _TABLE, by={"state": "none"})
-        assert recorder.plans[0].rows_scanned <= 102, recorder.plans[0]
-        assert all(plan.rows_scanned <= 2 for plan in recorder.plans[1:]), recorder.plans[1:]
+        """Flips if a bounded count or a probe reads past its bound: every row its key names, or (a scan stopped at the
+        LIMIT) every row before them. The hard case: the key's rows clustered at the end of the heap."""
+        await seeded.conn.execute(f"CREATE TABLE clustered AS SELECT * FROM {_TABLE} ORDER BY state")
+        await seeded.conn.execute("ALTER TABLE clustered ADD PRIMARY KEY (state, geo, id)")
+        await seeded.conn.execute("ANALYZE clustered")
+        for table, state in ((_TABLE, "S30"), ("clustered", "S50")):
+            recorder = PlanRecorder(seeded.conn)
+            bounded = await count_at_most(recorder, table, by={"state": state}, at_most=100, order=_KEY)
+            assert (bounded.count, bounded.more) == (100, True)
+            assert await holds_any(recorder, table, by={"state": state}, order=_KEY)
+            assert not await holds_any(recorder, table, by={"state": "none"}, order=_KEY)
+            assert recorder.plans[0].rows_scanned <= 102, (table, recorder.plans[0])
+            assert all(plan.rows_scanned <= 2 for plan in recorder.plans[1:]), (table, recorder.plans[1:])
 
 
 class TestMarks:
@@ -267,75 +307,94 @@ class TestMarks:
 
 class TestDeleteBefore:
     async def test_a_sweep_deletes_page_by_page_within_budget(self, seeded: _Seeded) -> None:
-        """Flips if a sweep's pages read past their own rows, or the sweep is over 2x one bare delete of them."""
+        """Flips if a sweep sends other than ceil(rows / page) + 1 statements, a page's plan reads its rows other than
+        by the stamp index and the key (batched on YugabyteDB), or a page is over 2x one bare delete of the same 500
+        rows by the same predicate on the same table."""
         oldest = await seeded.conn.fetchval(f"SELECT stamp FROM {_TABLE} ORDER BY stamp LIMIT 1")
         before = oldest + timedelta(seconds=3000)
-        baseline_rows = f"SELECT state, geo, id, stamp FROM {_TABLE} WHERE stamp < $1"
-        async with plain_copies(seeded.conn, {"rows": (baseline_rows, (before,))}) as plain:
-            began = time.perf_counter()
-            await seeded.conn.execute(f"DELETE FROM {plain['rows']} WHERE stamp < $1", before)  # noqa: S608
-            baseline = time.perf_counter() - began
-        began = time.perf_counter()
-        swept = await delete_before(
-            _TABLE,
-            collection=_Settling(seeded.conn),
-            key=["state", "geo", "id"],
-            column="stamp",
-            before=before,
-            page=500,
+        page_end = await seeded.conn.fetchval(f"SELECT stamp FROM {_TABLE} ORDER BY stamp OFFSET 500 LIMIT 1")
+        planned = _WritePlans(seeded.conn)
+        await _rolled_back(
+            seeded.conn,
+            lambda: delete_before(
+                _TABLE, collection=None, conn=planned, key=_KEY, column="stamp", before=before, page=500, most_pages=1
+            ),
         )
-        took = time.perf_counter() - began
+        plan = planned.plans[0]
+        assert plan_uses_index(plan, "results_by_stamp") and plan_uses_index(plan, "results_pkey"), plan.plan
+        _batched_on_yugabyte(plan, seeded)
+        baseline = await _rolled_back(
+            seeded.conn, lambda: seeded.conn.execute(f"DELETE FROM {_TABLE} WHERE stamp < $1", page_end)
+        )
+        took = await _rolled_back(
+            seeded.conn,
+            lambda: delete_before(
+                _TABLE,
+                collection=None,
+                conn=seeded.conn,
+                key=_KEY,
+                column="stamp",
+                before=before,
+                page=500,
+                most_pages=1,
+            ),
+        )
+        swept = await delete_before(
+            _TABLE, collection=cast(Any, _Settling(seeded.conn)), key=_KEY, column="stamp", before=before, page=500
+        )
         assert swept.deleted == 3000
-        assert swept.statements == 7
-        assert not await holds_any(seeded.conn, _TABLE, by={"state": "S01", "geo": "001"})
-        problem = budget_problem("delete_before of 3,000 rows in pages of 500", took, baseline)
+        assert swept.statements == 3000 // 500 + 1
+        assert not await holds_any(seeded.conn, _TABLE, by={"state": "S01", "geo": "001"}, order=_KEY)
+        problem = budget_problem("a delete_before page of 500 rows", took, baseline)
         assert problem is None, problem
 
 
 class TestUpdateBefore:
     async def test_a_reap_updates_page_by_page_within_budget(self, seeded: _Seeded) -> None:
-        """Flips if a paged update's pages read past their own rows, or the reap is over 2x one bare update of them."""
+        """Flips if a reap sends other than ceil(rows / page) + 1 statements, a page's plan reads its rows other than
+        by the stamp index and the key (batched on YugabyteDB), or a page is over 2x one bare update of the same 500
+        rows by the same predicate on the same table."""
         oldest = await seeded.conn.fetchval(f"SELECT stamp FROM {_TABLE} ORDER BY stamp LIMIT 1")
         before = oldest + timedelta(seconds=3000)
         moved = before + timedelta(days=365)
-        baseline_rows = f"SELECT state, geo, id, stamp FROM {_TABLE} WHERE stamp < $1"
-        async with plain_copies(seeded.conn, {"rows": (baseline_rows, (before,))}) as plain:
-            began = time.perf_counter()
-            await seeded.conn.execute(f"UPDATE {plain['rows']} SET stamp = $2 WHERE stamp < $1", before, moved)  # noqa: S608
-            baseline = time.perf_counter() - began
+        page_end = await seeded.conn.fetchval(f"SELECT stamp FROM {_TABLE} ORDER BY stamp OFFSET 500 LIMIT 1")
+
+        def page(conn: Any) -> Any:
+            return update_before(
+                _TABLE,
+                collection=None,
+                conn=conn,
+                key=_KEY,
+                column="stamp",
+                before=before,
+                set_to={"stamp": moved},
+                page=500,
+                most_pages=1,
+            )
+
         planned = _WritePlans(seeded.conn)
-        reaped = await update_before(
-            _TABLE,
-            collection=None,
-            conn=planned,
-            key=["state", "geo", "id"],
-            column="stamp",
-            before=before,
-            set_to={"stamp": moved},
-            page=500,
-            most_pages=1,
+        await _rolled_back(seeded.conn, lambda: page(planned))
+        plan = planned.plans[0]
+        assert plan_uses_index(plan, "results_by_stamp") and plan_uses_index(plan, "results_pkey"), plan.plan
+        _batched_on_yugabyte(plan, seeded)
+        baseline = await _rolled_back(
+            seeded.conn,
+            lambda: seeded.conn.execute(f"UPDATE {_TABLE} SET stamp = $2 WHERE stamp < $1", page_end, moved),
         )
-        assert reaped.deleted == 500
-        # a write's plan is its estimates (never run): no looped sequential scan, its page found by the stamp index and
-        # its rows by the key
-        (plan,) = planned.plans
-        assert not plan_problems(planned.plans, scan_ratio=None), planned.plans
-        assert plan_uses_index(plan, "results_by_stamp"), plan.plan
-        assert plan_uses_index(plan, "results_pkey"), plan.plan
-        began = time.perf_counter()
+        took = await _rolled_back(seeded.conn, lambda: page(seeded.conn))
         swept = await update_before(
             _TABLE,
-            collection=_Settling(seeded.conn),
-            key=["state", "geo", "id"],
+            collection=cast(Any, _Settling(seeded.conn)),
+            key=_KEY,
             column="stamp",
             before=before,
             set_to={"stamp": moved},
             page=500,
         )
-        took = time.perf_counter() - began
-        assert swept.deleted == 2500
+        assert swept.deleted == 3000
+        assert swept.statements == 3000 // 500 + 1
         assert await seeded.conn.fetchval(f"SELECT count(*) FROM {_TABLE} WHERE stamp < $1", before) == 0
-        problem = budget_problem("update_before of 3,000 rows in pages of 500", took, baseline)
+        problem = budget_problem("an update_before page of 500 rows", took, baseline)
         assert problem is None, problem
 
 
@@ -349,6 +408,10 @@ class TestReadJoined:
         )
         assert sum(len(rows) for rows in joined.values()) == len(page) * _IDS
         _plans_ok(recorder, seeded)
+        (plan,) = recorder.plans
+        assert plan_uses_index(plan, "results_pkey"), plan.plan
+        assert plan.rows_scanned <= 1.1 * len(page) * _IDS, plan
+        _batched_on_yugabyte(plan, seeded)
         baseline = await _baseline(
             seeded.conn,
             f"SELECT state, geo, id, votes FROM {_TABLE} WHERE state = $1 AND geo = ANY($2::text[])",
@@ -367,26 +430,28 @@ class TestReadJoined:
 class TestCountsByRelations:
     async def test_two_relations_count_only_their_keys_rows_within_budget(self, seeded: _Seeded) -> None:
         """Flips if a count over several relations reads rows no key names, or is over 2x the bare read of them."""
-        await seeded.conn.execute(f"CREATE TABLE results_b AS SELECT * FROM {_TABLE} WHERE state IN ('S20', 'S21')")
+        # a second relation as large as the first, its rows clustered by state (the key's rows together at one end of
+        # the heap): a count reads its keys' rows by the key on each, however the rows lie
+        await seeded.conn.execute(f"CREATE TABLE results_b AS SELECT * FROM {_TABLE} ORDER BY state")
         await seeded.conn.execute("ALTER TABLE results_b ADD PRIMARY KEY (state, geo, id)")
         await seeded.conn.execute("ANALYZE results_b")
-        geos = [f"{g:03d}" for g in range(1, 101)]
+        geos = [f"{g:03d}" for g in range(5, 200, 20)]
         tables = {"a": _TABLE, "b": "results_b"}
         recorder = PlanRecorder(seeded.conn)
-        counted = await counts_by_relations(recorder, tables, column="geo", values=AnyOf(geos), by={"state": "S20"})
+        counted = await counts_by_relations(recorder, tables, column="geo", values=AnyOf(geos), by={"state": "S50"})
         assert counted == {"a": dict.fromkeys(geos, _IDS), "b": dict.fromkeys(geos, _IDS)}
         assert all(plan.rows_scanned <= 1.1 * 2 * len(geos) * _IDS for plan in recorder.plans), recorder.plans
         baseline = await _baseline(
             seeded.conn,
             f"SELECT state, geo FROM {_TABLE} WHERE state = $1 AND geo = ANY($2::text[]) "  # noqa: S608
             "UNION ALL SELECT state, geo FROM results_b WHERE state = $1 AND geo = ANY($2::text[])",
-            "S20",
+            "S50",
             geos,
         )
         took = await best_seconds(
-            lambda: counts_by_relations(seeded.conn, tables, column="geo", values=AnyOf(geos), by={"state": "S20"})
+            lambda: counts_by_relations(seeded.conn, tables, column="geo", values=AnyOf(geos), by={"state": "S50"})
         )
-        problem = budget_problem("counts_by_relations of 100 geographies in 2 relations", took, baseline)
+        problem = budget_problem(f"counts_by_relations of {len(geos)} geographies in 2 relations", took, baseline)
         assert problem is None, problem
 
 
@@ -475,22 +540,3 @@ class TestAKeyedReadIsAnIndexCondition:
         (plan,) = recorder.plans
         assert plan_uses_index(plan, "credit_rates_by_model"), plan.plan
         assert plan.rows_scanned <= 1.1 * len(models) * _RATES_A_MODEL, plan
-
-    async def test_a_batch_of_two_key_columns_reads_its_index_by_the_keys(self, rates: _Seeded) -> None:
-        """Flips if a composite batch reads every row of the index, rather than the keys' own."""
-        named = await rates.conn.fetch(f"SELECT model_id, kind FROM {_RATES} ORDER BY id LIMIT 5")
-        recorder = PlanRecorder(rates.conn)
-        rows = await read_keyed(
-            recorder,
-            _RATES,
-            keys=KeyBatch(("model_id", "kind"), [(str(r["model_id"]), r["kind"]) for r in named], ("uuid", "text")),
-            columns=["id"],
-        )
-        assert len(rows) == len(named)
-        (plan,) = recorder.plans
-        assert plan_uses_index(plan, "credit_rates_by_model"), plan.plan
-        # at most the rows of the keys' lead values (the lead is always an index condition), never the table
-        led = await rates.conn.fetchval(
-            f"SELECT count(*) FROM {_RATES} WHERE model_id = ANY($1::uuid[])", [r["model_id"] for r in named]
-        )
-        assert plan.rows_scanned <= 1.1 * led + 1 < _MODELS * _RATES_A_MODEL, plan

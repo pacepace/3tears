@@ -361,7 +361,9 @@ def _probe(call: ast.Call) -> list[str]:
     # holds_any reads one row; count_at_most at most its bound, bound as a parameter (a probe of a table's first rows
     # when it names no key)
     limit = "1" if _name(call) == "holds_any" else f"${place}"
-    return [f"SELECT 1 FROM {relation} AS r{_where(pinned)} LIMIT {limit}", *own]
+    # the probe walks the key it names (order=): with no order it is a scan stopped at the LIMIT, never keyed
+    order = ", ".join(f"r.{column}" for column in _texts(_argument(call, "order", None), "order"))
+    return [f"SELECT 1 FROM {relation} AS r{_where(pinned)} ORDER BY {order} LIMIT {limit}", *own]
 
 
 def _delete_oldest(call: ast.Call) -> list[str]:
