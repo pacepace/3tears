@@ -342,9 +342,10 @@ def _build_fenced_update_sql(
     :rtype: str
     """
     set_clause = ", ".join(f"{c} = ${len(pk_cols) + i + 1}" for i, c in enumerate(update_cols))
-    where_clause = " AND ".join(f"{c} = ${i + 1}" for i, c in enumerate(pk_cols))
+    # the row's whole primary key, so the update reaches that one row
+    pk_predicate = " AND ".join(f"{c} = ${i + 1}" for i, c in enumerate(pk_cols))
     fence_position = len(pk_cols) + len(update_cols) + 1
-    return f"UPDATE {table} SET {set_clause} WHERE {where_clause} AND date_updated = ${fence_position}"
+    return f"UPDATE {table} SET {set_clause} WHERE {pk_predicate} AND date_updated = ${fence_position}"
 
 
 _AGENT_WAKE_SCHEDULES_UPSERT_SQL = _build_upsert_sql(
