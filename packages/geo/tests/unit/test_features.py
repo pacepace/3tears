@@ -705,8 +705,9 @@ class TestOneReadClaimsAtMostHalfTheBound:
 
 class TestACollectedCache:
     async def test_leaves_no_index_entries(self, request: pytest.FixtureRequest) -> None:
-        # caches of one scope share the L1's tables, so one that is dropped must take its entries
-        # -- and only its own: a second live cache on the same L1 keeps every entry it holds
+        # caches of one scope share the L1, each with its own R-Tree and key map, so one that is
+        # dropped must take its entries -- and only its own: a second live cache on the same L1
+        # keeps every entry it holds
         tile = _chunk_tile(0)
         loader, calls = _recording_loader([_point_row("f", tile)])
         cache = _cache_over(request, loader)
@@ -715,13 +716,20 @@ class TestACollectedCache:
         backend.initialize(MetaData())
         await cache.features_in_bbox("tracts", 1, tile_bounds(tile))
         await survivor.features_in_bbox("tracts", 1, tile_bounds(tile))
-        count_sql = f"SELECT count(*) AS n FROM geo_features_{SCOPE}_rtree_map"
-        assert backend.execute_query(count_sql)[0]["n"] == 2
+
+        def entries() -> int:
+            maps = backend.execute_query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE ?",
+                (f"geo_features_{SCOPE}_%_rtree_map",),
+            )
+            return sum(int(backend.execute_query(f"SELECT count(*) AS n FROM {row['name']}")[0]["n"]) for row in maps)
+
+        assert entries() == 2
 
         del cache
         gc.collect()
 
-        assert backend.execute_query(count_sql)[0]["n"] == 1
+        assert entries() == 1
         assert survivor.indexed_keys_in_bbox("tracts", 1, tile_bounds(tile)) == ["f"]
         found = await survivor.features_in_bbox("tracts", 1, tile_bounds(tile))
         assert [row["feature_id"] for row in found] == ["f"]

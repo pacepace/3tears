@@ -56,6 +56,7 @@ from threetears.epoch.generation_tick import (
     quiet_pass_interval,
 )
 from threetears.epoch.listener import BumpCallback, EpochListener, ResetCallback
+from threetears.epoch.row_follower import RowFollower
 from threetears.epoch.table_follow import (
     DEFAULT_STOP_TIMEOUT,
     DEFAULT_WATCH_RESTART_DELAY,
@@ -95,6 +96,7 @@ __all__ = [
     "quiet_pass_interval",
     "EpochListener",
     "PoolLike",
+    "RowFollower",
     "TableFollower",
     "follow_l2_kept_tables",
     "WatchHealth",

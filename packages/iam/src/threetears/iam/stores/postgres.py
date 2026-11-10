@@ -160,8 +160,9 @@ class PostgresTicketStore:
         swept. ``None`` covers unknown, expired and already-redeemed alike -- a caller must
         not distinguish them, or it becomes an oracle.
         """
+        pk = "hashed"  # the table's primary key: the claim reads one row by it
         row = await self._pool.fetchrow(
-            f"DELETE FROM {self._table} WHERE hashed = $1 AND expires_at > $2 RETURNING payload",  # noqa: S608
+            f"DELETE FROM {self._table} WHERE {pk} = $1 AND expires_at > $2 RETURNING payload",  # noqa: S608
             hash_ticket(secret),
             datetime.now(UTC),
         )
@@ -206,8 +207,9 @@ class PostgresStateStore:
 
     async def take(self, key: str) -> Mapping[str, Any] | None:
         """Atomically remove and return the value under ``key``, or ``None``."""
+        pk = "key"  # the table's primary key: the claim reads one row by it
         row = await self._pool.fetchrow(
-            f"DELETE FROM {self._table} WHERE key = $1 AND expires_at > $2 RETURNING payload",  # noqa: S608
+            f"DELETE FROM {self._table} WHERE {pk} = $1 AND expires_at > $2 RETURNING payload",  # noqa: S608
             key,
             datetime.now(UTC),
         )
@@ -218,8 +220,9 @@ class PostgresStateStore:
 
         Only correct where a separate mechanism enforces single use -- see the Protocol.
         """
+        pk = "key"  # the table's primary key: one row by it
         row = await self._pool.fetchrow(
-            f"SELECT payload FROM {self._table} WHERE key = $1 AND expires_at > $2",  # noqa: S608
+            f"SELECT payload FROM {self._table} WHERE {pk} = $1 AND expires_at > $2",  # noqa: S608
             key,
             datetime.now(UTC),
         )

@@ -165,6 +165,7 @@ async def test_every_part_comes_back_whole_from_pages_read_side_by_side(warehous
             page_size=5,
             concurrency=3,
             batch_rows=40,
+            prove=True,
         )
     ]
 
@@ -190,6 +191,7 @@ async def test_parts_asked_for_are_read_alone_and_an_empty_one_comes_back_empty(
             partition_by="state",
             parts=["VA", "WY"],
             page_size=5,
+            prove=True,
         )
     }
 
@@ -214,6 +216,7 @@ async def test_a_part_written_once_while_it_is_read_is_read_again_whole(warehous
             key=_KEY,
             partition_by="state",
             page_size=5,
+            prove=True,
         )
     }
 
@@ -238,5 +241,6 @@ async def test_a_part_written_during_every_read_is_refused(warehouse: tuple[_Cli
             key=_KEY,
             partition_by="state",
             page_size=5,
+            prove=True,
         ):
             pass

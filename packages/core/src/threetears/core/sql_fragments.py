@@ -16,6 +16,7 @@ __all__ = [
     "equality_conditions",
     "filter_conditions",
     "quote_identifier",
+    "unnest_key_join",
 ]
 
 #: a value a filter compares a column with, bound as a parameter: text, or an integer bound as one
@@ -38,6 +39,41 @@ def quote_identifier(identifier: str) -> str:
     :rtype: str
     """
     return '"' + identifier.replace('"', '""') + '"'
+
+
+def unnest_key_join(
+    columns: Sequence[str], casts: Sequence[str], *, alias: str = "t", null_safe: bool = False
+) -> tuple[str, str]:
+    """the two halves of a read of the rows some keys name, each key column's values bound as one text array: the
+    select list unnesting them and the join of ``alias`` to them, each column cast from text.
+
+    Written as ``... FROM <table> AS t JOIN (SELECT {unnested}) AS k ON {joined}`` (or ``ANTI JOIN`` for the rows
+    the keys do not name): with ``columns`` a leading part of the table's key, PostgreSQL, YugabyteDB and DuckDB
+    alike answer it by the key, a lookup whose cost is the keys', whatever the table holds. The one spelling of
+    the keyed batch read a copy follower makes of L3 and of its own copy, and a checkpoint of a part.
+
+    :param columns: the key columns named, a leading part of the key in key order
+    :ptype columns: Sequence[str]
+    :param casts: each column's SQL type, which its text is cast to (``bigint``, ``uuid``, ``text``)
+    :ptype casts: Sequence[str]
+    :param alias: the table's alias in the statement
+    :ptype alias: str
+    :param null_safe: a NULL bound matches the rows holding none (``IS NOT DISTINCT FROM``): a key column's NULL
+        bucket, as a scope with no value is
+    :ptype null_safe: bool
+    :return: ``unnest($1::text[]) AS k0, ...`` and ``alias."c0" = CAST(k.k0 AS <cast>) AND ...``
+    :rtype: tuple[str, str]
+    :raises ValueError: when no column, or not one cast a column, is given
+    """
+    if not columns or len(columns) != len(casts):
+        raise ValueError("a keyed batch read names at least one key column and one cast for each")
+    match = "IS NOT DISTINCT FROM" if null_safe else "="
+    unnested = ", ".join(f"unnest(${i + 1}::text[]) AS k{i}" for i in range(len(columns)))
+    joined = " AND ".join(
+        f"{alias}.{quote_identifier(column)} {match} CAST(k.k{i} AS {cast})"
+        for i, (column, cast) in enumerate(zip(columns, casts, strict=True))
+    )
+    return unnested, joined
 
 
 def as_written(identifier: str) -> str:

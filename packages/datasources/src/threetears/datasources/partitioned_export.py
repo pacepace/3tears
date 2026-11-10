@@ -387,7 +387,8 @@ class CountedPartitionedExport:
     :ivar result: the hub's answer: the bucket, the object prefix, the manifest and the rows written
     :ivar partition_by: the column its files are divided by
     :ivar files: part value -> its files, in the manifest's order; every counted part with rows has some
-    :ivar rows: part value -> its rows, as the caller counted them (a part counted with none left out)
+    :ivar rows: part value -> its rows, as the caller counted them, or as the manifest counts them when the
+        caller gave no counts (a part with none left out)
     """
 
     destination: str
@@ -404,12 +405,12 @@ async def _counted_files(
     destination: str,
     bucket: str,
     partition_by: str,
-    counts: Mapping[str, int],
-) -> dict[str, tuple[CountedFile, ...]]:
-    """every proof a counted export must pass before a row of it is read; each part's files.
+    counts: Mapping[str, int] | None,
+) -> tuple[dict[str, tuple[CountedFile, ...]], dict[str, int]]:
+    """every proof a counted export must pass before a row of it is read; each part's files and rows.
 
-    :return: part value -> its files
-    :rtype: dict[str, tuple[CountedFile, ...]]
+    :return: part value -> its files; part value -> its rows (the caller's counts, or the manifest's)
+    :rtype: tuple[dict[str, tuple[CountedFile, ...]], dict[str, int]]
     :raises IncompleteExportError: naming the proof that failed
     """
     if not result.object_prefix.endswith(f"/{destination}/"):
@@ -417,19 +418,27 @@ async def _counted_files(
             f"the hub answered an export at {result.object_prefix!r}, not the destination {destination!r} asked for"
         )
     _check_export_location(result, bucket=bucket)
-    counted = sum(counts.values())
-    if result.row_count != counted:
-        raise IncompleteExportError(f"the warehouse exported {result.row_count} rows, the counts add up to {counted}")
+    if counts is not None:
+        counted = sum(counts.values())
+        if result.row_count != counted:
+            raise IncompleteExportError(
+                f"the warehouse exported {result.row_count} rows, the counts add up to {counted}"
+            )
     files: dict[str, tuple[CountedFile, ...]] = {}
+    manifested: dict[str, int] = {}
     if result.row_count > 0:
         manifest = json.loads(await _read_object(store, result.manifest_path))
         for value, part_files in _partition_files(manifest, result, partition_by).items():
             rows = _counted_total(part_files)
             # a warehouse char column's values come back padded; the caller's counts are not
             part = None if value is None else value.strip()
-            if part is None or part not in counts:
+            if part is None or (counts is not None and part not in counts):
                 raise IncompleteExportError(f"the export holds a {partition_by} no count named: {value!r}")
-            if rows is not None and rows != counts[part]:
+            if counts is None and rows is None:
+                raise IncompleteExportError(
+                    f"{partition_by}={part}: the manifest does not count every file, and nothing else counts the part"
+                )
+            if counts is not None and rows is not None and rows != counts[part]:
                 raise IncompleteExportError(
                     f"{partition_by}={part}: the manifest counts {rows} rows, the caller {counts[part]}"
                 )
@@ -437,10 +446,18 @@ async def _counted_files(
                 *files.get(part, ()),
                 *(CountedFile(path=file.object_name, rows=file.rows) for file in part_files),
             )
+            manifested[part] = manifested.get(part, 0) + (rows or 0)
+    if counts is None:
+        written = sum(manifested.values())
+        if result.row_count != written:
+            raise IncompleteExportError(
+                f"the warehouse exported {result.row_count} rows, its manifest counts {written}"
+            )
+        return files, {part: rows for part, rows in manifested.items() if rows}
     missing = sorted(part for part in set(counts) - set(files))
     if missing:
         raise IncompleteExportError(f"the export holds no file of {partition_by} {missing[:10]}")
-    return files
+    return files, dict(counts)
 
 
 async def export_counted_partitions(
@@ -450,22 +467,29 @@ async def export_counted_partitions(
     *,
     select: str,
     partition_by: str,
-    counts: Mapping[str, int],
+    counts: Mapping[str, int] | None,
     destination: str,
     bucket: str,
 ) -> CountedPartitionedExport:
-    """export the caller's ``SELECT`` divided by a column, proven against the caller's own count of each part.
+    """export the caller's ``SELECT`` divided by a column, proven against the caller's own count of each part, or
+    against the warehouse's own counts of what it wrote.
 
-    For rows that never change once written, which the caller counted part by part before asking
-    (the export's counterpart to :func:`~threetears.datasources.query_client.read_counted`). Every
-    check a refusal (:class:`~threetears.datasources.export_read.IncompleteExportError`) before any
-    row is read:
+    With ``counts``: for rows that never change once written, which the caller counted part by part
+    before asking (the export's counterpart to :func:`~threetears.datasources.query_client.read_counted`).
+    Every check a refusal (:class:`~threetears.datasources.export_read.IncompleteExportError`) before
+    any row is read:
 
     - the export is the one asked for: under ``destination``, in ``bucket``, its manifest its
       prefix's own;
     - the warehouse wrote as many rows as the counts add up to;
     - the manifest names no part that was not counted, and counts each part's rows as counted;
     - each counted part with rows has files.
+
+    With ``counts=None``: for rows that may move while they are exported, where the caller takes what
+    the statement wrote and catches a later move itself. Each part's count is the manifest's (every
+    file must carry its record count), and the manifest's counts must add up to the rows the warehouse
+    itself says the ``UNLOAD`` wrote (the export's ``row_count``, the engine's own count of the
+    statement, read on its session). The export must be the one asked for, as above.
 
     A part's files are held to its count again when it is read (:func:`read_counted_partition`).
     The proven export is the caller's to delete (:func:`delete_counted_export`); a refused one, or
@@ -482,8 +506,9 @@ async def export_counted_partitions(
     :ptype select: str
     :param partition_by: the column its files are divided by; among ``select``'s columns
     :ptype partition_by: str
-    :param counts: part value -> its rows, as the caller counted them; a part with none needs no file
-    :ptype counts: Mapping[str, int]
+    :param counts: part value -> its rows, as the caller counted them; a part with none needs no file. None:
+        each part as the manifest counts it, all of them the rows the warehouse says it wrote
+    :ptype counts: Mapping[str, int] | None
     :param destination: a fresh relative path under the datasource's export prefix
     :ptype destination: str
     :param bucket: the bucket the store reads
@@ -495,13 +520,13 @@ async def export_counted_partitions(
         ``partition_by`` as ``MALFORMED_REQUEST``; a datasource with no export location as
         ``EXPORT_UNSUPPORTED``): nothing was written
     """
-    expected = {part: rows for part, rows in counts.items() if rows}
+    expected = None if counts is None else {part: rows for part, rows in counts.items() if rows}
     result = await client.export(datasource_name, select, destination=destination, partition_by=partition_by)
     # from here the export exists: a refusal, or any error, deletes it before it is raised
     refused: IncompleteExportError | None = None
     try:
         try:
-            files = await _counted_files(
+            files, rows = await _counted_files(
                 store, result, destination=destination, bucket=bucket, partition_by=partition_by, counts=expected
             )
         except IncompleteExportError as exc:
@@ -516,7 +541,10 @@ async def export_counted_partitions(
             what=destination,
             refused=refused,
             unwinding=exc,
-            refusal_detail={"warehouse_rows": result.row_count, "counted": sum(expected.values())},
+            refusal_detail={
+                "warehouse_rows": result.row_count,
+                "counted": None if expected is None else sum(expected.values()),
+            },
         )
         raise
     log.info(
@@ -525,14 +553,15 @@ async def export_counted_partitions(
             "extra_data": {
                 "datasource": datasource_name,
                 "partition_by": partition_by,
-                "parts": len(expected),
+                "parts": len(rows),
                 "rows": result.row_count,
+                "counted_by": "manifest" if expected is None else "caller",
                 "object_prefix": result.object_prefix,
             }
         },
     )
     return CountedPartitionedExport(
-        destination=destination, result=result, partition_by=partition_by, files=files, rows=expected
+        destination=destination, result=result, partition_by=partition_by, files=files, rows=rows
     )
 
 

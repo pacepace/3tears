@@ -21,9 +21,10 @@ from threetears.core.data.migrations.change_notes import give_noted_tables_their
 from threetears.core.data.migrations.session import ConnectionSession
 from threetears.core.data.migrations.write_generation_switch import switch_off, write_generation_triggers_on
 from threetears.core.data.migrations.write_marks import give_switched_tables_their_trigger
-from threetears.core.ddl.change_notes import NOTE_TRIGGERS, change_notes_ddl, note_function_name
+from threetears.core.ddl.change_notes import NOTE_TRIGGERS, note_function_name
 from threetears.core.ddl.write_marks import WRITE_MARK_TRIGGER
 from threetears.core.tenancy import TENANT_BY_SCHEMA
+from threetears.core.testing.note_ring import install_note_ring
 
 pytestmark = pytest.mark.integration
 
@@ -39,8 +40,7 @@ async def _schema(conn: asyncpg.Connection, schema: str) -> ConnectionSession:
     register_coordination(runner)
     session = ConnectionSession(conn)
     await runner.apply_for_platform_schema(session)
-    for statement in change_notes_ddl(schema):
-        await conn.execute(statement)
+    await install_note_ring(conn, schema)
     await conn.execute(f"CREATE TABLE {schema}.{_TABLE} (id TEXT PRIMARY KEY, n INTEGER)")
     await give_switched_tables_their_trigger(session, [_TABLE])
     await give_noted_tables_their_note_trigger(session, [NotedTable(_TABLE, keys=("id",), tenancy=TENANT_BY_SCHEMA)])

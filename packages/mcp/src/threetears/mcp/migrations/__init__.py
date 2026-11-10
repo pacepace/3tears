@@ -26,6 +26,7 @@ from threetears.core.data.migrations import (
 from threetears.mcp.migrations.v001_create_mcp_tool_grants import (
     create_mcp_tool_grants_table,
 )
+from threetears.mcp.rbac import McpToolGrantCollection
 
 PACKAGE_NAME = "mcp"
 
@@ -47,6 +48,9 @@ def register(runner: MigrationRunner) -> PackageMigrations:
         scope=MigrationScope.PLATFORM,
     )
     pkg.version(1)(create_mcp_tool_grants_table)
+    # the grants are followed by write generation: the run that creates the table, and every run
+    # after, gives it its write-mark and change-note triggers
+    pkg.mark_write_generation(McpToolGrantCollection.schema)
     runner.register(pkg)
     return pkg
 

@@ -199,6 +199,28 @@ class TestTheHandOffGoesWhenTheWorkerIsDone:
         assert store.handoffs() == ()
         assert (store.status()["handoffs_open"], store.status()["handoffs_held"]) == (0, 0)
 
+    def test_a_released_hand_off_goes_when_its_last_worker_lets_go_with_no_sweep_after(
+        self, store: SharedArrowStore, executor: ProcessPoolExecutor, tmp_path: Path
+    ) -> None:
+        """Flips if a hand-off released while a worker still maps it (a worker dying in its exit holds it so) waits for
+        some later, unrelated sweep: its release goes on its own once the worker lets go."""
+        signals = tmp_path / "signals"
+        handed = store.hand({"t": pa.table({"a": [1, 2]})})
+        future = executor.submit(jobs.hold_handed_on_signal, handed, str(signals))
+        deadline = time.monotonic() + 30
+        while not (signals / "mapped").exists():
+            assert time.monotonic() < deadline, "the worker never mapped the hand-off"
+            time.sleep(0.01)
+        store.release(handed)
+        assert store.handoffs() == (handed.handoff_id,), "the worker's mapping holds it"
+        (signals / "go").touch()
+        assert future.result() == 2
+        deadline = time.monotonic() + 30
+        while store.handoffs() or _hidden(store):
+            assert time.monotonic() < deadline, "the released hand-off stayed after its worker let go"
+            time.sleep(0.01)
+        assert store.status()["handoffs_held"] == 0
+
     def test_a_hand_off_released_before_its_worker_maps_it_is_gone_to_the_worker(
         self, store: SharedArrowStore, executor: ProcessPoolExecutor
     ) -> None:

@@ -866,13 +866,21 @@ def build_key_led_delete_sql(schema: TableSchema, *, varying: str) -> str:
 
 
 def build_whole_key_delete_sql(schema: TableSchema) -> str:
-    """build one DELETE of the rows named by whole keys, one array a key column, led by the leading column.
+    """build one DELETE of the rows named by whole keys, one array a key column, each key looked up.
 
-    ``DELETE FROM t WHERE <k1> = ANY($1::<t1>[]) AND (<k1>, <k2>, ...) IN (SELECT * FROM unnest($1::<t1>[],
-    $2::<t2>[], ...))``: ``$n`` is the n-th key column's values, the i-th of each array one key. For
-    keys that share no key-column value, where :func:`build_key_led_delete_sql` would need a
-    statement a key: the leading ``= ANY`` keeps the statement led by the key (a hash-sharded table
-    is looked up at each leading value) and the ``IN`` keeps exactly the keys named.
+    ``DELETE /*+ YbBatchedNL(named doomed) */ FROM t AS doomed WHERE (<k1>, <k2>, ...) IN (SELECT * FROM
+    unnest($1::<t1>[], $2::<t2>[], ...) AS named)``: ``$n`` is the n-th key column's values, the i-th of each
+    array one key. For keys that share no key-column value, where :func:`build_key_led_delete_sql` would need a
+    statement a key.
+
+    On YugabyteDB the hint asks for a batched nested loop: the keys go to the table in one request as
+    ``ROW(<k1>, <k2>, ...) = ANY(ARRAY[...])`` on its primary key, and the statement reads the rows it deletes and
+    no other (YugabyteDB's docs, "Table join methodologies in YSQL", batched nested loop join; hints through its
+    bundled pg_hint_plan). Left to itself the planner hash-joined the keys against a scan of every row their
+    leading values hold: deleting a 5,000-row table's rows in batches of 1,000 read the whole table each batch.
+    The leading ``<k1> = ANY($1)`` this statement once carried made that worse, a storage filter of every key's
+    leading value over every row (2.4 times one keyed delete of as many rows, 1.0 times without it and with the
+    hint). Postgres reads the hint as a comment.
 
     :param schema: table schema; its key has more than one column, each with an array form
     :ptype schema: TableSchema
@@ -885,11 +893,10 @@ def build_whole_key_delete_sql(schema: TableSchema) -> str:
     arrays = [
         f"${index}::{_required_array_type(schema, name)}" for index, name in enumerate(schema.pk_columns, start=1)
     ]
-    lead = as_written(schema.pk_columns[0])
     key = ", ".join(as_written(name) for name in schema.pk_columns)
     return (
-        f"DELETE FROM {schema.name} WHERE {lead} = ANY({arrays[0]}) "
-        f"AND ({key}) IN (SELECT * FROM unnest({', '.join(arrays)}))"
+        f"DELETE /*+ YbBatchedNL(named doomed) */ FROM {schema.name} AS doomed "
+        f"WHERE ({key}) IN (SELECT * FROM unnest({', '.join(arrays)}) AS named)"
     )
 
 

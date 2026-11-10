@@ -100,6 +100,7 @@ async def read_l3_rows(
     where: Mapping[str, Any] | None = None,
     where_any: Mapping[str, tuple[str, Sequence[Any]]] | None = None,
     page_size: int = DEFAULT_PAGE_SIZE,
+    lead_array: str | None = None,
 ) -> list[dict[str, Any]]:
     """every row of an L3 table (or the part ``where`` and ``where_any`` name), in key order, a page at a time.
 
@@ -131,12 +132,21 @@ async def read_l3_rows(
     :ptype where_any: Mapping[str, tuple[str, Sequence[Any]]] | None
     :param page_size: rows per page; under the rail's cap
     :ptype page_size: int
+    :param lead_array: the SQL array type of ``key``'s first column, named when the table's declaration leaves it
+        hashed on YugabyteDB (:func:`~threetears.core.keyset.keyset_pages`); None pages by the cursor alone
+    :ptype lead_array: str | None
     :return: the rows
     :rtype: list[dict[str, Any]]
     :raises ValueError: when ``page_size`` is under one
     """
     read = await read_keyset_pages(
-        l3, _select_from(table, columns), key, where=where, where_any=where_any, page_size=page_size
+        l3,
+        _select_from(table, columns),
+        key,
+        where=where,
+        where_any=where_any,
+        page_size=page_size,
+        lead_array=lead_array,
     )
     return read.rows
 
@@ -149,6 +159,7 @@ def l3_row_pages(
     *,
     where: Mapping[str, Any] | None = None,
     page_size: int = DEFAULT_PAGE_SIZE,
+    lead_array: str | None = None,
 ) -> AsyncGenerator[list[dict[str, Any]], None]:
     """the rows :func:`read_l3_rows` reads, handed over a page at a time as each is read.
 
@@ -168,11 +179,14 @@ def l3_row_pages(
     :ptype where: Mapping[str, Any] | None
     :param page_size: rows per page; under the rail's cap
     :ptype page_size: int
+    :param lead_array: the SQL array type of ``key``'s first column, named when the table's declaration leaves it
+        hashed on YugabyteDB (:func:`~threetears.core.keyset.keyset_pages`); None pages by the cursor alone
+    :ptype lead_array: str | None
     :return: the pages, in key order
     :rtype: AsyncGenerator[list[dict[str, Any]], None]
     :raises ValueError: when ``page_size`` is under one (at the first page)
     """
-    return keyset_pages(l3, _select_from(table, columns), key, where=where, page_size=page_size)
+    return keyset_pages(l3, _select_from(table, columns), key, where=where, page_size=page_size, lead_array=lead_array)
 
 
 #: the L3 column types the rail's JSON answers as text: ``fetch`` answers them as text (a ``NUMERIC`` arrives as
@@ -235,6 +249,7 @@ async def read_l3_arrow(
     where: Mapping[str, Any] | None = None,
     where_any: Mapping[str, tuple[str, Sequence[Any]]] | None = None,
     page_size: int = DEFAULT_PAGE_SIZE,
+    lead_array: str | None = None,
 ) -> Any:
     """:func:`read_l3_rows` as one Arrow table: the same statements, a page at a time, the rows never Python objects.
 
@@ -259,6 +274,9 @@ async def read_l3_arrow(
     :ptype where_any: Mapping[str, tuple[str, Sequence[Any]]] | None
     :param page_size: rows per page; under the rail's cap
     :ptype page_size: int
+    :param lead_array: the SQL array type of ``key``'s first column, named when the table's declaration leaves it
+        hashed on YugabyteDB (:func:`~threetears.core.keyset.keyset_pages`); None pages by the cursor alone
+    :ptype lead_array: str | None
     :return: the rows, in key order
     :rtype: pyarrow.Table
     :raises ValueError: when ``page_size`` is under one, or a column has no rail Arrow type
@@ -266,7 +284,7 @@ async def read_l3_arrow(
     pages = [
         page
         async for page in _l3_arrow_pages(
-            l3, table, columns, key, where=where, where_any=where_any, page_size=page_size
+            l3, table, columns, key, where=where, where_any=where_any, page_size=page_size, lead_array=lead_array
         )
     ]
     return pa.concat_tables(pages)
@@ -281,6 +299,7 @@ def _l3_arrow_pages(
     where: Mapping[str, Any] | None = None,
     where_any: Mapping[str, tuple[str, Sequence[Any]]] | None = None,
     page_size: int = DEFAULT_PAGE_SIZE,
+    lead_array: str | None = None,
 ) -> AsyncGenerator[Any, None]:
     """the pages :func:`read_l3_arrow` reads, handed over as each is read: :func:`l3_row_pages` as Arrow tables.
 
@@ -299,13 +318,23 @@ def _l3_arrow_pages(
     :ptype where_any: Mapping[str, tuple[str, Sequence[Any]]] | None
     :param page_size: rows per page; under the rail's cap
     :ptype page_size: int
+    :param lead_array: the SQL array type of ``key``'s first column, named when the table's declaration leaves it
+        hashed on YugabyteDB (:func:`~threetears.core.keyset.keyset_pages`); None pages by the cursor alone
+    :ptype lead_array: str | None
     :return: the pages, in key order, each a ``pyarrow.Table``; the last may be empty
     :rtype: AsyncGenerator[pyarrow.Table, None]
     :raises ValueError: when a column has no rail Arrow type
     """
     types = rail_arrow_types(columns)
     return keyset_arrow_pages(
-        l3, _select_from(table, list(types)), key, types=types, where=where, where_any=where_any, page_size=page_size
+        l3,
+        _select_from(table, list(types)),
+        key,
+        types=types,
+        where=where,
+        where_any=where_any,
+        page_size=page_size,
+        lead_array=lead_array,
     )
 
 

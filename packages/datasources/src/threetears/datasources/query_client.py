@@ -1641,8 +1641,22 @@ async def read_all(
     where_in: Mapping[str, Sequence[FilterValue]] | None = None,
     page_size: int = _DEFAULT_PAGE_SIZE,
     max_pages: int = 10_000,
+    prove: bool = False,
 ) -> list[dict[str, Any]]:
-    """read an entire relation, or raise. never return a prefix.
+    """read an entire relation (or the part the filters name) by keyset pages, or raise. never return a prefix.
+
+    **By default nothing is fingerprinted.** The pages are keyset pages with a sentinel row (below),
+    which never split a run of equal keys and never step past an unread row; what changed in the
+    source is the source's own change record's to say, so a read that crosses a write is picked up by
+    the next load, which that record names. A caller holding a count of the part (the rows its change
+    statement reported) reads it with :func:`read_counted` instead, which proves the count.
+
+    **The old proof is an explicit opt-in** (``prove=True``): the relation counted and fingerprinted
+    before the pages and again after them, and the read raised or read again when they differed, as
+    described below. It costs two warehouse fingerprints per read, so it is for a caller with no change
+    record and no count, never a load's default. Without it, a row whose key holds a NULL is skipped by
+    every keyset predicate and nothing sees it: the key must be NOT NULL in the source, or the caller
+    reads with :func:`read_counted`, whose count does see it.
 
     **The trap.** Keyset paging steps past the last key it saw. When the key is
     unique only BY PROMISE -- and a warehouse enforces nothing, including a
@@ -1651,7 +1665,7 @@ async def read_all(
     cursor, and the rest of that run is not greater. A hand-written helper
     returned 3 of 8 rows and reported success.
 
-    **What makes the read complete.** The relation is COUNTED AND FINGERPRINTED
+    **What made the read complete, with ``prove=True``.** The relation is COUNTED AND FINGERPRINTED
     before paging begins and again after the last page. A read that does not
     return as many rows as the count raises, and so does one where the two
     readings differ. That is the contract, and it is deliberately not a statement
@@ -1746,12 +1760,29 @@ async def read_all(
     :ptype page_size: int
     :param max_pages: refuse rather than loop forever
     :ptype max_pages: int
+    :param prove: count and fingerprint the part before and after the pages, and read it again or raise
+        when they differ (the proof described above); off by default
+    :ptype prove: bool
     :return: every row of the relation
     :rtype: list[dict[str, Any]]
     :raises IncompleteReadError: when completeness cannot be demonstrated
     :raises ValueError: when the arguments cannot describe a complete read
     """
     _check_read(columns, key, page_size)
+    if not prove:
+        filters = _Filters.of(where, where_in)
+        if filters.reads_nothing:
+            return []
+        return await _pages(
+            client,
+            datasource_name,
+            columns=columns,
+            relation=relation,
+            key=key,
+            filters=filters,
+            page_size=page_size,
+            max_pages=max_pages,
+        )
 
     # THE TOTAL IS THE PROOF. Everything below this line guards a specific way to
     # lose a row, and four releases of this function shipped a guard that was

@@ -14,6 +14,7 @@ from uuid import uuid7
 from pydantic import BaseModel, SerializerFunctionWrapHandler, ValidationError, model_serializer
 from threetears.nats import KV_KEY_SCOPE_GRAMMAR, Subjects
 from threetears.nats.errors import PublishError
+from threetears.core.keyed import WholeReads
 from threetears.core.collections.noted_keys import NotedKeysCursor, NotedKeysPage, NotedKeysReader
 from threetears.core.collections.epoch_change import (
     RESET_REASON,
@@ -119,25 +120,22 @@ def _epochs_behind() -> Any:
     )
 
 
-#: why a process drops a table whole from its caches, as ``collection_whole_table_drops_total`` labels it
-WHOLE_TABLE_DROP_WHYS: Final[Mapping[str, str]] = {
-    "reset": "an operator's reset (SchemaBackedCollection.reset), here or in an epoch record naming reason='reset'",
-    # TODO(3tears 0.96.0 contract step, dated 2026-11-09): zero once no 0.94-or-older writer is left to record one
-    "whole_record": "an epoch record naming the whole table with no key prefix and no reason: an older writer's",
-    "local": "this process dropped it itself, for a change it made (a schema migration, a failed reset)",
-}
+#: why a process drops a table whole from its caches, counted by table and why (``collection_whole_table_drops_total``);
+#: a load or a clear names its key prefixes and drops nothing whole
+WHOLE_TABLE_DROPS: Final = WholeReads(
+    "collection_whole_table_drops_total",
+    subject="tables a process dropped whole from its caches",
+    whys={
+        "reset": "an operator's reset (SchemaBackedCollection.reset), here or in an epoch record naming reason='reset'",
+        # TODO(3tears 0.96.0 contract step, dated 2026-11-09): zero once no 0.94-or-older writer is left to record one
+        "whole_record": "an epoch record naming the whole table with no key prefix and no reason: an older writer's",
+        "local": "this process dropped it itself, for a change it made (a schema migration, a failed reset)",
+    },
+    expected={"reset", "local"},
+)
 
-
-def _whole_table_drops() -> Any:
-    return counter(
-        "collection_whole_table_drops_total",
-        description=(
-            "tables a process dropped whole from its caches, by table and why ("
-            + "; ".join(f"{why}: {what}" for why, what in WHOLE_TABLE_DROP_WHYS.items())
-            + "); a load or a clear names its key prefixes and drops nothing whole"
-        ),
-        label_names=("table", "why"),
-    )
+# TODO(3tears 0.96.0 contract step, dated 2026-11-10): WHOLE_TABLE_DROPS.whys, kept one release for its importers
+WHOLE_TABLE_DROP_WHYS: Final[Mapping[str, str]] = WHOLE_TABLE_DROPS.whys
 
 
 def _tables_behind() -> Any:
@@ -1429,7 +1427,7 @@ class CollectionRegistry:
         :return: nothing
         :rtype: None
         """
-        _whole_table_drops().labels(table=table_name, why=why).inc()
+        WHOLE_TABLE_DROPS.count(why, table=table_name)
         self.drop_local_scans(table_name)
         collection = self._collections.get(table_name)
         rows = collection.drop_cached_table() if collection is not None else 0

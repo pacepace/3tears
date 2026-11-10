@@ -94,8 +94,8 @@ from typing import Any, Final
 
 import asyncpg
 from threetears.observe import contain, get_logger
-from threetears.observe.metrics import counter
 
+from threetears.core.keyed import WholeReads
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, read_l3_rows
@@ -135,31 +135,27 @@ WHOLE: Final = "*"
 #: the columns a snapshot reads
 _COLUMNS: Final = ("scope", "epoch", "previous_epoch", "writing", "pending", "date_created", "date_updated")
 
-#: why a snapshot reads the epochs table whole, as ``scope_epochs_whole_reads_total`` labels it. Only ``first`` (an
-#: instance's first read) is expected; every other is a record a read of its changes could not be trusted to follow
-_WHOLE_READ_WHYS: Final[Mapping[str, str]] = {
-    "first": "the first read of an instance: every scope is read once",
-    "reset": "the writer's record was recreated or is gone (the table emptied or replaced)",
-    "version_backwards": "the data's version went back",
-    "epoch_backwards": "a scope's epoch went back",
-    "pending_lost": "a scope held as pending is neither pending nor moved: its mark cleared without a commit moving it",
-}
+#: why a snapshot reads the epochs table whole, counted by table and why (``scope_epochs_whole_reads_total``). Only
+#: ``first`` (an instance's first read) is expected; every other is a record a read of its changes could not be trusted
+#: to follow
+_WHOLE_READS: Final = WholeReads(
+    "scope_epochs_whole_reads_total",
+    subject="whole reads of a scope epochs table",
+    whys={
+        "first": "the first read of an instance: every scope is read once",
+        "reset": "the writer's record was recreated or is gone (the table emptied or replaced)",
+        "version_backwards": "the data's version went back",
+        "epoch_backwards": "a scope's epoch went back",
+        "pending_lost": "a scope held as pending is neither pending nor moved: its mark cleared without a commit moving it",
+    },
+    expected={"first"},
+)
 
 #: scopes one statement names when touching
 _TOUCH_BATCH: Final = 500
 
 #: a write in progress longer than this has most likely died: readers say so at warning, not info
 STALLED_WRITE_SECONDS: Final = 600
-
-
-def _whole_reads() -> Any:
-    return counter(
-        "scope_epochs_whole_reads_total",
-        description="whole reads of a scope epochs table, by table and why ("
-        + "; ".join(f"{why}: {what}" for why, what in _WHOLE_READ_WHYS.items())
-        + "); one per reader but the first is a record a read of its changes could not follow",
-        label_names=("table", "why"),
-    )
 
 
 class EpochRecordBusyError(RuntimeError):
@@ -301,6 +297,11 @@ class ScopeEpochs:
         self._since = 0
         self._reading = asyncio.Lock()
 
+    @property
+    def table_name(self) -> str:
+        """the epochs table's name: every replica hears its row messages when a write begins or commits."""
+        return self._collection.table_name
+
     async def _bound_idle(self, conn: Any) -> None:
         """bound how long the caller's transaction may sit idle, when an idle timeout was given.
 
@@ -337,17 +338,12 @@ class ScopeEpochs:
         The version the next read reads past is read first, on its own: a commit landing while the rows page then
         moves its scopes past it, and the next read takes them.
 
-        :param why: why the table is read whole (:data:`_WHOLE_READ_WHYS`)
+        :param why: why the table is read whole (:data:`_WHOLE_READS`)
         :ptype why: str
         :return: the snapshot
         :rtype: EpochSnapshot
         """
-        _whole_reads().labels(table=self._collection.table_name, why=why).inc()
-        log.log(
-            logging.INFO if why == "first" else logging.WARNING,
-            "the scope epochs are read whole",
-            extra={"extra_data": {"table": self._collection.table_name, "why": why, "what": _WHOLE_READ_WHYS[why]}},
-        )
+        _WHOLE_READS.count(why, table=self._collection.table_name)
         l3 = self._collection.required_l3_pool
         record = await l3.fetch(f"SELECT epoch FROM {self._table} WHERE {self._key_column} = $1", WHOLE)  # noqa: S608 - the owner's table name
         rows = await read_l3_rows(l3, self._collection.table_name, _COLUMNS, ("scope",), page_size=self._page_size)
@@ -389,7 +385,7 @@ class ScopeEpochs:
         :ptype held: EpochSnapshot
         :param changed: the rows :meth:`_read_changed` read
         :ptype changed: list[dict[str, Any]]
-        :return: the why (:data:`_WHOLE_READ_WHYS`), or None
+        :return: the why (:data:`_WHOLE_READS`), or None
         :rtype: str | None
         """
         record = next((row for row in changed if str(row["scope"]) == WHOLE), None)

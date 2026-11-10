@@ -59,6 +59,7 @@ from threetears.core.collections.schema_backed import (
     Column,
     SchemaBackedCollection,
     TableSchema,
+    UniqueConstraint,
 )
 from threetears.core.security.secret_refs import validate_ref
 from threetears.observe import get_logger
@@ -120,6 +121,12 @@ _DATASOURCE_TABLES_SCHEMA = TableSchema(
         Column("column_hash", STRING_TYPE, nullable=True),
         Column("coverage_dimension", STRING_TYPE, nullable=True),
     ],
+    # the hub's unique index on the natural key (hub v001): a table by its datasource, schema and name
+    unique_constraints=(
+        UniqueConstraint(
+            "datasource_tables_datasource_id_schema_name_table_name_key", "datasource_id", "schema_name", "table_name"
+        ),
+    ),
     write_generation=WRITE_GENERATION,
 )
 
@@ -146,6 +153,16 @@ _DATASOURCE_COLUMNS_SCHEMA = TableSchema(
         Column("date_created", DATETIMETZ_TYPE, immutable=True),
         Column("date_updated", DATETIMETZ_TYPE),
     ],
+    # the hub's unique index on the natural key (hub v001): a column by its datasource, schema, table and name
+    unique_constraints=(
+        UniqueConstraint(
+            "datasource_columns_datasource_id_schema_name_table_name_col_key",
+            "datasource_id",
+            "schema_name",
+            "table_name",
+            "column_name",
+        ),
+    ),
 )
 
 #: ``datasource_schema_digests`` as hub v029 leaves it: keyed by ``datasource_id``, no ``id`` column
@@ -335,6 +352,8 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
+        # the hub's unique index on the name (hub v001): a datasource by its name
+        unique_constraints=(UniqueConstraint("idx_datasources_name", "name"),),
         cas_column="date_updated",
     )
 
@@ -1219,3 +1238,18 @@ class TableTemplateCollection(DeclaredTableCollection[TableTemplateEntity]):
             "DELETE FROM table_templates WHERE id = $1",
             entity_id,
         )
+
+
+#: ``datasource_customers`` as the hub declares it (hub v001): which customers a ``restricted`` shared datasource
+#: is granted to. The hub owns and writes it; this package reads a grant by its whole key
+#: (:mod:`threetears.datasources.schema_priming`), and declares it so that read is judged against its key.
+DATASOURCE_CUSTOMERS_SCHEMA = TableSchema(
+    name="datasource_customers",
+    primary_key=("datasource_id", "customer_id"),
+    columns=[
+        Column("datasource_id", UUID_TYPE),
+        Column("customer_id", UUID_TYPE),
+        Column("granted_by_user_id", UUID_TYPE),
+        Column("date_granted", DATETIMETZ_TYPE),
+    ],
+)

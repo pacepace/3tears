@@ -557,12 +557,19 @@ async def ensure_memory_owner_assignment(
     :return: nothing
     :rtype: None
     """
-    builtin_roles = await deps.role_collection.list_builtin()
     owner_role_id: UUID | None = None
-    for role in builtin_roles:
-        if role.name == MEMORY_OWNER_ROLE_NAME:
+    # the built-in role by its name (RoleCollection.find_platform_by_name, a keyed read); a role
+    # collection that predates it is still asked for its built-in list
+    find_by_name = getattr(deps.role_collection, "find_platform_by_name", None)
+    if find_by_name is not None:
+        role = await find_by_name(MEMORY_OWNER_ROLE_NAME)
+        if role is not None and bool(getattr(role, "is_builtin", False)):
             owner_role_id = role.id
-            break
+    else:
+        for role in await deps.role_collection.list_builtin():
+            if role.name == MEMORY_OWNER_ROLE_NAME:
+                owner_role_id = role.id
+                break
     if owner_role_id is None:
         log.warning(
             "memory owner assignment ensure skipped: role %s not present in builtin role catalog",

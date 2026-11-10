@@ -39,6 +39,7 @@ from typing import Any, ClassVar, Final
 from threetears.core.coordination.tables import STORAGE_FAILURES
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError, GenerationUnavailableError
+from threetears.core.operator import operator_command
 
 from .collections import ScrapeCollection, _parse_dt_or_unrecorded, _parse_dt_strict
 from .extraction import html_to_text
@@ -345,6 +346,10 @@ class ScrapeTargetHealthCollection(ScrapeCollection[ScrapeTargetHealth]):
         """Return the entity type this collection manages."""
         return ScrapeTargetHealth
 
+    @operator_command(
+        "an operator's view of every target a human must unblock; it reads the table to find them",
+        proof="packages/scrape/tests/integration/test_health_l3_roundtrip.py::test_list_walled_finds_only_targets_a_human_can_actually_help",
+    )
     async def list_walled(self, *, now: datetime | None = None, limit: int = 200) -> list[ScrapeTargetHealth]:
         """Targets currently suppressed because a human has to clear them.
 

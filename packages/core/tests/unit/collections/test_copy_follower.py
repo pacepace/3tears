@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -34,12 +34,15 @@ from sqlalchemy import BigInteger, Column as SaColumn, MetaData, String, Table
 pa = pytest.importorskip("pyarrow")
 duckdb = pytest.importorskip("duckdb")
 
+import threetears.core as core  # noqa: E402
 from threetears.core.cache.duckdb import DuckDBBackend, StagedChange  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
-from threetears.core.collections.copy_checkpoint import CopyCheckpoints  # noqa: E402
+from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoints  # noqa: E402
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER  # noqa: E402
+from threetears.core.collections.scope_epochs import ScopeEpochs  # noqa: E402
 from threetears.core.collections.copy_follower import (  # noqa: E402
+    WHOLE_READ_WHYS,
     CopyFollower,
     FollowedTable,
     FollowerPhase,
@@ -54,6 +57,7 @@ from threetears.nats import Subject  # noqa: E402
 from threetears.nats.errors import NoRespondersError, RequestTimeoutError  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
 from prometheus_client import REGISTRY  # noqa: E402
+from threetears.core.testing.kv import FakeNatsClient  # noqa: E402
 
 _TABLE = "votes"
 _KEY = ("state", "geo_id")
@@ -122,6 +126,9 @@ class _L3:
         result = cursor.execute(sql, list(params))
         names = [d[0] for d in result.description]
         rows = [dict(zip(names, row, strict=True)) for row in result.fetchall()]
+        if sql.startswith("SELECT version()"):
+            # which database it is (threetears.core.backends.dialect), asked beside a whole read: no read of the table
+            return rows
         self.statements += 1
         self.rows_read += len(rows)
         return rows
@@ -375,8 +382,9 @@ async def test_the_keyed_read_joins_the_keys_to_the_table_on_its_key(world: Any)
     lock.version += 1
     assert await follower.catch_up()
     (sql,) = asked
-    assert "JOIN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]) AS k1) AS k" in sql
-    assert 't."state" = CAST(k.k0 AS text) AND t."geo_id" = CAST(k.k1 AS bigint)' in sql
+    # each key column is an index condition (= ANY its values, the array cast whole), then exactly the keys named
+    assert 't."state" = ANY($1::text[]) AND t."geo_id" = ANY($2::text[]::bigint[])' in sql
+    assert '(t."state", t."geo_id") IN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1)' in sql
 
 
 # --- checkpoints ---------------------------------------------------------------------------------
@@ -442,11 +450,18 @@ class _Pointers:
 
 
 def _replica(
-    l3: _L3, log: _Log, lock: _Seqlock, store: _Store, pointers: _Pointers, owner: str, part_rows: int = 40
+    l3: _L3,
+    log: _Log,
+    lock: _Seqlock | _Scopes,
+    store: _Store,
+    pointers: _Pointers,
+    owner: str,
+    part_rows: int = 40,
+    **stamps: Any,
 ) -> tuple[DuckDBBackend, CopyFollower, Any]:
     backend = DuckDBBackend()
     backend.initialize(_metadata())
-    tables = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)]
+    tables = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))]
     checkpoints = CopyCheckpoints(
         name="votes",
         tables=tables,
@@ -456,6 +471,7 @@ def _replica(
         retire=store.retire,
         owner=owner,
         part_rows=part_rows,
+        **stamps,
     )
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
@@ -469,6 +485,7 @@ def _replica(
         changes=log,
         page_size=50,
         checkpoints=checkpoints,
+        stamp_table="scope_epochs",
     )
     return backend, follower, checkpoints
 
@@ -671,7 +688,14 @@ async def test_a_partition_on_a_column_the_copy_does_not_hold_filters_l3_by_it()
         l3_kinds=(("state", STRING_TYPE), ("geo_id", BIGINT_TYPE), ("votes", BIGINT_TYPE), ("ver", BIGINT_TYPE)),
     )
     follower = CopyFollower(
-        registry, [table], backend, l3, settled=lock.settled, generation=log.current, changes=log, page_size=50
+        registry,
+        [table],
+        backend,
+        l3,
+        settled=lock.settled,
+        generation=log.current,
+        changes=log,
+        page_size=50,
     )
     follower.register()
     l3.put(_rows("VA", 40))
@@ -914,6 +938,7 @@ def _scoped_world(
         generation=log.current,
         changes=log,
         page_size=50,
+        stamp_table="scope_epochs",
     )
     follower.register()
     return l3, log, backend, follower
@@ -975,6 +1000,154 @@ async def test_a_new_replica_is_ready_during_a_long_write_for_every_scope_it_can
     assert await follower.catch_up()
     assert _copy(backend) == l3.held()
     assert l3.rows_read == 5  # IL alone, as a key range: never the table again
+
+
+def _encode_scoped(stamp: Any) -> Any:
+    """a scoped stamp as JSON-able data (a checkpoint keeps it): a partial stamp, or a settled record."""
+    if isinstance(stamp, PartialStamp):
+        return {"epochs": dict(stamp.epochs), "held": sorted(stamp.held), "version": stamp.version}
+    return {"epochs": dict(stamp.epochs), "version": stamp.version}
+
+
+def _decode_scoped(data: Any) -> Any:
+    if "held" in data:
+        return PartialStamp(epochs=data["epochs"], held=frozenset(data["held"]), version=data["version"])
+    return SimpleNamespace(version=data["version"], epochs=data["epochs"], pending=frozenset())
+
+
+async def test_a_checkpoint_written_beside_a_held_write_keeps_the_mark_before_its_keys_so_a_start_from_it_hears_them() -> (
+    None
+):
+    """Flips if a checkpoint records a table at the registry's mark while keys of a scope a write holds are still
+    pending: a replica started from it adopts that mark, never hears those keys, and serves the held scope's old rows
+    after the write commits (reports' live replica tests, 2026-11-10: the second replica's copy never held the load's
+    candidates)."""
+    lock = _Scopes()
+    l3, log, store, pointers = _L3(), _Log(), _Store(), _Pointers()
+    l3.put(_rows("VA", 5) + _rows("IL", 5))
+    log.commit([("VA", i) for i in range(5)] + [("IL", i) for i in range(5)])
+    codec = {"encode_stamp": _encode_scoped, "decode_stamp": _decode_scoped}
+    _, writer, _ = _replica(l3, log, lock, store, pointers, "a", **codec)
+    assert not await writer.start()
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    assert "votes-ckpt" in pointers.entries
+    # a long write holds IL: its rows land part way, their keys heard and left pending
+    lock.held = frozenset({"state:IL"})
+    l3.put([("IL", i, 50) for i in range(5)])
+    log.commit([("IL", i) for i in range(5)])
+    # VA commits beside it, enough rows that a checkpoint is due at its apply
+    l3.put([("VA", i, 70) for i in range(5)])
+    log.commit([("VA", i) for i in range(5)])
+    lock.commit("state:VA")
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    assert writer.status().pending == {_TABLE: 5}
+    written = Checkpoint.decode(pointers.entries["votes-ckpt"][0])
+    assert written.seq == 2, "a checkpoint is written beside the held write"
+    assert _decode_scoped(written.stamp).held == frozenset({"state:IL"})
+    # the write commits, and a replica starts from the checkpoint written beside it
+    lock.commit("state:IL")
+    lock.held = None
+    second, follower, _ = _replica(l3, log, lock, store, pointers, "b", **codec)
+    assert await follower.start()
+    assert await follower.catch_up()
+    assert _copy(second) == l3.held(), "the replica started from the checkpoint lost the held write's keys"
+
+
+async def test_another_replicas_commit_of_a_held_write_wakes_the_follower_by_the_stamps_own_row_messages() -> None:
+    """Flips if a follower holding keys a write held waits for another key, a catch-up or a poke once the write
+    commits on another replica: the commit moves only the writer's epochs (every key was heard before it), so nothing
+    else wakes it, and it serves the held scope's old rows (reports' live replica tests, 2026-11-10). The epochs
+    table's own row messages, heard from every replica, ask the pass."""
+    lock = _Scopes()
+    l3, log = _L3(), _Log()
+    backend = DuckDBBackend()
+    backend.initialize(_metadata())
+    registry = CollectionRegistry()
+    registry.follow_generation(_TABLE)
+    follower = CopyFollower(
+        registry,
+        [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))],
+        backend,
+        l3,
+        settled=lock.settled,
+        generation=log.current,
+        changes=log,
+        page_size=50,
+        stamp_table="scope_epochs",
+    )
+    follower.register()
+    bus = FakeNatsClient()
+    writer = CollectionRegistry()
+    await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    running = asyncio.create_task(follower.run())
+    try:
+        l3.put(_rows("IL", 5))
+        log.commit([("IL", i) for i in range(5)])
+        await follower.warm()
+        assert await follower.catch_up()
+        # a long write on another replica holds IL: its rows land, their keys heard and left pending
+        lock.held = frozenset({"state:IL"})
+        l3.put([("IL", i, 50) for i in range(5)])
+        log.commit([("IL", i) for i in range(5)])
+        follower.poke()
+        for _ in range(100):
+            if follower.status().pending == {_TABLE: 5}:
+                break
+            await asyncio.sleep(0.01)
+        assert follower.status().pending == {_TABLE: 5}
+        # it commits: the epochs move, and the writer's registry says so for the epochs' rows alone
+        lock.commit("state:IL")
+        lock.held = None
+        await writer.publish_invalidation(bus, "scope_epochs", ["state:IL"])  # type: ignore[arg-type]
+        for _ in range(200):
+            if _copy(backend) == l3.held():
+                break
+            await asyncio.sleep(0.01)
+        assert _copy(backend) == l3.held(), "the commit on another replica never woke the follower"
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        await registry.stop_invalidation_listener()
+
+
+def _stamped(tables: list[FollowedTable], settled: Any, **stamp: Any) -> CopyFollower:
+    """a follower of ``tables`` over a fresh copy, its writer's stamp read by ``settled``."""
+    backend = DuckDBBackend()
+    backend.initialize(_metadata())
+    registry = CollectionRegistry()
+    registry.follow_generation(_TABLE)
+    log = _Log()
+    return CopyFollower(registry, tables, backend, _L3(), settled=settled, generation=log.current, changes=log, **stamp)
+
+
+def test_a_follower_of_scoped_tables_names_the_stamp_table_it_hears_or_construction_raises() -> None:
+    """Flips if a follower of a table a write may hold can be built hearing no stamp table: it would hold that write's
+    keys until some other key arrives (reports' live replica tests, 2026-11-10). A ``ScopeEpochs.settled`` names its
+    own table; any other ``settled`` must name it, and the error says what to pass."""
+    scoped = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))]
+    with pytest.raises(ValueError, match="stamp_table="):
+        _stamped(scoped, _Scopes().settled)
+    _stamped(scoped, _Scopes().settled, stamp_table="scope_epochs").register()
+    epochs = ScopeEpochs(SimpleNamespace(table_name="enr_scope_epochs"))  # type: ignore[arg-type]
+    backend = DuckDBBackend()
+    backend.initialize(_metadata())
+    registry = CollectionRegistry()
+    registry.follow_generation(_TABLE)
+    log = _Log()
+    derived = CopyFollower(
+        registry, scoped, backend, _L3(), settled=epochs.settled, generation=log.current, changes=log
+    )
+    derived.register()
+    assert registry.has_derived_caches("enr_scope_epochs"), "a ScopeEpochs.settled names its own table"
+
+
+def test_a_follower_none_of_whose_tables_has_a_scope_builds_hearing_no_stamp_table() -> None:
+    """Flips if a follower none of whose tables has a scope must name a stamp table: no write can hold its keys, so it
+    has none to hear."""
+    plain = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)]
+    _stamped(plain, _Seqlock().settled).register()
 
 
 async def test_a_scope_the_write_takes_while_a_pass_reads_is_never_applied_from_that_pass() -> None:
@@ -1145,6 +1318,7 @@ def _office_world(lock: _Scopes) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower
         generation=log.current,
         changes=log,
         page_size=50,
+        stamp_table="scope_epochs",
     )
     follower.register()
     return l3, log, backend, follower
@@ -1225,6 +1399,7 @@ _DERIVED_TABLE = FollowedTable(
     name=_DERIVED,
     key=("state",),
     columns=(Column(name="state", column_type=STRING_TYPE), Column(name="total", column_type=BIGINT_TYPE)),
+    scope=("state", "state:"),
 )
 
 
@@ -1236,7 +1411,7 @@ def _derived_replica(
     Table(_DERIVED, metadata, SaColumn("state", String(8), primary_key=True), SaColumn("total", BigInteger))
     backend = DuckDBBackend()
     backend.initialize(metadata)
-    followed = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)]
+    followed = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))]
     checkpoints = CopyCheckpoints(
         name="votes",
         tables=[*followed, *([_DERIVED_TABLE] if holds_derived else [])],
@@ -1259,6 +1434,7 @@ def _derived_replica(
         changes=log,
         page_size=50,
         checkpoints=checkpoints,
+        stamp_table="scope_epochs",
     )
     return backend, follower
 
@@ -1328,6 +1504,7 @@ async def test_a_key_whose_row_is_of_a_held_scope_is_read_once_across_the_write(
         generation=log.current,
         changes=log,
         page_size=50,
+        stamp_table="scope_epochs",
     )
     follower.register()
     l3.put([("VA", 1, 1), ("VA", 2, 1), ("IL", 11, 1), ("IL", 12, 1)])
@@ -1351,3 +1528,139 @@ async def test_a_key_whose_row_is_of_a_held_scope_is_read_once_across_the_write(
     assert await follower.catch_up()
     assert _copy(backend) == l3.held()
     assert l3.rows_read == 1  # the changed key, read exactly once
+
+
+# --- the one whole read: only a cold start, a reset, a schema change, or an older writer mid-roll --------------------
+
+
+def _whole_reads_now() -> dict[str, float]:
+    """``copy_follower_whole_reads_total`` of the table, by why: what ``CopyFollower._stage_whole`` counts each time
+    it is reached."""
+    return {why: _whole_reads_counted(_TABLE, why) for why in WHOLE_READ_WHYS}
+
+
+def _risen(before: Mapping[str, float]) -> dict[str, float]:
+    return {why: count - before[why] for why, count in _whole_reads_now().items() if count != before[why]}
+
+
+async def test_stage_whole_is_reached_only_at_a_cold_start_a_reset_a_schema_change_or_a_legacy_whole_record() -> None:
+    """the proving test of CopyFollower._stage_whole and CopyFollower._stage's ledger lines: every steady-state path
+    (keys, a load's partition, a load's key prefixes, a stamp that moves, a failed pass, a start from a checkpoint and
+    its checkpoints) reads nothing whole; only a cold start, an operator's reset, a schema change and a whole record
+    with neither prefixes nor a reason (a writer older than 0.95.0 mid-roll) reach _stage_whole, each counted once
+    by its why (copy_follower_whole_reads_total, which _stage_whole alone counts)."""
+    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
+    l3.put(_rows("VA", 120))
+    log.commit([("VA", i) for i in range(120)])
+    _, first, _ = _replica(l3, log, lock, store, pointers, "a")
+    before = _whole_reads_now()
+    assert not await first.start()
+    assert await first.catch_up()
+    await first.checkpointed()
+    assert _risen(before) == {"cold_start": 1}
+    # a second replica starts from the checkpoint: no whole read
+    backend, follower, _ = _replica(l3, log, lock, store, pointers, "b")
+    counted = _whole_reads_now()
+    l3.rows_read = 0
+    assert await follower.start()
+    assert await follower.catch_up()
+    # keys: an insert, an update and a delete
+    l3.put([("VA", 7, 70), ("VA", 500, 1)])
+    l3.delete([("VA", 3)])
+    log.commit([("VA", 7), ("VA", 500), ("VA", 3)])
+    lock.version += 1
+    assert await follower.catch_up()
+    # a load's partition, and a load's key prefixes
+    l3.put(_rows("OH", 9, votes=4))
+    _record_whole(log, partition={"state": "OH"})
+    lock.version += 1
+    assert await follower.catch_up()
+    l3.put(_rows("TX", 5, votes=2))
+    _record_whole(log, prefixes=[{"state": "TX"}, {"state": "OH"}])
+    lock.version += 1
+    assert await follower.catch_up()
+    # a stamp that moves while a pass reads, then the pass that tops it up
+    l3.put([("VA", 8, 80)])
+    log.commit([("VA", 8)])
+    lock.version += 1
+    lock.move_on_read = lock.reads + 2
+    assert not await follower.catch_up()
+    assert await follower.catch_up()
+    # a pass that fails part way, then the one that applies the same keys
+    l3.put([("VA", 9, 90)])
+    log.commit([("VA", 9)])
+    lock.version += 1
+    l3.fail_next = True
+    with pytest.raises(ConnectionError):
+        await follower.catch_up()
+    assert await follower.catch_up()
+    await follower.checkpointed()
+    assert _copy(backend) == l3.held()
+    assert _risen(counted) == {}
+    assert l3.rows_read < len(l3.held())  # never the table
+    # the three that do read whole, each once and counted by its why
+    _record_whole(log, reason="reset")
+    lock.version += 1
+    assert await follower.catch_up()
+    follower.schema_changed(_TABLE)
+    assert await follower.catch_up()
+    _record_whole(log)  # a writer older than 0.95.0: neither prefixes nor a reason
+    lock.version += 1
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert _risen(counted) == {"reset": 1, "schema_change": 1, "legacy_whole_record": 1}
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in text.split(".")[:3])
+
+
+def test_the_older_writers_whole_record_read_is_gone_by_0_96_0() -> None:
+    """legacy_whole_record lives only for the 0.95.0 roll (Pace, 2026-11-09): from 3tears 0.96.0 it fails until the
+    code is deleted: CopyFollower._on_dropped's re-read and the non-key branch of CopyFollower._on_partition (a whole
+    record then is the registry's to refuse), WHOLE_READ_WHYS["legacy_whole_record"], this test's twin assertions in
+    test_stage_whole_is_reached_only_at_..., and the why in its ledger reason."""
+    assert core.__version__ != "unknown", "3tears is not installed: its version cannot be judged"
+    if _version_tuple(core.__version__) >= (0, 96, 0):
+        assert "legacy_whole_record" not in WHOLE_READ_WHYS, (
+            f"3tears {core.__version__} still re-reads a table whole for a writer older than 0.95.0: delete "
+            "CopyFollower._on_dropped's legacy re-read, the non-key branch of CopyFollower._on_partition and "
+            'WHOLE_READ_WHYS["legacy_whole_record"]'
+        )
+
+
+async def test_a_checkpoint_stage_is_reached_only_at_a_start() -> None:
+    """the proving test of CopyCheckpoints.stage's ledger line: its whole load of each table from L2 runs once, at a
+    follower's start; no catch-up, checkpoint write, reset or schema change reaches it again."""
+    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
+    l3.put(_rows("VA", 60))
+    log.commit([("VA", i) for i in range(60)])
+    _, writer, _ = _replica(l3, log, lock, store, pointers, "a")
+    assert not await writer.start()
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    backend, follower, checkpoints = _replica(l3, log, lock, store, pointers, "b")
+    stages: list[int] = []
+    real = checkpoints.stage
+
+    async def stage() -> Any:
+        stages.append(1)
+        return await real()
+
+    checkpoints.stage = stage  # type: ignore[method-assign]
+    assert await follower.start()
+    assert stages == [1]
+    for version in range(1, 40):
+        l3.put([("VA", version, version)])
+        log.commit([("VA", version)])
+        lock.version += 1
+        assert await follower.catch_up()
+    await follower.checkpointed()
+    _record_whole(log, reason="reset")
+    lock.version += 1
+    assert await follower.catch_up()
+    follower.schema_changed(_TABLE)
+    assert await follower.catch_up()
+    await follower.checkpointed()
+    assert _copy(backend) == l3.held()
+    assert stages == [1]

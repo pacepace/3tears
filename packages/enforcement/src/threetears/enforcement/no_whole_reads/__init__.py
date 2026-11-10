@@ -133,6 +133,13 @@ class NoWholeReadsConfig:
     :ivar extra_narrowing: the repo's own keywords that narrow them
     :ivar transient_relations: a regular expression of relations that are a change set being applied (a stage of
         rows a change named), never a data table; empty for none
+    :ivar transient_producers: the repo's functions whose returned relation is such a change set (``Stages._stage``,
+        ``_Work.put``): ``Class.method``, or a module function's name. A statement over what one returns -- the call in
+        the placeholder, a name bound to it, a ``self`` attribute every assignment of which is one -- reads a change
+        set; a method counts called on ``self`` in its class, on the class, or on a receiver known to be the class
+    :ivar view_producers: the repo's functions that build a view under a name they are handed (``_view_sql``,
+        ``Parts.copy_view``: ``Class.method`` or a module function's name), onto the key (or keys) every view each
+        builds declares: its ``CREATE VIEW {}`` is judged by them, as a declared view is by its own (passed through)
     :ivar verify_prefixes: repo-relative prefixes of load code (a writer, a loader, a follower), where a count or
         fingerprint even of one key's rows is a verification scan (``verify-aggregate``): the epoch and the source's
         own change records say what changed, so nothing counts rows to find out
@@ -159,6 +166,8 @@ class NoWholeReadsConfig:
     extra_pagers: frozenset[str] = field(default_factory=frozenset)
     extra_narrowing: frozenset[str] = field(default_factory=frozenset)
     transient_relations: str = ""
+    transient_producers: frozenset[str] = field(default_factory=frozenset)
+    view_producers: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
     verify_prefixes: tuple[str, ...] = ()
     minimum_files_scanned: int = 1
     schema_roots: tuple[Path, ...] = ()
@@ -294,6 +303,19 @@ def _dependency_roots(repo_root: Path) -> tuple[Path, ...]:
     )
 
 
+def _keys_of(declared: tuple[str, ...] | tuple[tuple[str, ...], ...]) -> tuple[tuple[str, ...], ...]:
+    """a declaration's keys: one key (its columns), or several.
+
+    :param declared: the declaration
+    :ptype declared: tuple[str, ...] | tuple[tuple[str, ...], ...]
+    :return: each key's columns
+    :rtype: tuple[tuple[str, ...], ...]
+    """
+    if all(isinstance(column, str) for column in declared):
+        return (tuple(str(column) for column in declared),)
+    return tuple(tuple(str(column) for column in key) for key in declared if not isinstance(key, str))
+
+
 def _schema_of(config: NoWholeReadsConfig) -> SchemaCatalog:
     """every table key and index the repo (and the 3tears it reads) declares.
 
@@ -313,12 +335,7 @@ def _schema_of(config: NoWholeReadsConfig) -> SchemaCatalog:
         for written, declared in relations.items():
             # ``local_relations["*"]``: the default key of every copy relation the repo declares no key for
             name = "{}" if written == "*" and prefix else written
-            keys: list[tuple[str, ...]] = (
-                [tuple(str(column) for column in declared)]
-                if all(isinstance(column, str) for column in declared)
-                else [tuple(str(column) for column in key) for key in declared if not isinstance(key, str)]
-            )
-            for key in keys:
+            for key in _keys_of(declared):
                 catalog.add_key(f"{prefix}{name.lower()}", key, "NoWholeReadsConfig")
     return catalog
 
@@ -341,6 +358,8 @@ def _hits(config: NoWholeReadsConfig) -> tuple[list[WholeReadHit], WholeReadScan
         verify_prefixes=config.verify_prefixes,
         schema=_schema_of(config),
         exec_calls=config.extra_exec_calls,
+        producers=config.transient_producers,
+        view_producers={producer: _keys_of(declared) for producer, declared in config.view_producers.items()},
     )
     return scan.hits, scan
 
@@ -418,22 +437,34 @@ def _announce(scan: WholeReadScan) -> list[str]:
     return lines
 
 
-def _marked(hit: WholeReadHit, marks: list[OperatorMark]) -> bool:
-    """whether a hit sits in a function (or one nested in it) whose operator mark lets its kind through.
+def _marked(hit: WholeReadHit, marks: list[OperatorMark], schema: SchemaCatalog | None = None) -> bool:
+    """whether a hit sits in a function (or one nested in it) whose operator mark lets its kind through. A source
+    change read of a whole static input (``unit="table"``) lets through its whole reads and pagers of relations no
+    declaration names, never of an L3 or catalog table.
 
     :param hit: the hit
     :ptype hit: WholeReadHit
     :param marks: the operator marks
     :ptype marks: list[OperatorMark]
+    :param schema: the declared tables, which a static input's mark never covers
+    :ptype schema: SchemaCatalog | None
     :return: whether it does
     :rtype: bool
     """
+    relation = hit.symbol.split(" ", 1)[1] if " " in hit.symbol else ""
+    declared = schema is not None and hit.kind == "whole-select" and schema.table(relation) is not None
     return any(
         hit.path == mark.path
         and (hit.function == mark.function or hit.function.startswith(f"{mark.function}."))
-        and hit.kind in mark.kinds
+        and (hit.kind in mark.kinds or (mark.unit == "table" and hit.kind in _STATIC_UNIT_KINDS and not declared))
         for mark in marks
     )
+
+
+#: the whole reads a source change read of a static input (``unit="table"``) is: a whole select, a pager over it
+_STATIC_UNIT_KINDS: Final[frozenset[str]] = frozenset(
+    {"whole-select", "whole-aggregate", "unkeyed-pager", "may-read-whole", "whole-read", "calls-whole-read"}
+)
 
 
 def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
@@ -479,7 +510,7 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
             warnings.warn(line, _WholeReadAccepted, stacklevel=2)
     findings.extend(index_findings(scan.schema, config.repo_root, scan.definitions | scan.constants))
     for hit in hits:
-        if _marked(hit, scan.operators):
+        if _marked(hit, scan.operators, scan.schema):
             continue
         if not any(_inside(hit, exemption) for exemption in exemptions):
             findings.append(f"{hit.path}:{hit.line} in {hit.function}: {hit.symbol} -- {hit.statement} -- {_ADVICE}")

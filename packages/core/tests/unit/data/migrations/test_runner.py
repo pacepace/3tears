@@ -837,3 +837,42 @@ class TestPackagesView:
         view_before = runner.packages
         runner.register(PackageMigrations(name="alpha", scope=MigrationScope.AGENT))
         assert "alpha" in view_before
+
+
+class TestARunRepairsItsSchemasUnusableIndexes:
+    """every apply ends by building again each index of its schema a failed build left unusable."""
+
+    @pytest.mark.parametrize("scope", [MigrationScope.AGENT, MigrationScope.PLATFORM])
+    async def test_a_scope_apply_asks_for_its_schema_s_unusable_indexes_under_the_lock(
+        self, scope: MigrationScope
+    ) -> None:
+        """Flips if a run ends without looking for its schema's unusable indexes, or looks after the lock is gone."""
+        pkg = PackageMigrations(name="healing", scope=scope)
+        pkg.version(1)(_noop)
+        runner = MigrationRunner()
+        runner.register(pkg)
+        store = FakeDataStore(schema="agent_heal")
+        apply = runner.apply_for_agent_schema if scope is MigrationScope.AGENT else runner.apply_for_platform_schema
+
+        await apply(store)
+        # a run with nothing left to apply still looks
+        await apply(store)
+
+        asked = [
+            (index, params)
+            for index, (sql, params) in enumerate(store.statements)
+            if "indisvalid AND i.indisready AND i.indislive" in sql
+        ]
+        assert [params for _, params in asked] == [(["agent_heal"], None)] * 2
+        unlocks = [index for index, (sql, _) in enumerate(store.statements) if "pg_advisory_unlock" in sql]
+        assert all(any(at < unlock for unlock in unlocks) for at, _ in asked), "asked while the run held the lock"
+
+    async def test_a_package_apply_asks_too(self) -> None:
+        """Flips if a single package's run (a pod's table upgrade) ends without the repair."""
+        pkg = PackageMigrations(name="healing", scope=MigrationScope.AGENT)
+        pkg.version(1)(_noop)
+        runner = MigrationRunner()
+        runner.register(pkg)
+        store = FakeDataStore(schema="agent_heal")
+        await runner.apply_package(store, "healing")
+        assert any("indisvalid AND i.indisready AND i.indislive" in sql for sql, _ in store.statements)

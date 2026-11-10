@@ -142,9 +142,10 @@ class SchemaPrimingIntegration:
             "WHERE name = ANY($2) AND status = 'active' AND ("
             "  customer_id = $1"
             "  OR visibility = 'public'"
-            "  OR id IN ("
-            "       SELECT datasource_id FROM datasource_customers"
-            "        WHERE customer_id = $1"
+            # the grant by its whole key (datasource_customers' primary key), for each named row
+            "  OR EXISTS ("
+            "       SELECT 1 FROM datasource_customers dc"
+            "        WHERE dc.datasource_id = datasources.id AND dc.customer_id = $1"
             "  )"
             ")",
             self.customer_id,

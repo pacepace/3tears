@@ -37,6 +37,7 @@ from threetears.core.collections.schema_backed import (
     STRING_TYPE,
     UUID_TYPE,
     Column,
+    Index,
     SchemaBackedCollection,
     TableSchema,
 )
@@ -142,6 +143,13 @@ def _parse_vector_text(value: Any) -> list[float] | None:
     return result
 
 
+#: each table's vectors by primary key, one statement per table so each is judged against its own key
+_EMBEDDINGS_BY_ID_SQL: dict[str, str] = {
+    "playbook_entries": "SELECT id, embedding::text AS embedding FROM playbook_entries WHERE id = ANY($1)",
+    "concepts": "SELECT id, embedding::text AS embedding FROM concepts WHERE id = ANY($1)",
+}
+
+
 async def _fetch_embeddings(
     l3_pool: Any,
     table_name: str,
@@ -188,7 +196,7 @@ async def _fetch_embeddings(
     result: dict[UUID, list[float]] = {}
     if l3_pool is not None and ids:
         rows = await l3_pool.fetch(
-            f"SELECT id, embedding::text AS embedding FROM {table_name} WHERE id = ANY($1)",
+            _EMBEDDINGS_BY_ID_SQL[table_name],
             ids,
             customer_scope=customer_scope,
         )
@@ -329,6 +337,17 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
+        # the hub's own-drafts index (hub v019): a user's drafts, the only rows it holds
+        indexes=(
+            Index(
+                "playbook_entries_draft_owner_idx",
+                "user_id",
+                "status",
+                where="status = 'draft'",
+                purpose="packages/agent/knowledge/src/threetears/agent/knowledge/collections.py::PlaybookEntryCollection.list_own_drafts",
+                plan_test="packages/agent/knowledge/tests/integration/test_index_plans.py::test_draft_owner_indexes",
+            ),
+        ),
         cas_column="date_updated",
     )
 
@@ -568,6 +587,17 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
+        # the hub's own-drafts index (hub v019): a user's drafts, the only rows it holds
+        indexes=(
+            Index(
+                "concepts_draft_owner_idx",
+                "user_id",
+                "status",
+                where="status = 'draft'",
+                purpose="packages/agent/knowledge/src/threetears/agent/knowledge/collections.py::ConceptCollection.list_own_drafts",
+                plan_test="packages/agent/knowledge/tests/integration/test_index_plans.py::test_draft_owner_indexes",
+            ),
+        ),
         cas_column="date_updated",
     )
 

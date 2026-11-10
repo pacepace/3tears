@@ -91,6 +91,7 @@ from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter
 
 __all__ = [
+    "sql_cast",
     "BIGINT_TYPE",
     "MAX_INDEX_COLUMNS",
     "BOOL_TYPE",
@@ -205,6 +206,29 @@ INT_TYPE = "int"
 BIGINT_TYPE = "bigint"
 BOOL_TYPE = "bool"
 VECTOR_TYPE = "vector"
+
+#: the SQL type a column's value is cast to where a statement binds it in an array, by its type tag; ``text`` for
+#: every tag not here
+_SQL_CASTS: Final[Mapping[str, str]] = {
+    UUID_TYPE: "uuid",
+    INT_TYPE: "bigint",
+    BIGINT_TYPE: "bigint",
+    BOOL_TYPE: "boolean",
+    NUMERIC_TYPE: "numeric",
+    DATETIMETZ_TYPE: "timestamptz",
+}
+
+
+def sql_cast(column_type: str) -> str:
+    """the SQL type a value of a column of ``column_type`` is cast to where a statement binds it in an array.
+
+    :param column_type: the column's type tag
+    :ptype column_type: str
+    :return: the SQL type (``uuid``, ``bigint``, ``timestamptz``; ``text`` for a string and every other tag)
+    :rtype: str
+    """
+    return _SQL_CASTS.get(column_type, "text")
+
 
 #: the most columns one index may hold on YugabyteDB, its ``INCLUDE`` columns and a primary key's columns counted:
 #: 2026.1 refuses more ("cannot use more than 32 columns in an index", measured on 2026.1.0.0-b118). A schema naming
@@ -1256,6 +1280,21 @@ class TableSchema:
                 best, order = led, tuple(columns[led:])
         return order
 
+    def hashed_lead_array(self, order: Sequence[str]) -> str | None:
+        """the SQL array type of ``order``'s first column when a keyset read on ``order`` pages a hashed lead: when
+        ``order`` is the primary key (what :meth:`keyset_order` answers for a read no filter leads), whose first
+        column YugabyteDB hashes (no declaration here names a range-sharded key). None for an order a filter leads,
+        which pages inside the bucket of the pinned lead (:mod:`threetears.core.keyset`, "A hashed lead").
+
+        :param order: the columns the read pages on
+        :ptype order: Sequence[str]
+        :return: the lead's array type (``text[]``), or None
+        :rtype: str | None
+        """
+        if len(order) < 2 or tuple(order) != tuple(self._pk_columns):
+            return None
+        return f"{sql_cast(self.column(order[0]).column_type)}[]"
+
     @property
     def partition_column(self) -> str | None:
         """return the partition-column name, or ``None`` for non-partitioned tables.
@@ -2217,6 +2256,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             f"SELECT {build_select_column_list(schema)} FROM {schema.name}",  # noqa: S608 - the declared schema
             list(schema.pk_columns),
             page_size=page_size,
+            lead_array=schema.hashed_lead_array(schema.pk_columns),
         )
 
         async def coerced() -> AsyncIterator[list[dict[str, Any]]]:

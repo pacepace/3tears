@@ -156,20 +156,19 @@ def test_the_election_night_paths_are_named_where_they_read_and_where_they_are_c
         ("Store.count", "whole-aggregate {}"),
         ("Refresher._check_counts", "calls-whole-read Store.count"),
         ("Store.stamps", "whole-by-loop read_l3_rows"),
-        ("Store.count_held", "verify-aggregate results"),
     }
     assert expected <= found, sorted(expected - found)
     # the keyed reads beside them are not named
     assert not {f for f, _ in found} & {"CopyFollower._stage_partition", "ScopeEpochs.scope"}
 
 
-def test_a_keyed_count_is_a_verification_scan_only_in_the_code_named_load_code(tmp_path: Path) -> None:
-    """Flips if a per-key count is flagged outside the repo's load code, or passes inside it."""
+def test_a_keyed_count_is_no_verification_scan_even_in_load_code(tmp_path: Path) -> None:
+    """Flips if a count bound by a key prefix is named, in load code or out of it, or if a whole count is not."""
     source = {"writer.py": _WRITER}
-    assert ("Store.count_held", "verify-aggregate results") not in _symbols(_config(tmp_path, source))
-    assert ("Store.count_held", "verify-aggregate results") in _symbols(
-        _config(tmp_path, source, verify_prefixes=("src/",))
-    )
+    for config in (_config(tmp_path, source), _config(tmp_path, source, verify_prefixes=("src/",))):
+        found = _symbols(config)
+        assert not any(function == "Store.count_held" for function, _ in found), found
+        assert ("Store.count", "whole-aggregate {}") in found, found
 
 
 def test_a_call_resolves_only_when_every_function_it_may_reach_reads_whole(tmp_path: Path) -> None:
@@ -417,6 +416,58 @@ def test_an_operator_mark_needs_its_proof_and_no_unmarked_caller(tmp_path: Path)
     assert any(
         "drill @operator_command: the proof" in finding and "never names drill" in finding for finding in findings
     )
+
+
+_MARKED_METHOD = """
+    from threetears.core.operator import operator_command
+
+    class RereadStateTool:
+        @operator_command("an operator's explicit one-off reread of every state row", proof="tests/test_ops.py::test_reread")
+        async def execute(self, conn):
+            return await conn.fetch("SELECT * FROM state")
+"""
+
+
+def test_an_entry_only_mark_counts_a_method_call_only_on_a_receiver_known_to_be_its_class(tmp_path: Path) -> None:
+    """Flips if a call of a marked method's name on a receiver of unknown type (``self._db.execute``, a DuckDB
+    connection) is reported as an unmarked caller of it, or if a receiver typed or assigned as the marked class is
+    not."""
+    _ops(tmp_path, "def test_reread():\n    assert RereadStateTool.execute\n")
+    unrelated = """
+        class Pod:
+            def __init__(self, db):
+                self._db = db
+
+            async def step(self, key):
+                return await self._db.execute("SELECT 1 FROM state WHERE k = $1", key)
+
+            async def other(self, conn, key):
+                return await conn.execute("SELECT 1 FROM state WHERE k = $1", key)
+        """
+    typed = """
+        from tool import RereadStateTool
+
+        async def annotated(tool: RereadStateTool, conn):
+            return await tool.execute(conn)
+
+        async def assigned(conn):
+            tool = RereadStateTool()
+            return await tool.execute(conn)
+
+        class Holder:
+            def __init__(self):
+                self._tool = RereadStateTool()
+
+            async def run(self, conn):
+                return await self._tool.execute(conn)
+        """
+    findings = no_whole_reads_findings(
+        _config(tmp_path, {"tool.py": _MARKED_METHOD, "pod.py": unrelated, "typed.py": typed})
+    )
+    callers = [finding for finding in findings if "marked @operator_command" in finding]
+    assert not [finding for finding in callers if "pod.py" in finding], callers
+    for function in ("in annotated:", "in assigned:", "in Holder.run:"):
+        assert any("typed.py" in finding and function in finding for finding in callers), (function, callers)
 
 
 def test_a_ledger_line_without_its_speed_test_field_is_malformed(tmp_path: Path) -> None:
@@ -1440,3 +1491,591 @@ def test_a_source_gap_names_its_gap_and_is_announced(tmp_path: Path) -> None:
     unnamed = _ledger(kind="source-gap")
     findings = no_whole_reads_findings(_config(tmp_path, {"follower.py": _COLD}, ledger=unnamed))
     assert any("names its gap id" in finding for finding in findings), findings
+
+
+_STATIC = """
+    from threetears.core.operator import source_change_read
+
+    class Warehouse:
+        @source_change_read(unit="table", proof="tests/test_source.py::test_static")
+        async def static_records(self, relation):
+            rows = await read_all(self._client, f"SELECT * FROM {relation}")
+            heads = await self._client.query(f"SELECT name FROM {relation}")
+            return rows, heads
+
+        async def load(self, relation):
+            return await self.static_records(relation)
+
+    @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+    async def grouped_by(client, relation, run_ids, required):
+        condition, params = filter_conditions(where_in={"run_id": run_ids, "family": ["race"]}, not_null=required)
+        return await client.query(f"SELECT office_key FROM {relation} WHERE {condition} GROUP BY office_key", params)
+
+    @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+    async def filtered_unknown(client, relation, filters):
+        condition, params = filter_conditions(where_in=filters)
+        return await client.query(f"SELECT office_key FROM {relation} WHERE {condition}", params)
+
+    def typed(connection, rows, typed_columns):
+        connection.register("raw", rows)
+        connection.execute(f"CREATE TEMP VIEW typed AS SELECT {typed_columns}, raw.{ORDER} FROM raw")
+        return connection.execute("SELECT * FROM typed")
+"""
+
+_STATIC_TESTS = """
+    async def test_static(warehouse):
+        assert await warehouse.static_records("r")
+
+    async def test_runs(client):
+        assert await grouped_by(client, "r", [1], ()) and await filtered_unknown(client, "r", {})
+"""
+
+
+def test_a_static_input_s_pager_its_callers_filter_conditions_and_temp_views_are_judged_right(tmp_path: Path) -> None:
+    """Flips if a static input read whole (a pager, a bare head) inside its mark, or its caller, is a finding; if a
+    read by ids built through filter_conditions is unknown; if one whose columns are not written out passes; or if a
+    temp view over registered rows, built in an f-string, is undeclared or its reads are named."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_source.py").write_text(textwrap.dedent(_STATIC_TESTS), encoding="utf-8")
+    with pytest.warns(UserWarning):
+        found = _symbols(_config(tmp_path, {"warehouse.py": _STATIC}))
+    assert not {function for function, _ in found} & {
+        "Warehouse.static_records",
+        "Warehouse.load",
+        "grouped_by",
+        "typed",
+    }, found
+    assert any(function == "filtered_unknown" for function, _ in found), found
+
+
+_CURSORED = """
+    from threetears.core.keyset import keyset_arrow_pages
+
+    async def from_mark(l3, mark):
+        return keyset_arrow_pages(l3, "SELECT k FROM t", ("k",), types={}, after=mark)
+
+    async def keyed_from_mark(l3, mark, scope):
+        return keyset_arrow_pages(l3, "SELECT k FROM t", ("k",), types={}, after=mark, where={"scope": scope})
+"""
+
+
+def test_a_pager_s_start_alone_does_not_narrow_it(tmp_path: Path) -> None:
+    """Flips if a pager given only where to start (after=, since=) passes as narrowed, or one given a where beside it
+    is named."""
+    found = _symbols(_config(tmp_path, {"cursored.py": _CURSORED}))
+    assert ("from_mark", "unkeyed-pager keyset_arrow_pages") in found, found
+    assert not any(function == "keyed_from_mark" for function, _ in found), found
+
+
+_SPREAD = """
+    from threetears.core.operator import source_change_read
+
+    @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+    async def by_runs(client, relation, run_ids, part):
+        condition, params = filter_conditions(where_in={"run_id": run_ids, **part.filters})
+        return await client.query(f"SELECT office_key FROM {relation} WHERE {condition}", params)
+
+    @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+    async def by_family(client, relation, part):
+        condition, params = filter_conditions(where_in={"family": ["race"], **part.filters})
+        return await client.query(f"SELECT office_key FROM {relation} WHERE {condition}", params)
+"""
+
+
+def test_sets_spread_beside_a_bound_id_only_narrow(tmp_path: Path) -> None:
+    """Flips if where_in sets spread in beside the bound id make the read unknown, or if spread sets beside no
+    bound id or key pass."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_source.py").write_text(
+        "async def test_runs(client):\n    assert await by_runs(client, 'r', [1], None) and await by_family(client, 'r', None)\n",
+        encoding="utf-8",
+    )
+    with pytest.warns(UserWarning):
+        found = _symbols(_config(tmp_path, {"spread.py": _SPREAD}))
+    assert not any(function == "by_runs" for function, _ in found), found
+    assert ("by_family", "unknown-predicate {}") in found, found
+
+
+_HELPED = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import KeyBatch, Sort, keyset_page, read_keyed
+
+    RESULTS = TableSchema(name="results", primary_key=("state", "geo", "id"), columns=[])
+
+    async def by_key(c, ks, cols):
+        return await read_keyed(c, "results", keys=KeyBatch(("state", "geo"), ks), columns=cols)
+
+    async def by_kind(c, cols):
+        return await keyset_page(c, "results", columns=cols, by={}, order=[Sort("kind")], limit=5)
+
+    async def unread(c, table, ks, cols):
+        return await read_keyed(c, table, keys=KeyBatch(("state",), ks), columns=cols)
+"""
+
+
+def test_a_keyed_helper_is_judged_by_the_statement_it_sends(tmp_path: Path) -> None:
+    """Flips if a keyed helper call naming a key prefix is named, one ordering by no key passes, or one whose table
+    the walk cannot read passes rather than being unknown."""
+    found = _symbols(_config(tmp_path, {"helped.py": _HELPED}))
+    assert not any(function == "by_key" for function, _ in found), found
+    assert any(function == "by_kind" for function, _ in found), found
+    assert any(function == "unread" and symbol.startswith("unknown-predicate read_keyed") for function, symbol in found)
+
+
+_CONSTANT_TABLE = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import delete_before
+
+    LINKS = "link_redemptions"
+    LINKS_SCHEMA = TableSchema(
+        name=LINKS,
+        primary_key="token_id",
+        columns=[],
+        indexes=(Index("links_by_expiry", "expires_at", purpose="src/links.py::prune"),),
+    )
+
+    async def prune(conn, cutoff):
+        return await delete_before(LINKS, collection=None, conn=conn, key=["token_id"], column="expires_at", before=cutoff, page=1000)
+
+    async def prune_any(conn, table, cutoff):
+        return await delete_before(table, collection=None, conn=conn, key=["token_id"], column="expires_at", before=cutoff, page=1000)
+"""
+
+
+def test_a_helper_s_constant_argument_reads_as_its_literal(tmp_path: Path) -> None:
+    """Flips if a helper whose table is a module constant is unknown rather than judged, or one whose table is a
+    parameter the walk cannot read passes."""
+    found = _symbols(_config(tmp_path, {"links.py": _CONSTANT_TABLE}))
+    assert not any(function == "prune" for function, _ in found), found
+    assert any(function == "prune_any" and "unknown-predicate delete_before" in s for function, s in found), found
+
+
+_DRAIN = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyset import keyset_pages
+
+    RUNS = TableSchema(
+        name="dataset_runs",
+        primary_key="id",
+        columns=[],
+        indexes=(
+            Index(
+                "dataset_runs_live",
+                "status",
+                "date_last_progress",
+                "id",
+                purpose="src/runs.py::live_run_ids",
+                plan_test="tests/test_plans.py::test_live",
+            ),
+        ),
+    )
+
+    async def live_run_ids(pool, status, cutoff):
+        async for page in keyset_pages(
+            pool,
+            "SELECT id, date_last_progress FROM dataset_runs",
+            ["date_last_progress", "id"],
+            where={"status": status},
+            conditions=[Fragment('"date_last_progress" < $1', (cutoff,))],
+            page_size=10,
+        ):
+            return page
+"""
+
+
+def test_a_keyset_pager_s_purposed_index_is_recorded_as_used(tmp_path: Path) -> None:
+    """Flips if a drain through keyset_pages does not record the purposed index its pages read through (so the index
+    reports its purpose unused), or records one whose purpose names another function."""
+    _plans(tmp_path, "def test_live(plan):\n    assert plan_uses_index(plan, 'dataset_runs_live')\n")
+    findings = no_whole_reads_findings(_config(tmp_path, {"runs.py": _DRAIN}))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
+    other = _DRAIN.replace('purpose="src/runs.py::live_run_ids"', 'purpose="src/runs.py::other"').replace(
+        "async def live_run_ids", "async def other(pool):\n        return pool\n\n    async def live_run_ids"
+    )
+    findings = no_whole_reads_findings(_config(tmp_path, {"runs.py": other}))
+    assert any("index-purpose-unused" in finding for finding in findings), findings
+
+
+_MARKED_COLUMNS = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import Sort, keyset_page
+
+    CONSOLIDATIONS = TableSchema(
+        name="memory_consolidations",
+        primary_key=("agent_id", "consolidated_memory_id", "source_memory_id"),
+        columns=[],
+        indexes=(Index("by_source", "agent_id", "source_memory_id", purpose="src/memory.py::_MARK_COLUMNS"),),
+    )
+    OPERATIONS = TableSchema(
+        name="backup_operations",
+        primary_key="operation_id",
+        columns=[],
+        indexes=(Index("recent", "date_started", purpose="src/memory.py::newest"),),
+    )
+    _MARK_COLUMNS = (
+        "(SELECT c.consolidated_memory_id FROM memory_consolidations c "
+        "WHERE c.agent_id = memories.agent_id AND c.source_memory_id = memories.memory_id LIMIT 1) AS corrected_by"
+    )
+    _NEWEST_FIRST = (Sort("date_started", descending=True), Sort("operation_id", descending=True))
+
+    async def by_ids(pool, agent_id, ids):
+        return await pool.fetch(f"SELECT memory_id, {_MARK_COLUMNS} FROM memories WHERE agent_id = $1 AND memory_id = ANY($2)", agent_id, ids)
+
+    async def for_user(pool, agent_id, user_id):
+        return await pool.fetch(f"SELECT memory_id, {_MARK_COLUMNS} FROM memories WHERE agent_id = $1 AND user_id = $2", agent_id, user_id)
+
+    async def newest(pool, cols):
+        return await keyset_page(pool, "backup_operations", columns=cols, by={}, order=_NEWEST_FIRST, limit=10)
+"""
+
+
+def test_a_read_in_a_shared_constant_and_a_helper_s_constant_order_are_judged_and_credited(tmp_path: Path) -> None:
+    """Flips if a subquery written once in a module constant can't key through the index whose purpose names that
+    constant, or if a helper's order given as a module constant is unread (its purposed index unused)."""
+    found = _symbols(_config(tmp_path, {"memory.py": _MARKED_COLUMNS}))
+    assert not any("memory_consolidations" in symbol for _, symbol in found), found
+    assert not any(function == "newest" for function, _ in found), found
+    findings = no_whole_reads_findings(_config(tmp_path, {"memory.py": _MARKED_COLUMNS}))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
+
+
+_PRODUCED = """
+    class Stages:
+        def __init__(self, db):
+            self._db = db
+
+        @staticmethod
+        def _stage(stage):
+            return f'"__s_{stage}"'
+
+        def rows(self, stage):
+            return self._db.execute(f"SELECT * FROM {self._stage(stage)}")
+
+
+    class _Work:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def put(self, rows):
+            return "w"
+
+
+    class Other:
+        def put(self, rows):
+            return "o"
+
+
+    def settle(conn, rows):
+        work = _Work(conn)
+        named = work.put(rows)
+        return conn.execute(f"SELECT * FROM {named}")
+
+
+    def widen(work: _Work, conn, rows):
+        return conn.execute(f"SELECT * FROM {work.put(rows)}")
+
+
+    class Pass:
+        def __init__(self, work: _Work):
+            self.work = work
+            self.new = work.put(None)
+
+        def read(self, conn):
+            return conn.execute(f"SELECT * FROM {self.new} AS n JOIN {self.work.put(None)} AS k ON n.a = k.a")
+
+
+    def unrelated(other: Other, conn):
+        return conn.execute(f"SELECT * FROM {other.put(1)}")
+"""
+
+
+def test_a_relation_a_declared_transient_producer_returns_is_a_change_set(tmp_path: Path) -> None:
+    """Flips if a relation named by a declared transient producer's return (``Stages._stage``, ``_Work.put``) -- the
+    call in the placeholder, a name bound to it, or a ``self`` attribute assigned it -- is judged as a data table, if
+    an undeclared producer's (``Other.put``, the same method name on another class) is not, or if undeclared the same
+    reads are not judged at all."""
+    modules = {"pkg/produced.py": _PRODUCED}
+    readers = {"Stages.rows", "settle", "widen", "Pass.read"}
+    bare = _symbols(_config(tmp_path, modules))
+    assert readers | {"unrelated"} <= {function for function, _ in bare}, bare
+    found = _symbols(_config(tmp_path, modules, transient_producers=frozenset({"Stages._stage", "_Work.put"})))
+    assert not readers & {function for function, _ in found}, found
+    assert "unrelated" in {function for function, _ in found}, found
+
+
+_TABLE_PARAMETER = """
+    from threetears.core.keyed import holds_any
+
+    from pkg.tables import GEOS
+
+
+    async def _held(conn, table, geo):
+        return await holds_any(conn, table, by={"geo_id": geo})
+
+
+    async def _by_state(conn, table, state):
+        return await holds_any(conn, table, by={"state": state})
+
+
+    async def _loose(conn, table, geo):
+        return await holds_any(conn, table, by={"geo_id": geo})
+
+
+    async def callers(conn, named):
+        await _held(conn, GEOS, "g1")
+        await _held(conn, table="geos", geo="g2")
+        await _by_state(conn, GEOS, "s")
+        await _loose(conn, GEOS, "g3")
+        await _loose(conn, named, "g4")
+"""
+
+
+def test_a_keyed_helpers_table_parameter_resolves_when_every_caller_names_a_declared_table(tmp_path: Path) -> None:
+    """Flips if a keyed helper called with a table parameter stays unknown when every caller of its function passes a
+    literal or a module constant (``_held``: keyed; ``_by_state``: judged against that table, so non-key), or
+    resolves when one caller passes a value the walk cannot read (``_loose``)."""
+    found = _symbols(_config(tmp_path, {"pkg/tables.py": _TABLES, "pkg/probe.py": _TABLE_PARAMETER}))
+    assert not any(function == "_held" for function, _ in found), found
+    assert ("_by_state", 'non-key-where "geos"') in found, found
+    assert ("_loose", "unknown-predicate holds_any(table)") in found, found
+
+
+_RENAMED_VIEWS = """
+    def make(db):
+        db.execute("CREATE VIEW offices AS SELECT p.race AS office_key, p.state FROM lsf_rows AS p")
+        db.execute("CREATE VIEW cased AS SELECT CASE WHEN p.race IS NULL THEN '' ELSE p.race END AS office_key FROM lsf_rows AS p")
+        db.execute("CREATE VIEW joined AS SELECT p.race || p.state AS office_key FROM lsf_rows AS p")
+
+    def by_office(db, office):
+        return db.execute_query(f"SELECT * FROM offices WHERE office_key = {office}")
+"""
+
+
+def test_a_view_column_that_renames_a_plain_column_passes_its_key_through(tmp_path: Path) -> None:
+    """Flips if a key column a view's body renames from a plain column (``p.race AS office_key``) is not passed
+    through, or if one it computes (a CASE, a concatenation) is."""
+    relations = {"offices": ("office_key",), "cased": ("office_key",), "joined": ("office_key",)}
+    found = _symbols(_config(tmp_path, {"views.py": _RENAMED_VIEWS}, local_relations=relations))
+    assert ("make", "view-key-not-passed cased.office_key") in found, found
+    assert ("make", "view-key-not-passed joined.office_key") in found, found
+    assert not any("offices" in symbol for _, symbol in found), found
+    assert not any(function == "by_office" for function, _ in found), found
+
+
+_QUALIFIED_VIEWS = """
+    from threetears.core.collections.schema_backed import TableSchema
+
+    SETTINGS = TableSchema(name="report_settings", primary_key="join_state_code", columns=[])
+
+    def make(db):
+        db.execute("CREATE OR REPLACE VIEW report.report_settings AS SELECT name, value FROM copy_settings")
+
+    def by_name(db, name):
+        return db.execute_query(f"SELECT value FROM report.report_settings WHERE name = {name}")
+
+    def by_state(db, state):
+        return db.execute_query(f"SELECT value FROM report.report_settings WHERE join_state_code = {state}")
+
+    async def l3_by_state(conn, state):
+        return await conn.fetch("SELECT * FROM report_settings WHERE join_state_code = $1", state)
+"""
+
+
+def test_a_view_in_a_schema_of_its_own_is_judged_by_its_copy_declaration_before_an_l3_table(tmp_path: Path) -> None:
+    """Flips if a view named in a schema of its own (``report.<v>``) is judged by the L3 table sharing its bare name,
+    rather than by the copy relation declared for it, or if the L3 table loses its own key."""
+    found = _symbols(_config(tmp_path, {"views.py": _QUALIFIED_VIEWS}, local_relations={"report_settings": ("name",)}))
+    assert not any(function in ("make", "by_name", "l3_by_state") for function, _ in found), found
+    assert ("by_state", "non-key-where report.report_settings") in found, found
+
+
+_VIEW_PRODUCERS = """
+    def _view_sql(view):
+        return f"CREATE OR REPLACE VIEW {view} AS SELECT p.race AS office_key, p.state FROM lsf_rows AS p"
+
+    def _bad_view_sql(view):
+        return f"CREATE VIEW {view} AS SELECT upper(office_key) AS office_key FROM lsf_rows"
+
+    class Parts:
+        def copy_view(self, view):
+            return f"CREATE VIEW {view} AS SELECT office_key, votes FROM lsf_rows"
+
+    def _stray_view_sql(view):
+        return f"CREATE VIEW {view} AS SELECT office_key FROM lsf_rows"
+
+    def newest(db):
+        db.execute("CREATE OR REPLACE VIEW report.newest AS SELECT max(model) AS model FROM lsf_rows")
+"""
+
+
+def test_a_view_named_at_run_time_is_judged_by_the_keys_its_producer_declares(tmp_path: Path) -> None:
+    """Flips if a view a declared producer builds under a name it is handed is not judged by the producer's declared
+    keys (passed through, or computed), or if a producer nobody declares builds an undeclared view unseen."""
+    producers = {"_view_sql": ("office_key",), "_bad_view_sql": ("office_key",), "Parts.copy_view": ("office_key",)}
+    found = _symbols(
+        _config(tmp_path, {"views.py": _VIEW_PRODUCERS}, view_producers=producers, local_relations={"newest": ()})
+    )
+    # a copy relation declared with no key (one row) is declared all the same
+    assert not any(function in ("_view_sql", "Parts.copy_view", "newest") for function, _ in found), found
+    assert any(function == "_bad_view_sql" and "view-key-not-passed" in symbol for function, symbol in found), found
+    assert any(function == "_stray_view_sql" and "undeclared-view" in symbol for function, symbol in found), found
+
+
+_DECLARED_TABLES = """
+    from dataclasses import dataclass
+
+    from threetears.core.collections.schema_backed import TableSchema
+
+    COUNTIES = "counties"
+    PRECINCTS = "precincts"
+    COUNTIES_SCHEMA = TableSchema(name=COUNTIES, primary_key=("state", "county"), columns=[])
+    PRECINCTS_SCHEMA = TableSchema(name=PRECINCTS, primary_key=("state", "precinct"), columns=[])
+    RUNS_SCHEMA = TableSchema(name="runs", primary_key="run_id", columns=[])
+
+
+    @dataclass(frozen=True)
+    class Declared:
+        name: str
+        per_run: bool = False
+
+
+    TABLES = (Declared(name=COUNTIES), Declared(name=PRECINCTS, per_run=True))
+    WITH_RUNS = (Declared(name=COUNTIES), Declared(name="runs"))
+    NAMES = (COUNTIES, PRECINCTS)
+"""
+
+_LOOPED = """
+    from threetears.core.keyed import holds_any
+
+    from pkg.tables import NAMES, TABLES, WITH_RUNS
+
+
+    class Store:
+        async def holds_state(self, table, state):
+            return await holds_any(self._conn, table, by={"state": state})
+
+        async def holds_run(self, table, state):
+            return await holds_any(self._conn, table, by={"state": state})
+
+
+    class Pull:
+        async def _held(self, table, state):
+            return await self._store.holds_state(table.name, state)
+
+        async def _write(self, table, state):
+            return await self._held(table, state)
+
+        async def run(self, state):
+            for table in TABLES:
+                await self._write(table, state)
+
+        async def by_name(self, state):
+            for name in NAMES:
+                await holds_any(self._conn, name, by={"state": state})
+
+        async def with_runs(self, state):
+            for table in WITH_RUNS:
+                await self._store.holds_run(table.name, state)
+"""
+
+
+def test_a_table_bound_by_a_loop_over_a_declared_tuple_resolves_through_its_callers(tmp_path: Path) -> None:
+    """Flips if a keyed helper's table, named by a loop over a module tuple of declared tables (``for t in TABLES``,
+    ``t.name``) and handed down through parameters (``run`` -> ``_write`` -> ``_held`` -> ``Store.holds_state``),
+    stays unknown, or if one element whose key the read does not bind (``runs``) passes."""
+    found = _symbols(_config(tmp_path, {"pkg/tables.py": _DECLARED_TABLES, "pkg/pull.py": _LOOPED}))
+    assert not any(function in ("Store.holds_state", "Pull._held", "Pull.by_name") for function, _ in found), found
+    assert any(function == "Store.holds_run" and "runs" in symbol for function, symbol in found), found
+
+
+_SPLICED_TABLES = """
+    from dataclasses import dataclass
+
+    from threetears.core.collections.schema_backed import TableSchema
+
+    COUNTIES_SCHEMA = TableSchema(name="counties", primary_key=("state", "county"), columns=[])
+    FEED_SCHEMA = TableSchema(name="feed", primary_key=("state", "race"), columns=[])
+
+
+    @dataclass(frozen=True)
+    class Declared:
+        name: str
+
+
+    FEEDS = (Declared(name="feed"),)
+    TABLES = (Declared(name="counties"), *FEEDS)
+    STATE = "state"
+"""
+
+_SPLICED = """
+    from typing import Protocol
+
+    from threetears.core.keyed import holds_any
+
+    from pkg.tables import TABLES
+
+    BY_NAME = {table.name: table for table in TABLES}
+
+
+    class Holding(Protocol):
+        async def holds_state(self, table: str, state: str) -> bool:
+            'whether the table holds the state.'
+            ...
+
+
+    class Store:
+        async def holds_state(self, table, state):
+            return await holds_any(self._conn, table, by={"state": state})
+
+
+    class Pull:
+        async def _held(self, table, state, *, pulled=None):
+            return await self._store.holds_state(table.name, state)
+
+        async def run(self, state, behind, fresh):
+            for table in () if behind else TABLES:
+                await self._held(table, state, **({"pulled": {}} if fresh else {}))
+
+        async def one(self, name, state):
+            await self._held(BY_NAME[name], state)
+"""
+
+
+def test_a_loop_s_tables_resolve_through_a_spliced_tuple_a_conditional_a_lookup_and_a_spread_call(
+    tmp_path: Path,
+) -> None:
+    """Flips if a keyed helper's table stays unknown when the tuple splices another (``*FEEDS``), the loop iterates a
+    conditional (``() if behind else TABLES``), a caller looks one up in a dict built over the tuple
+    (``BY_NAME[name]``) or spreads keywords (``**{...}``) beside the table it names, or the helper's protocol declares
+    the same method (a stub, not a second definition)."""
+    found = _symbols(_config(tmp_path, {"pkg/tables.py": _SPLICED_TABLES, "pkg/pull.py": _SPLICED}))
+    assert not any(function in ("Store.holds_state", "Pull._held") for function, _ in found), found
+
+
+_SAME_NAMED = """
+    from threetears.core import keyed
+
+    from pkg.tables import STATE, TABLES
+
+
+    class Store:
+        async def holds_any(self, table, state):
+            return await keyed.holds_any(self._conn, table, by={STATE: state})
+
+
+    class Pull:
+        async def _held(self, table, state):
+            return await self._store.holds_any(table.name, state)
+
+        async def run(self, state):
+            for table in TABLES:
+                await self._held(table, state)
+"""
+
+
+def test_a_repo_method_named_as_a_keyed_helper_is_the_repo_s_and_its_body_is_judged(tmp_path: Path) -> None:
+    """Flips if a call of the repo's own method named as a 3tears keyed helper (``self._store.holds_any``) is judged
+    as the helper's call, or if the helper's own call in its body (``keyed.holds_any``) counts as a call of the
+    method, so its table never resolves, or a key its ``by`` names by an imported constant stays unread."""
+    found = _symbols(_config(tmp_path, {"pkg/tables.py": _SPLICED_TABLES, "pkg/pull.py": _SAME_NAMED}))
+    assert not any(function in ("Store.holds_any", "Pull._held") for function, _ in found), found

@@ -57,7 +57,7 @@ __all__ = [
 # the cap to hold under concurrency. Protected wakes are not counted: they
 # exist for the agent's own sake and must never crowd out, or be refused by,
 # the cap.
-_COUNT_ACTIVE_SQL = (
+COUNT_ACTIVE_SQL = (
     "SELECT COUNT(*) FROM agent_wake_schedules WHERE agent_id = $1 AND status = 'active' AND NOT protected"
 )
 
@@ -66,7 +66,7 @@ _COUNT_ACTIVE_SQL = (
 # (re)activated, so re-resuming an already-active schedule cannot refuse
 # itself at exactly cap: the cap counts OTHER active schedules, then this one
 # makes it ``other + 1 <= cap`` iff ``other < cap``.
-_COUNT_ACTIVE_EXCLUDING_SQL = (
+COUNT_ACTIVE_EXCLUDING_SQL = (
     "SELECT COUNT(*) FROM agent_wake_schedules "
     "WHERE agent_id = $1 AND status = 'active' AND NOT protected AND schedule_id != $2"
 )
@@ -95,16 +95,18 @@ _COUNT_SUBSCRIPTION_FIRES_SQL = (
 
 # Fires that ran for every wake and subscription of one agent, protected
 # wakes left out. The agent's wakes live in several conversations, so the
-# count joins the two source tables on the agent.
-_COUNT_AGENT_FIRES_SQL = (
+# count joins the two source tables on the agent; a fire lives in its wake's
+# conversation, so each join is on the fire's primary key prefix too.
+COUNT_AGENT_FIRES_SQL = (
     "SELECT "
     "(SELECT COUNT(*) FROM wake_fires wf "
-    " JOIN agent_wake_schedules ws ON wf.schedule_id = ws.schedule_id "
+    " JOIN agent_wake_schedules ws ON wf.conversation_id = ws.conversation_id AND wf.schedule_id = ws.schedule_id "
     " WHERE ws.agent_id = $1 AND NOT ws.protected AND wf.actual_fired_at > $2 "
     " AND wf.status IN ('fired', 'fired_silent') AND ($3 OR wf.fire_source <> 'manual')) "
     "+ "
     "(SELECT COUNT(*) FROM wake_fires wf "
-    " JOIN webhook_subscriptions ws ON wf.webhook_subscription_id = ws.subscription_id "
+    " JOIN webhook_subscriptions ws"
+    " ON wf.conversation_id = ws.conversation_id AND wf.webhook_subscription_id = ws.subscription_id "
     " WHERE ws.agent_id = $1 AND wf.actual_fired_at > $2 "
     " AND wf.status IN ('fired', 'fired_silent')) "
     "AS total"
@@ -215,11 +217,12 @@ async def check_rate_limit(
     user_count = await pool.fetchval(
         "SELECT "
         "(SELECT COUNT(*) FROM wake_fires wf "
-        " JOIN agent_wake_schedules ws ON wf.schedule_id = ws.schedule_id "
+        " JOIN agent_wake_schedules ws ON wf.conversation_id = ws.conversation_id AND wf.schedule_id = ws.schedule_id "
         " WHERE ws.user_id = $1 AND wf.actual_fired_at > $2 AND wf.status = 'fired') "
         "+ "
         "(SELECT COUNT(*) FROM wake_fires wf "
-        " JOIN webhook_subscriptions ws ON wf.webhook_subscription_id = ws.subscription_id "
+        " JOIN webhook_subscriptions ws"
+        " ON wf.conversation_id = ws.conversation_id AND wf.webhook_subscription_id = ws.subscription_id "
         " WHERE ws.user_id = $1 AND wf.actual_fired_at > $2 AND wf.status = 'fired') "
         "AS total",
         trigger.user_id,
@@ -302,7 +305,7 @@ async def check_fire_limits(
     if int(wake_count or 0) >= limits.per_wake:
         _log_limit_reached(trigger, "wake", int(wake_count or 0), limits.per_wake)
         return "wake"
-    agent_count = await pool.fetchval(_COUNT_AGENT_FIRES_SQL, trigger.agent_id, since, count_manual)
+    agent_count = await pool.fetchval(COUNT_AGENT_FIRES_SQL, trigger.agent_id, since, count_manual)
     if int(agent_count or 0) >= limits.per_agent:
         _log_limit_reached(trigger, "agent", int(agent_count or 0), limits.per_agent)
         return "agent"
@@ -373,7 +376,7 @@ async def check_active_schedule_cap(
     elif pool is not None:
         # cache-bypass: aggregate COUNT not pk-addressable, and a cap read from
         # cache is a cap that lets an extra schedule through.
-        value = await pool.fetchval(_COUNT_ACTIVE_SQL, agent_id)
+        value = await pool.fetchval(COUNT_ACTIVE_SQL, agent_id)
         count = int(value or 0)
     else:
         return True
@@ -475,7 +478,7 @@ async def create_schedule_serialized(
         async with CallerTransaction(conn):
             await _lock_agent(conn, agent_id)
             if not data.get("protected", False):
-                await _refuse_at_cap(conn, _COUNT_ACTIVE_SQL, (agent_id,), agent_id=agent_id, cap=cap, action="create")
+                await _refuse_at_cap(conn, COUNT_ACTIVE_SQL, (agent_id,), agent_id=agent_id, cap=cap, action="create")
             row = dict(data)
             if make_wake_conversation is not None:
                 row["conversation_id"] = await make_wake_conversation(conn)
@@ -532,7 +535,7 @@ async def resume_schedule_serialized(
             await _lock_agent(conn, agent_id)
             await _refuse_at_cap(
                 conn,
-                _COUNT_ACTIVE_EXCLUDING_SQL,
+                COUNT_ACTIVE_EXCLUDING_SQL,
                 (agent_id, schedule_id),
                 agent_id=agent_id,
                 cap=cap,

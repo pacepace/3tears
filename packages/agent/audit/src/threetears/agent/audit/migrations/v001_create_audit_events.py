@@ -54,9 +54,15 @@ AUDIT_EVENTS_V001_DDL: tuple[str, ...] = (
             "ip_address TEXT",
         )
     ),
+    "-- purpose: packages/agent/audit/src/threetears/agent/audit/persist.py::prune_audit_events\n"
+    "-- plan_test: packages/agent/audit/tests/integration/test_index_plans.py::test_audit_events_time\n"
+    "-- reason: audit_events carries four indexes: retention's prune, an erasure by actor, and two the hub's views read\n"
     "CREATE INDEX IF NOT EXISTS idx_audit_events_time ON audit_events (timestamp)",
     "CREATE INDEX IF NOT EXISTS idx_audit_events_customer_time ON audit_events (customer_id, timestamp DESC)",
     "CREATE INDEX IF NOT EXISTS idx_audit_events_type ON audit_events (event_type)",
+    "-- purpose: packages/agent/audit/src/threetears/agent/audit/persist.py::anonymize_audit_rows\n"
+    "-- plan_test: packages/agent/audit/tests/integration/test_index_plans.py::test_audit_events_actor\n"
+    "-- reason: audit_events carries four indexes: retention's prune, an erasure by actor, and two the hub's views read\n"
     "CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events (actor_user_id)",
 )
 
