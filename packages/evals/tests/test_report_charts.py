@@ -243,7 +243,7 @@ def test_markdown_prints_every_chart_s_values_table() -> None:
     )
     markdown = report_markdown(report)
     assert "**Spend**\n\n| Row | Value |\n" in markdown and "| a | 2 |" in markdown
-    assert "| Panel |  | x |" in markdown and "| P | r | 50% (n = 1200) |" in markdown
+    assert "| Panel |  | x |" in markdown and "| P | r | 50% (n = 1,200) |" in markdown
 
 
 def test_a_range_bar_s_start_is_spelled_from_in_a_stored_report_as_in_the_kit_s_data() -> None:

@@ -42,9 +42,9 @@ from threetears.evals.kernel.numbers import (
     WHOLE_FROM,
     MoneyForm,
     ends_places,
-    format_number,
     group_thousands,
     spell_at,
+    spell_count,
 )
 from threetears.evals.analysis.quantities import (
     MONEY,
@@ -1612,7 +1612,7 @@ def _heat_detail(low: str | None, high: str | None, n: float | None) -> str:
     """What a heatmap cell's table text adds after its value: its interval's ends' texts and its cases, in
     parentheses."""
     said = [_interval(low, high)] if low is not None and high is not None else []
-    said += [f"n = {format_number(n)}"] if n is not None else []
+    said += [f"n = {spell_count(int(n))}"] if n is not None else []
     return f" ({'; '.join(said)})" if said else ""
 
 

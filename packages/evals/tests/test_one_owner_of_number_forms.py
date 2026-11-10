@@ -25,8 +25,8 @@ in a table, "85.3%" in the chart head). Every decision is ``analysis/report/form
   function returning one is no wrapper to a caller in the engine, though it is one to a caller above the line; a
   format spec, ``round()``, ``quantize()`` and digits from a ``log10`` stay sites there as anywhere. Above that line
   ``PageForms`` is the only route, through ``PageForms.off_page()`` for a surface no page prints.
-* **The rule** fails on any site the walk finds that :data:`_PERMANENT` does not name, and on any entry there that
-  names no site, so a rewritten expression loses its exemption rather than keeping it unseen.
+* **The rule** fails on any site the walk finds that :data:`_PERMANENT` does not name at its function and form, on
+  one more site there than an entry counts, and on an entry counting more sites than the walk finds.
 * **What the wrapper rule cannot see** is a stated limit, not a hidden one: a figure reached through another object's
   method of a common name, a property read through anything but ``self``, or a method handed on by reference from
   anything but ``self``; lines appended then joined, a ``yield``, a tuple unpacked; a formatter a factory returns (a
@@ -34,9 +34,10 @@ in a table, "85.3%" in the chart head). Every decision is ``analysis/report/form
   counted once where its site is written rather than at every call of it; or digits derived as ``floor(v + 0.5)``. A
   function's nested returns count as its own, which over-counts, the safe way.
 * **The permanent list** (:data:`_PERMANENT`) names the sites whose fixed form is right for good, keyed by module,
-  expression and form, each with its reason: text stored where a fingerprint holds it, arithmetic, CSS, SVG and the
-  kit's own drawing, the helpers ``forms.py`` imports and so cannot route through, and messages no page prints. It
-  has a ceiling (:data:`_PERMANENT_CEILING`): a new exemption is an owner's decision, made where the ceiling is.
+  enclosing qualname and form, each with its count and its reason: text stored where a fingerprint holds it,
+  arithmetic, CSS, SVG and the kit's own drawing, the helpers ``forms.py`` imports and so cannot route through, and
+  messages no page prints. It has a ceiling (:data:`_PERMANENT_CEILING`): a new exemption is an owner's decision,
+  made where the ceiling is.
 
 It also holds the report trees to the stricter rule ``test_numbers.py`` held them to before this test existed:
 under ``analysis/`` and ``ops/`` no format spec chooses digits except a share's ``%`` and a permanent site.
@@ -239,9 +240,7 @@ _WHOLE_FROM_SHARE = "a whole count recovered from a share; sets no digits"
 _INTERVAL_SENTENCE = (
     "the interval's sentence around the sizes the page's forms decided (forms.sizes); it chooses words, not digits"
 )
-_HEAT_COUNT = (
-    "a count in a heatmap row's table text; format_number prints a whole number in full, and charts sits below forms"
-)
+_HEAT_COUNT = "a count in a heatmap row's table text, spelled by the rule's count primitive; charts sits below forms"
 _AXIS = "axis arithmetic: tick positions and the kit's named axis format"
 _KERNEL_TIMEOUT = "relays the kernel's timeout message verbatim; no page prints it"
 _TABLE_CLASSIFIER = (
@@ -249,364 +248,179 @@ _TABLE_CLASSIFIER = (
     "forms'"
 )
 
-#: Sites whose fixed form is right for good, keyed by (module, expression, spec or form) so a moved line keeps its
-#: entry and a rewritten expression loses it. Each reason says why the fixed form is right there; an entry no site
-#: matches any more fails the suite. A permanent site wraps nothing, so a helper whose every site is named here is no
-#: wrapper, and its callers are sites only where it is a primitive by its name.
-_PERMANENT: dict[tuple[str, str, str], str] = {
-    # Money's spelling (two significant figures, cents from ten cents up) is numbers.spell_dollars, in the
-    # rule's own module.
-    # A static page's chart is the kit's drawing made on the server: its ticks and notes are the kit's named formats
-    # (kit.js K_FMTS), restated so the static page reads the number the default page's script draws, and pinned to the
-    # same cases table the kit and format_number are (test_report_chart_svg). The figure's table beside it keeps the one
-    # rule. Its markup spells coordinates and opacities, which no reader reads as a number.
-    (_CHART_SVG, "value", ",.{}f"): _KIT_FORMAT + "grouped dollars at the format's digits",
-    (_CHART_SVG, "_rounded(size)", ","): _KIT_FORMAT + "whole dollars from $10",
-    (_CHART_SVG, "_rounded(value)", ","): _KIT_FORMAT + "a whole amount, grouped",
-    (_CHART_SVG, "n", ",.3f"): _KIT_FORMAT + "a tooltip's count, as toLocaleString writes it",
-    (_CHART_SVG, "joined.width or 2", "g"): "an SVG stroke width",
-    (_CHART_SVG, "1 if joined.opacity is None else joined.opacity", "g"): "an SVG opacity",
-    (_CHART_SVG, "1 if item.opacity is None else item.opacity", "g"): "an SVG opacity",
-    (_CHART_SVG, "opacity", "g"): "an SVG opacity",
-    # The glyph's and the static charts' coordinates, every one written through svg.tenth_px.
-    ("threetears/evals/analysis/report/svg.py", "round_figures(value)", ".1f"): (
-        "an SVG coordinate, to a tenth of a px, which no reader reads as a number"
+_SVG_STROKE = "an SVG stroke width and its opacity, which no reader reads as a number"
+
+#: Sites whose fixed form is right for good, keyed as the walk keys a site, by (module, enclosing qualname, form),
+#: each with how many sites of that form the function holds and why the fixed form is right there. A moved line keeps
+#: its entry; one more site of the form in the function, or one in another function, fails, and so does one fewer
+#: until the count is cut. A permanent site wraps nothing, so a helper whose every site is named here is no wrapper,
+#: and its callers are sites only where it is a primitive by its name.
+_PERMANENT: dict[tuple[str, str, str], tuple[int, str]] = {
+    ("threetears/evals/actions/analyst.py", "<module>", "group_thousands()"): (1, _TOOL_LIMIT),
+    ("threetears/evals/analysis/aspects.py", "_unread_without_control", "format_number()"): (1, _BUNDLE),
+    ("threetears/evals/analysis/bundle/assemble.py", "_declared_words", "format_number()"): (3, _BUNDLE),
+    ("threetears/evals/analysis/bundle/bars.py", "_frontier_bar.named", "format_number()"): (1, _BUNDLE),
+    ("threetears/evals/analysis/bundle/comparisons.py", "_family_disclosure", "format_number()"): (3, _BUNDLE),
+    ("threetears/evals/analysis/bundle/comparisons.py", "_guardrail_check", "format_number()"): (3, _BUNDLE),
+    ("threetears/evals/analysis/bundle/coverage.py", "_within_level_dispersion", "format_number()"): (1, _BUNDLE),
+    ("threetears/evals/analysis/bundle/schema.py", "AnalysisContextBundle", "format_number()"): (2, _BUNDLE),
+    ("threetears/evals/analysis/depth.py", "precision", "round()"): (1, _COUNTS_FROM_SHARES),
+    ("threetears/evals/analysis/latency_partition.py", "decompose_total_ms", "format_number()"): (1, _BUNDLE),
+    ("threetears/evals/analysis/lenses/frontier.py", "_decide_boundary_pillar", "format_number()"): (1, _BUNDLE),
+    ("threetears/evals/analysis/lenses/frontier.py", "_frontier_point", "round()"): (1, _STORED_MEAN),
+    ("threetears/evals/analysis/measurement_windows.py", "format_window_gap", "round()"): (1, _WHOLE_SECONDS),
+    ("threetears/evals/analysis/quantities.py", "_at_precision", "round()"): (1, _QUANTITIES),
+    ("threetears/evals/analysis/quantities.py", "number_in", "format_number()"): (1, _QUANTITIES),
+    ("threetears/evals/analysis/quantities.py", "render_cell", "format_number()"): (1, _QUANTITIES),
+    ("threetears/evals/analysis/quantities.py", "signed_with_unit", "format_signed()"): (1, _QUANTITIES),
+    ("threetears/evals/analysis/quantities.py", "with_unit", "number_in()"): (1, _QUANTITIES),
+    ("threetears/evals/analysis/report/blocks.py", "ChartBlock._cost_drawn", "with_unit()"): (1, _HOST_CHART),
+    ("threetears/evals/analysis/report/blocks.py", "ChartBlock._cost_quality_scatter", "with_unit()"): (3, _HOST_CHART),
+    ("threetears/evals/analysis/report/blocks.py", "ChartBlock._outcome_bars", "with_unit()"): (1, _HOST_CHART),
+    ("threetears/evals/analysis/report/blocks.py", "ChartBlock._values_table.said", "number_in()"): (1, _HOST_CHART),
+    ("threetears/evals/analysis/report/blocks.py", "TableCell.figure", "render_cell()"): (1, _TABLE_CELL),
+    ("threetears/evals/analysis/report/blocks.py", "interval_text", "number_in()"): (2, _HOST_CHART),
+    ("threetears/evals/analysis/report/blocks.py", "interval_value_text", "number_in()"): (1, _HOST_CHART),
+    ("threetears/evals/analysis/report/campaign/scorecard.py", "_rate_counts", "round()"): (1, _WHOLE_FROM_SHARE),
+    ("threetears/evals/analysis/report/campaign/scorecard.py", "row_figures", "interval_words()"): (
+        1,
+        _INTERVAL_SENTENCE,
     ),
-    ("threetears/evals/kernel/covariates.py", "round(reasoning / completion, 6)", "round()"): _COVARIATE_RATIO,
-    ("threetears/evals/kernel/covariates.py", "round(accumulator.get(key, 0.0) + ms, 3)", "round()"): _PHASE_TIMINGS,
-    ("threetears/evals/run/judge.py", "round(SCALES[scales[name]].normalized(score), 4)", "round()"): _JUDGE_SCORE,
-    ("threetears/evals/negotiation/settings.py", "round(share * cap)", "round()"): _TOKEN_BUDGET,
-    (
-        "threetears/evals/negotiation/settings.py",
-        "float(Fraction(budget, asked.max_tokens))",
-        ".2f",
-    ): _NEGOTIATION_RATIO,
-    ("threetears/evals/negotiation/settings.py", "float(BUDGET_SHARES[effort])", ".2f"): _NEGOTIATION_RATIO,
-    ("threetears/evals/schema/hashing.py", "value", ".{}g"): _FINGERPRINT,
-    ("threetears/evals/schema/values.py", "resolved_scale.value", "g"): _SCHEMA_VALUE,
-    (
-        "threetears/evals/actions/analyst.py",
-        "group_thousands(str(GAP_TEXT_MAX_CHARS))",
-        "group_thousands()",
-    ): _TOOL_LIMIT,
-    ("threetears/evals/providers/catalogue.py", "bound", "g"): _CATALOGUE_BOUND,
-    (
-        "threetears/evals/testing/jobs_conformance.py",
-        "spell_declared(self.call_return_timeout_s)",
-        "spell_declared()",
-    ): _CONFORMANCE_TIMEOUT,
-    (
-        "threetears/evals/testing/jobs_conformance.py",
-        "spell_declared(timeout_s)",
-        "spell_declared()",
-    ): _CONFORMANCE_TIMEOUT,
-    (
-        "threetears/evals/transports/fastmcp/__init__.py",
-        "spell_declared(timeout_s)",
-        "spell_declared()",
-    ): _TRANSPORT_TIMEOUT,
-    (
-        "threetears/evals/transports/fastmcp/__init__.py",
-        "spell_declared(stopped.timeout_s)",
-        "spell_declared()",
-    ): _TRANSPORT_TIMEOUT,
-    ("threetears/evals/analysis/report/kit/kit.js", ".toFixed(10)", "toFixed()"): _KIT_FLOAT,
-    ("threetears/evals/analysis/report/kit/kit.js", ".toPrecision(12)", "toPrecision()"): _KIT_FLOAT,
-    (
-        "threetears/evals/analysis/report/kit/kit.js",
-        "Math.round(Math.min(380,Math.max(300,w*.45)))",
-        "Math.round()",
-    ): _KIT_PIXELS,
-    ("threetears/evals/analysis/report/kit/kit.js", "Math.round(18+mag*72)", "Math.round()"): _KIT_COLOUR,
-    ("threetears/evals/analysis/report/kit/kit.js", '.toLocaleString("en-US")', "toLocaleString()"): _KIT_TOOLTIP_COUNT,
-    ("threetears/evals/analysis/report/kit/kit.js", 'namedFmt(d.fmt||"pct:1")', "namedFmt"): _KIT_DEFAULT,
-    ("threetears/evals/analysis/report/figure_keys.py", "round(cases * share)", "round()"): _WHOLE_CASES,
-    ("threetears/evals/analysis/report/figure_keys.py", "round(overall.count * share)", "round()"): _WHOLE_CASES,
-    (
-        "threetears/evals/analysis/report/figure_keys.py",
-        "group_thousands(str(count))",
-        "group_thousands()",
-    ): _UNANSWERED_COUNT,
-    (
-        "threetears/evals/analysis/report/cost_unit.py",
-        "self.form.spell(value * self.scale, signed=signed)",
-        "spell()",
-    ): _COST_UNIT,
-    (
-        "threetears/evals/analysis/report/cost_unit.py",
-        "self.form.spell_ends(low * self.scale, high * self.scale, signed=signed)",
-        "spell_ends()",
-    ): _COST_UNIT,
-    (
-        "threetears/evals/analysis/report/cost_unit.py",
-        "self.form.for_changes((change * self.scale if change is not None else None for change in changes), "
-        "(width * self.scale if width is not None else None for width in widths))",
-        "for_changes()",
-    ): _COST_UNIT,
-    (
-        "threetears/evals/analysis/report/cost_unit.py",
-        "money_form(held, rate=counts, reconciles=reconciles)",
-        "money_form()",
-    ): _COST_UNIT,
-    (
-        "threetears/evals/analysis/report/cost_unit.py",
-        "money_form((amount * scale for amount in held), rate=counts, reconciles=reconciles)",
-        "money_form()",
-    ): _COST_UNIT,
-    ("threetears/evals/analysis/report/cost_unit.py", "format_number(float(count))", "format_number()"): _COST_UNIT,
-    (
-        "threetears/evals/analysis/report/cost_unit.py",
-        "group_thousands(format_number(float(count)))",
-        "group_thousands()",
-    ): _COST_UNIT,
-    (
-        "threetears/evals/analysis/quantities.py",
-        "format_number(_at_precision(value, unit))",
-        "format_number()",
-    ): _QUANTITIES,
-    ("threetears/evals/analysis/quantities.py", "format_number(value)", "format_number()"): _QUANTITIES,
-    ("threetears/evals/analysis/quantities.py", "number_in(value, unit)", "number_in()"): _QUANTITIES,
-    (
-        "threetears/evals/analysis/quantities.py",
-        "format_signed(_at_precision(value, unit))",
-        "format_signed()",
-    ): _QUANTITIES,
-    ("threetears/evals/analysis/quantities.py", "round(value, 1)", "round()"): _QUANTITIES,
-    (
-        "threetears/evals/analysis/report/parts/look.py",
-        "drawn.money.spell(value, signed=drawn.change)",
-        "spell()",
-    ): _LOOK,
-    ("threetears/evals/analysis/report/parts/look.py", "format_number(float(round(size)))", "format_number()"): _LOOK,
-    (
-        "threetears/evals/analysis/report/parts/look.py",
-        "group_thousands(format_number(float(round(size))))",
-        "group_thousands()",
-    ): _LOOK,
-    ("threetears/evals/analysis/report/parts/look.py", "round(size)", "round()"): _LOOK,
-    ("threetears/evals/analysis/report/parts/look.py", "spell_dollars(size)", "spell_dollars()"): _LOOK,
-    (
-        "threetears/evals/analysis/report/parts/look.py",
-        "spell_at(value, POINT_PLACES, signed=drawn.change)",
-        "spell_at()",
-    ): _LOOK,
-    (
-        "threetears/evals/analysis/report/parts/look.py",
-        "signed_with_unit(value, drawn.unit)",
-        "signed_with_unit()",
-    ): _LOOK,
-    ("threetears/evals/analysis/report/parts/look.py", "with_unit(value, drawn.unit)", "with_unit()"): _LOOK,
-    (
-        "threetears/evals/analysis/report/parts/look.py",
-        "amounts.money.for_changes(changes, widths)",
-        "for_changes()",
-    ): _LOOK,
-    ("threetears/evals/analysis/report/parts/look.py", "quantity(unit, change=change)", "quantity()"): _LOOK,
-    (
-        "threetears/evals/analysis/report/parts/look.py",
-        "quantity(unit, [figure * factor for figure in figures], change=change, places=places)",
-        "quantity()",
-    ): _LOOK,
-    (
-        "threetears/evals/analysis/report/charts.py",
-        "MoneyForm(per_thousand=True, decimals=int(match[3]) if match[3] is not None else 2)",
-        "MoneyForm()",
-    ): _RESPELL,
-    ("threetears/evals/analysis/report/charts.py", "form.spell(value, signed=bool(match[1]))", "spell()"): _RESPELL,
-    (
-        "threetears/evals/analysis/report/charts.py",
-        "MoneyForm(decimals=decimals, figures=MONEY_FIGURES + finer, rate=decimals == 0)",
-        "MoneyForm()",
-    ): _RESPELL,
-    (
-        "threetears/evals/analysis/report/charts.py",
-        "spell_at(value, int(match[3]), signed=bool(match[1]))",
-        "spell_at()",
-    ): _RESPELL,
-    (
-        "threetears/evals/analysis/report/charts.py",
-        "spell_at(value, POINT_PLACES if places is None else places, signed=bool(match[1]))",
-        "spell_at()",
-    ): _RESPELL,
-    ("threetears/evals/analysis/report/charts.py", "number_in(value, read_at)", "number_in()"): _RESPELL,
-    ("threetears/evals/analysis/report/charts.py", "signed_with_unit(value, unit)", "signed_with_unit()"): _RESPELL,
-    ("threetears/evals/analysis/report/charts.py", "with_unit(value, unit)", "with_unit()"): _RESPELL,
-    ("threetears/evals/analysis/report/charts.py", "group_thousands(digits)", "group_thousands()"): _RESPELL,
-    ("threetears/evals/analysis/report/charts.py", "ends_places(low, high, POINT_PLACES)", "ends_places()"): _RESPELL,
-    ("threetears/evals/analysis/report/blocks.py", "render_cell(self.value)", "render_cell()"): _TABLE_CELL,
-    (
-        "threetears/evals/analysis/report/blocks.py",
-        "with_unit(passed(bar) / bar.total * 100, PERCENT)",
-        "with_unit()",
-    ): _HOST_CHART,
-    (
-        "threetears/evals/analysis/report/blocks.py",
-        "with_unit(amount * _REPLIES_PER_COST_UNIT, self.unit)",
-        "with_unit()",
-    ): _HOST_CHART,
-    ("threetears/evals/analysis/report/blocks.py", "with_unit(point.pass_rate, PERCENT)", "with_unit()"): _HOST_CHART,
-    (
-        "threetears/evals/analysis/report/blocks.py",
-        "with_unit(point.pass_rate_high, PERCENT)",
-        "with_unit()",
-    ): _HOST_CHART,
-    (
-        "threetears/evals/analysis/report/blocks.py",
-        "with_unit(point.pass_rate_low, PERCENT)",
-        "with_unit()",
-    ): _HOST_CHART,
-    ("threetears/evals/analysis/report/blocks.py", "number_in(amount * scale, self.unit)", "number_in()"): _HOST_CHART,
-    ("threetears/evals/analysis/report/blocks.py", "number_in(value, unit)", "number_in()"): _HOST_CHART,
-    ("threetears/evals/analysis/report/blocks.py", "number_in(high, unit)", "number_in()"): _HOST_CHART,
-    ("threetears/evals/analysis/report/blocks.py", "number_in(low, unit)", "number_in()"): _HOST_CHART,
-    ("threetears/evals/analysis/report/said.py", "format_number(figure.value)", "format_number()"): _STORED_READING,
-    (
-        "threetears/evals/analysis/report/said.py",
-        "format_number(round(100 * figure.value, 2))",
-        "format_number()",
-    ): _STORED_READING,
-    ("threetears/evals/analysis/report/said.py", "round(100 * figure.value, 2)", "round()"): _STORED_READING,
-    (
-        "threetears/evals/analysis/report/said.py",
-        "format_number(round(figure.value, POINT_PLACES))",
-        "format_number()",
-    ): _STORED_READING,
-    ("threetears/evals/analysis/report/said.py", "round(figure.value, POINT_PLACES)", "round()"): _STORED_READING,
-    ("threetears/evals/analysis/report/decision.py", "round(count)", "round()"): _WHOLE_COUNT,
-    (
-        "threetears/evals/analysis/report/html_parts.py",
-        "round(min(max(widest + _CELL_PAD_REM, low), high), 2)",
-        "round()",
-    ): _CSS_WIDTH,
-    (
-        "threetears/evals/analysis/report/html_parts.py",
-        "round(chars * _HEAD_REM_PER_CHAR + _CELL_PAD_REM, 2)",
-        "round()",
-    ): _CSS_WIDTH,
-    (
-        "threetears/evals/analysis/report/html_parts.py",
-        "round(min(max(max(widths) + _CELL_PAD_REM, low), high), 2)",
-        "round()",
-    ): _CSS_WIDTH,
-    ("threetears/evals/analysis/report/html_parts.py", "round(min(max(widest, low), high), 2)", "round()"): _CSS_WIDTH,
-    ("threetears/evals/analysis/report/parts/charting.py", "quantity(unit, change=change)", "quantity()"): _CLASSIFIER,
-    ("threetears/evals/analysis/report/parts/charting.py", "quantity('points')", "quantity()"): _CLASSIFIER,
-    ("threetears/evals/analysis/report/parts/charting.py", "quantity(unit, change=True)", "quantity()"): _CLASSIFIER,
-    (
-        "threetears/evals/analysis/report/chart_svg.py",
-        "Decimal(value).quantize(Decimal(1).scaleb(-digits), rounding=ROUND_HALF_UP)",
-        "quantize()",
-    ): _SVG_FIXED,
-    ("threetears/evals/analysis/report/chart_svg.py", "math.floor(math.log10(size))", "floor(log10)"): _SVG_USD,
-    ("threetears/evals/analysis/report/chart_svg.py", "round(step * 10 ** places)", "round()"): _SVG_TICKS,
-    (
-        "threetears/evals/analysis/report/chart_svg.py",
-        "math.floor(math.log10((b - a) / n))",
-        "floor(log10)",
-    ): _SVG_TICKS,
-    ("threetears/evals/analysis/report/chart_svg.py", "round(value, 10)", "round()"): _SVG_TICKS,
-    ("threetears/evals/analysis/report/chart_svg.py", "math.ceil(math.log10(b))", "ceil(log10)"): _SVG_TICKS,
-    ("threetears/evals/analysis/report/chart_svg.py", "math.floor(math.log10(a))", "floor(log10)"): _SVG_TICKS,
-    ("threetears/evals/analysis/report/chart_svg.py", "round(min(380, max(300, w * 0.45)))", "round()"): _KIT_PIXELS,
-    ("threetears/evals/analysis/report/chart_svg.py", "round(18 + size * 72)", "round()"): _KIT_COLOUR,
-    ("threetears/evals/analysis/bundle/assemble.py", "format_number(margin)", "format_number()"): _BUNDLE,
-    ("threetears/evals/analysis/bundle/assemble.py", "format_number(bounds[0])", "format_number()"): _BUNDLE,
-    ("threetears/evals/analysis/bundle/assemble.py", "format_number(bounds[1])", "format_number()"): _BUNDLE,
-    ("threetears/evals/analysis/bundle/bars.py", "format_number(threshold)", "format_number()"): _BUNDLE,
-    ("threetears/evals/analysis/bundle/comparisons.py", "format_number(alpha)", "format_number()"): _BUNDLE,
-    (
-        "threetears/evals/analysis/bundle/comparisons.py",
-        "format_number(100 * (1 - alpha / family_size))",
-        "format_number()",
-    ): _BUNDLE,
-    ("threetears/evals/analysis/bundle/comparisons.py", "format_number(100 * (1 - alpha))", "format_number()"): _BUNDLE,
-    (
-        "threetears/evals/analysis/bundle/comparisons.py",
-        "format_number(verdict.interval[0])",
-        "format_number()",
-    ): _BUNDLE,
-    ("threetears/evals/analysis/bundle/comparisons.py", "format_number(line)", "format_number()"): _BUNDLE,
-    (
-        "threetears/evals/analysis/bundle/comparisons.py",
-        "format_number(verdict.interval[1])",
-        "format_number()",
-    ): _BUNDLE,
-    (
-        "threetears/evals/analysis/bundle/coverage.py",
-        "format_number(sum(sems) / len(sems))",
-        "format_number()",
-    ): _BUNDLE,
-    (
-        "threetears/evals/analysis/bundle/schema.py",
-        "format_number(CALIBRATION_MIN_AGREEMENT)",
-        "format_number()",
-    ): _BUNDLE,
-    (
-        "threetears/evals/analysis/bundle/schema.py",
-        "format_number(SEPARATION_MIN_AGREEMENT)",
-        "format_number()",
-    ): _BUNDLE,
-    ("threetears/evals/analysis/report_input_build.py", "format_number(100 * level)", "format_number()"): _SNAPSHOT,
-    ("threetears/evals/ops/report_writer/tally.py", "round(ceiling.usd * 100, 6)", "round()"): _CENT_CEILING,
-    ("threetears/evals/analysis/lenses/frontier.py", "round(sum(totals) / n_latency, 3)", "round()"): _STORED_MEAN,
-    ("threetears/evals/analysis/lenses/frontier.py", "format_number(margin)", "format_number()"): _BUNDLE,
-    ("threetears/evals/analysis/aspects.py", "format_number(margin)", "format_number()"): _BUNDLE,
-    ("threetears/evals/analysis/latency_partition.py", "format_number(-remainder)", "format_number()"): _BUNDLE,
-    ("threetears/evals/analysis/depth.py", "round(share * count)", "round()"): _COUNTS_FROM_SHARES,
-    ("threetears/evals/analysis/measurement_windows.py", "round(seconds)", "round()"): _WHOLE_SECONDS,
-    ("threetears/evals/quick/result.py", "round(100 * margin, 10)", "round()"): _MARGIN_ARITHMETIC,
-    (
-        "threetears/evals/analysis/report/campaign/scorecard.py",
-        "round(share * summary.n)",
-        "round()",
-    ): _WHOLE_FROM_SHARE,
-    (
-        "threetears/evals/analysis/report/campaign/scorecard.py",
-        "interval_words(row.arm_label, interval[0], interval[1], "
-        "amount=lambda value: size[abs(value)], unit=' points')",
-        "interval_words()",
-    ): _INTERVAL_SENTENCE,
-    ("threetears/evals/analysis/report/charts.py", "format_number(n)", "format_number()"): _HEAT_COUNT,
-    ("threetears/evals/analysis/report/parts/look.py", "math.ceil(-math.log10(top / 5))", "ceil(log10)"): _AXIS,
-    ("threetears/evals/analysis/report/parts/look.py", "math.floor(math.log10(value))", "floor(log10)"): _AXIS,
-    ("threetears/evals/analysis/report/parts/look.py", "math.ceil(math.log10(max(values)))", "ceil(log10)"): _AXIS,
-    ("threetears/evals/analysis/report/parts/look.py", "math.floor(math.log10(min(values)))", "floor(log10)"): _AXIS,
-    ("threetears/evals/analysis/report/parts/look.py", "round(math.log10(domain[0]))", "round()"): _AXIS,
-    ("threetears/evals/analysis/report/parts/look.py", "round(math.log10(domain[1]))", "round()"): _AXIS,
-    ("threetears/evals/ops/analysis.py", "timed_out_detail(timed_out)", "timed_out_detail()"): _KERNEL_TIMEOUT,
-    ("threetears/evals/ops/sweeps.py", "timed_out_detail(timed_out)", "timed_out_detail()"): _KERNEL_TIMEOUT,
-    (
-        "threetears/evals/analysis/report/parts/resolve_table.py",
-        "quantity_of(figure_unit(context.report_input, key), [read[0] for read in reads if read is not None])",
-        "quantity_of()",
-    ): _TABLE_CLASSIFIER,
-    (
-        "threetears/evals/analysis/report/parts/resolve_table.py",
-        "quantity_of(unit, held_means(report_input, key))",
-        "quantity_of()",
-    ): _TABLE_CLASSIFIER,
-    (
-        "threetears/evals/analysis/report/parts/resolve_table.py",
-        "quantity(unit, change=True)",
-        "quantity()",
-    ): _TABLE_CLASSIFIER,
-    (
-        "threetears/evals/analysis/report/parts/resolve_table.py",
-        "quantity('points', change=True)",
-        "quantity()",
-    ): _TABLE_CLASSIFIER,
-    (
-        "threetears/evals/analysis/report/parts/resolve_table.py",
-        "quantity_of(figure_unit(context.report_input, measure), [float(number) for read in reads "
-        "if read.measure == measure for number in (read.value, read.bar, *(read.interval or ())) "
-        "if number is not None])",
-        "quantity_of()",
-    ): _TABLE_CLASSIFIER,
+    ("threetears/evals/analysis/report/chart_svg.py", "<module>", "f-string spec"): (
+        1,
+        _KIT_FORMAT + "a whole amount, grouped",
+    ),
+    ("threetears/evals/analysis/report/chart_svg.py", "_count", "f-string spec"): (
+        1,
+        _KIT_FORMAT + "a tooltip's count, as toLocaleString writes it",
+    ),
+    ("threetears/evals/analysis/report/chart_svg.py", "_diff_heatmap", "round()"): (1, _KIT_COLOUR),
+    ("threetears/evals/analysis/report/chart_svg.py", "_fixed", "quantize()"): (1, _SVG_FIXED),
+    ("threetears/evals/analysis/report/chart_svg.py", "_grouped", "f-string spec"): (
+        1,
+        _KIT_FORMAT + "grouped dollars at the format's digits",
+    ),
+    ("threetears/evals/analysis/report/chart_svg.py", "_log_ticks.at", "ceil(log10)"): (1, _SVG_TICKS),
+    ("threetears/evals/analysis/report/chart_svg.py", "_log_ticks.at", "floor(log10)"): (1, _SVG_TICKS),
+    ("threetears/evals/analysis/report/chart_svg.py", "_scatter", "f-string spec"): (2, _SVG_STROKE),
+    ("threetears/evals/analysis/report/chart_svg.py", "_scatter", "round()"): (1, _KIT_PIXELS),
+    ("threetears/evals/analysis/report/chart_svg.py", "_swatch", "f-string spec"): (1, "an SVG opacity"),
+    ("threetears/evals/analysis/report/chart_svg.py", "_texture", "f-string spec"): (1, "an SVG opacity"),
+    ("threetears/evals/analysis/report/chart_svg.py", "_tick_labels", "round()"): (1, _SVG_TICKS),
+    ("threetears/evals/analysis/report/chart_svg.py", "_ticks_raw", "floor(log10)"): (1, _SVG_TICKS),
+    ("threetears/evals/analysis/report/chart_svg.py", "_ticks_raw", "round()"): (1, _SVG_TICKS),
+    ("threetears/evals/analysis/report/chart_svg.py", "_usd", "f-string spec"): (
+        1,
+        _KIT_FORMAT + "whole dollars from $10",
+    ),
+    ("threetears/evals/analysis/report/chart_svg.py", "_usd", "floor(log10)"): (1, _SVG_USD),
+    ("threetears/evals/analysis/report/chart_svg.py", "_usdk", "f-string spec"): (
+        1,
+        _KIT_FORMAT + "a whole amount, grouped",
+    ),
+    ("threetears/evals/analysis/report/charts.py", "_ends", "ends_places()"): (1, _RESPELL),
+    ("threetears/evals/analysis/report/charts.py", "_formatted", "MoneyForm()"): (2, _RESPELL),
+    ("threetears/evals/analysis/report/charts.py", "_formatted", "number_in()"): (1, _RESPELL),
+    ("threetears/evals/analysis/report/charts.py", "_formatted", "signed_with_unit()"): (1, _RESPELL),
+    ("threetears/evals/analysis/report/charts.py", "_formatted", "spell()"): (2, _RESPELL),
+    ("threetears/evals/analysis/report/charts.py", "_formatted", "spell_at()"): (2, _RESPELL),
+    ("threetears/evals/analysis/report/charts.py", "_formatted", "with_unit()"): (1, _RESPELL),
+    ("threetears/evals/analysis/report/charts.py", "_heat_detail", "spell_count()"): (1, _HEAT_COUNT),
+    ("threetears/evals/analysis/report/charts.py", "_respelled", "group_thousands()"): (1, _RESPELL),
+    ("threetears/evals/analysis/report/charts.py", "_restates", "signed_with_unit()"): (1, _RESPELL),
+    ("threetears/evals/analysis/report/charts.py", "_restates", "with_unit()"): (1, _RESPELL),
+    ("threetears/evals/analysis/report/cost_unit.py", "MoneyRuler.for_changes", "for_changes()"): (1, _COST_UNIT),
+    ("threetears/evals/analysis/report/cost_unit.py", "MoneyRuler.spell", "spell()"): (1, _COST_UNIT),
+    ("threetears/evals/analysis/report/cost_unit.py", "MoneyRuler.spell_ends", "spell_ends()"): (1, _COST_UNIT),
+    ("threetears/evals/analysis/report/cost_unit.py", "money_ruler", "money_form()"): (2, _COST_UNIT),
+    ("threetears/evals/analysis/report/cost_unit.py", "per_count", "format_number()"): (1, _COST_UNIT),
+    ("threetears/evals/analysis/report/cost_unit.py", "per_count", "group_thousands()"): (1, _COST_UNIT),
+    ("threetears/evals/analysis/report/decision.py", "_held", "round()"): (2, _WHOLE_COUNT),
+    ("threetears/evals/analysis/report/decision.py", "floor_readings", "round()"): (2, _WHOLE_COUNT),
+    ("threetears/evals/analysis/report/figure_keys.py", "_assumed_cases", "round()"): (2, _WHOLE_CASES),
+    ("threetears/evals/analysis/report/figure_keys.py", "_unanswered_figure", "group_thousands()"): (
+        1,
+        _UNANSWERED_COUNT,
+    ),
+    ("threetears/evals/analysis/report/html_parts.py", "_head_width", "round()"): (1, _CSS_WIDTH),
+    ("threetears/evals/analysis/report/html_parts.py", "_id_rem", "round()"): (1, _CSS_WIDTH),
+    ("threetears/evals/analysis/report/html_parts.py", "_key_rem", "round()"): (1, _CSS_WIDTH),
+    ("threetears/evals/analysis/report/html_parts.py", "_lines_rem", "round()"): (1, _CSS_WIDTH),
+    ("threetears/evals/analysis/report/kit/kit.js", "kConfusion", "namedFmt"): (1, _KIT_DEFAULT),
+    ("threetears/evals/analysis/report/kit/kit.js", "kDiffHeatmap", "Math.round()"): (2, _KIT_COLOUR),
+    ("threetears/evals/analysis/report/kit/kit.js", "kHeatmap", "toLocaleString()"): (1, _KIT_TOOLTIP_COUNT),
+    ("threetears/evals/analysis/report/kit/kit.js", "kLogTicks", "toPrecision()"): (1, _KIT_FLOAT),
+    ("threetears/evals/analysis/report/kit/kit.js", "kScatter", "Math.round()"): (1, _KIT_PIXELS),
+    ("threetears/evals/analysis/report/kit/kit.js", "ticksRaw", "toFixed()"): (1, _KIT_FLOAT),
+    ("threetears/evals/analysis/report/parts/charting.py", "contrast_unit", "quantity()"): (2, _CLASSIFIER),
+    ("threetears/evals/analysis/report/parts/charting.py", "contrast_unit_of", "quantity()"): (2, _CLASSIFIER),
+    ("threetears/evals/analysis/report/parts/charting.py", "unit_refusal", "quantity()"): (1, _CLASSIFIER),
+    ("threetears/evals/analysis/report/parts/look.py", "_money_text", "format_number()"): (1, _LOOK),
+    ("threetears/evals/analysis/report/parts/look.py", "_money_text", "group_thousands()"): (1, _LOOK),
+    ("threetears/evals/analysis/report/parts/look.py", "_money_text", "round()"): (1, _LOOK),
+    ("threetears/evals/analysis/report/parts/look.py", "_money_text", "spell()"): (1, _LOOK),
+    ("threetears/evals/analysis/report/parts/look.py", "_money_text", "spell_dollars()"): (1, _LOOK),
+    ("threetears/evals/analysis/report/parts/look.py", "_round_up", "floor(log10)"): (1, _AXIS),
+    ("threetears/evals/analysis/report/parts/look.py", "cost_axis_format", "ceil(log10)"): (1, _AXIS),
+    ("threetears/evals/analysis/report/parts/look.py", "figure_text", "signed_with_unit()"): (1, _LOOK),
+    ("threetears/evals/analysis/report/parts/look.py", "figure_text", "spell_at()"): (1, _LOOK),
+    ("threetears/evals/analysis/report/parts/look.py", "figure_text", "with_unit()"): (1, _LOOK),
+    ("threetears/evals/analysis/report/parts/look.py", "in_change_form", "for_changes()"): (1, _LOOK),
+    ("threetears/evals/analysis/report/parts/look.py", "log_domain", "ceil(log10)"): (1, _AXIS),
+    ("threetears/evals/analysis/report/parts/look.py", "log_domain", "floor(log10)"): (1, _AXIS),
+    ("threetears/evals/analysis/report/parts/look.py", "log_ticks", "round()"): (2, _AXIS),
+    ("threetears/evals/analysis/report/parts/look.py", "quantity_of", "quantity()"): (2, _LOOK),
+    ("threetears/evals/analysis/report/parts/resolve_table.py", "_bar_reads", "quantity_of()"): (1, _TABLE_CLASSIFIER),
+    ("threetears/evals/analysis/report/parts/resolve_table.py", "_changes_drawn", "quantity()"): (1, _TABLE_CLASSIFIER),
+    ("threetears/evals/analysis/report/parts/resolve_table.py", "_changes_drawn", "quantity_of()"): (
+        1,
+        _TABLE_CLASSIFIER,
+    ),
+    ("threetears/evals/analysis/report/parts/resolve_table.py", "_column_quantity", "quantity_of()"): (
+        1,
+        _TABLE_CLASSIFIER,
+    ),
+    ("threetears/evals/analysis/report/parts/resolve_table.py", "_floors", "quantity()"): (1, _TABLE_CLASSIFIER),
+    ("threetears/evals/analysis/report/said.py", "_stored_figure", "format_number()"): (3, _STORED_READING),
+    ("threetears/evals/analysis/report/said.py", "_stored_figure", "round()"): (2, _STORED_READING),
+    ("threetears/evals/analysis/report/svg.py", "tenth_px", "f-string spec"): (
+        1,
+        "an SVG coordinate, to a tenth of a px, which no reader reads as a number",
+    ),
+    ("threetears/evals/analysis/report_input_build.py", "_level", "format_number()"): (1, _SNAPSHOT),
+    ("threetears/evals/kernel/covariates.py", "_reasoning_ratio_of", "round()"): (1, _COVARIATE_RATIO),
+    ("threetears/evals/kernel/covariates.py", "fold_phase_timings", "round()"): (1, _PHASE_TIMINGS),
+    ("threetears/evals/negotiation/settings.py", "_budget_for_word", "round()"): (1, _TOKEN_BUDGET),
+    ("threetears/evals/negotiation/settings.py", "_closest_reasoning", "f-string spec"): (2, _NEGOTIATION_RATIO),
+    ("threetears/evals/ops/analysis.py", "_write_doc_analysis", "timed_out_detail()"): (1, _KERNEL_TIMEOUT),
+    ("threetears/evals/ops/report_writer/tally.py", "ReportBudget.first_turn_refusal", "round()"): (1, _CENT_CEILING),
+    ("threetears/evals/ops/sweeps.py", "_run_sweep", "timed_out_detail()"): (1, _KERNEL_TIMEOUT),
+    ("threetears/evals/providers/catalogue.py", "Catalogue.load", "f-string spec"): (1, _CATALOGUE_BOUND),
+    ("threetears/evals/quick/result.py", "declare", "round()"): (1, _MARGIN_ARITHMETIC),
+    ("threetears/evals/run/judge.py", "_normalize_criteria_scores", "round()"): (1, _JUDGE_SCORE),
+    ("threetears/evals/schema/hashing.py", "round_figures", "f-string spec"): (1, _FINGERPRINT),
+    ("threetears/evals/schema/values.py", "SweepableValue._build", "f-string spec"): (1, _SCHEMA_VALUE),
+    ("threetears/evals/testing/jobs_conformance.py", "CompletionGuard.after_the_call", "spell_declared()"): (
+        1,
+        _CONFORMANCE_TIMEOUT,
+    ),
+    ("threetears/evals/testing/jobs_conformance.py", "_happy_path_case.check", "spell_declared()"): (
+        1,
+        _CONFORMANCE_TIMEOUT,
+    ),
+    ("threetears/evals/transports/fastmcp/__init__.py", "CallTimedOut.__init__", "spell_declared()"): (
+        1,
+        _TRANSPORT_TIMEOUT,
+    ),
+    ("threetears/evals/transports/fastmcp/__init__.py", "CatalogueTool.run", "spell_declared()"): (
+        1,
+        _TRANSPORT_TIMEOUT,
+    ),
 }
 
-#: The most sites :data:`_PERMANENT` may name. It only comes down: an entry routed through ``forms.py`` lowers it, and a
-#: new exemption raises it only by an owner's decision, in the same change.
-_PERMANENT_CEILING = 135
+#: How many entries :data:`_PERMANENT` holds, pinned: an entry routed through ``forms.py`` lowers it in the same
+#: change, and a new exemption raises it only by an owner's decision, so no slack is ever refilled unseen.
+_PERMANENT_CEILING = 118
 
 #: The one-line remedy every failure of the rule ends with.
 _REMEDY = (
@@ -641,10 +455,6 @@ class _Site:
     @property
     def key(self) -> tuple[str, str, str]:
         return (self.module, self.qualname, self.form)
-
-    @property
-    def permanent_key(self) -> tuple[str, str, str]:
-        return (self.module, self.expression, self.form if self.spec is None else self.spec)
 
     def shown(self) -> str:
         what = f"{{{self.expression}:{self.spec}}}" if self.spec is not None else self.expression
@@ -809,6 +619,23 @@ class _Signature:
                 yield keyword.value, frozenset({self.double_star})
 
 
+#: The nodes a site can be: a call, a formatted field, and a ``%`` over a literal.
+_SITE_NODES = (ast.Call, ast.FormattedValue, ast.Interpolation, ast.BinOp)
+
+
+def _scoped_nodes(tree: ast.AST, scope: tuple[str, ...] = ()) -> Iterator[tuple[int, str]]:
+    """Each node of ``tree`` a site can be, by its ``id``, with the qualname the walk keys a site at it by: the
+    enclosing definitions' names joined (``Class.method.inner``), ``<module>`` outside one."""
+    for child in ast.iter_child_nodes(tree):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            # As the walk keys them: a definition's decorators and defaults sit in its own scope.
+            yield from _scoped_nodes(child, (*scope, child.name))
+        else:
+            if isinstance(child, _SITE_NODES):
+                yield id(child), ".".join(scope) or "<module>"
+            yield from _scoped_nodes(child, scope)
+
+
 class _Index:
     """The walked modules' definitions and imports, to tell which function a call reaches.
 
@@ -830,7 +657,11 @@ class _Index:
         self.signatures: dict[tuple[str, str], list[_Signature]] = {}
         #: The methods read as attributes (a property, a cached one), by their key: reading one runs it.
         self.properties: set[tuple[str, str]] = set()
+        #: Each module's every node that may be a site, by its ``id``, with the qualname of the definition it sits in,
+        #: as a site is keyed: what :data:`_PERMANENT` names a permanent site by.
+        self.scopes: dict[str, dict[int, str]] = {}
         for module, tree in trees.items():
+            self.scopes[module] = dict(_scoped_nodes(tree))
             self.defined[module] = {
                 node.name
                 for node in tree.body
@@ -844,6 +675,11 @@ class _Index:
                     if any(_reads_as_attribute(decorator) for decorator in function.decorator_list):
                         self.properties.add(key)
                 self.signatures.setdefault(key, []).append(_Signature.of(function, method=reached == "method"))
+
+    def permanent(self, module: str, node: ast.AST, form: str) -> bool:
+        """Whether a site of ``form`` at ``node`` is one :data:`_PERMANENT` names, by its function: so it wraps nothing.
+        The count is the rule's to hold, not the derivation's."""
+        return (module, self.scopes.get(module, {}).get(id(node), "<module>"), form) in _PERMANENT
 
     def _imports(self, module: str, tree: ast.Module) -> Iterator[tuple[str, tuple[str, str | None]]]:
         package = _dotted(module).split(".") if module.endswith("__init__.py") else _dotted(module).split(".")[:-1]
@@ -1216,7 +1052,7 @@ def _spelled(node: ast.AST | None, where: tuple[str, str], lookup: _Lookup, spel
     if isinstance(node, ast.Name):
         return node.id in spelled
     module = where[0]
-    if any((module, expression, spec) not in _PERMANENT for _form, expression, spec in _spec_sites(node)):
+    if any(not lookup.index.permanent(module, node, form) for form, _expression, _spec in _spec_sites(node)):
         return True
     if isinstance(node, ast.JoinedStr):
         return any(_spelled(part, where, lookup, spelled) for part in node.values)
@@ -1240,7 +1076,7 @@ def _spelled(node: ast.AST | None, where: tuple[str, str], lookup: _Lookup, spel
         return lookup.read(node, where) is not None
     if isinstance(node, ast.Call):
         form = _call_form(node, where, lookup)
-        if form is not None and (module, ast.unparse(node), form) not in _PERMANENT:
+        if form is not None and not lookup.index.permanent(module, node, form):
             return True
         func = node.func
         if isinstance(func, ast.Name) and func.id in _TEXT_BUILTINS:
@@ -1718,7 +1554,17 @@ def _all_sites() -> tuple[_Site, ...]:
 
 
 def _unnamed(sites: Iterable[_Site]) -> list[_Site]:
-    return [site for site in sites if site.permanent_key not in _PERMANENT]
+    """Every site of a key :data:`_PERMANENT` does not name, or names at fewer sites than the walk finds there."""
+    sites = list(sites)
+    live = _tally(sites)
+    over = {key for key, count in live.items() if count > _PERMANENT.get(key, (0, ""))[0]}
+    return [site for site in sites if site.key in over]
+
+
+def _outlived(sites: Iterable[_Site]) -> dict[tuple[str, str, str], tuple[int, int]]:
+    """Each :data:`_PERMANENT` entry naming more sites than the walk finds there: its count, then the walk's."""
+    live = _tally(sites)
+    return {key: (count, live.get(key, 0)) for key, (count, _reason) in _PERMANENT.items() if live.get(key, 0) < count}
 
 
 def _tally(sites: Iterable[_Site]) -> Counter[tuple[str, str, str]]:
@@ -1733,19 +1579,20 @@ class TestTheRule:
         shown = [site.shown() for site in sites]
         assert not sites, f"number-form sites outside the owners: {_REMEDY}.\n  " + "\n  ".join(shown)
 
-    def test_every_permanent_site_still_names_a_site(self):
-        """An exemption nothing matches is one a rewritten line walked out of without anyone deciding."""
-        live = {site.permanent_key for site in _all_sites()}
-        assert sorted(set(_PERMANENT) - live) == []
+    def test_every_permanent_entry_still_names_its_count_of_sites(self):
+        """An exemption a site walked out of, or holding more than it names, is one nobody decided: cut its count."""
+        assert _outlived(_all_sites()) == {}
 
     def test_every_permanent_reason_is_stated_and_cites_nothing_a_reader_cannot_open(self):
-        unstated = [key for key, reason in _PERMANENT.items() if not reason.strip()]
-        citing = {key: found.group() for key, reason in _PERMANENT.items() if (found := _CITES.search(reason))}
+        uncounted = [key for key, (count, _reason) in _PERMANENT.items() if count < 1]
+        unstated = [key for key, (_count, reason) in _PERMANENT.items() if not reason.strip()]
+        citing = {key: found.group() for key, (_n, reason) in _PERMANENT.items() if (found := _CITES.search(reason))}
+        assert uncounted == []
         assert unstated == []
         assert citing == {}
 
-    def test_the_permanent_list_and_the_engine_have_a_ceiling(self):
-        assert len(_PERMANENT) <= _PERMANENT_CEILING
+    def test_the_permanent_list_is_pinned_and_the_engine_has_a_ceiling(self):
+        assert len(_PERMANENT) == _PERMANENT_CEILING
         assert len(_ENGINE_TREES) <= _ENGINE_TREES_CEILING
 
     def test_a_reason_that_cites_a_plan_or_an_id_is_caught(self):
@@ -1761,19 +1608,20 @@ class TestTheRule:
         assert _RULE in every
         assert {site.module for site in _all_sites()} >= {_KIT_JS, _CHART_SVG}
 
-    def test_the_key_keeps_a_moved_line_and_counts_a_new_one(self):
-        before = _tally(_python_sites("def f(v):\n    return round(v, 1)\n"))
-        moved = _tally(_python_sites("\n\n# a comment\ndef f(v):\n\n    return round(v, 1)\n"))
-        added = _tally(_python_sites("def f(v):\n    return round(v, 1), round(v, 2)\n"))
-        assert before == moved == Counter({("sample.py", "f", "round()"): 1})
-        assert added == Counter({("sample.py", "f", "round()"): 2})
-
-    def test_a_permanent_entry_keeps_a_moved_line_and_loses_a_rewritten_expression(self, monkeypatch):
-        monkeypatch.setitem(_PERMANENT, ("sample.py", "round(v, 1)", "round()"), "a self-test's permanent site")
+    def test_a_permanent_entry_holds_its_function_and_its_count(self, monkeypatch):
+        """A moved line, or one rewritten in place, keeps its entry; one more of the form in the function, or the same
+        expression in another function, fails; and an entry the function no longer fills outlives its site."""
+        monkeypatch.setitem(_PERMANENT, ("sample.py", "g", "round()"), (1, "a self-test's permanent site"))
         moved = _python_sites("\n\n# a comment\ndef g(v):\n\n    return round(v, 1)\n")
         rewritten = _python_sites("def g(v):\n    return round(v, 2)\n")
-        assert _unnamed(moved) == []
-        assert [site.expression for site in _unnamed(rewritten)] == ["round(v, 2)"]
+        one_more = _python_sites("def g(v):\n    return round(v, 1), round(v, 1)\n")
+        elsewhere = _python_sites("def g(v):\n    return round(v, 1)\n\ndef h(v):\n    return round(v, 1)\n")
+        gone = _python_sites("def g(v):\n    return v\n")
+        assert _unnamed(moved) == _unnamed(rewritten) == []
+        assert [(site.qualname, site.expression) for site in _unnamed(one_more)] == [("g", "round(v, 1)")] * 2
+        assert [(site.qualname, site.expression) for site in _unnamed(elsewhere)] == [("h", "round(v, 1)")]
+        assert ("sample.py", "g", "round()") not in _outlived(moved)
+        assert _outlived(gone)[("sample.py", "g", "round()")] == (1, 0)
 
 
 class TestTheReportTreesKeepTheStricterRule:
@@ -1807,9 +1655,7 @@ class TestTheReportTreesKeepTheStricterRule:
             site.shown()
             for site in _all_sites()
             if site.module in report_modules
-            if site.spec is not None
-            and not site.spec.endswith(_PERCENTAGE_TYPE)
-            and site.permanent_key not in _PERMANENT
+            if site.spec is not None and not site.spec.endswith(_PERCENTAGE_TYPE) and site.key not in _PERMANENT
         ]
         assert not offenders, (
             "these spell a number with their own precision; route them through format_number / format_signed, "
@@ -1987,8 +1833,9 @@ class TestAWrapperIsAPrimitive:
             ("page", "spell_at()"),
         ]
 
-    def test_a_permanent_site_inside_a_helper_leaves_its_callers_unlisted(self):
+    def test_a_permanent_site_inside_a_helper_leaves_its_callers_unlisted(self, monkeypatch):
         """An SVG opacity is permanent, so the helper that writes it wraps nothing and drawing through it is no site."""
+        monkeypatch.setitem(_PERMANENT, (_CHART_SVG, "_faded", "f-string spec"), (1, "an SVG opacity"))
         source = (
             "def _faded(opacity):\n    return f'{opacity:g}'\n\n"
             "def _swatch(opacity):\n    return f'<rect opacity=\"{_faded(opacity)}\"/>'\n"
@@ -2133,7 +1980,8 @@ class TestASiteHandedThroughAHelperIsStillASite:
         """A permanent site wraps nothing, so a helper whose body is named permanently would lose its callers by
         derivation alone; one listed by name keeps them."""
         quantities = "threetears/evals/analysis/quantities.py"
-        monkeypatch.setitem(_PERMANENT, (quantities, "v", ".1f"), "a self-test's permanent body")
+        for helper in ("number_in", "tenths"):
+            monkeypatch.setitem(_PERMANENT, (quantities, helper, "f-string spec"), (1, "a self-test's permanent body"))
         sources = {
             quantities: "def number_in(v, unit):\n    return f'{v:.1f}'\n\ndef tenths(v):\n    return f'{v:.1f}'\n",
             "threetears/evals/caller.py": (
