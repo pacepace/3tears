@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
@@ -320,6 +320,8 @@ class _CallSite:
     :ivar narrowed: whether the call passes a narrowing argument (a filter, keys, a scope)
     :ivar whole_named: whether the callee's name says it reads, rebuilds or warms whole
     :ivar receiver_name: the receiver's last segment (``_store``), empty for a bare or ``self`` call
+    :ivar receiver_class: the class the receiver is known to be (a parameter or variable annotated with it, a name
+        or ``self`` attribute assigned one of it), empty when unknown
     """
 
     path: str
@@ -332,6 +334,7 @@ class _CallSite:
     narrowed: bool
     whole_named: bool
     receiver_name: str
+    receiver_class: str = ""
 
 
 @dataclass
@@ -625,6 +628,7 @@ class _ModuleWalk(ast.NodeVisitor):
         self.stubs: set[str] = set()
         self._stack: list[str] = []
         self._classes: list[str] = []
+        self._class_nodes: list[ast.ClassDef] = []
         self._envs: list[dict[str, str]] = [{}]
         self._parents: dict[ast.AST, ast.AST] = {}
         for node in ast.walk(tree):
@@ -810,8 +814,10 @@ class _ModuleWalk(ast.NodeVisitor):
         """
         self._stack.append(node.name)
         self._classes.append(self._function)
+        self._class_nodes.append(node)
         self.definitions.add(f"{self.path}::{self._function}")
         self.generic_visit(node)
+        self._class_nodes.pop()
         self._classes.pop()
         self._stack.pop()
 
@@ -1442,7 +1448,8 @@ class _ModuleWalk(ast.NodeVisitor):
             receiver = "bare"
         elif segments and _STORE.search(segments[-1]):
             receiver = "store"
-        if receiver != "other" or whole_named:
+        # a receiver of any other name is kept when the walk knows its class: a call on it reaches that class
+        if receiver != "other" or whole_named or self._receiver_class(node):
             self._call(node, name, receiver, spelled, narrowed=narrowed, whole_named=whole_named)
 
     def _credit_pager(self, node: ast.Call) -> None:
@@ -1529,8 +1536,98 @@ class _ModuleWalk(ast.NodeVisitor):
                 narrowed,
                 whole_named,
                 receiver_name,
+                self._receiver_class(node),
             )
         )
+
+    def _receiver_class(self, node: ast.Call) -> str:
+        """the class a method call's receiver is known to be: a name annotated with a class or assigned an instance of
+        one in the calling function (its parameters included), or a ``self`` attribute annotated or assigned so in the
+        calling class; empty when nothing says.
+
+        :param node: the call
+        :ptype node: ast.Call
+        :return: the class's name, its final segment; empty when unknown
+        :rtype: str
+        """
+        receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
+        known = ""
+        if isinstance(receiver, ast.Name) and self._function_nodes:
+            function = self._function_nodes[-1]
+            arguments = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
+            for argument in arguments:
+                if argument.arg == receiver.id and argument.annotation is not None:
+                    known = _annotated_class(argument.annotation)
+            known = (
+                _assigned_class(function.body, lambda target: isinstance(target, ast.Name) and target.id == receiver.id)
+                or known
+            )
+        elif (
+            isinstance(receiver, ast.Attribute)
+            and isinstance(receiver.value, ast.Name)
+            and receiver.value.id == "self"
+            and self._class_nodes
+        ):
+            attribute = receiver.attr
+            known = _assigned_class(
+                self._class_nodes[-1].body,
+                lambda target: (
+                    (
+                        isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "self"
+                        and target.attr == attribute
+                    )
+                    or (isinstance(target, ast.Name) and target.id == attribute)
+                ),
+            )
+        return known
+
+
+def _annotated_class(annotation: ast.expr) -> str:
+    """the class an annotation names: its final segment, ``None`` left out of a union (``Tool | None``); empty for
+    anything else.
+
+    :param annotation: the annotation
+    :ptype annotation: ast.expr
+    :return: the class's name, or empty
+    :rtype: str
+    """
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        left, right = _annotated_class(annotation.left), _annotated_class(annotation.right)
+        return left or right
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        return annotation.value.rsplit(".", 1)[-1]
+    if isinstance(annotation, (ast.Name, ast.Attribute)):
+        name = (dotted(annotation) or "").rsplit(".", 1)[-1]
+        return "" if name == "None" else name
+    return ""
+
+
+def _assigned_class(body: list[ast.stmt], matches: Callable[[ast.expr], bool]) -> str:
+    """the class a target is annotated with or assigned an instance of anywhere in ``body`` (nested statements
+    included): ``x: Tool``, ``x = Tool(...)``, ``self._x = Tool(...)``; empty when none says.
+
+    :param body: the statements
+    :ptype body: list[ast.stmt]
+    :param matches: whether an assignment target is the receiver
+    :ptype matches: Callable[[ast.expr], bool]
+    :return: the class's name, or empty
+    :rtype: str
+    """
+    known = ""
+    for statement in body:
+        for node in ast.walk(statement):
+            if isinstance(node, ast.AnnAssign) and matches(node.target):
+                known = _annotated_class(node.annotation) or known
+            elif (
+                isinstance(node, ast.Assign)
+                and isinstance(node.value, ast.Call)
+                and any(matches(target) for target in node.targets)
+            ):
+                name = (dotted(node.value.func) or "").rsplit(".", 1)[-1]
+                known = name if name[:1].isupper() else known
+    return known
 
 
 def _keyed_exists(condition: str, table: str, reader: Reader) -> bool:
@@ -1797,6 +1894,22 @@ def _class_module(
     return found
 
 
+def _calls_marked(call: _CallSite, target: tuple[str, str]) -> bool:
+    """whether a call that may reach an entry-only marked function is known to: a ``self`` or bare call resolved to
+    it, or a method call on a receiver known to be its class. A receiver of unknown type that only shares the method's
+    name (``self._db.execute`` on a database connection) is no caller of it.
+
+    :param call: the call
+    :ptype call: _CallSite
+    :param target: the marked function, ``(path, qualified name)``
+    :ptype target: tuple[str, str]
+    :return: whether it is a caller
+    :rtype: bool
+    """
+    owner = target[1].rsplit(".", 1)[0] if "." in target[1] else ""
+    return call.receiver in ("self", "bare") or (bool(owner) and call.receiver_class == owner.rsplit(".", 1)[-1])
+
+
 def _targets(
     call: _CallSite,
     module_functions: dict[str, set[str]],
@@ -1854,6 +1967,13 @@ def _targets(
         token = call.receiver_name.strip("_").lower().removesuffix("s")
         named = [(path, name) for path, name in targets if token and token in name.split(".", 1)[0].lower()]
         targets = named or targets
+        # a receiver known to be one of the repo's classes reaches that class's method alone
+        typed = [
+            (path, name)
+            for path, name in targets
+            if call.receiver_class and name.split(".", 1)[0] == call.receiver_class
+        ]
+        targets = typed or targets
     return [target for target in targets if target != (call.path, call.function)]
 
 
@@ -1931,7 +2051,7 @@ def _resolve(
         "operator's command is reached only from its own entry, so every caller carries the same mark"
         for call, targets in resolved
         for target in targets
-        if target in marks and marks.get((call.path, call.function)) != marks[target]
+        if target in marks and marks.get((call.path, call.function)) != marks[target] and _calls_marked(call, target)
     ]
     for index, (call, targets) in enumerate(resolved):
         if index in constructors_found:
