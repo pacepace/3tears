@@ -86,6 +86,7 @@ from threetears.evals.analysis.analyst.compare import ComparisonRow
 from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow
 from threetears.evals.analysis.analyst.settle import SettleRow
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
+from threetears.evals.analysis.report.words import label_case
 from threetears.evals.analysis.report_input import (
     BarRead,
     Cell,
@@ -356,7 +357,7 @@ def _scoreboard(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             named = humanize("dimension", key)
             yield {
                 "arm": _arm(context, arm),
-                "figure": _words(named[:1].upper() + named[1:]),
+                "figure": _words(label_case(named)),
                 "value": TableCell(value=value),
             }
 

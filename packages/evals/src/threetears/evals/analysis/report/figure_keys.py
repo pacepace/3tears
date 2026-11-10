@@ -129,6 +129,7 @@ from threetears.evals.analysis.report.words import (
     arm_tags,
     reader_arm_name,
     stratum_name,
+    stratum_names,
     text_levers,
     told_apart,
 )
@@ -1955,10 +1956,19 @@ def _loss_keys(qualified: bool) -> Callable[[ReportInput, tuple[str, ...]], list
     return options
 
 
+def _printed_stratum(report_input: ReportInput, stratum: Stratum) -> str:
+    """A stratum's printed name among the input's strata (:func:`~threetears.evals.analysis.report.words.
+    stratum_names`), so two that would print alike each print as their id."""
+    declared = {held.id: held.name for held in report_input.strata}
+    return stratum_names([held.id for held in report_input.strata], declared).get(stratum.id) or stratum_name(
+        stratum.id, stratum.name
+    )
+
+
 def _stratum_field(report_input: ReportInput, stratum: Stratum, rest: tuple[str, ...], path: str) -> Figure:
     (field,) = rest
     if field == "name":
-        return _text(path, stratum.name or humanize("dimension", stratum.id), "the stratum's name")
+        return _text(path, _printed_stratum(report_input, stratum), "the stratum's name")
     if field == "n_cases":
         return _number(path, stratum.n_cases, "the stratum's cases", "count")
     return _number(path, stratum.share, "the stratum's share of traffic", "share", whole=True)
@@ -3543,8 +3553,7 @@ def reader_name(kind: NamedKind, identifier: str, report_input: ReportInput) -> 
     if kind == "judged":
         return report_input.judged[identifier].label or humanize("dimension", identifier)
     if kind == "stratum":
-        stratum = _stratum(report_input, identifier)
-        return stratum_name(stratum.id, stratum.name)
+        return _printed_stratum(report_input, _stratum(report_input, identifier))
     if kind == "task":
         task = _task(report_input, identifier)
         return task.name or humanize("dimension", task.id)

@@ -99,7 +99,7 @@ from threetears.evals.analysis.report.build import (
 )
 from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.verdict import VerdictLine
-from threetears.evals.analysis.report.words import campaign_arm_tags, judged_heading, stratum_name
+from threetears.evals.analysis.report.words import campaign_arm_tags, judged_heading, stratum_names
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, predicted_label
 from threetears.evals.quick.judged import Judge
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
@@ -786,13 +786,12 @@ class Result:
         tables = [block for block in self.report.blocks if isinstance(block, TableBlock) and block.name == "strata"]
         # Each stratum by its key here (its declared name, else its id), from the name its column prints.
         bundle = self.report.bundle
+        ids = sorted(
+            {held.stratum for cell in bundle.cell_measures for held in cell.strata if held.stratum is not None}
+        )
         keyed = {
-            stratum_name(held.stratum, bundle.stratum_names.get(held.stratum)): bundle.stratum_names.get(
-                held.stratum, held.stratum
-            )
-            for cell in bundle.cell_measures
-            for held in cell.strata
-            if held.stratum is not None
+            printed: bundle.stratum_names.get(stratum, stratum)
+            for stratum, printed in stratum_names(ids, bundle.stratum_names).items()
         }
         rows: list[dict[str, Any]] = []
         for table in tables:

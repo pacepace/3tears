@@ -31,23 +31,23 @@ PROBE = r"""async () => {
     const r = e.getBoundingClientRect();
     if (r.width && r.right > vw + 1) out.push(`${e.tagName.toLowerCase()} "${(e.textContent||'').trim().slice(0,40)}" right=${Math.round(r.right)}`);
   }
-  const overlaps = [];
-  document.querySelectorAll('.chart svg').forEach((svg, si) => {
-    const boxes = [...svg.querySelectorAll('text')].map(t => ({t: t.textContent, r: t.getBoundingClientRect()})).filter(b => b.r.width > 0 && b.t.trim());
-    for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
-      const a = boxes[i].r, b = boxes[j].r, pad = -1;
-      if (a.left < b.right - pad && a.right > b.left + pad && a.top < b.bottom - pad && a.bottom > b.top + pad)
-        overlaps.push(`chart ${si}: "${boxes[i].t.slice(0,24)}" × "${boxes[j].t.slice(0,24)}"`);
-    }
-  });
-  // a chart's label sits clear of every axis, zero line and reference line drawn across the chart (a kit's chart: one
-  // a page's own code draws, with no data-kind, is the page's)
   // a chart named by its kind and the title or caption of the figure holding it, so a failure says which chart
   const chartName = (e, si) => {
     const fig = e.closest('figure'), kind = e.closest('[data-kind]')?.dataset.kind || 'chart';
     const title = (fig?.querySelector('figcaption, .cap, h3, h4')?.textContent || fig?.id || '').trim().slice(0, 40);
     return `chart${si === undefined ? '' : ` ${si}`} (${kind}${title ? ` "${title}"` : ''})`;
   };
+  const overlaps = [];
+  document.querySelectorAll('.chart svg').forEach((svg, si) => {
+    const boxes = [...svg.querySelectorAll('text')].map(t => ({t: t.textContent, r: t.getBoundingClientRect()})).filter(b => b.r.width > 0 && b.t.trim());
+    for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i].r, b = boxes[j].r, pad = -1;
+      if (a.left < b.right - pad && a.right > b.left + pad && a.top < b.bottom - pad && a.bottom > b.top + pad)
+        overlaps.push(`${chartName(svg, si)}: "${boxes[i].t.slice(0,24)}" × "${boxes[j].t.slice(0,24)}"`);
+    }
+  });
+  // a chart's label sits clear of every axis, zero line and reference line drawn across the chart (a kit's chart: one
+  // a page's own code draws, with no data-kind, is the page's)
   const crossed = [];
   document.querySelectorAll('.chart[data-kind] svg, .chart-drawn svg').forEach((svg, si) => {
     const boxes = [...svg.querySelectorAll('text')].map(t => ({t: t.textContent, r: t.getBoundingClientRect()})).filter(b => b.r.width > 0 && b.t.trim());
@@ -213,7 +213,7 @@ PROBE = r"""async () => {
     const s = getComputedStyle(a), ink = rgba(s.stroke);
     if (!ink) continue;
     const g = ground(a.ownerSVGElement), r = ratio(over([ink[0], ink[1], ink[2], ink[3] * parseFloat(s.strokeOpacity) * opacity(a)], g), g);
-    if (r < 3) faint.push(`an axis ${r.toFixed(2)}:1`);
+    if (r < 3) faint.push(`an axis in ${chartName(a.ownerSVGElement)} ${r.toFixed(2)}:1`);
   }
   window.scrollTo(0, 0);
   // an interval in a cell ("0 to 43%", "$25 to $34") holds its ends and the word between them on one line: the
