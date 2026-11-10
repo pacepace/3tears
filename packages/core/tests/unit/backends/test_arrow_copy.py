@@ -13,6 +13,7 @@ What the pod sends is the contract the hub's broker implements (its ``test_copy_
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import threading
@@ -213,3 +214,58 @@ def test_a_request_that_is_not_one_is_not_split() -> None:
     assert split_copy_request(b'{"rows": []}') is None
     with pytest.raises(ValueError, match="past its end"):
         split_copy_request(b"L3COPYA1" + (100).to_bytes(4, "big") + b"{}")
+
+
+def _wide_records(count: int) -> list[tuple[Any, ...]]:
+    """rows shaped as the reports pod's candidates (42 columns: text, integers, floats, booleans, nulls), ~490 bytes."""
+    return [
+        tuple(
+            [f"text {n % 97} of the row {column}" for column in range(26)]
+            + [n * column for column in range(6)]
+            + [n / 7, float(n % 11)]
+            + [n % 2 == 0, None]
+            + [None] * 6
+        )
+        for n in range(count)
+    ]
+
+
+async def _worst_lag(work: Any) -> float:
+    """the latest a 1 ms ticker on this loop woke while ``work`` ran, in seconds."""
+    late: list[float] = []
+    stop = asyncio.Event()
+
+    async def ticker() -> None:
+        while not stop.is_set():
+            asked = time.perf_counter()
+            await asyncio.sleep(0.001)
+            late.append(time.perf_counter() - asked - 0.001)
+
+    ticking = asyncio.create_task(ticker())
+    await asyncio.sleep(0.02)
+    late.clear()
+    await work()
+    stop.set()
+    await ticking
+    return max(late)
+
+
+@pytest.mark.loop_timing
+class TestTheCallersLoopRunsWhileACopyIsBuilt:
+    async def test_a_12_mb_copy_holds_the_callers_loop_no_longer_than_a_ticker_idles(self) -> None:
+        """the build reads the caller's rows (Python objects) on a thread and takes turns with the loop: a 12 MB copy
+        holds the loop no longer than its own idle jitter and a few milliseconds, measured in the same run."""
+        records = _wide_records(16_000)
+        idle = await _worst_lag(lambda: asyncio.sleep(0.2))
+        hub = _Hub({"success": True, "tx_id": _TX_ID, COPY_ARROW_FIELD: True})
+        proxy = hub.proxy()
+
+        async def copy() -> None:
+            async with proxy.acquire() as conn, conn.transaction():
+                await conn.copy_records_to_table("rows", records=records, columns=[f"c{n}" for n in range(42)])
+
+        worst = await _worst_lag(copy)
+        assert split_copy_request(hub.copy()) is not None
+        assert worst < 0.005 + 2 * idle, (
+            f"a 12 MB copy's build held the caller's loop {worst * 1000:.1f} ms (idle {idle * 1000:.1f} ms)"
+        )

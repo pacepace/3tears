@@ -46,6 +46,16 @@ from pathlib import Path
 from typing import Final
 
 from threetears.enforcement.common import dotted, iter_python_files, parse_python_path, relative_posix_path
+from threetears.enforcement.no_whole_reads.helpers import (
+    KEYED_FRAGMENT_BUILDERS,
+    KEYED_HELPER_CALLS,
+    START_KEYWORDS,
+    HelperStatement,
+    UNSEEN,
+    helper_statements,
+    is_keyed_fragment,
+    narrows,
+)
 from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, SchemaCatalog, bare_table, purposes
 from threetears.enforcement.no_whole_reads.sql import (
     HEAD,
@@ -88,6 +98,10 @@ DEFAULT_PAGER_CALLS: Final[frozenset[str]] = frozenset(
         "read_all",
     }
 )
+
+#: what a reviewed visibility clause (``caller_visible_customer_clause(...)``) reads as where it is placed: a bound
+#: predicate on no key, a per-row filter
+_KEYED_FRAGMENT_TEXT: Final[str] = "__keyed_fragment__ = $9"
 
 #: helpers that read a whole table whatever they are passed
 _ALWAYS_WHOLE_CALLS: Final[frozenset[str]] = frozenset({"copy_table"})
@@ -414,6 +428,8 @@ def _placeholder(value: ast.expr, constants: dict[str, str]) -> str:
     known = _constant_text(value, constants)
     if known is not None:
         return known
+    if isinstance(value, ast.Call) and is_keyed_fragment(value):
+        return _KEYED_FRAGMENT_TEXT
     if isinstance(value, ast.Call) and value.args:
         # ``{quote(TABLE)}``, ``{snapshot.relation(GEOS)}``: a call on a constant reads as the constant; a local copy's
         # relation (``.relation(NAME)``, ``.relation_reading(NAME, ...)``) as ``copy.<name>``, its own key namespace
@@ -718,9 +734,9 @@ class _ModuleWalk(ast.NodeVisitor):
                 and node.targets[0].elts
                 and isinstance(node.targets[0].elts[0], ast.Name)
                 and isinstance(node.value, ast.Call)
-                and _final(node.value) in _FILTER_BUILDERS
+                and (_final(node.value) in _FILTER_BUILDERS | KEYED_FRAGMENT_BUILDERS)
             ):
-                built = _filter_text(node.value)
+                built = _KEYED_FRAGMENT_TEXT if is_keyed_fragment(node.value) else _filter_text(node.value)
                 name = node.targets[0].elts[0].id
                 if built is not None and stores.get(name, 0) == 1:
                     env[name] = built
@@ -971,9 +987,9 @@ class _ModuleWalk(ast.NodeVisitor):
                 continue
             parent = self._parents.get(node)
             if finding.kind == KEYED_COUNT:
-                if self._verify:
-                    self._hit(node, f"verify-aggregate {finding.table}", text or "")
-            elif finding.kind != HEAD:
+                # a count bound by a key prefix or a bound id set reads its key's rows: no verification scan
+                continue
+            if finding.kind != HEAD:
                 self._hit(node, f"{finding.kind} {finding.table}", text or "")
             elif isinstance(parent, ast.Call) and self._runs(parent, node):
                 self._hit(node, f"whole-select {finding.table}", text or "")
@@ -1120,7 +1136,9 @@ class _ModuleWalk(ast.NodeVisitor):
                 shape = condition_shape(condition) if condition is not None else ("range", column)
                 if condition is not None and " ".join(condition.lower().split()) == partial:
                     continue
-                if condition is not None and _keyed_exists(condition, table, reader):
+                if condition == _KEYED_FRAGMENT_TEXT or (
+                    condition is not None and _keyed_exists(condition, table, reader)
+                ):
                     # a correlated EXISTS whose own read is keyed filters each row of the page, reading no more
                     continue
                 if shape is not None and (shape == ("range", column) or (shape[0] == "eq" and shape[1] in prefix)):
@@ -1266,7 +1284,28 @@ class _ModuleWalk(ast.NodeVisitor):
         name = _final(node)
         if name is not None:
             self._judge_call(node, name)
+            self._judge_helper(node)
         self.generic_visit(node)
+
+    def _judge_helper(self, node: ast.Call) -> None:
+        """judge each statement a keyed helper call sends (``read_keyed``, ``keyset_page``, ...), as SQL written in the
+        calling function: :mod:`~threetears.enforcement.no_whole_reads.helpers` writes it from the call's arguments.
+
+        :param node: the call
+        :ptype node: ast.Call
+        :return: nothing
+        :rtype: None
+        """
+        if _final(node) not in KEYED_HELPER_CALLS:
+            return
+        statement: HelperStatement
+        for statement in helper_statements(node):
+            if statement.sql is UNSEEN or statement.sql is None:
+                self._hit(node, f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(node))
+                continue
+            for finding in judge_sql(statement.sql, self._reader(node)):
+                if finding.kind not in {HEAD, KEYED_COUNT} and not self._transient_table(finding.table):
+                    self._hit(node, f"{finding.kind} {finding.table}", statement.sql)
 
     def _judge_call(self, node: ast.Call, name: str) -> None:
         """every call-shaped check over one call.
@@ -1279,8 +1318,9 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: None
         """
         segments = _segments(node)
-        narrowing = [k for k in node.keywords if k.arg in self._narrowing]
-        narrowed = any(not _maybe_none(k.value) for k in narrowing) or any(
+        # ``after=`` / ``since=`` say where a page starts, not which rows: alone they read on to the table's end
+        narrowing = [k for k in node.keywords if k.arg in self._narrowing and k.arg not in START_KEYWORDS]
+        narrowed = (narrows(node, self._narrowing) and any(not _maybe_none(k.value) for k in narrowing)) or any(
             _PAGER_FILTER.search((dotted(value) or "").rsplit(".", 1)[-1]) is not None for value in node.args[1:]
         )
         spelled = self._spelled(node)
@@ -1443,11 +1483,16 @@ def _filter_text(call: ast.Call) -> str | None:
         mapping = given.get(argument)
         if mapping is None or (isinstance(mapping, ast.Constant) and mapping.value is None):
             continue
-        if not isinstance(mapping, ast.Dict) or not all(
-            isinstance(key, ast.Constant) and isinstance(key.value, str) for key in mapping.keys
-        ):
+        if not isinstance(mapping, ast.Dict):
             return None
-        parts.extend(form.format(key.value) for key in mapping.keys if isinstance(key, ast.Constant))
+        written = [key.value for key in mapping.keys if isinstance(key, ast.Constant) and isinstance(key.value, str)]
+        if not written:
+            return None
+        parts.extend(form.format(column) for column in written)
+        if len(written) < len(mapping.keys):
+            # sets spread in beside the written ones (``**part.filters``) only narrow: what the walk cannot see is an
+            # interpolation, unknown unless a written column keys the read
+            parts.append("{}")
     if given.get("not_null") is not None:
         parts.append("__not_null__ IS NOT NULL")
     return " AND ".join(parts) or None

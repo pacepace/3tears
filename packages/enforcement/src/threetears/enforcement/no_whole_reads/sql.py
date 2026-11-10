@@ -98,6 +98,7 @@ _BLOCK_COMMENT: Final[re.Pattern[str]] = re.compile(r"/\*.*?\*/", re.DOTALL)
 _LINE_COMMENT: Final[re.Pattern[str]] = re.compile(r"--[^\n]*")
 _QUOTED: Final[re.Pattern[str]] = re.compile(r"'(?:[^']|'')*'")
 _BRACED: Final[re.Pattern[str]] = re.compile(r"\{([^{}]*)\}")
+_DOLLAR_BRACED: Final[re.Pattern[str]] = re.compile(r"\$\{[^{}]*\}")
 
 #: the start of a statement: a verb, then the shape that verb has in SQL (so English prose is not SQL)
 _STATEMENT: Final[re.Pattern[str]] = re.compile(
@@ -240,7 +241,9 @@ def _clean(sql: str) -> str:
     :rtype: str
     """
     text = _LINE_COMMENT.sub(" ", _BLOCK_COMMENT.sub(" ", sql))
-    return " ".join(_BRACED.sub(_interpolation, _QUOTED.sub("'_'", text)).split())
+    # ``${len(params)}`` renders a bind placeholder ``$N``: a bound parameter, not interpolated text
+    text = _DOLLAR_BRACED.sub("$9", _QUOTED.sub("'_'", text))
+    return " ".join(_BRACED.sub(_interpolation, text).split())
 
 
 def is_sql(text: str) -> bool:
@@ -936,7 +939,13 @@ def _key_hit(
         prefix = 0
         while prefix < len(columns) and columns[prefix] in eq | contained:
             prefix += 1
-        ranged_next = prefix < len(columns) and columns[prefix] in ranged and level.limited
+        # a range on the index's next column pages it only when the read orders by that column
+        ranged_next = (
+            prefix < len(columns)
+            and columns[prefix] in ranged
+            and level.limited
+            and (level.order is None or level.order[1] == columns[prefix])
+        )
         if _covers(columns, eq | contained, tenants) or ranged_next:
             if table is not None:
                 reader.schema.use(table, name, reader.names)
@@ -1114,9 +1123,9 @@ def _source_read(level: _Level, reader: Reader) -> bool:
     :rtype: bool
     """
     by_ids = any(atom.kind == "eq" and atom.column[1] in reader.source_ids for atom in level.atoms)
-    unseen = any(atom.kind == "unseen" for atom in level.atoms)
     stamped = bool(reader.stamps) and _past_stamps(level.where, reader.stamps)
-    return reader.source_unit or stamped or (by_ids and not unseen)
+    # an id the source's runs record named keys the read; any other predicate beside it, seen or not, only narrows
+    return reader.source_unit or stamped or by_ids
 
 
 def _past_stamps(where: str | None, stamps: frozenset[str]) -> bool:
@@ -1173,6 +1182,18 @@ def _unkeyed_kind(level: _Level, known: bool, aggregate: bool) -> str:
     return kind
 
 
+def _suffixed(name: str) -> bool:
+    """whether text is interpolated straight after a relation's name (``FROM t{filters}``), where it may be the
+    predicate; a whole interpolated segment (``{schema}.{table}``, ``copy.{}``) is the relation's name.
+
+    :param name: the relation as written
+    :ptype name: str
+    :return: whether it is
+    :rtype: bool
+    """
+    return re.search(r"[\w\"]\{\}$", name) is not None
+
+
 def _judge_select(
     text: str,
     depths: list[int],
@@ -1213,12 +1234,7 @@ def _judge_select(
     # read, the read is unknown (``unknown-predicate``), never a pass
     unseen = (
         _INTERPOLATION.search(between) is not None
-        or (
-            first.name.endswith("{}")
-            and len(first.name) > 2
-            and first.name.lower() != f"{COPY_PREFIX}{{}}"
-            and reader.schema.table(first.name) is None
-        )
+        or (_suffixed(first.name) and reader.schema.table(first.name) is None)
         or any(atom.kind == "unseen" for atom in level.atoms)
     )
     aggregate = _AGGREGATE.search(masked[: opening.start() if opening else 0]) is not None or bool(
@@ -1302,9 +1318,7 @@ def _judge_write(
             clauses = _AFTER_WHERE.search(masked, relative)
             table = match.group(1)
             unseen = (
-                table.endswith("{}")
-                and len(table) > 2
-                and table.lower() != f"{COPY_PREFIX}{{}}"
+                _suffixed(table)
                 and reader.schema.table(table) is None
                 or (
                     _INTERPOLATION.search(masked[relative : clauses.start() if clauses else len(masked)]) is not None

@@ -156,20 +156,19 @@ def test_the_election_night_paths_are_named_where_they_read_and_where_they_are_c
         ("Store.count", "whole-aggregate {}"),
         ("Refresher._check_counts", "calls-whole-read Store.count"),
         ("Store.stamps", "whole-by-loop read_l3_rows"),
-        ("Store.count_held", "verify-aggregate results"),
     }
     assert expected <= found, sorted(expected - found)
     # the keyed reads beside them are not named
     assert not {f for f, _ in found} & {"CopyFollower._stage_partition", "ScopeEpochs.scope"}
 
 
-def test_a_keyed_count_is_a_verification_scan_only_in_the_code_named_load_code(tmp_path: Path) -> None:
-    """Flips if a per-key count is flagged outside the repo's load code, or passes inside it."""
+def test_a_keyed_count_is_no_verification_scan_even_in_load_code(tmp_path: Path) -> None:
+    """Flips if a count bound by a key prefix is named, in load code or out of it, or if a whole count is not."""
     source = {"writer.py": _WRITER}
-    assert ("Store.count_held", "verify-aggregate results") not in _symbols(_config(tmp_path, source))
-    assert ("Store.count_held", "verify-aggregate results") in _symbols(
-        _config(tmp_path, source, verify_prefixes=("src/",))
-    )
+    for config in (_config(tmp_path, source), _config(tmp_path, source, verify_prefixes=("src/",))):
+        found = _symbols(config)
+        assert not any(function == "Store.count_held" for function, _ in found), found
+        assert ("Store.count", "whole-aggregate {}") in found, found
 
 
 def test_a_call_resolves_only_when_every_function_it_may_reach_reads_whole(tmp_path: Path) -> None:
@@ -1495,3 +1494,77 @@ def test_a_static_input_s_pager_its_callers_filter_conditions_and_temp_views_are
         "typed",
     }, found
     assert any(function == "filtered_unknown" for function, _ in found), found
+
+
+_CURSORED = """
+    from threetears.core.keyset import keyset_arrow_pages
+
+    async def from_mark(l3, mark):
+        return keyset_arrow_pages(l3, "SELECT k FROM t", ("k",), types={}, after=mark)
+
+    async def keyed_from_mark(l3, mark, scope):
+        return keyset_arrow_pages(l3, "SELECT k FROM t", ("k",), types={}, after=mark, where={"scope": scope})
+"""
+
+
+def test_a_pager_s_start_alone_does_not_narrow_it(tmp_path: Path) -> None:
+    """Flips if a pager given only where to start (after=, since=) passes as narrowed, or one given a where beside it
+    is named."""
+    found = _symbols(_config(tmp_path, {"cursored.py": _CURSORED}))
+    assert ("from_mark", "unkeyed-pager keyset_arrow_pages") in found, found
+    assert not any(function == "keyed_from_mark" for function, _ in found), found
+
+
+_SPREAD = """
+    from threetears.core.operator import source_change_read
+
+    @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+    async def by_runs(client, relation, run_ids, part):
+        condition, params = filter_conditions(where_in={"run_id": run_ids, **part.filters})
+        return await client.query(f"SELECT office_key FROM {relation} WHERE {condition}", params)
+
+    @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+    async def by_family(client, relation, part):
+        condition, params = filter_conditions(where_in={"family": ["race"], **part.filters})
+        return await client.query(f"SELECT office_key FROM {relation} WHERE {condition}", params)
+"""
+
+
+def test_sets_spread_beside_a_bound_id_only_narrow(tmp_path: Path) -> None:
+    """Flips if where_in sets spread in beside the bound id make the read unknown, or if spread sets beside no
+    bound id or key pass."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_source.py").write_text(
+        "async def test_runs(client):\n    assert await by_runs(client, 'r', [1], None) and await by_family(client, 'r', None)\n",
+        encoding="utf-8",
+    )
+    with pytest.warns(UserWarning):
+        found = _symbols(_config(tmp_path, {"spread.py": _SPREAD}))
+    assert not any(function == "by_runs" for function, _ in found), found
+    assert ("by_family", "unknown-predicate {}") in found, found
+
+
+_HELPED = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import KeyBatch, Sort, keyset_page, read_keyed
+
+    RESULTS = TableSchema(name="results", primary_key=("state", "geo", "id"), columns=[])
+
+    async def by_key(c, ks, cols):
+        return await read_keyed(c, "results", keys=KeyBatch(("state", "geo"), ks), columns=cols)
+
+    async def by_kind(c, cols):
+        return await keyset_page(c, "results", columns=cols, by={}, order=[Sort("kind")], limit=5)
+
+    async def unread(c, table, ks, cols):
+        return await read_keyed(c, table, keys=KeyBatch(("state",), ks), columns=cols)
+"""
+
+
+def test_a_keyed_helper_is_judged_by_the_statement_it_sends(tmp_path: Path) -> None:
+    """Flips if a keyed helper call naming a key prefix is named, one ordering by no key passes, or one whose table
+    the walk cannot read passes rather than being unknown."""
+    found = _symbols(_config(tmp_path, {"helped.py": _HELPED}))
+    assert not any(function == "by_key" for function, _ in found), found
+    assert any(function == "by_kind" for function, _ in found), found
+    assert any(function == "unread" and symbol.startswith("unknown-predicate read_keyed") for function, symbol in found)
