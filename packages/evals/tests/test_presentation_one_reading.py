@@ -453,9 +453,9 @@ def test_a_judged_dimension_reads_one_name_on_the_page_and_in_the_print(rungs: d
     for dimension in ("answer.grounded", "answer.answers", "answer.safe"):
         named = judged_heading(dimension)
         assert named == f"{dimension.replace('.', ' ')} (judged)"
-        assert judged_label(dimension) == named[:1].upper() + named[1:]
+        assert judged_label(named) == named[:1].upper() + named[1:]
         assert (
-            f"| {judged_label(dimension)} |" in surfaces["aspect.md"]
+            f"| {judged_label(named)} |" in surfaces["aspect.md"]
             and f"  {named}, scored pass/fail: 100%, 40 of 40 trials" in surfaces["print"]
         )
         assert dimension not in surfaces["print"]
@@ -473,7 +473,7 @@ def test_kairo_s_judged_dimension_reads_one_name_in_its_contrasts_and_floors() -
             elif isinstance(block, TableBlock):
                 said += [column.header for column in block.columns]
                 said += [row[key].text for row in block.rows for key in ("reading", "rate", "guardrail") if key in row]
-    assert any("Persona holds character (judged)" in text for text in said)
+    assert any("persona holds character (judged)" in text for text in said)
     assert not [text for text in said if "persona.holds_character" in _CODE.sub("", text)]
     assert "| the pass rate |" not in campaign_report_markdown(page)
 

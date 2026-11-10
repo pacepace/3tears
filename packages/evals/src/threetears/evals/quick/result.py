@@ -99,7 +99,7 @@ from threetears.evals.analysis.report.build import (
 )
 from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.verdict import VerdictLine
-from threetears.evals.analysis.report.words import campaign_arm_tags, judged_heading
+from threetears.evals.analysis.report.words import campaign_arm_tags, judged_heading, stratum_name
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, predicted_label
 from threetears.evals.quick.judged import Judge
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
@@ -775,17 +775,28 @@ class Result:
         :ptype reading: str | None
         :return: One row per arm and reading, keyed ``arm`` (the arm, by its key in :attr:`arms`), ``label`` (the arm as
             the report names it), ``reading``, ``all`` (the figure over every case) and ``strata`` (the figure
-            over each stratum's cases alone, by stratum name, the cases declaring none under ``"(no stratum)"``;
-            a stratum the arm has no case in is absent); empty when no case declares a stratum.
+            over each stratum's cases alone, by stratum: its declared name, else its id (``edge_case``), as the
+            case declared it, never the name the page prints (``edge case``); the cases declaring none under
+            ``"(no stratum)"``; a stratum the arm has no case in is absent); empty when no case declares a stratum.
         :rtype: list[dict[str, Any]]
         :raises ValueError: ``arm`` names no arm.
         """
         if arm is not None:
             _refuse_an_unknown_arm(self.arms, arm)
         tables = [block for block in self.report.blocks if isinstance(block, TableBlock) and block.name == "strata"]
+        # Each stratum by its key here (its declared name, else its id), from the name its column prints.
+        bundle = self.report.bundle
+        keyed = {
+            stratum_name(held.stratum, bundle.stratum_names.get(held.stratum)): bundle.stratum_names.get(
+                held.stratum, held.stratum
+            )
+            for cell in bundle.cell_measures
+            for held in cell.strata
+            if held.stratum is not None
+        }
         rows: list[dict[str, Any]] = []
         for table in tables:
-            headers = {column.key: column.header for column in table.columns}
+            headers = {column.key: keyed.get(column.header, column.header) for column in table.columns}
             for row in table.values():
                 label = str(row["arm"]).removeprefix("▸ ")
                 key = self.labelled_arms.get(label)

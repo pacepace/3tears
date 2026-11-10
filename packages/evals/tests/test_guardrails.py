@@ -258,7 +258,7 @@ class TestTheCodeOnlyReportShowsTheGuardrails:
         (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "guardrails"]
         assert table.section == "contrasts"
         (row,) = table.values()
-        assert row["guardrail"] == "Boundary correct (judged)"
+        assert row["guardrail"] == "boundary correct (judged)"
         assert str(row["decision"]).startswith("breached")
         assert any(
             b.section == "contrasts" and b.source == "guardrails"
@@ -310,5 +310,5 @@ class TestReadingsNoQuestionAskedAboutAreExploratory:
         (listed,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "unasked"]
         named = [str(row["reading"]) for row in listed.values()]
         assert listed.section == "not_tested" and listed.title == "Unasked readings"
-        assert "Task correct (judged)" in named
+        assert "task correct (judged)" in named
         assert not any(BOUNDARY in name for name in named)

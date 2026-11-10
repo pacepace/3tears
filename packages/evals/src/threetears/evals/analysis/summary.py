@@ -115,7 +115,7 @@ from threetears.evals.analysis.bundle.schema import TrialState
 from threetears.evals.analysis.bundle.trials import read_trial
 from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals.kernel.text_block import one_line
-from threetears.evals.analysis.report.words import judged_heading
+from threetears.evals.analysis.report.words import judged_heading, stratum_name
 from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NO_STRATUM, NOT_SHOWN_TO_MEASURE, TOO_FEW_CASES
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.remedies import FIND_RUN
@@ -1066,7 +1066,9 @@ class EvalSummary(BaseModel):
         """Each stratum's line, then its measures' lines indented beneath it."""
         lines: list[str] = []
         for stratum in self.strata:
-            said = f"{NO_STRATUM if stratum.stratum is None else _shown(stratum.stratum)}: {stratum.n_cases} case(s), "
+            # The stratum by the name every surface prints for it (``edge case``); :attr:`strata` keeps its id.
+            named = NO_STRATUM if stratum.stratum is None else _shown(stratum_name(stratum.stratum))
+            said = f"{named}: {stratum.n_cases} case(s), "
             said += f"{stratum.n_results} result(s)"
             if stratum.too_few:
                 said += f" — {TOO_FEW_CASES} (fewer than {STRATUM_MIN_CASES})"

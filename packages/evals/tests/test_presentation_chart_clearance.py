@@ -29,7 +29,7 @@ import pytest
 
 from threetears.evals.analysis import report_html
 from threetears.evals.analysis.report.chart_svg import DRAWERS
-from threetears.evals.analysis.report.charts import DotIntervalChart, ForestChart
+from threetears.evals.analysis.report.charts import BarsChart, DotIntervalChart, ForestChart, ScatterChart
 from threetears.evals.analysis.report.html_parts import table_html
 from threetears.evals.analysis.report.model import TableBlock, TableCell, TableColumn
 
@@ -145,7 +145,7 @@ def _scorecard() -> TableBlock:
 
 def _page(*, static: bool) -> str:
     charts = [("forest", "Margin", MARGIN), ("forest", "Grouped", GROUPED), ("dot_interval", "Cost", COST)]
-    charts.append(("bars", "Dots", DOTS))
+    charts += [("bars", "Dots", DOTS), ("bars", "Noted", NOTED_BARS), ("scatter_frontier", "Scatter", SCATTER)]
     blocks: list[Any] = [
         {"kind": "chart", "section": "memo", "chart": kind, "title": title, "data": data}
         for kind, title, data in charts
@@ -181,6 +181,80 @@ def test_the_zero_line_stops_short_of_each_group_s_heading_it_would_cross(width:
     assert len(heads) == 3 and (reaching or width == 960), heads
     for baseline in reaching:
         assert not [seg for seg in axis if float(seg[1]) < baseline and float(seg[2]) > baseline - 9], (baseline, axis)
+
+
+#: A scatter whose one point sits just left of both reference lines, its long label running across them wherever it
+#: is placed: right of the mark it crosses the x reference, and it sits on the y reference's row.
+SCATTER: dict[str, Any] = {
+    "points": [{"x": 0.4, "y": 5, "label": "a point whose label runs on past both its reference lines"}],
+    "x_domain": [0, 10],
+    "y_domain": [0, 10],
+    "x_fmt": "num",
+    "y_fmt": "num",
+    "x_reference": {"value": 1, "kind": "budget"},
+    "reference": {"value": 5, "kind": "floor"},
+}
+
+#: Bars whose note, printed past the bar's end, runs across the floor drawn just past it.
+NOTED_BARS: dict[str, Any] = {
+    "rows": [{"label": "a", "value": 10, "note": "10 points, a note that runs on"}],
+    "domain": [0, 30],
+    "fmt": "num",
+    "reference": {"value": 12, "label": "floor", "kind": "floor"},
+}
+
+#: A 12 px label's box as the drawing estimates it, in the face a host's frame falls back to.
+_WIDTH_PER_CHAR = 12 * 0.55 * 1.08
+
+
+def _floor_segments(drawn: str) -> list[tuple[float, float, float, float]]:
+    return [
+        (float(a), float(b), float(c), float(d))
+        for a, b, c, d in re.findall(
+            r'<line x1="([-\d.]+)" y1="([-\d.]+)" x2="([-\d.]+)" y2="([-\d.]+)" class="floor"', drawn
+        )
+    ]
+
+
+def _crosses(segment: tuple[float, float, float, float], box: tuple[float, float, float, float]) -> bool:
+    x1, y1, x2, y2 = segment
+    left, top, right, bottom = box
+    return min(x1, x2) <= right and max(x1, x2) >= left and min(y1, y2) <= bottom and max(y1, y2) >= top
+
+
+def _box(x: float, y: float, text: str, anchor: str) -> tuple[float, float, float, float]:
+    width = len(text) * _WIDTH_PER_CHAR
+    left = x - width if anchor == "end" else x - width / 2 if anchor == "middle" else x
+    return (left, y - 9, left + width, y + 2)
+
+
+@pytest.mark.parametrize("width", [640, 960])
+def test_a_scatter_s_reference_lines_stop_short_of_a_point_s_label(width: int) -> None:
+    """The point's label is placed across both reference lines (a crossing the placement allows over colliding with a
+    label), and neither line runs through it: each is drawn in pieces around it, where at 5757aa3ae each was one line
+    from edge to edge."""
+    drawn, _ = DRAWERS["scatter_frontier"](ScatterChart.model_validate(SCATTER), width)
+    (label,) = re.findall(r'<text x="([\d.]+)" y="([\d.]+)" text-anchor="(\w+)" class="lbl">([^<]+)<', drawn)
+    box = _box(float(label[0]), float(label[1]), label[3], label[2])
+    lines = _floor_segments(drawn)
+    assert lines, "the control: each reference line is drawn"
+    whole = [(min(s[0] for s in lines), min(s[1] for s in lines), max(s[2] for s in lines), max(s[3] for s in lines))]
+    assert _crosses(whole[0], box), "the control: the label is placed across a reference line's run"
+    assert not [segment for segment in lines if _crosses(segment, box)], (box, lines)
+
+
+@pytest.mark.parametrize("width", [360, 640, 960])
+def test_a_bar_s_reference_line_stops_short_of_the_bar_s_note(width: int) -> None:
+    drawn, _ = DRAWERS["bars"](BarsChart.model_validate(NOTED_BARS), width)
+    notes = re.findall(
+        r'<text x="([\d.]+)" y="([\d.]+)" text-anchor="(\w+)" class="tick">(?:<tspan[^>]*>)?([^<]+)<', drawn
+    )
+    (note,) = [found for found in notes if found[3].startswith("10 points")]
+    box = _box(float(note[0]), float(note[1]), note[3], note[2])
+    lines = _floor_segments(drawn)
+    rx = lines[0][0]
+    assert box[0] < rx < box[2], "the control: the note runs across the floor's x"
+    assert lines and not [segment for segment in lines if _crosses(segment, box)], (box, lines)
 
 
 # =============================================================================
@@ -243,6 +317,24 @@ def test_the_render_check_passes_the_re_shoot_s_charts_and_scorecard(tmp_path: P
     page.write_text(_page(static=static), encoding="utf-8")
     checked, runs = render_checked(page, tmp_path / "shots")
     assert checked.returncode == 0 and len(runs) == 8, checked.stdout + checked.stderr
+
+
+@pytest.mark.integration
+def test_the_kit_s_reference_lines_stop_short_of_a_point_s_label_and_a_bar_s_note(tmp_path: Path) -> None:
+    """The kit's own drawing (``kScatter``, ``barsH``) of the scatter and the noted bars, at every render: no label an
+    axis or a reference line crosses, where at 5757aa3ae the scatter's lines ran through its point's label and the
+    floor through the bar's note."""
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+    blocks = [
+        {"kind": "chart", "section": "memo", "chart": "scatter_frontier", "title": "Scatter", "data": SCATTER},
+        {"kind": "chart", "section": "memo", "chart": "bars", "title": "Noted", "data": NOTED_BARS},
+    ]
+    page = tmp_path / "lines.html"
+    page.write_text(report_html(report_of(blocks)), encoding="utf-8")
+    checked, runs = render_checked(page, tmp_path / "shots")
+    assert len(runs) == 8 and "crossed:" not in checked.stdout, checked.stdout
 
 
 @pytest.mark.integration

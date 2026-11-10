@@ -19,6 +19,7 @@ import re
 import pytest
 
 from threetears.evals.analysis import build_code_only_report
+from threetears.evals.analysis.report.md_parts import table_lines
 from threetears.evals.analysis.report.model import Report, TableBlock
 from threetears.evals.analysis.report.parts.charting import measure_words
 from threetears.evals.analysis.report.words import judged_heading, judged_label
@@ -32,10 +33,14 @@ from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 _MARK = re.compile(r" \(judged(?:, [^)]+)?\)$")
 
 
-def _judged_rows(report: Report, table: str) -> list[str]:
-    """Every judged row's label on the page's table of that name."""
+def _judged_rows(report: Report, table: str) -> list[tuple[str, str]]:
+    """Every judged row on the page's table of that name: the label its Markdown prints in the row's reading column,
+    and its heading, the cell's value a program reads (and looks a row up by)."""
     (block,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == table]
-    return [str(row["reading"].value) for row in block.rows if _MARK.search(str(row["reading"].value))]
+    at = [column.key for column in block.columns].index("reading")
+    printed = [line.split(" | ")[at].strip("| ") for line in table_lines(block)[2:]]
+    values = [str(row["reading"].value) for row in block.rows]
+    return [(said, value) for said, value in zip(printed, values, strict=True) if _MARK.search(value)]
 
 
 def _pages(name: str) -> tuple[list[Report], dict[str, str]]:
@@ -63,12 +68,16 @@ def test_a_judged_row_reads_its_measure_s_display_name(campaign: str, table: str
     pages, names = _pages(campaign)
     rows = [row for page in pages for row in _judged_rows(page, table)]
     assert rows, f"{campaign}'s {table} table holds a judged row"
-    for row in rows:
-        named = _MARK.sub("", row)
-        assert named in names.values(), (row, names)
-        assert named[:1].isupper(), row
+    for printed, value in rows:
+        named = _MARK.sub("", printed)
+        assert named in names.values(), (printed, names)
+        assert named[:1].isupper(), printed
+        # The value keeps the heading every surface heads the reading by, so a lookup by it finds the row.
+        assert _MARK.sub("", value) in names, (value, names)
+        assert printed == judged_label(value), (printed, value)
 
 
 def test_a_judged_label_is_its_heading_starting_with_a_capital() -> None:
-    assert judged_label("persona.holds_character") == "Persona holds character (judged)"
-    assert judged_heading("persona.holds_character") == "persona holds character (judged)"
+    assert judged_heading("reply.stays_polite") == "reply stays polite (judged)"
+    assert judged_label(judged_heading("reply.stays_polite")) == "Reply stays polite (judged)"
+    assert judged_label("outcome (judged, 1–5)") == "Outcome (judged, 1–5)"

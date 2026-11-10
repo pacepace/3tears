@@ -22,6 +22,7 @@ from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.kit_colours import ink_on
 from threetears.evals.analysis.report.svg import GLYPH_STYLE, interval_glyph_svg
+from threetears.evals.analysis.report.words import table_label
 from threetears.evals.analysis.quantities import PERCENT, is_money
 from threetears.evals.analysis.style import CHECK_LINK_TITLE, GLOSSARY
 from threetears.evals.schema.hashing import round_floats
@@ -299,7 +300,8 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
             cell = row[column.key]
             glyphed = classes[column.key] == ' class="glyph"'
             # A glyph cell sets its reading after its glyph, so its figure alone is the cell's text here.
-            text = _cell_code(cell.figure if glyphed else cell.text)
+            # A cell's words as a table prints them (a judged heading as a label), its value left as it was.
+            text = _cell_code(cell.figure if glyphed else table_label(cell.text))
             if cell.ref is not None:
                 # A finding's figure, linked to a cell printing the same figure, or to the closed fold holding it. A
                 # link never holds a fold that opens: a long expression's fold sits beside the link, not inside it.
@@ -780,8 +782,7 @@ def _held_figures(text: str, css: str) -> tuple[str, str]:
     ``iv`` span, which never breaks, a unit word after it left free to take the next line (``-0.007 to +0.002`` /
     ``notices``); in a column of numbers, a figure with its count after it classed ``split``, the count in an ``aside``
     span held whole, so the figure may set its count on the next line rather than hold the column at its full width
-    and squeeze an interval beside it onto two lines (Discodon's C5b re-shoot: "0 to / 43%" beside a Value column
-    with room)."""
+    and squeeze an interval beside it onto two lines ("0 to" above "43%" beside a Value column with room)."""
     if css == ' class="interval"':
         return re.sub(_INTERVAL_SPAN, r'<span class="iv">\1</span>', text, count=1), css
     if css.startswith(' class="num') and (counted := _COUNTED_FIGURE.fullmatch(text)) is not None:

@@ -178,6 +178,26 @@ writing its own report input declares a fraction with `unit: "share"`. Nothing e
 renders in the new forms, one citing `weakest.interval` with the new words, and one citing a gap or `weakest.margin`
 with no `+`, as before.
 
+### evals: a table's labels read in one register, a stratum by one name, and a chart's labels clear its lines (number forms C5c)
+
+**Changed:**
+- A judged dimension's row on a table (contrasts, statistics, by stratum, all cases, guardrails, bars, unasked
+  readings) prints starting with a capital, as a measure's does: `Outcome (judged, 1–5)`, where it read
+  `outcome (judged, 1–5)`. Only the printed label moves: the cell's value, `Result.contrasts()` and its `reading`
+  lookup, and every sentence keep `outcome (judged)`.
+- A stratum with no declared name prints as its id humanized (`edge case` for `edge_case`) in a By stratum header,
+  a case's Stratum cell, the thin-stratum note and a summary's stratum lines, where it printed the id.
+  `Result.strata()` still keys each stratum by its declared name, else its id.
+- A chart's vertical lines (zero line, reference line, axis, grid) stop short of its head, a reference label, a
+  group's heading and a bar's note, and a scatter's reference lines stop short of a point's label, in the kit and on
+  the static page; a group heading wider than a phone's chart wraps. A dot strip's interval is drawn in its arm's
+  colour at full strength (3:1, where it was 1.6:1). A table holds an interval's ends on one line.
+
+**Hosts:** a host matching a rendered page's judged row or stratum header updates the match once; a host keying on
+`Result.strata()`, `Result.contrasts()` or a table's cell values changes nothing. The kit script a default-mode page
+inlines moved again, so a host allowing it by a CSP hash recomputes the hash. `scripts/check.py` now fails a label a
+line crosses, a chart's line mark under 3:1 and an interval broken across lines.
+
 ### evals: one module decides every figure's form (number forms C1 to C3)
 
 **Changed:**

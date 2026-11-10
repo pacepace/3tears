@@ -42,6 +42,12 @@ PROBE = r"""async () => {
   });
   // a chart's label sits clear of every axis, zero line and reference line drawn across the chart (a kit's chart: one
   // a page's own code draws, with no data-kind, is the page's)
+  // a chart named by its kind and the title or caption of the figure holding it, so a failure says which chart
+  const chartName = (e, si) => {
+    const fig = e.closest('figure'), kind = e.closest('[data-kind]')?.dataset.kind || 'chart';
+    const title = (fig?.querySelector('figcaption, .cap, h3, h4')?.textContent || fig?.id || '').trim().slice(0, 40);
+    return `chart${si === undefined ? '' : ` ${si}`} (${kind}${title ? ` "${title}"` : ''})`;
+  };
   const crossed = [];
   document.querySelectorAll('.chart[data-kind] svg, .chart-drawn svg').forEach((svg, si) => {
     const boxes = [...svg.querySelectorAll('text')].map(t => ({t: t.textContent, r: t.getBoundingClientRect()})).filter(b => b.r.width > 0 && b.t.trim());
@@ -51,7 +57,7 @@ PROBE = r"""async () => {
       for (const b of boxes) {
         const a = b.r;
         if (r.left < a.right - pad && r.right > a.left + pad && r.top < a.bottom - pad && r.bottom > a.top + pad)
-          crossed.push(`chart ${si}: a ${line.getAttribute('class')} line crosses "${b.t.slice(0,32)}"`);
+          crossed.push(`${chartName(svg, si)}: a ${line.getAttribute('class')} line crosses "${b.t.slice(0,32)}"`);
       }
     }
   });
@@ -200,7 +206,7 @@ PROBE = r"""async () => {
     const s = getComputedStyle(m), ink = rgba(s.stroke);
     if (!ink || parseFloat(s.strokeWidth) < 2) continue;
     const g = ground(m.ownerSVGElement), r = ratio(over([ink[0], ink[1], ink[2], ink[3] * parseFloat(s.strokeOpacity) * opacity(m)], g), g);
-    if (r < 3) faint.push(`a mark ${r.toFixed(2)}:1`);
+    if (r < 3) faint.push(`a mark in ${chartName(m.ownerSVGElement)} ${r.toFixed(2)}:1`);
   }
   for (const a of document.querySelectorAll('svg .axis')) {
     if (!drawn(a.ownerSVGElement)) continue;
