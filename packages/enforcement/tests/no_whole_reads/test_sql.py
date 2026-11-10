@@ -412,3 +412,11 @@ def test_a_page_through_an_index_orders_by_its_next_column(order: str, keyed: bo
     when it orders by another (sorting the tenant's every row)."""
     sql = f"SELECT * FROM grants WHERE customer_id = $1 AND state > $2 ORDER BY {order} LIMIT 5"
     assert (_kinds(sql, schema, _PAGED) == []) is keyed, _kinds(sql, schema, _PAGED)
+
+
+def test_a_dollar_interpolation_is_a_bind_placeholder(schema: SchemaCatalog) -> None:
+    """Flips if ``${n}`` (a bind placeholder rendered at run time) is unseen text rather than a bound value, or if a
+    bare interpolated predicate stops being unseen."""
+    assert _kinds("SELECT a FROM t WHERE k = ${n}", schema) == []
+    assert _kinds("SELECT a FROM t WHERE flag = ${n}", schema) == [("non-key-where", "t")]
+    assert _kinds("SELECT a FROM t WHERE {x}", schema) == [("unknown-predicate", "t")]
