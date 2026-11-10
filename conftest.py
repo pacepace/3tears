@@ -26,6 +26,7 @@ when langchain-core flips the default in a future release.
 
 from __future__ import annotations
 
+import sys
 import warnings
 from collections.abc import Iterator
 
@@ -55,6 +56,42 @@ warnings.filterwarnings(
 # ``tests.contain_tripwire`` fails a test whose code under test contained a programming error
 # (see its docstring); ``pytester`` lets its own test run a session with it installed.
 pytest_plugins = ["threetears.core.testing.fixtures", "tests.contain_tripwire", "pytester"]
+
+
+#: the threetears packages whose lazy attributes are already resolved in this process
+_RESOLVED_LAZY: set[str] = set()
+
+
+def _resolve_lazy_attributes() -> None:
+    """resolve every lazy attribute of each threetears package loaded so far, once a package.
+
+    A package whose ``__init__`` serves its names lazily (a module ``__getattr__``, with ``__dir__`` listing them)
+    imports a submodule on the first read of a name. ``freezegun.freeze_time`` reads every attribute of every
+    loaded module when it starts, after it has put ``FakeDatetime`` in place of ``datetime.datetime``: a lazy name
+    read then imports its module under the freeze, and a pydantic model there with a ``datetime`` field is built on
+    ``FakeDatetime`` and fails (``threetears.core.collections.epoch_change``). The failed start leaves the freeze
+    half applied, so the tests after it in the same process see a fake clock. Which test met it first depended on
+    whether anything earlier in the process had already imported the package. Resolving the names before each test,
+    as the scan would, takes the import out of the freeze.
+    """
+    for name, module in list(sys.modules.items()):
+        if name in _RESOLVED_LAZY or not name.startswith("threetears") or module is None:
+            continue
+        _RESOLVED_LAZY.add(name)
+        if "__getattr__" not in vars(module) or "__dir__" not in vars(module):
+            continue
+        for attribute in dir(module):
+            try:
+                getattr(module, attribute)
+            except ImportError, AttributeError:
+                # an optional extra not installed: freezegun's own scan skips the name the same way
+                continue
+
+
+@pytest.fixture(autouse=True)
+def _lazy_attributes_resolved_outside_any_freeze() -> None:
+    """every loaded threetears package's lazy names resolved before the test (:func:`_resolve_lazy_attributes`)."""
+    _resolve_lazy_attributes()
 
 
 @pytest.fixture(autouse=True)
