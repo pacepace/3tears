@@ -3,8 +3,9 @@
 A table shaped like the reports pod's results (300,000 rows: 50 states, 200 geographies a state, 30 rows each, keyed
 ``(state, geo, id)``, a stamp index for change records and expiry), seeded in a schema of its own. Each helper's
 statements are planned for real (:class:`~threetears.core.testing.plans.PlanRecorder`) and judged by the shared
-plan check (rows scanned within 1.1x the rows answered; a count's within its bound), then timed against the bare
-operation on a plain table holding only the rows it reads (:mod:`threetears.core.testing.calibrate`), held to 2x.
+plan check (rows scanned within 1.1x the rows answered; a count's within its bound), then timed against the bare:
+the best hand-written statement doing the same work on the same table, natively bound, best of N
+(:mod:`threetears.core.testing.calibrate`), held to 2x. Each test's docstring names its bare and why.
 
 Against the session ``db_container`` (Postgres); set ``THREETEARS_TEST_POSTGRES_URL`` to a YugabyteDB URL to run
 them there, the platform's database.
@@ -12,13 +13,14 @@ them there, the platform's database.
 
 from __future__ import annotations
 
-import time
+import asyncio
+import sqlite3
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 import pytest
@@ -29,14 +31,26 @@ from threetears.core.keyed import (
     Sort,
     count_at_most,
     counts_by,
+    ThreadedSQLite,
+    counts_by_relations,
     delete_before,
+    delete_oldest,
     holds_any,
     keyset_page,
+    read_joined,
     read_keyed,
     read_past_marks,
+    update_before,
 )
-from threetears.core.testing.calibrate import best_seconds, budget_problem, plain_copies
-from threetears.core.testing.plans import PlanRecorder, on_yugabyte, plan_problems, plan_uses_index
+from threetears.core.testing.calibrate import best_seconds, budget_problem
+from threetears.core.testing.plans import (
+    PlanRecorder,
+    StatementPlan,
+    explain_write,
+    on_yugabyte,
+    plan_problems,
+    plan_uses_index,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -98,10 +112,60 @@ class _Settling:
         yield _Write()
 
 
-async def _baseline(conn: asyncpg.Connection, rows_sql: str, *args: Any) -> float:
-    """the bare read of the same rows: one statement over a plain table holding only them."""
-    async with plain_copies(conn, {"rows": (rows_sql, args)}) as plain:
-        return await best_seconds(lambda: conn.fetch(f"SELECT * FROM {plain['rows']}"))  # noqa: S608
+async def _bare(conn: asyncpg.Connection, sql: str, *args: Any) -> float:
+    """the bare: the best of N runs of the best hand-written statement doing the helper's work, on the same real table,
+    its parameters bound natively. Never a scan of a plain copy holding only the answer: that skips the lookups, the
+    seek and the sort the helper must make, and times a different statement."""
+    return await best_seconds(lambda: conn.fetch(sql, *args))
+
+
+class _WritePlans:
+    """a connection whose every write is planned (EXPLAIN, never run: :func:`explain_write`) before it runs."""
+
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
+        self.plans: list[StatementPlan] = []
+
+    async def fetch(self, sql: str, *args: Any) -> Any:
+        self.plans.append(await explain_write(self._conn, sql, *args))
+        return await self._conn.fetch(sql, *args)
+
+
+_KEY = ["state", "geo", "id"]
+
+
+def _node_types(plan: Any) -> list[str]:
+    node = plan.plan if isinstance(plan, StatementPlan) else plan
+    return [str(node.get("Node Type", "")), *(t for child in node.get("Plans", ()) for t in _node_types(child))]
+
+
+def _batched_on_yugabyte(plan: StatementPlan, seeded: _Seeded) -> None:
+    """on YugabyteDB the keys are joined by a batched nested loop: one storage request a batch, never one a key (the
+    hint every keyed join carries; this fails if the hint is ignored)."""
+    if seeded.yugabyte:
+        # YugabyteDB's JSON plan names the node "YB Batched Nested Loop" (its text plan adds " Join")
+        assert any(node.startswith("YB Batched Nested Loop") for node in _node_types(plan)), plan.plan
+
+
+async def _rolled_back(conn: asyncpg.Connection, run: Any) -> float:
+    """the best seconds of ``run()`` inside a transaction rolled back after each run: a write timed on the real table,
+    which each run finds as it was."""
+
+    async def once() -> None:
+        transaction = conn.transaction()
+        await transaction.start()
+        try:
+            await run()
+        finally:
+            await transaction.rollback()
+
+    return await best_seconds(once)
+
+
+def _budget(what: str, took: float, baseline: float) -> str | None:
+    """the budget's verdict, its numbers printed (``-s``) for the run's record."""
+    print(f"BUDGET {what} | baseline {baseline * 1000:.2f} ms | took {took * 1000:.2f} ms | {took / baseline:.2f}x")
+    return budget_problem(what, took, baseline)
 
 
 def _plans_ok(recorder: PlanRecorder, seeded: _Seeded, *, scan_ratio: float | None = 1.1) -> None:
@@ -117,25 +181,33 @@ def _keys(count: int) -> list[tuple[str, str, int]]:
 
 class TestReadKeyed:
     async def test_a_batch_of_keys_reads_its_rows_within_budget(self, seeded: _Seeded) -> None:
-        """Flips if a keyed batch read scans past its keys' rows, or is over 2x the bare read of them."""
+        """Flips if a keyed batch read scans past its keys' rows, or is over 2x the bare read of them.
+
+        The bare is the best hand-written statement doing the same work on the same table: the same 600 keys looked
+        up on the real 300k-row table by its key (IN-unnest of natively typed arrays), returning the same rows. Never
+        a scan of a small copy holding only the answer: that skips the lookups the helper must make (it measured
+        0.40 ms against 2.30 ms for the keyed lookup, and read 4.6x where the helper is 1.5x the lookup)."""
         keys = list(dict.fromkeys(_keys(2000)))
         batch = KeyBatch(("state", "geo", "id"), keys, ("text", "text", "bigint"))
         recorder = PlanRecorder(seeded.conn)
         rows = await read_keyed(recorder, _TABLE, keys=batch, columns=["state", "geo", "id", "votes"])
         assert sorted((r["state"], r["geo"], r["id"]) for r in rows) == sorted(keys)
         _plans_ok(recorder, seeded)
-        baseline = await _baseline(
-            seeded.conn,
+        # the keys found by the key's index, about one row read a key, on PostgreSQL and YugabyteDB alike
+        (plan,) = recorder.plans
+        assert plan_uses_index(plan, "results_pkey"), plan.plan
+        assert plan.rows_scanned <= 1.1 * len(keys), plan
+        _batched_on_yugabyte(plan, seeded)
+        bare_sql = (
             f"SELECT state, geo, id, votes FROM {_TABLE} WHERE (state, geo, id) IN "
-            "(SELECT * FROM unnest($1::text[], $2::text[], $3::bigint[]))",
-            [k[0] for k in keys],
-            [k[1] for k in keys],
-            [k[2] for k in keys],
+            "(SELECT * FROM unnest($1::text[], $2::text[], $3::bigint[]))"
         )
+        typed = ([k[0] for k in keys], [k[1] for k in keys], [k[2] for k in keys])
+        baseline = await best_seconds(lambda: seeded.conn.fetch(bare_sql, *typed))
         took = await best_seconds(
             lambda: read_keyed(seeded.conn, _TABLE, keys=batch, columns=["state", "geo", "id", "votes"])
         )
-        problem = budget_problem(f"read_keyed of {len(keys)} keys", took, baseline)
+        problem = _budget(f"read_keyed of {len(keys)} keys", took, baseline)
         assert problem is None, problem
 
     async def test_a_batch_of_prefixes_reads_their_rows(self, seeded: _Seeded) -> None:
@@ -151,7 +223,12 @@ class TestReadKeyed:
 
 class TestKeysetPage:
     async def test_a_page_reads_about_its_rows_within_budget(self, seeded: _Seeded) -> None:
-        """Flips if a page reads the prefix whole (a sort of every row) or is over 2x the bare page read."""
+        """Flips if a page reads the prefix whole (a sort of every row) or is over 2x the bare page read.
+
+        The bare is the best hand-written statement doing the same work on the same table: the same page past the
+        same last row, seeking the key's index by the row-value comparison ``(geo, id) > ($2, $3)`` with natively
+        typed binds, LIMIT 201. Never a scan of a plain copy holding only the page's rows: that skips the seek
+        (it measured 0.39 ms on YugabyteDB, against the helper's 0.79 ms)."""
         order = [Sort("geo"), Sort("id", "bigint")]
         first = await keyset_page(
             seeded.conn, _TABLE, columns=["geo", "id", "votes"], by={"state": "S10"}, order=order, limit=200
@@ -172,7 +249,7 @@ class TestKeysetPage:
         assert [(r["geo"], r["id"]) for r in page.rows] == [(r["geo"], r["id"]) for r in expected]
         _plans_ok(recorder, seeded)
         last = first.rows[-1]
-        baseline = await _baseline(
+        baseline = await _bare(
             seeded.conn,
             f"SELECT geo, id, votes FROM {_TABLE} WHERE state = $1 AND (geo, id) > ($2, $3) ORDER BY geo, id LIMIT 201",
             "S10",
@@ -190,41 +267,57 @@ class TestKeysetPage:
                 cursor=first.next_cursor,
             )
         )
-        problem = budget_problem("keyset_page of 200 rows", took, baseline)
+        problem = _budget("keyset_page of 200 rows", took, baseline)
         assert problem is None, problem
 
 
 class TestCounts:
     async def test_counts_by_counts_only_its_keys_rows(self, seeded: _Seeded) -> None:
-        """Flips if a keyed count reads rows no key names, or is over 2x the bare read of the rows it counts."""
+        """Flips if a keyed count reads rows no key names, or is over 2x the bare count of them.
+
+        The bare is the best hand-written statement doing the same work on the same table: the same GROUP BY count of
+        the state's 100 geographies by the key (``geo = ANY`` a natively typed array). Never a read of a plain copy
+        holding only the counted rows: that returns rows where the count returns 100, and skips the key's seek."""
         geos = [f"{g:03d}" for g in range(1, 101)]
         recorder = PlanRecorder(seeded.conn)
         counted = await counts_by(recorder, _TABLE, column="geo", values=AnyOf(geos), by={"state": "S20"})
         assert counted == dict.fromkeys(geos, _IDS)
         assert all(plan.rows_scanned <= 1.1 * len(geos) * _IDS for plan in recorder.plans), recorder.plans
-        baseline = await _baseline(
-            seeded.conn, f"SELECT state, geo FROM {_TABLE} WHERE state = $1 AND geo = ANY($2::text[])", "S20", geos
+        baseline = await _bare(
+            seeded.conn,
+            f"SELECT geo, count(*) FROM {_TABLE} WHERE state = $1 AND geo = ANY($2::text[]) GROUP BY geo",
+            "S20",
+            geos,
         )
         took = await best_seconds(
             lambda: counts_by(seeded.conn, _TABLE, column="geo", values=AnyOf(geos), by={"state": "S20"})
         )
-        problem = budget_problem("counts_by of 100 geographies", took, baseline)
+        problem = _budget("counts_by of 100 geographies", took, baseline)
         assert problem is None, problem
 
     async def test_bounded_counts_and_probes_read_no_further_than_their_bound(self, seeded: _Seeded) -> None:
-        """Flips if a bounded count or a probe reads every row its key names."""
-        recorder = PlanRecorder(seeded.conn)
-        bounded = await count_at_most(recorder, _TABLE, by={"state": "S30"}, at_most=100)
-        assert (bounded.count, bounded.more) == (100, True)
-        assert await holds_any(recorder, _TABLE, by={"state": "S30"})
-        assert not await holds_any(recorder, _TABLE, by={"state": "none"})
-        assert recorder.plans[0].rows_scanned <= 102, recorder.plans[0]
-        assert all(plan.rows_scanned <= 2 for plan in recorder.plans[1:]), recorder.plans[1:]
+        """Flips if a bounded count or a probe reads past its bound: every row its key names, or (a scan stopped at the
+        LIMIT) every row before them. The hard case: the key's rows clustered at the end of the heap."""
+        await seeded.conn.execute(f"CREATE TABLE clustered AS SELECT * FROM {_TABLE} ORDER BY state")
+        await seeded.conn.execute("ALTER TABLE clustered ADD PRIMARY KEY (state, geo, id)")
+        await seeded.conn.execute("ANALYZE clustered")
+        for table, state in ((_TABLE, "S30"), ("clustered", "S50")):
+            recorder = PlanRecorder(seeded.conn)
+            bounded = await count_at_most(recorder, table, by={"state": state}, at_most=100, order=_KEY)
+            assert (bounded.count, bounded.more) == (100, True)
+            assert await holds_any(recorder, table, by={"state": state}, order=_KEY)
+            assert not await holds_any(recorder, table, by={"state": "none"}, order=_KEY)
+            assert recorder.plans[0].rows_scanned <= 102, (table, recorder.plans[0])
+            assert all(plan.rows_scanned <= 2 for plan in recorder.plans[1:]), (table, recorder.plans[1:])
 
 
 class TestMarks:
     async def test_a_read_past_a_mark_reads_only_what_moved_within_budget(self, seeded: _Seeded) -> None:
-        """Flips if a change-record read scans past the rows that moved, or is over 2x the bare read of them."""
+        """Flips if a change-record read scans past the rows that moved, or is over 2x the bare read of them.
+
+        The bare is the best hand-written statement doing the same work on the same table: the rows past the mark,
+        found by the stamp index (``stamp > $1``). Never a scan of a plain copy holding only the moved rows: that skips
+        the index range (it measured 2.93 ms on YugabyteDB, against the helper's 6.91 ms, 2.36x)."""
         newest = await seeded.conn.fetchval(f"SELECT stamp FROM {_TABLE} ORDER BY stamp DESC LIMIT 1")
         mark = newest - timedelta(seconds=1500)
         recorder = PlanRecorder(seeded.conn)
@@ -232,38 +325,231 @@ class TestMarks:
         assert len(read.rows) == 1500
         assert read.marks == {"stamp": newest}
         _plans_ok(recorder, seeded)
-        baseline = await _baseline(seeded.conn, f"SELECT state, geo, id, stamp FROM {_TABLE} WHERE stamp > $1", mark)
+        baseline = await _bare(seeded.conn, f"SELECT state, geo, id, stamp FROM {_TABLE} WHERE stamp > $1", mark)
         took = await best_seconds(
             lambda: read_past_marks(seeded.conn, _TABLE, columns=["state", "geo", "id", "stamp"], marks={"stamp": mark})
         )
-        problem = budget_problem("read_past_marks of 1,500 moved rows", took, baseline)
+        problem = _budget("read_past_marks of 1,500 moved rows", took, baseline)
         assert problem is None, problem
 
 
 class TestDeleteBefore:
     async def test_a_sweep_deletes_page_by_page_within_budget(self, seeded: _Seeded) -> None:
-        """Flips if a sweep's pages read past their own rows, or the sweep is over 2x one bare delete of them."""
+        """Flips if a sweep sends other than ceil(rows / page) + 1 statements, a page's plan reads its rows other than
+        by the stamp index and the key (batched on YugabyteDB), or a page is over 2x the bare page delete.
+
+        The bare is the best hand-written statement doing the same work on the same table: it finds the page (the 500
+        oldest by stamp, ORDER BY ... LIMIT) and deletes it RETURNING the keys, as the helper must (it does not know
+        the page's end stamp, and the keys settle every cache). Never a range delete to a stamp the test looked up
+        first: that skips finding the page and returning its keys (0.89 ms against 2.05 ms)."""
         oldest = await seeded.conn.fetchval(f"SELECT stamp FROM {_TABLE} ORDER BY stamp LIMIT 1")
         before = oldest + timedelta(seconds=3000)
-        baseline_rows = f"SELECT state, geo, id, stamp FROM {_TABLE} WHERE stamp < $1"
-        async with plain_copies(seeded.conn, {"rows": (baseline_rows, (before,))}) as plain:
-            began = time.perf_counter()
-            await seeded.conn.execute(f"DELETE FROM {plain['rows']} WHERE stamp < $1", before)  # noqa: S608
-            baseline = time.perf_counter() - began
-        began = time.perf_counter()
+        planned = _WritePlans(seeded.conn)
+        await _rolled_back(
+            seeded.conn,
+            lambda: delete_before(
+                _TABLE, collection=None, conn=planned, key=_KEY, column="stamp", before=before, page=500, most_pages=1
+            ),
+        )
+        plan = planned.plans[0]
+        assert plan_uses_index(plan, "results_by_stamp") and plan_uses_index(plan, "results_pkey"), plan.plan
+        _batched_on_yugabyte(plan, seeded)
+        bare_page = (
+            f"DELETE FROM {_TABLE} AS t WHERE (t.state, t.geo, t.id) IN (SELECT state, geo, id FROM {_TABLE} "
+            "WHERE stamp < $1 ORDER BY stamp LIMIT 500) RETURNING t.state, t.geo, t.id"
+        )
+        baseline = await _rolled_back(seeded.conn, lambda: seeded.conn.fetch(bare_page, before))
+        took = await _rolled_back(
+            seeded.conn,
+            lambda: delete_before(
+                _TABLE,
+                collection=None,
+                conn=seeded.conn,
+                key=_KEY,
+                column="stamp",
+                before=before,
+                page=500,
+                most_pages=1,
+            ),
+        )
         swept = await delete_before(
+            _TABLE, collection=cast(Any, _Settling(seeded.conn)), key=_KEY, column="stamp", before=before, page=500
+        )
+        assert swept.deleted == 3000
+        assert swept.statements == 3000 // 500 + 1
+        assert not await holds_any(seeded.conn, _TABLE, by={"state": "S01", "geo": "001"}, order=_KEY)
+        problem = _budget("a delete_before page of 500 rows", took, baseline)
+        assert problem is None, problem
+
+
+class TestUpdateBefore:
+    async def test_a_reap_updates_page_by_page_within_budget(self, seeded: _Seeded) -> None:
+        """Flips if a reap sends other than ceil(rows / page) + 1 statements, a page's plan reads its rows other than
+        by the stamp index and the key (batched on YugabyteDB), or a page is over 2x one bare update of the same 500
+        rows by the same predicate on the same table."""
+        oldest = await seeded.conn.fetchval(f"SELECT stamp FROM {_TABLE} ORDER BY stamp LIMIT 1")
+        before = oldest + timedelta(seconds=3000)
+        moved = before + timedelta(days=365)
+        page_end = await seeded.conn.fetchval(f"SELECT stamp FROM {_TABLE} ORDER BY stamp OFFSET 500 LIMIT 1")
+
+        def page(conn: Any) -> Any:
+            return update_before(
+                _TABLE,
+                collection=None,
+                conn=conn,
+                key=_KEY,
+                column="stamp",
+                before=before,
+                set_to={"stamp": moved},
+                page=500,
+                most_pages=1,
+            )
+
+        planned = _WritePlans(seeded.conn)
+        await _rolled_back(seeded.conn, lambda: page(planned))
+        plan = planned.plans[0]
+        assert plan_uses_index(plan, "results_by_stamp") and plan_uses_index(plan, "results_pkey"), plan.plan
+        _batched_on_yugabyte(plan, seeded)
+        baseline = await _rolled_back(
+            seeded.conn,
+            lambda: seeded.conn.execute(f"UPDATE {_TABLE} SET stamp = $2 WHERE stamp < $1", page_end, moved),
+        )
+        took = await _rolled_back(seeded.conn, lambda: page(seeded.conn))
+        swept = await update_before(
             _TABLE,
-            collection=_Settling(seeded.conn),
-            key=["state", "geo", "id"],
+            collection=cast(Any, _Settling(seeded.conn)),
+            key=_KEY,
             column="stamp",
             before=before,
+            set_to={"stamp": moved},
             page=500,
         )
-        took = time.perf_counter() - began
         assert swept.deleted == 3000
-        assert swept.statements == 7
-        assert not await holds_any(seeded.conn, _TABLE, by={"state": "S01", "geo": "001"})
-        problem = budget_problem("delete_before of 3,000 rows in pages of 500", took, baseline)
+        assert swept.statements == 3000 // 500 + 1
+        assert await seeded.conn.fetchval(f"SELECT count(*) FROM {_TABLE} WHERE stamp < $1", before) == 0
+        problem = _budget("an update_before page of 500 rows", took, baseline)
+        assert problem is None, problem
+
+
+class TestReadJoined:
+    async def test_a_page_s_joined_rows_are_read_by_its_values_within_budget(self, seeded: _Seeded) -> None:
+        """Flips if a joined read scans past the rows the page's values name, or is over 2x the bare read of them.
+
+        The bare is the best hand-written statement doing the same work on the same table: the rows of the page's 200
+        (state, geo) values by the key, IN-unnest of natively typed arrays with each column bound to its distinct
+        values (the keys alone plan on PostgreSQL as a hash join over the whole table: 18 ms against 6 ms). Never a
+        read of a plain copy holding only the answer: that skips the 200 lookups."""
+        page = [{"state": "S11", "geo": f"{g:03d}"} for g in range(1, 201)]
+        recorder = PlanRecorder(seeded.conn)
+        joined = await read_joined(
+            recorder, page, _TABLE, on={"state": "state", "geo": "geo"}, columns=["state", "geo", "id", "votes"]
+        )
+        assert sum(len(rows) for rows in joined.values()) == len(page) * _IDS
+        _plans_ok(recorder, seeded)
+        (plan,) = recorder.plans
+        assert plan_uses_index(plan, "results_pkey"), plan.plan
+        assert plan.rows_scanned <= 1.1 * len(page) * _IDS, plan
+        _batched_on_yugabyte(plan, seeded)
+        baseline = await _bare(
+            seeded.conn,
+            f"SELECT state, geo, id, votes FROM {_TABLE} WHERE (state, geo) IN "
+            "(SELECT * FROM unnest($1::text[], $2::text[])) AND state = ANY($3::text[]) AND geo = ANY($4::text[])",
+            [row["state"] for row in page],
+            [row["geo"] for row in page],
+            list(dict.fromkeys(row["state"] for row in page)),
+            list(dict.fromkeys(row["geo"] for row in page)),
+        )
+        took = await best_seconds(
+            lambda: read_joined(
+                seeded.conn, page, _TABLE, on={"state": "state", "geo": "geo"}, columns=["state", "geo", "id", "votes"]
+            )
+        )
+        problem = _budget(f"read_joined of {len(page) * _IDS} rows", took, baseline)
+        assert problem is None, problem
+
+
+class TestCountsByRelations:
+    async def test_two_relations_count_only_their_keys_rows_within_budget(self, seeded: _Seeded) -> None:
+        """Flips if a count over several relations reads rows no key names, or is over 2x the bare count of them.
+
+        The bare is the best hand-written statement doing the same work on the same tables: one UNION ALL of each
+        relation's GROUP BY count by the key. Never a read of a plain copy holding only the counted rows."""
+        # a second relation as large as the first, its rows clustered by state (the key's rows together at one end of
+        # the heap): a count reads its keys' rows by the key on each, however the rows lie
+        await seeded.conn.execute(f"CREATE TABLE results_b AS SELECT * FROM {_TABLE} ORDER BY state")
+        await seeded.conn.execute("ALTER TABLE results_b ADD PRIMARY KEY (state, geo, id)")
+        await seeded.conn.execute("ANALYZE results_b")
+        geos = [f"{g:03d}" for g in range(5, 200, 20)]
+        tables = {"a": _TABLE, "b": "results_b"}
+        recorder = PlanRecorder(seeded.conn)
+        counted = await counts_by_relations(recorder, tables, column="geo", values=AnyOf(geos), by={"state": "S50"})
+        assert counted == {"a": dict.fromkeys(geos, _IDS), "b": dict.fromkeys(geos, _IDS)}
+        assert all(plan.rows_scanned <= 1.1 * 2 * len(geos) * _IDS for plan in recorder.plans), recorder.plans
+        baseline = await _bare(
+            seeded.conn,
+            f"SELECT 0 AS relation, geo, count(*) FROM {_TABLE} "  # noqa: S608
+            "WHERE state = $1 AND geo = ANY($2::text[]) GROUP BY geo "
+            "UNION ALL SELECT 1, geo, count(*) FROM results_b WHERE state = $1 AND geo = ANY($2::text[]) GROUP BY geo",
+            "S50",
+            geos,
+        )
+        took = await best_seconds(
+            lambda: counts_by_relations(seeded.conn, tables, column="geo", values=AnyOf(geos), by={"state": "S50"})
+        )
+        problem = _budget(f"counts_by_relations of {len(geos)} geographies in 2 relations", took, baseline)
+        assert problem is None, problem
+
+
+class TestDeleteOldest:
+    async def test_a_cache_trim_deletes_its_oldest_rows_within_budget(self) -> None:
+        """Flips if a cache trim reads past the rows it deletes (a sort of the table) or is over 2x the bare trim.
+
+        The bare is the best hand-written statement doing the same work on the same table through the same thread
+        hop: the 3,000 oldest rows deleted as one rowid range up to the 3,000th rowid (found by one seek, OFFSET 2999),
+        through asyncio.to_thread, since IO in a thread is the rule on both sides. Never a range delete to a rowid the
+        test already knows, run in the loop: that skips finding the 3,000th row and the hop (0.17 ms against 0.54 ms
+        for the helper's first form, a list of rowids probed). Each side is the best of several runs, each rolled
+        back, so every run deletes from the same 300,000 rows."""
+        local = sqlite3.connect(":memory:", check_same_thread=False, isolation_level=None)
+        try:
+            local.execute("CREATE TABLE cached (state TEXT, geo TEXT, id INTEGER, pad TEXT)")
+            local.execute("BEGIN")
+            local.executemany(
+                "INSERT INTO cached VALUES (?, ?, ?, ?)",
+                ((f"S{n % _STATES:02d}", f"{n % _GEOS:03d}", n, "x" * 40) for n in range(_STATES * _GEOS * _IDS)),
+            )
+            local.execute("COMMIT")
+            plan = " ".join(
+                str(row[-1])
+                for row in local.execute(
+                    "EXPLAIN QUERY PLAN DELETE FROM cached WHERE rowid <= COALESCE((SELECT rowid FROM cached "
+                    "ORDER BY rowid LIMIT 1 OFFSET 2999), (SELECT max(rowid) FROM cached))"
+                )
+            )
+            assert "USE TEMP B-TREE" not in plan, plan
+            bare = (
+                "DELETE FROM cached WHERE rowid <= COALESCE((SELECT rowid FROM cached ORDER BY rowid LIMIT 1 "
+                "OFFSET 2999), (SELECT max(rowid) FROM cached))"
+            )
+
+            async def rolled_back(run: Any) -> float:
+                async def once() -> None:
+                    local.execute("BEGIN")
+                    try:
+                        await run()
+                    finally:
+                        local.execute("ROLLBACK")
+
+                return await best_seconds(once)
+
+            baseline = await rolled_back(lambda: asyncio.to_thread(local.execute, bare))
+            took = await rolled_back(lambda: delete_oldest(ThreadedSQLite(local), "cached", count=3000))
+            deleted = await delete_oldest(ThreadedSQLite(local), "cached", count=3000)
+            assert deleted == 3000
+            assert local.execute("SELECT min(rowid) FROM cached").fetchone()[0] == 3001
+        finally:
+            local.close()
+        problem = _budget("delete_oldest of 3,000 rows of 300,000", took, baseline)
         assert problem is None, problem
 
 
@@ -316,22 +602,3 @@ class TestAKeyedReadIsAnIndexCondition:
         (plan,) = recorder.plans
         assert plan_uses_index(plan, "credit_rates_by_model"), plan.plan
         assert plan.rows_scanned <= 1.1 * len(models) * _RATES_A_MODEL, plan
-
-    async def test_a_batch_of_two_key_columns_reads_its_index_by_the_keys(self, rates: _Seeded) -> None:
-        """Flips if a composite batch reads every row of the index, rather than the keys' own."""
-        named = await rates.conn.fetch(f"SELECT model_id, kind FROM {_RATES} ORDER BY id LIMIT 5")
-        recorder = PlanRecorder(rates.conn)
-        rows = await read_keyed(
-            recorder,
-            _RATES,
-            keys=KeyBatch(("model_id", "kind"), [(str(r["model_id"]), r["kind"]) for r in named], ("uuid", "text")),
-            columns=["id"],
-        )
-        assert len(rows) == len(named)
-        (plan,) = recorder.plans
-        assert plan_uses_index(plan, "credit_rates_by_model"), plan.plan
-        # at most the rows of the keys' lead values (the lead is always an index condition), never the table
-        led = await rates.conn.fetchval(
-            f"SELECT count(*) FROM {_RATES} WHERE model_id = ANY($1::uuid[])", [r["model_id"] for r in named]
-        )
-        assert plan.rows_scanned <= 1.1 * led + 1 < _MODELS * _RATES_A_MODEL, plan

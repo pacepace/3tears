@@ -38,6 +38,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from threetears.core.keyed._filters import binds_native_arrays
+
 __all__ = [
     "PlanRecorder",
     "WholeScanGuard",
@@ -255,6 +257,16 @@ class PlanRecorder:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._conn, name)
+
+    @property
+    def binds_native_arrays(self) -> bool:
+        """whether the connection it records binds typed arrays natively: a keyed helper then sends it the statement
+        it would send the connection itself.
+
+        :return: whether it does
+        :rtype: bool
+        """
+        return binds_native_arrays(self._conn)
 
     async def _explain(self, sql: str, args: Sequence[Any]) -> None:
         if self._yugabyte is None:

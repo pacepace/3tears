@@ -87,7 +87,11 @@ marked class. A view column that renames a plain column (`p.race AS office_key`)
 one does not. A relation in a schema of its own (`report.<view>`) is judged by the copy relation declared for it
 before an L3 table sharing its bare name. A repo names the functions that build a view under a name they are handed
 (`NoWholeReadsConfig.view_producers`, onto the key every such view declares), and their `CREATE VIEW {}` is judged by
-those keys.
+those keys: a view passes when it passes any one of them, and the declaration wins over a copy key its run-time name
+happens to match (a producer declared keyless may build `SELECT * EXCLUDE (state)`). A select list of interpolations
+around literal key columns (`SELECT {before}l.state{after}`) reads the text between them as items of its own; a body
+joined from one statement per table (`" UNION ALL ".join(f"SELECT ..." for t in held)`) is that statement, a part of
+the view rather than a read; a name each branch of an `if`/`else` binds is judged as each branch writes it.
 
 **Added (core):** `threetears.core.testing.plans.WholeScanGuard` and `whole_scans`, the runtime half: a load-path
 test wraps its connection, and a statement whose plan scans a table past `threshold_rows` whole (a sequential scan,

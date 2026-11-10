@@ -377,14 +377,17 @@ async def test_the_keyed_read_joins_the_keys_to_the_table_on_its_key(world: Any)
         return rows
 
     l3.fetch = recording
-    l3.put([("VA", 1, 5)])
-    log.commit([("VA", 1)])
+    l3.put([("VA", 1, 5), ("TX", 2, 6), ("CA", 3, 7)])
+    log.commit([("VA", 1), ("TX", 2), ("CA", 3)])
     lock.version += 1
     assert await follower.catch_up()
     (sql,) = asked
-    # each key column is an index condition (= ANY its values, the array cast whole), then exactly the keys named
-    assert 't."state" = ANY($1::text[]) AND t."geo_id" = ANY($2::text[]::bigint[])' in sql
+    # the keys joined to the table as rows (each array cast whole), batched on YugabyteDB; never a column = ANY its
+    # values, which names their cross product (3 states x 3 geographies: 9 keys for 3; keys sharing their lead are
+    # bound to them too, test_keyed_helpers)
+    assert sql.startswith("/*+ YbBatchedNL(ANY_subquery t) */ "), sql
     assert '(t."state", t."geo_id") IN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1)' in sql
+    assert "= ANY(" not in sql, sql
 
 
 # --- checkpoints ---------------------------------------------------------------------------------
