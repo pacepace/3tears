@@ -418,6 +418,58 @@ def test_an_operator_mark_needs_its_proof_and_no_unmarked_caller(tmp_path: Path)
     )
 
 
+_MARKED_METHOD = """
+    from threetears.core.operator import operator_command
+
+    class RereadStateTool:
+        @operator_command("an operator's explicit one-off reread of every state row", proof="tests/test_ops.py::test_reread")
+        async def execute(self, conn):
+            return await conn.fetch("SELECT * FROM state")
+"""
+
+
+def test_an_entry_only_mark_counts_a_method_call_only_on_a_receiver_known_to_be_its_class(tmp_path: Path) -> None:
+    """Flips if a call of a marked method's name on a receiver of unknown type (``self._db.execute``, a DuckDB
+    connection) is reported as an unmarked caller of it, or if a receiver typed or assigned as the marked class is
+    not."""
+    _ops(tmp_path, "def test_reread():\n    assert RereadStateTool.execute\n")
+    unrelated = """
+        class Pod:
+            def __init__(self, db):
+                self._db = db
+
+            async def step(self, key):
+                return await self._db.execute("SELECT 1 FROM state WHERE k = $1", key)
+
+            async def other(self, conn, key):
+                return await conn.execute("SELECT 1 FROM state WHERE k = $1", key)
+        """
+    typed = """
+        from tool import RereadStateTool
+
+        async def annotated(tool: RereadStateTool, conn):
+            return await tool.execute(conn)
+
+        async def assigned(conn):
+            tool = RereadStateTool()
+            return await tool.execute(conn)
+
+        class Holder:
+            def __init__(self):
+                self._tool = RereadStateTool()
+
+            async def run(self, conn):
+                return await self._tool.execute(conn)
+        """
+    findings = no_whole_reads_findings(
+        _config(tmp_path, {"tool.py": _MARKED_METHOD, "pod.py": unrelated, "typed.py": typed})
+    )
+    callers = [finding for finding in findings if "marked @operator_command" in finding]
+    assert not [finding for finding in callers if "pod.py" in finding], callers
+    for function in ("in annotated:", "in assigned:", "in Holder.run:"):
+        assert any("typed.py" in finding and function in finding for finding in callers), (function, callers)
+
+
 def test_a_ledger_line_without_its_speed_test_field_is_malformed(tmp_path: Path) -> None:
     """Flips if a line of the old six fields, a cold start with no speed test, is still read as an exemption."""
     _proof(tmp_path)
