@@ -1,37 +1,20 @@
 """multi-pod RBAC propagation integration test for the MCP framework.
 
-closes spec MCP-11's hard success criterion ("Multi-pod test:
-revoking a grant on pod A propagates to pod B in < 5 seconds via
-the ``mcp.rbac`` epoch broadcast"). without this end-to-end test
-the cross-pod RBAC promise is asserted only at unit-test level
-(LocalGrantAuthorizer + EpochListener tested with mocks); the
-testcontainer pair here proves the wiring stays coherent against
-real Postgres + NATS.
+closes spec MCP-11's hard success criterion ("Multi-pod test: revoking a grant on pod A propagates
+to pod B in < 5 seconds"), against real Postgres + NATS.
 
-shape mirrors :mod:`threetears.epoch.tests.integration.test_multi_pod`:
+``mcp_tool_grants`` is a switched-on table: every committed grant write advances its write generation
+and records the grant it changed in the epoch change log. each pod's :class:`LocalGrantAuthorizer` is
+a cache derived from the table on that pod's registry, and follows it:
 
-- two :class:`LocalGrantAuthorizer` instances against shared
-  Postgres + NATS, wired through real :class:`EpochClient` /
-  :class:`EpochListener`. each pod has its own
-  :class:`McpToolGrantCollection` reading from the same row store.
-- a writer pod calls :meth:`McpToolGrantCollection.add_grant` then
-  bumps :func:`Subjects.mcp_rbac_epoch`; the receiver pod's
-  authorizer reloads its in-memory cache and ``allows`` returns
-  True for the new grant.
-- a revoke path covers the inverse: ``remove_grant`` then bump;
-  receiver's ``allows`` flips to False.
-- each bump names its grant and the receiver reads that one grant by
-  key; every grant is read only by the cold start and an operator reset
-  (``McpToolGrantCollection.load_all_grants``), which a test here proves.
-- a missed-broadcast path covers the periodic catch-up tick: the
-  receiver's subscription never delivers the broadcast, and the
-  authorizer's own catch-up tick finds the higher epoch. The grants are in
-  Postgres; the EPOCH is a NATS KV counter that keeps no record of what a
-  bump changed -- ``mcp.rbac.epoch`` is not in the durable tile family --
-  so the grant is unknown: the receiver refuses non-admin checks, reads
-  nothing whole, and an operator reset fills it again.
-- speed: the cold-start fill and one bump's keyed apply, each held to a
-  multiple of the bare read on the same database.
+- a grant written on pod A reaches pod B as a row broadcast, and pod B reads that one grant by key;
+- a broadcast pod B never received -- its listener down for the write -- is found by the generation
+  walk and read by key, with no restart and no refusal in between; the same holds for a write whose
+  ``mcp.rbac`` bump named no grant, since the authorizer no longer reads bumps at all;
+- every grant is read only by the cold start and a whole-table change
+  (``McpToolGrantCollection.load_all_grants``), which a test here proves;
+- speed: the cold-start fill, and one walked change's apply, each held to a multiple of the bare read
+  on the same database.
 
 requires docker; gated by ``pytest.mark.integration``.
 """
@@ -39,7 +22,9 @@ requires docker; gated by ``pytest.mark.integration``.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -47,22 +32,25 @@ from uuid import UUID, uuid4
 import asyncpg
 import pytest
 
+from threetears.core.collections.epoch_change import ChangedRow, EpochChange
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.testing.calibrate import best_seconds, budget_problem, plain_read_seconds
-from threetears.epoch import BumpCallback, EpochClient, EpochListener, ResetCallback
+from threetears.epoch import EpochClient, EpochGenerationReader, EpochGenerationSource
 from threetears.epoch.migrations import register as register_epoch
 from threetears.mcp import (
     Identity,
     LocalGrantAuthorizer,
     McpToolGrantCollection,
 )
-from threetears.mcp.auth import GrantCacheUnavailableError
 from threetears.mcp.migrations import register as register_mcp
-from threetears.nats import NatsClient, Subject, Subjects, set_default_namespace
+from threetears.nats import NatsClient, Subjects, set_default_namespace
 
 pytestmark = pytest.mark.integration
+
+#: how long a test waits for something the broker delivers asynchronously
+_DELIVERY_SECONDS = 10.0
 
 
 # ---------------------------------------------------------------------
@@ -150,63 +138,124 @@ async def pg_pool(pg_schema: tuple[str, str]) -> AsyncIterator[asyncpg.Pool]:
         await pool.close()
 
 
-async def _connect_pod(nats_url: str, name: str) -> NatsClient:
-    """connect one pod's NatsClient bound to the test namespace.
+class _Counting:
+    """a grant loader or reader that counts its calls, so a test can say when every grant was read."""
 
-    matches the pattern from :mod:`threetears.epoch.tests.integration
-    .test_multi_pod` so the propagation behaviour observed here is
-    structurally identical to the epoch package's own test.
+    def __init__(self, inner: Callable[..., Awaitable[Any]]) -> None:
+        """wrap the call.
+
+        :param inner: the loader or reader
+        :ptype inner: Callable[..., Awaitable[Any]]
+        :return: nothing
+        :rtype: None
+        """
+        self.inner = inner
+        self.calls = 0
+        self.landed = asyncio.Event()
+
+    async def __call__(self, *args: Any) -> Any:
+        """count, then call through.
+
+        :param args: the call's arguments
+        :ptype args: Any
+        :return: what the inner call returns
+        :rtype: Any
+        """
+        self.calls += 1
+        try:
+            return await self.inner(*args)
+        finally:
+            self.landed.set()
+
+
+class _Pod:
+    """one pod: its own NATS connection, registry, listener, collection and authorizer; the shared broker and L3."""
+
+    def __init__(self, nc: NatsClient, pool: asyncpg.Pool, *, scope: str) -> None:
+        self.nc = nc
+        self.registry = CollectionRegistry()
+        self.registry.configure(l3_pool=pool, kv_key_scope=scope)
+        self.source = EpochGenerationSource(nc)
+        self.registry.set_generation_source(self.source)
+        self.grants = McpToolGrantCollection(self.registry, DefaultCoreConfig(), nc)
+        self.fills = _Counting(self.grants.load_all_grants)
+        self.reads = _Counting(self.grants.read_grant)
+        self.authorizer = LocalGrantAuthorizer(
+            grant_loader=self.fills,
+            grant_reader=self.reads,
+            registry=self.registry,
+            generation_reader=EpochGenerationReader(nc),
+        )
+
+    async def listen(self) -> None:
+        await self.registry.start_invalidation_listener(self.nc)
+
+    async def go_deaf(self) -> None:
+        """the pod's subscription is gone: every row broadcast from here is lost to it."""
+        await self.registry.stop_invalidation_listener()
+
+    async def close(self) -> None:
+        await self.authorizer.stop()
+        await self.registry.stop_invalidation_listener()
+
+
+@asynccontextmanager
+async def _pods(url: str, pool: asyncpg.Pool) -> AsyncIterator[tuple[_Pod, _Pod]]:
+    """a writer and a follower in a namespace of their own, both listening and both authorizers started."""
+    namespace = f"mcpg{uuid4().hex[:6]}"
+    set_default_namespace(namespace)
+    async with (
+        await NatsClient.connect(nats_url=url, nats_subject_namespace=namespace, client_name="pod-a") as a_nc,
+        await NatsClient.connect(nats_url=url, nats_subject_namespace=namespace, client_name="pod-b") as b_nc,
+    ):
+        pod_a, pod_b = _Pod(a_nc, pool, scope="pod-a"), _Pod(b_nc, pool, scope="pod-b")
+        try:
+            # the namespace's change log is declared before anyone reads it, as the hub's keeper does at its start
+            await pod_a.source.start_log()
+            for pod in (pod_a, pod_b):
+                await pod.listen()
+                await pod.authorizer.start()
+            yield pod_a, pod_b
+        finally:
+            await pod_a.close()
+            await pod_b.close()
+
+
+async def _until_answers(pod: _Pod, identity: Identity, permission: str, expected: bool) -> int:
+    """wait until ``pod`` answers ``expected``, checking every 20 ms; every check must answer, never refuse.
+
+    :param pod: the pod
+    :ptype pod: _Pod
+    :param identity: who asks
+    :ptype identity: Identity
+    :param permission: what for
+    :ptype permission: str
+    :param expected: the answer waited for
+    :ptype expected: bool
+    :return: how many checks were made
+    :rtype: int
+    :raises AssertionError: when it does not answer so within :data:`_DELIVERY_SECONDS`
+    :raises GrantCacheUnavailableError: when a check is refused -- the steady state never fails closed
     """
-    return await NatsClient.connect(
-        nats_url=nats_url,
-        nats_subject_namespace="itest",
-        client_name=name,
+    deadline = time.monotonic() + _DELIVERY_SECONDS
+    checks = 0
+    while True:
+        checks += 1
+        if await pod.authorizer.allows(identity, permission) is expected:
+            return checks
+        if time.monotonic() > deadline:
+            raise AssertionError(f"pod never answered {expected} for {permission}")
+        await asyncio.sleep(0.02)
+
+
+_PERMISSION = "mcp.test.read"
+
+
+async def _grant(pod: _Pod, identity: Identity) -> UUID:
+    entity = await pod.grants.add_grant(
+        principal_type="user", principal_id=identity.principal_id, tool_name="probe", permission=_PERMISSION
     )
-
-
-def _build_collection(pool: asyncpg.Pool) -> McpToolGrantCollection:
-    """construct a :class:`McpToolGrantCollection` against ``pool``.
-
-    the registry is minimal: only the L3 pool is wired (no L1, no NATS-
-    KV). load_all_grants reads via ``self.l3_pool`` directly; the test
-    exercises the public surface only.
-    """
-    registry = CollectionRegistry()
-    registry.configure(l3_pool=pool)
-    return McpToolGrantCollection(
-        registry,
-        DefaultCoreConfig(),
-        None,
-        None,
-    )
-
-
-async def _build_started_authorizer(
-    *,
-    pool: asyncpg.Pool,
-    nats_client: NatsClient,
-    catchup_interval_seconds: float = 3600.0,
-) -> tuple[LocalGrantAuthorizer, McpToolGrantCollection, EpochListener]:
-    """wire EpochClient/EpochListener + collection + authorizer; start authorizer.
-
-    returns the authorizer for ``allows`` calls, plus the collection
-    and listener for tests that need to mutate / probe directly.
-    catchup_interval defaults to 1h so the periodic tick never fires
-    during a test (deterministic) -- tests that exercise the catch-up
-    path call ``listener.catch_up(...)`` explicitly.
-    """
-    epoch_client = EpochClient(pool, nats_client)
-    epoch_listener = EpochListener(nats_client, epoch_client)
-    collection = _build_collection(pool)
-    authorizer = LocalGrantAuthorizer(
-        grant_loader=collection.load_all_grants,
-        grant_reader=collection.read_grant,
-        epoch_client=epoch_client,
-        epoch_listener=epoch_listener,
-        catchup_interval_seconds=catchup_interval_seconds,
-    )
-    await authorizer.start()
-    return authorizer, collection, epoch_listener
+    return UUID(str(entity.grant_id))
 
 
 # ---------------------------------------------------------------------
@@ -215,385 +264,94 @@ async def _build_started_authorizer(
 
 
 @pytest.mark.asyncio
-async def test_grant_added_on_pod_a_propagates_to_pod_b(
-    pg_pool: asyncpg.Pool,
-    nats_container: str,
-) -> None:
-    """add_grant on pod A; pod B's allows returns True within ~2 seconds.
-
-    this is the spec MCP-11 hard success criterion: cross-pod
-    RBAC propagation via the ``mcp.rbac`` epoch broadcast.
-    """
-    set_default_namespace("itest")
-    async with (
-        await _connect_pod(nats_container, "pod-a") as pod_a_nc,
-        await _connect_pod(nats_container, "pod-b") as pod_b_nc,
-    ):
-        pod_a, pod_a_collection, _ = await _build_started_authorizer(
-            pool=pg_pool,
-            nats_client=pod_a_nc,
-        )
-        pod_b, _, _ = await _build_started_authorizer(
-            pool=pg_pool,
-            nats_client=pod_b_nc,
-        )
-        try:
-            principal_id = uuid4()
-            permission = "mcp.test.read"
-            identity = Identity(
-                principal_type="user",
-                principal_id=principal_id,
-            )
-
-            # baseline: neither pod allows the grant.
-            assert await pod_a.allows(identity, permission) is False
-            assert await pod_b.allows(identity, permission) is False
-
-            # pod A adds + bumps. EpochClient.bump publishes
-            # mcp.rbac broadcast; pod B's listener receives it
-            # and the authorizer reads the named grant from L3 by key.
-            grant_entity = await pod_a_collection.add_grant(
-                principal_type="user",
-                principal_id=principal_id,
-                tool_name="probe",
-                permission=permission,
-            )
-            # bump is the caller's responsibility (matches the REST
-            # endpoint pattern, payload included); here the test does it explicitly.
-            await EpochClient(pg_pool, pod_a_nc).bump(
-                Subjects.mcp_rbac_epoch(),
-                payload={"grant_id": str(grant_entity.grant_id), "action": "create"},
-            )
-
-            # poll for propagation (NATS dispatch is async). 2s is
-            # well under the spec's 5s budget.
-            for _ in range(20):
-                await asyncio.sleep(0.1)
-                if await pod_b.allows(identity, permission):
-                    break
-            assert await pod_b.allows(identity, permission) is True
-            assert await pod_a.allows(identity, permission) is True
-        finally:
-            await pod_a.stop()
-            await pod_b.stop()
-
-
-@pytest.mark.asyncio
-async def test_grant_removed_on_pod_a_propagates_to_pod_b(
-    pg_pool: asyncpg.Pool,
-    nats_container: str,
-) -> None:
-    """remove_grant on pod A; pod B's allows flips False within ~2 seconds.
-
-    revocation propagation is the security-critical inverse: a
-    revoked operator must lose access on every pod, fast.
-    """
-    set_default_namespace("itest")
-    async with (
-        await _connect_pod(nats_container, "pod-a") as pod_a_nc,
-        await _connect_pod(nats_container, "pod-b") as pod_b_nc,
-    ):
-        pod_a, pod_a_collection, _ = await _build_started_authorizer(
-            pool=pg_pool,
-            nats_client=pod_a_nc,
-        )
-        pod_b, _, _ = await _build_started_authorizer(
-            pool=pg_pool,
-            nats_client=pod_b_nc,
-        )
-        try:
-            principal_id = uuid4()
-            permission = "mcp.test.read"
-            identity = Identity(
-                principal_type="user",
-                principal_id=principal_id,
-            )
-
-            # seed: a grant exists, both pods allow.
-            grant_entity = await pod_a_collection.add_grant(
-                principal_type="user",
-                principal_id=principal_id,
-                tool_name="probe",
-                permission=permission,
-            )
-            await EpochClient(pg_pool, pod_a_nc).bump(
-                Subjects.mcp_rbac_epoch(),
-                payload={"grant_id": str(grant_entity.grant_id), "action": "create"},
-            )
-            for _ in range(20):
-                await asyncio.sleep(0.1)
-                if await pod_b.allows(identity, permission):
-                    break
-            assert await pod_b.allows(identity, permission) is True
-
-            # revoke + bump.
-            removed = await pod_a_collection.remove_grant(grant_entity.grant_id)
-            assert removed is True
-            await EpochClient(pg_pool, pod_a_nc).bump(
-                Subjects.mcp_rbac_epoch(),
-                payload={"grant_id": str(grant_entity.grant_id), "action": "delete"},
-            )
-
-            # poll for revocation.
-            for _ in range(20):
-                await asyncio.sleep(0.1)
-                if not await pod_b.allows(identity, permission):
-                    break
-            assert await pod_b.allows(identity, permission) is False
-            assert await pod_a.allows(identity, permission) is False
-        finally:
-            await pod_a.stop()
-            await pod_b.stop()
-
-
-class _BroadcastDroppingNats:
-    """a pod's NATS client whose subscriptions never receive anything.
-
-    every call is forwarded to the real connected client except
-    ``subscribe_typed``, which accepts the registration and drops it --
-    the "every broadcast was lost" condition (subscriber blip, dropped
-    message) made deterministic. KV reads still reach the real broker, so
-    the epoch counter the catch-up tick reads is the real one.
-    """
-
-    def __init__(self, inner: NatsClient) -> None:
-        """wrap a connected client.
-
-        :param inner: the pod's real NATS client
-        :ptype inner: NatsClient
-        :return: nothing
-        :rtype: None
-        """
-        self.inner = inner
-
-    async def subscribe_typed(self, **_kwargs: Any) -> None:
-        """accept the subscription and never deliver to it.
-
-        :return: nothing
-        :rtype: None
-        """
-
-    def __getattr__(self, name: str) -> Any:
-        """forward everything else to the real client.
-
-        :param name: attribute name
-        :ptype name: str
-        :return: the real client's attribute
-        :rtype: Any
-        """
-        return getattr(self.inner, name)
-
-
-@pytest.mark.asyncio
-async def test_missed_broadcast_refuses_until_an_operator_reset_and_never_reads_every_grant(
-    pg_pool: asyncpg.Pool,
-    nats_container: str,
-) -> None:
-    """grant added during a NATS outage; pod B's tick finds the epoch, and its grant is unknown.
-
-    pod B is started normally -- subscribe, prime, catch-up loop -- but its
-    subscription is wired to a client that never delivers. pod A mutates +
-    bumps; pod B's catch-up tick sees the higher epoch on the KV counter
-    after one interval's grace. nothing durable says which grant that epoch
-    changed, so pod B refuses non-admin checks rather than answer from a
-    cache that may hold a revoked grant -- and reads nothing whole. the
-    operator reset fills it again. epochs are compared relative to the
-    counter's value at the start, because the broker, and with it the
-    counter for this subject, is shared by the session.
-    """
-    set_default_namespace("itest")
-    async with (
-        await _connect_pod(nats_container, "pod-a") as pod_a_nc,
-        await _connect_pod(nats_container, "pod-b") as pod_b_nc,
-    ):
-        pod_a_epoch_client = EpochClient(pg_pool, pod_a_nc)
-        pod_a_collection = _build_collection(pg_pool)
-
-        pod_b_epoch_client = EpochClient(pg_pool, pod_b_nc)
-        pod_b_listener = EpochListener(_BroadcastDroppingNats(pod_b_nc), pod_b_epoch_client)  # type: ignore[arg-type]
-        pod_b_collection = _build_collection(pg_pool)
-        fills = _Counting(pod_b_collection.load_all_grants)
-        pod_b_authorizer = LocalGrantAuthorizer(
-            grant_loader=fills,
-            grant_reader=pod_b_collection.read_grant,
-            epoch_client=pod_b_epoch_client,
-            epoch_listener=pod_b_listener,
-            catchup_interval_seconds=0.05,
-        )
-
-        principal_id = uuid4()
-        permission = "mcp.test.read"
-        identity = Identity(
-            principal_type="user",
-            principal_id=principal_id,
-        )
-
-        epoch_before = await pod_a_epoch_client.current(Subjects.mcp_rbac_epoch())
-        await pod_b_authorizer.start()
-        try:
-            # baseline: cache empty, deny.
-            assert await pod_b_authorizer.allows(identity, permission) is False
-
-            # pod A adds + bumps. the broadcast goes out; pod B's
-            # subscription never delivers it.
-            grant_entity = await pod_a_collection.add_grant(
-                principal_type="user",
-                principal_id=principal_id,
-                tool_name="probe",
-                permission=permission,
-            )
-            new_epoch = await pod_a_epoch_client.bump(
-                Subjects.mcp_rbac_epoch(),
-                payload={"grant_id": str(grant_entity.grant_id), "action": "create"},
-            )
-            assert new_epoch == epoch_before + 1
-
-            # the catch-up tick gives the broadcast one interval, then advances last_seen:
-            # the epoch's grant is unknown, so non-admin checks are refused.
-            for _ in range(40):
-                if pod_b_listener.last_seen(Subjects.mcp_rbac_epoch()) >= new_epoch:
-                    break
-                await asyncio.sleep(0.05)
-            assert pod_b_listener.last_seen(Subjects.mcp_rbac_epoch()) >= new_epoch
-            with pytest.raises(GrantCacheUnavailableError, match="unheard"):
-                await pod_b_authorizer.allows(identity, permission)
-            assert fills.calls == 1, "a lost broadcast read every grant again"
-
-            # the operator reset: the one fill after the cold start.
-            await pod_b_listener.signal_reset()
-            assert fills.calls == 2
-            assert await pod_b_authorizer.allows(identity, permission) is True
-        finally:
-            await pod_b_authorizer.stop()
-
-
-class _Counting:
-    """a grant loader that counts its calls, so a test can say when every grant was read."""
-
-    def __init__(self, inner: Callable[[], Awaitable[list[dict[str, Any]]]]) -> None:
-        """wrap the loader.
-
-        :param inner: the loader
-        :ptype inner: Callable[[], Awaitable[list[dict[str, Any]]]]
-        :return: nothing
-        :rtype: None
-        """
-        self.inner = inner
-        self.calls = 0
-
-    async def __call__(self) -> list[dict[str, Any]]:
-        """count, then load.
-
-        :return: the rows
-        :rtype: list[dict[str, Any]]
-        """
-        self.calls += 1
-        return await self.inner()
-
-
-class _CapturingListener(EpochListener):
-    """a real listener that also hands its test the bump callback, to time one bump's apply without NATS."""
-
-    on_bump: BumpCallback | None = None
-
-    async def subscribe(
-        self,
-        subject: Subject,
-        on_bump: BumpCallback,
-        primed_epoch: int | None = None,
-        on_reset: ResetCallback | None = None,
-    ) -> None:
-        """record the callback, then subscribe.
-
-        :param subject: the subject
-        :ptype subject: Subject
-        :param on_bump: the bump callback
-        :ptype on_bump: BumpCallback
-        :param primed_epoch: as the listener takes it
-        :ptype primed_epoch: int | None
-        :param on_reset: as the listener takes it
-        :ptype on_reset: ResetCallback | None
-        :return: nothing
-        :rtype: None
-        """
-        self.on_bump = on_bump
-        await super().subscribe(subject, on_bump, primed_epoch=primed_epoch, on_reset=on_reset)
-
-
-@pytest.mark.asyncio
-async def test_load_all_grants_is_reached_only_at_the_cold_start_and_an_operator_reset(
-    pg_pool: asyncpg.Pool,
-    nats_container: str,
-) -> None:
-    """every grant is read to fill the empty cache at start, and after an operator reset -- never for a bump.
-
-    pod A adds a grant, revokes it, and bumps each time with the grant named; pod B applies each by
-    key. a bump naming no grant leaves its grant unknown, and is not read around either. only
-    ``signal_reset`` -- the counter replaced -- reaches ``load_all_grants`` again.
-    """
-    set_default_namespace("itest")
-    async with (
-        await _connect_pod(nats_container, "pod-a") as pod_a_nc,
-        await _connect_pod(nats_container, "pod-b") as pod_b_nc,
-    ):
-        pod_a_epoch_client = EpochClient(pg_pool, pod_a_nc)
-        pod_a_collection = _build_collection(pg_pool)
-        pod_b_epoch_client = EpochClient(pg_pool, pod_b_nc)
-        pod_b_listener = EpochListener(pod_b_nc, pod_b_epoch_client)
-        pod_b_collection = _build_collection(pg_pool)
-        fills = _Counting(pod_b_collection.load_all_grants)
-        pod_b = LocalGrantAuthorizer(
-            grant_loader=fills,
-            grant_reader=pod_b_collection.read_grant,
-            epoch_client=pod_b_epoch_client,
-            epoch_listener=pod_b_listener,
-            catchup_interval_seconds=0.05,
-        )
+async def test_a_grant_added_on_pod_a_reaches_pod_b_by_key(pg_pool: asyncpg.Pool, nats_container: str) -> None:
+    async with _pods(nats_container, pg_pool) as (pod_a, pod_b):
         identity = Identity(principal_type="user", principal_id=uuid4())
-        permission = "mcp.test.read"
-        await pod_b.start()
-        try:
-            assert fills.calls == 1, "the cold start fills the cache once"
-            grant = await pod_a_collection.add_grant(
-                principal_type="user", principal_id=identity.principal_id, tool_name="probe", permission=permission
-            )
-            await pod_a_epoch_client.bump(
-                Subjects.mcp_rbac_epoch(), payload={"grant_id": str(grant.grant_id), "action": "create"}
-            )
-            for _ in range(40):
-                if await pod_b.allows(identity, permission):
-                    break
-                await asyncio.sleep(0.05)
-            assert await pod_b.allows(identity, permission) is True
-            await pod_a_collection.remove_grant(grant.grant_id)
-            await pod_a_epoch_client.bump(
-                Subjects.mcp_rbac_epoch(), payload={"grant_id": str(grant.grant_id), "action": "delete"}
-            )
-            for _ in range(40):
-                if not await pod_b.allows(identity, permission):
-                    break
-                await asyncio.sleep(0.05)
-            assert await pod_b.allows(identity, permission) is False
-            # a few catch-up ticks pass with nothing unheard
-            await asyncio.sleep(0.3)
-            assert fills.calls == 1, "a bump or a catch-up tick read every grant"
+        assert await pod_b.authorizer.allows(identity, _PERMISSION) is False
+        grant_id = await _grant(pod_a, identity)
+        await _until_answers(pod_b, identity, _PERMISSION, True)
+        await _until_answers(pod_a, identity, _PERMISSION, True)
+        assert pod_b.fills.calls == 1, "a changed grant read every grant"
+        assert pod_b.reads.calls >= 1
+        assert grant_id
 
-            await pod_a_epoch_client.bump(Subjects.mcp_rbac_epoch(), payload=None)
-            for _ in range(40):
-                try:
-                    await pod_b.allows(identity, permission)
-                except GrantCacheUnavailableError:
-                    break
-                await asyncio.sleep(0.05)
-            with pytest.raises(GrantCacheUnavailableError):
-                await pod_b.allows(identity, permission)
-            assert fills.calls == 1, "a bump naming no grant read every grant"
 
-            await pod_b_listener.signal_reset()
-            assert fills.calls == 2, "the operator reset fills the cache"
-            assert await pod_b.allows(identity, permission) is False
-        finally:
-            await pod_b.stop()
+@pytest.mark.asyncio
+async def test_a_grant_removed_on_pod_a_is_revoked_on_pod_b(pg_pool: asyncpg.Pool, nats_container: str) -> None:
+    """revocation is the security-critical direction: a revoked operator loses access on every pod, fast."""
+    async with _pods(nats_container, pg_pool) as (pod_a, pod_b):
+        identity = Identity(principal_type="user", principal_id=uuid4())
+        grant_id = await _grant(pod_a, identity)
+        await _until_answers(pod_b, identity, _PERMISSION, True)
+        assert await pod_a.grants.remove_grant(grant_id) is True
+        await _until_answers(pod_b, identity, _PERMISSION, False)
+        await _until_answers(pod_a, identity, _PERMISSION, False)
+        assert pod_b.fills.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_lost_broadcast_converges_by_key_with_no_restart_and_no_refusal(
+    pg_pool: asyncpg.Pool, nats_container: str
+) -> None:
+    """pod B hears nothing of the revocation; the generation walk finds it and pod B reads it by key.
+
+    every check in between answers from what pod B holds -- never a refusal -- and nothing reads every grant.
+    """
+    async with _pods(nats_container, pg_pool) as (pod_a, pod_b):
+        identity = Identity(principal_type="user", principal_id=uuid4())
+        grant_id = await _grant(pod_a, identity)
+        await _until_answers(pod_b, identity, _PERMISSION, True)
+        reads_before = pod_b.reads.calls
+
+        await pod_b.go_deaf()
+        assert await pod_a.grants.remove_grant(grant_id) is True
+        await _until_answers(pod_b, identity, _PERMISSION, False)
+
+        assert pod_b.reads.calls > reads_before, "the walk read the revoked grant by key"
+        assert pod_b.fills.calls == 1, "a lost broadcast read every grant again"
+
+
+@pytest.mark.asyncio
+async def test_a_write_whose_bump_named_no_grant_is_applied_from_the_walk(
+    pg_pool: asyncpg.Pool, nats_container: str
+) -> None:
+    """the rbac bump says nothing the follow needs: a bump naming no grant, broadcast lost, still converges."""
+    async with _pods(nats_container, pg_pool) as (pod_a, pod_b):
+        identity = Identity(principal_type="user", principal_id=uuid4())
+        await pod_b.go_deaf()
+        await _grant(pod_a, identity)
+        await EpochClient(pg_pool, pod_a.nc).bump(Subjects.mcp_rbac_epoch(), payload=None)
+        await _until_answers(pod_b, identity, _PERMISSION, True)
+        assert pod_b.fills.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_load_all_grants_is_reached_only_at_the_cold_start_and_a_whole_table_change(
+    pg_pool: asyncpg.Pool, nats_container: str
+) -> None:
+    """every grant is read to fill the empty cache at start, and when the whole table changed -- never for a grant.
+
+    pod A adds, revokes and adds again; pod B applies each by key, heard or walked. only a whole-table
+    change -- a truncate or a load, which drops the table here -- reaches ``load_all_grants`` again.
+    """
+    async with _pods(nats_container, pg_pool) as (pod_a, pod_b):
+        assert pod_b.fills.calls == 1, "the cold start fills the cache once"
+        identity = Identity(principal_type="user", principal_id=uuid4())
+        first = await _grant(pod_a, identity)
+        await _until_answers(pod_b, identity, _PERMISSION, True)
+        await pod_a.grants.remove_grant(first)
+        await _until_answers(pod_b, identity, _PERMISSION, False)
+        await pod_b.go_deaf()
+        await _grant(pod_a, identity)
+        await _until_answers(pod_b, identity, _PERMISSION, True)
+        assert pod_b.fills.calls == 1, "a changed grant, heard or walked, read every grant"
+
+        pod_b.registry.drop_table("mcp_tool_grants", reason="a truncate")
+        deadline = time.monotonic() + _DELIVERY_SECONDS
+        while pod_b.fills.calls < 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        assert pod_b.fills.calls == 2, "a whole-table change fills the cache again"
+        await _until_answers(pod_b, identity, _PERMISSION, True)
 
 
 #: grants seeded for the speed tests: past any deployment's operator-written grants
@@ -628,7 +386,9 @@ async def _seed_grants(pool: asyncpg.Pool, count: int) -> list[UUID]:
 async def test_load_all_grants_speed_at_real_size(pg_pool: asyncpg.Pool) -> None:
     """the cold-start fill reads the grants as fast as a bare read of the same rows, within the budget."""
     await _seed_grants(pg_pool, _SPEED_GRANTS)
-    collection = _build_collection(pg_pool)
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=pg_pool)
+    collection = McpToolGrantCollection(registry, DefaultCoreConfig(), None)
     async with pg_pool.acquire() as conn:
         baseline = await plain_read_seconds(conn, f"SELECT {_GRANT_COLUMNS} FROM mcp_tool_grants")  # noqa: S608
     took = await best_seconds(collection.load_all_grants)
@@ -638,46 +398,27 @@ async def test_load_all_grants_speed_at_real_size(pg_pool: asyncpg.Pool) -> None
 
 
 @pytest.mark.asyncio
-async def test_a_bump_applies_its_grant_as_fast_as_a_bare_keyed_read(
-    pg_pool: asyncpg.Pool,
-    nats_container: str,
-) -> None:
-    """one bump's apply -- the keyed read and the cache update -- against a bare ``WHERE grant_id = $1``."""
-    set_default_namespace("itest")
+async def test_a_walked_change_applies_as_fast_as_a_bare_keyed_read(pg_pool: asyncpg.Pool, nats_container: str) -> None:
+    """one epoch the walk applies -- its row message, the keyed read, the cache update -- against a bare
+    ``WHERE grant_id = $1`` on the same database."""
     keys = await _seed_grants(pg_pool, _SPEED_GRANTS)
-    async with await _connect_pod(nats_container, "pod-speed") as nc:
-        epoch_client = EpochClient(pg_pool, nc)
-        listener = _CapturingListener(nc, epoch_client)
-        collection = _build_collection(pg_pool)
-        authorizer = LocalGrantAuthorizer(
-            grant_loader=collection.load_all_grants,
-            grant_reader=collection.read_grant,
-            epoch_client=epoch_client,
-            epoch_listener=listener,
-            catchup_interval_seconds=3600.0,
-        )
-        await authorizer.start()
-        try:
-            on_bump = listener.on_bump
-            assert on_bump is not None
-            epoch = [await epoch_client.current(Subjects.mcp_rbac_epoch())]
-            target = keys[len(keys) // 2]
+    async with _pods(nats_container, pg_pool) as (_pod_a, pod_b):
+        target = keys[len(keys) // 2]
+        change = EpochChange(table="mcp_tool_grants", token="speed:1", rows=[ChangedRow(ids=[str(target)])])
 
-            async def _apply_one() -> None:
-                epoch[0] += 1
-                await on_bump(epoch[0], {"grant_id": str(target), "action": "create"})
+        async def _walked_one() -> None:
+            pod_b.reads.landed.clear()
+            await pod_b.registry.apply_epoch_change(change)
+            await pod_b.reads.landed.wait()
 
-            async def _bare() -> None:
-                await pg_pool.fetchrow(
-                    f"SELECT {_GRANT_COLUMNS} FROM mcp_tool_grants WHERE grant_id = $1",  # noqa: S608
-                    target,
-                )
+        async def _bare() -> None:
+            await pg_pool.fetchrow(
+                f"SELECT {_GRANT_COLUMNS} FROM mcp_tool_grants WHERE grant_id = $1",  # noqa: S608
+                target,
+            )
 
-            baseline = await best_seconds(_bare, runs=50)
-            took = await best_seconds(_apply_one, runs=50)
-            print(f"bump apply {took * 1e6:.0f} us, bare keyed read {baseline * 1e6:.0f} us, {took / baseline:.2f}x")
-            problem = budget_problem("one bump's keyed apply", took, baseline)
-            assert problem is None, problem
-            assert await authorizer.allows(Identity(principal_type="user", principal_id=uuid4()), "x") is False
-        finally:
-            await authorizer.stop()
+        baseline = await best_seconds(_bare, runs=50)
+        took = await best_seconds(_walked_one, runs=50)
+        print(f"walked change {took * 1e6:.0f} us, bare keyed read {baseline * 1e6:.0f} us, {took / baseline:.2f}x")
+        problem = budget_problem("one walked change's keyed apply", took, baseline)
+        assert problem is None, problem
