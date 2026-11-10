@@ -99,8 +99,9 @@ what the caveat says. Whether a loss past the margin would change the call is th
 is ``breached``. The check reads each criterion of kind ``gate`` or ``guardrail`` on its point estimate (at least the
 threshold where higher is better, at most where lower is), overall, in its one task, in every task or in every cell as
 its scope says. A gate with no figure for the arm is not shown passed, so the arm does not survive it. Borderline
-counts as passing for the decision (GENERATOR §3). Floors and bars warn and never remove an option; a margin is the
-asked aspect's own axis, not a gate.
+counts as passing for the decision (GENERATOR §3). Floors and bars never remove an option: a bar warns, and a floor
+read broken on an asked aspect caps the option's standing there (Dominance); a margin is the asked aspect's own axis,
+not a gate.
 
 **Dominance** (:func:`dominant_options`). One surviving option dominates when it is at least as good as every other
 survivor on every axis that matters:
@@ -111,19 +112,25 @@ survivor on every axis that matters:
   a dollar measure blended over the tasks by traffic share), lower is better. Two arms with no cost tie; an arm with
   no cost is not at least as good as one with a cost, nor the reverse.
 - *The asked aspect*: in a change, each arm takes a level: a candidate shown better (a confirmatory ``better``
-  reading, or an ``improved`` contrast on an asked aspect) is 2; one shown no worse (every floor on every asked
-  aspect held, each declaring one, and within the margin on each asked reading that declares one) is 1; any other
-  candidate is 0; the control is 1. An arm is at least as good as another at the same level or above. In a choice, an
-  arm is at least as good as another unless a pair reading on an asked aspect shows the other ahead of it. With no
-  asked reading, pair or floor, the aspect ties.
+  reading, or an ``improved`` contrast on an asked aspect) with no floor on an asked aspect read ``broken`` is 2; one
+  shown no worse (every floor on every asked aspect held, each declaring one, and within the margin on each asked
+  reading that declares one) is 1; any other candidate is 0; the control is 1. A floor read broken (its whole
+  interval past the floor) caps a candidate shown better at 0, not shown no worse, since a broken floor is not held;
+  an unclear one caps nothing. An ``improved`` contrast on a judged dimension whose judge the input states
+  uncalibrated (its tier and calibration undetermined or insufficient, the reading ``judge_uncalibrated`` makes) is
+  set aside: it does not raise the level, and the candidate's other improvements count as usual. Only those two
+  states set aside an improvement: hosts often make a judge ad hoc, without the hours of human rating calibration
+  takes, and a judge measured and found short (``separation``, ``incidental``) still counts. An arm is at least
+  as good as another at the same level or above. In a choice, an arm is at least as good as another unless a pair
+  reading on an asked aspect shows the other ahead of it. With no asked reading, pair or floor, the aspect ties.
 
 **Modes** (:func:`decision_at`'s ``modes``, GENERATOR §1.1), read in this order:
 
 1. *No call* when the report measures one arm (there is nothing to choose), when no option survives, or, in a change,
    when no surviving candidate is separated: its asked readings' intervals cross zero and sit outside the margin (or
    no margin is declared), and no contrast on an asked aspect separated it (``improved``, ``regressed`` or
-   ``equivalent``, as its family's correction reads it: corrected only where that names a method). A candidate with neither an asked reading nor a contrast on an asked
-   aspect forces nothing.
+   ``equivalent``, as its family's correction reads it: corrected only where that names a method). A
+   candidate with neither an asked reading nor a contrast on an asked aspect forces nothing.
 2. *Decide* when exactly one survivor dominates; the plan recommends that one.
 3. *Decide* when two or more survive, none dominates alone, and the campaign declared a rule that ranks the axes (a
    contrast family's merit priority): the rule picks, among the survivors.
@@ -311,19 +318,8 @@ def late_subject(report_input: ReportInput, late: LateCriterion) -> tuple[str | 
 
 
 def _judge_uncalibrated(report_input: ReportInput) -> bool:
-    tiers = report_input.caveats.judge_tiers
-    dimensions = [*report_input.judged, *(name for name in tiers if name not in report_input.judged)]
-    if not dimensions:
-        return False
-    for dimension in dimensions:
-        judged = report_input.judged.get(dimension)
-        stated = {tiers.get(dimension)}
-        if judged is not None:
-            stated |= {judged.tier, judged.calibration}
-        stated.discard(None)
-        if not stated or not stated <= _UNCALIBRATED:
-            return False
-    return True
+    dimensions = _judged_dimensions(report_input)
+    return bool(dimensions) and all(_stated_uncalibrated(report_input, dimension) for dimension in dimensions)
 
 
 def _touches_every_comparison(report_input: ReportInput, arms: set[str] | None) -> bool:
@@ -429,6 +425,14 @@ def _judge_described(report_input: ReportInput, dimension: str) -> bool:
     return bool(_judge_standing(report_input, dimension)) or (judged is not None and judged.judge_model is not None)
 
 
+def _stated_uncalibrated(report_input: ReportInput, dimension: str) -> bool:
+    """Whether the input states one judged dimension's judge uncalibrated: it states the judge's tier or calibration
+    state, and every one it states is undetermined or insufficient. The one reading of a judge's calibration the
+    caveats and the asked standing share."""
+    standing = _judge_standing(report_input, dimension)
+    return bool(standing) and standing <= _UNCALIBRATED
+
+
 def _judged_dimensions(report_input: ReportInput) -> list[str]:
     tiers = report_input.caveats.judge_tiers
     return [*report_input.judged, *(name for name in tiers if name not in report_input.judged)]
@@ -527,11 +531,7 @@ def implied_caveats(report_input: ReportInput) -> list[ImpliedCaveat]:
             )
         )
     stated = {caveat.id for caveat in report_caveats(report_input)}
-    uncalibrated = tuple(
-        dimension
-        for dimension in dimensions
-        if (standing := _judge_standing(report_input, dimension)) and standing <= _UNCALIBRATED
-    )
+    uncalibrated = tuple(dimension for dimension in dimensions if _stated_uncalibrated(report_input, dimension))
     if uncalibrated and "judge_uncalibrated" not in stated:
         found.append(
             ImpliedCaveat(
@@ -635,9 +635,46 @@ def _asked(report_input: ReportInput) -> list[Aspect]:
     return [aspect for aspect in report_input.aspects if aspect.asked]
 
 
+@dataclass(frozen=True)
+class _Better:
+    """What shows a candidate better than the control, and what is set aside.
+
+    :ivar counted: Each improvement that counts, as a clause names it: a confirmatory ``better`` reading by its
+        aspect, an ``improved`` contrast on an asked aspect by its measure.
+    :ivar set_aside: Each judged dimension an ``improved`` contrast on an asked aspect reads whose judge the input
+        states uncalibrated (:func:`_stated_uncalibrated`), by key: it does not count.
+    """
+
+    counted: tuple[str, ...]
+    set_aside: tuple[str, ...]
+
+
+def _better(report_input: ReportInput, arm: str) -> _Better:
+    counted = [
+        f"its confirmatory reading on aspect {aspect.id!r}"
+        for aspect in report_input.aspects
+        for reading in aspect.readings
+        if reading.arm == arm and reading.reading == "better" and reading.confirmatory
+    ]
+    set_aside: list[str] = []
+    asked = {aspect.id for aspect in _asked(report_input)}
+    for contrast in report_input.contrasts:
+        if contrast.arm != arm or contrast.verdict != "improved" or contrast.aspect not in asked:
+            continue
+        # Only a judged dimension's judge carries a tier or calibration state, so a measure is never set aside.
+        if _stated_uncalibrated(report_input, contrast.measure):
+            set_aside.append(contrast.measure)
+        else:
+            counted.append(f"its improved contrast on {contrast.measure!r}")
+    return _Better(tuple(dict.fromkeys(counted)), tuple(dict.fromkeys(set_aside)))
+
+
 def shown_better(report_input: ReportInput, arm: str) -> bool:
     """Whether a candidate is shown better: a confirmatory ``better`` reading, or an ``improved`` contrast on an asked
-    aspect.
+    aspect, save one on a judged dimension whose judge the input states uncalibrated (tier and calibration undetermined
+    or insufficient), which is set aside. Only those two states set aside an improvement: hosts often make a judge ad
+    hoc, without the hours of human rating calibration takes, and a judge measured and found short (``separation``,
+    ``incidental``) still counts.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -646,17 +683,7 @@ def shown_better(report_input: ReportInput, arm: str) -> bool:
     :return: True when the evidence shows it better than the control.
     :rtype: bool
     """
-    if any(
-        reading.arm == arm and reading.reading == "better" and reading.confirmatory
-        for aspect in report_input.aspects
-        for reading in aspect.readings
-    ):
-        return True
-    asked = {aspect.id for aspect in _asked(report_input)}
-    return any(
-        contrast.arm == arm and contrast.verdict == "improved" and contrast.aspect in asked
-        for contrast in report_input.contrasts
-    )
+    return bool(_better(report_input, arm).counted)
 
 
 def _floor_status(read: FloorRead, overrides: _Overrides) -> str:
@@ -670,11 +697,31 @@ def _floor_status(read: FloorRead, overrides: _Overrides) -> str:
     return "broken" if -high >= margin else "unclear"
 
 
+def _broken_floors(report_input: ReportInput, arm: str, overrides: _Overrides) -> list[str]:
+    """The floors on the asked aspects a candidate's read breaks (its whole interval past the floor), by key: each caps
+    its standing below shown better."""
+    asked = {aspect.id for aspect in _asked(report_input)}
+    return list(
+        dict.fromkeys(
+            read.floor
+            for read in report_input.floors
+            if read.arm == arm and read.aspect in asked and _floor_status(read, overrides) == "broken"
+        )
+    )
+
+
 def _floors_not_held(
-    report_input: ReportInput, arm: str, asked: Sequence[Aspect], overrides: _Overrides, *, reasons: bool = True
+    report_input: ReportInput,
+    arm: str,
+    asked: Sequence[Aspect],
+    overrides: _Overrides,
+    *,
+    reasons: bool = True,
+    capped: bool = False,
 ) -> list[str]:
     """One clause per floor not held on the asked aspects, and per aspect declaring none; with ``reasons``, a floor's
-    clause ends with the input's own reason where it speaks for the status read."""
+    clause ends with the input's own reason where it speaks for the status read. With ``capped`` (the candidate is shown
+    better), a broken floor's clause says it caps the standing."""
     clauses: list[str] = []
     for aspect in asked:
         floors = list(dict.fromkeys(floor.floor for floor in report_input.floors if floor.aspect == aspect.id))
@@ -686,7 +733,12 @@ def _floors_not_held(
                 clauses.append(f"floor {key} was not read on it, so it is not shown held")
                 continue
             status = _floor_status(read, overrides)
-            if status != "held":
+            if status == "broken" and capped:
+                clauses.append(
+                    f"floor {key} is broken, its whole interval past the floor, which caps it at not shown no worse "
+                    "though it is shown better"
+                )
+            elif status != "held":
                 reason = f" ({read.reason.rstrip('.')})" if reasons and read.reason and status == read.status else ""
                 clauses.append(f"floor {key} is {status}{reason}")
     return clauses
@@ -774,10 +826,11 @@ def _shown_no_worse(report_input: ReportInput, arm: str, overrides: _Overrides) 
 
 
 def _level(report_input: ReportInput, arm: str, control: str, overrides: _Overrides) -> int:
-    """A change's arm on the asked aspect: 2 shown better, 1 shown no worse (the control), 0 otherwise."""
+    """A change's arm on the asked aspect: 2 shown better with no asked floor broken, 1 shown no worse (the control),
+    0 otherwise. A broken floor is never held, so it caps a candidate shown better at 0."""
     if arm == control:
         return 1
-    if shown_better(report_input, arm):
+    if shown_better(report_input, arm) and not _broken_floors(report_input, arm, overrides):
         return 2
     return 1 if _shown_no_worse(report_input, arm, overrides) else 0
 
@@ -999,9 +1052,9 @@ def decision_at(
     return DecisionAt(modes=modes, dominant=dominant)
 
 
-#: How an arm stands on the asked aspects, as this module's Dominance reads it. In a change: ``shown_better`` (level 2),
-#: ``control`` or ``shown_no_worse`` (level 1), ``not_shown_no_worse`` (level 0). In a choice, by the asked pair
-#: readings: ``behind`` when one shows another arm ahead of it, else ``not_behind``.
+#: How an arm stands on the asked aspects, as this module's Dominance reads it. In a change: ``shown_better`` (level 2,
+#: no asked floor broken), ``control`` or ``shown_no_worse`` (level 1), ``not_shown_no_worse`` (level 0). In a choice,
+#: by the asked pair readings: ``behind`` when one shows another arm ahead of it, else ``not_behind``.
 StandingWord = Literal["shown_better", "control", "shown_no_worse", "not_shown_no_worse", "behind", "not_behind"]
 
 
@@ -1015,9 +1068,13 @@ class AskedStanding:
         least as good as another on the asked aspects exactly when its level is at least the other's. None in a choice.
     :ivar behind: In a choice, the arms an asked pair reading shows ahead of it; one arm is at least as good as another
         exactly when the other is not among them. Empty in a change.
-    :ivar why: Why a change's candidate is not shown no worse: each floor not held, each aspect declaring none, and each
-        asked reading not within its margin, in words that name each by its id and state no figure (a floor read's
-        own reason, and its figures, are read by its keys). Empty otherwise.
+    :ivar why: In a change, for a candidate: why it is not shown no worse (each floor not held, a broken one saying it
+        caps a candidate shown better, each aspect declaring none, and each asked reading not within its margin), and
+        at any standing each improvement set aside because its judge is not calibrated, in words that name each by its
+        id and state no figure (a floor read's own reason, and its figures, are read by its keys). Empty otherwise.
+    :ivar set_aside: In a change, for a candidate: each judged dimension an ``improved`` contrast on an asked aspect
+        reads whose judge the input states uncalibrated, by key; set aside, it does not raise the standing. Empty
+        otherwise.
     """
 
     arm: str
@@ -1025,6 +1082,7 @@ class AskedStanding:
     level: int | None
     behind: tuple[str, ...]
     why: tuple[str, ...]
+    set_aside: tuple[str, ...] = ()
 
 
 def _not_within(report_input: ReportInput, arm: str) -> list[str]:
@@ -1065,16 +1123,25 @@ def asked_standing(report_input: ReportInput) -> dict[str, AskedStanding]:
         level = _level(report_input, arm, control, _Overrides())
         if arm == control:
             found[arm] = AskedStanding(arm, "control", level, (), ())
-        elif level == 2:
-            found[arm] = AskedStanding(arm, "shown_better", level, (), ())
+            continue
+        better = _better(report_input, arm)
+        set_aside = tuple(
+            f"its improvement on {dimension!r} is set aside: that dimension's judge is not calibrated, so it does not "
+            "raise the standing"
+            for dimension in better.set_aside
+        )
+        if level == 2:
+            found[arm] = AskedStanding(arm, "shown_better", level, (), set_aside, better.set_aside)
         elif level == 1:
-            found[arm] = AskedStanding(arm, "shown_no_worse", level, (), ())
+            found[arm] = AskedStanding(arm, "shown_no_worse", level, (), set_aside, better.set_aside)
         else:
-            floors = _floors_not_held(report_input, arm, asked, _Overrides(), reasons=False)
-            why = [*floors, *_not_within(report_input, arm)]
+            floors = _floors_not_held(
+                report_input, arm, asked, _Overrides(), reasons=False, capped=bool(better.counted)
+            )
+            why = [*floors, *_not_within(report_input, arm), *set_aside]
             if not asked:
                 why.append("no aspect is asked, so nothing shows it no worse")
-            found[arm] = AskedStanding(arm, "not_shown_no_worse", level, (), tuple(why))
+            found[arm] = AskedStanding(arm, "not_shown_no_worse", level, (), tuple(why), better.set_aside)
     return found
 
 

@@ -1071,10 +1071,12 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
 class Floor(EvalDocumentModel, CoreShapeModel):
     """A line a candidate is warned for crossing on one aspect: a typed clause, read on that aspect's readings.
 
-    A floor only WARNS, and loudly: a broken floor is the first thing on the campaign's page, the writer must address
-    it, and a recorded call that adopts the arm anyway names it as overridden (:attr:`CampaignCall.floors_overridden`).
-    It never blocks. A stored decision rule reads back as floors on its one aspect, one per clause. A floor's
-    :attr:`key` is unique within its campaign, which the campaign holding the floors enforces.
+    A floor WARNS, and loudly: a broken floor is the first thing on the campaign's page, the writer must address it,
+    and a recorded call that adopts the arm anyway names it as overridden (:attr:`CampaignCall.floors_overridden`).
+    It never blocks or removes an option. Read broken on an asked aspect, it caps the candidate's standing in code's
+    dominance read (:mod:`~threetears.evals.analysis.report_decision`). A stored decision rule reads back as floors on
+    its one aspect, one per clause. A floor's :attr:`key` is unique within its campaign, which the campaign holding the
+    floors enforces.
     """
 
     aspect: str = Field(min_length=1, description="The label of the aspect whose readings this floor is read on.")

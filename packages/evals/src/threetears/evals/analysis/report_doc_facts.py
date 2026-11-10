@@ -28,9 +28,11 @@ already hold:
 - ``adoption``: a recommended arm is a candidate (the snapshot has a control and it is not that arm), and the
   evidence for switching to it is short: the snapshot asks no question of
   any aspect; or a guardrail the pipeline read on it is breached
-  (:func:`~threetears.evals.analysis.analyst.analyses.breached_guardrails`); or it is shown better on no asked aspect
-  (:func:`~threetears.evals.analysis.report_decision.shown_better`) and not shown no worse
-  (:func:`~threetears.evals.analysis.report_decision.floors_not_held`).
+  (:func:`~threetears.evals.analysis.analyst.analyses.breached_guardrails`); or its standing on the asked aspects is
+  not shown no worse (:func:`~threetears.evals.analysis.report_decision.asked_standing`) with a floor not held
+  (:func:`~threetears.evals.analysis.report_decision.floors_not_held`): it is shown better on no asked aspect
+  (:func:`~threetears.evals.analysis.report_decision.shown_better`, which sets aside an improvement read by a judge not
+  calibrated, and the sentence names it), or a floor read broken caps it though it is shown better.
 - ``settled_loss_unasked``: a recommended candidate's reading on an aspect the campaign does not ask about is a loss
   settled past the aspect's margin: its interval lies wholly at or below minus the margin. It is the other side of
   #980's open caveat (``unsettled:<aspect>``, an interval that allows a loss past the margin and a change short of
@@ -117,7 +119,13 @@ from threetears.evals.analysis.report.figure_keys import (
     reader_name,
 )
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report_decision import control_arm, floors_not_held, report_caveats, shown_better
+from threetears.evals.analysis.report_decision import (
+    asked_standing,
+    control_arm,
+    floors_not_held,
+    report_caveats,
+    shown_better,
+)
 from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, Reading, ReportInput
 from threetears.evals.analysis.report_margins import Margin, weakest_margin
 from threetears.evals.kernel.report_doc import Claim, ReportDoc, report_doc_prose
@@ -444,11 +452,17 @@ def _adoption_facts(report_input: ReportInput, path: str, arm: str) -> Iterator[
         said = "the snapshot asks no question of any aspect, so no reading is confirmatory"
     elif breached := breached_guardrails(report_input, arm):
         said = f"it breached the guardrail on {', '.join(breached)}"
-    elif not shown_better(report_input, arm) and (open_floors := floors_not_held(report_input, arm, asked)):
-        said = (
-            "no confirmatory reading shows it better and no contrast on an asked aspect shows it improved, and it is "
-            f"not shown no worse: {'; '.join(open_floors)}"
-        )
+    elif (held := asked_standing(report_input)[arm]).standing == "not_shown_no_worse" and (
+        open_floors := floors_not_held(report_input, arm, asked)
+    ):
+        if shown_better(report_input, arm):
+            better = "it is shown better, but a floor read broken on an asked aspect caps its standing"
+        else:
+            better = "no confirmatory reading shows it better and no contrast on an asked aspect shows it improved"
+            if held.set_aside:
+                dimensions = ", ".join(repr(dimension) for dimension in held.set_aside)
+                better += f" save on {dimensions}, whose judge is not calibrated, so it is set aside"
+        said = f"{better}, and it is not shown no worse: {'; '.join(open_floors)}"
     else:
         return
     yield _fact("adoption", path, [*named, f"; {said}."], report_input)

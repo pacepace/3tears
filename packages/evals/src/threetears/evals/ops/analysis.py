@@ -354,8 +354,10 @@ ASPECTS_DESCRIPTION = (
 FLOORS_DESCRIPTION = (
     "Lines a candidate is warned for crossing, each {aspect, clause}: clause {kind: rate_drop, max_points, reading?} "
     "(no pass rate, or the named one, may drop by more than max_points) or {kind: cost_lower} (it must cost less per "
-    "reply). A floor only warns, on an aspect that declares a design, of a campaign that names a control: without "
-    "one a floor is read against nothing, and a bar is declared instead. Each aspect, kind and reading once."
+    "reply). A floor warns and never blocks or removes an option; read broken on an asked aspect, it caps the "
+    "candidate's standing in code's dominance read. It is read on an aspect that declares a design, of a campaign "
+    "that names a control: without one a floor is read against nothing, and a bar is declared instead. Each aspect, "
+    "kind and reading once."
 )
 
 #: What a margin given at adoption is, said once.

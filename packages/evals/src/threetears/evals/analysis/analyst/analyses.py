@@ -434,8 +434,9 @@ class SurvivorRow(BaseModel):
     standing: StandingWord = Field(description="Its standing on the asked aspects.")
     behind: list[str] = Field(description="In a choice, the arms an asked pair shows ahead of it, as arm:<id>.")
     why: list[str] = Field(
-        description="Why a candidate is not shown no worse on the asked aspects, each floor and aspect by its id; the "
-        "figures of each floor it is not shown to hold are among its figures."
+        description="Why a candidate is not shown no worse on the asked aspects (a floor read broken caps one shown "
+        "better), and each improvement set aside because its judge is not calibrated, each floor, aspect and dimension "
+        "by its id; the figures of each floor it is not shown to hold are among its figures."
     )
     dominated_by: list[str] = Field(
         description="The survivors at least as good on every axis while it is not as good as them, as arm:<id>; "

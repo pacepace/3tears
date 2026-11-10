@@ -467,9 +467,11 @@ existed reads as one aspect labelled with its behavior.
 #### Floor
 A line a candidate is warned for crossing on one aspect (`Floor`): a typed clause, `RateDrop` (no pass rate drops
 by more than `max_points`) or `CostLower` (the candidate costs less per reply), never words the engine parses. A
-floor reads `broken`, `held` or `unclear`, on its own interval at the nominal level. It only **warns**, loudly: a
-broken floor is the first line of the page. It never decides, blocks or writes the verdict; code reports, the
-writer recommends, and a person decides. Held on every floor of every asked aspect, each declaring one, a candidate is shown no worse,
+floor reads `broken`, `held` or `unclear`, on its own interval at the nominal level. It **warns**, loudly: a
+broken floor is the first line of the page. It never removes an option, blocks or writes the verdict; code reports,
+the writer recommends, and a person decides. Read `broken` on an asked aspect, it caps the candidate's standing in
+code's dominance read (`options_dominance`): a candidate shown better there is read not shown no worse, and the
+reason names the floor. An `unclear` floor caps nothing. Held on every floor of every asked aspect, each declaring one, a candidate is shown no worse,
 which licenses the writer to recommend it as a separated gain does: a floor is how a campaign asks "no worse?".
 
 #### Campaign kind
