@@ -208,6 +208,20 @@ class TestAComparisonReadsEachArmPerKind:
         (cases,) = [block for block in comparison.report.blocks if getattr(block, "name", None) == "cases"]
         assert {row["stratum"].text for row in cases.rows} == {"lookalike ticket", "plain ticket"}
 
+    async def test_two_ids_that_would_print_alike_each_print_and_key_as_their_id(self) -> None:
+        """``edge_case`` and ``edge__case`` would both print ``edge case``: the page heads each stratum, and names each
+        case's, by its id, and :meth:`Result.strata` keys the two apart."""
+        renamed = [{**case, "stratum": "edge_case" if case["stratum"] == "plain" else "edge__case"} for case in CASES]
+        comparison = await _compared(renamed, [QUEUE])
+
+        (strata,) = [block for block in comparison.report.blocks if getattr(block, "name", None) == "strata"]
+        headers = [column.header for column in strata.columns]
+        assert "edge_case" in headers and "edge__case" in headers and "edge case" not in headers
+        (cases,) = [block for block in comparison.report.blocks if getattr(block, "name", None) == "cases"]
+        assert {row["stratum"].text for row in cases.rows} == {"edge_case", "edge__case"}
+        rows = comparison.strata(reading="Accuracy")
+        assert rows and all(set(row["strata"]) == {"edge_case", "edge__case"} for row in rows)
+
     async def test_unstratified_cases_have_no_strata_rows(self) -> None:
         unkinded = [{key: value for key, value in case.items() if key != "stratum"} for case in CASES]
         comparison = await _compared(unkinded, [answered])
