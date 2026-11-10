@@ -135,8 +135,7 @@ async def _paged(
     touched = statements = 0
     while most_pages is None or statements < most_pages:
         if collection is None:
-            # a table no collection or cache serves: nothing to settle
-            rows = await reader.fetch(sql, *params)
+            rows = await _unserved_page(reader, sql, params)
         else:
             async with collection.bypassing_write(conn=conn) as settled:
                 rows = await reader.fetch(sql, *params)
@@ -146,6 +145,22 @@ async def _paged(
         if len(rows) < write.page:
             break
     return SweptRows(deleted=touched, statements=statements)
+
+
+async def _unserved_page(reader: Any, sql: str, params: Sequence[Any]) -> list[Any]:
+    """one page of a paged write on a table no collection or cache serves (``collection=None``, said so by the
+    caller): nothing to settle.
+
+    :param reader: the caller's connection
+    :ptype reader: Any
+    :param sql: the page's statement
+    :ptype sql: str
+    :param params: its parameters
+    :ptype params: Sequence[Any]
+    :return: the keys it returned
+    :rtype: list[Any]
+    """
+    return list(await reader.fetch(sql, *params))
 
 
 def _entity_id(row: Mapping[str, Any], key: Sequence[str]) -> Any:
