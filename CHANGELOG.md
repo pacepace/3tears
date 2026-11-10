@@ -8,6 +8,8 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+- core testing: `assert_same_results` compares rows holding arrays, decoded jsonb objects and nested ones: each value is normalised to a hashable form (a list as a tuple, a mapping as its items in key order, recursively) before the rows are counted, where it raised `unhashable type`.
+
 ### enforcement: use-the-helper, every data table read and written through 3tears' helpers
 
 **Added:** `threetears.enforcement.no_whole_reads.use_the_helper_findings(config)`, the `use-the-helper` rule: every

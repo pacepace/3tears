@@ -150,3 +150,64 @@ async def test_a_write_is_compared_by_the_table_it_leaves(conn: _Duck) -> None:
             helper=_asking("UPDATE t SET v = 'w' WHERE k >= $1", 0),
             state_sql=_STATE,
         )
+
+
+@pytest.fixture
+async def documents() -> AsyncIterator[_Duck]:
+    """a table whose rows hold an array, an object, and an object nesting an array and an object (decoded jsonb)."""
+    db = duckdb.connect()
+    db.execute(
+        "CREATE TABLE d (tenant VARCHAR NOT NULL, k INTEGER NOT NULL, tags VARCHAR[], "
+        "meta STRUCT(a INTEGER, b VARCHAR), deep STRUCT(names VARCHAR[], inner_ STRUCT(x INTEGER)))"
+    )
+    yield _Duck(db)
+    db.close()
+
+
+def _document(seed: Seeded) -> Mapping[str, Any]:
+    return {
+        "tenant": f"t{seed.tenant}",
+        "k": seed.index,
+        "tags": [] if seed.null else [f"tag{seed.index}", "shared"],
+        "meta": {"a": seed.tie, "b": f"b{seed.index}"},
+        "deep": {"names": [f"n{seed.index}"], "inner_": {"x": seed.index}},
+    }
+
+
+_OLD_DOCUMENTS = "SELECT k, tags, meta, deep FROM d WHERE tenant = $1 ORDER BY k"
+
+
+async def test_rows_holding_lists_and_objects_compare_by_their_values(documents: _Duck) -> None:
+    """Flips if a row holding an array, an object or a nested one cannot be compared (an unhashable value), or if
+    equal ones are reported as differing."""
+    await assert_same_results(
+        documents,
+        table="d",
+        row=_document,
+        old_sql=_OLD_DOCUMENTS,
+        params=["t0"],
+        helper=_asking(_OLD_DOCUMENTS, "t0"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("column", "changed"),
+    [
+        ("tags", "list_append(tags, 'extra')"),
+        ("meta", "struct_pack(a := meta.a + 1, b := meta.b)"),
+        ("deep", "struct_pack(names := deep.names, inner_ := struct_pack(x := deep.inner_.x + 1))"),
+    ],
+)
+async def test_a_changed_list_object_or_nested_value_is_caught(documents: _Duck, column: str, changed: str) -> None:
+    """Flips if a helper whose array, object, or object nested in an object differs passes for the old statement."""
+    others = ", ".join(name for name in ("tags", "meta", "deep") if name != column)
+    helper_sql = f"SELECT k, {others}, {changed} AS {column} FROM d WHERE tenant = $1 ORDER BY k"
+    with pytest.raises(AssertionError, match="one row: "):
+        await assert_same_results(
+            documents,
+            table="d",
+            row=_document,
+            old_sql=_OLD_DOCUMENTS,
+            params=["t0"],
+            helper=_asking(helper_sql, "t0"),
+        )
