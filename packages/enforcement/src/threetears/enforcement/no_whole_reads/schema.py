@@ -223,6 +223,8 @@ class _DeclaredIndex:
     :ivar unique: whether it is a unique index, a key of its table
     :ivar partial: whether it covers only the rows a ``WHERE`` names (a partial unique index is no key)
     :ivar where: a partial index's predicate, as written
+    :ivar ranged: whether its first column is declared ``ASC`` or ``DESC`` (``IndexDef(asc=...)``/``desc``, or the item
+        in its ``CREATE INDEX``), so YugabyteDB range-shards it; a first column not so declared is hashed there
     """
 
     table: str
@@ -238,6 +240,7 @@ class _DeclaredIndex:
     unique: bool = False
     partial: bool = False
     where: str = ""
+    ranged: bool = False
 
 
 @dataclass
@@ -277,6 +280,9 @@ class SchemaCatalog:
     tables: dict[str, _DeclaredTable] = field(default_factory=dict)
     sites: list[_DeclaredIndex] = field(default_factory=list)
     used: set[tuple[str, str, str]] = field(default_factory=set)
+    #: each declared index a keyed read ranges or orders through from its first column with nothing bound before it,
+    #: whose first column is not declared ``ASC``/``DESC`` (hashed on YugabyteDB), with the read's code
+    hashed_leads: set[tuple[str, str, str]] = field(default_factory=set)
     dependency_indexes: set[tuple[str, str]] = field(default_factory=set)
     templates: dict[str, _DeclaredTable] = field(default_factory=dict)
 
@@ -298,6 +304,26 @@ class SchemaCatalog:
         for purpose in purposes(declared.purpose) if declared is not None else ():
             if purpose in readers:
                 self.used.add((table, index, purpose))
+
+    def use_from_lead(self, table: str, index: str, readers: frozenset[str]) -> None:
+        """record that a keyed read written in ``readers`` ranges or orders through ``index`` of ``table`` from its first
+        column, nothing bound before it (:meth:`use`, and the read's own check): on YugabyteDB that first column must be
+        range-sharded, declared ``ASC`` or ``DESC``, or the read reads every row.
+
+        :param table: the bare table
+        :ptype table: str
+        :param index: the index
+        :ptype index: str
+        :param readers: ``<path>::<name>`` of the code the read is written in
+        :ptype readers: frozenset[str]
+        :return: nothing
+        :rtype: None
+        """
+        self.use(table, index, readers)
+        entry = self.tables.get(table)
+        declared = entry.indexes.get(index) if entry is not None else None
+        if declared is not None and not declared.ranged:
+            self.hashed_leads.add((table, index, min(readers) if readers else ""))
 
     def table(self, name: str) -> _DeclaredTable | None:
         """a table's declaration.
@@ -526,6 +552,19 @@ def _paren_body(text: str, opening: int) -> tuple[str, int]:
     return text[opening + 1 :], len(text)
 
 
+def _listed(value: Any) -> list[Any]:
+    """a table list's field as a list: a bare string is one item, nothing is none.
+
+    :param value: the field
+    :ptype value: Any
+    :return: its items
+    :rtype: list[Any]
+    """
+    if value is None:
+        return []
+    return [value] if isinstance(value, str) else list(value)
+
+
 def _column_of(item: str) -> str:
     """the column a key or index item names (``(a) HASH`` -> ``a``, ``"b" DESC`` -> ``b``, ``lower(c)`` as written).
 
@@ -589,7 +628,9 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
         partial = partial_match is not None
         where_text = _strip_comments(rest[partial_match.end() :]).split(";")[0].strip() if partial_match else ""
         notes = _notes_before(text, match.start())
-        columns = tuple(_column_of(part) for part in _split_top(_strip_comments(inner)))
+        items = _split_top(_strip_comments(inner))
+        columns = tuple(_column_of(part) for part in items)
+        ranged = bool(items) and re.search(r"\b(?:ASC|DESC)\b", items[0], re.IGNORECASE) is not None
         events.append(
             (
                 match.start(),
@@ -599,7 +640,7 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
                     match.group(3),
                     columns,
                     include,
-                    (bool(match.group(1)), partial, where_text),
+                    (bool(match.group(1)), partial, where_text, ranged),
                     notes,
                 ),
             )
@@ -669,7 +710,7 @@ def _apply_ddl(catalog: SchemaCatalog, text: str, origin: str, *, local: bool) -
             elif table is not None:
                 catalog.add_unique(table, payload[1], origin)
         elif kind == "index":
-            name, table_written, columns, include, (unique, partial, where_text), notes = payload
+            name, table_written, columns, include, (unique, partial, where_text, ranged), notes = payload
             table = bare_table(table_written)
             index_name = bare_table(name) if name else None
             if table is None or index_name is None:
@@ -687,6 +728,7 @@ def _apply_ddl(catalog: SchemaCatalog, text: str, origin: str, *, local: bool) -
                 unique=unique,
                 partial=partial,
                 where=where_text,
+                ranged=ranged,
             )
             catalog.add_index(index)
             if not local:
@@ -1034,6 +1076,13 @@ def _index_from_call(call: ast.Call, values: _Values, table: str, origin: str, *
         unique=getattr(_keyword(call, "unique"), "value", False) is True,
         partial=_keyword(call, "where") is not None or _keyword(call, "postgresql_where") is not None,
         where=values.text(_keyword(call, "where")) or "",
+        ranged=bool(columns)
+        and columns[0].lower()
+        in {
+            column.lower()
+            for order in ("asc", "desc")
+            for column in (values.texts(_keyword(call, order)) or [values.text(_keyword(call, order)) or ""])
+        },
     )
 
 
@@ -1285,6 +1334,9 @@ def _apply_yaml(catalog: SchemaCatalog, path: Path, relative: str, *, local: boo
                                 local,
                                 unique=index.get("unique") is True,
                                 partial=bool(index.get("where")),
+                                ranged=bool(index.get("columns"))
+                                and str(index["columns"][0]).lower()
+                                in {str(c).lower() for o in ("asc", "desc") for c in _listed(index.get(o))},
                             )
                             _add_site(catalog, declared)
                     for constraint in node.get("unique_constraints") or ():
@@ -1569,5 +1621,15 @@ def _index_site_findings(
         findings.append(
             f"{where}: index-crowded-no-reason -- {site.table} carries {len(table.indexes)} indexes, more than "
             f"{MAX_PLAIN_INDEXES}, and this one gives no written reason ({_MIN_REASON}+ characters)"
+        )
+    readers = sorted(
+        reader for table_name, index, reader in catalog.hashed_leads if (table_name, index) == (site.table, site.name)
+    )
+    if readers and site.columns:
+        findings.append(
+            f"{where}: index-hashed-range -- {readers[0]} ranges or orders by its first column {site.columns[0]} with "
+            "nothing bound before it, and YugabyteDB hashes a first column not declared ASC: every such read reads "
+            f"the whole table. Declare it range-sharded (IndexDef asc=({site.columns[0]!r},), or "
+            f"'{site.columns[0]} ASC' in its CREATE INDEX)"
         )
     return findings

@@ -138,8 +138,8 @@ def scheduled_jobs_table(metadata: MetaData) -> Table:
             name="scheduled_jobs_missed_fire_policy_check",
         ),
         Index(
-            "idx_scheduled_jobs_next_fire",
-            "next_fire_at",
+            "idx_scheduled_jobs_next_fire_asc",
+            sa_text("next_fire_at ASC"),
             postgresql_where=sa_text("status = 'active' AND next_fire_at IS NOT NULL"),
             info={
                 "purpose": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::ScheduledJobCollection.list_due_for_tick",

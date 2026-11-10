@@ -77,9 +77,9 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
 # Partial index on the tick-engine's hot query path
 # (``WHERE status = 'active' AND next_fire_at <= now``). Partial cuts the
 # index footprint because expired one-shots accumulate.
+# v003 builds this index again range-sharded (``next_fire_at ASC``) beside it, moves its purpose there and
+# drops it: hashed on YugabyteDB, the due scan's range and order read every active row.
 _CREATE_NEXT_FIRE_INDEX_SQL = (
-    "-- purpose: packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::ScheduledJobCollection.list_due_for_tick\n"
-    "-- plan_test: packages/scheduled-jobs/tests/integration/test_index_plans.py::test_scheduled_jobs_next_fire\n"
     "CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_next_fire "
     "ON scheduled_jobs (next_fire_at) "
     "WHERE status = 'active' AND next_fire_at IS NOT NULL"

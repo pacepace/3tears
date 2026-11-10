@@ -656,7 +656,7 @@ def table_def_for(schema: TableSchema) -> TableDef:
     :return: the DDL definition
     :rtype: TableDef
     :raises KeyError: when a column carries a type tag this renderer does not map
-    :raises ValueError: when an index declares what the DDL definition cannot carry (``desc``,
+    :raises ValueError: when an index declares what the DDL definition cannot carry (``desc``, ``asc``,
         ``where``, ``using``, ``ops``, ``pg_with`` or ``nulls_not_distinct``), so the migration would create a different index
     """
     for index in schema.indexes:
@@ -664,6 +664,7 @@ def table_def_for(schema: TableSchema) -> TableDef:
             field
             for field, value in (
                 ("desc", index.desc),
+                ("asc", index.asc),
                 ("where", index.where),
                 ("using", index.using),
                 ("ops", index.ops),

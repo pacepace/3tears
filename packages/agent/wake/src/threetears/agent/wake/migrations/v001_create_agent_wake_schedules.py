@@ -106,10 +106,9 @@ CREATE TABLE IF NOT EXISTS agent_wake_schedules (
 # the index footprint roughly by 1 - (active_count / total_count); for
 # wakes that's typically 0.9+ savings because expired one-shots
 # accumulate.
+# v012 builds this index again range-sharded (``next_fire_at ASC``) beside it, moves its purpose there and
+# drops it: hashed on YugabyteDB, the due scan's range and order read every active row.
 _CREATE_NEXT_FIRE_INDEX_SQL = (
-    "-- purpose: packages/agent/wake/src/threetears/agent/wake/collections.py::WakeScheduleCollection.list_due_for_tick\n"
-    "-- plan_test: packages/agent/wake/tests/integration/test_index_plans.py::test_wake_schedules_next_fire\n"
-    "-- reason: agent_wake_schedules carries five indexes: the tick's due scan, the agent's and the user's reads\n"
     "CREATE INDEX IF NOT EXISTS idx_wake_schedules_next_fire "
     "ON agent_wake_schedules (next_fire_at) "
     "WHERE status = 'active' AND next_fire_at IS NOT NULL"

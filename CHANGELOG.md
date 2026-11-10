@@ -8,6 +8,17 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### core, enforcement: an index that serves a range or an order from its first column is declared range-sharded
+
+**Added (core):** `IndexDef.asc` / `Index(..., asc="expires_at")`: the column rendered `ASC` in so many words.
+Postgres reads it as its default; YugabyteDB range-shards an index whose first column is declared `ASC` (or `DESC`)
+and hashes it otherwise, and a hashed first column seeks no range and answers no order, so a page past a bound with
+nothing bound before it (`read_after`, `delete_before` with an empty `by`, an ordered listing) read every row.
+**Added (enforcement):** `index-hashed-range`: a purposed index a keyed read ranges or orders through from its first
+column, nothing bound before it, whose first column is not declared `ASC`/`DESC` (`asc=`/`desc=`, `col ASC` in its
+`CREATE INDEX`, a table list's `asc`/`desc`). A read on a local backend (`execute_query`, `execute_arrow`), of a copy
+relation or of a change set is exempt: nothing there is hashed.
+
 ### core: a whole read of a table whose key's lead YugabyteDB hashes reads each page from its bucket
 
 **Fixed:** on YugabyteDB a key's first column is hashed, and the keyset cursor's leading bound cannot seek a hashed

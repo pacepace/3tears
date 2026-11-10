@@ -20,7 +20,7 @@ import pytest
 from threetears.agent.audit.migrations import register
 from threetears.agent.audit.persist import anonymize_audit_rows, prune_audit_events
 from threetears.core.data.migrations import MigrationRunner
-from threetears.core.testing.plans import explain_statement, explain_write, plan_uses_index
+from threetears.core.testing.plans import explain_statement, explain_write, on_yugabyte, plan_uses_index
 
 pytestmark = pytest.mark.integration
 
@@ -146,12 +146,19 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
 
 
 async def test_audit_events_time(conn: asyncpg.Connection) -> None:
-    """Flips if retention's prune stops finding the expired events through idx_audit_events_time."""
+    """Flips if retention's prune stops finding the expired events through idx_audit_events_time_asc, or if on
+    YugabyteDB a batch's read of them stops seeking the range (a hashed ``timestamp`` reads every event)."""
     captured = _Captured()
     await prune_audit_events(captured, older_than=timedelta(minutes=80), batch_size=100)  # type: ignore[arg-type]
     (sql, args), *_ = captured.asked
     plan = await explain_write(conn, sql, *args)
-    assert plan_uses_index(plan, "idx_audit_events_time"), plan.plan
+    assert plan_uses_index(plan, "idx_audit_events_time_asc"), plan.plan
+    # the batch's own read, analysed: about its own rows (200 events are past the cutoff), not the 5000 of the table
+    batch = sql[sql.index("(SELECT") + 1 : sql.rindex(")")]
+    read = await explain_statement(conn, batch, *args)
+    assert read.rows_returned == 100, read
+    if await on_yugabyte(conn):
+        assert read.rows_scanned <= 2 * (100 + 1), read
 
 
 async def test_audit_events_actor(conn: asyncpg.Connection) -> None:
