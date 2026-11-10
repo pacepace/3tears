@@ -8,6 +8,21 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### core: a whole read of a table whose key's lead YugabyteDB hashes reads each page from its bucket
+
+**Fixed:** on YugabyteDB a key's first column is hashed, and the keyset cursor's leading bound cannot seek a hashed
+column, so every page of a whole-table read past its cursor scanned and sorted the whole table (a 200,000-row table:
+200,000 rows scanned a page; a cold start of a 1,000,000-row copy read the table a thousand times, about 5.5 minutes).
+`keyset_pages`, `keyset_arrow_pages` and `read_keyset_pages` take `lead_array` (the lead's SQL array type), named by a
+reader whose declaration leaves the lead hashed; on YugabyteDB such a read walks the lead: its values from
+`SELECT DISTINCT` (answered from the bucket heads), then each value's rows with the rest of the key past the cursor (a
+seek inside the bucket), small values grouped `= ANY` a page at a time. Rows come in key order; `after=` resumes
+inside a value. Postgres, an older hub, and a read whose filter pins the lead keep the cursor's form.
+`CopyFollower`'s cold start, `SqlL3Backend.scan` of a whole table and a schema-backed collection's L3 pages name it;
+`read_l3_rows`, `l3_row_pages` and `read_l3_arrow` pass it through. **Added:** `threetears.core.backends.dialect
+.l3_on_yugabyte` (a pool by `version()`; the rail's proxy by its broker's `hub_capabilities`, `dialect:yugabyte`), and
+`schema_backed.sql_cast` / `TableSchema.hashed_lead_array`.
+
 ### core: `ScopedSnapshot` and `SharedSnapshot` are removed
 
 **Removed (core):** `threetears.core.collections.scoped_snapshot` (`ScopedSnapshot`, its `SnapshotTable`,
