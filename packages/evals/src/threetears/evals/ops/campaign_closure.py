@@ -55,10 +55,10 @@ from typing import Any, Final
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis import host_declarations_digest
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel import MeasureFamily, MetricDescriptor
 from threetears.evals.kernel.build_stamp import package_version
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
-from threetears.evals.kernel.numbers import spell_count
 from threetears.evals.kernel.storage import UnreadableRecordError
 from threetears.evals.kernel.host import Bar, EvalHost, HostProfile, PassThreshold
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN
@@ -473,9 +473,11 @@ class _Closure:
             return
         self.kept_bytes += len(canonical_json(document))
         if self.kept_bytes > self._max_bytes:
+            forms = PageForms.off_page()
             raise ValidationFailedError(
-                f"the closure of campaign {self._campaign_id!r} passed the export ceiling of {spell_count(self._max_bytes)} "
-                f"bytes, at {spell_count(self.kept_bytes)} bytes after {spell_count(len(self.documents))} documents: every page call of "
+                f"the closure of campaign {self._campaign_id!r} passed the export ceiling of "
+                f"{forms.count(self._max_bytes).text} bytes, at {forms.count(self.kept_bytes).text} bytes after "
+                f"{forms.count(len(self.documents)).text} documents: every page call of "
                 "the action reads the whole closure, so a closure past the ceiling is not served here",
                 {"max_bytes": self._max_bytes, "kept_bytes": self.kept_bytes, "kept_documents": len(self.documents)},
                 remedy=_PAST_CEILING,

@@ -377,8 +377,8 @@ async def test_reports_whose_budgets_could_pass_an_arms_share_are_refused_before
     # The smallest cap whose arm's part holds the reports: they are the first batch, every case launching at once.
     smallest = spell_dollars(math.ceil(reports * len(arms) / 0.8 * 100 - 1e-9) / 100)
     expected = (
-        f"the {len(HELD_OUT_FIXTURES)} report(s) at ${budget_usd:.2f} each could pass an arm's ${share:.2f} part of "
-        f"max_cost_usd ${max_cost_usd:.2f}, after the pairwise pass's $1.60 (pairwise_share 0.2); a max_cost_usd of "
+        f"the {len(HELD_OUT_FIXTURES)} report(s) at {spell_dollars(budget_usd)} each could pass an arm's {spell_dollars(share)} part of "
+        f"max_cost_usd {spell_dollars(max_cost_usd)}, after the pairwise pass's $1.60 (pairwise_share 0.2); a max_cost_usd of "
         f"{smallest} or more admits it, or lower budget_usd"
     )
     with pytest.raises(ValueError) as refused:
@@ -455,8 +455,8 @@ async def test_a_judge_whose_calls_at_their_floor_could_pass_a_part_is_refused_b
         assert pass_calls * FLOOR > pass_part and cases * budget_usd + judge_calls * FLOOR <= arm_part
         expected = (
             f"a pairwise pass's {pass_calls} judge call(s) ({cases} pair(s) in both orders, {JUDGE_CALL_ATTEMPTS} "
-            f"attempts each) are priced at {each}, ${pass_calls * FLOOR:.2f} in all, above the pass's "
-            f"${pass_part:.2f} part of max_cost_usd ${max_cost_usd:.2f} (pairwise_share {share}); "
+            f"attempts each) are priced at {each}, {spell_dollars(pass_calls * FLOOR)} in all, above the pass's "
+            f"{spell_dollars(pass_part)} part of max_cost_usd {spell_dollars(max_cost_usd)} (pairwise_share {share}); "
             f"{admits(share, budget_usd)}, or raise pairwise_share or lower the judge's max_tokens"
         )
     else:
@@ -467,9 +467,9 @@ async def test_a_judge_whose_calls_at_their_floor_could_pass_a_part_is_refused_b
         total = cases * budget_usd + judge_calls * FLOOR
         assert total > arm_part
         expected = (
-            f"an arm's {cases} report(s) at ${budget_usd:.2f} and its {judge_calls} judge call(s) ({cases} case(s) x "
-            f"{dims} dimension(s) x {JUDGE_CALL_ATTEMPTS} attempts), priced at {each}, come to ${total:.2f}, above "
-            f"the arm's ${arm_part:.2f} part of max_cost_usd ${max_cost_usd:.2f}; {admits(share, budget_usd)}, or "
+            f"an arm's {cases} report(s) at {spell_dollars(budget_usd)} and its {judge_calls} judge call(s) ({cases} case(s) x "
+            f"{dims} dimension(s) x {JUDGE_CALL_ATTEMPTS} attempts), priced at {each}, come to {spell_dollars(total)}, above "
+            f"the arm's {spell_dollars(arm_part)} part of max_cost_usd {spell_dollars(max_cost_usd)}; {admits(share, budget_usd)}, or "
             "lower budget_usd or the judge's max_tokens"
         )
     with pytest.raises(ValueError) as refused:
@@ -482,6 +482,10 @@ async def test_a_judge_whose_calls_at_their_floor_could_pass_a_part_is_refused_b
             pairwise_share=share,
         ).run()
     assert str(refused.value) == expected
+    if what == "pass":
+        # Every amount the refusal weighs is money's one form, the smallest cap it names included: the pass's part of
+        # $8 at a hundredth reads to two figures, never cut to the cent.
+        assert "the pass's $0.080 part of max_cost_usd $8.00" in str(refused.value)
     storage = EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite"))
     assert await asyncio.to_thread(storage.query_eval_runs, SCOPE) == [], "no arm was launched"
     assert offline == []

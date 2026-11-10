@@ -1482,38 +1482,43 @@ class WriterEval:
         smallest = max(
             costs.arm(cases) * arms / (1 - self.pairwise_share), costs.pairs(cases) * candidates / self.pairwise_share
         )
-        admitted = PageForms.off_page().money_total(math.ceil(smallest * 100 - 1e-9) / 100)
+        forms = PageForms.off_page()
+        admitted = forms.money_total(math.ceil(smallest * 100 - 1e-9) / 100)
         admits = f"a max_cost_usd of {admitted.text} or more admits it"
         which = "the first batch's" if self.stop_when == "separated" else "the"
         if self.budget.usd is not None and cases * self.budget.usd > self._arm_part:
             raise ValueError(
-                f"{which} {cases} report(s) at ${self.budget.usd:.2f} each could pass an arm's ${self._arm_part:.2f} "
-                f"part of max_cost_usd ${self.max_cost_usd:.2f}, after the pairwise pass's "
-                f"${self.max_cost_usd * self.pairwise_share:.2f} (pairwise_share {self.pairwise_share}); {admits}, or "
-                "lower budget_usd"
+                f"{which} {cases} report(s) at {forms.money_total(self.budget.usd).text} each could pass an arm's "
+                f"{forms.money_total(self._arm_part).text} part of max_cost_usd "
+                f"{forms.money_total(self.max_cost_usd).text}, after the pairwise pass's "
+                f"{forms.money_total(self.max_cost_usd * self.pairwise_share).text} (pairwise_share "
+                f"{self.pairwise_share}); {admits}, or lower budget_usd"
             )
         floor = costs.floor
         if floor is None:
             return
         each = (
-            f"${floor:.4f} each before any page is read ({costs.judge}'s output cap and "
+            f"{forms.money_ledger(floor).text} each before any page is read ({costs.judge}'s output cap and "
             f"{PROMPT_FRAMING_TOKENS} prompt tokens)"
         )
         pass_calls = cases * 2 * JUDGE_CALL_ATTEMPTS
         if pass_calls * floor > self._pass_part:
             raise ValueError(
                 f"a pairwise pass's {pass_calls} judge call(s) ({cases} pair(s) in both orders, {JUDGE_CALL_ATTEMPTS} "
-                f"attempts each) are priced at {each}, ${pass_calls * floor:.2f} in all, above the pass's "
-                f"${self._pass_part:.2f} part of max_cost_usd ${self.max_cost_usd:.2f} (pairwise_share "
+                f"attempts each) are priced at {each}, {forms.money_total(pass_calls * floor).text} in all, above the "
+                f"pass's {forms.money_total(self._pass_part).text} part of max_cost_usd "
+                f"{forms.money_total(self.max_cost_usd).text} (pairwise_share "
                 f"{self.pairwise_share}); {admits}, or raise pairwise_share or lower the judge's max_tokens"
             )
         judge_calls = cases * costs.dims * JUDGE_CALL_ATTEMPTS
         if costs.arm(cases) > self._arm_part:
             raise ValueError(
-                f"an arm's {cases} report(s) at ${self.budget.usd or 0:.2f} and its {judge_calls} judge call(s) "
+                f"an arm's {cases} report(s) at {forms.money_total(self.budget.usd or 0).text} and its {judge_calls} "
+                "judge call(s) "
                 f"({cases} case(s) x {costs.dims} dimension(s) x {JUDGE_CALL_ATTEMPTS} attempts), priced at {each}, "
-                f"come to ${costs.arm(cases):.2f}, above the arm's ${self._arm_part:.2f} part of max_cost_usd "
-                f"${self.max_cost_usd:.2f}; {admits}, or lower budget_usd or the judge's max_tokens"
+                f"come to {forms.money_total(costs.arm(cases)).text}, above the arm's "
+                f"{forms.money_total(self._arm_part).text} part of max_cost_usd "
+                f"{forms.money_total(self.max_cost_usd).text}; {admits}, or lower budget_usd or the judge's max_tokens"
             )
 
     async def _pairwise(

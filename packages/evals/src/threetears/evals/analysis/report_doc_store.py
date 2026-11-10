@@ -48,13 +48,13 @@ from pydantic import ValidationError
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.doc_page.build import build, written_prose
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.doc_page.text import above_appendix_text
 from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS
 from threetears.evals.analysis.report_doc_checks import DocVerdict, InvariantNumber, check_report_doc
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import NotFoundError, RefusedInput
-from threetears.evals.kernel.numbers import spell_dollars
 from threetears.evals.kernel.report_doc import (
     EvalReportDoc,
     EvalReportSession,
@@ -235,7 +235,7 @@ def made_line(record: EvalReportDoc) -> str:
     unpriced = total.get("unpriced_turns")
     sent = total.get("turns") if isinstance(total.get("turns"), int) else len(turns)
     if isinstance(cost, int | float) and not isinstance(cost, bool):
-        spent = f"for {spell_dollars(cost)}"
+        spent = f"for {PageForms.off_page().money_total(cost).text}"
     elif unpriced == sent and sent:
         spent = f"unpriced ({sent} turns, none of them priced)"
     else:

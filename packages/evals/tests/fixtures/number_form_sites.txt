@@ -22,8 +22,6 @@ threetears/evals/analysis/agreement.py | tier_sentence | _criterion_words() | 8
 threetears/evals/analysis/agreement.py | tier_sentence | format_number() | 3
 threetears/evals/analysis/aspects.py | _unread_without_control | format_number() | 1
 threetears/evals/analysis/aspects.py | _view | _unread_without_control() | 1
-threetears/evals/analysis/bar_proposals.py | propose_bars | f-string spec | 1
-threetears/evals/analysis/bar_proposals.py | propose_bars | format_number() | 3
 threetears/evals/analysis/bundle/assemble.py | _declared_words | format_number() | 3
 threetears/evals/analysis/bundle/assemble.py | assemble_context_bundle | _frontier_bar() | 1
 threetears/evals/analysis/bundle/bars.py | _frontier_bar | named() | 3
@@ -41,30 +39,11 @@ threetears/evals/analysis/campaign_readings.py | _reason | _percent() | 4
 threetears/evals/analysis/campaign_readings.py | _reason | format_number() | 1
 threetears/evals/analysis/campaign_readings.py | campaign_readings | _reason() | 1
 threetears/evals/analysis/depth.py | precision | round() | 1
-threetears/evals/analysis/judge_temperature.py | JudgeTemperatureComparison.render | _side_text() | 2
-threetears/evals/analysis/judge_temperature.py | JudgeTemperatureComparison.render | dollars_text() | 1
-threetears/evals/analysis/judge_temperature.py | JudgeTemperatureComparison.render | format_number() | 2
-threetears/evals/analysis/judge_temperature.py | JudgeTemperatureComparison.render | spell_stored_counts() | 1
-threetears/evals/analysis/judge_temperature.py | _case | _recorded_text() | 1
-threetears/evals/analysis/judge_temperature.py | _recorded_text | format_number() | 1
-threetears/evals/analysis/judge_temperature.py | _side_text | f-string spec | 1
-threetears/evals/analysis/judge_temperature.py | _side_text | format_number() | 3
-threetears/evals/analysis/judge_temperature.py | read_judge_temperatures | _recorded_text() | 2
 threetears/evals/analysis/latency_partition.py | decompose_total_ms | format_number() | 1
-threetears/evals/analysis/lens_text.py | _pass_hat_k_text | format_number() | 3
-threetears/evals/analysis/lens_text.py | _point_depth | format_number() | 2
-threetears/evals/analysis/lens_text.py | frontier_text | _pass_hat_k_text() | 1
-threetears/evals/analysis/lens_text.py | frontier_text | format_number() | 3
-threetears/evals/analysis/lenses/cost_estimate.py | _cost_band | f-string spec | 5
-threetears/evals/analysis/lenses/cost_estimate.py | _cost_band | format_number() | 3
-threetears/evals/analysis/lenses/cost_estimate.py | compute_estimate_cost | _cost_band() | 1
 threetears/evals/analysis/lenses/frontier.py | _decide_boundary_pillar | format_number() | 1
 threetears/evals/analysis/lenses/frontier.py | _frontier_point | round() | 1
 threetears/evals/analysis/lenses/frontier.py | pass_hat_k_cell_lines | format_number() | 1
 threetears/evals/analysis/measurement_windows.py | format_window_gap | round() | 1
-threetears/evals/analysis/out_of_run_spend.py | _totals_line | f-string spec | 2
-threetears/evals/analysis/out_of_run_spend.py | out_of_run_spend_text | _totals_line() | 3
-threetears/evals/analysis/out_of_run_spend.py | out_of_run_spend_text | f-string spec | 3
 threetears/evals/analysis/quantities.py | _at_precision | round() | 1
 threetears/evals/analysis/quantities.py | number_in | _at_precision() | 1
 threetears/evals/analysis/quantities.py | number_in | format_number() | 1
@@ -252,21 +231,12 @@ threetears/evals/analysis/report/serialize_html.py | _block | table_html() | 1
 threetears/evals/analysis/report/serialize_html.py | _folded | _block() | 1
 threetears/evals/analysis/report/serialize_html.py | campaign_report_html | _block() | 1
 threetears/evals/analysis/report/serialize_html.py | report_html | _block() | 1
-threetears/evals/analysis/report_doc_store.py | made_line | spell_dollars() | 1
-threetears/evals/analysis/report_doc_store.py | read_report_doc | made_line() | 1
-threetears/evals/analysis/report_doc_store.py | store_report_doc | made_line() | 1
 threetears/evals/analysis/report_input_build.py | _Builder.contrasts | _level() | 1
 threetears/evals/analysis/report_input_build.py | _Builder.contrasts | interval_level() | 1
 threetears/evals/analysis/report_input_build.py | _Builder.families | _level() | 1
 threetears/evals/analysis/report_input_build.py | _Builder.families | interval_level() | 1
 threetears/evals/analysis/report_input_build.py | _Builder.measures | _level() | 1
 threetears/evals/analysis/report_input_build.py | _level | format_number() | 1
-threetears/evals/analysis/significance.py | format_significance | format_number() | 2
-threetears/evals/harness/writer_eval.py | WriterEval._launch_budget | first_turn_refusal() | 1
-threetears/evals/harness/writer_eval.py | WriterEval._refuse_a_first_batch_past_its_part | f-string spec | 12
-threetears/evals/harness/writer_eval.py | WriterEval._resolution | resolution_line() | 3
-threetears/evals/harness/writer_eval.py | WriterEval._run | _resolution() | 1
-threetears/evals/harness/writer_host.py | writer_ops_host.plan | f-string spec | 3
 threetears/evals/kernel/covariates.py | _reasoning_ratio_of | round() | 1
 threetears/evals/kernel/covariates.py | derive_covariates | _reasoning_ratio_of() | 1
 threetears/evals/kernel/covariates.py | fold_phase_timings | round() | 1
@@ -274,31 +244,9 @@ threetears/evals/negotiation/settings.py | _budget_for_word | round() | 1
 threetears/evals/negotiation/settings.py | _closest_reasoning | _budget_for_word() | 1
 threetears/evals/negotiation/settings.py | closest_settings | _closest_reasoning() | 1
 threetears/evals/ops/analysis.py | _write_doc_analysis | timed_out_detail() | 1
-threetears/evals/ops/analysis.py | analysis_generate.prepare | format_number() | 1
-threetears/evals/ops/analysis.py | bar_proposals_text | format_number() | 1
-threetears/evals/ops/analyst.py | analyst_gaps_list | group_thousands() | 1
-threetears/evals/ops/campaign_closure.py | _Closure._count | spell_count() | 3
-threetears/evals/ops/report_writer/analyst.py | AnalystSession.draft | capped() | 1
-threetears/evals/ops/report_writer/session.py | ToolSession._answer | capped() | 1
-threetears/evals/ops/report_writer/session.py | ToolSession.capped | group_thousands() | 2
-threetears/evals/ops/report_writer/session.py | ToolSession.from_json | capped() | 1
-threetears/evals/ops/report_writer/tally.py | ReportBudget.admit | first_turn_refusal() | 1
-threetears/evals/ops/report_writer/tally.py | ReportBudget.admit | group_thousands() | 3
-threetears/evals/ops/report_writer/tally.py | ReportBudget.admit | spell_dollars() | 4
 threetears/evals/ops/report_writer/tally.py | ReportBudget.first_turn_refusal | round() | 1
-threetears/evals/ops/report_writer/tally.py | ReportBudget.first_turn_refusal | spell_dollars() | 3
-threetears/evals/ops/report_writer/tally.py | ReportBudget.spelled | group_thousands() | 1
-threetears/evals/ops/report_writer/tally.py | ReportBudget.spelled | spell_dollars() | 1
-threetears/evals/ops/report_writer/write.py | report_write | made_line() | 1
-threetears/evals/ops/report_writer/writer_pairwise.py | resolution_line | format_number() | 1
-threetears/evals/ops/report_writer/writer_pairwise.py | resolution_line | spell_count() | 2
-threetears/evals/ops/report_writer/writer_promotion.py | _readout | _row() | 3
-threetears/evals/ops/report_writer/writer_promotion.py | _readout | format_number() | 1
-threetears/evals/ops/report_writer/writer_promotion.py | _row | format_number() | 4
-threetears/evals/ops/report_writer/writer_promotion.py | _row | interval_level() | 1
 threetears/evals/ops/sweeps.py | _run_sweep | timed_out_detail() | 1
 threetears/evals/providers/catalogue.py | Catalogue.load | spell_declared() | 1
-threetears/evals/quick/judged.py | Judge.__init__ | f-string spec | 2
 threetears/evals/quick/result.py | declare | round() | 1
 threetears/evals/run/judge.py | _normalize_criteria_scores | round() | 1
 threetears/evals/schema/hashing.py | round_figures | f-string spec | 1

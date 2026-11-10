@@ -51,6 +51,7 @@ from typing import Any, Self
 
 from pydantic import ValidationError
 
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.schema import SCALES, CompletionClient, CompletionResult, JudgeEvidence, RubricDim
 from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.host import CompletionClients, CompletionRole
@@ -174,9 +175,11 @@ class Judge:
                 )
             low, high = SCALES[dim.scale].value_range
             if isinstance(margin, bool) or not isinstance(margin, int | float) or not 0 < margin < high - low:
+                forms = PageForms.off_page()
+                ends = [forms.echoed(end, measure=dim.name, kind="judged").text for end in (low, high)]
                 raise ValueError(
                     f"the guard on {key!r} is how much worse than the control an arm may be on it, a positive number "
-                    f"narrower than its scale ({low:g} to {high:g}), not {margin!r}"
+                    f"narrower than its scale ({ends[0]} to {ends[1]}), not {margin!r}"
                 )
         guarded = {self.dim_name(key) for key in self.guard}
         # A guarded dimension is a guardrail: scored on the boundary axis, which the judge stamps on every score.

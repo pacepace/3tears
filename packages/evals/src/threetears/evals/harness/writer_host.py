@@ -43,6 +43,7 @@ from typing import Any, Final, Protocol
 
 from threetears.evals.actions.report_writing import launchable_report_writer_kind
 from threetears.evals.analysis.analyst.skill import AnalystSkill
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel import EvalStorage, ceiling_is_estimate, default_job_timeout
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host import (
@@ -264,9 +265,11 @@ def writer_ops_host(
         width = 1 if request.measure_latency else min(request.settings.max_concurrent_cells, cells)
         needed_s, job_s = math.ceil(cells / max(width, 1)) * cell_s, adaptive_job_timeout_s(cells, cell_s)
         if needed_s > job_s:
+            forms = PageForms.off_page()
             raise ValidationFailedError(
-                f"the arm's {cells} writer cell(s), {width} at a time at {cell_s:.0f}s each, could run {needed_s:.0f}s, "
-                f"past its job's {job_s:.0f}s budget, which would cut a report off after it was paid for",
+                f"the arm's {cells} writer cell(s), {width} at a time at {forms.whole_seconds(cell_s).text} each, "
+                f"could run {forms.whole_seconds(needed_s).text}, past its job's {forms.whole_seconds(job_s).text} "
+                "budget, which would cut a report off after it was paid for",
                 remedy="launch fewer cases, give the report budget a lower turn cap, or lower the request ceiling",
             )
         return planned

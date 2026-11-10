@@ -1690,6 +1690,41 @@ class PageForms:
         text = f"{value:.{_READING_PLACES}f}"
         return self._issue(*_keyed(measure, kind), "reading", value, text, text, "")
 
+    def money_ledger(self, amount: float, *, measure: str = "", kind: _MeasureKind = None) -> Printed:
+        """An amount of money the out-of-run spend ledger states, or a refusal prices one call at, to four decimals, its
+        ``$`` before the number (``$0.0012``), as each prints one today: the precision a single call's price needs,
+        which cents would read as nothing. Of none today: a call's cost and its priced ceiling, a ledger's totals, a
+        judge call's priced floor.
+
+        :param amount: Dollars, as stored.
+        :ptype amount: float
+        :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
+        :ptype kind: _MeasureKind
+        :return: The amount.
+        :rtype: Printed
+        """
+        return self._money(amount, f"${amount:.4f}", measure, kind)
+
+    def whole_seconds(self, seconds: float, *, measure: str = "", kind: _MeasureKind = None) -> Printed:
+        """A duration an off-page line states in whole seconds, rounded half to even, its ``s`` after the number
+        (``95s``), as it prints one today: a launch's refusal weighs a cell's deadline against a job's budget, where a
+        fraction of a second decides nothing. Of none today: a writer cell's deadline, the run it could take, its job's
+        budget.
+
+        :param seconds: The duration, in seconds.
+        :ptype seconds: float
+        :param measure: The measure's key where the figure is one of its figures; empty for a figure of no measure.
+        :ptype measure: str
+        :param kind: The measure's kind (None reads as ``measure``); unread without a measure.
+        :ptype kind: _MeasureKind
+        :return: The duration.
+        :rtype: Printed
+        """
+        digits = f"{seconds:.0f}"
+        return self._issue(*_keyed(measure, kind), "lone", seconds, digits + "s", digits, "s")
+
     def score_readings(
         self, reads: Mapping[str, tuple[float, int]], *, measure: str, kind: _MeasureKind
     ) -> dict[str, Printed]:

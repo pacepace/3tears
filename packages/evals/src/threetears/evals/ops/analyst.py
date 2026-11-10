@@ -37,6 +37,7 @@ from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_inp
 from threetears.evals.analysis.analyst_gaps import gap_digest
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report_doc_checks import DocVerdict, InvariantNumber
 from threetears.evals.analysis.report_doc_store import doc_verdicts_and_page
@@ -44,7 +45,6 @@ from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.service import assemble_campaign_bundle, get_analysis, require_evidence
 from threetears.evals.kernel.analyst_gap import CallGapKind, EvalAnalystGap, GapDigest, GapToolCall, call_gap_id
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, RefusedInput, ValidationFailedError
-from threetears.evals.kernel.numbers import group_thousands
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.kernel.report_snapshot import (
@@ -730,7 +730,7 @@ async def analyst_gaps_list(host: OpsHost, scope_id: str, *, since: datetime | N
     if more:
         window = f"since {since.isoformat()}" if since is not None else "in all"
         raise ValidationFailedError(
-            f"the scope holds more than {group_thousands(str(GAPS_READ_LIMIT))} gaps {window}, past what one digest "
+            f"the scope holds more than {PageForms.off_page().count(GAPS_READ_LIMIT).text} gaps {window}, past what one digest "
             "reads",
             remedy=f"name a later since: the newest of them was stored at {records[-1].created_at}",
         )

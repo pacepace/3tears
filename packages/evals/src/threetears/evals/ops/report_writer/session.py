@@ -59,8 +59,8 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal, Protocol
 
 from threetears.evals.analysis.analyst.skill import SkillText
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.capped_completion import turn_prompt_token_bound
-from threetears.evals.kernel.numbers import group_thousands
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally, TurnCost, WriterRole
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.turns import (
@@ -365,9 +365,10 @@ class ToolSession:
         cap = self.limits.result_chars
         if len(text) <= cap:
             return text
+        forms = PageForms.off_page()
         return (
-            f"{text[:cap]}\n[cut at {group_thousands(str(cap))} of {group_thousands(str(len(text)))} characters: narrow the call (a filter, a smaller "
-            "limit, the next page) to read the rest]"
+            f"{text[:cap]}\n[cut at {forms.count(cap).text} of {forms.count(len(text)).text} characters: narrow the "
+            "call (a filter, a smaller limit, the next page) to read the rest]"
         )
 
     async def send(self, content: str | Sequence[TurnBlock]) -> SessionStop:

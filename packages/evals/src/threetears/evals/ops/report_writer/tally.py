@@ -47,7 +47,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Final, Literal, get_args
 
-from threetears.evals.kernel.numbers import group_thousands, spell_dollars
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.schema.turns import TurnCeiling, TurnReply
 
 __all__ = ["MIN_TURNS_FOR_A_REPORT", "BounceKind", "ReportBudget", "Tally", "TurnCost", "WriterRole"]
@@ -459,8 +459,9 @@ class ReportBudget:
     @property
     def spelled(self) -> str:
         """The cap in words: ``$20.00``, ``$20.00, 60-turn``, or ``2,000,000-token, 60-turn``."""
-        caps = [spell_dollars(self.usd)] if self.usd is not None else []
-        caps += [f"{group_thousands(str(self.tokens))}-token"] if self.tokens is not None else []
+        forms = PageForms.off_page()
+        caps = [forms.money_total(self.usd).text] if self.usd is not None else []
+        caps += [f"{forms.count(self.tokens).text}-token"] if self.tokens is not None else []
         caps += [f"{self.turns}-turn"] if self.turns is not None else []
         return ", ".join(caps)
 
@@ -485,17 +486,18 @@ class ReportBudget:
         """
         if self.turns is not None and self._sent >= self.turns:
             return f"the report's {self.turns}-turn budget is spent"
+        forms = PageForms.off_page()
         if self.usd is None:
             if self.tokens is not None and self._spent_tokens + tokens > self.tokens:
                 return (
-                    f"the next turn can use up to {group_thousands(str(tokens))} tokens, and "
-                    f"{group_thousands(str(self._spent_tokens))} of the report's "
-                    f"{group_thousands(str(self.tokens))}-token budget are used"
+                    f"the next turn can use up to {forms.count(tokens).text} tokens, and "
+                    f"{forms.count(self._spent_tokens).text} of the report's "
+                    f"{forms.count(self.tokens).text}-token budget are used"
                 )
             return None
         if ceiling is None:
             return (
-                f"the client cannot bound the next turn's cost, so the report's {spell_dollars(self.usd)} budget cannot admit it "
+                f"the client cannot bound the next turn's cost, so the report's {forms.money_total(self.usd).text} budget cannot admit it "
                 "(load the price catalogue, hand the model a pricer, use a model it prices, or declare a token and "
                 "turn budget for a model nothing prices)"
             )
@@ -510,8 +512,8 @@ class ReportBudget:
                 else ""
             )
             return (
-                f"the next turn can cost up to {spell_dollars(ceiling.usd)}, and {spell_dollars(self._spent)} of the report's "
-                f"{spell_dollars(self.usd)} budget is spent; it admitted {self._sent} turn{'' if self._sent == 1 else 's'}"
+                f"the next turn can cost up to {forms.money_total(ceiling.usd).text}, and "
+                f"{forms.money_total(self._spent).text} of the report's {forms.money_total(self.usd).text} budget is spent; it admitted {self._sent} turn{'' if self._sent == 1 else 's'}"
                 f"{whole}, where a report takes at least {MIN_TURNS_FOR_A_REPORT}"
             )
         return None
@@ -535,10 +537,11 @@ class ReportBudget:
         if self.usd is None or ceiling.usd <= self.usd:
             return None
         admits = math.ceil(round(ceiling.usd * 100, 6)) / 100
+        forms = PageForms.off_page()
         return (
-            f"{priced} can cost up to {spell_dollars(ceiling.usd)}, above the report's {spell_dollars(self.usd)} budget, "
-            f"so it cannot admit even one turn of the {MIN_TURNS_FOR_A_REPORT} a report takes; a budget of "
-            f"{spell_dollars(admits)} or more admits it"
+            f"{priced} can cost up to {forms.money_total(ceiling.usd).text}, above the report's "
+            f"{forms.money_total(self.usd).text} budget, so it cannot admit even one turn of the "
+            f"{MIN_TURNS_FOR_A_REPORT} a report takes; a budget of {forms.money_total(admits).text} or more admits it"
         )
 
     def admitted_on_estimate(self, ceiling: TurnCeiling | None) -> bool:

@@ -69,13 +69,13 @@ from pydantic import Field, ValidationError
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.analyst.skill_ledger import ShippedSkill, skill_record
 from threetears.evals.analysis.report.blocks import Verdict
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.service import assemble_campaign_bundle, campaign_verdicts
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, PROJECTION_CASE_CAP, bounded_cases_to_clear
 from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart
 from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
-from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN
 from threetears.evals.kernel.run_pages import results_without_payloads
 from threetears.evals.ops.jobs import JobStatus
@@ -456,14 +456,15 @@ def _readout(
     """Each reading the decision read as one table row (its role, what it reads, its difference and interval), then
     the judge's order checks as a second table when a pass was read."""
     role = {"contrast": "gated", "guardrail": "guardrail", "bar": "reported"}
+    forms = PageForms.off_page()
     if report is None:
         head = [[PREFERRED_HEADING, "primary", "not read", "", "", ""]]
     else:
-        primary = _row(report.whole.verdict, "primary")
+        primary = _row(report.whole.verdict, "primary", forms)
         if void is not None:
             primary[2] = f"{primary[2]} (void, {_VOID})"
-        head = [primary, [_FINISHED_ONLY, *_row(report.finished_only.verdict, "reported")[1:]]]
-    rows = [*head, *(_row(verdict, role[verdict.kind]) for verdict in verdicts)]
+        head = [primary, [_FINISHED_ONLY, *_row(report.finished_only.verdict, "reported", forms)[1:]]]
+    rows = [*head, *(_row(verdict, role[verdict.kind], forms) for verdict in verdicts)]
     lines = ["| Reading | Role | Reads | Difference | Interval | Level |", "|---|---|---|---|---|---|"]
     readings = "\n".join([*lines, *("| " + " | ".join(row) + " |" for row in rows)])
     if report is None:
@@ -475,7 +476,7 @@ def _readout(
         ["Of those, both orders picked the same side", str(reliability.order_consistent)],
         [
             f"Order consistency, the primary void below {_ORDER_CONSISTENCY_FLOOR}",
-            "not measured" if rate is None else format_number(rate),
+            "not measured" if rate is None else forms.lone(rate).text,
         ],
         ["Cases scored in one order only, counted apart", str(reliability.one_order)],
         ["Answers the judge could not tell", str(reliability.cannot_tell)],
@@ -495,16 +496,16 @@ def _readout(
     return readings + "\n\n" + "\n".join(table)
 
 
-def _row(verdict: Verdict, role: str) -> list[str]:
-    """One verdict's row of the readout."""
-    interval = verdict.interval
+def _row(verdict: Verdict, role: str, forms: PageForms) -> list[str]:
+    """One verdict's row of the readout, its figures as ``forms`` states them."""
+    interval, level = verdict.interval, verdict.interval_level
     return [
         verdict.heading,
         role,
         _reads(verdict),
-        "" if verdict.delta is None else format_number(verdict.delta),
-        "" if interval is None else f"{format_number(interval[0])} to {format_number(interval[1])}",
-        "" if verdict.interval_level is None or interval is None else format_number(verdict.interval_level),
+        "" if verdict.delta is None else forms.lone(verdict.delta).text,
+        "" if interval is None else f"{forms.lone(interval[0]).text} to {forms.lone(interval[1]).text}",
+        "" if level is None or interval is None else forms.lone(level).text,
     ]
 
 

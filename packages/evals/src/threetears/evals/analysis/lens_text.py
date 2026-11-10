@@ -13,7 +13,7 @@ from threetears.evals.analysis.depth import times
 from threetears.evals.analysis.depth_reading import SubjectDepth, subject_depth
 
 
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.verdict import MIN_CASES
 
 
@@ -43,7 +43,9 @@ def _contestant(model: str, variant_key: str) -> str:
     return f"{model} · {short_digest(variant_key)}"
 
 
-def _pass_hat_k_text(k: int, value: float, n_cases: int, low: float | None, high: float | None) -> str:
+def _pass_hat_k_text(
+    k: int, value: float, n_cases: int, low: float | None, high: float | None, forms: PageForms
+) -> str:
     """A point's pass^k: a rate over :data:`MIN_CASES` or more cases, else only the case count it rests on.
 
     Below the floor no figure is printed, count or interval: pass^k averages fractional per-case estimates, so no count
@@ -51,8 +53,8 @@ def _pass_hat_k_text(k: int, value: float, n_cases: int, low: float | None, high
     """
     if n_cases < MIN_CASES:
         return f"pass^{k} over {n_cases} case(s), too few to state as a rate (a rate needs {MIN_CASES})"
-    interval = f" [{format_number(low)}, {format_number(high)}]" if low is not None and high is not None else ""
-    return f"pass^{k} {format_number(value)}{interval} over {n_cases} case(s)"
+    interval = f" [{forms.lone(low).text}, {forms.lone(high).text}]" if low is not None and high is not None else ""
+    return f"pass^{k} {forms.lone(value).text}{interval} over {n_cases} case(s)"
 
 
 #: The frontier text's depth lines, each one template: a subject's place, a contestant's delivered depth, the cases it
@@ -74,25 +76,27 @@ def _depth_lines(subject: SubjectFrontier) -> list[str]:
     return depth.lines()
 
 
-def _point_depth(point: FrontierPoint, subject: SubjectFrontier) -> str | None:
-    """One contestant's delivered depth, and its pass^k at the subject's common depth where it differs from ``k``."""
+def _point_depth(point: FrontierPoint, subject: SubjectFrontier, forms: PageForms) -> str | None:
+    """One contestant's delivered depth, and its pass^k at the subject's common depth where it differs from ``k``, its
+    figures as ``forms`` states them."""
     if point.depth is None:
         return None
     said = POINT_DEPTH.format(times=times(point.depth), cases=point.depth.cases)
     if point.n_cases_short_of_k:
         said += POINT_SHORT.format(short=point.n_cases_short_of_k, k=subject.k)
     if (model := point.model_pass_hat_k) is not None:
-        said += POINT_MODEL.format(k=model.k, value=format_number(model.pass_hat_k), assumes=model.assumes)
+        said += POINT_MODEL.format(k=model.k, value=forms.lone(model.pass_hat_k).text, assumes=model.assumes)
     if subject.common_depth is not None and subject.common_depth != subject.k and point.common_pass_hat_k is not None:
         said += POINT_COMMON.format(
-            k=subject.common_depth, value=format_number(point.common_pass_hat_k), cases=point.n_common_cases
+            k=subject.common_depth, value=forms.lone(point.common_pass_hat_k).text, cases=point.n_common_cases
         )
     return said
 
 
 def frontier_text(result: FrontierResult) -> str:
     """A frontier as text: each subject's variants, best pass^k first, with each one's axes and the verdict."""
-    bar = "no bar, so no verdict" if result.bar is None else f"bar {format_number(result.bar)} on pass^k"
+    forms = PageForms.off_page()
+    bar = "no bar, so no verdict" if result.bar is None else f"bar {forms.lone(result.bar).text} on pass^k"
     lines = [
         f"frontier, {bar}: {len(result.subjects)} subject(s) over {result.n_results} result(s), "
         f"{result.n_filtered_out} filtered out",
@@ -116,21 +120,26 @@ def frontier_text(result: FrontierResult) -> str:
         for point in subject.points:
             quality = (
                 _pass_hat_k_text(
-                    point.k, point.pass_hat_k, point.n_pass_cases, point.pass_hat_k_ci_low, point.pass_hat_k_ci_high
+                    point.k,
+                    point.pass_hat_k,
+                    point.n_pass_cases,
+                    point.pass_hat_k_ci_low,
+                    point.pass_hat_k_ci_high,
+                    forms,
                 )
                 if point.pass_hat_k is not None
                 else f"no pass^k ({point.pass_hat_k_unmeasured_reason or 'no case scored that deep'})"
             )
             cleared = f", bar {point.bar_decision}" if point.bar_decision is not None else ""
             cost = (
-                f"{format_number(point.production_replicating_cost, prefix='$')} per result (n={point.n_cost}"
+                f"{forms.lone(point.production_replicating_cost, money=True).text} per result (n={point.n_cost}"
                 + (", partial" if point.cost_is_partial else "")
                 + ")"
                 if point.production_replicating_cost is not None
                 else "cost unobserved"
             )
             latency = (
-                f"{format_number(point.mean_total_ms)} ms (n={point.n_latency})"
+                f"{forms.lone(point.mean_total_ms).text} ms (n={point.n_latency})"
                 if point.mean_total_ms is not None
                 else "latency unobserved"
             )
@@ -149,7 +158,7 @@ def frontier_text(result: FrontierResult) -> str:
                 f"- {_contestant(point.model, point.variant_key)}: {quality}{cleared}; {cost}; {latency}"
                 + (f"; {standing}" if standing else "")
             )
-            if (depth := _point_depth(point, subject)) is not None:
+            if (depth := _point_depth(point, subject, forms)) is not None:
                 lines.append(f"  {depth}")
             cell_lines = [line for cell in point.pass_hat_k_cells for line in pass_hat_k_cell_lines(cell)]
             if cell_lines and not said_reading:

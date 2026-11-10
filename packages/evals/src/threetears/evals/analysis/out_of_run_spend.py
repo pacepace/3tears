@@ -13,6 +13,7 @@ import math
 from collections.abc import Sequence
 
 
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.schema.base import EvalBaseModel
 
 
@@ -167,8 +168,9 @@ def scope_out_of_run_spend(
     )
 
 
-def _totals_line(totals: OutOfRunSpendTotals) -> str:
-    """One line of totals, saying when the sum is a floor, then how the calls were admitted, each way counted.
+def _totals_line(totals: OutOfRunSpendTotals, forms: PageForms) -> str:
+    """One line of totals, saying when the sum is a floor, then how the calls were admitted, each way counted, its
+    amounts as ``forms`` states them.
 
     The ceiling sum is said of the calls it was summed over alone (those admitted at a priced ceiling), and left out
     where none was: a call a report budget admitted, each turn on a ceiling the ledger does not hold, and a call
@@ -176,10 +178,10 @@ def _totals_line(totals: OutOfRunSpendTotals) -> str:
     """
     floor = f", {totals.n_unpriced} unpriced (so at least)" if totals.n_unpriced else ""
     raised = f", {totals.n_raised} raised" if totals.n_raised else ""
-    reported = f"{totals.n_calls} call(s): ${totals.priced_usd:.4f} reported{floor}{raised}"
+    reported = f"{totals.n_calls} call(s): {forms.money_ledger(totals.priced_usd).text} reported{floor}{raised}"
     ceilinged = totals.n_calls - totals.n_unbounded - totals.n_budgeted
     admitted = [
-        *([f"{ceilinged} admitted at up to ${totals.ceiling_usd:.4f}"] if ceilinged else []),
+        *([f"{ceilinged} admitted at up to {forms.money_ledger(totals.ceiling_usd).text}"] if ceilinged else []),
         *([f"{totals.n_budgeted} admitted by a report budget"] if totals.n_budgeted else []),
         *([f"{totals.n_unbounded} admitted unbounded"] if totals.n_unbounded else []),
     ]
@@ -207,17 +209,18 @@ def out_of_run_spend_text(report: OutOfRunSpendReport) -> str:
     if not report.rows:
         lines.append("no out-of-run call is ledgered here")
         return "\n".join(lines)
-    lines.append(f"total: {_totals_line(report.totals)}")
-    lines += [f"purpose {name}: {_totals_line(totals)}" for name, totals in report.by_purpose.items()]
-    lines += [f"launch {name}: {_totals_line(totals)}" for name, totals in report.by_launch.items()]
+    forms = PageForms.off_page()
+    lines.append(f"total: {_totals_line(report.totals, forms)}")
+    lines += [f"purpose {name}: {_totals_line(totals, forms)}" for name, totals in report.by_purpose.items()]
+    lines += [f"launch {name}: {_totals_line(totals, forms)}" for name, totals in report.by_launch.items()]
     for row in report.rows:
-        cost = f"${row.cost_usd:.4f}" if row.cost_usd is not None else "unpriced"
-        ceiling = f"${row.priced_ceiling_usd:.4f}" if row.priced_ceiling_usd is not None else "unbounded"
+        cost = forms.money_ledger(row.cost_usd).text if row.cost_usd is not None else "unpriced"
+        ceiling = forms.money_ledger(row.priced_ceiling_usd).text if row.priced_ceiling_usd is not None else "unbounded"
         admitted = f"admitted by {row.admitted_by}" if row.admitted_by is not None else f"ceiling {ceiling}"
         if row.calls is not None:
             # A row of several calls: how many, and the priced share beside the unpriced, never one figure for both.
             unpriced = f", {row.unpriced_calls} unpriced (so at least)" if row.unpriced_calls else ""
-            cost = f"{row.calls} calls: ${_priced(row):.4f} reported{unpriced}"
+            cost = f"{row.calls} calls: {forms.money_ledger(_priced(row)).text} reported{unpriced}"
         failed = f" {row.failure}" if row.failure else ""
         lines.append(
             f"  {row.created_at}  {row.purpose}  {row.model}  {row.outcome}{failed}  {cost} ({admitted})"
