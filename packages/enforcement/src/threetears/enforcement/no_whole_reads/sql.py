@@ -98,6 +98,7 @@ _BLOCK_COMMENT: Final[re.Pattern[str]] = re.compile(r"/\*.*?\*/", re.DOTALL)
 _LINE_COMMENT: Final[re.Pattern[str]] = re.compile(r"--[^\n]*")
 _QUOTED: Final[re.Pattern[str]] = re.compile(r"'(?:[^']|'')*'")
 _BRACED: Final[re.Pattern[str]] = re.compile(r"\{([^{}]*)\}")
+_DOLLAR_BRACED: Final[re.Pattern[str]] = re.compile(r"\$\{[^{}]*\}")
 
 #: the start of a statement: a verb, then the shape that verb has in SQL (so English prose is not SQL)
 _STATEMENT: Final[re.Pattern[str]] = re.compile(
@@ -240,7 +241,9 @@ def _clean(sql: str) -> str:
     :rtype: str
     """
     text = _LINE_COMMENT.sub(" ", _BLOCK_COMMENT.sub(" ", sql))
-    return " ".join(_BRACED.sub(_interpolation, _QUOTED.sub("'_'", text)).split())
+    # ``${len(params)}`` renders a bind placeholder ``$N``: a bound parameter, not interpolated text
+    text = _DOLLAR_BRACED.sub("$9", _QUOTED.sub("'_'", text))
+    return " ".join(_BRACED.sub(_interpolation, text).split())
 
 
 def is_sql(text: str) -> bool:
