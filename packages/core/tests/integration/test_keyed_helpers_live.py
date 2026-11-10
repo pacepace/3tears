@@ -601,15 +601,36 @@ class TestKeyedWritesByBatchAndStage:
 
     async def test_every_value_of_a_prefix_is_counted_a_page_at_a_time_within_budget(self, seeded: _Seeded) -> None:
         """Flips if counts_by with no values counts other than every geo of a state, reads past its pages' rows,
-        or is over 2x the bare one-statement ``GROUP BY`` of the same state through the same index."""
+        or is over 2x the same paged count hand-written: ``GROUP BY geo ORDER BY geo LIMIT 100`` pages past the last
+        geo, then the NULL group's count, through the same index; the two run turn about, best of N each."""
         recorder = PlanRecorder(seeded.conn)
         counted = await counts_by(recorder, _TABLE, column="geo", by={"state": "S31"}, batch=100)
         assert counted == {f"{g:03d}": _IDS for g in range(1, _GEOS + 1)}
         # a count reads its groups' rows (30 a geo), so no rows-scanned ratio: no looped sequential scan
         _plans_ok(recorder, seeded, scan_ratio=None)
-        bare = f"SELECT geo, count(*) FROM {_TABLE} WHERE state = $1 GROUP BY geo"
-        baseline = await best_seconds(lambda: seeded.conn.fetch(bare, "S31"))
-        took = await best_seconds(lambda: counts_by(seeded.conn, _TABLE, column="geo", by={"state": "S31"}, batch=100))
+        first = (
+            f"SELECT geo, count(*) AS held FROM {_TABLE} WHERE state = $1 AND geo IS NOT NULL "
+            "GROUP BY geo ORDER BY geo LIMIT 100"
+        )
+        after = (
+            f"SELECT geo, count(*) AS held FROM {_TABLE} WHERE state = $1 AND geo IS NOT NULL AND geo > $2 "
+            "GROUP BY geo ORDER BY geo LIMIT 100"
+        )
+        nulls = f"SELECT count(*) AS held FROM {_TABLE} WHERE state = $1 AND geo IS NULL"
+
+        async def bare_paged() -> dict[Any, int]:
+            page = list(await seeded.conn.fetch(first, "S31"))
+            groups = {row["geo"]: int(row["held"]) for row in page}
+            while len(page) == 100:
+                page = list(await seeded.conn.fetch(after, "S31", page[-1]["geo"]))
+                groups.update({row["geo"]: int(row["held"]) for row in page})
+            await seeded.conn.fetch(nulls, "S31")
+            return groups
+
+        assert await bare_paged() == counted
+        baseline, took = await best_seconds_interleaved(
+            bare_paged, lambda: counts_by(seeded.conn, _TABLE, column="geo", by={"state": "S31"}, batch=100)
+        )
         problem = _budget("counts_by every geo of a state, 100 a page", took, baseline)
         assert problem is None, problem
 
