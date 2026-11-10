@@ -21,6 +21,7 @@ from threetears.evals.kernel.metrics import (
     METRIC_DESCRIPTORS,
     MetricDescriptor,
     reads_as_rate,
+    reads_as_share,
 )
 from threetears.evals.kernel.surface import DecisionSurface
 
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
     # The module that defines a page loads the parts that read these, so the type is named for the checker alone.
     from threetears.evals.analysis.report.model import Report
 
-__all__ = ["measure_summary", "money_rulers", "rate_measures", "shown_measures"]
+__all__ = ["counted_rates", "measure_summary", "money_rulers", "rate_measures", "shown_measures"]
 
 
 def _measure_described(reading: MeasureReading, reports: Mapping[str, Report]) -> MetricDescriptor | None:
@@ -73,10 +74,37 @@ def measure_summary(
 def rate_measures(
     readings: CampaignReadings, reports: Mapping[str, Report], surfaces: dict[str, DecisionSurface] | None = None
 ) -> frozenset[str]:
-    """The measures the scorecard reads as rates, by key, each stated in percent beside the pass rate: the pass rate
-    itself, every measure that reads as a rate (:func:`~threetears.evals.kernel.metrics.reads_as_rate`: a check, a goal
-    check's pass rate, a classifier's accuracy), and every one its cells summarise as a rate (a classifier's precision
-    and recall), so a row never reads ``68.9`` beside ``0.9`` (the review's P18).
+    """The measures the scorecard reads as rates, by key, each stated in percent beside the pass rate: every counted
+    rate (:func:`counted_rates`), and every share on 0 to 1 its descriptor declares
+    (:func:`~threetears.evals.kernel.metrics.reads_as_share`: a host's fraction, ``value_range=(0, 1)`` with no unit),
+    as its aspect's page and the written page read it, so a row never reads ``0.3`` where the page reads ``30%``
+    (number rule 4).
+
+    :param readings: What code read off the campaign.
+    :ptype readings: CampaignReadings
+    :param reports: Each aspect's own page, by its label.
+    :ptype reports: Mapping[str, Report]
+    :param surfaces: Each aspect's decision surface read so far, which this fills as it reads; None for none.
+    :ptype surfaces: dict[str, DecisionSurface] | None
+    :return: The rates' keys.
+    :rtype: frozenset[str]
+    """
+    shares = frozenset(
+        reading.measure
+        for reading in readings.measures
+        if (described := _measure_described(reading, reports)) is not None and reads_as_share(described)
+    )
+    return counted_rates(readings, reports, surfaces) | shares
+
+
+def counted_rates(
+    readings: CampaignReadings, reports: Mapping[str, Report], surfaces: dict[str, DecisionSurface] | None = None
+) -> frozenset[str]:
+    """The rates the scorecard states with the count each is computed over (``81 of 90 trials``), by key: the pass
+    rate itself, every measure that reads as a rate (:func:`~threetears.evals.kernel.metrics.reads_as_rate`: a check, a
+    goal check's pass rate, a classifier's accuracy), and every one its cells summarise as a rate (a classifier's
+    precision and recall), so a row never reads ``68.9`` beside ``0.9`` (the review's P18). A fraction that is a share
+    of no trials (a host's share of deliveries) has no such count.
 
     :param readings: What code read off the campaign.
     :ptype readings: CampaignReadings

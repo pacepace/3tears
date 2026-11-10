@@ -78,6 +78,47 @@ only when `editor.md`, the editor's model and the effort all match; a caller tha
 **Hosts:** a `writer_promotion` action over arms whose skills differ now leaves each editor's own readings out of its
 `why`, and returns `one_editor: false`.
 
+### evals: a host's fraction reads as a rate on every table, and an interval writes its unit once beside its figure
+
+A production re-shoot of the number forms above found tables that read one measure apart.
+
+**Fixed:**
+- A host's fraction on 0 to 1 that declares no unit (`value_range=(0, 1)`) reads in percent on a measurement's
+  scorecard (`30%`, `0 to 70%`; it read `0.3`, `0 to 0.7`), as its aspect's page and the written page read it. One
+  test decides it for every page, `reads_as_share`.
+- A measure reads at one precision in the scorecard's matrix and the fold under it (`0.10` in both; the fold read
+  `0.1`).
+- A chart of two arms compared on a corrected contrast heads its interval with the family's joint guarantee (`95%
+  intervals (adjusted for 10 comparisons)`), where it read the per-interval `99.5%`.
+- A table glyph's title carries its change's sign, as its cell does (`+0.2, interval -1.2 to +1.6`; it read `0.2`).
+- A mean's spread reads at the mean's precision: `$3.33 ± $0.09`, where it read `$0.088`.
+- The quick console reads a 0-to-1 grader in percent, as the page does (`Fields found: 38% (12 trials)`; it read
+  `mean 0.375`), and rung 5's readings table reads a host's share as a rate.
+- A change chart's values table names the unit its changes are in whatever it draws (strata, contrasts, readings):
+  `-23 pts`, never `-23`.
+
+**Changed:**
+- **An interval writes its unit once.** Beside its figure, on the figure alone: a tooltip reads `85% (80 to 89)` and
+  `+10 pts, -29 to +58`, a glyph's title `+10 pts, interval -45 to +60` (they read `85% (80 to 89%)` and `... to +58
+  pts`). Standing alone in a table's column, after its high end (`80 to 89%`). A chart's values table writes the unit
+  its values are read in where its format names none (`+10 pts`, `-29 to +58 pts`; it read `+10`, `-29 to +58`).
+  Money keeps `$` on each end.
+- **A cost per reply reads per 1,000 replies on an aspect's page** (per 1,000,000 where that is under a cent), the
+  ruler the scorecard and the written page state it on: `Cost per 1,000 replies $20`, never `$0.020` beside `$20`.
+  The scoreboard's head reads `Cost per 1,000 replies`, and a bar on the scorecard names its count (`Measuring spend,
+  all roles, per 1,000 replies`).
+
+**Hosts:** a chart's `lo_text` and `hi_text` carry no unit but money's `$` (kit/API.md), so the shipped `kit.js`
+joins a tooltip as `85% (80 to 89)`; a host that prints the ends alone adds the unit after the high end. A pinned
+aspect page or quick line that read a cost per reply reads it per 1,000 replies. The report input now states a
+`share` unit for every unit-less fraction on 0 to 1 and every unit-less boolean, including a measure that reaches it
+through code's readings alone (a measurement's). A written page renders the report input its snapshot froze, so a
+stored report whose input predates this change prints such a measure as a bare fraction (`0.3`) until the host
+generates the report again; that covers every input frozen over the readings path, whenever it was frozen, not only
+those before 2026-11-09. Generating it again moves the frozen input's digest, so its snapshot id changes, and a
+scheduled mint of its writer case is refused as moved evidence until the host retires the case and mints it again.
+Nothing else stored changes.
+
 ### evals: every figure reads at its measure's precision, in one form across the campaign (number forms C5b)
 
 The number policy (`packages/evals/docs/design.md`, The number policy; owner rulings of 2026-11-08 and 2026-11-09)
@@ -136,6 +177,26 @@ mint of its writer case is refused as moved evidence until the host retires the 
 writing its own report input declares a fraction with `unit: "share"`. Nothing else stored changes: a stored report
 renders in the new forms, one citing `weakest.interval` with the new words, and one citing a gap or `weakest.margin`
 with no `+`, as before.
+
+### evals: a table's labels read in one register, a stratum by one name, and a chart's labels clear its lines (number forms C5c)
+
+**Changed:**
+- A judged dimension's row on a table (contrasts, statistics, by stratum, all cases, guardrails, bars, unasked
+  readings) prints starting with a capital, as a measure's does: `Outcome (judged, 1–5)`, where it read
+  `outcome (judged, 1–5)`. Only the printed label moves: the cell's value, `Result.contrasts()` and its `reading`
+  lookup, and every sentence keep `outcome (judged)`.
+- A stratum with no declared name prints as its id humanized (`edge case` for `edge_case`) in a By stratum header,
+  a case's Stratum cell, the thin-stratum note and a summary's stratum lines, where it printed the id.
+  `Result.strata()` still keys each stratum by its declared name, else its id.
+- A chart's vertical lines (zero line, reference line, axis, grid) stop short of its head, a reference label, a
+  group's heading and a bar's note, and a scatter's reference lines stop short of a point's label, in the kit and on
+  the static page; a group heading wider than a phone's chart wraps. A dot strip's interval is drawn in its arm's
+  colour at full strength (3:1, where it was 1.6:1). A table holds an interval's ends on one line.
+
+**Hosts:** a host matching a rendered page's judged row or stratum header updates the match once; a host keying on
+`Result.strata()`, `Result.contrasts()` or a table's cell values changes nothing. The kit script a default-mode page
+inlines moved again, so a host allowing it by a CSP hash recomputes the hash. `scripts/check.py` now fails a label a
+line crosses, a chart's line mark under 3:1 and an interval broken across lines.
 
 ### evals: one module decides every figure's form (number forms C1 to C3)
 

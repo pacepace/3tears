@@ -396,7 +396,7 @@ def _reading_cell(context: ChartContext, aspect: Aspect, reading: Reading | None
     said = forms.chart_note(float(reading.change), points, measure=rate, kind="trial").text
     if reading.within_interval is not None:
         low, high = (float(end) for end in reading.within_interval)
-        interval = forms.chart_interval(low, high, points, measure=rate, kind="trial").text
+        interval = forms.chart_interval(low, high, points, measure=rate, kind="trial").beside
         said += f" ({interval})"
     reasons = [said]
     for floor in context.report_input.floors:

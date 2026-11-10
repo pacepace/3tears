@@ -58,21 +58,22 @@ def test_the_change_chart_s_head_reads_the_pass_rate_at_its_measure_s_precision(
 
 
 def test_the_change_chart_reads_qwen_s_change_its_interval_and_its_note_whole() -> None:
-    """Change chart, qwen3.8-flash: ``-8 · -13 to -2 · -8 pts worse``."""
-    assert _row("Pass rate · September 85%", "A · qwen3.8-flash", "-8", "-13 to -2", "-8 pts worse") in _lines()
+    """Change chart, qwen3.8-flash: ``-8 pts · -13 to -2 pts · -8 pts worse``, its values table writing the unit its
+    values are read in (rule 3: an interval alone ends on its unit)."""
+    assert _row("Pass rate · September 85%", "A · qwen3.8-flash", "-8 pts", "-13 to -2 pts", "-8 pts worse") in _lines()
 
 
 def test_1017_s_change_reads_as_its_prose_does() -> None:
-    """Prose, 1017: its drop of ``3`` points sits beside ``-3 (-7 to +3)``, no longer beside ``-3.0``."""
+    """Prose, 1017: its drop of ``3`` points sits beside ``-3 pts (-7 to +3 pts)``, no longer beside ``-3.0``."""
     lines = _lines()
-    assert _row("Pass rate · September 85%", "B · 1017", "-3", "-7 to +3", "-3 pts cannot tell apart") in lines
+    assert _row("Pass rate · September 85%", "B · 1017", "-3 pts", "-7 to +3 pts", "-3 pts cannot tell apart") in lines
     assert any("1017 (B)'s drop of 3 points" in line for line in lines)
 
 
 def test_the_margin_reads_as_declared_on_the_chart_and_in_the_prose() -> None:
-    """Margin line: ``margin -15 pts``, its value ``-15``, never ``-15.0``, as the prose's ``15-point margin``."""
+    """Margin line: ``margin -15 pts``, its value ``-15 pts``, never ``-15.0``, as the prose's ``15-point margin``."""
     lines = _lines()
-    assert _row("margin -15 pts; shaded: no worse than the margin", "-15", "", "") in lines
+    assert _row("margin -15 pts; shaded: no worse than the margin", "-15 pts", "", "") in lines
     assert any("the 15-point margin" in line for line in lines)
     assert not any("-15.0" in line for line in lines)
 

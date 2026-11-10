@@ -21,7 +21,13 @@ from typing import NamedTuple
 from threetears.evals.analysis.quantities import MONEY, PERCENT, display_scale, is_money
 from threetears.evals.analysis.report.cost_unit import money_ruler
 from threetears.evals.kernel.numbers import MoneyForm
-from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor, classifier_label_of, goal_check_of
+from threetears.evals.kernel.metrics import (
+    METRIC_DESCRIPTORS,
+    MetricDescriptor,
+    classifier_label_of,
+    goal_check_of,
+    reads_as_share,
+)
 from threetears.evals.kernel.surface import DecisionSurface, MeasureFacts
 
 #: What a cell where no result took a turn reads in a cost or latency column. Not a blank: a blank reads as "not
@@ -159,15 +165,17 @@ def _is_share(name: str, facts: MeasureFacts, described: MetricDescriptor | None
         return False
     descriptor = described if described is not None else METRIC_DESCRIPTORS.get(name)
     if descriptor is not None:
-        return descriptor.data_type == "boolean" or descriptor.value_range == (0.0, 1.0)
+        return reads_as_share(descriptor)
     return classifier_label_of(name) is not None or goal_check_of(name) is not None
 
 
 def _money_ruler(amounts: Iterable[float | None]) -> MeasureRuler:
     """Money's ruler over the per-reply amounts it will state, by the one owner of money's scale
-    (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`, #993): per reply, or per 1,000 (1,000,000)
-    replies where some amount is under a cent per reply (per 1,000), its form chosen from every amount."""
-    ruler = money_ruler(amounts, per=1, start=1)
+    (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`, #993): per 1,000 replies, or per 1,000,000
+    where some amount is under a cent per 1,000, its form chosen from every amount; the ruler the campaign's scorecard
+    and its written page state the measure on, so one measure reads on one ruler on every page (``$20``, never
+    ``$0.020`` beside it)."""
+    ruler = money_ruler(amounts, per=1, start=1000)
     per = {1000: PER_THOUSAND_REPLIES, 1_000_000: PER_MILLION_REPLIES}.get(ruler.counted, "")
     return MeasureRuler(ruler.scale, MONEY, per, ruler.form)
 

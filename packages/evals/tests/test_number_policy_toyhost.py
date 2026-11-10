@@ -39,3 +39,17 @@ def test_field_accuracy_prints_the_same_text_on_the_written_and_the_code_page() 
     assert "| 78.0% | 75.5 to 80.5% |" in code, code
     (written,) = [line for line in _written().splitlines() if line.startswith("| A · 256tok | $20 |")]
     assert "| 78.0% | 75.5 to 80.5% |" in written, written
+
+
+def test_a_cost_per_reply_reads_on_one_ruler_across_the_code_page() -> None:
+    """One money measure, one ruler on the page: the toy campaign's two cents a reply read per 1,000 replies in the
+    scorecard's bars and on the aspect's own scoreboard and bars alike (``$20``), never ``$0.020`` beside ``$20``."""
+    lines = _code().splitlines()
+    assert any(
+        line.startswith(
+            "| extract_invoice_fields | 256tok | Measuring spend, all roles, per 1,000 replies | at most $25 | $20 |"
+        )
+        for line in lines
+    ), lines
+    assert any(line.endswith("| Cost per 1,000 replies |") for line in lines)
+    assert not any("$0.020" in line for line in lines)

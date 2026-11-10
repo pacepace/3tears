@@ -121,6 +121,7 @@ from threetears.evals.kernel.metrics import (
     RUBRIC_FAMILY,
     MetricDescriptor,
     goal_check_of,
+    reads_as_share,
 )
 from threetears.evals.kernel.surface import CellFacts
 
@@ -703,14 +704,16 @@ class _Builder:
                         mean=measured.value, ci=measured.interval, n=measured.trials, n_cases=measured.cases
                     )
                 described = aspect.measure_catalog.get(measured.measure)
+                grade = (
+                    "pass_fail" if measured.passed is not None else _grade(described) if described is not None else None
+                )
                 facts.setdefault(
                     measured.measure,
                     {
                         "label": measured.name,
+                        "unit": _unit(described, grade) if described is not None else None,
                         "higher_is_better": measured.higher_is_better,
-                        "grade": "pass_fail"
-                        if measured.passed is not None
-                        else (_grade(described) if described is not None else None),
+                        "grade": grade,
                     },
                 )
         level = _level(INTERVAL_LEVEL)
@@ -737,12 +740,9 @@ class _Builder:
         if facts is None:
             return {"label": label, "grade": "pass_fail" if check is not None else None}
         grade = _grade(facts)
-        # A share on 0–1 that declares no unit (a host's fraction, ``value_range=(0, 1)``) is a rate, which carries its
-        # "%" on every page (number rule 4), as the code page reads it from the same descriptor.
-        share = not facts.unit and grade is None and facts.value_range == (0.0, 1.0)
         return {
             "label": label if label is not None else measure_name(name, facts.reader_name),
-            "unit": SHARE_UNIT if share else facts.unit,
+            "unit": _unit(facts, grade),
             "higher_is_better": facts.higher_is_better,
             "merit_axis": facts.merit_axis,
             "means": capped_text(facts.reader_prose or facts.description or "", MEANING_CHARS) or None,
@@ -1051,6 +1051,14 @@ def _grade(facts: MetricDescriptor) -> Literal["pass_fail", "class_label"] | Non
     if facts.family == "goal_state" or facts.is_check:
         return "pass_fail"
     return None
+
+
+def _unit(facts: MetricDescriptor, grade: str | None) -> str | None:
+    """A measure's unit as the input states it: a share on 0 to 1 that declares none (a host's fraction,
+    ``value_range=(0, 1)``) is a share, which carries its "%" on every page (number rule 4), read by the one test the
+    code and aspect pages read it by (:func:`~threetears.evals.kernel.metrics.reads_as_share`); a graded measure's
+    share is its grade's, and any other its declared unit."""
+    return SHARE_UNIT if grade is None and reads_as_share(facts) else facts.unit
 
 
 def _analyst_only(declared: frozenset[str], counted: bool, fields: Callable[[], dict[str, Any]]) -> dict[str, Any]:

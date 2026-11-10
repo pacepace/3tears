@@ -35,6 +35,7 @@ from threetears.evals.analysis.style import (
     arm_name,
     cannot_tell_apart,
     lever_reader_name,
+    humanize,
     measure_name,
 )
 from threetears.evals.kernel.host.kinds import EMPTY_VALUE_DISPLAY, NO_VALUE_DISPLAY
@@ -286,6 +287,54 @@ def judged_heading(name: str) -> str:
     :rtype: str
     """
     return f"{measure_name(name)} (judged)"
+
+
+def _judged_label(heading: str) -> str:
+    """A judged dimension's heading as a table prints it in a row or a header: the heading :func:`judged_heading`
+    writes (a score's scale or a ruler's words after it where the table adds them), starting with a capital, as every
+    measure's label does where it is a label rather than words in a sentence
+    (:func:`~threetears.evals.analysis.report.parts.charting.measure_words`), so a judged row reads in the register of
+    the measure rows around it (``Reply polite (judged)`` beside ``Lost-call rate``) and a table names a dimension as
+    the page's charts do. The printed text only: a table's cell keeps the heading as its value, which a program reads.
+
+    :param heading: The judged dimension's heading.
+    :ptype heading: str
+    :return: The label.
+    :rtype: str
+    """
+    return heading[:1].upper() + heading[1:]
+
+
+#: A judged dimension's heading as :func:`judged_heading` writes it, a score's scale or a ruler's words after its mark
+#: where a table adds them (``outcome (judged, 1–5)``).
+_JUDGED_HEADING = re.compile(r".+ \(judged(?:, [^()]+)?\)")
+
+
+def table_label(text: str) -> str:
+    """A table cell's words as a page prints them (the one rule every serializer's table applies, at render time): a
+    judged dimension's heading starting with a capital (:func:`_judged_label`), so it reads as the measure rows around it do; any
+    other words as written. The cell keeps the heading as its value, which a program reads and looks a row up by.
+
+    :param text: The cell's words.
+    :ptype text: str
+    :return: The words printed.
+    :rtype: str
+    """
+    return _judged_label(text) if _JUDGED_HEADING.fullmatch(text) else text
+
+
+def stratum_name(stratum: str, declared: str | None = None) -> str:
+    """A stratum as every surface prints it: its declared display name, else its id with its underscores and dots as
+    spaces (``edge case``). The printed name only: a program reads a stratum by its id.
+
+    :param stratum: The stratum's id.
+    :ptype stratum: str
+    :param declared: Its declared display name, or None for none.
+    :ptype declared: str | None
+    :return: The name.
+    :rtype: str
+    """
+    return declared or humanize("dimension", stratum)
 
 
 #: The verb a counted reading's figure takes in a sentence, by its name as the page heads it: only the pass rate's
@@ -681,6 +730,8 @@ __all__ = [
     "positions",
     "PASS_RATE",
     "judged_heading",
+    "table_label",
+    "stratum_name",
     "one_figure_each",
     "reading_heading",
     "reading_verb",

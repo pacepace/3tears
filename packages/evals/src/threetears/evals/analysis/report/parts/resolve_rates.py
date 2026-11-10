@@ -1,6 +1,6 @@
 """The charts of rates against a line: dot strips, range bars, and the frontier scatter.
 
-**dot_interval** marks each figure with a faint interval against its floor:
+**dot_interval** marks each figure with its interval against its floor:
 
 - *readings*, *contrasts*: each change as the diverging chart reads it (the one owner of how a reading or a contrast
   reads as a change, :mod:`~threetears.evals.analysis.report.parts.resolve_changes`), a dot per row, panels by
@@ -211,7 +211,7 @@ def _dot(
     forms, kind = context.forms, figure_kind(context, measure)
     tip = [label, forms.chart_note(value, drawn, measure=measure, kind=kind).text]
     if interval is not None:
-        tip[1] += f", {forms.chart_interval(*interval, drawn, measure=measure, kind=kind).text}"
+        tip[1] += f", {forms.chart_interval(*interval, drawn, measure=measure, kind=kind).beside}"
     if drawn.unit == MONEY and arm and (share := priced_in_part(context.report_input, arm)) is not None:
         # A cost over part of the arm's calls is a smaller total, never stated bare.
         tip[1] += f" ({share})"
@@ -571,6 +571,8 @@ def _dot_interval(context: ChartContext) -> Drawn:
     first = strips[0].drawn
     # What an analysis computes is spelled at its quantity's precision in the values table (chart_block's read_at).
     read_at = first.unit if source in _COMPUTED and not several else ""
+    # Its values table names the unit its figures are in where they share one (``-23 pts``), whatever their source.
+    table_unit = None if several else first.unit
     if len(strips) == 1:
         (strip,) = strips
         data = DotIntervalChart(
@@ -583,7 +585,7 @@ def _dot_interval(context: ChartContext) -> Drawn:
             better=strip.better,
             emphasis=context.emphasis,
         )
-        return money_drawn(context, data, notes, money=_strip_money(strips), read_at=read_at)
+        return money_drawn(context, data, notes, money=_strip_money(strips), read_at=read_at, table_unit=table_unit)
     panels = []
     for strip in strips:
         look = context.look.arm(strip.arm) if strip.arm in context.look.arms else None
@@ -608,7 +610,7 @@ def _dot_interval(context: ChartContext) -> Drawn:
         emphasis=context.emphasis,
         panels=panels,
     )
-    return money_drawn(context, data, notes, money=_strip_money(strips), read_at=read_at)
+    return money_drawn(context, data, notes, money=_strip_money(strips), read_at=read_at, table_unit=table_unit)
 
 
 def _strip_money(strips: Sequence[_Strip]) -> list[tuple[str, Quantity]]:

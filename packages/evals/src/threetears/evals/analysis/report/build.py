@@ -147,6 +147,7 @@ from threetears.evals.analysis.report.words import (
     PASS_RATE,
     judged_heading,
     one_figure_each,
+    stratum_name,
     reading_verb,
     reading_heading,
     reason_words,
@@ -2813,7 +2814,9 @@ def _figure_text(
     mean: float, sem: float | None, ruler: MeasureRuler, forms: PageForms, *, measure: str, kind: str
 ) -> str:
     """A mean on its ruler with its standard error beside it, where one was estimated."""
-    spread = f" ± {forms.ruled_spread(ruler, sem, measure=measure, kind=kind).text}" if sem is not None else ""
+    spread = (
+        f" ± {forms.ruled_spread(ruler, sem, mean=mean, measure=measure, kind=kind).text}" if sem is not None else ""
+    )
     return f"{forms.ruled_level(ruler, mean, measure=measure, kind=kind).text}{spread}"
 
 
@@ -2961,9 +2964,10 @@ def _by_stratum_row(table: TableBlock) -> TableBlock:
 
 
 def _stratum_word(name: str | None, declared: Mapping[str, str]) -> str:
-    """A stratum as a column header and a disclosure name it: its declared display name, else its id, else
-    :data:`NO_STRATUM`."""
-    return NO_STRATUM if name is None else declared.get(name, name)
+    """A stratum as a column header, a case's row and a disclosure print it: its name as
+    :func:`~threetears.evals.analysis.report.words.stratum_name` writes it (``edge case``), else :data:`NO_STRATUM`. A
+    program reads a stratum by its id (:meth:`~threetears.evals.quick.result.Result.strata`)."""
+    return NO_STRATUM if name is None else stratum_name(name, declared.get(name))
 
 
 def _cases_text(n_trials: int, n_cases: int | None) -> str:

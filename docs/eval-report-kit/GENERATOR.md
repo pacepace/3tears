@@ -266,11 +266,11 @@ The renderer applies the kit (`kit/kit.css`, `kit/kit.js`). Don't restyle per re
 
 ## 8. Definition of done
 
-A page is done when all of these pass. `scripts/check.py` automates the first three, at the widths and themes it lists, and also fails a table that overflows its frame with no edge fade, a first screen read at more than one measure, text under 4.5:1 or an axis under 3:1 against its ground in either theme, a font size off the scale (12, 14, 16, 20, 28 px) and a table drawn in a box or under a filled header; the renderer and the invariants hold 4, 7, 8 and 9 on a report document's page (ANALYST §7).
+A page is done when all of these pass. `scripts/check.py` automates the first three, at the widths and themes it lists, and also fails a table that overflows its frame with no edge fade, a first screen read at more than one measure, text under 4.5:1 or an axis or a chart's line mark (an interval) under 3:1 against its ground in either theme, a chart's label crossed by an axis, a zero line or a reference line, an interval in a table's cell broken across lines, a font size off the scale (12, 14, 16, 20, 28 px) and a table drawn in a box or under a filled header; the renderer and the invariants hold 4, 7, 8 and 9 on a report document's page (ANALYST §7).
 
 1. It renders at every width `scripts/check.py` draws, in light and dark, with no console errors.
 2. `document.documentElement.scrollWidth` equals the viewport width at every width (nothing scrolls sideways).
-3. No two chart labels overlap, and no label overlaps a marker or leaves its chart (inspect the screenshots; `check.py` lists any element past the right edge).
+3. No two chart labels overlap, no label overlaps a marker or leaves its chart, and no drawn line strikes a label through: a vertical line stops short of a chart's head, a reference label, a group's heading and a bar's note, and a scatter's reference line stops short of a point's label (inspect the screenshots; `check.py` lists any element past the right edge and any label an axis or reference line crosses).
 4. Every chart has a table view (Full results) and states its interval level.
 5. The explore part says where the answer flips (or that it can't, and where each reading flips); on a reference page its controls change the outcome text and the chart.
 6. The headline is a decision (or a trade, or a stated no-call) and matches the options table and the first chart.

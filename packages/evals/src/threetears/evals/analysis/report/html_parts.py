@@ -22,6 +22,7 @@ from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.kit_colours import ink_on
 from threetears.evals.analysis.report.svg import GLYPH_STYLE, interval_glyph_svg
+from threetears.evals.analysis.report.words import table_label
 from threetears.evals.analysis.quantities import PERCENT, is_money
 from threetears.evals.analysis.style import CHECK_LINK_TITLE, GLOSSARY
 from threetears.evals.schema.hashing import round_floats
@@ -103,6 +104,11 @@ th code { font-size: 1em; }
 td, tbody th { vertical-align: top; }
 th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.num { white-space: nowrap; }
+/* an interval's two ends and the word between them read as one figure, never broken across lines; a unit word after it
+   may take the next line. A figure with its count after it (95% (38 of 40 trials, 20 cases)) may set its count on the
+   next line, held whole, so a column of such figures gives an interval column beside it the room to hold its line */
+td .iv, td.num.split .aside { white-space: nowrap; }
+td.num.split { white-space: normal; }
 td.key { font-weight: 600; }
 [data-table="scoreboard"] table { font-size: var(--t-base); }
 td.wrap { max-width: 32rem; }
@@ -294,7 +300,8 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
             cell = row[column.key]
             glyphed = classes[column.key] == ' class="glyph"'
             # A glyph cell sets its reading after its glyph, so its figure alone is the cell's text here.
-            text = _cell_code(cell.figure if glyphed else cell.text)
+            # A cell's words as a table prints them (a judged heading as a label), its value left as it was.
+            text = _cell_code(cell.figure if glyphed else table_label(cell.text))
             if cell.ref is not None:
                 # A finding's figure, linked to a cell printing the same figure, or to the closed fold holding it. A
                 # link never holds a fold that opens: a long expression's fold sits beside the link, not inside it.
@@ -317,7 +324,8 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
                 reading = "" if cell.flag is None else f' <span class="reading">{_cell_code(cell.flag)}</span>'
                 text = f'<span class="figure">{text}</span>' + _glyph(cell, column.key, scales, forms) + reading
             else:
-                css = classes[column.key] or (' class="wrap"' if len(cell.text) >= _PROSE_CELL else "")
+                css = classes[column.key] or _words_class(cell.text)
+                text, css = _held_figures(text, css)
             anchor = f' id="{cell.anchor}"' if cell.anchor is not None else ""
             pin = column.key in pinned
             tag, scope = ("th", ' scope="row"') if (block.name, column.key) in _ROW_HEADER_COLUMNS else ("td", "")
@@ -753,6 +761,54 @@ def _pinned_class(css: str, text: str, pinned: bool) -> str:
     return css[:-1] + ' unbroken"'
 
 
+#: One end of an interval as a cell prints it: a figure, signed or money where it is (``0``, ``43%``, ``-$4.99``,
+#: ``+58``, ``1.2k``).
+_INTERVAL_END = r"[+\-\u2212]?\$?\d[\d.,]*[%\u00d7k]?"
+
+#: A cell that is an interval and nothing else: its two ends, and a unit word after them where the cell names one
+#: (``-29 to +58 pts``); never words that happen to hold "to" (``Switch to B1017``).
+_INTERVAL_CELL = re.compile(rf"{_INTERVAL_END} to {_INTERVAL_END}(?: [a-z%]+)?")
+
+#: An interval's ends and the word between them, where a cell's markup holds them.
+_INTERVAL_SPAN = re.compile(rf"({_INTERVAL_END} to {_INTERVAL_END})")
+
+
+#: A cell's figure with its count after it, as markup with no tag in it: ``95% (38 of 40 trials, 20 cases)``.
+_COUNTED_FIGURE = re.compile(r"([^\s<>]+) (\([^<>]+\))")
+
+
+def _held_figures(text: str, css: str) -> tuple[str, str]:
+    """A cell's markup and class with its figures held whole: an interval's ends and the word between them in one
+    ``iv`` span, which never breaks, a unit word after it left free to take the next line (``-0.007 to +0.002`` /
+    ``notices``); in a column of numbers, a figure with its count after it classed ``split``, the count in an ``aside``
+    span held whole, so the figure may set its count on the next line rather than hold the column at its full width
+    and squeeze an interval beside it onto two lines ("0 to" above "43%" beside a Value column with room)."""
+    if css == ' class="interval"':
+        return re.sub(_INTERVAL_SPAN, r'<span class="iv">\1</span>', text, count=1), css
+    if css.startswith(' class="num') and (counted := _COUNTED_FIGURE.fullmatch(text)) is not None:
+        return f'{counted[1]} <span class="aside">{counted[2]}</span>', css[:-1] + ' split"'
+    return text, css
+
+
+def _words_class(text: str) -> str:
+    """The class attribute a cell of words takes: ``interval`` for an interval (``0 to 43%``, ``$25 to $34``), which
+    holds on one line, so a narrow frame never reads ``0 to`` above ``43%``; ``wrap`` for prose, which wraps as a
+    paragraph does; none for any other."""
+    if _INTERVAL_CELL.fullmatch(text):
+        return ' class="interval"'
+    return ' class="wrap"' if len(text) >= _PROSE_CELL else ""
+
+
+def _value_cell(cell: str, pinned: bool) -> str:
+    """One cell of a chart's table of values: a cell of words wrapping at a measure, an interval held on one line
+    (:func:`_held_figures`), any other holding its hyphenated words whole."""
+    css = _words_class(cell)
+    text, css = _held_figures(escape(cell), css)
+    return (
+        f"<td{_pinned_class(css, cell, pinned)}>{held_whole(text) if pinned or len(cell) < _PROSE_CELL else text}</td>"
+    )
+
+
 def _column_class(block: TableBlock, key: str) -> str:
     """The class attribute a column's cells share: ``num`` for a column of numbers, with ``key`` on the scoreboard's
     passed column, the one a reader weighs first; empty for a column of words.
@@ -801,14 +857,7 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bo
     # widens the table past what its frame can scroll to; the pinned first column breaks an id-like cell anywhere. Any
     # other cell holds a hyphenated word whole, as a table block's does (``A · qwen3.8-flash``).
     body = "".join(
-        "<tr>"
-        + "".join(
-            f"<td{_pinned_class(' class="wrap"' if len(cell) >= _PROSE_CELL else '', cell, at == 0)}>"
-            f"{held_whole(escape(cell)) if at == 0 or len(cell) < _PROSE_CELL else escape(cell)}</td>"
-            for at, cell in enumerate(row)
-        )
-        + "</tr>"
-        for row in rows
+        "<tr>" + "".join(_value_cell(cell, at == 0) for at, cell in enumerate(row)) + "</tr>" for row in rows
     )
     drawn = None if static else block.kit_chart()
     chart = ""

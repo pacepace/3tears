@@ -355,8 +355,8 @@ def test_a_glyph_s_title_and_its_scale_line_read_a_whole_end_at_the_column_s_pre
         total_rows=1,
     )
     drawn = html.unescape(grid_html(block))
-    # The interval in its one form, a change's ends signed.
-    assert "<title>-5.0 pts, interval -12.8 to +10.0 pts</title>" in drawn, drawn
+    # The interval in its one form, a change's ends signed, its unit once, on the figure (number rule 3).
+    assert "<title>-5.0 pts, interval -12.8 to +10.0</title>" in drawn, drawn
     # The scale's ends are figures of the column, so they read at its precision, a change's ends signed.
     assert '<p class="axis">Each column drawn from -12.8 to +10.0 pts</p>' in drawn
 
