@@ -785,7 +785,7 @@ def test_a_contrast_showing_a_drop_the_row_does_not_say_the_row_counts_one_only_
     assert line.startswith(
         "On refunds, v2's row reads no worse than the margin and its contrast on the pass rate reads regressed"
     )
-    assert "a bounded interval at 95%, on its own;" in line
+    assert "a bounded interval at 95% on its own;" in line
     assert line.endswith("The row counts a drop only past the 10-point margin.")
 
 
@@ -814,7 +814,8 @@ def test_a_shape_64_rate_contrast_drawn_on_its_t_interval_is_named_a_t_interval(
 
     reports = _with_trial_contrast(shape, "refunds", "v2", at_64)
     (line,) = _on(_lines(build_campaign_report(shape.campaign, shape.readings, reports)), "On refunds")
-    assert "; the contrast a t interval at " in line and "the contrast a bounded interval" not in line
+    # Named by its basis and what corrects it, never by its own adjusted level (owner ruling, level in headings).
+    assert "; the contrast a t interval corrected within" in line and "the contrast a bounded interval" not in line
 
 
 def test_a_contrast_over_other_values_is_not_reconciled_whatever_its_verdict() -> None:
