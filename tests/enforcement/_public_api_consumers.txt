@@ -140,3 +140,8 @@ packages/core/src/threetears/core/collections/copy_checkpoint.py:StagedCheckpoin
 packages/core/src/threetears/core/collections/copy_checkpoint.py:CheckpointTable  # bluelabsio/14-eng-ai-bot-agent-reports: the checkpoint's per-table entry, which its ops tooling reads off a manifest
 packages/core/src/threetears/core/collections/copy_checkpoint.py:COLD_START  # bluelabsio/14-eng-ai-bot-agent-reports: the why a start reads a table whole for, which its status names
 packages/core/src/threetears/core/collections/copy_checkpoint.py:SCHEMA_CHANGE  # bluelabsio/14-eng-ai-bot-agent-reports: the why a start reads a table whole for, which its status names
+packages/core/src/threetears/core/ddl/index_health.py:rebuild_unusable_indexes  # bluelabsio/14-eng-ai-bot: aibots/hub/common/index_repair.py at every start and migrations/v144
+packages/core/src/threetears/core/ddl/index_health.py:unusable_indexes  # bluelabsio/14-eng-ai-bot: aibots/hub/common/index_repair.py at every start and migrations/v144
+packages/core/src/threetears/core/ddl/index_health.py:UnusableIndex  # bluelabsio/14-eng-ai-bot: aibots/hub/common/index_repair.py at every start and migrations/v144
+packages/core/src/threetears/core/ddl/index_health.py:IndexDuplicateKeysError  # bluelabsio/14-eng-ai-bot: aibots/hub/common/index_repair.py at every start and migrations/v144
+packages/core/src/threetears/core/ddl/index_health.py:IndexStillUnusableError  # bluelabsio/14-eng-ai-bot: aibots/hub/common/index_repair.py at every start and migrations/v144
