@@ -327,6 +327,17 @@ class IndexDef:
         the index alone. On YugabyteDB a read through an index that does
         not carry a column visits the table for each row, several times the
         index read's cost. none may also be in ``columns``.
+    :cvar purpose: ``<path>::<qualified function>`` of the one keyed read
+        that uses this index; the no-whole-reads rule
+        (:mod:`threetears.enforcement.no_whole_reads`) counts a read through
+        it as keyed only in that function, and refuses an index with none.
+        Not part of the DDL, so it never makes two indexes differ.
+    :cvar plan_test: ``<test file>::<test function>`` proving that read's
+        plan uses this index (it names the index and calls
+        :func:`threetears.core.testing.plans.plan_uses_index`)
+    :cvar reason: why the index carries ``include`` columns, or why its
+        table carries more than three indexes; the rule asks for one in
+        either case
     """
 
     name: str
@@ -340,6 +351,9 @@ class IndexDef:
     desc: tuple[str, ...] = ()
     nulls_not_distinct: bool = False
     include: tuple[str, ...] = ()
+    purpose: str = field(default="", compare=False)
+    plan_test: str = field(default="", compare=False)
+    reason: str = field(default="", compare=False)
 
     def __post_init__(self) -> None:
         """validate the index shape after construction.
@@ -440,6 +454,9 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
     desc: str | Sequence[str] = (),
     nulls_not_distinct: bool = False,
     include: Sequence[str] = (),
+    purpose: str = "",
+    plan_test: str = "",
+    reason: str = "",
 ) -> IndexDef:
     """factory for :class:`IndexDef`.
 
@@ -501,6 +518,15 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         so a read of them never visits the table; maps to SQLAlchemy's
         ``postgresql_include`` dialect kwarg
     :ptype include: Sequence[str]
+    :param purpose: ``<path>::<qualified function>`` of the keyed read
+        that uses the index (:attr:`IndexDef.purpose`)
+    :ptype purpose: str
+    :param plan_test: ``<test file>::<test function>`` proving that read
+        uses it (:attr:`IndexDef.plan_test`)
+    :ptype plan_test: str
+    :param reason: why it is wide, or why its table carries more than
+        three indexes (:attr:`IndexDef.reason`)
+    :ptype reason: str
     :return: validated :class:`IndexDef` instance
     :rtype: IndexDef
     :raises ValueError: when validation in
@@ -527,6 +553,9 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         desc=(desc,) if isinstance(desc, str) else tuple(desc),
         nulls_not_distinct=nulls_not_distinct,
         include=tuple(include),
+        purpose=purpose,
+        plan_test=plan_test,
+        reason=reason,
     )
 
 

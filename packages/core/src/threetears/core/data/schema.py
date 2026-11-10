@@ -147,12 +147,22 @@ class IndexDef(BaseModel):
     :param include: columns the index carries without ordering by them (``INCLUDE (...)``), so a read of
         them is answered from the index alone
     :ptype include: list[str]
+    :param purpose: ``<path>::<qualified function>`` of the keyed read that uses the index; the no-whole-reads rule
+        refuses an index with none (never part of the DDL)
+    :ptype purpose: str
+    :param plan_test: ``<test file>::<test function>`` proving that read's plan uses the index
+    :ptype plan_test: str
+    :param reason: why the index carries ``include`` columns, or why its table carries more than three indexes
+    :ptype reason: str
     """
 
     name: str
     columns: list[str]
     unique: bool = False
     include: list[str] = Field(default_factory=list)
+    purpose: str = ""
+    plan_test: str = ""
+    reason: str = ""
 
     @field_validator("name")
     @classmethod
