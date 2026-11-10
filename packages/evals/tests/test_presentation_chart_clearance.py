@@ -29,7 +29,13 @@ import pytest
 
 from threetears.evals.analysis import report_html
 from threetears.evals.analysis.report.chart_svg import DRAWERS
-from threetears.evals.analysis.report.charts import BarsChart, DotIntervalChart, ForestChart, ScatterChart
+from threetears.evals.analysis.report.charts import (
+    BarsChart,
+    DotIntervalChart,
+    ForestChart,
+    GateScatterChart,
+    ScatterChart,
+)
 from threetears.evals.analysis.report.html_parts import table_html
 from threetears.evals.analysis.report.model import TableBlock, TableCell, TableColumn
 
@@ -195,6 +201,29 @@ SCATTER: dict[str, Any] = {
     "reference": {"value": 5, "kind": "floor"},
 }
 
+#: A scatter whose labelled point sits on its floor at the plot's foot, a mark just above it: below the mark is outside
+#: the plot and above it is the other mark, so its label is placed beside it, across the floor's row.
+SCATTER_ON_FLOOR: dict[str, Any] = {
+    "points": [{"x": 2, "y": 0, "label": "a point on its floor"}, {"x": 2, "y": 0.6}],
+    "x_domain": [0, 10],
+    "y_domain": [0, 10],
+    "x_fmt": "num",
+    "y_fmt": "num",
+    "reference": {"value": 0.25, "kind": "floor"},
+}
+
+#: A gate scatter whose floor's label, set from the plot's right end leftward, runs across the budget's line (r3's
+#: stored document at 390 px: "Overall accuracy gate, at least ...").
+GATE: dict[str, Any] = {
+    "points": [{"x": 2, "y": 0.95, "label": "a"}, {"x": 6, "y": 0.8, "label": "b"}],
+    "x_domain": [0, 10],
+    "y_domain": [0.5, 1],
+    "x_fmt": "num",
+    "y_fmt": "pct",
+    "reference": {"value": 0.9, "kind": "floor", "label": "Overall accuracy gate, at least 90%"},
+    "x_reference": {"value": 8, "kind": "budget", "label": "budget 8"},
+}
+
 #: Bars whose note, printed past the bar's end, runs across the floor drawn just past it.
 NOTED_BARS: dict[str, Any] = {
     "rows": [{"label": "a", "value": 10, "note": "10 points, a note that runs on"}],
@@ -223,9 +252,10 @@ def _crosses(segment: tuple[float, float, float, float], box: tuple[float, float
 
 
 def _box(x: float, y: float, text: str, anchor: str) -> tuple[float, float, float, float]:
+    """A label's box: its estimated width, from a cap's height over its baseline to a descender's under it."""
     width = len(text) * _WIDTH_PER_CHAR
     left = x - width if anchor == "end" else x - width / 2 if anchor == "middle" else x
-    return (left, y - 9, left + width, y + 2)
+    return (left, y - 9, left + width, y + 3)
 
 
 @pytest.mark.parametrize("width", [640, 960])
@@ -241,6 +271,44 @@ def test_a_scatter_s_reference_lines_stop_short_of_a_point_s_label(width: int) -
     whole = [(min(s[0] for s in lines), min(s[1] for s in lines), max(s[2] for s in lines), max(s[3] for s in lines))]
     assert _crosses(whole[0], box), "the control: the label is placed across a reference line's run"
     assert not [segment for segment in lines if _crosses(segment, box)], (box, lines)
+
+
+@pytest.mark.parametrize("width", [640, 960])
+def test_a_scatter_s_floor_stops_short_of_a_point_label_placed_across_it(width: int) -> None:
+    """The y reference (a floor, drawn across the plot) and a label placed on its row: the line is drawn in two pieces,
+    either side of the label, where at 5757aa3ae it ran through it."""
+    drawn, _ = DRAWERS["scatter_frontier"](ScatterChart.model_validate(SCATTER_ON_FLOOR), width)
+    (label,) = re.findall(r'<text x="([\d.]+)" y="([\d.]+)" text-anchor="(\w+)" class="lbl">([^<]+)<', drawn)
+    box = _box(float(label[0]), float(label[1]), label[3], label[2])
+    lines = [segment for segment in _floor_segments(drawn) if segment[1] == segment[3]]
+    whole = (min(s[0] for s in lines), lines[0][1], max(s[2] for s in lines), lines[0][1])
+    assert _crosses(whole, box), "the control: the label is placed on the floor's row, across its run"
+    assert not [segment for segment in lines if _crosses(segment, box)], (box, lines)
+
+
+@pytest.mark.parametrize("width", [280, 360, 640, 960])
+def test_a_gate_scatter_s_budget_line_stops_short_of_the_floor_s_label(width: int) -> None:
+    """The floor's label, set leftward from the plot's right end, runs across the budget's line; the line is drawn in
+    pieces around it, where at 5757aa3ae it ran through it."""
+    drawn, _ = DRAWERS["gate_scatter"](GateScatterChart.model_validate(GATE), width)
+    found = next(
+        (
+            match
+            for match in re.finditer(
+                r'<text x="([\d.]+)" y="([\d.]+)" text-anchor="end" class="tick">((?:<tspan[^>]*>[^<]*</tspan>)+)</text>',
+                drawn,
+            )
+            if "Overall" in match[3]
+        ),
+        None,
+    )
+    assert found is not None and "Overall" in found[3], "the control: the floor's label is drawn"
+    right, top = float(found[1]), float(found[2])
+    lines = [line.strip() for line in re.findall(r"<tspan[^>]*>([^<]*)</tspan>", found[3])]
+    box = (right - max(len(line) for line in lines) * _WIDTH_PER_CHAR, top - 9, right, top + 3 + (len(lines) - 1) * 13)
+    budget = [segment for segment in _floor_segments(drawn) if segment[0] == segment[2]]
+    assert budget and box[0] < budget[0][0] < box[2], "the control: the label runs across the budget's x"
+    assert not [segment for segment in budget if _crosses(segment, box)], (box, budget)
 
 
 @pytest.mark.parametrize("width", [360, 640, 960])
@@ -329,6 +397,8 @@ def test_the_kit_s_reference_lines_stop_short_of_a_point_s_label_and_a_bar_s_not
         pytest.skip(f"headless Chromium cannot launch: {reason}")
     blocks = [
         {"kind": "chart", "section": "memo", "chart": "scatter_frontier", "title": "Scatter", "data": SCATTER},
+        {"kind": "chart", "section": "memo", "chart": "scatter_frontier", "title": "Floor", "data": SCATTER_ON_FLOOR},
+        {"kind": "chart", "section": "memo", "chart": "gate_scatter", "title": "Gate", "data": GATE},
         {"kind": "chart", "section": "memo", "chart": "bars", "title": "Noted", "data": NOTED_BARS},
     ]
     page = tmp_path / "lines.html"

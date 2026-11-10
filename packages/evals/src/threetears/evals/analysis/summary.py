@@ -115,7 +115,7 @@ from threetears.evals.analysis.bundle.schema import TrialState
 from threetears.evals.analysis.bundle.trials import read_trial
 from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals.kernel.text_block import one_line
-from threetears.evals.analysis.report.words import judged_heading, stratum_name
+from threetears.evals.analysis.report.words import judged_heading, stratum_name, stratum_names
 from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NO_STRATUM, NOT_SHOWN_TO_MEASURE, TOO_FEW_CASES
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.remedies import FIND_RUN
@@ -577,7 +577,8 @@ class CaseResult(BaseModel):
         :return: The text, without a trailing newline.
         :rtype: str
         """
-        kind = "" if self.stratum is None else f"{self.stratum}, "
+        # The stratum by the name every surface prints for it; :attr:`stratum` keeps its id.
+        kind = "" if self.stratum is None else f"{stratum_name(self.stratum)}, "
         head = f"case {self.case} ({kind}repeat {self.repeat}, {self.outcome}): answered {_shown_value(self.answer)}"
         if self.expected is not None:
             head += f", expected {_shown_value(self.expected)}"
@@ -1065,9 +1066,10 @@ class EvalSummary(BaseModel):
     def stratum_lines(self) -> list[str]:
         """Each stratum's line, then its measures' lines indented beneath it."""
         lines: list[str] = []
+        # Each stratum by the name every surface prints for it (``edge case``); :attr:`strata` keeps its id.
+        printed = stratum_names(stratum.stratum for stratum in self.strata if stratum.stratum is not None)
         for stratum in self.strata:
-            # The stratum by the name every surface prints for it (``edge case``); :attr:`strata` keeps its id.
-            named = NO_STRATUM if stratum.stratum is None else _shown(stratum_name(stratum.stratum))
+            named = NO_STRATUM if stratum.stratum is None else _shown(printed[stratum.stratum])
             said = f"{named}: {stratum.n_cases} case(s), "
             said += f"{stratum.n_results} result(s)"
             if stratum.too_few:

@@ -20,6 +20,7 @@ import pytest
 
 from threetears.evals.analysis import StratumSummary
 from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
+from threetears.evals.analysis.report.words import stratum_names
 from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals import Eval
 from threetears.evals.analysis import report_markdown
@@ -116,6 +117,35 @@ class TestAnEvalReadsEachKind:
         assert summary.strata == [] and summary.stratum_lines == []
         assert "by stratum" not in summary.render()
         assert all(result.stratum is None for result in summary.results())
+
+
+class TestThePrintNamesEachStratumAsThePageDoes:
+    async def test_a_stratum_line_and_a_result_s_line_print_the_name_and_the_summary_keeps_the_id(self) -> None:
+        """A stratum's id with an underscore (``plain_ticket``): the print's stratum lines and a result's line name it
+        as every page prints it (``plain ticket``), never the id; :attr:`strata` and each result keep the id."""
+        renamed = [{**case, "stratum": f"{case['stratum']}_ticket"} for case in CASES]
+        summary = await _summary(renamed, misses_lookalikes, [QUEUE])
+
+        assert list(_by_name(summary.strata)) == ["lookalike_ticket", "plain_ticket"]
+        heads = [line for line in summary.stratum_lines if not line.startswith(" ")]
+        assert [line.split(":")[0] for line in heads] == ["lookalike ticket", "plain ticket"]
+        assert not [line for line in summary.stratum_lines if "_ticket" in line]
+        (miss, *_) = summary.misses()
+        assert miss.stratum == "lookalike_ticket" and "(lookalike ticket, repeat" in miss.render()
+
+    async def test_two_ids_that_would_print_alike_each_print_as_their_id(self) -> None:
+        """``edge_case`` and ``edge.case`` would both print ``edge case``; each prints as its id, so the print never
+        reads one stratum where the cases declare two."""
+        cases = [{**case, "stratum": "edge_case" if case["stratum"] == "plain" else "edge.case"} for case in CASES]
+        summary = await _summary(cases, misses_lookalikes, [QUEUE])
+
+        heads = [line.split(":")[0] for line in summary.stratum_lines if not line.startswith(" ")]
+        assert sorted(heads) == ["edge.case", "edge_case"]
+        assert stratum_names(["edge_case", "edge.case", "plain_ticket"]) == {
+            "edge_case": "edge_case",
+            "edge.case": "edge.case",
+            "plain_ticket": "plain ticket",
+        }
 
 
 class TestRelabellingKeepsHistory:

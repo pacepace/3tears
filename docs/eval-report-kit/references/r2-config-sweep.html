@@ -873,7 +873,7 @@ function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);
   const yt=d.y_ticks||kFmtTicks(y0,y1,5,yf);const h=d.height||Math.round(Math.min(380,Math.max(300,w*.45)));
   // a y title takes a line of its own above the plot, top left, so no mark is ever drawn over it
   const m={l:Math.max(30,Math.max(...yt.map(v=>yf(v).length))*6.6+16),r:18,t:(d.level?22:16)+(d.y_title?16:0),b:40};const s=svgIn(el,w,h);
-  const x=d.x_log?logs(x0,x1,m.l,w-m.r):lin(x0,x1,m.l,w-m.r),y=lin(y0,y1,h-m.b,m.t);const obs=[];
+  const x=d.x_log?logs(x0,x1,m.l,w-m.r):lin(x0,x1,m.l,w-m.r),y=lin(y0,y1,h-m.b,m.t);const obs=[],refs=[];
   const passSide=(r,lo,hi,dflt)=>((r.kind||dflt)==="budget"?[lo,r.value]:[r.value,hi]);
   if(gate){const [ax,bx]=passSide(d.x_reference,x0,x1,"budget"),[ay,by]=passSide(d.reference,y0,y1,"floor");
     S("rect",{x:x(ax),y:y(by),width:x(bx)-x(ax),height:y(ay)-y(by),style:"fill:var(--good-wash)"},s);
@@ -886,7 +886,7 @@ function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);
       const st="fill:var(--good);font-weight:600";
       if(ls.length===1)S("text",{x:lx,y:ly,class:"lbl",style:st,text:ls[0]},s);
       else{const t=S("text",{x:lx,y:ly,class:"lbl",style:st},s);ls.forEach((l,i)=>S("tspan",{x:lx,dy:i?14:0,text:l},t));}
-      obs.push([lx,ly-10,lx+lw,ly+3+(ls.length-1)*14]);}}
+      obs.push([lx,ly-10,lx+lw,ly+3+(ls.length-1)*14]);refs.push(obs.at(-1));}}
   if(d.price_line){const p=d.price_line.value,yAt=v=>-(v/Math.max(1e-9,p)),lx=Math.min(x1,p*-y0);
     // the price line and its region in ink: green is a status's colour alone, and this region is a price's reading
     S("path",{d:`M${x(0)},${y(0)}L${x(x1)},${y(0)}L${x(x1)},${y(Math.max(y0,yAt(x1)))}L${x(lx)},${y(Math.max(y0,yAt(lx)))}Z`,style:"fill:var(--sunk)"},s);}
@@ -900,10 +900,10 @@ function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);
   // placed, so it stops short of any label placed across it (a crossing the placement allows over colliding with one)
   const xg=d.x_reference?S("g",{},s):null;
   if(d.x_reference){const rx=x(d.x_reference.value);obs.push([rx-2,m.t,rx+2,h-m.b,1]);
-    if(d.x_reference.label){const rl=kRefLabel(rx,d.x_reference.label,m.l,w-m.r);kRefText(s,rl,m.t+12,false);obs.push(kRefBox(rl,m.t+12));}}
+    if(d.x_reference.label){const rl=kRefLabel(rx,d.x_reference.label,m.l,w-m.r);kRefText(s,rl,m.t+12,false);obs.push(kRefBox(rl,m.t+12));refs.push(obs.at(-1));}}
   const yg=d.reference?S("g",{},s):null;
   if(d.reference){const ry=y(d.reference.value);obs.push([m.l,ry-2,w-m.r,ry+2,1]);
-    if(d.reference.label){const rl=kRefLabel(w-m.r+4,d.reference.label,m.l,w-m.r);kRefText(s,rl,ry+13,false);obs.push(kRefBox(rl,ry+13));}}
+    if(d.reference.label){const rl=kRefLabel(w-m.r+4,d.reference.label,m.l,w-m.r);kRefText(s,rl,ry+13,false);obs.push(kRefBox(rl,ry+13));refs.push(obs.at(-1));}}
   if(d.price_line){const p=d.price_line.value,yAt=v=>-(v/Math.max(1e-9,p)),lx=Math.min(x1,p*-y0);
     S("line",{x1:x(0),y1:y(0),x2:x(lx),y2:y(Math.max(y0,yAt(lx))),style:"stroke:var(--ink-2);stroke-width:1.5;stroke-dasharray:5 4"},s);
     if(d.price_line.label){const mx=lx*.55,t=d.price_line.label,tx=x(mx)+8,ty=y(Math.max(y0,yAt(mx)))+16;S("text",{x:tx,y:ty,class:"lbl",text:t},s);obs.push([tx,ty-10,tx+t.length*6.4,ty+3]);}
@@ -927,7 +927,7 @@ function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);
   const labs=pts.map(p=>({p,text:(narrow?p.narrow_label:p.label)||p.tag})).filter(l=>l.text).map(l=>{const [px,py]=at(l.p);return {...l,px,py,r:kNum(l.p.size,5.5,"point size")};})
     .map(l=>({...l,strong:kIsEm(d,l.p.id)})).sort((a,b)=>(b.strong?1:0)-(a.strong?1:0)||a.px-b.px);
   const placed=placeLabels(labs,[m.l,0,w,h-m.b],obs,pts.map(at)).map(l=>{S("text",{x:l.x,y:l.y,"text-anchor":l.anchor,class:kIsEm(d,l.p.id)?"lbl-strong":"lbl",text:l.text},s);
-    return kTextBox(l.x,l.y,l.text,l.anchor,kIsEm(d,l.p.id));});
+    return kTextBox(l.x,l.y,l.text,l.anchor,kIsEm(d,l.p.id));}).concat(refs);
   if(xg)kVLine(xg,x(d.x_reference.value),m.t,h-m.b,placed,{class:"floor"});
   if(yg)kHLine(yg,m.l,w-m.r,y(d.reference.value),placed,{class:"floor"});
   return s;}

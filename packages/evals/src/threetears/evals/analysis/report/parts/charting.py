@@ -85,6 +85,7 @@ from threetears.evals.analysis.report.figure_keys import (
     resolve,
 )
 from threetears.evals.analysis.report.parts.look import PageLook, Quantity, quantity, series_token
+from threetears.evals.analysis.report.words import label_case
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.words import (
     ASPECT_MEASURE_TEMPLATE,
@@ -367,7 +368,7 @@ def measure_words(report_input: ReportInput, key: str, *, kind: str | None = Non
     :rtype: str
     """
     named = _reader_name(report_input, key, kind=kind)
-    return named if prose else named[:1].upper() + named[1:]
+    return named if prose else label_case(named)
 
 
 def _reader_name(report_input: ReportInput, key: str, *, kind: str | None) -> str:

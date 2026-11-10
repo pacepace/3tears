@@ -1468,6 +1468,8 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
     ml, mr, mb = max(30, max(len(yf(v)) for v in y_ticks) * 6.6 + 16), 18, 40
     x, y = _Scale(x0, x1, ml, w - mr, log=bool(d.x_log)), _Scale(y0, y1, h - mb, mt)
     obstacles: list[tuple[float, float, float, float, float]] = []
+    # The labels a reference line keeps clear of, beside the points' (the region's and each reference's own).
+    labels_clear: list[_Clear] = []
     out: list[str] = []
 
     def pass_side(r: ChartReference, lo: float, hi: float) -> tuple[float, float]:
@@ -1495,6 +1497,7 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
             region_text, region_box = _region_label(x(ax) + 8, y(by) + 16, region, x(bx) - x(ax) - 16, budget)
             out.append(region_text)
             obstacles.append(region_box)
+            labels_clear.append(region_box[:4])
     price = d.price_line
     if price is not None:
         p = price.value
@@ -1540,6 +1543,7 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
             label = _ref_label(rx, d.x_reference.label, ml, w - mr)
             out.append(_ref_text(label, mt + 12, False))
             obstacles.append(_ref_box(label, mt + 12))
+            labels_clear.append(_label_box(label, mt + 12, False))
     if d.reference is not None:
         ry = y(d.reference.value)
         y_line = len(out)
@@ -1549,6 +1553,7 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
             label = _ref_label(w - mr + 4, d.reference.label, ml, w - mr)
             out.append(_ref_text(label, ry + 13, False))
             obstacles.append(_ref_box(label, ry + 13))
+            labels_clear.append(_label_box(label, ry + 13, False))
     if price is not None:
         p = price.value
         lx = min(x1, p * -y0)
@@ -1633,7 +1638,7 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
             strong = d.emphasis is not None and point.id == d.emphasis
             labels.append(_Label(px, py, text, strong, point.size or 5.5))
     labels.sort(key=lambda one: (0 if one.strong else 1, one.px))
-    placed_clear: list[_Clear] = []
+    placed_clear: list[_Clear] = list(labels_clear)
     for placed in _place_labels(labels, (ml, 0, w, h - mb), obstacles, [at(p.x, p.y) for p in points]):
         out.append(_text(placed.x, placed.y, placed.text, "lbl-strong" if placed.strong else "lbl", placed.anchor))
         placed_clear.append(_text_box(placed.x, placed.y, placed.text, placed.anchor, placed.strong))

@@ -17,6 +17,8 @@ readings table read as a fraction.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -25,6 +27,7 @@ import pytest
 from packages.evals.tests.ladder_support import load, offline_copy
 from threetears.evals.analysis.report import ChartBlock, DisclosureBlock, DotIntervalChart, TableBlock
 from threetears.evals.harness import WriterResult
+from threetears.evals.kernel.host.measures import MeasureRegistry
 
 
 @pytest.fixture(scope="module")
@@ -93,3 +96,38 @@ def test_the_readings_table_reads_a_rate_as_a_percent_and_the_count_it_is_of(run
     assert "| Bounces | 0.9 | 1.0 |" in lines
     assert "| Must-fix findings open | 0.4 | 0.3 |" in lines
     assert "| Should-fix findings open | 2.43 | 1.57 |" in lines
+
+
+def _with_share(result: WriterResult, reader_name: str) -> WriterResult:
+    """The replayed result with one of its host's measures declared a share: no unit, on 0 to 1, as a host declares
+    a fraction."""
+    measures = result.host.profile.measures
+    described = [measures.get(name) for name in measures.names]
+    shared = [
+        one.model_copy(update={"unit": None, "value_range": (0.0, 1.0), "nonnegative": False})
+        if one is not None and one.reader_name == reader_name
+        else one
+        for one in described
+    ]
+    registry = MeasureRegistry([one for one in shared if one is not None], families=measures.families)
+    profile = dataclasses.replace(result.host.profile, measures=registry)
+    return dataclasses.replace(result, host=dataclasses.replace(result.host, profile=profile))
+
+
+def test_the_readings_table_reads_a_share_as_a_rate_with_its_count(rung5: WriterResult) -> None:
+    """Rung 5's readings table reads a measure declared a share on 0 to 1, as every page does: in percent with the
+    count it is of (``43% (3 of 7)``), never its bare mean ``0.43``."""
+    lines = _with_share(rung5, "Shape bounces").render().splitlines()
+    (row,) = [line for line in lines if line.startswith("| Shape bounces |")]
+    assert row == "| Shape bounces | 43% (3 of 7) | 14% (1 of 7) |", row
+
+
+def test_the_readings_table_reads_a_judged_score_at_the_digits_its_cases_support(rung5: WriterResult) -> None:
+    """A judged score in the readings table reads to a tenth at seven cases, where a hundredth is noise
+    (``4.7``, never ``4.71``); a pass rate reads in percent with its count (``43% (3 of 7)``)."""
+    lines = rung5.render().splitlines()
+    assert "| Report finished | 43% (3 of 7) | 86% (6 of 7) |" in lines, lines
+    judged = [line for line in lines if re.match(r"^\| \S+ \(judged\) \|", line)]
+    assert judged, lines
+    cells = [cell.strip() for line in judged for cell in line.strip("|").split("|")[1:]]
+    assert all(re.fullmatch(r"\d\.\d|-", cell) for cell in cells), judged
