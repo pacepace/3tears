@@ -54,7 +54,7 @@ from threetears.core.keyed.deletes import SweptRows, delete_before, delete_oldes
 from threetears.core.keyed.inline import InlineDuckDB, InlineTransaction, run_inline
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
 from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_past_marks
-from threetears.core.keyed.page import KeyPage, Sort, exists_keyed, keyset_page, keyset_rows
+from threetears.core.keyed.page import KeyPage, Sort, exists_keyed, keyset_cursor, keyset_page, keyset_rows
 from threetears.core.keyed.rows import (
     ANY_ROWS_CAP,
     DEFAULT_KEY_BATCH,
@@ -115,6 +115,7 @@ __all__ = [
     "estimated_rows",
     "exists_keyed",
     "holds_any",
+    "keyset_cursor",
     "keyset_page",
     "keyset_rows",
     "read_after",

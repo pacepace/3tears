@@ -58,7 +58,7 @@ from threetears.core.keyed._filters import (
 from threetears.core.pagination import CursorError
 from threetears.core.sql_fragments import quote_identifier
 
-__all__ = ["Sort", "KeyPage", "exists_keyed", "keyset_page", "keyset_rows"]
+__all__ = ["Sort", "KeyPage", "exists_keyed", "keyset_cursor", "keyset_page", "keyset_rows"]
 
 
 @dataclass(frozen=True)
@@ -115,7 +115,20 @@ def _as_text(value: Any) -> str:
     return str(value)
 
 
-def _encode(order: Sequence[Sort], row: Mapping[str, Any]) -> str:
+def keyset_cursor(order: Sequence[Sort], row: Mapping[str, Any]) -> str:
+    """the cursor of a page that ends at ``row``: :func:`keyset_page` given it resumes right after ``row``.
+
+    The cursor every page answers (:attr:`KeyPage.next_cursor`), made from a row's sort values: a caller moving a
+    listing onto :func:`keyset_page` makes one from a place its own older cursor named, so those keep resuming.
+
+    :param order: the sort the cursor resumes, as :func:`keyset_page` is given it
+    :ptype order: Sequence[Sort]
+    :param row: the row the page ended at: each sort column's value under its name (``None`` for ``NULL``)
+    :ptype row: Mapping[str, Any]
+    :return: the cursor
+    :rtype: str
+    :raises KeyError: when ``row`` lacks a sort column
+    """
     values = [None if row[sort.column] is None else _as_text(row[sort.column]) for sort in order]
     raw = json.dumps([[sort.column for sort in order], values], separators=(",", ":"))
     return base64.urlsafe_b64encode(raw.encode()).decode()
@@ -280,7 +293,7 @@ async def keyset_page(
     more = len(answered) > limit
     if more:
         del answered[limit:]
-    return KeyPage(rows=answered, next_cursor=_encode(order, answered[-1]) if more else None)
+    return KeyPage(rows=answered, next_cursor=keyset_cursor(order, answered[-1]) if more else None)
 
 
 async def _steps_by_row(conn: Any, order: Sequence[Sort]) -> bool:

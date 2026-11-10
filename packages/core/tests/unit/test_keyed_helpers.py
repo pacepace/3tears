@@ -42,6 +42,7 @@ from threetears.core.keyed import (
     estimated_rows,
     exists_keyed,
     holds_any,
+    keyset_cursor,
     keyset_page,
     read_after,
     read_joined,
@@ -266,6 +267,26 @@ class TestKeysetPage:
         sql, params = reader.statements[-1]
         assert 'EXISTS (SELECT 1 FROM "grants" AS v WHERE v."a" = t."a" AND v."who" = $3)' in sql
         assert params[-1] == "ann"
+
+    @pytest.mark.parametrize("descending", [False, True])
+    async def test_a_cursor_made_from_a_row_resumes_right_after_it(
+        self, db: duckdb.DuckDBPyConnection, descending: bool
+    ) -> None:
+        """Flips if keyset_cursor's cursor resumes anywhere but right after its row (an older cursor's place, made
+        into one), or differs from the cursor the page ending at that row answers -- NULLs included."""
+        order = [Sort("stamp", "timestamp", descending=descending, nullable=True), Sort("b", "bigint", descending)]
+        every = await keyset_page(ThreadedDuckDB(db), "t", columns=["b", "stamp"], by={}, order=order, limit=1000)
+        for index in (0, 1, 2, 3, 50, 98):
+            row = every.rows[index]
+            made = keyset_cursor(order, {"stamp": row["stamp"], "b": row["b"]})
+            first = await keyset_page(
+                ThreadedDuckDB(db), "t", columns=["b", "stamp"], by={}, order=order, limit=index + 1
+            )
+            assert made == first.next_cursor
+            resumed = await keyset_page(
+                ThreadedDuckDB(db), "t", columns=["b", "stamp"], by={}, order=order, limit=1000, cursor=made
+            )
+            assert resumed.rows == every.rows[index + 1 :]
 
     async def test_a_cursor_of_another_sort_is_refused(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a cursor issued for one sort is read as a place in another, or garbage reads as the start."""
