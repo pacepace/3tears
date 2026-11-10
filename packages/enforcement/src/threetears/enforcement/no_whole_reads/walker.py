@@ -479,6 +479,51 @@ def _placeholder(value: ast.expr, constants: dict[str, str], produced: Produced 
     return PK_TOKEN if any(_KEY_NAME.search(found) for found in names) else "{}"
 
 
+#: the most scopes a function's if/else branch bindings are judged in
+_MOST_BRANCH_ENVS: Final[int] = 8
+
+
+def _branch_binding(body: list[ast.stmt]) -> dict[str, ast.expr]:
+    """the names a branch binds by a plain assignment among its own statements (not nested ones), onto the value.
+
+    :param body: the branch's statements
+    :ptype body: list[ast.stmt]
+    :return: name onto value
+    :rtype: dict[str, ast.expr]
+    """
+    return {
+        statement.targets[0].id: statement.value
+        for statement in body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+    }
+
+
+def _joined_statements(node: ast.AST | None) -> bool:
+    """whether ``node`` joins the statements a comprehension writes with a literal separator (``" UNION ALL ".join(
+    f"SELECT ..." for t in held)``): a body built of one statement's parts, each judged where it is written.
+
+    :param node: the expression, or None
+    :ptype node: ast.AST | None
+    :return: whether it is
+    :rtype: bool
+    """
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "join"
+        and isinstance(node.func.value, ast.Constant)
+        and isinstance(node.func.value.value, str)
+        and len(node.args) == 1
+        and not node.keywords
+        and isinstance(node.args[0], (ast.GeneratorExp, ast.ListComp))
+    ):
+        return False
+    part = _string_text(node.args[0].elt, {})
+    return part is not None and is_sql(part)
+
+
 def _string_text(node: ast.expr, env: dict[str, str], produced: Produced = None) -> str | None:
     """the statically known text of a string expression.
 
@@ -687,6 +732,8 @@ class _ModuleWalk(ast.NodeVisitor):
         self._classes: list[str] = []
         self._class_nodes: list[ast.ClassDef] = []
         self._envs: list[dict[str, str]] = [{}]
+        #: per function on the stack, the scopes of its if/else branch bindings (:meth:`_branch_envs`)
+        self._branch_scopes: list[list[dict[str, str]]] = [[]]
         self._parents: dict[ast.AST, ast.AST] = {}
         for node in ast.walk(tree):
             for child in ast.iter_child_nodes(node):
@@ -784,18 +831,23 @@ class _ModuleWalk(ast.NodeVisitor):
         """
         return ".".join(self._stack) if self._stack else "<module>"
 
-    def _bind(self, body: list[ast.stmt], env: dict[str, str]) -> None:
+    def _bind(self, body: list[ast.stmt], env: dict[str, str], fixed: Mapping[str, str] | None = None) -> None:
         """record the string each simple assignment under ``body`` binds (not in nested functions). A name the body
         binds more than once (``where = ""`` then ``where = "WHERE ..."``, or ``where += ...``) has no one text, so it
-        is left unbound: a statement built from it reads it as an interpolation the walk cannot see.
+        is left unbound: a statement built from it reads it as an interpolation the walk cannot see. A ``fixed`` name
+        is bound to its given text throughout (one branch's binding: :meth:`_branch_envs`).
 
         :param body: statements
         :ptype body: list[ast.stmt]
         :param env: name onto bound string, updated in place
         :ptype env: dict[str, str]
+        :param fixed: names onto the text each is read as, whatever the body binds it to
+        :ptype fixed: Mapping[str, str] | None
         :return: nothing
         :rtype: None
         """
+        fixed = fixed or {}
+        env.update(fixed)
         stores: dict[str, int] = {}
         for node in _own_nodes(body):
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
@@ -827,12 +879,67 @@ class _ModuleWalk(ast.NodeVisitor):
                 target, value = node.targets[0], node.value
             elif isinstance(node, ast.AnnAssign) and node.value is not None:
                 target, value = node.target, node.value
+            if isinstance(target, ast.Name) and target.id in fixed:
+                continue
             if isinstance(target, ast.Name) and value is not None:
-                text = _string_text(value, env, self._produced_by)
+                text = _string_text(self._view_part(value), env, self._produced_by)
                 if text is not None and stores.get(target.id, 0) == 1:
                     env[target.id] = text
                 else:
                     env.pop(target.id, None)
+
+    def _view_part(self, value: ast.expr) -> ast.expr:
+        """in a declared view producer, the statement a body joined from one statement per table is written as
+        (``union = " UNION ALL ".join(f"SELECT ... FROM {t}" for t in held)``: the f-string); else ``value``.
+
+        :param value: an assignment's value
+        :ptype value: ast.expr
+        :return: the expression its text is read from
+        :rtype: ast.expr
+        """
+        if self._function in self._view_producers and _joined_statements(value):
+            assert isinstance(value, ast.Call) and isinstance(value.args[0], (ast.GeneratorExp, ast.ListComp))
+            return value.args[0].elt
+        return value
+
+    def _branch_envs(self, body: list[ast.stmt], env: dict[str, str]) -> list[dict[str, str]]:
+        """the scopes a function's statements are also judged in: one per branch choice of each name it binds once in
+        each branch of an ``if``/``else`` (``select = f"{a}t.state{b}"`` / ``else: select = f"{a}t.state{c}"``), its
+        known text in each, so a statement built from it is judged as each branch writes it (at most
+        :data:`_MOST_BRANCH_ENVS`); empty when it binds none.
+
+        :param body: the function's statements
+        :ptype body: list[ast.stmt]
+        :param env: the scope the function's own bindings start from
+        :ptype env: dict[str, str]
+        :return: the scopes, the function's own bindings read in each
+        :rtype: list[dict[str, str]]
+        """
+        stores: dict[str, int] = {}
+        for node in _own_nodes(body):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                stores[node.id] = stores.get(node.id, 0) + 1
+            elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+                stores[node.target.id] = stores.get(node.target.id, 0) + 2
+        choices: dict[str, list[ast.expr]] = {}
+        for node in _own_nodes(body):
+            if not isinstance(node, ast.If) or not node.orelse:
+                continue
+            for name in {*_branch_binding(node.body)} & {*_branch_binding(node.orelse)}:
+                if stores.get(name) == 2 and name not in choices:
+                    choices[name] = [_branch_binding(node.body)[name], _branch_binding(node.orelse)[name]]
+        envs: list[dict[str, str]] = []
+        names = sorted(choices)
+        for picked in itertools.product(*(choices[name] for name in names)):
+            scope = dict(env)
+            texts = {name: _string_text(value, scope, self._produced_by) for name, value in zip(names, picked)}
+            if any(text is None for text in texts.values()):
+                continue
+            self._bind(body, scope, fixed={name: text for name, text in texts.items() if text is not None})
+            envs.append(scope)
+            if len(envs) >= _MOST_BRANCH_ENVS:
+                break
+        return envs
 
     def _hit(self, node: ast.AST, symbol: str, statement: str) -> None:
         """record one hit at ``node``.
@@ -897,14 +1004,17 @@ class _ModuleWalk(ast.NodeVisitor):
         # its receiver's class, which the function's parameters and assignments say
         self._function_nodes.append(node)
         env = dict(self._envs[-1])
+        branches = self._branch_envs(node.body, env)
         self._bind(node.body, env)
         self._envs.append(env)
+        self._branch_scopes.append(branches)
         self._ctes.append(_function_ctes(node.body))
         owner = self._classes[-1] if self._classes and self._function.startswith(f"{self._classes[-1]}.") else ""
         self._classes.append(owner)
         self.generic_visit(node)
         self._classes.pop()
         self._envs.pop()
+        self._branch_scopes.pop()
         self._ctes.pop()
         self._function_nodes.pop()
         self._source.pop()
@@ -991,7 +1101,15 @@ class _ModuleWalk(ast.NodeVisitor):
         prose = isinstance(parent, ast.Expr) or (
             isinstance(parent, ast.Call) and _PROSE_CALLS.search(_final(parent) or "") is not None
         )
-        return not piece and not prose
+        # in a declared view producer, a statement a comprehension writes for a joined body (``" UNION ALL ".join(
+        # f"SELECT ..." for t in held)``) is a part of the view it builds, judged there by the producer's keys
+        part = (
+            self._function in self._view_producers
+            and isinstance(parent, (ast.GeneratorExp, ast.ListComp))
+            and parent.elt is node
+            and _joined_statements(self._parents.get(parent))
+        )
+        return not piece and not prose and not part
 
     def _cte_parameters(self, function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
         """the function's parameters that every call site in the repo fills with a string literal its own statements
@@ -1069,13 +1187,33 @@ class _ModuleWalk(ast.NodeVisitor):
             return
         # a placeholder resolves to a module constant, or to a string the enclosing function binds once; a parameter
         # every caller fills with a CTE its own statement defines is that CTE (judged where the caller builds it)
-        env = self._envs[-1]
         function = self._function_node
         cte_params = self._cte_parameters(function) if function is not None else set()
-        if cte_params:
-            env = {**env, **{name: f"__cte_{name}" for name in cte_params}}
-        text = _string_text(node, env, self._produced_by) if self._maximal_string(node) else None
+        judged: set[tuple[str, str]] = set()
+        # the function's scope, or one per if/else branch choice when it has them (a statement built from a name each
+        # branch binds is judged as each writes it; every other name is bound in each as in the function's); a finding
+        # counts once
+        for scope in self._branch_scopes[-1] or [self._envs[-1]]:
+            env = {**scope, **{name: f"__cte_{name}" for name in cte_params}} if cte_params else scope
+            text = _string_text(node, env, self._produced_by) if self._maximal_string(node) else None
+            self._judge_text(node, text, judged)
+
+    def _judge_text(self, node: ast.expr, text: str | None, judged: set[tuple[str, str]]) -> None:
+        """record the findings of ``node``'s statement as one scope reads it, each finding once.
+
+        :param node: the expression
+        :ptype node: ast.expr
+        :param text: its text in that scope, or None
+        :ptype text: str | None
+        :param judged: the findings already recorded for ``node``, as (kind, table); updated in place
+        :ptype judged: set[tuple[str, str]]
+        :return: nothing
+        :rtype: None
+        """
         for finding in judge_sql(text, self._reader(node)) if text is not None and is_sql(text) else []:
+            if (finding.kind, finding.table) in judged:
+                continue
+            judged.add((finding.kind, finding.table))
             if self._transient_table(finding.table):
                 continue
             parent = self._parents.get(node)
