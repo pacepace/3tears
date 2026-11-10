@@ -8,6 +8,20 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### agent/memory: every read names its key; `find_by_scope` reads one user
+
+- **Migrating: `MemoriesCollection.find_by_scope` requires `user_id` (contract change).** It reads one user's
+  memories (with `customer_id` or without) through the owner's index. A call with `agent_id` alone, or with only
+  `customer_id`, read a whole agent or customer and now raises `ValueError` before any SQL. No caller in the hub,
+  the SDK, reports, admin or DIPP made one; a caller that needs them names the user.
+- **The owner scope is written into each statement.** The hybrid, semantic, keyword, tag, listing and consolidation
+  reads write `agent_id`/`customer_id`/`user_id` in their own text (`_OWNER_SCOPE`, one statement per scope grain
+  for the consolidation load) instead of building them at run time; the narrowing filters follow. Same SQL, same
+  parameters.
+- **Migration v033** drops the legacy index names v018 and v028 already removed (`idx_mem_agent`, `idx_mem_user`,
+  `idx_media_memory_id`, `idx_chunks_memory_id`, `idx_chunks_user`, ...), in literal `DROP INDEX IF EXISTS`
+  statements: a no-op on a migrated schema.
+
 ### core: `ScopedSnapshot` and `SharedSnapshot` are removed
 
 **Removed (core):** `threetears.core.collections.scoped_snapshot` (`ScopedSnapshot`, its `SnapshotTable`,

@@ -489,6 +489,27 @@ class TestMemoriesCollectionFindByUser:
         assert all(isinstance(e, MemoryEntity) for e in entities)
 
 
+class TestFindByScopeReadsOneUser:
+    """find_by_scope reads one user's memories through the owner's index; a whole agent or customer is refused."""
+
+    @pytest.mark.parametrize("customer", [False, True], ids=["agent-only", "agent-and-customer"])
+    async def test_a_read_with_no_user_is_refused_before_any_sql(
+        self,
+        registry: CollectionRegistry,
+        config_always: DefaultCoreConfig,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+        customer: bool,
+    ) -> None:
+        pg = _make_pg_mock({})
+        _rebind_pool(registry, pg)
+        coll = MemoriesCollection(registry, config_always, authorizer=permissive_memory_authorizer)
+
+        with pytest.raises(ValueError, match="give user_id"):
+            await coll.find_by_scope(uuid.uuid7(), uuid.uuid7() if customer else None)
+
+        pg.fetch.assert_not_called()
+
+
 class TestMemoriesCollectionSerialization:
     def test_serialize_deserialize_roundtrip(
         self,

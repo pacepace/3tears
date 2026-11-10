@@ -103,6 +103,8 @@ version history:
 - v032 adds ``conversation_memory_refs.agent_id``, the agent that surfaced a
   ref, backfilled from the memory or chunk it names, else the conversation's
   own agent.
+- v033 drops the legacy index names v018 and v028 already removed, in literal
+  ``DROP INDEX IF EXISTS`` statements: a no-op on a migrated schema.
 
 the three embedding columns (v001 ``memories``, v006 ``media_content``,
 v007 ``memory_chunks``) are created at the width :func:`register` is given
@@ -215,6 +217,7 @@ from threetears.agent.memory.migrations.v031_declared_not_null_columns import (
     declared_not_null_columns,
 )
 from threetears.agent.memory.migrations.v032_memory_refs_agent_id import memory_refs_agent_id
+from threetears.agent.memory.migrations.v033_drop_legacy_index_names import drop_legacy_index_names
 from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, check_embedding_dim
 from threetears.core.data.migrations import (
     MigrationFunc,
@@ -336,6 +339,7 @@ def register(runner: MigrationRunner, *, embedding_dim: int = DEFAULT_EMBEDDING_
     pkg.version(30)(recompute_memory_chunks_search_vector)
     pkg.version(31)(declared_not_null_columns)
     pkg.version(32)(memory_refs_agent_id)
+    pkg.version(33)(drop_legacy_index_names)
     runner.register(pkg)
     return pkg
 
@@ -361,6 +365,7 @@ __all__ = [
     "declared_not_null_columns",
     "datetime_to_datetimetz",
     "drop_legacy_memory_columns",
+    "drop_legacy_index_names",
     "drop_search_vector_gin_indexes",
     "enforce_conversation_id_not_null",
     "flip_memory_parent_fks",

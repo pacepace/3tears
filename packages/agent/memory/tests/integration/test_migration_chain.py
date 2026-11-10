@@ -68,11 +68,13 @@ async def _read_back(
     memory_id: uuid.UUID,
 ) -> MemoryEntity:
     """
-    read one memory back through the collection's raw-SELECT scope read.
+    read one memory back through the collection's raw-SELECT owner read.
 
     ``find_by_scope`` is the production path that selects the explicit column
     list over the codec-less pool, so a column the migration chain added but the
     read path forgot (or cannot decode) shows up here as a missing or wrong field.
+    It reads one user's memories (0.95.0); a memory of the agent or customer grain
+    (no user) is read back by its key through ``get``.
 
     :param conn: live asyncpg connection, search_path set to the agent schema
     :ptype conn: asyncpg.Connection
@@ -92,7 +94,16 @@ async def _read_back(
         config=DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""),
         authorizer=authorizer,
     )
-    matches = [entity for entity in await collection.find_by_scope(agent_id) if entity.memory_id == memory_id]
+    owner = await conn.fetchrow(
+        "SELECT customer_id, user_id FROM memories WHERE agent_id = $1 AND memory_id = $2", agent_id, memory_id
+    )
+    assert owner is not None, f"memory {memory_id} was never written"
+    if owner["user_id"] is None:
+        entity = await collection.get((agent_id, memory_id))
+        assert entity is not None, f"memory {memory_id} not read back by its key"
+        return entity
+    found = await collection.find_by_scope(agent_id, owner["customer_id"], owner["user_id"])
+    matches = [entity for entity in found if entity.memory_id == memory_id]
     assert len(matches) == 1, f"memory {memory_id} not read back through find_by_scope"
     return matches[0]
 

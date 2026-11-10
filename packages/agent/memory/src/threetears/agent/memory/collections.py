@@ -22,7 +22,7 @@ import json
 import math
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Final, cast
 from uuid import UUID
 
 from sqlalchemy import MetaData, Table
@@ -291,53 +291,27 @@ def _build_fts_text(user_text: str, min_len: int = 3, max_len: int = 500) -> str
     return text[:max_len]
 
 
-def _build_user_scope_clause(
-    user_id: UUID,
-    *,
-    agent_id: UUID,
-    customer_id: UUID,
-    start_param: int = 2,
-    table_prefix: str = "",
-) -> tuple[str, list[UUID], int]:
-    """Build WHERE fragments scoping by agent / customer / user.
+#: the owner triple every memory hybrid-search read is scoped to, written out so the read's key is in its text: the
+#: partition column ``agent_id`` and its sub-scopes ``customer_id`` and ``user_id``, bound at $2..$4 (each search's
+#: query text or vector is $1). collections-task-04 made the triple mandatory; v008 restored its NOT NULLs.
+_OWNER_SCOPE: Final[str] = "agent_id = $2 AND customer_id = $3 AND user_id = $4"
+#: :data:`_OWNER_SCOPE` on a table aliased ``mc``
+_OWNER_SCOPE_MC: Final[str] = "mc.agent_id = $2 AND mc.customer_id = $3 AND mc.user_id = $4"
 
-    collections-task-04 requires the partition column ``agent_id`` and
-    its sub-scope ``customer_id`` to be mandatory: the legacy "optional
-    scoping tag" doctrine is retired with v008's NOT NULL restoration.
-    every memory hybrid-search SQL site receives a fully-scoped
-    ``(agent_id, customer_id, user_id)`` triple.
 
-    :param user_id: user ID
-    :ptype user_id: UUID
-    :param agent_id: partition column for the memory tables; required
+def _owner_scope_params(agent_id: UUID, customer_id: UUID, user_id: UUID) -> tuple[list[UUID], int]:
+    """the values :data:`_OWNER_SCOPE` binds, and the last parameter index it uses.
+
+    :param agent_id: partition column for the memory tables
     :ptype agent_id: UUID
-    :param customer_id: customer ID sub-scope; required
+    :param customer_id: customer sub-scope
     :ptype customer_id: UUID
-    :param start_param: starting positional parameter index
-    :ptype start_param: int
-    :param table_prefix: optional table alias prefix
-    :ptype table_prefix: str
-    :return: tuple of (conditions string, param values, last param
-        index used)
-    :rtype: tuple[str, list[UUID], int]
+    :param user_id: user sub-scope
+    :ptype user_id: UUID
+    :return: ``([agent_id, customer_id, user_id], 4)``
+    :rtype: tuple[list[UUID], int]
     """
-    prefix = f"{table_prefix}." if table_prefix else ""
-    conditions: list[str] = []
-    params: list[UUID] = []
-    idx = start_param
-
-    conditions.append(f"{prefix}agent_id = ${idx}")
-    params.append(agent_id)
-    idx += 1
-
-    conditions.append(f"{prefix}customer_id = ${idx}")
-    params.append(customer_id)
-    idx += 1
-
-    conditions.append(f"{prefix}user_id = ${idx}")
-    params.append(user_id)
-
-    return " AND ".join(conditions), params, idx
+    return [agent_id, customer_id, user_id], 4
 
 
 def _normalize_scores(candidates: list[dict[str, Any]], key: str) -> None:
@@ -1069,9 +1043,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         when ``caller_user_id`` is provided the rbac evaluator
         decides ``memory.read`` on the ``(agent_id, customer_id)``
         memory namespace before the SQL runs. ``customer_id`` is
-        required for evaluator invocation -- single-argument
-        ``find_by_scope(agent_id)`` is an agent-internal row-scan
-        path (no user dimension) and runs without evaluation.
+        required for evaluator invocation. ``user_id`` must be given:
+        the read is keyed by the owner's index, and ``agent_id`` alone
+        or with only ``customer_id`` (every memory of the agent, or of a
+        whole customer) is refused (0.95.0).
 
         :param agent_id: agent ID scope (required)
         :ptype agent_id: UUID
@@ -1088,8 +1063,13 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         :rtype: list[MemoryEntity]
         :raises MemoryAccessDenied: when rbac enforcement denies
         :raises ValueError: when ``caller_user_id`` is set without
-            ``customer_id``
+            ``customer_id``, or without ``user_id``
         """
+        if user_id is None:
+            raise ValueError(
+                "find_by_scope reads one user's memories: give user_id (with customer_id or without);"
+                " agent_id alone, or with only customer_id, would read a whole agent or customer",
+            )
         if caller_user_id is not None:
             if customer_id is None:
                 raise ValueError(
@@ -1105,24 +1085,18 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             )
         if self.l3_pool is None:
             return []
-        conditions = ["agent_id = $1"]
+        # each owner form is written out, so the read's key is in its own text
         params: list[object] = [agent_id]
-        param_idx = 2
-
-        if customer_id is not None:
-            conditions.append(f"customer_id = ${param_idx}")
-            params.append(customer_id)
-            param_idx += 1
-
-        if user_id is not None:
-            conditions.append(f"user_id = ${param_idx}")
+        if customer_id is None:
+            where = "agent_id = $1 AND user_id = $2"
             params.append(user_id)
-            param_idx += 1
+        else:
+            where = "agent_id = $1 AND customer_id = $2 AND user_id = $3"
+            params.extend((customer_id, user_id))
+        allowed = filter_clause(self.read_filter, "memories.tags", params)
+        query = f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE {where}{allowed} ORDER BY date_created DESC"
 
-        where_clause = " AND ".join(conditions) + filter_clause(self.read_filter, "memories.tags", params)
-        query = f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE {where_clause} ORDER BY date_created DESC"
-
-        # cache-bypass: multi-row scan by agent scope is not primary-
+        # cache-bypass: one owner's rows by the owner's index are not primary-
         # key addressable; L1 row cache would not help. method on
         # Collection preserves single entry point + rbac gating.
         rows = await self.l3_pool.fetch(query, *params)
@@ -1180,11 +1154,15 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             return []
         fragments, scope_params, _next = build_scope_conditions(scope, next_param=4)
         args: list[Any] = [agent_id, customer_id, user_id, *scope_params]
-        where = " AND ".join(["agent_id = $1", "customer_id = $2", "user_id = $3", *fragments])
+        narrowing = "".join(f" AND {fragment}" for fragment in fragments)
         if filtered:
-            where += filter_clause(self.read_filter, "memories.tags", args)
-        # cache-bypass: a multi-row scan by tag is not primary-key addressable, as find_by_scope.
-        rows = await self.l3_pool.fetch(f"SELECT memory_id FROM memories WHERE {where} ORDER BY date_created", *args)
+            narrowing += filter_clause(self.read_filter, "memories.tags", args)
+        # cache-bypass: one owner's rows by tag, found through the owner's index (not the primary key).
+        rows = await self.l3_pool.fetch(
+            "SELECT memory_id FROM memories WHERE agent_id = $1 AND customer_id = $2 AND user_id = $3"
+            f"{narrowing} ORDER BY date_created",
+            *args,
+        )
         return [row["memory_id"] for row in rows]
 
     async def delete_by_tags(
@@ -1602,12 +1580,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             return []
         embedding_str = json.dumps(embedding)
 
-        scope_conditions, scope_params, param_offset = _build_user_scope_clause(
-            user_id,
-            agent_id=agent_id,
-            customer_id=customer_id,
-            start_param=2,
-        )
+        scope_params, param_offset = _owner_scope_params(agent_id, customer_id, user_id)
         # v0.7.5 date filter: append ``AND date_created >= $X`` /
         # ``AND date_created <= $Y`` to both the vector and FTS sub-
         # queries. Bound parameters are appended after the existing
@@ -1627,7 +1600,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         for fragment in vec_scope_fragments:
             vec_date_clause += f" AND {fragment}"
         vec_extra_params.extend(vec_scope_params)
-        vec_where = f"WHERE {scope_conditions}"
         limit_param = f"${param_offset + 1}"
 
         # cache-bypass: vector-distance search is not primary-key-
@@ -1673,7 +1645,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                        embedding::text AS embedding,
                        1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
                 FROM memories
-                {vec_where}
+                WHERE {_OWNER_SCOPE}
                   AND embedding IS NOT NULL{vec_date_clause}
                   AND (superseded_by IS NULL OR NOT EXISTS (
                         SELECT 1 FROM memories g
@@ -1698,12 +1670,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
         if fts_text:
-            fts_scope_conditions, fts_scope_params, fts_param_offset = _build_user_scope_clause(
-                user_id,
-                agent_id=agent_id,
-                customer_id=customer_id,
-                start_param=2,
-            )
+            fts_scope_params, fts_param_offset = _owner_scope_params(agent_id, customer_id, user_id)
             # v0.7.5 date filter on FTS sub-query.
             fts_date_clause = ""
             fts_extra_params: list[Any] = []
@@ -1719,7 +1686,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             for fragment in fts_retrieval_fragments:
                 fts_date_clause += f" AND {fragment}"
             fts_extra_params.extend(fts_retrieval_params)
-            fts_where = f"WHERE {fts_scope_conditions}"
             fts_limit_param = f"${fts_param_offset + 1}"
             # cache-bypass: FTS rank query is not primary-key-
             # addressable. See :meth:`hybrid_search` docstring.
@@ -1738,7 +1704,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                        embedding::text AS embedding,
                        ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM memories
-                {fts_where}
+                WHERE {_OWNER_SCOPE}
                   AND embedding IS NOT NULL
                   AND {_MEMORY_FTS_MATCH}{fts_date_clause}
                   AND (superseded_by IS NULL OR NOT EXISTS (
@@ -1918,7 +1884,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             return []
         embedding_str = json.dumps(embedding)
         params: list[Any] = [embedding_str, agent_id, user_id]
-        conditions = ["agent_id = $2", "user_id = $3"]
+        # the narrowing after the read's key (agent_id = $2 AND user_id = $3), written into the statement itself
+        conditions: list[str] = []
         param_idx = 4
         if type_filter:
             conditions.append(f"type_memory = ${param_idx}")
@@ -1940,7 +1907,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             conditions.append(_NOT_RETRACTED)
         limit_param = f"${param_idx}"
         params.append(max_results)
-        where_clause = " AND ".join(conditions) + filter_clause(self.read_filter, "memories.tags", params)
+        narrowing = "".join(f" AND {condition}" for condition in conditions)
+        narrowing += filter_clause(self.read_filter, "memories.tags", params)
         # ``embedding IS NOT NULL`` guard: ``NULL <=> vector`` is NULL,
         # which trips ``float(similarity)`` downstream.
         # DELIBERATE-RECALL by design (§3): this is the agent-invoked
@@ -1958,7 +1926,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS},
                    1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memories
-            WHERE {where_clause}
+            WHERE agent_id = $2 AND user_id = $3{narrowing}
             ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
         """
@@ -2029,11 +1997,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         """
         if self.l3_pool is None or scope_matches_nothing(scope):
             return []
-        conditions = [
-            "agent_id = $2",
-            "user_id = $3",
-            _MEMORY_FTS_MATCH,
-        ]
+        # the narrowing after the read's key (agent_id = $2 AND user_id = $3), written into the statement itself
+        conditions = [_MEMORY_FTS_MATCH]
         params: list[Any] = [fts_text, agent_id, user_id]
         idx = 4
         if type_filter:
@@ -2053,7 +2018,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         params.extend(scope_extra_params)
         if not include_retracted:
             conditions.append(_NOT_RETRACTED)
-        where = " AND ".join(conditions) + filter_clause(self.read_filter, "memories.tags", params)
+        narrowing = "".join(f" AND {condition}" for condition in conditions)
+        narrowing += filter_clause(self.read_filter, "memories.tags", params)
         # DELIBERATE-RECALL by design (§3), mirroring search_by_semantic:
         # the agent-invoked memory_search keyword leg applies NO salience
         # floor and NO supersession filter (unlike ambient hybrid_search) --
@@ -2062,7 +2028,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS},
                    ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
             FROM memories
-            WHERE {where}
+            WHERE agent_id = $2 AND user_id = $3{narrowing}
             ORDER BY fts_rank DESC
             LIMIT {max_results}
         """
@@ -2166,7 +2132,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             raise ValueError(f"list_for_user: unknown state {state!r}")
         if self.l3_pool is None:
             return [], 0
-        conditions = ["agent_id = $1", "user_id = $2"]
+        # the narrowing after the read's key (agent_id = $1 AND user_id = $2), written into each statement itself
+        conditions: list[str] = []
         params: list[Any] = [agent_id, user_id]
 
         def _bind(fragment: str, value: Any) -> None:
@@ -2190,13 +2157,16 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             conditions.append(f"NOT ({_NOT_RETRACTED})")
         elif state == "replaced":
             conditions.append(_REPLACED)
-        where = " AND ".join(conditions) + filter_clause(self.read_filter, "memories.tags", params)
+        narrowing = "".join(f" AND {condition}" for condition in conditions)
+        narrowing += filter_clause(self.read_filter, "memories.tags", params)
         # cache-bypass: a filtered scan of one person's rows is not primary-key
         # addressable; ix_memories_user_date backs the order.
-        total = await self.l3_pool.fetchval(f"SELECT count(*) FROM memories WHERE {where}", *params)
+        total = await self.l3_pool.fetchval(
+            f"SELECT count(*) FROM memories WHERE agent_id = $1 AND user_id = $2{narrowing}", *params
+        )
         rows = await self.l3_pool.fetch(
             f"SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS} "
-            f"FROM memories WHERE {where} "
+            f"FROM memories WHERE agent_id = $1 AND user_id = $2{narrowing} "
             f"ORDER BY date_created DESC, memory_id DESC LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}",
             *params,
             limit,
@@ -2598,26 +2568,22 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         """
         if self.l3_pool is None:
             return []
-        conditions = ["m.agent_id = $1"]
+        # exact scope match, including the NULL grain (see docstring): a None argument narrows to IS NULL rather
+        # than dropping the filter. each grain's owner is written out, so the read's key is in its own text; the
+        # owner's index (agent_id, customer_id, user_id) serves IS NULL as an equality.
         params: list[object] = [agent_id]
-        param_idx = 2
-
-        # exact scope match, including the NULL grain (see docstring): a
-        # None argument narrows to IS NULL rather than dropping the filter.
-        if customer_id is None:
-            conditions.append("m.customer_id IS NULL")
-        else:
-            conditions.append(f"m.customer_id = ${param_idx}")
-            params.append(customer_id)
-            param_idx += 1
-        if user_id is None:
-            conditions.append("m.user_id IS NULL")
-        else:
-            conditions.append(f"m.user_id = ${param_idx}")
+        if customer_id is None and user_id is None:
+            where = "m.agent_id = $1 AND m.customer_id IS NULL AND m.user_id IS NULL"
+        elif customer_id is None:
+            where = "m.agent_id = $1 AND m.customer_id IS NULL AND m.user_id = $2"
             params.append(user_id)
-            param_idx += 1
-
-        where_clause = " AND ".join(conditions) + filter_clause(self.read_filter, "m.tags", params)
+        elif user_id is None:
+            where = "m.agent_id = $1 AND m.customer_id = $2 AND m.user_id IS NULL"
+            params.append(customer_id)
+        else:
+            where = "m.agent_id = $1 AND m.customer_id = $2 AND m.user_id = $3"
+            params.extend((customer_id, user_id))
+        allowed = filter_clause(self.read_filter, "m.tags", params)
         # cache-bypass: a scope-scanned candidate load is not primary-key
         # addressable, so the L1 row cache cannot serve it; keeping the SQL
         # on the Collection preserves the single-entry-point contract.
@@ -2630,7 +2596,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             "m.type_memory, m.content, m.embedding::text AS embedding, "
             "m.date_created, m.tags "
             "FROM memories m "
-            f"WHERE {where_clause} "
+            f"WHERE {where}{allowed} "
             "AND NOT m.evergreen "
             "AND m.embedding IS NOT NULL "
             "AND (m.superseded_by IS NULL OR NOT EXISTS ("
@@ -3052,13 +3018,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
             return []
         embedding_str = json.dumps(embedding)
 
-        scope_conditions, scope_params, param_offset = _build_user_scope_clause(
-            user_id,
-            agent_id=agent_id,
-            customer_id=customer_id,
-            start_param=2,
-            table_prefix="mc",
-        )
+        scope_params, param_offset = _owner_scope_params(agent_id, customer_id, user_id)
         limit_param = f"${param_offset + 1}"
 
         # cache-bypass: vector-distance search joining media_content ->
@@ -3078,7 +3038,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
             JOIN media med
               ON mc.agent_id = med.agent_id
              AND mc.media_id = med.media_id
-            WHERE {scope_conditions} AND mc.embedding IS NOT NULL{vec_allowed}
+            WHERE {_OWNER_SCOPE_MC} AND mc.embedding IS NOT NULL{vec_allowed}
             ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
             """,
@@ -3087,13 +3047,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
         if fts_text:
-            fts_scope_conditions, fts_scope_params, fts_param_offset = _build_user_scope_clause(
-                user_id,
-                agent_id=agent_id,
-                customer_id=customer_id,
-                start_param=2,
-                table_prefix="mc",
-            )
+            fts_scope_params, fts_param_offset = _owner_scope_params(agent_id, customer_id, user_id)
             fts_limit_param = f"${fts_param_offset + 1}"
             # cache-bypass: FTS rank query joining media_content ->
             # media. see vec_coro justification above.
@@ -3109,7 +3063,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
                 JOIN media med
                   ON mc.agent_id = med.agent_id
                  AND mc.media_id = med.media_id
-                WHERE {fts_scope_conditions} AND mc.embedding IS NOT NULL
+                WHERE {_OWNER_SCOPE_MC} AND mc.embedding IS NOT NULL
                   AND {_CHUNK_FTS_MATCH}{fts_allowed}
                 ORDER BY fts_rank DESC
                 LIMIT {fts_limit_param}
@@ -3658,13 +3612,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
             return []
         embedding_str = json.dumps(embedding)
 
-        scope_conditions, scope_params, param_offset = _build_user_scope_clause(
-            user_id,
-            agent_id=agent_id,
-            customer_id=customer_id,
-            start_param=2,
-            table_prefix="mc",
-        )
+        scope_params, param_offset = _owner_scope_params(agent_id, customer_id, user_id)
         cursor_clause = ""
         cursor_value: UUID | None = None
         if chunk_id_after is not None:
@@ -3699,7 +3647,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
             LEFT JOIN media med
               ON mc.agent_id = med.agent_id
              AND mc.memory_id = med.memory_id
-            WHERE {scope_conditions}
+            WHERE {_OWNER_SCOPE_MC}
               AND mc.embedding IS NOT NULL
               {cursor_clause}{vec_allowed}
             ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
@@ -3710,13 +3658,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
         if fts_text:
-            fts_scope_conditions, fts_scope_params, fts_param_offset = _build_user_scope_clause(
-                user_id,
-                agent_id=agent_id,
-                customer_id=customer_id,
-                start_param=2,
-                table_prefix="mc",
-            )
+            fts_scope_params, fts_param_offset = _owner_scope_params(agent_id, customer_id, user_id)
             fts_cursor_clause = ""
             fts_cursor_params: list[Any] = []
             if cursor_value is not None:
@@ -3739,7 +3681,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                 LEFT JOIN media med
                   ON mc.agent_id = med.agent_id
                  AND mc.memory_id = med.memory_id
-                WHERE {fts_scope_conditions}
+                WHERE {_OWNER_SCOPE_MC}
                   AND mc.embedding IS NOT NULL
                   AND {_CHUNK_FTS_MATCH}
                   {fts_cursor_clause}{fts_allowed}
@@ -4318,13 +4260,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
             return []
         embedding_str = json.dumps(embedding)
 
-        scope_conditions, scope_params, param_offset = _build_user_scope_clause(
-            user_id,
-            agent_id=agent_id,
-            customer_id=customer_id,
-            start_param=2,
-            table_prefix="mc",
-        )
+        scope_params, param_offset = _owner_scope_params(agent_id, customer_id, user_id)
         memory_id_param = f"${param_offset + 1}"
         limit_param = f"${param_offset + 2}"
         vec_args: list[Any] = [embedding_str, *scope_params, memory_id, candidate_k]
@@ -4348,7 +4284,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
             LEFT JOIN media med
               ON mc.agent_id = med.agent_id
              AND mc.memory_id = med.memory_id
-            WHERE {scope_conditions}
+            WHERE {_OWNER_SCOPE_MC}
               AND mc.memory_id = {memory_id_param}
               AND mc.embedding IS NOT NULL{vec_allowed}
             ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
@@ -4359,13 +4295,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
         if fts_text:
-            fts_scope_conditions, fts_scope_params, fts_param_offset = _build_user_scope_clause(
-                user_id,
-                agent_id=agent_id,
-                customer_id=customer_id,
-                start_param=2,
-                table_prefix="mc",
-            )
+            fts_scope_params, fts_param_offset = _owner_scope_params(agent_id, customer_id, user_id)
             fts_memory_id_param = f"${fts_param_offset + 1}"
             fts_limit_param = f"${fts_param_offset + 2}"
             fts_args: list[Any] = [fts_text, *fts_scope_params, memory_id, candidate_k]
@@ -4383,7 +4313,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                 LEFT JOIN media med
                   ON mc.agent_id = med.agent_id
                  AND mc.memory_id = med.memory_id
-                WHERE {fts_scope_conditions}
+                WHERE {_OWNER_SCOPE_MC}
                   AND mc.memory_id = {fts_memory_id_param}
                   AND {_CHUNK_FTS_MATCH}{fts_allowed}
                 ORDER BY fts_rank DESC

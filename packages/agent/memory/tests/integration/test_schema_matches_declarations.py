@@ -33,6 +33,7 @@ from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MemoryChunkCollection
 from threetears.agent.memory.migrations import align_indexes_with_declarations
 from threetears.agent.memory.migrations import register as register_memory
+from threetears.agent.memory.migrations.v033_drop_legacy_index_names import DROP_LEGACY_INDEXES_SQL
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import VECTOR_TYPE, SchemaBackedCollection, TableSchema
@@ -213,6 +214,29 @@ async def _catalog_snapshot(conn: asyncpg.Connection, schema: str) -> list[tuple
     return result
 
 
+async def _index_rows(conn: asyncpg.Connection, schema: str) -> list[tuple[str, str, str]]:
+    """every index of ``schema`` as ``(table, name, definition)``, the schema's own name taken out of each definition.
+
+    :param conn: connection to the test database
+    :ptype conn: asyncpg.Connection
+    :param schema: schema to read
+    :ptype schema: str
+    :return: the sorted rows
+    :rtype: list[tuple[str, str, str]]
+    """
+    rows = await conn.fetch("SELECT tablename, indexname, indexdef FROM pg_indexes WHERE schemaname = $1", schema)
+    return sorted((r["tablename"], r["indexname"], r["indexdef"].replace(f"{schema}.", "")) for r in rows)
+
+
+def v033_names() -> list[str]:
+    """the index names v033 drops, read off its statements.
+
+    :return: the names
+    :rtype: list[str]
+    """
+    return [sql.rsplit(" ", 1)[1] for sql in DROP_LEGACY_INDEXES_SQL]
+
+
 async def _memory_foreign_keys_on_media(conn: asyncpg.Connection, schema: str) -> list[tuple[str, ...]]:
     """the local column lists of every foreign key from ``media`` to ``memories``.
 
@@ -310,6 +334,27 @@ class TestBuiltSchemaMatchesDeclarations:
             assert await _memory_foreign_keys_on_media(conn, schema) == [("agent_id", "memory_id")]
         finally:
             await conn.close()
+
+    async def test_an_upgraded_schema_ends_with_the_fresh_schemas_indexes(
+        self, two_schemas: tuple[str, str, str]
+    ) -> None:
+        """a schema built before v028 (legacy index names in place) and carried through the rest of the chain ends
+        with exactly the indexes a fresh build has, none of the names v033 drops among them."""
+        url, fresh, upgraded = two_schemas
+        conn = await asyncpg.connect(url)
+        try:
+            await _migrate(conn, fresh)
+            await _migrate(conn, upgraded, target=27)
+            before = {name for _, name, _ in await _index_rows(conn, upgraded)}
+            assert {"idx_mem_agent", "idx_chunks_user", "idx_media_memory_id"} <= before
+            await _migrate(conn, upgraded)
+            fresh_rows = await _index_rows(conn, fresh)
+            upgraded_rows = await _index_rows(conn, upgraded)
+        finally:
+            await conn.close()
+        assert upgraded_rows == fresh_rows
+        names = {name for _, name, _ in fresh_rows}
+        assert not names & set(v033_names()), names & set(v033_names())
 
     async def test_memories_date_updated_is_not_null_on_both_sides(self, pg_schema: tuple[str, str]) -> None:
         url, schema = pg_schema
