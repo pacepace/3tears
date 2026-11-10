@@ -74,13 +74,24 @@ from datetime import datetime, timedelta
 from typing import Any, ClassVar
 from uuid import UUID
 
+from threetears.core.keyed import (
+    AnyOf,
+    Fragment,
+    KeyBatch,
+    Sort,
+    counts_by,
+    delete_keyed,
+    keyset_page,
+    keyset_rows,
+    read_keyed,
+    update_keyed,
+)
 from threetears.agent.wake.entities import (
     WakeFireEntity,
     WakeScheduleEntity,
     WebhookSubscriptionEntity,
 )
 from threetears.agent.wake.types import ReapedFire
-from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.collections.base import BaseCollection
 from threetears.core.serialization import (
     deserialize_from_json,
@@ -218,11 +229,6 @@ _SCHEDULE_UPDATE_COLUMNS: tuple[str, ...] = tuple(
 )
 
 
-# Every column a schedule read selects, in one place so the pk fetch, the
-# tick scan and the listings cannot drift apart.
-_SCHEDULE_SELECT_COLUMNS = ", ".join(_SCHEDULE_INSERT_COLUMNS)
-
-
 _FIRE_INSERT_COLUMNS: tuple[str, ...] = (
     "conversation_id",
     "fire_id",
@@ -240,10 +246,6 @@ _FIRE_INSERT_COLUMNS: tuple[str, ...] = (
     "fire_source",
     "requested_by",
 )
-
-
-# Every column a fire read selects.
-_FIRE_SELECT_COLUMNS = ", ".join(_FIRE_INSERT_COLUMNS)
 
 
 # fires are immutable post-finalize; the update set covers only the
@@ -284,10 +286,6 @@ _SUBSCRIPTION_UPDATE_COLUMNS: tuple[str, ...] = tuple(
 )
 
 
-# Every column a subscription read selects.
-_SUBSCRIPTION_SELECT_COLUMNS = ", ".join(_SUBSCRIPTION_INSERT_COLUMNS)
-
-
 def _build_upsert_sql(
     table: str,
     insert_cols: Sequence[str],
@@ -320,31 +318,44 @@ def _build_upsert_sql(
     )
 
 
-def _build_fenced_update_sql(
+async def _fenced_update(
+    target: Any,
     table: str,
+    data: dict[str, Any],
+    value_for: Any,
     update_cols: Sequence[str],
     pk_cols: Sequence[str],
-) -> str:
-    """Build an update-only statement fenced on the ``date_updated`` the row was read with.
+    original_timestamp: Any,
+) -> int:
+    """update a row's ``update_cols`` only where it still carries the ``date_updated`` it was read with.
 
-    Positional parameters bind to ``pk_cols`` then ``update_cols`` in declared order, then the
-    fence last. The statement updates only a row that still carries the fence value, so a save
-    built from a row read before another writer changed it -- or deleted it -- updates nothing
-    rather than writing that change away, and never re-inserts a deleted row.
+    A save built from a row read before another writer changed it -- or deleted it -- updates nothing rather than
+    writing that change away, and never re-inserts a deleted row.
 
-    :param table: table name
+    :param target: the pool or connection
+    :ptype target: Any
+    :param table: the table
     :ptype table: str
+    :param data: the row
+    :ptype data: dict[str, Any]
+    :param value_for: ``(column, data) -> value`` as the save binds it
+    :ptype value_for: Any
     :param update_cols: columns the save writes
     :ptype update_cols: Sequence[str]
-    :param pk_cols: primary-key columns, matched in the ``WHERE`` clause
+    :param pk_cols: primary-key columns
     :ptype pk_cols: Sequence[str]
-    :return: SQL string ready for ``execute()``
-    :rtype: str
+    :param original_timestamp: the fence
+    :ptype original_timestamp: Any
+    :return: rows updated (1, or 0 when the row changed or went since it was read)
+    :rtype: int
     """
-    set_clause = ", ".join(f"{c} = ${len(pk_cols) + i + 1}" for i, c in enumerate(update_cols))
-    where_clause = " AND ".join(f"{c} = ${i + 1}" for i, c in enumerate(pk_cols))
-    fence_position = len(pk_cols) + len(update_cols) + 1
-    return f"UPDATE {table} SET {set_clause} WHERE {where_clause} AND date_updated = ${fence_position}"
+    written = await update_keyed(
+        target,
+        table,
+        values={column: value_for(column, data) for column in update_cols},
+        by={**{column: value_for(column, data) for column in pk_cols}, "date_updated": original_timestamp},
+    )
+    return written.count
 
 
 _AGENT_WAKE_SCHEDULES_UPSERT_SQL = _build_upsert_sql(
@@ -356,13 +367,6 @@ _AGENT_WAKE_SCHEDULES_UPSERT_SQL = _build_upsert_sql(
 
 
 _SCHEDULE_PK_COLUMNS: tuple[str, ...] = ("conversation_id", "schedule_id")
-
-
-_AGENT_WAKE_SCHEDULES_FENCED_UPDATE_SQL = _build_fenced_update_sql(
-    "agent_wake_schedules",
-    _SCHEDULE_UPDATE_COLUMNS,
-    _SCHEDULE_PK_COLUMNS,
-)
 
 
 _WAKE_FIRES_UPSERT_SQL = _build_upsert_sql(
@@ -384,36 +388,49 @@ _WEBHOOK_SUBSCRIPTIONS_UPSERT_SQL = _build_upsert_sql(
 _SUBSCRIPTION_PK_COLUMNS: tuple[str, ...] = ("conversation_id", "subscription_id")
 
 
-_WEBHOOK_SUBSCRIPTIONS_FENCED_UPDATE_SQL = _build_fenced_update_sql(
-    "webhook_subscriptions",
-    _SUBSCRIPTION_UPDATE_COLUMNS,
-    _SUBSCRIPTION_PK_COLUMNS,
+_SCHEDULES = "agent_wake_schedules"
+_FIRES = "wake_fires"
+_SUBSCRIPTIONS = "webhook_subscriptions"
+_REFUSALS = "webhook_refusals"
+
+#: a SET value of the statement's own clock
+_NOW = Fragment("now()")
+
+#: fires newest first, as ``idx_wake_fires_*_time`` serves them (a page with no cursor: the index's column alone)
+_NEWEST_FIRST = (Sort("actual_fired_at", cast="timestamptz", descending=True),)
+
+#: subscriptions newest first, the id breaking a tie so a listing pages
+_NEWEST_SUBSCRIPTIONS_FIRST = (
+    Sort("date_created", cast="timestamptz", descending=True),
+    Sort("subscription_id", cast="uuid"),
 )
 
-
-_AGENT_WAKE_SCHEDULES_FETCH_SQL = (
-    f"SELECT {_SCHEDULE_SELECT_COLUMNS} FROM agent_wake_schedules WHERE conversation_id = $1 AND schedule_id = $2"
-)
+#: what a reaped fire answers back
+_REAPED_COLUMNS = ("conversation_id", "fire_id", "started_conversation_id")
 
 
-_AGENT_WAKE_SCHEDULES_DELETE_SQL = "DELETE FROM agent_wake_schedules WHERE conversation_id = $1 AND schedule_id = $2"
+async def _read_one(
+    pool: Any, table: str, columns: Sequence[str], key: str, value: Any, by: dict[str, Any]
+) -> dict[str, Any] | None:
+    """the one row of ``table`` whose ``key`` is ``value`` (within ``by``), or None.
 
-
-_WAKE_FIRES_FETCH_SQL = f"SELECT {_FIRE_SELECT_COLUMNS} FROM wake_fires WHERE conversation_id = $1 AND fire_id = $2"
-
-
-_WAKE_FIRES_DELETE_SQL = "DELETE FROM wake_fires WHERE conversation_id = $1 AND fire_id = $2"
-
-
-_WEBHOOK_SUBSCRIPTIONS_FETCH_SQL = (
-    f"SELECT {_SUBSCRIPTION_SELECT_COLUMNS} FROM webhook_subscriptions "
-    "WHERE conversation_id = $1 AND subscription_id = $2"
-)
-
-
-_WEBHOOK_SUBSCRIPTIONS_DELETE_SQL = (
-    "DELETE FROM webhook_subscriptions WHERE conversation_id = $1 AND subscription_id = $2"
-)
+    :param pool: the pool
+    :ptype pool: Any
+    :param table: the table
+    :ptype table: str
+    :param columns: the columns read
+    :ptype columns: Sequence[str]
+    :param key: the unique key column
+    :ptype key: str
+    :param value: its value
+    :ptype value: Any
+    :param by: the partition (or owner) pinned beside it
+    :ptype by: dict[str, Any]
+    :return: the row, or None
+    :rtype: dict[str, Any] | None
+    """
+    rows = await read_keyed(pool, table, keys=KeyBatch((key,), [(value,)], ("uuid",)), columns=columns, by=by)
+    return rows[0] if rows else None
 
 
 class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
@@ -466,14 +483,9 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         if self.l3_pool is None:
             return None
         conv_id, schedule_id = self.normalize_pk(entity_id)
-        row = await self.l3_pool.fetchrow(
-            _AGENT_WAKE_SCHEDULES_FETCH_SQL,
-            conv_id,
-            schedule_id,
+        return await _read_one(
+            self.l3_pool, _SCHEDULES, _SCHEDULE_INSERT_COLUMNS, "schedule_id", schedule_id, {"conversation_id": conv_id}
         )
-        if row is None:
-            return None
-        return dict(row)
 
     async def save_to_store(
         self,
@@ -511,9 +523,15 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         if original_timestamp is None:
             await target.execute(_AGENT_WAKE_SCHEDULES_UPSERT_SQL, *_schedule_insert_params(data))
             return 1
-        params = [_schedule_value_for_column(col, data) for col in _SCHEDULE_PK_COLUMNS + _SCHEDULE_UPDATE_COLUMNS]
-        status = await target.execute(_AGENT_WAKE_SCHEDULES_FENCED_UPDATE_SQL, *params, original_timestamp)
-        return parse_rowcount(status)
+        return await _fenced_update(
+            target,
+            _SCHEDULES,
+            data,
+            _schedule_value_for_column,
+            _SCHEDULE_UPDATE_COLUMNS,
+            _SCHEDULE_PK_COLUMNS,
+            original_timestamp,
+        )
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """Delete a schedule row by composite pk.
@@ -530,11 +548,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         if self.l3_pool is None:
             return None
         conv_id, schedule_id = self.normalize_pk(entity_id)
-        await self.l3_pool.execute(
-            _AGENT_WAKE_SCHEDULES_DELETE_SQL,
-            conv_id,
-            schedule_id,
-        )
+        await delete_keyed(self.l3_pool, _SCHEDULES, by={"conversation_id": conv_id, "schedule_id": schedule_id})
         return None
 
     def serialize(self, data: dict[str, Any]) -> bytes:
@@ -576,14 +590,18 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         # across every conversation; the partition predicate cannot
         # apply here by construction. Same shape as agent-tools'
         # cross-partition LRU scan.
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_SCHEDULE_SELECT_COLUMNS} "
-            "FROM agent_wake_schedules "
-            "WHERE status = 'active' AND next_fire_at IS NOT NULL AND next_fire_at <= $1 "
-            "ORDER BY next_fire_at ASC LIMIT $2",
-            now,
-            limit,
+        # one page in the due index's order (idx_wake_schedules_next_fire_asc, status = 'active'): no cursor follows
+        # it, so the sort is the index's column alone, as the index serves it
+        page = await keyset_page(
+            self.l3_pool,
+            _SCHEDULES,
+            columns=_SCHEDULE_INSERT_COLUMNS,
+            by={"status": "active"},
+            order=[Sort("next_fire_at", cast="timestamptz")],
+            limit=limit,
+            where=[Fragment('t."next_fire_at" IS NOT NULL AND t."next_fire_at" <= $1', (now,))],
         )
+        rows = page.rows
         return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def list_active_for_conversation(
@@ -605,12 +623,12 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             return []
         # cache-bypass: multi-row scan by conversation_id is not pk-
         # addressable; L1 row cache cannot serve.
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_SCHEDULE_SELECT_COLUMNS} "
-            "FROM agent_wake_schedules "
-            "WHERE conversation_id = $1 AND status = 'active' "
-            "ORDER BY next_fire_at ASC NULLS LAST",
-            conversation_id,
+        rows = await keyset_rows(
+            self.l3_pool,
+            _SCHEDULES,
+            columns=_SCHEDULE_INSERT_COLUMNS,
+            by={"conversation_id": conversation_id, "status": "active"},
+            order=[Sort("next_fire_at", cast="timestamptz", nullable=True), Sort("schedule_id", cast="uuid")],
         )
         return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
@@ -630,12 +648,12 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         if self.l3_pool is None:
             return []
         # cache-bypass: multi-row scan.
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_SCHEDULE_SELECT_COLUMNS} "
-            "FROM agent_wake_schedules "
-            "WHERE conversation_id = $1 "
-            "ORDER BY date_created DESC",
-            conversation_id,
+        rows = await keyset_rows(
+            self.l3_pool,
+            _SCHEDULES,
+            columns=_SCHEDULE_INSERT_COLUMNS,
+            by={"conversation_id": conversation_id},
+            order=[Sort("date_created", cast="timestamptz", descending=True), Sort("schedule_id", cast="uuid")],
         )
         return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
@@ -658,11 +676,14 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         if self.l3_pool is None:
             return 0
         # cache-bypass: aggregate COUNT not pk-addressable.
-        value = await self.l3_pool.fetchval(
-            "SELECT COUNT(*) FROM agent_wake_schedules WHERE conversation_id = $1 AND status = 'active'",
-            conversation_id,
+        counted = await counts_by(
+            self.l3_pool,
+            _SCHEDULES,
+            column="conversation_id",
+            values=AnyOf([conversation_id], "uuid"),
+            by={"status": "active"},
         )
-        return int(value or 0)
+        return counted.get(conversation_id, 0)
 
     async def find_for_agent(
         self,
@@ -690,14 +711,12 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         # UNIQUE (schedule_id) makes the lookup exact and the agent_id
         # predicate keeps it to the caller's own. conversation_id is read off
         # the row.
-        row = await self.l3_pool.fetchrow(
-            f"SELECT {_SCHEDULE_SELECT_COLUMNS} FROM agent_wake_schedules WHERE agent_id = $1 AND schedule_id = $2",
-            agent_id,
-            schedule_id,
+        row = await _read_one(
+            self.l3_pool, _SCHEDULES, _SCHEDULE_INSERT_COLUMNS, "schedule_id", schedule_id, {"agent_id": agent_id}
         )
         if row is None:
             return None
-        return WakeScheduleEntity(dict(row), is_new=False, collection=self)
+        return WakeScheduleEntity(row, is_new=False, collection=self)
 
     async def list_for_agent(
         self,
@@ -723,12 +742,16 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         # spans-partitions: the agent's listing covers every conversation it
         # holds wakes in; agent_id is the scope. conversation_id is read off
         # each row.
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_SCHEDULE_SELECT_COLUMNS} FROM agent_wake_schedules "
-            "WHERE agent_id = $1 AND status = ANY($2::text[]) "
-            "ORDER BY next_fire_at ASC NULLS LAST, date_created ASC",
-            agent_id,
-            statuses,
+        rows = await keyset_rows(
+            self.l3_pool,
+            _SCHEDULES,
+            columns=_SCHEDULE_INSERT_COLUMNS,
+            by={"agent_id": agent_id, "status": AnyOf(statuses)},
+            order=[
+                Sort("next_fire_at", cast="timestamptz", nullable=True),
+                Sort("date_created", cast="timestamptz"),
+                Sort("schedule_id", cast="uuid"),
+            ],
         )
         return [WakeScheduleEntity(dict(row), is_new=False, collection=self) for row in rows]
 
@@ -764,25 +787,20 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             if last_fired_at is None:
                 # cache-bypass: targeted UPDATE on the next_fire_at column; the row is evicted
                 # from every tier once it lands.
-                await self.l3_pool.execute(
-                    "UPDATE agent_wake_schedules "
-                    "SET next_fire_at = $3, date_updated = now() "
-                    "WHERE conversation_id = $1 AND schedule_id = $2",
-                    conversation_id,
-                    schedule_id,
-                    next_fire_at,
+                await update_keyed(
+                    self.l3_pool,
+                    _SCHEDULES,
+                    values={"next_fire_at": next_fire_at, "date_updated": _NOW},
+                    by={"conversation_id": conversation_id, "schedule_id": schedule_id},
                 )
             else:
                 # cache-bypass: targeted UPDATE with both timestamps; the row is evicted from
                 # every tier once it lands.
-                await self.l3_pool.execute(
-                    "UPDATE agent_wake_schedules "
-                    "SET next_fire_at = $3, last_fired_at = $4, date_updated = now() "
-                    "WHERE conversation_id = $1 AND schedule_id = $2",
-                    conversation_id,
-                    schedule_id,
-                    next_fire_at,
-                    last_fired_at,
+                await update_keyed(
+                    self.l3_pool,
+                    _SCHEDULES,
+                    values={"next_fire_at": next_fire_at, "last_fired_at": last_fired_at, "date_updated": _NOW},
+                    by={"conversation_id": conversation_id, "schedule_id": schedule_id},
                 )
         return None
 
@@ -807,12 +825,11 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         async with self.bypassing_write((conversation_id, schedule_id)):
             # cache-bypass: targeted UPDATE on status column; the row is evicted from every
             # tier once it lands.
-            await self.l3_pool.execute(
-                "UPDATE agent_wake_schedules "
-                "SET status = 'paused', next_fire_at = NULL, date_updated = now() "
-                "WHERE conversation_id = $1 AND schedule_id = $2 AND status = 'active'",
-                conversation_id,
-                schedule_id,
+            await update_keyed(
+                self.l3_pool,
+                _SCHEDULES,
+                values={"status": "paused", "next_fire_at": None, "date_updated": _NOW},
+                by={"conversation_id": conversation_id, "schedule_id": schedule_id, "status": "active"},
             )
         return None
 
@@ -858,11 +875,6 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         :raises ValueError: if ``conn`` is given and its transaction was not
             opened by :class:`~threetears.core.collections.CallerTransaction`
         """
-        sql = (
-            "UPDATE agent_wake_schedules "
-            "SET status = 'active', next_fire_at = $3, date_updated = now() "
-            "WHERE conversation_id = $1 AND schedule_id = $2 AND status != 'expired'"
-        )
         target = conn if conn is not None else self.l3_pool
         if target is None:
             return None
@@ -871,7 +883,13 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         async with self.bypassing_write((conversation_id, schedule_id), conn=conn):
             # cache-bypass: targeted UPDATE flipping paused -> active; the row is evicted from
             # every tier once it is final.
-            await target.execute(sql, conversation_id, schedule_id, next_fire_at)
+            await update_keyed(
+                target,
+                _SCHEDULES,
+                values={"status": "active", "next_fire_at": next_fire_at, "date_updated": _NOW},
+                by={"conversation_id": conversation_id, "schedule_id": schedule_id},
+                where=[Fragment(""""status" != 'expired'""")],
+            )
         return None
 
     async def claim_and_reschedule(
@@ -928,21 +946,21 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         # have landed, so it evicts.
         async with self.bypassing_write((conversation_id, schedule_id)) as write:
             # cache-bypass: atomic CAS UPDATE; the row is evicted from every tier once it lands.
-            claimed = await self.l3_pool.fetchval(
-                "UPDATE agent_wake_schedules "
-                "SET next_fire_at = $1, last_fired_at = $2, date_updated = $2, status = $3 "
-                "WHERE conversation_id = $4 AND schedule_id = $5 AND next_fire_at = $6 "
-                "RETURNING schedule_id",
-                computed_next_fire,
-                now,
-                new_status,
-                conversation_id,
-                schedule_id,
-                expected_next_fire,
+            claim = await update_keyed(
+                self.l3_pool,
+                _SCHEDULES,
+                values={
+                    "next_fire_at": computed_next_fire,
+                    "last_fired_at": now,
+                    "date_updated": now,
+                    "status": new_status,
+                },
+                by={"conversation_id": conversation_id, "schedule_id": schedule_id, "next_fire_at": expected_next_fire},
+                returning=["schedule_id"],
             )
-            if claimed is None:
+            if not claim.count:
                 write.unchanged()
-        return claimed is not None
+        return bool(claim.count)
 
     async def mark_expired(
         self,
@@ -967,12 +985,11 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         async with self.bypassing_write((conversation_id, schedule_id)):
             # cache-bypass: targeted UPDATE on status column; the row is evicted from every
             # tier once it lands.
-            await self.l3_pool.execute(
-                "UPDATE agent_wake_schedules "
-                "SET status = 'expired', next_fire_at = NULL, date_updated = now() "
-                "WHERE conversation_id = $1 AND schedule_id = $2",
-                conversation_id,
-                schedule_id,
+            await update_keyed(
+                self.l3_pool,
+                _SCHEDULES,
+                values={"status": "expired", "next_fire_at": None, "date_updated": _NOW},
+                by={"conversation_id": conversation_id, "schedule_id": schedule_id},
             )
         return None
 
@@ -1020,14 +1037,9 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         if self.l3_pool is None:
             return None
         conv_id, fire_id = self.normalize_pk(entity_id)
-        row = await self.l3_pool.fetchrow(
-            _WAKE_FIRES_FETCH_SQL,
-            conv_id,
-            fire_id,
+        return await _read_one(
+            self.l3_pool, _FIRES, _FIRE_INSERT_COLUMNS, "fire_id", fire_id, {"conversation_id": conv_id}
         )
-        if row is None:
-            return None
-        return dict(row)
 
     async def save_to_store(
         self,
@@ -1062,11 +1074,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         if self.l3_pool is None:
             return None
         conv_id, fire_id = self.normalize_pk(entity_id)
-        await self.l3_pool.execute(
-            _WAKE_FIRES_DELETE_SQL,
-            conv_id,
-            fire_id,
-        )
+        await delete_keyed(self.l3_pool, _FIRES, by={"conversation_id": conv_id, "fire_id": fire_id})
         return None
 
     def serialize(self, data: dict[str, Any]) -> bytes:
@@ -1132,15 +1140,15 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         if self.l3_pool is None:
             return []
         # cache-bypass: per-schedule history scan.
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_FIRE_SELECT_COLUMNS} "
-            "FROM wake_fires "
-            "WHERE conversation_id = $1 AND schedule_id = $2 "
-            "ORDER BY actual_fired_at DESC LIMIT $3",
-            conversation_id,
-            schedule_id,
-            limit,
+        page = await keyset_page(
+            self.l3_pool,
+            _FIRES,
+            columns=_FIRE_INSERT_COLUMNS,
+            by={"conversation_id": conversation_id, "schedule_id": schedule_id},
+            order=_NEWEST_FIRST,
+            limit=limit,
         )
+        rows = page.rows
         return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def list_for_subscription(
@@ -1168,15 +1176,15 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         if self.l3_pool is None:
             return []
         # cache-bypass: per-subscription history scan.
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_FIRE_SELECT_COLUMNS} "
-            "FROM wake_fires "
-            "WHERE conversation_id = $1 AND webhook_subscription_id = $2 "
-            "ORDER BY actual_fired_at DESC LIMIT $3",
-            conversation_id,
-            webhook_subscription_id,
-            limit,
+        page = await keyset_page(
+            self.l3_pool,
+            _FIRES,
+            columns=_FIRE_INSERT_COLUMNS,
+            by={"conversation_id": conversation_id, "webhook_subscription_id": webhook_subscription_id},
+            order=_NEWEST_FIRST,
+            limit=limit,
         )
+        rows = page.rows
         return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def list_for_conversation(
@@ -1200,14 +1208,15 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         if self.l3_pool is None:
             return []
         # cache-bypass: per-conversation scan.
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_FIRE_SELECT_COLUMNS} "
-            "FROM wake_fires "
-            "WHERE conversation_id = $1 "
-            "ORDER BY actual_fired_at DESC LIMIT $2",
-            conversation_id,
-            limit,
+        page = await keyset_page(
+            self.l3_pool,
+            _FIRES,
+            columns=_FIRE_INSERT_COLUMNS,
+            by={"conversation_id": conversation_id},
+            order=_NEWEST_FIRST,
+            limit=limit,
         )
+        rows = page.rows
         return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def latest_for_schedule(
@@ -1236,28 +1245,15 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             return None
         # cache-bypass: lookup by (conv_id, schedule_id) is not pk-
         # addressable for the row cache (the pk is (conv_id, fire_id)).
-        if statuses is None:
-            row = await self.l3_pool.fetchrow(
-                f"SELECT {_FIRE_SELECT_COLUMNS} "
-                "FROM wake_fires "
-                "WHERE conversation_id = $1 AND schedule_id = $2 "
-                "ORDER BY actual_fired_at DESC LIMIT 1",
-                conversation_id,
-                schedule_id,
-            )
-        else:
-            row = await self.l3_pool.fetchrow(
-                f"SELECT {_FIRE_SELECT_COLUMNS} "
-                "FROM wake_fires "
-                "WHERE conversation_id = $1 AND schedule_id = $2 AND status = ANY($3::text[]) "
-                "ORDER BY actual_fired_at DESC LIMIT 1",
-                conversation_id,
-                schedule_id,
-                list(statuses),
-            )
-        if row is None:
+        by: dict[str, Any] = {"conversation_id": conversation_id, "schedule_id": schedule_id}
+        if statuses is not None:
+            by["status"] = AnyOf(list(statuses))
+        page = await keyset_page(
+            self.l3_pool, _FIRES, columns=_FIRE_INSERT_COLUMNS, by=by, order=_NEWEST_FIRST, limit=1
+        )
+        if not page.rows:
             return None
-        return self.entity_class(dict(row), is_new=False, collection=self)
+        return self.entity_class(dict(page.rows[0]), is_new=False, collection=self)
 
     async def create_dispatching(
         self,
@@ -1375,15 +1371,14 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         # cache-bypass: a targeted UPDATE inside the caller's transaction. No code reads a fire row
         # by primary key -- every fire reader queries L3 (see the module docstring) -- so no cached
         # copy of this row is ever served and none is evicted.
-        linked = await conn.fetchval(
-            "UPDATE wake_fires SET started_conversation_id = $3 "
-            "WHERE conversation_id = $1 AND fire_id = $2 AND status = 'dispatching' "
-            "RETURNING fire_id",
-            conversation_id,
-            fire_id,
-            started_conversation_id,
+        linked = await update_keyed(
+            conn,
+            _FIRES,
+            values={"started_conversation_id": started_conversation_id},
+            by={"conversation_id": conversation_id, "fire_id": fire_id, "status": "dispatching"},
+            returning=["fire_id"],
         )
-        return linked is not None
+        return bool(linked.count)
 
     async def finalize_success(
         self,
@@ -1428,17 +1423,16 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         # cache-bypass: targeted UPDATE on the terminal-state columns. No code reads a fire row
         # by primary key -- every fire reader queries L3 (see the module docstring) -- so no
         # cached copy of this row is ever served and none is evicted.
-        await self.l3_pool.execute(
-            "UPDATE wake_fires "
-            "SET status = $1, output_text = $2, latency_ms = $3, "
-            "    display_suppressed = $4 "
-            "WHERE conversation_id = $5 AND fire_id = $6 AND status = 'dispatching'",
-            status,
-            output_text,
-            latency_ms,
-            display_suppressed,
-            conversation_id,
-            fire_id,
+        await update_keyed(
+            self.l3_pool,
+            _FIRES,
+            values={
+                "status": status,
+                "output_text": output_text,
+                "latency_ms": latency_ms,
+                "display_suppressed": display_suppressed,
+            },
+            by={"conversation_id": conversation_id, "fire_id": fire_id, "status": "dispatching"},
         )
         return None
 
@@ -1479,13 +1473,11 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         # cache-bypass: targeted UPDATE on the failure columns. No code reads a fire row by
         # primary key -- every fire reader queries L3 (see the module docstring) -- so no cached
         # copy of this row is ever served and none is evicted.
-        await self.l3_pool.execute(
-            "UPDATE wake_fires SET status = 'failed', error = $1, latency_ms = $2 "
-            "WHERE conversation_id = $3 AND fire_id = $4 AND status = 'dispatching'",
-            error,
-            latency_ms,
-            conversation_id,
-            fire_id,
+        await update_keyed(
+            self.l3_pool,
+            _FIRES,
+            values={"status": "failed", "error": error, "latency_ms": latency_ms},
+            by={"conversation_id": conversation_id, "fire_id": fire_id, "status": "dispatching"},
         )
         return None
 
@@ -1522,13 +1514,15 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         # cache-bypass: bulk terminal-state UPDATE across partitions. No code reads a fire row
         # by primary key -- every fire reader queries L3 (see the module docstring) -- so no
         # cached copy of a reaped row is ever served and none is evicted.
-        rows = await self.l3_pool.fetch(
-            "UPDATE wake_fires SET status = 'failed', error = $1 "
-            "WHERE status = 'dispatching' AND actual_fired_at < $2 "
-            "RETURNING conversation_id, fire_id, started_conversation_id",
-            REAPED_DISPATCH_ERROR,
-            cutoff,
+        reaped = await update_keyed(
+            self.l3_pool,
+            _FIRES,
+            values={"status": "failed", "error": REAPED_DISPATCH_ERROR},
+            by={"status": "dispatching"},
+            where=[Fragment('"actual_fired_at" < $1', (cutoff,))],
+            returning=_REAPED_COLUMNS,
         )
+        rows = reaped.rows
         return [
             ReapedFire(
                 conversation_id=row["conversation_id"],
@@ -1559,13 +1553,15 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         # ``conversation_id`` is named in the RETURNING clause so the
         # partition-column enforcement walker sees it as a static literal.
         # cache-bypass: see reap_stale_dispatching -- no code reads a fire row by primary key.
-        rows = await self.l3_pool.fetch(
-            "UPDATE wake_fires SET status = 'failed', error = $1 "
-            "WHERE status = 'dispatching' AND fire_id = ANY($2::uuid[]) "
-            "RETURNING conversation_id, fire_id, started_conversation_id",
-            REAPED_DISPATCH_ERROR,
-            list(fire_ids),
+        reaped = await update_keyed(
+            self.l3_pool,
+            _FIRES,
+            values={"status": "failed", "error": REAPED_DISPATCH_ERROR},
+            keys=KeyBatch(("fire_id",), [(fire_id,) for fire_id in fire_ids], ("uuid",)),
+            by={"status": "dispatching"},
+            returning=_REAPED_COLUMNS,
         )
+        rows = reaped.rows
         return [
             ReapedFire(
                 conversation_id=row["conversation_id"],
@@ -1605,22 +1601,18 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         if self.l3_pool is None:
             return 0
         # cache-bypass: aggregate COUNT not pk-addressable.
-        if webhook_subscription_id is None:
-            value = await self.l3_pool.fetchval(
-                "SELECT COUNT(*) FROM wake_fires WHERE conversation_id = $1 AND actual_fired_at >= $2",
-                conversation_id,
-                since,
-            )
-        else:
-            value = await self.l3_pool.fetchval(
-                "SELECT COUNT(*) FROM wake_fires "
-                "WHERE conversation_id = $1 AND actual_fired_at >= $2 "
-                "AND webhook_subscription_id = $3",
-                conversation_id,
-                since,
-                webhook_subscription_id,
-            )
-        return int(value or 0)
+        by: dict[str, Any] = (
+            {} if webhook_subscription_id is None else {"webhook_subscription_id": webhook_subscription_id}
+        )
+        counted = await counts_by(
+            self.l3_pool,
+            _FIRES,
+            column="conversation_id",
+            values=AnyOf([conversation_id], "uuid"),
+            by=by,
+            where=[Fragment('"actual_fired_at" >= $1', (since,))],
+        )
+        return counted.get(conversation_id, 0)
 
 
 class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
@@ -1662,14 +1654,14 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         if self.l3_pool is None:
             return None
         conv_id, subscription_id = self.normalize_pk(entity_id)
-        row = await self.l3_pool.fetchrow(
-            _WEBHOOK_SUBSCRIPTIONS_FETCH_SQL,
-            conv_id,
+        return await _read_one(
+            self.l3_pool,
+            _SUBSCRIPTIONS,
+            _SUBSCRIPTION_INSERT_COLUMNS,
+            "subscription_id",
             subscription_id,
+            {"conversation_id": conv_id},
         )
-        if row is None:
-            return None
-        return dict(row)
 
     async def save_to_store(
         self,
@@ -1707,11 +1699,15 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         if original_timestamp is None:
             await target.execute(_WEBHOOK_SUBSCRIPTIONS_UPSERT_SQL, *_subscription_insert_params(data))
             return 1
-        params = [
-            _subscription_value_for_column(col, data) for col in _SUBSCRIPTION_PK_COLUMNS + _SUBSCRIPTION_UPDATE_COLUMNS
-        ]
-        status = await target.execute(_WEBHOOK_SUBSCRIPTIONS_FENCED_UPDATE_SQL, *params, original_timestamp)
-        return parse_rowcount(status)
+        return await _fenced_update(
+            target,
+            _SUBSCRIPTIONS,
+            data,
+            _subscription_value_for_column,
+            _SUBSCRIPTION_UPDATE_COLUMNS,
+            _SUBSCRIPTION_PK_COLUMNS,
+            original_timestamp,
+        )
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """Delete a subscription row by composite pk.
@@ -1723,10 +1719,8 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         if self.l3_pool is None:
             return None
         conv_id, subscription_id = self.normalize_pk(entity_id)
-        await self.l3_pool.execute(
-            _WEBHOOK_SUBSCRIPTIONS_DELETE_SQL,
-            conv_id,
-            subscription_id,
+        await delete_keyed(
+            self.l3_pool, _SUBSCRIPTIONS, by={"conversation_id": conv_id, "subscription_id": subscription_id}
         )
         return None
 
@@ -1762,9 +1756,8 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         # spans-partitions: the receiver has no conversation context
         # until it resolves the subscription row. The UNIQUE constraint
         # makes the cross-partition lookup safe + fast.
-        row = await self.l3_pool.fetchrow(
-            f"SELECT {_SUBSCRIPTION_SELECT_COLUMNS} FROM webhook_subscriptions WHERE subscription_id = $1",
-            subscription_id,
+        row = await _read_one(
+            self.l3_pool, _SUBSCRIPTIONS, _SUBSCRIPTION_INSERT_COLUMNS, "subscription_id", subscription_id, {}
         )
         if row is None:
             return None
@@ -1792,11 +1785,13 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         # spans-partitions: the caller names the subscription, not its
         # conversation; the standalone UNIQUE (subscription_id) makes the
         # lookup exact and agent_id keeps it to the caller's own.
-        row = await self.l3_pool.fetchrow(
-            f"SELECT {_SUBSCRIPTION_SELECT_COLUMNS} FROM webhook_subscriptions "
-            "WHERE agent_id = $1 AND subscription_id = $2",
-            agent_id,
+        row = await _read_one(
+            self.l3_pool,
+            _SUBSCRIPTIONS,
+            _SUBSCRIPTION_INSERT_COLUMNS,
+            "subscription_id",
             subscription_id,
+            {"agent_id": agent_id},
         )
         if row is None:
             return None
@@ -1818,10 +1813,12 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         if self.l3_pool is None:
             return []
         # spans-partitions: the agent's listing covers every conversation.
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_SUBSCRIPTION_SELECT_COLUMNS} FROM webhook_subscriptions "
-            "WHERE agent_id = $1 ORDER BY date_created DESC",
-            agent_id,
+        rows = await keyset_rows(
+            self.l3_pool,
+            _SUBSCRIPTIONS,
+            columns=_SUBSCRIPTION_INSERT_COLUMNS,
+            by={"agent_id": agent_id},
+            order=_NEWEST_SUBSCRIPTIONS_FIRST,
         )
         return [WebhookSubscriptionEntity(dict(row), is_new=False, collection=self) for row in rows]
 
@@ -1839,11 +1836,12 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         if self.l3_pool is None:
             return []
         # cache-bypass: per-conversation scan.
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_SUBSCRIPTION_SELECT_COLUMNS} "
-            "FROM webhook_subscriptions WHERE conversation_id = $1 "
-            "ORDER BY date_created DESC",
-            conversation_id,
+        rows = await keyset_rows(
+            self.l3_pool,
+            _SUBSCRIPTIONS,
+            columns=_SUBSCRIPTION_INSERT_COLUMNS,
+            by={"conversation_id": conversation_id},
+            order=_NEWEST_SUBSCRIPTIONS_FIRST,
         )
         return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
@@ -1876,13 +1874,11 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
             # cache-bypass: targeted UPDATE on a single bytes column; the row is evicted from
             # every tier once it lands. A cached pre-rotation row would otherwise be saved back
             # by the next edit, restoring the secret this replaced.
-            await self.l3_pool.execute(
-                "UPDATE webhook_subscriptions "
-                "SET secret_ciphertext = $3, date_updated = now() "
-                "WHERE conversation_id = $1 AND subscription_id = $2",
-                conversation_id,
-                subscription_id,
-                bytes(new_ciphertext),
+            await update_keyed(
+                self.l3_pool,
+                _SUBSCRIPTIONS,
+                values={"secret_ciphertext": bytes(new_ciphertext), "date_updated": _NOW},
+                by={"conversation_id": conversation_id, "subscription_id": subscription_id},
             )
         return None
 
@@ -1897,12 +1893,11 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         async with self.bypassing_write((conversation_id, subscription_id)):
             # cache-bypass: targeted UPDATE on status; the row is evicted from every tier once
             # it lands.
-            await self.l3_pool.execute(
-                "UPDATE webhook_subscriptions "
-                "SET status = 'paused', date_updated = now() "
-                "WHERE conversation_id = $1 AND subscription_id = $2",
-                conversation_id,
-                subscription_id,
+            await update_keyed(
+                self.l3_pool,
+                _SUBSCRIPTIONS,
+                values={"status": "paused", "date_updated": _NOW},
+                by={"conversation_id": conversation_id, "subscription_id": subscription_id},
             )
         return None
 
@@ -1917,12 +1912,11 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         async with self.bypassing_write((conversation_id, subscription_id)):
             # cache-bypass: targeted UPDATE on status; the row is evicted from every tier once
             # it lands.
-            await self.l3_pool.execute(
-                "UPDATE webhook_subscriptions "
-                "SET status = 'active', date_updated = now() "
-                "WHERE conversation_id = $1 AND subscription_id = $2",
-                conversation_id,
-                subscription_id,
+            await update_keyed(
+                self.l3_pool,
+                _SUBSCRIPTIONS,
+                values={"status": "active", "date_updated": _NOW},
+                by={"conversation_id": conversation_id, "subscription_id": subscription_id},
             )
         return None
 
@@ -1981,10 +1975,11 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
             str(detail)[:500] if detail else None,
         )
         # cache-bypass: as above; the prune keeps the log bounded per subscription.
-        await self.l3_pool.execute(
-            "DELETE FROM webhook_refusals WHERE subscription_id = $1 AND last_refused_at < $2",
-            subscription_id,
-            at - keep,
+        await delete_keyed(
+            self.l3_pool,
+            _REFUSALS,
+            by={"subscription_id": subscription_id},
+            where=[Fragment('"last_refused_at" < $1', (at - keep,))],
         )
         return None
 
@@ -2007,13 +2002,15 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         if self.l3_pool is None:
             return []
         # cache-bypass: a counted log with no entity.
-        rows = await self.l3_pool.fetch(
-            "SELECT reason, status_code, window_start, refusals, last_refused_at, detail "
-            "FROM webhook_refusals WHERE subscription_id = $1 "
-            "ORDER BY last_refused_at DESC LIMIT $2",
-            subscription_id,
-            limit,
+        page = await keyset_page(
+            self.l3_pool,
+            _REFUSALS,
+            columns=("reason", "status_code", "window_start", "refusals", "last_refused_at", "detail"),
+            by={"subscription_id": subscription_id},
+            order=[Sort("last_refused_at", cast="timestamptz", descending=True)],
+            limit=limit,
         )
+        rows = page.rows
         return [dict(row) for row in rows]
 
     async def record_fire(
@@ -2044,13 +2041,11 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         async with self.bypassing_write((conversation_id, subscription_id)):
             # cache-bypass: targeted UPDATE on the timestamp column; the row is evicted from
             # every tier once it lands.
-            await self.l3_pool.execute(
-                "UPDATE webhook_subscriptions "
-                "SET last_fired_at = $3, date_updated = now() "
-                "WHERE conversation_id = $1 AND subscription_id = $2",
-                conversation_id,
-                subscription_id,
-                fired_at,
+            await update_keyed(
+                self.l3_pool,
+                _SUBSCRIPTIONS,
+                values={"last_fired_at": fired_at, "date_updated": _NOW},
+                by={"conversation_id": conversation_id, "subscription_id": subscription_id},
             )
         return None
 
