@@ -72,6 +72,9 @@ from threetears.nats.errors import (
     KvBucketNotFoundError,
     KvConfigMismatch,
     KvError,
+    KvFullError,
+    KvStoreExhaustedError,
+    KvValueTooLargeError,
     NatsClientError,
     PublishTimeoutError,
     StreamSubjectsOverlapError,
@@ -410,11 +413,65 @@ _BOUNDED_CALL_FAILURES: Final[tuple[type[Exception], ...]] = (*_NATS_CALL_FAILUR
 _OPERATION_FAILURES: Final[tuple[type[Exception], ...]] = (*_BOUNDED_CALL_FAILURES, KvError)
 
 
+#: JetStream's generic "stream store failed", which carries the store's own error as its description.
+_JS_ERR_STORE_FAILED: Final = 10077
+
+#: the store error a stream at its ``max_bytes`` reports, as the description of a store failure. KV
+#: streams discard NEW, so a write past the bound is refused rather than evicting an older key.
+_MAX_BYTES_EXCEEDED: Final = "maximum bytes exceeded"
+
+#: an account's own storage limit, for file and for memory storage, and its overall resource limit:
+#: a configured bound reached, like the bucket's own ``max_bytes``. From nats-server's
+#: ``server/errors.json``: ``10047`` ``JSStorageResourcesExceededErr``, ``10028``
+#: ``JSMemoryResourcesExceededErr``, ``10002`` ``JSAccountResourcesExceededErr``.
+_JS_ERR_ACCOUNT_LIMIT_REACHED: Final[frozenset[int]] = frozenset({10002, 10028, 10047})
+
+#: ``10023`` ``JSInsufficientResourcesErr``: the server's JetStream has no storage left at all.
+_JS_ERR_INSUFFICIENT_RESOURCES: Final = 10023
+
+#: ``10054`` ``JSStreamMessageExceedsMaximumErr``: a message over the stream's ``max_msg_size``.
+_JS_ERR_MESSAGE_TOO_LARGE: Final = 10054
+
+
+type _RoomOrSizeRefusal = type[KvFullError] | type[KvStoreExhaustedError] | type[KvValueTooLargeError]
+
+
+def _refusal_for_its_room_or_size(cause: BaseException) -> _RoomOrSizeRefusal | None:
+    """the typed error a write refused for want of room, or for its size, raises; ``None`` for anything else.
+
+    These refusals are the server answering, or the client measuring, so a re-open and a retry
+    meet the same answer: :meth:`NatsKvBucket._run_with_reopen` raises them at once.
+
+    :param cause: what the KV call raised
+    :ptype cause: BaseException
+    :return: :class:`KvFullError`, :class:`KvStoreExhaustedError` or :class:`KvValueTooLargeError`,
+        or ``None`` when ``cause`` is none of those refusals
+    :rtype: _RoomOrSizeRefusal | None
+    """
+    if isinstance(cause, _NatsMaxPayloadError):
+        return KvValueTooLargeError
+    if not isinstance(cause, APIError):
+        return None
+    code = cause.err_code
+    description = str(cause.description or "").lower()
+    if code == _JS_ERR_STORE_FAILED and _MAX_BYTES_EXCEEDED in description:
+        return KvFullError
+    if code in _JS_ERR_ACCOUNT_LIMIT_REACHED:
+        return KvFullError
+    if code == _JS_ERR_INSUFFICIENT_RESOURCES:
+        return KvStoreExhaustedError
+    if code == _JS_ERR_MESSAGE_TOO_LARGE:
+        return KvValueTooLargeError
+    return None
+
+
 def _kv_error(message: str, *, bucket: str, cause: BaseException) -> KvError:
     """the typed error a failed KV call surfaces as: an absent bucket gets its own type.
 
     Built here for every operation that runs through :meth:`NatsKvBucket._run_op` -- the reads, the
-    writes and ``date_created`` -- and for a key listing's consumer create. Other paths build their
+    writes and ``date_created`` -- and for a key listing's consumer create. A write refused for want
+    of room, or for its size, gets its own type too (:func:`_refusal_for_its_room_or_size`), so a
+    full bucket never reads as an outage. Other paths build their
     own error, each naming a remedy only it knows: the opens (:func:`open_kv_stream`,
     :func:`_bind_when_declared`, :func:`_live_stream_config`) name the declarer, or the remedy
     :func:`_failure_remedy` chooses for what the server answered, a key
@@ -434,9 +491,17 @@ def _kv_error(message: str, *, bucket: str, cause: BaseException) -> KvError:
     :return: the error to raise
     :rtype: KvError
     """
+    error: KvError
     if is_bucket_not_found(cause):
-        return KvBucketNotFoundError(message, bucket=bucket)
-    return KvError(message)
+        error = KvBucketNotFoundError(message, bucket=bucket)
+    else:
+        refusal = _refusal_for_its_room_or_size(cause)
+        error = KvError(message) if refusal is None else refusal(message, bucket=bucket)
+    if isinstance(cause, APIError):
+        error.server_error_code = cause.err_code
+    elif isinstance(cause, KvError):
+        error.server_error_code = cause.server_error_code
+    return error
 
 
 def build_kv_stream_config(
@@ -1872,6 +1937,11 @@ class NatsKvBucket:
             self._log_timeout_remedy()
             raise
         except _NATS_CALL_FAILURES as exc:  # transport failure: self-heal once, then let it surface
+            if _refusal_for_its_room_or_size(exc) is not None:
+                # a full bucket, an exhausted server or a value over the stream's size limit: the
+                # server ANSWERED, and answers the same after a re-open. The caller's KvError wrap
+                # gives it its type.
+                raise
             contain(
                 exc, log=log, what="KV operation failed on a transport error; reopening the bucket and retrying once"
             )
