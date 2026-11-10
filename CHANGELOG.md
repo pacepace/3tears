@@ -155,6 +155,11 @@ operator's reset.
   prefixes as key ranges a batch of values a statement, re-reads a reset table alone, counts every whole read by why
   (`copy_follower_whole_reads_total`; `GATED_WHOLE_READ_WHYS` are those a replay must keep at zero), and resolves
   BEHIND from the notes, never by a warm.
+- A `CopyFollower` checkpoint records a table only at the mark the copy holds every key of: a table whose keys a write
+  in progress holds keeps the mark it was last current at, so a start from that checkpoint hears those keys again.
+- `CopyFollower(stamp_table=)` names the table the writer's stamp is kept in (derived from `settled` when that is a
+  `ScopeEpochs.settled`; `ScopeEpochs.table_name`), whose row messages ask a pass: another replica's commit of a held
+  write wakes the follower. `NEVER_HOLDS` is for a writer that never holds a scope; construction refuses neither.
 - `ScopeEpochs.settled()` reads only what changed after its first read: one statement for the writer's row, every
   pending scope and every scope past the last version it read, merged into a cached snapshot; it reads whole again
   only when the record cannot be trusted (`scope_epochs_whole_reads_total{table,why}`).
