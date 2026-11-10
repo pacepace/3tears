@@ -112,7 +112,7 @@ production vs v2 · billing, tone
 
 **One matrix, by the campaign's kind.** Its rows are the aspects. A change's columns are its candidates, each head
 naming the measure and the control (`v2 · pass rate vs production`), each cell the candidate's own pass rate, then
-its change from the control's, signed and in points at one decimal, its interval drawn against the aspect's margin
+its change from the control's, signed and in points at its measure's precision, its interval drawn against the aspect's margin
 in HTML, and what it shows. The control's column holds the level every change on the aspect is read from: its trials
 passed where that is its mean over the cases the changes read, else that mean, said as `mean of N cases`, so a
 candidate's level less the control's is its change. The line under the HTML matrix says the glyph's tick is the
@@ -338,8 +338,9 @@ document's appendix lists its Checks after Method, each name defined by its expr
   narrow an interval only by steadying each case's share, far less than new cases do. A count is always more than the
   run had, and where every count is, the line says so: `This run used 12 cases; showing the floors hold needs about
   121 to 223, more than it ran.` A floor broken or held projects nothing.
-- **Contrasts**: one table headed by its control (`Against v1`), a row per reading: `Reading | ▸ control | arm | Change |
-  Interval (99%) | Verdict | Cases`, each value with its interval, the change and its interval drawn in the row
+- **Contrasts**: one table headed by its control (`Against v1`), a row per reading: `Reading | Arm | ▸ control | Value |
+  Change | 95% interval (adjusted for 42 comparisons) | Verdict | Cases`, the interval's header saying what the
+  family's intervals hold at together, each value with its interval, the change and its interval drawn in the row
   ([the marks](#the-marks)); one line instead when no contrast can resolve under the case floor. Then the effect
   size, pairing and adjusted p in a closed `Statistics` fold, the `Guardrails` table, and the `By stratum` and
   `Per label` tables, folded. A one-arm page contrasts nothing, so the section is headed **Readings** and lists
@@ -397,11 +398,11 @@ each alike on every bar, and the key names each (`failed: check`, `failed: judge
 solid and then textured, so no loss reads as a failure. An **interval glyph** is drawn in the table row that states
 the figure (Tufte's table-graphic): the interval as a whisker, the point as a dot, a zero line for a change, and a
 declared margin as a quiet band. Every cell of a column in one unit shares one scale, written once under the table,
-its two ends at one precision (`Each column drawn from -7.0 to 36.7 pts`), so the rows compare at a glance. A change's
-matrix opens that line with what its marks draw (`Each mark is a candidate's change from production (the tick) with
-its interval, read at 95% to 98.33%; right is better. Drawn from -88.0 to 68.5 pts.`). A scale of levels runs below
-zero only where an interval on a measure not declared non-negative does. There are no standalone interval charts: the
-tables carry the intervals.
+its two ends at one precision (`Each column drawn from -12.8 to 10.0 pts`), so the rows compare at a glance. A
+change's matrix opens that line with what its marks draw (`Each mark is a candidate's change from production (the
+tick) with its interval, read at 95% to 98.33%; right is better. Drawn from -88.0 to 68.5 pts.`). A scale of levels
+runs below zero only where an interval on a measure not declared non-negative does. There are no standalone interval
+charts: the tables carry the intervals.
 
 No colour is the only encoding: a glyph is drawn in the page's ink and its verdict is the word in the next cell,
 every figure is text in the row, the bar has a `<title>` and a `<desc>` stating its values, and a visually hidden
@@ -446,8 +447,9 @@ under one rig. How its columns, and the `Statistics` fold under it, are computed
 - **The change, the means, and `Cases`** (`30 paired`) are all over the cases the test read. A case only one arm
   ran is left out of a paired test, and the row counts it, so a mean here can differ from the cell's own mean.
 - **The interval on the change** comes from the same test, at `1 − 0.05/m` for a family of `m` tested rows
-  (Bonferroni), and the column's header states that level (`Interval (99%)` over five rows). All of a family's
-  intervals cover together at least 95% of the time. A separation needs both
+  (Bonferroni): 99% over five rows. All of a family's intervals cover together at least 95% of the time, and that is
+  what the column's header states (`95% interval (adjusted for 5 comparisons)`); the per-interval level is in Method and the
+  glossary, as stored. A separation needs both
   an adjusted p below 0.05 and an interval that excludes zero, so the two never disagree: a row Holm's later
   steps would separate while its interval still touches zero reads cannot tell apart, its p below 0.05
   notwithstanding.
@@ -492,7 +494,8 @@ guardrail. The printed verdict is rendered from it, so code branches on the outc
 same values drive the CI gate ([`gate`](serving.md#gate)). The typed values are in the measure's own units; the
 rows `Result.contrasts()` and `Result.guardrails()` return are the page's figures on the page's ruler (a share in
 percent, its change in points, a cost per 1,000 replies where the page states it so), and each contrast row's
-`unit` says which.
+`unit` says which. They are numbers as computed, never rounded: the text the page prints for each is decided once for
+the campaign ([below](#how-a-figure-is-printed)), and a table cell that prints one carries it as `value_text`.
 
 `equivalent` needs a margin and a paired test. A host declares a measure's margin
 (`MetricDescriptor.materiality_threshold`); accuracy, whose description the engine owns, takes one declared on
@@ -522,11 +525,34 @@ when the eval is built. The p is corrected in the same Holm family as the separa
 compared rows (Shaffer's refinement: a difference cannot be both zero and at least the margin), so the
 chance that any verdict in the family is wrong stays at 5%.
 
+### How a figure is printed
+
 No report states a change as a percent of the control: a Δ is in the reading's own unit. A reading that is a share
-on 0–1 (a pass rate, an accuracy, a precision, a pass/fail grader or judged dimension) is stated as a percent to one
-decimal, `98.9%`, and a change in it in points, `-1.1 pts`, with its interval `[-4.2, 2] pts`; the level every
-interval holds at is said once, in the column's header (`Interval (99%)`). A cost per reply under a cent on every arm
-is stated per 1,000 replies, and the heading says so (`Cost per 1,000 replies`, `Production cost, per 1,000 replies`).
+on 0–1 (a pass rate, an accuracy, a precision, a pass/fail grader or judged dimension) is stated as a percent, and a
+change in it in points. Each measure reads at one precision on every page of its campaign, the written page, the code
+page and each aspect page alike, so one value reads the same in a table, a chart, a tooltip, the prose and the CLI.
+
+- **The digits come from the measure's uncertainty**: the first significant digit of the narrowest 95% half-width
+  among the figures a reader compares (each arm's level and each comparison's change), or the second when that digit
+  is a 1 or a 2. A pooled figure, such as a code page's campaign-wide pass rate, prints at that form and never sets
+  it. A pass rate over a few hundred cases reads whole (`85%`, `-8 pts`); a check near the ceiling, whose interval
+  is narrow, reads a decimal (`99.7%`).
+- **A rate, or a change in points, never goes past one decimal**, except where an end would round onto zero, 0% or
+  100%: it takes just enough digits to stay off it, so `99.7%` never reads `100%`, and an interval that excludes zero
+  never reads as touching it (`-15 to -0.03 pts`). A judge's preference share keeps off even, 50%, the same way.
+- **An interval reads `low to high`**, its unit once (`-13 to -2 pts`), a change's ends signed.
+- **A heading states what a family's intervals hold at together**: a chart's `95% intervals (adjusted for 16
+  comparisons)`, a column's `95% interval (adjusted for 16 comparisons)`, plain `95%` where nothing is adjusted.
+  Each interval's own level (99.69%) is in Method and the glossary, and the key `{family.level}` cites it.
+- **Figures that are not measurements keep fixed forms**: a count whole (`765 of 897`), a declared margin as declared
+  (`-15 pts`), a criterion's gap or the weakest margin as a bare distance (signed only by `|signed`), a p-value as
+  APA writes it (`< 0.001`, `0.005`, `0.50`), an effect size or correlation to two decimals (`0.08`), an exact zero
+  whole with its unit (`0 notices`).
+
+Two measures on one page can differ in decimals, since each reads to its own uncertainty, and a level and its change
+are rounded apart, so at whole points a change can miss its two levels' difference by one. A cost per reply under a cent on every arm
+is stated per 1,000 replies, and the heading says so (`Cost per 1,000 replies`, `Production cost, per 1,000
+replies`). The policy and why: [the number policy](design.md#the-number-policy).
 
 ## Reading the guardrails
 

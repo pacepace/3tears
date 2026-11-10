@@ -479,7 +479,7 @@ writer_eval = WriterEval(
   the package ships today would go stale with its next edit. The rung measures the copy that was recorded.
 - **The judge is another family** than the writers, as in rung 2, and the eval refuses one of the writers' own.
 
-What the recording printed (made 2026-11-03, its judge's calls again 2026-11-08), replayed from `packages/evals/` with no key: the arms, the first
+What the recording printed (made 2026-11-03, its judge's calls again 2026-11-08 and 2026-11-10), replayed from `packages/evals/` with no key: the arms, the first
 readings and the judged ones, the judge's preference between the two arms' pages, the promotion read, and where the
 turns came from (each path printed whole):
 
@@ -546,14 +546,14 @@ it may spend, and what to do when a recording run is cut short.
 **The lesson: a judge that scores one page at a time sits at the ceiling here, so the arms are read side by side,
 and at seven cases even that reading is mostly the judge's own noise.** Every judged item reads 5 or near it for both
 arms: the writer revises each page until the editor passes it on the same rubric, so the scores bunch at the top and
-cannot tell the arms apart. Read side by side, the same judge gave lead-first 52% of its preference (50% is even), and
-its two orders agreed on 6 of 7 cases. Recorded seven times on the same seven cases, a few lines of the pages apart
-each time, the judge read between 43% and 70%, which is why seven cases decide nothing. Two code measures differ, and the evidence cannot
+cannot tell the arms apart. Read side by side, the same judge gave lead-first 73% of its preference (50% is even), and
+its two orders agreed on 6 of 7 cases. Recorded again and again on the same seven cases, a few lines of the pages
+apart each time, the judge has read between 43% and 73%, which is why seven cases decide nothing. Two code measures differ, and the evidence cannot
 tell the arms apart on either: 6 of 7 lead-first reports finished against 3 of 7, with fewer must-fix findings left
 open (0.29 a report against 0.43). That preference is the promotion read's primary reading, fixed before the run: it
 reads `promote` only when the preference favours the candidate on enough held-out cases, no gated reading regressed
 and every guardrail held. 7 held-out cases, each written once (k=1), separate only a large effect, and the pass gives
-the size that would settle this one only if the share it read were the true one: if it stayed near 52%, roughly 3,000
+the size that would settle this one only if the share it read were the true one: if it stayed near 73%, roughly 20
 held-out cases. So the read is `Undecided`, which never promotes, and recording the call stays a person's act. That
 is the answer at this size, stated rather than tuned around: what would answer it is more cases or more repeats of
 each, and each costs a recorded report. [Pairwise

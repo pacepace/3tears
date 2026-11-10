@@ -10,7 +10,7 @@ Building the Kairo round 2 reference from `kairo-round2-writer-input.json` worke
 
 ### U2. One interval system per comparison, and consistent point estimates
 
-**Seen:** the asked reading for qwen3.8-flash is −7.58 [−10.79, −3.38] at 95% (confirmatory), while the contrast on the same `passed` measure is −7.58 [−12.59, −2.57] at 99.69% (Holm, family of 16). Both are correct, but a page that shows both without labels contradicts itself. Separately, the cost contrast delta for qwen3.8-flash is +$0.000616 per reply while the difference of the cell means is +$0.000535. The populations differ (n = 828 vs 864 priced replies), but the bundle doesn't say so.
+**Seen:** the asked reading for qwen3.8-flash is −7.58, −10.79 to −3.38 at 95% (confirmatory), while the contrast on the same `passed` measure is −7.58, −12.59 to −2.57, each interval of its family at 99.69% (Holm over 16 comparisons, 95% together). These are the bundle's stored figures; a page prints them at the measure's precision (GENERATOR.md §5.2, the number policy). Both are correct, but a page that shows both without labels contradicts itself. Separately, the cost contrast delta for qwen3.8-flash is +$0.000616 per reply while the difference of the cell means is +$0.000535. The populations differ (n = 828 vs 864 priced replies), but the bundle doesn't say so.
 **Need:** each interval tagged with its level and family; a note when a contrast's point estimate isn't the difference of the reported means, and why.
 **Proposal:** add `level` and `family_id` to every interval-bearing object; add `population` (n per side) to contrasts.
 
@@ -69,7 +69,7 @@ Building the Kairo round 2 reference from `kairo-round2-writer-input.json` worke
 
 ### U12. Floors that speak for a different measure than their reading
 
-**Seen:** in `floors`, qwen3.8-flash's floor `speaks_for` "the pass rate" and matches its reading. 1017's floor on the same aspect `speaks_for: persona.holds_character`, with interval [−7.11, −1.70] (worse), while its asked reading is on the pass rate, [−5.8, +1.1] (not separated). Two arms on one aspect are judged on different measures.
+**Seen:** in `floors`, qwen3.8-flash's floor `speaks_for` "the pass rate" and matches its reading. 1017's floor on the same aspect `speaks_for: persona.holds_character`, with interval −7.11 to −1.70 (worse), while its asked reading is on the pass rate, −5.8 to +1.1 (not separated). Two arms on one aspect are judged on different measures.
 **Need:** every floor on an aspect speaks for the same measure as the aspect's reading, or the bundle says why it doesn't.
 **Proposal:** a validation in bundle assembly that refuses mixed `speaks_for` within an aspect, or adds an explicit `speaks_for_reason`.
 

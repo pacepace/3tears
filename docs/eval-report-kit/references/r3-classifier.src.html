@@ -73,7 +73,7 @@
   <dl class="method">
     <dt>Corpus</dt><dd>48,210 user turns from August and September, each labeled by two annotators (complexity agreement κ = 0.78, domain κ = 0.91). Disagreements were adjudicated.</dd>
     <dt>Accuracy</dt><dd>A turn is correct only if both complexity and domain match. Balanced accuracy weights the nine cells equally. Traffic-weighted accuracy uses corpus counts, which follow production traffic.</dd>
-    <dt>Intervals</dt><dd>95% binomial intervals per cell; the smallest cell (complex conversational, n = 1,960) has intervals of about ±1.7 points.</dd>
+    <dt>Intervals</dt><dd>95% binomial intervals per cell; the smallest cell (complex conversational, n = 1,960) has intervals about 3.4 points wide.</dd>
     <dt>Cost</dt><dd>Measured tokens times list price per million turns. Monthly figures assume 30 million turns.</dd>
   </dl>
 </section>
@@ -81,6 +81,9 @@
 
 <script>/*KIT_JS*/
 const D=/*DATA*/;
+// The number policy (packages/evals/docs/design.md, The number policy): every interval reads "low to high". A cell's
+// half-width sits under 2 points, so its rate reads at one decimal, as stored.
+const span=(v,ci)=>`${(v-ci).toFixed(1)} to ${Math.min(100,v+ci).toFixed(1)}%`;
 const MN=Object.fromEntries(D.models.map(m=>[m.id,m.name])),PN=Object.fromEntries(D.prompts.map(p=>[p.id,p.name]));
 const COL={"atlas-m":"--s2","brisk-s":"--s3","nano-xs":"--s1"};const SH={zero:"circle",few:"square",rubric:"diamond"};
 const C=Object.fromEntries(D.configs.map(c=>[c.id,c]));const CX=D.complexity,DM=D.domain;
@@ -99,7 +102,7 @@ function gp(c,cr=CR0){const g=gs(c,cr);return pill(g.status,g.label);}
 (function(){const nano=C["nano-xs.few"],best=[...D.configs].sort((a,b)=>b.balanced-a.balanced)[0];const wc=minCell(REC);
   document.getElementById("b-lede").textContent=`Nano-XS with few-shot is ${Math.round(REC.cost/nano.cost)}× cheaper and close on overall accuracy (${nano.balanced}%), but drops to ${minCell(nano).v}% on complex news. ${name(best)} is the most accurate at ${best.balanced}%, but its p95 of ${best.p95} ms is five times the budget.`;
   document.getElementById("b-rec").innerHTML=`<strong>${name(REC)}.</strong> ${REC.balanced}% balanced accuracy, p95 ${REC.p95} ms, ${fmt.usd(REC.cost)} per million turns (about ${fmt.usd(monthly(REC))} a month).`;
-  document.getElementById("b-weak").innerHTML=`${cellName(wc.k)}: ${wc.v}% ±${REC.cells[wc.k].ci} on ${D.counts[wc.k].toLocaleString()} turns. It clears the 80% floor by about 3 points.`;
+  document.getElementById("b-weak").innerHTML=`${cellName(wc.k)}: ${wc.v}% (${span(wc.v,REC.cells[wc.k].ci)}) on ${D.counts[wc.k].toLocaleString()} turns. It clears the 80% floor by about 3 points.`;
   const rows=[[REC,"Recommended"],[nano,"Cheaper, fails a cell"],[C["brisk-s.rubric"],"Same model, rubric prompt"],[best,"Most accurate"]];
   document.getElementById("opt").innerHTML=`<thead><tr><th>Configuration</th><th>Role</th><th>Gates</th><th class="r">Balanced</th><th class="r">Worst cell</th><th class="r">p95</th><th class="r">Per 1M turns</th><th class="r">Per month</th></tr></thead><tbody>`+
     rows.map(([c,r])=>{const mc=minCell(c);return `<tr class="${c===REC?"hl":""}"><td>${c===REC?"<strong>":""}${name(c)}${c===REC?"</strong>":""}</td><td>${r}</td><td>${gp(c)}</td><td class="r">${c.balanced.toFixed(1)}%</td><td class="r">${mc.v.toFixed(1)}%</td><td class="r">${c.p95} ms</td><td class="r">${fmt.usd(c.cost)}</td><td class="r">${fmt.usd(monthly(c))}</td></tr>`;}).join("")+"</tbody>";})();
@@ -129,7 +132,7 @@ setChart(document.getElementById("lat"),{columns:D.prompts.map(p=>({label:p.name
 
 // matrices
 const cellRows=(c,floor)=>CX.map(x=>({label:x.name,cells:DM.map(d=>{const k=`${x.id}|${d.id}`,v=c.cells[k];
-  return {value:v.acc,n:D.counts[k],tip:[`${x.name} ${d.name.toLowerCase()}`,`${v.acc}% ±${v.ci} · n = ${D.counts[k].toLocaleString()}`].concat(v.acc<floor?[`Below the ${floor}% floor`]:[])};})}));
+  return {value:v.acc,n:D.counts[k],tip:[`${x.name} ${d.name.toLowerCase()}`,`${v.acc}% (${span(v.acc,v.ci)}) · n = ${D.counts[k].toLocaleString()}`].concat(v.acc<floor?[`Below the ${floor}% floor`]:[])};})}));
 setChart(document.getElementById("mats"),{columns:DM.map(d=>({label:d.name})),domain:[70,100],fmt:"num:1",n_fmt:"k:1",reference:{value:D.criteria.cell_floor,kind:"floor"},panel_min_rem:20,
   panels:[[REC.id,"Recommended"],["nano-xs.few","Cheaper alternative"],["atlas-m.rubric","Most accurate"]].map(([id,t])=>{const c=C[id];return {title:name(c),subtitle:`${t} · worst cell ${minCell(c).v}%`,rows:cellRows(c,D.criteria.cell_floor)};})});
 

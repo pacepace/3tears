@@ -147,7 +147,7 @@ v1 vs v2
 | invoices | 30 | 81% (73 of 90 trials, 30 cases) | 98% · +17 pts (cannot tell apart) |
 ```
 
-with the guardrail's row saying why, on the row's ruler beside its interval of `[-13.4, 13.4] pts`: `undecided: v2
+with the guardrail's row saying why, on the row's ruler beside its interval of `-13 to +13 pts`: `undecided: v2
 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the
 arm is shown neither within it nor beyond it)`. That is the lesson: rather than declare a winner, the report names the question it could not
 answer, and what would answer it is more hard-negative cases, invoices that print no amount due (7 of the 30). One

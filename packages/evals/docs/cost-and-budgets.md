@@ -405,11 +405,12 @@ refuses `cost_usd`); the report heads it `Production cost`. `cost_usd` and `prog
 spent, which is measuring cost: never tested between arms, and labelled `Measuring spend` wherever shown, except in a campaign whose every result is judge-kind (see below), where those dollars are the arm's own spend and read `Spend, all roles`, `Program spend`, `Total spend` and `Mean spend per result`. A judge campaign is the one place the judge is the subject: every call its cells make is the judge under test, metered under the judge role, so there that role is what the arm costs (`production_replicating_cost` reads the result's `candidate_kind`). Money reads
 one way per set: a column, an axis or a family of figures is spelled by one rule throughout, and where any amount in
 it is too small for cents the whole set reads per 1,000 replies, which the heading says (`Cost per 1,000 replies`,
-`Production cost, per 1,000 replies`). The rule is one count of significant figures, not one count of decimals (owner
+`Production cost, per 1,000 replies`). Each money measure takes one form on every page of a campaign
+([the number policy](design.md#the-number-policy)). The rule is one count of significant figures, not one count of decimals (owner
 ruling Q3, 2026-11-07, which replaces the 2026-10-27 reading of one decimal count per set), so `$0.0080` sits beside
 `$0.11`, never `$0.1100`: below $1 an amount prints to two significant figures (`$0.020`), from $1 to under $10 in
 cents whether total or rate (`$1.90`, never `$1.9`), and from $10 up a total in cents (`$1,208.00`) and a rate to two
-significant figures (`$75 [$73, $77]`, `$120` for $123). Only an interval whose two ends would read
+significant figures (`$75`, its interval `$73 to $77`, `$120` for $123). Only an interval whose two ends would read
 alike takes a third figure, and a cost per 1,000 takes one where two would leave the month printed beside it more than
 half a percent off (`$0.302 per 1,000 calls` beside `$1,208.00 a month`). A difference takes the form of the amounts
 it compares, to the places its interval supports.

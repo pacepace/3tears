@@ -64,6 +64,60 @@ only when `editor.md`, the editor's model and the effort all match; a caller tha
 **Hosts:** a `writer_promotion` action over arms whose skills differ now leaves each editor's own readings out of its
 `why`, and returns `one_editor: false`.
 
+### evals: every figure reads at its measure's precision, in one form across the campaign (number forms C5b)
+
+The number policy (`packages/evals/docs/design.md`, The number policy; owner rulings of 2026-11-08 and 2026-11-09)
+replaces the number forms the entry "a chart says what it compares" lists below. Every page's figures move once.
+
+**Changed:**
+- **One precision per measure, on every page of a campaign.** A measure reads at one count of decimals on the written
+  page, the code page and every aspect page, set by the narrowest 95% interval among the figures a reader compares:
+  each arm's level and each comparison's change. A pooled figure (the code page's campaign-wide pass rate) prints at
+  that form and never sets it. Kairo reads `85%` and `-8 pts`, `-13 to -2` (it read `85.3%` and `-7.6`,
+  `-12.9 to -1.8`); the scaled campaign's scorecard reads `21% · 23% · +2 pts` (it read `20.5% · 23.0% · +2.5 pts`).
+  A rate or a change in points never goes past one decimal, except an end that would round onto zero, 0% or 100%,
+  which takes just enough digits to stay off it (`-15 to -0.03 pts`; `99.7%`, never `100%`). A judge's preference
+  share keeps off even the same way: `49.7%`, never `50%`.
+- **One interval form, `low to high`, the unit written once,** on every page and in `interval_text` (`0.05 to 0.45`,
+  where it wrote `[0.05, 0.45]`), so the code page's `$75 [$73, $77]` reads `$75`, `$73 to $77`. The kit
+  (`kit.js` and its `docs/eval-report-kit/kit/` copy) and the static page join a tooltip's interval the same way: a
+  forest's reads `-8 (-13 to -2)` (was `-8 [-13, -2]`), a line point's `85% (80 to 89%)` (was `85% (80%–89%)`),
+  money `$1.89 ($1.76 to $2.03)`.
+- **A heading states what a family's intervals hold at together:** a chart's head `95% intervals (adjusted for 16
+  comparisons)`, a column's `95% interval (adjusted for 16 comparisons)`, where both read `99.7% (95% across 16
+  comparisons)`. The per-interval level (`99.69%`) is printed in Method and the glossary, as stored, and
+  `{family.level}` is the key that cites it. `weakest.interval` reads `the 95% interval, adjusted for 16 comparisons`,
+  or `the 95% interval` where nothing is adjusted (it read `the multiplicity-corrected 99.69% interval` and `the plain
+  95% interval, uncorrected`).
+- **Figures that are not measurements keep fixed forms:** a p-value `< 0.001`, else three decimals below 0.1 and two
+  at or above (`0.005`, `0.11`, `0.50`, `1.00`; it read `< 0.000001`, `0.4996`, `1`); an effect size or a
+  correlation two decimals (`0.08`, `0.12`; it read `0.08475`, `0.1228`); a declared margin as declared (`-15 pts`,
+  it read `-15.0 pts`); an exact zero whole, with its unit (`0 notices`).
+- **Rung 5** reads a rate in its readings table as a percent with its counts (`43% (3 of 7)`, it read `0.43`) and a
+  judged score to a tenth at seven cases (`4.7`, where it read two decimals). Its judge is recorded again over the new pages
+  (112 calls, $0.66); the writer's turns replay unchanged.
+
+**Added:**
+- The figure-key filter `signed`. A criterion's `gap` and `weakest.margin` print their bare magnitude by default, at
+  the measure's change precision, since the prose around them says the direction (`inside the margin`); `|signed`
+  prints the `+`, in any unit.
+- A settle row's `level` and the `weakest.interval` key resolve to their level as a number (the analyst serves `value`
+  0.95, `kind` `number`, `scale` `share`), and `reads` says the words (`95% one-sided`).
+- `CostQualityPoint.pass_rate_text` and `pass_rate_interval_text`: a cost and quality chart's pass rate and its
+  interval as the page decided them, bare (the column holds the `%`), and left out where no page decided them.
+- Every chart the package emits names its format's digits, its measure's decimals (`pct:0`, `+num:1`, `ms:0`; it
+  named `pct`, `+num:0`, `ms`). A gate matrix's and a lattice's cells carry `cost_text` (`$4.60 per 1,000
+  conversations`, where the kit drew `$5`), and rung 5's preference strip carries its shares' text and names `pct:0`.
+
+**Hosts:** every page's text moves once. A host pinning a rendered page, its text, a served chart's JSON (a tooltip,
+a cost, a `fmt`) or rung 5's CLI updates its match once, and Discodon re-shoots its pages once, on its first pin past
+this entry. A host that re-renders the package's chart JSON with the shipped `kit.js` prints the package's text and
+joins; with an older copy it prints each value's text but joins a tooltip's interval the old way, so take the new
+kit. A host's own chart, without text fields, draws its values as before and its tooltips in the new join, each end
+in its `fmt` (`80% to 89%`). A host that read a settle row's `level` or `weakest.interval` words from `value` reads
+them from `reads`. The new fields are additive. Nothing stored changes: a stored report renders in the new forms, one
+citing `weakest.interval` with the new words, and one citing a gap or `weakest.margin` with no `+`, as before.
+
 ### evals: one module decides every figure's form (number forms C1 to C3)
 
 **Changed:**
@@ -80,8 +134,8 @@ only when `editor.md`, the editor's model and the effort all match; a caller tha
   `low_text`, `high_text`, `detail_text`, `matrix_text`; a reference or a stacked bar's segment `value_text`).
   `kit.js` and the static page print it as it is wherever they would format the value, and the chart's values table
   prints the same text (kit/API.md). Each value's text is the one its chart drew before; how an interval's ends are
-  joined, and a matrix's costs, move (Hosts, C5b, below). A heatmap cell's count still draws by `n_fmt`, a count's
-  fixed form.
+  joined, and a matrix's costs, move with the number policy (number forms C5b, above). A heatmap cell's count still
+  draws by `n_fmt`, a count's fixed form.
 - A table cell carries the text its page decided for its number, `TableCell.value_text`: set on every rate and money
   cell a table's column rule spells, and on an aspect page's level and change cells, and printed by every serializer
   in place of spelling `value`. A copy that changes what the number is spelled from (`value`, `unit`, `decimals`,
@@ -95,38 +149,7 @@ those criterion, weakest or settle keys on a non-rate measure renders
 it at the new decimals; no other text changes. A written page's `data-chart` JSON, and a JSON report's chart blocks,
 gain the additive text fields above: a host that re-renders the package's chart JSON with the shipped kit prints the
 package's text for every value, and a host-authored chart without them draws as before, each value formatted by its
-`fmt`. Tick labels are still the kit's. The report's own charts (outcome bars, cost and quality) carry no text fields
-yet: every value they draw is already a note or a tooltip. Nothing to change in host code.
-
-**Hosts (number forms C5b):** every chart the kit (`kit.js` and its `docs/eval-report-kit/kit/` copy) or the static
-page draws joins an interval's ends as `low to high`, and the package's ends write the unit once: a forest tooltip
-reads `-8 (-13 to -2)` (was `-8 [-13, -2]`), a line point's `85% (80 to 89%)` (was `85% (80%–89%)`), money
-`$1.89 ($1.76 to $2.03)`, each end with its `$` as the page writes money. A host's chart without text fields draws its
-values as before, but its tooltips in the new join, each end in its `fmt` (`80% to 89%`). A gate matrix's and a
-lattice's cells carry `cost_text` (`$4.60 per 1,000 conversations`, where the kit drew `$5 per 1,000 conversations`). Rung 5's
-preference strip carries its texts and names `pct:0`; its readings table reads a rate as `43% (3 of 7)` (was `0.43`).
-Every chart's format names its digits, its measure's decimals on the page (`pct:0`, `+num:1`, `ms:0`; was `pct`,
-`+num:0`, `ms`), so a host re-rendering the chart JSON with no text fields writes each value as the page prints it.
-A host matching a tooltip, a cost or a format updates its match.
-
-**Hosts (prose keys, C5b):** a settle row's `level` and the `weakest.interval` key now resolve to their level as a
-number (the analyst serves `value` 0.95, `kind` `number`, `scale` `share`), and `reads` says the words (`95%
-one-sided`): a host that read those words from `value` reads them from `reads`. `weakest.interval` states what its
-interval guarantees, `the 95% interval, adjusted for 16 comparisons`, or `the 95% interval` where nothing is adjusted,
-in place of `the multiplicity-corrected 99.69% interval` and `the plain 95% interval, uncorrected`, so a stored report
-citing it renders the new words. A contrast family's and a contrast's `level` keys still read the per-interval level
-as the input states it (`99.69%`).
-The key grammar gains a `signed` filter, which prints a criterion's `gap` or `weakest.margin` with its `+` in any unit;
-without it they print no `+`, as before, so a stored report renders as it did.
-
-**Hosts (number policy, code and aspect pages):** a cost and quality chart's point (`CostQualityPoint`) gains
-`pass_rate_text` and `pass_rate_interval_text`, the pass rate and its interval as the page decided them, bare (their
-`%` is the column's); each is left out where no page decided it, and the values table spells `pass_rate` as before.
-`interval_text` now joins an interval in the one form every page prints, `low to high` (`0.05 to 0.45`), where it
-wrote `[low, high]`; a host matching that text, or any code or aspect page's `[a, b]` interval, updates its match.
-
-**Hosts (number policy, preference shares):** a judge's preference share, and each end of its interval, keeps off
-even as it keeps off none and all: `49.7%`, never `50%`.
+`fmt`. Tick labels are still the kit's. Nothing to change in host code.
 
 ### evals: a provider key whose credit is spent fails over to the next key the environment names
 
