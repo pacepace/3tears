@@ -12,6 +12,7 @@ them there, the platform's database.
 
 from __future__ import annotations
 
+import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -29,11 +30,16 @@ from threetears.core.keyed import (
     Sort,
     count_at_most,
     counts_by,
+    ThreadedSQLite,
+    counts_by_relations,
     delete_before,
+    delete_oldest,
     holds_any,
     keyset_page,
+    read_joined,
     read_keyed,
     read_past_marks,
+    update_before,
 )
 from threetears.core.testing.calibrate import best_seconds, budget_problem, plain_copies
 from threetears.core.testing.plans import PlanRecorder, on_yugabyte, plan_problems, plan_uses_index
@@ -264,6 +270,134 @@ class TestDeleteBefore:
         assert swept.statements == 7
         assert not await holds_any(seeded.conn, _TABLE, by={"state": "S01", "geo": "001"})
         problem = budget_problem("delete_before of 3,000 rows in pages of 500", took, baseline)
+        assert problem is None, problem
+
+
+class TestUpdateBefore:
+    async def test_a_reap_updates_page_by_page_within_budget(self, seeded: _Seeded) -> None:
+        """Flips if a paged update's pages read past their own rows, or the reap is over 2x one bare update of them."""
+        oldest = await seeded.conn.fetchval(f"SELECT stamp FROM {_TABLE} ORDER BY stamp LIMIT 1")
+        before = oldest + timedelta(seconds=3000)
+        moved = before + timedelta(days=365)
+        baseline_rows = f"SELECT state, geo, id, stamp FROM {_TABLE} WHERE stamp < $1"
+        async with plain_copies(seeded.conn, {"rows": (baseline_rows, (before,))}) as plain:
+            began = time.perf_counter()
+            await seeded.conn.execute(f"UPDATE {plain['rows']} SET stamp = $2 WHERE stamp < $1", before, moved)  # noqa: S608
+            baseline = time.perf_counter() - began
+        recorder = PlanRecorder(seeded.conn)
+        reaped = await update_before(
+            _TABLE,
+            collection=None,
+            conn=recorder,
+            key=["state", "geo", "id"],
+            column="stamp",
+            before=before,
+            set_to={"stamp": moved},
+            page=500,
+            most_pages=1,
+        )
+        assert reaped.deleted == 500
+        _plans_ok(recorder, seeded)
+        began = time.perf_counter()
+        swept = await update_before(
+            _TABLE,
+            collection=_Settling(seeded.conn),
+            key=["state", "geo", "id"],
+            column="stamp",
+            before=before,
+            set_to={"stamp": moved},
+            page=500,
+        )
+        took = time.perf_counter() - began
+        assert swept.deleted == 2500
+        assert await seeded.conn.fetchval(f"SELECT count(*) FROM {_TABLE} WHERE stamp < $1", before) == 0
+        problem = budget_problem("update_before of 3,000 rows in pages of 500", took, baseline)
+        assert problem is None, problem
+
+
+class TestReadJoined:
+    async def test_a_page_s_joined_rows_are_read_by_its_values_within_budget(self, seeded: _Seeded) -> None:
+        """Flips if a joined read scans past the rows the page's values name, or is over 2x the bare read of them."""
+        page = [{"state": "S11", "geo": f"{g:03d}"} for g in range(1, 201)]
+        recorder = PlanRecorder(seeded.conn)
+        joined = await read_joined(
+            recorder, page, _TABLE, on={"state": "state", "geo": "geo"}, columns=["state", "geo", "id", "votes"]
+        )
+        assert sum(len(rows) for rows in joined.values()) == len(page) * _IDS
+        _plans_ok(recorder, seeded)
+        baseline = await _baseline(
+            seeded.conn,
+            f"SELECT state, geo, id, votes FROM {_TABLE} WHERE state = $1 AND geo = ANY($2::text[])",
+            "S11",
+            [row["geo"] for row in page],
+        )
+        took = await best_seconds(
+            lambda: read_joined(
+                seeded.conn, page, _TABLE, on={"state": "state", "geo": "geo"}, columns=["state", "geo", "id", "votes"]
+            )
+        )
+        problem = budget_problem(f"read_joined of {len(page) * _IDS} rows", took, baseline)
+        assert problem is None, problem
+
+
+class TestCountsByRelations:
+    async def test_two_relations_count_only_their_keys_rows_within_budget(self, seeded: _Seeded) -> None:
+        """Flips if a count over several relations reads rows no key names, or is over 2x the bare read of them."""
+        await seeded.conn.execute(f"CREATE TABLE results_b AS SELECT * FROM {_TABLE} WHERE state IN ('S20', 'S21')")
+        await seeded.conn.execute("ALTER TABLE results_b ADD PRIMARY KEY (state, geo, id)")
+        await seeded.conn.execute("ANALYZE results_b")
+        geos = [f"{g:03d}" for g in range(1, 101)]
+        tables = {"a": _TABLE, "b": "results_b"}
+        recorder = PlanRecorder(seeded.conn)
+        counted = await counts_by_relations(recorder, tables, column="geo", values=AnyOf(geos), by={"state": "S20"})
+        assert counted == {"a": dict.fromkeys(geos, _IDS), "b": dict.fromkeys(geos, _IDS)}
+        assert all(plan.rows_scanned <= 1.1 * 2 * len(geos) * _IDS for plan in recorder.plans), recorder.plans
+        baseline = await _baseline(
+            seeded.conn,
+            f"SELECT state, geo FROM {_TABLE} WHERE state = $1 AND geo = ANY($2::text[]) "  # noqa: S608
+            "UNION ALL SELECT state, geo FROM results_b WHERE state = $1 AND geo = ANY($2::text[])",
+            "S20",
+            geos,
+        )
+        took = await best_seconds(
+            lambda: counts_by_relations(seeded.conn, tables, column="geo", values=AnyOf(geos), by={"state": "S20"})
+        )
+        problem = budget_problem("counts_by_relations of 100 geographies in 2 relations", took, baseline)
+        assert problem is None, problem
+
+
+class TestDeleteOldest:
+    async def test_a_cache_trim_deletes_its_oldest_rows_within_budget(self) -> None:
+        """Flips if a trim reads past the rows it deletes, or is over 2x one bare delete of them (SQLite, an L1 cache of
+        300,000 rows trimmed by 3,000)."""
+        local = sqlite3.connect(":memory:", check_same_thread=False)
+        try:
+            local.execute("CREATE TABLE cached (state TEXT, geo TEXT, id INTEGER, pad TEXT)")
+            local.executemany(
+                "INSERT INTO cached VALUES (?, ?, ?, ?)",
+                ((f"S{n % _STATES:02d}", f"{n % _GEOS:03d}", n, "x" * 40) for n in range(_STATES * _GEOS * _IDS)),
+            )
+            local.execute("CREATE TABLE plain AS SELECT * FROM cached WHERE rowid <= 3000")
+            local.commit()
+            plan = " ".join(
+                str(row[-1])
+                for row in local.execute(
+                    "EXPLAIN QUERY PLAN DELETE FROM cached WHERE rowid IN "
+                    "(SELECT rowid FROM cached ORDER BY rowid LIMIT 3000)"
+                )
+            )
+            assert "USE TEMP B-TREE" not in plan, plan
+            began = time.perf_counter()
+            local.execute("DELETE FROM plain")
+            baseline = time.perf_counter() - began
+            began = time.perf_counter()
+            deleted = await delete_oldest(ThreadedSQLite(local), "cached", count=3000)
+            took = time.perf_counter() - began
+            assert deleted == 3000
+            assert local.execute("SELECT min(rowid) FROM cached").fetchone()[0] == 3001
+        finally:
+            local.close()
+        problem = budget_problem("delete_oldest of 3,000 rows of 300,000", took, baseline)
         assert problem is None, problem
 
 
