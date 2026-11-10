@@ -130,6 +130,8 @@ def test_whole_reads_and_writes_are_found(sql: str, expected: list[tuple[str, st
         # a bounded probe reads at most its bound count of rows, of any relation
         "SELECT a FROM nowhere LIMIT 1",
         "SELECT * FROM t LIMIT $1",
+        # interpolated relations too (hub table_rows.rows_up_to)
+        "SELECT 1 FROM {schema}.{table} LIMIT $1",
         "SELECT a FROM results WHERE state = $1 AND winner IS NOT NULL",
         "SELECT a FROM results WHERE state = $1 AND geo = ANY($2::text[])",
         "SELECT a FROM t WHERE k = $1 OR k = $2",
