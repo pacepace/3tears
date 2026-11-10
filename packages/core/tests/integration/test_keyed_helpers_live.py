@@ -159,6 +159,12 @@ async def _rolled_back(conn: asyncpg.Connection, run: Any) -> float:
     return await best_seconds(once)
 
 
+def _budget(what: str, took: float, baseline: float) -> str | None:
+    """the budget's verdict, its numbers printed (``-s``) for the run's record."""
+    print(f"BUDGET {what} | baseline {baseline * 1000:.2f} ms | took {took * 1000:.2f} ms | {took / baseline:.2f}x")
+    return budget_problem(what, took, baseline)
+
+
 def _plans_ok(recorder: PlanRecorder, seeded: _Seeded, *, scan_ratio: float | None = 1.1) -> None:
     # Postgres plans a small batch its own way (a bitmap scan, a sort); the rows-scanned ratio is the platform's
     # (YugabyteDB) contract, and every database's plan is held to no looped sequential scan
@@ -195,7 +201,7 @@ class TestReadKeyed:
         took = await best_seconds(
             lambda: read_keyed(seeded.conn, _TABLE, keys=batch, columns=["state", "geo", "id", "votes"])
         )
-        problem = budget_problem(f"read_keyed of {len(keys)} keys", took, baseline)
+        problem = _budget(f"read_keyed of {len(keys)} keys", took, baseline)
         assert problem is None, problem
 
     async def test_a_batch_of_prefixes_reads_their_rows(self, seeded: _Seeded) -> None:
@@ -250,7 +256,7 @@ class TestKeysetPage:
                 cursor=first.next_cursor,
             )
         )
-        problem = budget_problem("keyset_page of 200 rows", took, baseline)
+        problem = _budget("keyset_page of 200 rows", took, baseline)
         assert problem is None, problem
 
 
@@ -268,7 +274,7 @@ class TestCounts:
         took = await best_seconds(
             lambda: counts_by(seeded.conn, _TABLE, column="geo", values=AnyOf(geos), by={"state": "S20"})
         )
-        problem = budget_problem("counts_by of 100 geographies", took, baseline)
+        problem = _budget("counts_by of 100 geographies", took, baseline)
         assert problem is None, problem
 
     async def test_bounded_counts_and_probes_read_no_further_than_their_bound(self, seeded: _Seeded) -> None:
@@ -301,7 +307,7 @@ class TestMarks:
         took = await best_seconds(
             lambda: read_past_marks(seeded.conn, _TABLE, columns=["state", "geo", "id", "stamp"], marks={"stamp": mark})
         )
-        problem = budget_problem("read_past_marks of 1,500 moved rows", took, baseline)
+        problem = _budget("read_past_marks of 1,500 moved rows", took, baseline)
         assert problem is None, problem
 
 
@@ -345,7 +351,7 @@ class TestDeleteBefore:
         assert swept.deleted == 3000
         assert swept.statements == 3000 // 500 + 1
         assert not await holds_any(seeded.conn, _TABLE, by={"state": "S01", "geo": "001"}, order=_KEY)
-        problem = budget_problem("a delete_before page of 500 rows", took, baseline)
+        problem = _budget("a delete_before page of 500 rows", took, baseline)
         assert problem is None, problem
 
 
@@ -394,7 +400,7 @@ class TestUpdateBefore:
         assert swept.deleted == 3000
         assert swept.statements == 3000 // 500 + 1
         assert await seeded.conn.fetchval(f"SELECT count(*) FROM {_TABLE} WHERE stamp < $1", before) == 0
-        problem = budget_problem("an update_before page of 500 rows", took, baseline)
+        problem = _budget("an update_before page of 500 rows", took, baseline)
         assert problem is None, problem
 
 
@@ -423,7 +429,7 @@ class TestReadJoined:
                 seeded.conn, page, _TABLE, on={"state": "state", "geo": "geo"}, columns=["state", "geo", "id", "votes"]
             )
         )
-        problem = budget_problem(f"read_joined of {len(page) * _IDS} rows", took, baseline)
+        problem = _budget(f"read_joined of {len(page) * _IDS} rows", took, baseline)
         assert problem is None, problem
 
 
@@ -451,7 +457,7 @@ class TestCountsByRelations:
         took = await best_seconds(
             lambda: counts_by_relations(seeded.conn, tables, column="geo", values=AnyOf(geos), by={"state": "S50"})
         )
-        problem = budget_problem(f"counts_by_relations of {len(geos)} geographies in 2 relations", took, baseline)
+        problem = _budget(f"counts_by_relations of {len(geos)} geographies in 2 relations", took, baseline)
         assert problem is None, problem
 
 
@@ -487,7 +493,7 @@ class TestDeleteOldest:
             assert local.execute("SELECT min(rowid) FROM cached").fetchone()[0] == 3001
         finally:
             local.close()
-        problem = budget_problem("delete_oldest of 3,000 rows of 300,000", took, baseline)
+        problem = _budget("delete_oldest of 3,000 rows of 300,000", took, baseline)
         assert problem is None, problem
 
 
