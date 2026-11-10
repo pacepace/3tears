@@ -288,7 +288,10 @@ class Sha256Mismatch(RuntimeError):
 #: other one -- the broker rewrites no table reference, so the statement can
 #: only fail there. What puts those tables on the path is the
 #: :data:`PLATFORM_RBAC_READ_NAMESPACE` binding the one caller passes.
-_SELECT_NAMESPACE_CUSTOMER_SQL = "SELECT customer_id FROM namespaces WHERE namespace_id = $1"
+#: Both row scopes and the id: the whole primary key ``(row_scope, namespace_id)``, two point reads.
+_SELECT_NAMESPACE_CUSTOMER_SQL = (
+    "SELECT customer_id FROM namespaces WHERE row_scope IN ('platform', 'customer') AND namespace_id = $1"
+)
 
 
 async def authorize_workspace(

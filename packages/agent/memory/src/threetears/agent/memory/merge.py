@@ -42,6 +42,7 @@ from typing import Any
 from uuid import UUID
 
 from threetears.core.collections import repoint_user_rows
+from threetears.core.operator import operator_command
 from threetears.observe import get_logger
 
 __all__ = ["MemoryRepointResult", "repoint_user"]
@@ -146,6 +147,10 @@ def _columns(keys: list[tuple[Any, ...]]) -> tuple[list[Any], list[Any]]:
     return [key[0] for key in keys], [key[1] for key in keys]
 
 
+@operator_command(
+    "an operator's merge of two users: every memory the source user holds, across every agent, moves to the master",
+    proof="packages/agent/memory/tests/test_merge.py::test_deletes_alias_collisions_before_repoint",
+)
 async def _delete_alias_collisions(
     conn: Any,
     *,
@@ -236,6 +241,10 @@ async def _delete_alias_collisions(
     return result
 
 
+@operator_command(
+    "an operator's merge of two users: every memory the source user holds, across every agent, moves to the master",
+    proof="packages/agent/memory/tests/test_merge.py::test_deletes_alias_collisions_before_repoint",
+)
 async def repoint_user(
     conn: Any,
     *,
