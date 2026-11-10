@@ -923,12 +923,12 @@ def build_whole_key_select_sql(schema: TableSchema) -> str:
     arrays = [
         f"${index}::{_required_array_type(schema, name)}" for index, name in enumerate(schema.pk_columns, start=1)
     ]
-    lead = as_written(schema.pk_columns[0])
-    where = f"{lead} = ANY({arrays[0]})"
+    lead_key = as_written(schema.pk_columns[0])
+    pk_where = f"{lead_key} = ANY({arrays[0]})"
     if len(arrays) > 1:
         key = ", ".join(as_written(name) for name in schema.pk_columns)
-        where += f" AND ({key}) IN (SELECT * FROM unnest({', '.join(arrays)}))"
-    return f"SELECT {build_select_column_list(schema)} FROM {schema.name} WHERE {where}"
+        pk_where += f" AND ({key}) IN (SELECT * FROM unnest({', '.join(arrays)}))"
+    return f"SELECT {build_select_column_list(schema)} FROM {schema.name} WHERE {pk_where}"
 
 
 def build_led_by_select_sql(schema: TableSchema, columns: Sequence[str]) -> str:
@@ -945,10 +945,10 @@ def build_led_by_select_sql(schema: TableSchema, columns: Sequence[str]) -> str:
     :rtype: str
     :raises ValueError: when the leading key column's type has no array form
     """
-    lead = schema.pk_columns[0]
+    lead_key = schema.pk_columns[0]
     return (
         f"SELECT {build_select_column_list(schema, columns)} FROM {schema.name} "
-        f"WHERE {as_written(lead)} = ANY($1::{_required_array_type(schema, lead)})"
+        f"WHERE {as_written(lead_key)} = ANY($1::{_required_array_type(schema, lead_key)})"
     )
 
 
@@ -1347,9 +1347,9 @@ def build_fetch_sql(schema: TableSchema) -> str:
     :return: parameterized SELECT SQL
     :rtype: str
     """
-    where, _ = build_where_pk(schema, start=1)
+    pk_where, _ = build_where_pk(schema, start=1)
     columns = build_select_column_list(schema)
-    return f"SELECT {columns} FROM {schema.name} WHERE {where}"
+    return f"SELECT {columns} FROM {schema.name} WHERE {pk_where}"
 
 
 def build_delete_sql(schema: TableSchema) -> str:
@@ -1360,8 +1360,8 @@ def build_delete_sql(schema: TableSchema) -> str:
     :return: parameterized DELETE SQL
     :rtype: str
     """
-    where, _ = build_where_pk(schema, start=1)
-    return f"DELETE FROM {schema.name} WHERE {where}"
+    pk_where, _ = build_where_pk(schema, start=1)
+    return f"DELETE FROM {schema.name} WHERE {pk_where}"
 
 
 def build_insert_params(schema: TableSchema, data: dict[str, Any]) -> list[Any]:
