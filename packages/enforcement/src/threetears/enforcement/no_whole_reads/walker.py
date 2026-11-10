@@ -41,7 +41,7 @@ from __future__ import annotations
 import ast
 import itertools
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
@@ -110,6 +110,16 @@ TRANSIENT_PRODUCED: Final[str] = "__transient_produced__"
 
 #: the most combinations of resolved parameter values a keyed helper call is judged under; past it, unresolved
 _MAX_PARAMETER_COMBINATIONS: Final[int] = 16
+
+#: how many calls up a parameter's value is followed (``run`` -> ``_write`` -> ``_held`` -> the helper)
+_PARAMETER_DEPTH: Final[int] = 6
+
+#: a declared object a module tuple holds (``Declared(name=COUNTIES)``): its keyword arguments that read as strings,
+#: sorted, so ``table.name`` reads as the object's ``name``
+Declared = tuple[tuple[str, str], ...]
+
+#: what a call site passes a parameter: a string, a declared object, or None for anything the walk cannot read
+Passed = str | Declared | None
 
 #: whether an expression is a declared transient producer's return; None when the repo declares none
 Produced = Callable[[ast.expr], bool] | None
@@ -586,7 +596,9 @@ class _ModuleWalk(ast.NodeVisitor):
         exec_calls: frozenset[str] = frozenset(),
         cte_arguments: dict[tuple[str, str], list[tuple[str, bool]]] | None = None,
         producers: frozenset[str] = frozenset(),
-        parameter_values: dict[tuple[str, str], list[str | None]] | None = None,
+        parameter_values: dict[tuple[str, str], list[Passed]] | None = None,
+        view_producers: Mapping[str, tuple[tuple[str, ...], ...]] | None = None,
+        tuples: dict[str, list[Passed]] | None = None,
     ) -> None:
         """prepare a walk of one module.
 
@@ -619,14 +631,21 @@ class _ModuleWalk(ast.NodeVisitor):
         :param producers: the repo's functions whose returned relation is a change set (``Stages._stage``,
             ``_Work.put``): ``Class.method``, or a module function's name
         :ptype producers: frozenset[str]
-        :param parameter_values: ``(function, parameter)`` onto the string each call site passes it, None where the
-            walk cannot read one (:func:`_parameter_values`)
-        :ptype parameter_values: dict[tuple[str, str], list[str | None]] | None
+        :param parameter_values: ``(function, parameter)`` onto what each call site passes it, None where the walk
+            cannot read it (:func:`_parameter_values`)
+        :ptype parameter_values: dict[tuple[str, str], list[Passed]] | None
+        :param tuples: the module tuples this module reads (its own and the ones it imports), onto their elements
+            (:func:`_module_tuples`)
+        :ptype tuples: dict[str, list[Passed]] | None
+        :param view_producers: each function that builds a view under a name it is handed onto the keys its views
+            declare
+        :ptype view_producers: Mapping[str, tuple[tuple[str, ...], ...]] | None
         :return: nothing
         :rtype: None
         """
         self.path = path
         self._parameter_values = parameter_values or {}
+        self._tuples = tuples or {}
         self.source = source
         self.hits: list[WholeReadHit] = []
         self.calls: list[_CallSite] = []
@@ -644,6 +663,7 @@ class _ModuleWalk(ast.NodeVisitor):
         self._narrowing = narrowing
         self._transient = transient
         #: each declared producer as ``(class, method)``, the class empty for a module function
+        self._view_producers = dict(view_producers or {})
         self._producers: tuple[tuple[str, str], ...] = tuple(
             (owner.rsplit(".", 1)[-1], method)
             for owner, _, method in (producer.rpartition(".") for producer in sorted(producers))
@@ -1025,6 +1045,7 @@ class _ModuleWalk(ast.NodeVisitor):
         return Reader(
             schema=self._schema,
             names=frozenset(names),
+            view_keys=self._view_producers.get(self._function, ()),
             transient=self._transient_table,
             ctes=(self._ctes[-1] if self._ctes else frozenset())
             | frozenset(
@@ -1378,6 +1399,13 @@ class _ModuleWalk(ast.NodeVisitor):
             text = _constant_text(value, self._envs[-1])
             if text is not None and not isinstance(value, ast.Constant):
                 return ast.Constant(text)
+            # a mapping keyed by constants (``by={STATE_COLUMN: state}``): each key the string it names
+            if isinstance(value, ast.Dict):
+                keys = [
+                    key if key is None else literal(key) if _constant_text(key, self._envs[-1]) is not None else key
+                    for key in value.keys
+                ]
+                return ast.Dict(keys=keys, values=value.values)
             # a module constant holding the argument's shape (``_NEWEST_FIRST = (Sort("date_started"), ...)``)
             if isinstance(value, ast.Name) and isinstance(
                 self._module_values.get(value.id), (ast.Tuple, ast.List, ast.Dict)
@@ -1400,7 +1428,8 @@ class _ModuleWalk(ast.NodeVisitor):
         :return: nothing
         :rtype: None
         """
-        if _final(node) not in KEYED_HELPER_CALLS:
+        if _final(node) not in KEYED_HELPER_CALLS or _on_an_attribute(node):
+            # a call on an object's attribute (``self._store.holds_any``) is the repo's own method, judged in its body
             return
         statement: HelperStatement
         resolved = self._resolved_call(node)
@@ -1417,10 +1446,12 @@ class _ModuleWalk(ast.NodeVisitor):
             self._hit(node, symbol, statement_text)
 
     def _parameter_calls(self, call: ast.Call) -> list[ast.Call]:
-        """the call once per combination of the strings its function's parameters are passed: an argument that is a
-        parameter of the calling function, never rebound in it, which every call site in the repo fills with a
-        literal or a module constant (``_held(conn, GEOS, key)``), reads as each of those strings in turn; the call
-        itself when there is none, or one caller passes something the walk cannot read.
+        """the call once per combination of the strings its arguments are passed: an argument that is a parameter of
+        the calling function, never rebound in it, which every call site in the repo fills with a literal or a module
+        constant (``_held(conn, GEOS, key)``), followed up through callers that hand on their own parameter, reads as
+        each of those strings in turn; so does one bound by a loop over a module tuple (``for name in NAMES``), and an
+        attribute of either when it holds declared objects (``table.name``, ``for table in TABLES``); the call itself
+        when there is none, or one caller passes something the walk cannot read.
 
         :param call: the helper call, its known strings already literals
         :ptype call: ast.Call
@@ -1428,29 +1459,25 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: list[ast.Call]
         """
         function = self._function_node
-        if function is None or not self._parameter_values:
+        if function is None or not (self._parameter_values or self._tuples):
             return [call]
-        parameters = {
-            argument.arg for argument in [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
-        }
-        rebound = {
-            node.id
-            for node in _own_nodes(function.body)
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
-        }
+        bindings = _function_bindings(function, self._tuples)
         choices: dict[str, list[str]] = {}
         for value in [*call.args, *(keyword.value for keyword in call.keywords)]:
-            if not isinstance(value, ast.Name) or value.id not in parameters or value.id in rebound:
+            named = _bound_name(value)
+            if named is None:
                 continue
-            passed = self._parameter_values.get((function.name, value.id), [])
-            if passed and all(text is not None for text in passed):
-                choices[value.id] = sorted({text for text in passed if text is not None})
+            passed = _passed_values(function.name, named[0], bindings, self._parameter_values)
+            texts = _texts_of(passed, named[1]) if passed is not None else None
+            if texts:
+                choices[ast.unparse(value)] = sorted(set(texts))
         combinations = list(itertools.product(*choices.values()))
         if not choices or len(combinations) > _MAX_PARAMETER_COMBINATIONS:
             return [call]
 
         def bound(value: ast.expr, given: dict[str, str]) -> ast.expr:
-            return ast.Constant(given[value.id]) if isinstance(value, ast.Name) and value.id in given else value
+            spelled = ast.unparse(value) if _bound_name(value) is not None else None
+            return ast.Constant(given[spelled]) if spelled is not None and spelled in given else value
 
         calls = []
         for combination in combinations:
@@ -2326,63 +2353,462 @@ def _cte_arguments(modules: list[tuple[str, ast.Module]]) -> dict[tuple[str, str
     return found
 
 
+def _on_an_attribute(call: ast.Call) -> bool:
+    """whether ``call`` is a method of an object an attribute holds (``self._store.f()``), never a module's function
+    (``keyed.f()``, ``f()``).
+
+    :param call: the call
+    :ptype call: ast.Call
+    :return: whether it is
+    :rtype: bool
+    """
+    return isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Attribute)
+
+
+def _imported_names(tree: ast.Module) -> frozenset[str]:
+    """the names a module's imports bind (``keyed`` for ``from threetears.core import keyed``): a call on one is a
+    module's function, never a method the repo defines under the same name.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :return: the names
+    :rtype: frozenset[str]
+    """
+    names: set[str] = set()
+    for statement in ast.walk(tree):
+        if isinstance(statement, ast.Import):
+            names.update((alias.asname or alias.name).split(".")[0] for alias in statement.names)
+        elif isinstance(statement, ast.ImportFrom):
+            names.update(alias.asname or alias.name for alias in statement.names)
+    return frozenset(names)
+
+
+def _bound_name(value: ast.expr) -> tuple[str, str | None] | None:
+    """the name an argument reads, and the attribute it reads of it: ``table`` -> ``("table", None)``,
+    ``table.name`` -> ``("table", "name")``; None for anything else.
+
+    :param value: the argument
+    :ptype value: ast.expr
+    :return: the name and attribute, or None
+    :rtype: tuple[str, str | None] | None
+    """
+    if isinstance(value, ast.Name):
+        return value.id, None
+    if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+        return value.value.id, value.attr
+    return None
+
+
+def _texts_of(passed: list[Passed], attribute: str | None) -> list[str] | None:
+    """the strings ``passed`` reads as: each string itself, or each declared object's ``attribute``; None when any one
+    does not read as a string.
+
+    :param passed: what is passed
+    :ptype passed: list[Passed]
+    :param attribute: the attribute read of it, or None for the value itself
+    :ptype attribute: str | None
+    :return: the strings, or None
+    :rtype: list[str] | None
+    """
+    texts: list[str] = []
+    for value in passed:
+        if attribute is None:
+            text = value if isinstance(value, str) else None
+        else:
+            text = dict(value).get(attribute) if isinstance(value, tuple) else None
+        if text is None:
+            return None
+        texts.append(text)
+    return texts
+
+
+@dataclass(frozen=True)
+class _Bindings:
+    """what a function's own names hold: its parameters never rebound, and its names bound only by a loop over a
+    module tuple (``for table in TABLES``) onto that tuple's elements."""
+
+    parameters: frozenset[str]
+    loops: dict[str, list[Passed]]
+    tuples: dict[str, list[Passed]] = field(default_factory=dict)
+
+
+def _function_bindings(function: ast.FunctionDef | ast.AsyncFunctionDef, tuples: dict[str, list[Passed]]) -> _Bindings:
+    """the parameters and loop names of ``function`` whose values the walk can follow.
+
+    :param function: the function
+    :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+    :param tuples: the module tuples it may loop over
+    :ptype tuples: dict[str, list[Passed]]
+    :return: its bindings
+    :rtype: _Bindings
+    """
+    stores: dict[str, int] = {}
+    for node in _own_nodes(function.body):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            stores[node.id] = stores.get(node.id, 0) + 1
+    loops: dict[str, list[Passed]] = {}
+    for node in _own_nodes(function.body):
+        looped = (
+            (node.target, node.iter) if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)) else (None, None)
+        )
+        target, over = looped
+        elements = _iterated(over, tuples) if over is not None else None
+        if isinstance(target, ast.Name) and elements is not None and stores.get(target.id) == 1:
+            loops[target.id] = elements
+    arguments = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
+    return _Bindings(
+        parameters=frozenset(argument.arg for argument in arguments if argument.arg not in stores),
+        loops=loops,
+        tuples=tuples,
+    )
+
+
+def _iterated(over: ast.expr, tuples: dict[str, list[Passed]]) -> list[Passed] | None:
+    """the elements a loop over ``over`` binds: a module tuple's; an empty literal's (none); either branch's of a
+    conditional (``() if behind else TABLES``); None for anything else.
+
+    :param over: what the loop iterates
+    :ptype over: ast.expr
+    :param tuples: the module tuples
+    :ptype tuples: dict[str, list[Passed]]
+    :return: the elements, or None
+    :rtype: list[Passed] | None
+    """
+    if isinstance(over, ast.Name):
+        found = tuples.get(over.id)
+        return None if found is None else list(found)
+    if isinstance(over, (ast.Tuple, ast.List)) and not over.elts:
+        return []
+    if isinstance(over, ast.IfExp):
+        body, orelse = _iterated(over.body, tuples), _iterated(over.orelse, tuples)
+        return None if body is None or orelse is None else [*body, *orelse]
+    return None
+
+
+def _passed_values(
+    function: str, name: str, bindings: _Bindings, found: dict[tuple[str, str], list[Passed]]
+) -> list[Passed] | None:
+    """what ``name`` holds in ``function``: a loop's elements, or what every caller passes the parameter; None when
+    the walk cannot follow it.
+
+    :param function: the function's name
+    :ptype function: str
+    :param name: the name
+    :ptype name: str
+    :param bindings: the function's bindings
+    :ptype bindings: _Bindings
+    :param found: what each parameter is passed, as followed so far
+    :ptype found: dict[tuple[str, str], list[Passed]]
+    :return: the values, or None
+    :rtype: list[Passed] | None
+    """
+    if name in bindings.loops:
+        return bindings.loops[name]
+    if name in bindings.parameters:
+        passed = found.get((function, name))
+        if passed and all(value is not None for value in passed):
+            return passed
+    return None
+
+
+def _site_values(
+    value: ast.expr,
+    known: dict[str, str],
+    caller: tuple[str, _Bindings] | None,
+    found: dict[tuple[str, str], list[Passed]],
+) -> list[Passed]:
+    """what one call site passes: a literal or a module constant; a name a loop over a module tuple binds (its
+    elements) or an attribute of one (``table.name``); the caller's own parameter or its attribute, as its callers
+    pass it; ``[None]`` for anything else.
+
+    :param value: the argument
+    :ptype value: ast.expr
+    :param known: the calling module's strings
+    :ptype known: dict[str, str]
+    :param caller: the calling function's name and bindings, None at a module's or class's top level
+    :ptype caller: tuple[str, _Bindings] | None
+    :param found: what each parameter is passed, as followed so far
+    :ptype found: dict[tuple[str, str], list[Passed]]
+    :return: the values
+    :rtype: list[Passed]
+    """
+    text = _constant_text(value, known)
+    if text is not None:
+        return [text]
+    if isinstance(value, ast.Subscript) and isinstance(value.value, ast.Name) and caller is not None:
+        looked = caller[1].tuples.get(f"{value.value.id}[]")
+        return [None] if looked is None else list(looked)
+    named = _bound_name(value)
+    if named is None or caller is None:
+        return [None]
+    passed = _passed_values(caller[0], named[0], caller[1], found)
+    if passed is None:
+        return [None]
+    if named[1] is None:
+        return list(passed)
+    texts = _texts_of(passed, named[1])
+    return [None] if texts is None else list(texts)
+
+
 def _parameter_values(
-    modules: list[tuple[str, ast.Module]], strings: dict[str, dict[str, str]]
-) -> dict[tuple[str, str], list[str | None]]:
-    """for every function the repo defines once by its name, the string each call site passes each of its parameters:
-    a literal, or a module constant of the calling module (its own, or one it imports from the repo); a default the
-    call leaves in place reads the same way; None for anything else.
+    modules: list[tuple[str, ast.Module]],
+    strings: dict[str, dict[str, str]],
+    tuples: dict[str, dict[str, list[Passed]]] | None = None,
+) -> dict[tuple[str, str], list[Passed]]:
+    """for every function the repo defines once by its name, what each call site passes each of its parameters: a
+    literal, or a module constant of the calling module (its own, or one it imports from the repo); a default the
+    call leaves in place reads the same way; the elements of a module tuple a loop binds the argument to (or the
+    attribute of each it reads); the calling function's own parameter, as its own callers pass it, followed
+    :data:`_PARAMETER_DEPTH` calls up; None for anything else.
 
     :param modules: each module's path and parse
     :ptype modules: list[tuple[str, ast.Module]]
     :param strings: every walked module's path onto its once-bound strings (:func:`_module_strings`)
     :ptype strings: dict[str, dict[str, str]]
-    :return: ``(function, parameter)`` onto each site's string, or None
-    :rtype: dict[tuple[str, str], list[str | None]]
+    :param tuples: every walked module's path onto its tuples (:func:`_module_tuples`); none when None
+    :ptype tuples: dict[str, dict[str, list[Passed]]] | None
+    :return: ``(function, parameter)`` onto each site's value, or None
+    :rtype: dict[tuple[str, str], list[Passed]]
     """
     definitions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
     for _, tree in modules:
         for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # a protocol's stub (a docstring and ``...``) declares a signature; only a body says what it does
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not _stub(node):
                 definitions.setdefault(node.name, []).append(node)
-    found: dict[tuple[str, str], list[str | None]] = {}
+    contexts: list[tuple[dict[str, str], tuple[str, _Bindings] | None, list[ast.Call]]] = []
     for relative, tree in modules:
         known = {**_imported_strings(tree, strings), **strings.get(relative, {})}
-        for call in ast.walk(tree):
-            if not isinstance(call, ast.Call):
-                continue
-            defined = definitions.get(_final(call) or "", [])
-            if len(defined) != 1:
-                # a name defined twice could be either: no site of it says what its parameters hold
-                continue
-            function = defined[0]
-            positional = [*function.args.posonlyargs, *function.args.args]
-            if positional[:1] and positional[0].arg in ("self", "cls") and isinstance(call.func, ast.Attribute):
-                positional = positional[1:]
-            defaults = dict(
-                zip(
-                    [argument.arg for argument in positional][len(positional) - len(function.args.defaults) :],
-                    function.args.defaults,
-                    strict=True,
+        imported = _imported_names(tree)
+        module_tuples = _imported_tuples(tree, relative, tuples or {})
+        definers = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        # a module's or a class's own statements: each function's are its own scope, with its bindings
+        scopes: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef | None, list[ast.stmt]]] = [
+            (None, [statement for statement in tree.body if not isinstance(statement, definers)])
+        ]
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                scopes.append((None, [statement for statement in node.body if not isinstance(statement, definers)]))
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scopes.append((node, node.body))
+        for function, body in scopes:
+            caller = None if function is None else (function.name, _function_bindings(function, module_tuples))
+            # a call on an imported module (``keyed.holds_any``) is that module's, not a method of the same name
+            calls = [
+                node
+                for node in _own_nodes(body)
+                if isinstance(node, ast.Call)
+                and not (
+                    isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id in imported
                 )
-            )
-            defaults.update(
-                {
-                    argument.arg: default
-                    for argument, default in zip(function.args.kwonlyargs, function.args.kw_defaults, strict=True)
-                    if default is not None
-                }
-            )
-            starred = any(isinstance(argument, ast.Starred) for argument in call.args) or any(
-                keyword.arg is None for keyword in call.keywords
-            )
-            passed: dict[str, ast.expr] = dict(zip([a.arg for a in positional], call.args, strict=False))
-            passed.update({keyword.arg: keyword.value for keyword in call.keywords if keyword.arg})
-            for argument in [*positional, *function.args.kwonlyargs]:
-                value = passed.get(argument.arg, defaults.get(argument.arg))
-                text = None if starred or value is None else _constant_text(value, known)
-                found.setdefault((function.name, argument.arg), []).append(text)
+            ]
+            contexts.append((known, caller, calls))
+    found: dict[tuple[str, str], list[Passed]] = {}
+    for _ in range(_PARAMETER_DEPTH):
+        followed: dict[tuple[str, str], list[Passed]] = {}
+        for known, caller, calls in contexts:
+            for call in calls:
+                defined = definitions.get(_final(call) or "", [])
+                if len(defined) != 1:
+                    # a name defined twice could be either: no site of it says what its parameters hold
+                    continue
+                _record_site(call, defined[0], known, caller, found, followed)
+        if followed == found:
+            break
+        found = followed
     return found
+
+
+def _record_site(
+    call: ast.Call,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    known: dict[str, str],
+    caller: tuple[str, _Bindings] | None,
+    found: dict[tuple[str, str], list[Passed]],
+    followed: dict[tuple[str, str], list[Passed]],
+) -> None:
+    """add what one call of ``function`` passes each of its parameters to ``followed``.
+
+    :param call: the call
+    :ptype call: ast.Call
+    :param function: the function it calls
+    :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+    :param known: the calling module's strings
+    :ptype known: dict[str, str]
+    :param caller: the calling function's name and bindings, None at a top level
+    :ptype caller: tuple[str, _Bindings] | None
+    :param found: what each parameter is passed, as followed so far
+    :ptype found: dict[tuple[str, str], list[Passed]]
+    :param followed: what this pass finds
+    :ptype followed: dict[tuple[str, str], list[Passed]]
+    :return: nothing
+    :rtype: None
+    """
+    positional = [*function.args.posonlyargs, *function.args.args]
+    if positional[:1] and positional[0].arg in ("self", "cls") and isinstance(call.func, ast.Attribute):
+        positional = positional[1:]
+    defaults = dict(
+        zip(
+            [argument.arg for argument in positional][len(positional) - len(function.args.defaults) :],
+            function.args.defaults,
+            strict=True,
+        )
+    )
+    defaults.update(
+        {
+            argument.arg: default
+            for argument, default in zip(function.args.kwonlyargs, function.args.kw_defaults, strict=True)
+            if default is not None
+        }
+    )
+    # a ``*args`` leaves every positional from it on unknown; a ``**kwargs`` every parameter not passed by name or
+    # place, which it may fill
+    star = next((place for place, argument in enumerate(call.args) if isinstance(argument, ast.Starred)), None)
+    spread = any(keyword.arg is None for keyword in call.keywords)
+    passed: dict[str, ast.expr] = dict(
+        zip([a.arg for a in positional], call.args if star is None else call.args[:star], strict=False)
+    )
+    passed.update({keyword.arg: keyword.value for keyword in call.keywords if keyword.arg})
+    for place, argument in enumerate([*positional, *function.args.kwonlyargs]):
+        value = passed.get(argument.arg)
+        unknown = value is None and ((star is not None and place >= star) or spread)
+        value = value if value is not None else defaults.get(argument.arg)
+        values: list[Passed] = [None] if unknown or value is None else _site_values(value, known, caller, found)
+        followed.setdefault((function.name, argument.arg), []).extend(values)
+
+
+def _stub(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """whether a function's body is only a docstring and ``...`` (or ``pass``): a protocol's declared signature.
+
+    :param function: the function
+    :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+    :return: whether it is
+    :rtype: bool
+    """
+    return all(
+        isinstance(statement, ast.Pass)
+        or (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant))
+        for statement in function.body
+    )
+
+
+def _module_tuples(
+    tree: ast.Module, known: dict[str, str], imported: dict[str, list[Passed]] | None = None
+) -> dict[str, list[Passed]]:
+    """the tuples a module's top level binds once, by name, onto their elements: a string (a literal or a constant)
+    or a declared object (``Declared(name=COUNTIES)``: its keyword arguments that read as strings); a starred tuple
+    (``*FEED_TABLES``, the module's own or an imported one) adds its elements; an element none of these reads as
+    None. A dict built by a comprehension over one (``{t.name: t for t in TABLES}``) is bound as ``<name>[]`` onto the
+    same elements, so a lookup in it (``BY_NAME[name]``) reads as any one of them.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param known: the module's strings, its imported ones among them
+    :ptype known: dict[str, str]
+    :param imported: the tuples it imports (:func:`_imported_tuples`), for a starred one; none when None
+    :ptype imported: dict[str, list[Passed]] | None
+    :return: name onto elements
+    :rtype: dict[str, list[Passed]]
+    """
+    found: dict[str, list[Passed]] = {}
+    twice: set[str] = set()
+    for statement in tree.body:
+        target = (
+            statement.targets[0]
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1
+            else (statement.target if isinstance(statement, ast.AnnAssign) and statement.value is not None else None)
+        )
+        value = statement.value if isinstance(statement, (ast.Assign, ast.AnnAssign)) else None
+        if (
+            isinstance(target, ast.Name)
+            and isinstance(value, ast.DictComp)
+            and len(value.generators) == 1
+            and isinstance(value.generators[0].target, ast.Name)
+            and isinstance(value.value, ast.Name)
+            and value.value.id == value.generators[0].target.id
+            and isinstance(value.generators[0].iter, ast.Name)
+        ):
+            over = value.generators[0].iter.id
+            looked = found.get(over, (imported or {}).get(over))
+            if looked is not None:
+                found[f"{target.id}[]"] = list(looked)
+            continue
+        if not isinstance(target, ast.Name) or not isinstance(value, (ast.Tuple, ast.List)):
+            continue
+        if target.id in found:
+            twice.add(target.id)
+        elements: list[Passed] = []
+        for element in value.elts:
+            text = _constant_text(element, known)
+            spliced = (
+                found.get(element.value.id, (imported or {}).get(element.value.id))
+                if isinstance(element, ast.Starred) and isinstance(element.value, ast.Name)
+                else None
+            )
+            if spliced is not None:
+                elements.extend(spliced)
+            elif text is not None:
+                elements.append(text)
+            elif isinstance(element, ast.Call):
+                attributes = {
+                    keyword.arg: _constant_text(keyword.value, known)
+                    for keyword in element.keywords
+                    if keyword.arg is not None
+                }
+                elements.append(tuple(sorted((k, v) for k, v in attributes.items() if v is not None)))
+            else:
+                elements.append(None)
+        found[target.id] = elements
+    return {name: elements for name, elements in found.items() if name not in twice}
+
+
+def _imported_tuples(
+    tree: ast.Module, relative: str, tuples: dict[str, dict[str, list[Passed]]]
+) -> dict[str, list[Passed]]:
+    """the tuples a module reads: the ones it binds and the ones it imports from the repo's own modules, by the name it
+    imports each as.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param relative: its repo-relative path
+    :ptype relative: str
+    :param tuples: every walked module's path onto its tuples (:func:`_module_tuples`)
+    :ptype tuples: dict[str, dict[str, list[Passed]]]
+    :return: name onto elements
+    :rtype: dict[str, list[Passed]]
+    """
+    found: dict[str, list[Passed]] = {}
+    for statement in tree.body:
+        if not (isinstance(statement, ast.ImportFrom) and statement.module and not statement.level):
+            continue
+        source = _module_named(statement.module, tuples)
+        for alias in statement.names:
+            if source is not None and alias.name in source:
+                found[alias.asname or alias.name] = source[alias.name]
+    return {**found, **tuples.get(relative, {})}
+
+
+def _module_named[T](module: str, per_module: dict[str, dict[str, T]]) -> dict[str, T] | None:
+    """what a walked module binds, found by its dotted name (``pkg.tables``), or None when no walked module is it.
+
+    :param module: the dotted name
+    :ptype module: str
+    :param per_module: every walked module's path onto what it binds
+    :ptype per_module: dict[str, dict[str, T]]
+    :return: what it binds, or None
+    :rtype: dict[str, T] | None
+    """
+    base = module.replace(".", "/")
+    return next(
+        (
+            names
+            for path, names in per_module.items()
+            if path.endswith((f"/{base}.py", f"/{base}/__init__.py")) or path in {f"{base}.py", f"{base}/__init__.py"}
+        ),
+        None,
+    )
 
 
 def _formatted_ctes(body: list[ast.stmt]) -> frozenset[str]:
@@ -2453,16 +2879,7 @@ def _imported_strings(tree: ast.Module, strings: dict[str, dict[str, str]]) -> d
     for statement in tree.body:
         if not (isinstance(statement, ast.ImportFrom) and statement.module and not statement.level):
             continue
-        base = statement.module.replace(".", "/")
-        source = next(
-            (
-                names
-                for path, names in strings.items()
-                if path.endswith((f"/{base}.py", f"/{base}/__init__.py"))
-                or path in {f"{base}.py", f"{base}/__init__.py"}
-            ),
-            None,
-        )
+        source = _module_named(statement.module, strings)
         for alias in statement.names:
             if source is not None and alias.name in source:
                 found[alias.asname or alias.name] = source[alias.name]
@@ -2485,6 +2902,7 @@ def scan_whole_reads(
     schema: SchemaCatalog | None = None,
     exec_calls: frozenset[str] = frozenset(),
     producers: frozenset[str] = frozenset(),
+    view_producers: Mapping[str, tuple[tuple[str, ...], ...]] | None = None,
 ) -> WholeReadScan:
     """walk every module under ``src_roots`` and record every whole read, write and call.
 
@@ -2517,6 +2935,8 @@ def scan_whole_reads(
     :param producers: the repo's functions whose returned relation is a change set (``Class.method`` or a module
         function's name)
     :ptype producers: frozenset[str]
+    :param view_producers: each function that builds a view under a name it is handed onto the keys its views declare
+    :ptype view_producers: Mapping[str, tuple[tuple[str, ...], ...]] | None
     :return: the walk
     :rtype: WholeReadScan
     """
@@ -2530,8 +2950,21 @@ def scan_whole_reads(
     pattern = re.compile(transient) if transient else None
     modules = [(relative_posix_path(path, repo_root), path) for root in src_roots for path in iter_python_files(root)]
     strings = {relative: _module_strings(parse_python_path(path)) for relative, path in modules}
+    tuples: dict[str, dict[str, list[Passed]]] = {}
+    # twice: a module's tuple may splice one another module binds
+    for _ in range(2):
+        tuples = {
+            relative: _module_tuples(
+                parse_python_path(path),
+                {**_imported_strings(parse_python_path(path), strings), **strings.get(relative, {})},
+                _imported_tuples(parse_python_path(path), relative, tuples),
+            )
+            for relative, path in modules
+        }
     cte_arguments = _cte_arguments([(relative, parse_python_path(path)) for relative, path in modules])
-    parameter_values = _parameter_values([(relative, parse_python_path(path)) for relative, path in modules], strings)
+    parameter_values = _parameter_values(
+        [(relative, parse_python_path(path)) for relative, path in modules], strings, tuples
+    )
     for relative, path in modules:
         excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
         used.update(excluded)
@@ -2553,6 +2986,8 @@ def scan_whole_reads(
             cte_arguments=cte_arguments,
             producers=producers,
             parameter_values=parameter_values,
+            view_producers=view_producers,
+            tuples=_imported_tuples(tree, relative, tuples),
         )
         walk.visit(tree)
         stubs.update(walk.stubs)

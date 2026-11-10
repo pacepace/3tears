@@ -186,6 +186,26 @@ def bare_table(name: str) -> str | None:
     return None if not last or not literal else f"{COPY_PREFIX if copied else ''}{template}"
 
 
+#: the schemas an L3 table is named in: Postgres' default; a namespace's own is interpolated (``{schema}.t``)
+_L3_SCHEMAS: Final[frozenset[str]] = frozenset({"public", "pg_catalog"})
+
+
+def _own_schema(name: str) -> bool:
+    """whether ``name`` is qualified by a schema of its own: a literal one that is neither an L3 schema nor the
+    ``copy.`` namespace (``report.settings``, a local database's views).
+
+    :param name: the relation as written
+    :ptype name: str
+    :return: whether it is
+    :rtype: bool
+    """
+    parts = re.findall(r"\"[^\"]+\"|[^.\"]+", name.strip())
+    if len(parts) < 2:
+        return False
+    schema = parts[-2].strip('"').strip().lower()
+    return bool(re.fullmatch(r"\w+", schema)) and schema not in _L3_SCHEMAS and schema != COPY_PREFIX.rstrip(".")
+
+
 @dataclass
 class _DeclaredIndex:
     """one index a repo declares.
@@ -288,7 +308,12 @@ class SchemaCatalog:
         :rtype: _DeclaredTable | None
         """
         bare = bare_table(name)
-        found = self.tables.get(bare) if bare is not None else None
+        found = None
+        if bare is not None and _own_schema(name):
+            # a relation in a schema of its own (``report.<view>``): a local relation first, then the L3 table
+            found = self.tables.get(f"{COPY_PREFIX}{bare}")
+        if found is None and bare is not None:
+            found = self.tables.get(bare)
         if found is None and bare is not None and not bare.startswith(COPY_PREFIX):
             # a view a copy declares (``local_relations``), read by its own name: no L3 table shares it
             found = self.tables.get(f"{COPY_PREFIX}{bare}")
