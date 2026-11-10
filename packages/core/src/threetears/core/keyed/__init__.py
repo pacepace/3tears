@@ -58,9 +58,11 @@ from threetears.core.keyed.page import KeyPage, Sort, exists_keyed, keyset_curso
 from threetears.core.keyed.rows import (
     ANY_ROWS_CAP,
     DEFAULT_KEY_BATCH,
+    DIRECT_KEY_BATCH,
     KeyBatch,
     KeyTooWide,
     any_rows,
+    key_batch_for,
     read_joined,
     read_keyed,
     read_keyed_arrow,
@@ -80,6 +82,7 @@ from threetears.core.keyed.writes import (
 __all__ = [
     "ANY_ROWS_CAP",
     "DEFAULT_KEY_BATCH",
+    "DIRECT_KEY_BATCH",
     "AnyOf",
     "BoundedCount",
     "Derived",
@@ -104,6 +107,7 @@ __all__ = [
     "ThreadedSQLite",
     "WholeReads",
     "any_rows",
+    "key_batch_for",
     "apply_stage",
     "count_at_most",
     "counts_by",

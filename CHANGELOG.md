@@ -46,6 +46,16 @@ returned a prefix as the whole. Every keyset pager now reads a cut reply as "mor
 to the reply's last whole key group and reads on from there (a reply of one key group is kept when one keyed count
 says the part holds no more of it, else the read raises `IncompleteReadError`); `read_partitions`' page starts and
 each of its pages read on the same way. `DatasourceQueryResult` carries `max_reply_bytes` from the reply.
+**Fixed (speed):** under a byte-capping hub a page is sized at the width the hub cuts by (pydantic's compact JSON, in
+UTF-8 bytes, as the broker's `reply_rows` measures), filling 95% of the cap (was 80%, at a different width); and a read
+on a client the hub has answered under its cap sizes its FIRST page from what one reply carried, not the asked-for
+size (a hub that has since dropped the cap is read again at the asked size).
+
+### core.keyed: a direct connection reads its keys in one statement
+**Fixed (speed):** `read_keyed`, `read_keyed_arrow` and `read_joined` name `key_batch_for(conn)` keys a statement when
+the caller gives no `batch=`: `DIRECT_KEY_BATCH` (10,000) on a connection that binds arrays natively (asyncpg's, to
+PostgreSQL or YugabyteDB: each key column one array parameter), `DEFAULT_KEY_BATCH` (1,000) through the L3 rail or a
+datasource, whose JSON parameters and reply caps bound it. 2,000 keys were two statements, 0.5-0.65 ms more than one.
 
 ### core: one equivalence harness for every conversion to a helper
 

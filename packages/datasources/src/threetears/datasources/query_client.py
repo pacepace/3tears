@@ -48,15 +48,16 @@ the prefix, a derivation refuses it.
 from __future__ import annotations
 
 import asyncio
-import json
 import random
 import re
+import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 from uuid import UUID, uuid7
 
+import pydantic_core
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -2005,12 +2006,57 @@ def _row_cap_refusal(page_size: int) -> ValueError:
     )
 
 
-#: the share of a hub's announced reply byte cap a page is sized to fill: room for rows wider than those measured
-_CAP_FILL: Final[float] = 0.8
+#: the share of a hub's announced reply byte cap a page is sized to fill: room for the reply's envelope and for rows
+#: a little wider than those measured
+_CAP_FILL: Final[float] = 0.95
+
+#: per client, the rows one reply of a byte-capping hub carried for a (datasource, relation, columns) read, so the
+#: next read of it sizes its FIRST page from the announced cap too. A hint only: a page it oversizes comes back cut
+#: and is read on from its last whole key group, as any cut page is.
+_REPLY_ROWS: weakref.WeakKeyDictionary[Any, dict[tuple[str, str, str], int]] = weakref.WeakKeyDictionary()
+
+
+def _remembered_reply_rows(client: Any, read: tuple[str, str, str]) -> int | None:
+    """the rows one reply carried the last time ``client`` read ``read`` under a byte cap, if it did.
+
+    :param client: the query client
+    :ptype client: Any
+    :param read: the datasource, relation and selected columns
+    :ptype read: tuple[str, str, str]
+    :return: the rows, or None
+    :rtype: int | None
+    """
+    try:
+        return _REPLY_ROWS.get(client, {}).get(read)
+    except TypeError:
+        # a client that cannot be weakly referenced or hashed keeps no memory
+        return None
+
+
+def _remember_reply_rows(client: Any, read: tuple[str, str, str], rows: int | None) -> None:
+    """remember (or, with None, forget) the rows one reply carries for ``read`` on ``client``.
+
+    :param client: the query client
+    :ptype client: Any
+    :param read: the datasource, relation and selected columns
+    :ptype read: tuple[str, str, str]
+    :param rows: the rows, or None to forget
+    :ptype rows: int | None
+    """
+    try:
+        held = _REPLY_ROWS.setdefault(client, {})
+    except TypeError:
+        return
+    if rows is None:
+        held.pop(read, None)
+    else:
+        held[read] = rows
 
 
 def _rows_a_reply_carries(rows: list[dict[str, Any]], max_reply_bytes: int) -> int:
     """about how many rows like ``rows`` one reply cut at ``max_reply_bytes`` carries, with a margin.
+
+    Measured as the hub measures its cut: pydantic's compact JSON, in UTF-8 bytes (the broker's ``reply_rows``).
 
     :param rows: a page's rows, as the hub sent them
     :ptype rows: list[dict[str, Any]]
@@ -2019,7 +2065,7 @@ def _rows_a_reply_carries(rows: list[dict[str, Any]], max_reply_bytes: int) -> i
     :return: the rows, at least 1
     :rtype: int
     """
-    per_row = len(json.dumps(rows, default=str, separators=(",", ":"))) / len(rows)
+    per_row = len(pydantic_core.to_json(rows, serialize_unknown=True)) / len(rows)
     return max(1, int(_CAP_FILL * max_reply_bytes / per_row))
 
 
@@ -2055,6 +2101,13 @@ async def _pages(
     # the most rows a page grows back to: the asked-for size, or, under a hub that cuts its replies by their bytes,
     # about the rows one reply carries (so the cap's larger replies are reached through this pager)
     ceiling = page_size
+    # a byte-capped hub read here before: the first page asks what one of its replies carried then
+    read = (datasource_name, relation, selected)
+    remembered = _remembered_reply_rows(client, read)
+    if remembered is not None and remembered > page_size:
+        size = ceiling = remembered
+    # the first whole page under a byte cap is measured, and the pages after it ask what one reply carries
+    measured = False
     for _ in range(max_pages):
         predicate, params = _filtered(filters, key, cursor)
         # LIMIT size + 1: the extra row is a SENTINEL, not data. Getting it
@@ -2085,7 +2138,14 @@ async def _pages(
             continue
 
         if page.max_reply_bytes is None and size >= _HUB_ROW_CAP:
-            raise _row_cap_refusal(size)
+            if remembered is None or size <= page_size:
+                raise _row_cap_refusal(size)
+            # the hub cut by bytes before and cuts by rows now: its row cap may have eaten the sentinel, so the page
+            # is read again at the asked-for size, and nothing is remembered
+            _remember_reply_rows(client, read, None)
+            remembered = None
+            size = ceiling = page_size
+            continue
 
         if not page.rows:
             if previous_had_more:
@@ -2131,6 +2191,8 @@ async def _pages(
             previous_had_more = True
             size = max(1, len(page.rows) - 1)
             ceiling = max(page_size, size)
+            if page.max_reply_bytes is not None:
+                _remember_reply_rows(client, read, ceiling)
             log.info(
                 "read_all page cut by the hub's reply cap; reading on from its last whole key group",
                 extra={
@@ -2190,9 +2252,11 @@ async def _pages(
         rows.extend(kept)
         cursor = advanced
         previous_had_more = had_more
-        if page.max_reply_bytes is not None and ceiling == page_size:
+        if page.max_reply_bytes is not None and not measured:
             # the hub cuts by bytes, and a whole page fitted: the next pages ask about what one reply carries
+            measured = True
             ceiling = max(page_size, _rows_a_reply_carries(page.rows, page.max_reply_bytes) - 1)
+            _remember_reply_rows(client, read, ceiling)
         # back toward the ceiling (one oversized stretch should not slow the rest); a byte-capped hub's ceiling at once
         size = ceiling if ceiling > page_size else min(page_size, size * 2)
 

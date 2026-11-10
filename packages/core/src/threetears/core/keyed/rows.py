@@ -58,9 +58,11 @@ from threetears.core.sql_fragments import quote_identifier
 __all__ = [
     "ANY_ROWS_CAP",
     "DEFAULT_KEY_BATCH",
+    "DIRECT_KEY_BATCH",
     "KeyBatch",
     "KeyTooWide",
     "any_rows",
+    "key_batch_for",
     "read_joined",
     "read_keyed",
     "read_keyed_arrow",
@@ -69,8 +71,27 @@ __all__ = [
 #: the most rows one :func:`any_rows` look takes
 ANY_ROWS_CAP: Final = 1000
 
-#: keys a statement names when the caller does not say: well under a statement's parameter and reply bounds
+#: keys a statement names when the caller does not say, through a transport that carries its parameters as JSON
+#: and bounds its replies (the L3 rail, a datasource): well under a statement's parameter and reply bounds
 DEFAULT_KEY_BATCH: Final = 1000
+
+#: keys a statement names when the caller does not say, on a connection that binds arrays natively (asyncpg's, to
+#: PostgreSQL or YugabyteDB): each key column is ONE array parameter, so the batch is bounded by the statement's work,
+#: not by its parameters, and a second statement costs more than the keys it splits off (2,000 keys: 0.5-0.65 ms
+#: more as two statements than as one)
+DIRECT_KEY_BATCH: Final = 10_000
+
+
+def key_batch_for(conn: Any) -> int:
+    """the keys a statement names on ``conn`` when the caller does not say.
+
+    :param conn: the connection a keyed helper reads through
+    :ptype conn: Any
+    :return: :data:`DIRECT_KEY_BATCH` where its arrays bind natively, else :data:`DEFAULT_KEY_BATCH`
+    :rtype: int
+    """
+    return DIRECT_KEY_BATCH if binds_native_arrays(conn) else DEFAULT_KEY_BATCH
+
 
 #: a batch's key columns are each bound to their distinct values when those name at most this many times its keys
 _TIGHT_BOUND_FACTOR: Final = 2
@@ -329,7 +350,7 @@ async def read_keyed(
     keys: KeyBatch,
     columns: Sequence[str | Selected],
     by: Mapping[str, Any] | None = None,
-    batch: int = DEFAULT_KEY_BATCH,
+    batch: int | None = None,
     row_cap: int | None = None,
     lock: Lock | None = None,
     where: Sequence[Fragment] = (),
@@ -349,8 +370,8 @@ async def read_keyed(
     :ptype columns: Sequence[str | Selected]
     :param by: columns pinned beside the keys (a tenant), each a value or an :class:`~threetears.core.keyed.AnyOf`
     :ptype by: Mapping[str, Any] | None
-    :param batch: the most keys a statement names
-    :ptype batch: int
+    :param batch: the most keys a statement names; None: :func:`key_batch_for` the connection
+    :ptype batch: int | None
     :param row_cap: the most rows the transport answers a statement without saying it cut; None when it never cuts
     :ptype row_cap: int | None
     :param lock: the row lock taken on the rows read (the caller's transaction), in the key's order; none when None
@@ -371,7 +392,7 @@ async def read_keyed(
         return list(await conn.fetch(sql, *params))
 
     rows: list[dict[str, Any]] = []
-    for chunk in _batches(keys, batch):
+    for chunk in _batches(keys, key_batch_for(conn) if batch is None else batch):
         for answered in await _read_split(fetch, len, chunk, row_cap, table):
             # mapped, not a generator: a row a call less, at a page's 6,000 rows a millisecond
             rows.extend(map(dict, answered))
@@ -385,7 +406,7 @@ async def read_keyed_arrow(
     keys: KeyBatch,
     types: Mapping[str, Any],
     by: Mapping[str, Any] | None = None,
-    batch: int = DEFAULT_KEY_BATCH,
+    batch: int | None = None,
     row_cap: int | None = None,
 ) -> list[Any]:
     """:func:`read_keyed`, each statement's answer one Arrow table: the same statements, the rows never Python
@@ -401,8 +422,8 @@ async def read_keyed_arrow(
     :ptype types: Mapping[str, pyarrow.DataType]
     :param by: columns pinned beside the keys
     :ptype by: Mapping[str, Any] | None
-    :param batch: the most keys a statement names
-    :ptype batch: int
+    :param batch: the most keys a statement names; None: :func:`key_batch_for` the connection
+    :ptype batch: int | None
     :param row_cap: the most rows the transport answers a statement without saying it cut
     :ptype row_cap: int | None
     :return: one ``pyarrow.Table`` a statement, in the order read
@@ -418,7 +439,7 @@ async def read_keyed_arrow(
         return await l3_fetch_arrow(conn, sql, *params, types=types)
 
     tables: list[Any] = []
-    for chunk in _batches(keys, batch):
+    for chunk in _batches(keys, key_batch_for(conn) if batch is None else batch):
         tables += await _read_split(fetch, lambda answered: int(answered.num_rows), chunk, row_cap, table)
     return tables
 
@@ -432,7 +453,7 @@ async def read_joined(
     columns: Sequence[str],
     casts: Mapping[str, str] | None = None,
     by: Mapping[str, Any] | None = None,
-    batch: int = DEFAULT_KEY_BATCH,
+    batch: int | None = None,
 ) -> dict[tuple[Any, ...], list[dict[str, Any]]]:
     """the rows of ``table`` joined to ``rows`` (a page already read), by a keyed read of the values they name.
 
@@ -455,8 +476,8 @@ async def read_joined(
     :ptype casts: Mapping[str, str] | None
     :param by: the joined table's columns pinned beside (a tenant)
     :ptype by: Mapping[str, Any] | None
-    :param batch: the most values a statement names
-    :ptype batch: int
+    :param batch: the most values a statement names; None: :func:`key_batch_for` the connection
+    :ptype batch: int | None
     :return: the page's values (in ``on``'s order) -> the joined rows holding them; a value no row holds is absent
     :rtype: dict[tuple[Any, ...], list[dict[str, Any]]]
     :raises ValueError: when ``on`` is empty or a column of it is not read

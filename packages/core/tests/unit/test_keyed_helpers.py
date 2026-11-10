@@ -21,6 +21,8 @@ import duckdb
 import pytest
 
 from threetears.core.keyed import (
+    DEFAULT_KEY_BATCH,
+    DIRECT_KEY_BATCH,
     AnyOf,
     BoundedCount,
     Derived,
@@ -108,6 +110,22 @@ class _Recording:
         return await self._inner.execute(query, *params)
 
 
+class _Unanswering:
+    """a reader that keeps every statement it is sent and answers each with no rows (statement counts only)."""
+
+    def __init__(self) -> None:
+        self.statements: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        self.statements.append((query, params))
+        return []
+
+
+def _plain_b(conn: duckdb.DuckDBPyConnection, below: int) -> list[int]:
+    """the table's b values under ``below``, in order, read whole (the oracle a keyed read of 0..below-1 equals)."""
+    return [int(row[0]) for row in conn.execute("SELECT b FROM t WHERE b < ? ORDER BY b", [below]).fetchall()]
+
+
 def _plain(conn: duckdb.DuckDBPyConnection, sql: str, *params: Any) -> list[tuple[Any, ...]]:
     return [tuple(row) for row in conn.execute(sql, list(params)).fetchall()]
 
@@ -183,6 +201,40 @@ class TestReadKeyed:
         truthy.binds_native_arrays = "yes"  # type: ignore[attr-defined]
         await read_keyed(truthy, "t", keys=KeyBatch(("a", "b"), keys, ("text", "bigint")), columns=["b"])
         assert "unnest($2::text[]::bigint[])" in truthy.statements[0][0]
+
+    async def test_a_connection_binding_arrays_natively_reads_2000_keys_in_one_statement(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a direct connection (asyncpg's, to PostgreSQL or YugabyteDB: each key column one array parameter)
+        splits a read of 2,000 keys at the rail's batch: a second statement costs more than the keys it takes."""
+        native = _Recording(db)
+        native.binds_native_arrays = True  # type: ignore[attr-defined]
+        rows = await read_keyed(
+            native, "t", keys=KeyBatch(("b",), [(i,) for i in range(2_000)], ("bigint",)), columns=["b"]
+        )
+        assert sorted(row["b"] for row in rows) == _plain_b(db, 2_000)
+        assert [len(params[0]) for _, params in native.statements] == [2_000]
+        wide = _Unanswering()
+        wide.binds_native_arrays = True  # type: ignore[attr-defined]
+        many = KeyBatch(("b",), [(i,) for i in range(DIRECT_KEY_BATCH + 1)], ("bigint",))
+        await read_keyed(wide, "t", keys=many, columns=["b"])
+        assert [len(params[0]) for _, params in wide.statements] == [DIRECT_KEY_BATCH, 1]
+        joined = _Unanswering()
+        joined.binds_native_arrays = True  # type: ignore[attr-defined]
+        await read_joined(
+            joined, [{"b": i} for i in range(2_000)], "t", on={"b": "b"}, columns=["b"], casts={"b": "bigint"}
+        )
+        assert len(joined.statements) == 1
+
+    async def test_the_rail_reads_2000_keys_in_batches_its_bounds_hold(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a transport carrying its parameters as JSON and bounding its replies (the L3 rail, a datasource)
+        is sent more than the rail's batch of keys a statement."""
+        rail = _Recording(db)
+        rows = await read_keyed(
+            rail, "t", keys=KeyBatch(("b",), [(i,) for i in range(2_000)], ("bigint",)), columns=["b"]
+        )
+        assert sorted(row["b"] for row in rows) == _plain_b(db, 2_000)
+        assert [len(params[0]) for _, params in rail.statements] == [DEFAULT_KEY_BATCH, DEFAULT_KEY_BATCH]
 
     async def test_by_pins_a_prefix_beside_the_keys(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if ``by`` is dropped (the read answers rows of every group) or bound to the wrong placeholder."""
