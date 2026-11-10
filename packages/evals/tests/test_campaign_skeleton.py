@@ -97,11 +97,11 @@ def test_no_page_holds_a_block_in_the_glossary_which_is_written_from_its_terms(b
 
 
 def test_a_flag_is_printed_after_its_value_and_a_cell_without_one_prints_as_before() -> None:
-    assert TableCell(value=-60.0).text == "-60"
-    assert TableCell(value=-60.0, flag="floor broken").text == "-60 (floor broken)"
+    assert TableCell(value=-60.0, value_text="-60").text == "-60"
+    assert TableCell(value=-60.0, value_text="-60", flag="floor broken").text == "-60 (floor broken)"
     assert TableCell(value=None, flag="cannot show a drop").text == "— (cannot show a drop)"
     with pytest.raises(ValidationError):
-        TableCell(value=1.0, flag="")
+        TableCell(value=1.0, value_text="1", flag="")
 
 
 @pytest.mark.parametrize("build", [s1_change, s4_change], ids=["s1", "s4"])

@@ -213,7 +213,7 @@ class TestTheReportsRefusals:
 
     def test_a_row_stating_a_value_no_column_shows_is_refused(self) -> None:
         with pytest.raises(ValueError, match="has rows that do not key exactly its columns: hidden"):
-            _table(rows=[table_row({"arm": "a", "hidden": 1})])
+            _table(rows=[table_row({"arm": "a", "hidden": "one"})])
 
     def test_a_row_missing_a_column_is_refused(self) -> None:
         """A row keys every column, so a client prints each row as served and never invents a missing cell's text."""

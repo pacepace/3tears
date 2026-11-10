@@ -19,6 +19,7 @@ from threetears.evals.analysis import (
     campaign_readings,
     campaign_report_markdown,
 )
+from threetears.evals.analysis.campaign_readings import AggregateFigure
 from threetears.evals.analysis.bundle.schema import FamilyComparison
 from threetears.evals.analysis.stats import difference_interval
 from threetears.evals.analysis.lenses.frontier import FrontierCostDecision, FrontierCostTie, FrontierVerdict
@@ -843,8 +844,8 @@ def test_the_equal_weight_row_closes_the_matrix_each_arm_s_cell_in_its_own_colum
 ) -> None:
     shape = SHAPES[name]()
     figures = {arm.label: float(index) for index, arm in enumerate(shape.arms)}
-    cells = {shape.key(label): TableCell(value=value, unit=_unit(shape, label)) for label, value in figures.items()}
-    monkeypatch.setattr(aggregate, "equal_weight_cells", lambda campaign, readings, reports: cells)
+    handed = {shape.key(label): (_figure(value), _unit(shape, label)) for label, value in figures.items()}
+    monkeypatch.setattr(aggregate, "equal_weight_figures", lambda campaign, readings, reports: handed)
     matrix = _table(shape.page(), "scorecard")
     *aspects, across = matrix.rows
     assert [row["aspect"].text for row in aspects] == [aspect.label for aspect in shape.campaign.aspects]
@@ -858,13 +859,16 @@ def test_the_equal_weight_row_closes_the_matrix_each_arm_s_cell_in_its_own_colum
         control = next(arm.label for arm in shape.arms if arm.role == "control")
         above = [float(_by_arm(matrix, row)[control].value) for row in aspects]  # type: ignore[arg-type]
         # At the places the cells above read at, the pass rate's one precision.
-        places = _by_arm(matrix, aspects[0])[control].decimals
-        assert places is not None
+        decimals = re.search(r"\.(\d+)%", _by_arm(matrix, aspects[0])[control].figure)
+        places = len(decimals.group(1)) if decimals is not None else 0
         mean = float(round_half_even(sum(above) / len(above), places))
         assert placed_figures == {**figures, control: mean}
     # Each figure prints as the column's other cells do: placed bare under a head that names its unit (a choice's), or
     # in its unit at the pass rate's places, a change signed, under one that names none (a change's, visual pass V2).
-    placed = {arm: (cell.unit, cell.signed) for arm, cell in _by_arm(matrix, across).items()}
+    placed = {
+        arm: (cell.unit, cell.figure.rpartition(" · ")[2].startswith("+"))
+        for arm, cell in _by_arm(matrix, across).items()
+    }
     if name == "s2":
         assert placed == {label: ("", False) for label in figures}
     else:
@@ -879,10 +883,15 @@ def test_an_equal_weight_cell_for_an_arm_the_matrix_has_no_column_for_is_refused
     name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     shape = SHAPES[name]()
-    cells = {shape.arms[0].variant_key: TableCell(value=1.0), "not-an-arm": TableCell(value=2.0)}
-    monkeypatch.setattr(aggregate, "equal_weight_cells", lambda campaign, readings, reports: cells)
+    handed = {shape.arms[0].variant_key: (_figure(1.0), PERCENT), "not-an-arm": (_figure(2.0), PERCENT)}
+    monkeypatch.setattr(aggregate, "equal_weight_figures", lambda campaign, readings, reports: handed)
     with pytest.raises(ValueError, match="names arm\\(s\\) not-an-arm"):
         shape.page()
+
+
+def _figure(value: float) -> AggregateFigure:
+    """A figure across the aspects, with an interval a point either side of it."""
+    return AggregateFigure(value=value, interval=(value - 1.0, value + 1.0), missing=[])
 
 
 def _unit(shape: Shape, label: str) -> str:
@@ -897,19 +906,21 @@ def test_an_equal_weight_cell_in_another_unit_than_its_column_is_refused(
     name: str, label: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A pass rate under a change's points column, or a change under a percent column, would print under the wrong
-    unit: the matrix refuses it, and refuses a cell stating none or holding words."""
+    unit: the matrix refuses it, and refuses a figure stating none."""
     shape = SHAPES[name]()
     wrong = POINTS if _unit(shape, label) == PERCENT else PERCENT
-    for cell in (TableCell(value=1.0, unit=wrong), TableCell(value=1.0), TableCell(value="about 5")):
+    for unit in (wrong, ""):
         monkeypatch.setattr(
-            aggregate, "equal_weight_cells", lambda campaign, readings, reports, c=cell: {shape.key(label): c}
+            aggregate,
+            "equal_weight_figures",
+            lambda campaign, readings, reports, u=unit: {shape.key(label): (_figure(1.0), u)},
         )
         with pytest.raises(ValueError, match=f"cell for arm {shape.key(label)} states"):
             shape.page()
-    # A figure withheld carries no value and no unit, and is placed as a dash.
-    withheld = TableCell(value=None, flag="withheld")
+    # A figure withheld carries no value, and is placed as a dash.
+    withheld = (AggregateFigure(value=None, interval=None, missing=["tone"]), _unit(shape, label))
     monkeypatch.setattr(
-        aggregate, "equal_weight_cells", lambda campaign, readings, reports: {shape.key(label): withheld}
+        aggregate, "equal_weight_figures", lambda campaign, readings, reports: {shape.key(label): withheld}
     )
     matrix = _table(shape.page(), "scorecard")
     assert _by_arm(matrix, matrix.rows[-1])[label].text == "— (withheld)"
@@ -927,7 +938,7 @@ def test_an_equal_weight_cell_where_no_matrix_holds_arms_is_refused_not_dropped(
         shape = replace(shape, readings=emptied)
     key = shape.arms[0].variant_key
     monkeypatch.setattr(
-        aggregate, "equal_weight_cells", lambda campaign, readings, reports: {key: TableCell(value=1.0, unit=PERCENT)}
+        aggregate, "equal_weight_figures", lambda campaign, readings, reports: {key: (_figure(1.0), PERCENT)}
     )
     with pytest.raises(ValueError, match="lays out no matrix to hold it"):
         shape.page()
@@ -935,7 +946,7 @@ def test_an_equal_weight_cell_where_no_matrix_holds_arms_is_refused_not_dropped(
 
 def test_with_no_equal_weight_cell_the_matrix_has_only_its_aspects() -> None:
     shape = s4_change()
-    assert aggregate.equal_weight_cells(shape.campaign, shape.readings, shape.reports) == {}
+    assert aggregate.equal_weight_figures(shape.campaign, shape.readings, shape.reports) == {}
     assert aggregate.EQUAL_WEIGHT_ROW not in {row["aspect"].text for row in _table(shape.page(), "scorecard").rows}
 
 
@@ -972,8 +983,9 @@ async def test_a_measurement_s_money_reads_per_1000_replies_in_one_form_never_a_
     # One arm's matrix is turned: a row per measure, its value in a column of its own (visual pass V2).
     (row,) = [line for line in matrix.rows if line["measure"].text == "Measuring spend, all roles, per 1,000 replies"]
     cell = row["value"]
-    assert cell.unit == MONEY and not cell.per_thousand and cell.decimals is not None
-    assert cell.text == f"${cell.value:.{cell.decimals}f}" and "/1000" not in cell.text
+    spelled = re.fullmatch(r"\$\d+\.(\d+)", cell.text)
+    assert cell.unit == MONEY and spelled is not None, cell.text
+    assert cell.text == f"${cell.value:.{len(spelled.group(1))}f}" and "/1000" not in cell.text
     assert re.fullmatch(r"\$\d+\.\d+ to \$\d+\.\d+", str(row["interval"].value))
     measures = _table(result.page, "measures")
     (folded,) = [

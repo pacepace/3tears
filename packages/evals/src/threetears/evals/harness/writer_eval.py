@@ -147,7 +147,6 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.blocks import (
-    CellValue,
     ChartBlock,
     DisclosureBlock,
     ReportBlock,
@@ -155,6 +154,7 @@ from threetears.evals.analysis.report.blocks import (
     TableCell,
     TableColumn,
     Verdict,
+    table_row,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.report.figures import ContrastPlaces, MeasureRuler, report_rulers
@@ -1872,9 +1872,8 @@ def _preference_figure(
     for arm, read, shares in drawn:
         candidate_share, control_share = shares.share_text(shares.candidate), shares.share_text(shares.control)
         line = f"{arm} {candidate_share}% · {control} {control_share}% (50% is even)"
-        if shares.ends is not None:
-            low, high = shares.ends
-            line += f", {level} interval {low} to {high}%"  # the unit once, as every interval reads
+        if shares.interval_text is not None:
+            line += f", {level} interval {shares.interval_text}"
         lines.append(
             DisclosureBlock(section="scorecard", source="comparisons", text=f"{line}; {_primary_reads(read)}.")
         )
@@ -1882,16 +1881,11 @@ def _preference_figure(
     return [ChartBlock(section="scorecard", chart="dot_interval", title=title, data=chart), *lines]
 
 
-def _cells(values: Mapping[str, CellValue]) -> dict[str, TableCell]:
-    """One table row's cells, by column key."""
-    return {key: TableCell(value=value) for key, value in values.items()}
-
-
 def _preference_rows(forms: PageForms, arm: str, read: WriterPairwise | None) -> list[dict[str, TableCell]]:
     """A candidate's rows of the preference table: every pair, then the pairs whose two pages were both finished; one
     row of the candidate alone when its pass was not read."""
     if read is None:
-        return [_cells({key: arm if key == "candidate" else None for key, _ in _PREFERENCE_COLUMNS})]
+        return [table_row({key: arm if key == "candidate" else None for key, _ in _PREFERENCE_COLUMNS})]
     rows = []
     for pairs, verdict, share in (
         (_EVERY_PAIR, read.primary, read.share),
@@ -1902,7 +1896,7 @@ def _preference_rows(forms: PageForms, arm: str, read: WriterPairwise | None) ->
         # none, even and all, and the three apart.
         shares = forms.preference(share, verdict.interval)
         rows.append(
-            _cells(
+            table_row(
                 {
                     "candidate": arm,
                     "pairs": pairs,
@@ -1919,17 +1913,17 @@ def _preference_rows(forms: PageForms, arm: str, read: WriterPairwise | None) ->
 def _check_row(forms: PageForms, arm: str, read: WriterPairwise | None) -> dict[str, TableCell]:
     """A candidate's row of the judge's checks table; the candidate alone when its pass was not read."""
     if read is None:
-        return _cells({key: arm if key == "candidate" else None for key, _ in _CHECK_COLUMNS})
+        return table_row({key: arm if key == "candidate" else None for key, _ in _CHECK_COLUMNS})
     rate, settle = read.order_consistency, read.cases_to_settle
     spent, cap = forms.money_set([read.cost_usd, read.cap_usd])  # the spend and its part read in one money form
-    return _cells(
+    return table_row(
         {
             "candidate": arm,
             "order_consistency": None
             if rate is None
             else f"{forms.lone(forms.check(rate)).text}% ({read.order_consistent} of {read.both_orders})",
-            "first_slot_lean": forms.check(read.first_slot_bias),
-            "cannot_tell": read.cannot_tell,
+            "first_slot_lean": forms.check_cell(read.first_slot_bias),
+            "cannot_tell": forms.count_cell(read.cannot_tell),
             "to_settle": None
             if settle is None
             else f"more than {forms.count(PROJECTION_CASE_CAP).text}"

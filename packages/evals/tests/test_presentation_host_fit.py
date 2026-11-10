@@ -1202,7 +1202,7 @@ def _keyed_table(keys: list[str], *, key_columns: int = 1, figures: int = 6, nam
         {
             "key": TableCell(value=key),
             **({"reading": TableCell(value="pass rate")} if key_columns == 2 else {}),
-            **{f"f{at}": TableCell(value=12.5 + at) for at in range(figures)},
+            **{f"f{at}": TableCell(value=12.5 + at, value_text=f"{12.5 + at}") for at in range(figures)},
         }
         for key in keys
     ]

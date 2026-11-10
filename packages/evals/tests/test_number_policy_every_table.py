@@ -30,7 +30,7 @@ from threetears.evals.analysis.report.charts import BarRow, BarsChart
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report.figure_keys import format_figure, resolve
-from threetears.evals.analysis.report.figures import reply_cost_ruler
+from threetears.evals.analysis.report.figures import SHARE, UNITLESS, reply_cost_ruler
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.html_parts import grid_html
 from threetears.evals.analysis.report_input import ReportInput
@@ -197,12 +197,11 @@ def _glyph_titles(cell: TableCell, header: str) -> list[str]:
 def test_rule_3_and_signs_in_a_static_evidence_title() -> None:
     """A static evidence title: a change's figure carries its sign, as its cell does (``+0.2``, ``+10 pts``), and its
     unit once, on the figure, the interval beside it bare."""
-    assert _glyph_titles(TableCell(value=0.2, low=-1.2, high=1.6, decimals=1, signed=True), "v2") == [
-        "+0.2, interval -1.2 to +1.6"
-    ]
-    assert _glyph_titles(TableCell(value=10.0, low=-45.0, high=60.0, decimals=0, zero_line=True), "v2 (pts)") == [
-        "+10 pts, interval -45 to +60"
-    ]
+    forms = PageForms.off_page()
+    score = forms.ruled_change_cell(UNITLESS, 0.2, interval=(-1.2, 1.6), places=1)
+    assert _glyph_titles(score, "v2") == ["+0.2, interval -1.2 to +1.6"]
+    rate = forms.ruled_change_cell(SHARE, 0.1, interval=(-0.45, 0.6), places=0)
+    assert _glyph_titles(rate, "v2 (pts)") == ["+10 pts, interval -45 to +60"]
 
 
 def test_a_mean_s_spread_reads_at_the_mean_s_precision() -> None:

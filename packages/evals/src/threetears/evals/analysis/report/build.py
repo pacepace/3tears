@@ -50,6 +50,7 @@ from threetears.evals.analysis.bundle.schema import (
     CellCoordinate,
     ComparedCell,
     FLOOR_COST_MEASURE,
+    TRIAL_PASS_NAME,
     FamilyComparison,
     GoalCheckProofReading,
     TrialRow,
@@ -67,7 +68,7 @@ from threetears.evals.analysis.report.figure_keys import joint_guarantee
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.cost_unit import PRICED_TRIALS_TEMPLATE, money_ruler
 from threetears.evals.analysis.report.blocks import bare_columns
-from threetears.evals.analysis.report.forms import PageForms, Printed
+from threetears.evals.analysis.report.forms import PageForms, Printed, Role
 from threetears.evals.analysis.report.figures import (
     NO_SUCCESSFUL_RESULTS,
     ContrastPlaces,
@@ -173,7 +174,6 @@ from threetears.evals.analysis.style import (
 )
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
 from threetears.evals.analysis.quantities import (
-    MONEY,
     PERCENT,
     UNSPACED_UNITS,
     delta_unit,
@@ -1155,6 +1155,8 @@ def _scoreboard_blocks(
     lost_any = any(board.lost for board in boards)
     other_causes = sorted({cause for board in boards for cause in board.failed if cause not in ("check", "judged")})
     cost = _cost_ruler(bundle)
+    # The share of each arm's trials that passed, on the pass rate's ruler, as the scorecard states the rate.
+    passing = report_rulers(bundle_decision_surface(bundle), bundle.measure_catalog).of(TRIAL_PASS_NAME, "trial")
     rows: list[dict[str, CellValue]] = []
     for board in boards:
         row: dict[str, CellValue] = {
@@ -1196,7 +1198,7 @@ def _scoreboard_blocks(
     surface = bundle_decision_surface(bundle)
     cells = [
         {
-            **_scoreboard_cells(row),
+            **_scoreboard_cells(row, forms),
             # Money in the one form its ruler chose over every arm's cost, held as a figure of the cost the floors read.
             "cost": forms.of_measure(
                 _arm_cost_at(
@@ -1225,7 +1227,10 @@ def _scoreboard_blocks(
             section="scoreboard",
             chart="outcome_bar",
             title="Outcomes, share of each arm's trials",
-            bars=[_outcome_bar(board, arm, tags[board.variant_key], shorts.get(board.variant_key)) for board in boards],
+            bars=[
+                _outcome_bar(board, arm, tags[board.variant_key], shorts.get(board.variant_key), forms, passing)
+                for board in boards
+            ],
         ),
     ]
     blocks += [
@@ -1256,12 +1261,10 @@ def _arm_cost_at(cell: TableCell, surface: DecisionSurface, variant_key: str, fi
     return _at(cell, surface, held[0], FLOOR_COST_MEASURE, "measure", figure)
 
 
-def _scoreboard_cells(row: Mapping[str, CellValue]) -> dict[str, TableCell]:
-    """A scoreboard row's cells: counts and words as they are, the cost carrying money's unit so it prints as money."""
-    return {
-        key: TableCell(value=value, unit=MONEY if key == "cost" and isinstance(value, float) else "")
-        for key, value in row.items()
-    }
+def _scoreboard_cells(row: Mapping[str, CellValue], forms: PageForms) -> dict[str, TableCell]:
+    """A scoreboard row's cells but its cost, which its ruler's one form spells: counts as a table prints them, and
+    words as they are."""
+    return {key: forms.count_cell(value) for key, value in row.items() if key != "cost"}
 
 
 def _other_failures_header(causes: Sequence[str]) -> str:
@@ -1285,9 +1288,17 @@ def _unpriced_cost_line(bundle: AnalysisContextBundle, arm: Callable[[str], str]
     )
 
 
-def _outcome_bar(board: ArmScoreboard, arm: Callable[[str], str], tag: str, short: str | None) -> OutcomeBar:
+def _outcome_bar(
+    board: ArmScoreboard,
+    arm: Callable[[str], str],
+    tag: str,
+    short: str | None,
+    forms: PageForms,
+    passing: MeasureRuler,
+) -> OutcomeBar:
     """One arm's census as its stacked bar, tagged and short-named as every chart of the page tags and names it:
-    passed, then each failure cause, then each loss cause."""
+    passed, then each failure cause, then each loss cause; the share that passed in the pass rate's one form on the
+    page, as the scorecard prints it."""
     segments = [OutcomeSegment(state="passed", label="passed", count=board.passed)] if board.passed else []
     segments += [
         OutcomeSegment(state="failed", label=f"failed: {cause_short(cause)}", count=count)
@@ -1297,7 +1308,17 @@ def _outcome_bar(board: ArmScoreboard, arm: Callable[[str], str], tag: str, shor
         OutcomeSegment(state="lost", label=f"lost: {cause_short(cause)}", count=count)
         for cause, count in sorted(board.lost.items(), key=lambda item: (-item[1], item[0]))
     ]
-    return OutcomeBar(arm=arm(board.variant_key), segments=segments, tag=tag, short_name=short)
+    ran = sum(segment.count for segment in segments)
+    # The note's share is of every trial the bar draws, lost ones too, at the pass rate's digits: the pass rate itself
+    # where no trial was lost (its passes of its usable trials), so the note and the scorecard print it alike; else a
+    # share of its own, recorded as one.
+    role: Role = "level" if ran == board.usable else "share"
+    share = (
+        forms.ruled_level(passing, board.passed / ran, measure=TRIAL_PASS_NAME, kind="trial", role=role).text
+        if ran
+        else None
+    )
+    return OutcomeBar(arm=arm(board.variant_key), segments=segments, tag=tag, short_name=short, passed_text=share)
 
 
 def _design_words(bundle: AnalysisContextBundle) -> str:
@@ -2792,10 +2813,14 @@ def _readings_blocks(
             columns=columns,
             rows=[
                 {
-                    **table_row({column.key: row[column.key] for column in columns}),
-                    "value": forms.of_measure(
+                    column.key: forms.of_measure(
                         _at(TableCell(value=row["value"]), surface, *place), measure=place[1], kind=place[2]
-                    ),
+                    )
+                    if column.key == "value"
+                    else forms.count_cell(row["cases"])
+                    if column.key == "cases"
+                    else TableCell(value=row[column.key])
+                    for column in columns
                 }
                 for row, place in zip(rows, places, strict=True)
             ],

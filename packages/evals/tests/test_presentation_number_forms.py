@@ -45,6 +45,7 @@ from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.figures import SHARE, UNITLESS
 from threetears.evals.kernel.numbers import ends_places, set_places, spell_at
 
 from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
@@ -349,7 +350,8 @@ def test_a_glyph_s_title_and_its_scale_line_read_a_whole_end_at_the_column_s_pre
         rows=[
             {
                 "aspect": TableCell(value="classify"),
-                "arm:v2": TableCell(value=-5.0, low=-12.8, high=10.0, zero_line=True),
+                # The cell as the page's forms decide it, at the column's tenth of a point.
+                "arm:v2": PageForms.off_page().ruled_change_cell(SHARE, -0.05, interval=(-0.128, 0.1), places=1),
             }
         ],
         total_rows=1,
@@ -374,7 +376,8 @@ def test_a_scale_line_on_a_whole_point_column_reads_whole() -> None:
         rows=[
             {
                 "aspect": TableCell(value="classify"),
-                "arm:v2": TableCell(value=-5.0, low=-12.8, high=10.0, zero_line=True, decimals=0),
+                # The cell as the page's forms decide it, at the column's whole points.
+                "arm:v2": PageForms.off_page().ruled_change_cell(SHARE, -0.05, interval=(-0.128, 0.1), places=0),
             }
         ],
         total_rows=1,
@@ -383,12 +386,15 @@ def test_a_scale_line_on_a_whole_point_column_reads_whole() -> None:
     assert '<p class="axis">Each column drawn from -13 to +10 pts</p>' in drawn, drawn
 
 
-def test_a_change_of_zero_reads_at_its_column_s_precision_and_carries_no_sign() -> None:
-    """V2's review: an exact zero change read ``0 pts`` beside ``-5.0 pts``; a tiny positive one read ``+0.0``."""
-    assert TableCell(value=0.0, unit="pts", decimals=1, signed=True).text == "0.0 pts"
-    assert TableCell(value=0.0009, unit="pts", decimals=1, signed=True).text == "0.0 pts"
-    assert TableCell(value=-5.0, unit="pts", decimals=1, signed=True).text == "-5.0 pts"
-    assert TableCell(value=0.0686, decimals=2, signed=True).text == "+0.07"
+def test_a_change_of_zero_carries_no_sign_and_a_tiny_one_never_reads_as_zero() -> None:
+    """V2's review: a tiny positive change read ``+0.0``. A change's cell is decided by the page's forms, never by the
+    cell: an exact zero reads whole with no sign (number rule 5, ``0 pts``), a tiny change keeps off zero with its sign,
+    and any other reads at its column's places."""
+    forms = PageForms.off_page()
+    assert forms.ruled_change_cell(SHARE, 0.0, places=1).text == "0 pts"
+    assert forms.ruled_change_cell(SHARE, 0.000009, places=1).text == "+0.001 pts"
+    assert forms.ruled_change_cell(SHARE, -0.05, places=1).text == "-5.0 pts"
+    assert forms.ruled_change_cell(UNITLESS, 0.0686, places=2).text == "+0.07"
 
 
 def test_a_chart_s_values_table_reads_its_values_at_the_digits_its_format_names() -> None:

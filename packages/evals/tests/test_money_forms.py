@@ -44,7 +44,6 @@ from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_
 from threetears.evals.analysis import ABSENT, UNPRICED, dollars_text, format_number
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, GateMatrixChart, LatticeChart
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
@@ -67,7 +66,7 @@ from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report_gates import gate_check
 from threetears.evals.analysis.report_input import Criterion, Pricing, ReportInput, Unanswered
 from threetears.evals.analysis.report_arms import fact_arms
-from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.forms import ColumnMoney, PageForms
 from threetears.evals.kernel.numbers import CENT, MoneyForm, money_form, spell_dollars
 
 #: r1 to r5, and Kairo round 2 frozen from its bundle.
@@ -254,9 +253,7 @@ def test_a_rate_reads_two_significant_figures_at_every_magnitude_and_a_total_kee
     assert rate.decimals == 0, "a chart's ticks read whole dollars at the fewest"
     total = money_form([123.4, 1234.0])
     assert [total.spell(amount) for amount in (123.4, 1234.0)] == ["$123.40", "$1,234.00"]
-    rows = PageForms.off_page().money_columns(
-        [{"cost": TableCell(value=123.4, unit=MONEY)}, {"cost": TableCell(value=7.5, unit=MONEY)}]
-    )
+    rows = PageForms.off_page().money_columns([{"cost": ColumnMoney(value=123.4)}, {"cost": ColumnMoney(value=7.5)}])
     assert [row["cost"].text for row in rows] == ["$120", "$7.50"]
 
 
@@ -374,8 +371,8 @@ def test_a_tables_money_column_reads_one_form_chosen_from_its_values() -> None:
     states no digit the value does not hold."""
     rows = PageForms.off_page().money_columns(
         [
-            {"arm": TableCell(value="A"), "cost": TableCell(value=0.008, unit="usd")},
-            {"arm": TableCell(value="B"), "cost": TableCell(value=0.11, unit="usd")},
+            {"arm": TableCell(value="A"), "cost": ColumnMoney(value=0.008)},
+            {"arm": TableCell(value="B"), "cost": ColumnMoney(value=0.11)},
         ]
     )
     assert [row["cost"].text for row in rows] == ["$0.0080", "$0.11"]

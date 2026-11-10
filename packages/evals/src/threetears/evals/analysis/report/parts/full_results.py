@@ -68,7 +68,7 @@ from threetears.evals.analysis.report.figure_keys import (
     held_figure,
     resolve,
 )
-from threetears.evals.analysis.report.forms import MeasureForm, PageForms
+from threetears.evals.analysis.report.forms import ColumnMoney, MeasureForm, PageForms
 from threetears.evals.analysis.report.parts.charting import money_words, stat_value
 from threetears.evals.analysis.report.parts.look import GATE_STATUS, PageLook, Quantity
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
@@ -114,7 +114,7 @@ _TableBuilder = Callable[[ReportInput, PageLook, PageForms], list[TableBlock]]
 def _table(
     name: str,
     columns: Sequence[TableColumn],
-    rows: list[dict[str, TableCell]],
+    rows: Sequence[Mapping[str, TableCell | ColumnMoney]],
     order: str,
     forms: PageForms,
     *,
@@ -191,7 +191,7 @@ def _stated(
     *,
     kind: str | None = None,
     others: bool = False,
-) -> TableCell:
+) -> TableCell | ColumnMoney:
     """One figure on a measure or judged dimension as a cell: its mean (else the statistic a criterion on it reads,
     named beside it) in the measure's form, the mean's and any other statistic's alike; a dash where the input holds none, which says the arm recorded none where ``others`` (another arm in
     the same place holds the figure) and the arm holds no entry at all: the control that made no delivery reads ``—
@@ -203,10 +203,9 @@ def _stated(
     form = forms.measure(key, kind=kind)
     flag = statistic if statistic != "mean" else None
     if form.reads_as == "money":
-        # A number, which its column's one money form spells (:func:`_table`), never a form of its own.
-        cell = TableCell(value=value * form.factor, unit=MONEY, flag=flag)
-    else:
-        cell = TableCell(value=forms.level(key, value, kind=kind).text, flag=flag)
+        # An amount, which its column's one money form spells (:func:`_table`), never a form of its own.
+        return ColumnMoney(value=value * form.factor, flag=flag, measure=key, kind=form.kind)
+    cell = TableCell(value=forms.level(key, value, kind=kind).text, flag=flag)
     # A figure of the measure, which the column rules record the cell under.
     return forms.of_measure(cell, measure=key, kind=form.kind)
 
@@ -214,7 +213,7 @@ def _stated(
 # --- arms by measure -------------------------------------------------------------------------------------------------
 
 
-def _cost(report_input: ReportInput, arm: str, forms: PageForms) -> TableCell:
+def _cost(report_input: ReportInput, arm: str, forms: PageForms) -> TableCell | ColumnMoney:
     """The arm's cost by the package's one cost rule (the ``cost_per_1k`` figure), a number drawn per the count the
     column's head names (:func:`~threetears.evals.analysis.report.figure_keys.cost_ruler`), its priced share beside it
     where only part of its calls were priced: a figure of the cost's source, which the column rules record it under."""
@@ -224,8 +223,9 @@ def _cost(report_input: ReportInput, arm: str, forms: PageForms) -> TableCell:
     # The form is chosen over every arm's cost, a partly priced one's included, where the options table leaves that arm
     # out of its choice: this table prints the partly priced cost, its share beside it, and the options table prints
     # the share in its place, so each column's form fits the numbers it prints.
-    return forms.of_measure(
-        TableCell(value=cost_ruler(report_input).drawn(figure.value), unit=MONEY, flag=priced_in_part(report_input, arm)),
+    return ColumnMoney(
+        value=cost_ruler(report_input).drawn(figure.value),
+        flag=priced_in_part(report_input, arm),
         measure=cost_basis(report_input).source,
         kind="measure",
     )
@@ -267,7 +267,7 @@ def _arms_by_measure(report_input: ReportInput, look: PageLook, forms: PageForms
     ]
     rows = []
     for arm in arms:
-        cells = {"arm": _chip(look, arm)}
+        cells: dict[str, TableCell | ColumnMoney] = {"arm": _chip(look, arm)}
         if passing:
             cells["pass_rate"] = pass_rate_cell(report_input, arm, forms=forms)
         # Every column is one some arm holds a figure in, so an arm with no entry recorded none.
@@ -352,7 +352,10 @@ def _arms_by_aspect_and_measure(
 
     rows = []
     for aspect, arm in places:
-        cells = {"arm": _chip(look, arm), "aspect": TableCell(value=given_name(aspect.id, aspect.name))}
+        cells: dict[str, TableCell | ColumnMoney] = {
+            "arm": _chip(look, arm),
+            "aspect": TableCell(value=given_name(aspect.id, aspect.name)),
+        }
         if "pass_rate" in keys:
             cells["pass_rate"] = passing[aspect.id, arm]
         for key in judged:
@@ -377,7 +380,7 @@ def _arms_by_aspect_and_measure(
         if costed:
             cost = costs[aspect.id].get(arm)
             cells["cost_per_1k"] = (
-                TableCell(value=ruler.drawn(cost), unit=MONEY, flag=priced_in_part(report_input, arm, aspect.id))
+                ColumnMoney(value=ruler.drawn(cost), flag=priced_in_part(report_input, arm, aspect.id))
                 if cost is not None
                 else TableCell(value=None)
             )
@@ -505,7 +508,7 @@ def _slices_table(
             if not any(key in per_arm.get(arm, {}) for arm in arms):
                 continue
             kind = "judged" if key in report_input.judged and key not in report_input.measures else None
-            cells = {name: TableCell(value=label), "cases": TableCell(value=cases)}
+            cells: dict[str, TableCell | ColumnMoney] = {name: TableCell(value=label), "cases": forms.count_cell(cases)}
             if several:
                 cells["measure"] = TableCell(value=_named(report_input, forms, key, kind=kind))
             for arm in arms:

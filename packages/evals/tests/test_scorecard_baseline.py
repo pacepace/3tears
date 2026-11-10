@@ -37,6 +37,8 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, TableBlock, TableCell
+from threetears.evals.analysis.report.figures import SHARE
+from threetears.evals.analysis.report.forms import PageForms, Printed
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.quick.files import load_evals
@@ -487,12 +489,17 @@ def test_code_emphasis_keeps_every_decision_unless_one_cuts_a_code_span() -> Non
     assert DisclosureBlock.code_emphasis("a`b shown better.", ["a`b shown better"]) == []
 
 
-def test_a_change_cell_refuses_a_level_or_a_sign_on_words() -> None:
-    """A level and a sign qualify a change, so a cell of words carrying either is refused."""
-    with pytest.raises(ValueError, match="qualify a change"):
+def test_a_change_cell_refuses_a_level_on_words_and_carries_no_sign_of_its_own() -> None:
+    """A level qualifies a change, so a cell of words carrying one is refused; a cell has no sign to set, since its
+    page's forms decide a change's text, sign included, and the cell prints it after the level it lands at."""
+    with pytest.raises(ValueError, match="qualifies a change"):
         TableCell(value="unclear", level=20.0)
-    with pytest.raises(ValueError, match="qualify a change"):
-        TableCell(value="unclear", signed=True)
-    assert TableCell(value=2.5, unit="pts", decimals=1, signed=True, level=23.0).text == "23.0% · +2.5 pts"
-    assert TableCell(value=-7.6, unit="pts", decimals=1, signed=True).text == "-7.6 pts"
-    assert TableCell(value=10.0, unit="pts", decimals=1, signed=True).text == "+10.0 pts"
+    with pytest.raises(ValueError, match="signed"):
+        TableCell.model_validate({"value": "unclear", "signed": True})
+    forms = PageForms.off_page()
+    change = forms.ruled_change_cell(SHARE, 0.025, places=1)
+    level = Printed(value=23.0, text="23.0%", digits="23.0", unit="%")
+    said = forms.lands_at(level, Printed(value=0.025, text=change.text, digits="+2.5", unit="pts"))
+    assert TableCell(value=2.5, unit="pts", level=23.0, level_text="23.0%", value_text=said).text == "23.0% · +2.5 pts"
+    assert forms.ruled_change_cell(SHARE, -0.076, places=1).text == "-7.6 pts"
+    assert forms.ruled_change_cell(SHARE, 0.1, places=1).text == "+10.0 pts"

@@ -443,7 +443,8 @@ def provenance_blocks(
     :ptype labels: Mapping[str, str]
     :param names: What the page calls each aspect, and where each one's fold is, which a cell of one aspect links.
     :ptype names: AspectNames
-    :param forms: The page's forms, which state each floor's margin and the counts a stored sentence holds.
+    :param forms: The page's forms, which state each floor's margin, the counts a stored sentence holds, and a count a
+        detail states (results with no ordered time).
     :ptype forms: PageForms
     :return: The tables, each only where it has a row.
     :rtype: list[ReportBlock]
@@ -466,7 +467,7 @@ def provenance_blocks(
     if setup:
         # A disclosure's name is its row's label, so it starts with a capital as every row label does.
         rows = [
-            {"setup": TableCell(value=_label(what)), "detail": TableCell(value=detail), "aspects": aspects(held)}
+            {"setup": TableCell(value=_label(what)), "detail": forms.count_cell(detail), "aspects": aspects(held)}
             for (what, detail), held in setup.items()
         ]
         blocks.append(
