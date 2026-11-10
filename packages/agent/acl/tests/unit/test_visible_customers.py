@@ -59,6 +59,9 @@ class _Conn:
         :return: the page's rows
         :rtype: list[dict[str, Any]]
         """
+        if sql.startswith("SELECT version()"):
+            # the pager asks once which database it pages, as a pool is asked: a PostgreSQL one
+            return [{"v": "PostgreSQL 16.15"}]
         self.page_reads.append((sql, params))
         return self.pages.pop(0) if self.pages else []
 
