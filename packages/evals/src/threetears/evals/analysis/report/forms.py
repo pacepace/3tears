@@ -3500,12 +3500,9 @@ def _written_stated(
             if level is not None
         ]
     found += [
-        (
-            _set_key(str(check["name"]), str(check["reading"])),
-            _half_width(_stored_interval(check.get("interval"))),
-            "change",
-        )
+        (guarded, _half_width(_stored_interval(check.get("interval"))), "change")
         for check in report_input.guardrails
+        if (guarded := _guardrail_key(check)) is not None
     ]
     return _stated("written", found), figures
 
@@ -3528,6 +3525,17 @@ def _precision_half_width(reading: Reading) -> float | None:
     if reading.precision is None or reading.precision.half_width is None:
         return None
     return float(reading.precision.half_width)
+
+
+def _guardrail_key(check: Mapping[str, object]) -> tuple[str, str] | None:
+    """The key a stored guardrail check's interval joins its set under, as the aspect page keys it: its measure and
+    reading where the pipeline wrote them, else the judged dimension a host's own input names; None for a check that
+    names neither, which states no measure's interval."""
+    name, reading = check.get("name"), check.get("reading")
+    if isinstance(name, str) and isinstance(reading, str):
+        return _set_key(name, reading)
+    dimension = check.get("dimension")
+    return (dimension, "judged") if isinstance(dimension, str) else None
 
 
 def _stored_interval(value: object) -> tuple[float, float] | None:
