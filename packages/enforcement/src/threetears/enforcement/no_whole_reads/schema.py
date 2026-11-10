@@ -397,6 +397,12 @@ class SchemaCatalog:
             if old in entry.indexes:
                 index = entry.indexes.pop(old)
                 index.name = new
+                declared = entry.indexes.get(new)
+                if declared is not None:
+                    # renamed onto a name declared elsewhere (the collection's): it is that index, notes and all
+                    index.purpose = index.purpose or declared.purpose
+                    index.plan_test = index.plan_test or declared.plan_test
+                    index.reason = index.reason or declared.reason
                 entry.indexes[new] = index
 
     def rename_column(self, table: str, old: str, new: str) -> None:

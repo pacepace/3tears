@@ -516,6 +516,20 @@ def test_an_index_needs_a_purpose_its_read_uses_and_a_plan_test(tmp_path: Path, 
     assert any(f"index datasources_by_kind on datasources: {kind}" in finding for finding in findings), findings
 
 
+def test_an_index_a_migration_renames_onto_its_declared_name_keeps_the_declared_purpose(tmp_path: Path) -> None:
+    """Flips if a later migration's ALTER INDEX ... RENAME TO the name a collection declares (with its purpose and
+    plan test) leaves that index with no purpose: the renamed index is the declared one. The migrations sit after the
+    declaring module in the walk, as a package's migrations/ sits after its collections.py."""
+    _plans(tmp_path)
+    modules = {
+        "registry.py": _REGISTRY,
+        "versions/v001.py": 'UP = "CREATE INDEX IF NOT EXISTS datasources_kind ON datasources (kind)"\n',
+        "versions/v002.py": 'UP = "ALTER INDEX IF EXISTS datasources_kind RENAME TO datasources_by_kind"\n',
+    }
+    findings = no_whole_reads_findings(_config(tmp_path, modules))
+    assert not [finding for finding in findings if ": index-" in finding], findings
+
+
 def test_a_plan_test_must_ask_the_plan_for_the_index(tmp_path: Path) -> None:
     """Flips if a plan test that never calls plan_uses_index, or never names the index, proves the index is used."""
     _plans(tmp_path, _PLANS.replace("plan_uses_index(await", "(await"))
