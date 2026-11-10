@@ -73,7 +73,9 @@ WITH claim AS (
            OR s.last_manual_fire_at <= $3::timestamptz - make_interval(secs => $4::double precision)
        )
        AND NOT EXISTS (
-           SELECT 1 FROM wake_fires f WHERE f.schedule_id = s.schedule_id AND f.status = 'dispatching'
+           SELECT 1 FROM wake_fires f
+            WHERE f.conversation_id = s.conversation_id AND f.schedule_id = s.schedule_id
+              AND f.status = 'dispatching'
        )
     RETURNING s.conversation_id, s.schedule_id
 )
@@ -90,7 +92,9 @@ RETURNING fire_id
 _WHY_NOT_SQL = """
 SELECT s.last_manual_fire_at,
        EXISTS (
-           SELECT 1 FROM wake_fires f WHERE f.schedule_id = s.schedule_id AND f.status = 'dispatching'
+           SELECT 1 FROM wake_fires f
+            WHERE f.conversation_id = s.conversation_id AND f.schedule_id = s.schedule_id
+              AND f.status = 'dispatching'
        ) AS dispatching
   FROM agent_wake_schedules s
  WHERE s.conversation_id = $1 AND s.schedule_id = $2

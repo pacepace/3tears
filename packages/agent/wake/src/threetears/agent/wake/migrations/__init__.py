@@ -23,6 +23,8 @@ subclasses in ``3tears-agent-tools``):
   ``agent_skills.skill_id``.
 - ``webhook_refusals`` (v010) -- refused deliveries of a subscription,
   counted per reason and minute.
+- ``idx_wake_fires_dispatching`` (v011) -- the fires still in flight, the
+  reaper's sweep.
 
 The package declares
 ``depends_on=("conversations", "agent_skills")`` because:
@@ -110,6 +112,9 @@ from threetears.agent.wake.migrations.v009_fire_source_and_manual_fires import (
 from threetears.agent.wake.migrations.v010_create_webhook_refusals import (
     create_webhook_refusals,
 )
+from threetears.agent.wake.migrations.v011_dispatching_fires_index import (
+    add_dispatching_fires_index,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -147,6 +152,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(8)(add_checked_quiet_status)
     pkg.version(9)(add_fire_source_and_manual_fires)
     pkg.version(10)(create_webhook_refusals)
+    pkg.version(11)(add_dispatching_fires_index)
     runner.register(pkg)
     return pkg
 
@@ -155,6 +161,7 @@ __all__ = [
     "PACKAGE_NAME",
     "PROTECTED_GATE_SETTING",
     "add_checked_quiet_status",
+    "add_dispatching_fires_index",
     "add_dispatching_status",
     "add_fire_source_and_manual_fires",
     "add_include_conversation_history",

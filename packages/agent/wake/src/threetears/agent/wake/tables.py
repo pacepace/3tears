@@ -236,6 +236,11 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
             postgresql_where=sa_text(
                 "status = 'active' AND next_fire_at IS NOT NULL",
             ),
+            info={
+                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WakeScheduleCollection.list_due_for_tick",
+                "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_schedules_next_fire",
+                "reason": "agent_wake_schedules carries five indexes: the tick's due scan, the agent's and the user's reads",
+            },
         ),
         Index(
             "idx_wake_schedules_conv_status",
@@ -245,6 +250,11 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
         Index(
             "idx_wake_schedules_user",
             "user_id",
+            info={
+                "purpose": "packages/agent/wake/src/threetears/agent/wake/rate_limit.py::check_rate_limit",
+                "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_schedules_user",
+                "reason": "agent_wake_schedules carries five indexes: the tick's due scan, the agent's and the user's reads",
+            },
         ),
         Index(
             "idx_wake_schedules_context_from",
@@ -255,6 +265,11 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
             "idx_wake_schedules_agent_status",
             "agent_id",
             "status",
+            info={
+                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WakeScheduleCollection.list_for_agent; packages/agent/wake/src/threetears/agent/wake/collections.py::WakeScheduleCollection.find_for_agent; packages/agent/wake/src/threetears/agent/wake/rate_limit.py::COUNT_ACTIVE_SQL; packages/agent/wake/src/threetears/agent/wake/rate_limit.py::COUNT_ACTIVE_EXCLUDING_SQL; packages/agent/wake/src/threetears/agent/wake/rate_limit.py::COUNT_AGENT_FIRES_SQL",
+                "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_schedules_agent_status",
+                "reason": "agent_wake_schedules carries five indexes: the tick's due scan, the agent's and the user's reads",
+            },
         ),
     )
 
@@ -392,6 +407,18 @@ def wake_fires_table(metadata: MetaData) -> Table:
             "started_conversation_id",
             postgresql_where=sa_text("started_conversation_id IS NOT NULL"),
         ),
+        # v011: the fires in flight, the reaper's sweep
+        Index(
+            "idx_wake_fires_dispatching",
+            "status",
+            "actual_fired_at",
+            postgresql_where=sa_text("status = 'dispatching'"),
+            info={
+                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WakeFireCollection.reap_stale_dispatching",
+                "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_fires_dispatching",
+                "reason": "wake_fires carries five indexes: the reaper's in-flight sweep and the agent and user fire counts",
+            },
+        ),
     )
 
 
@@ -498,10 +525,18 @@ def webhook_subscriptions_table(metadata: MetaData) -> Table:
         Index(
             "idx_webhook_subs_user",
             "user_id",
+            info={
+                "purpose": "packages/agent/wake/src/threetears/agent/wake/rate_limit.py::check_rate_limit",
+                "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_webhook_subs_user",
+            },
         ),
         Index(
             "idx_webhook_subs_agent",
             "agent_id",
+            info={
+                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WebhookSubscriptionCollection.list_for_agent; packages/agent/wake/src/threetears/agent/wake/collections.py::WebhookSubscriptionCollection.find_for_agent; packages/agent/wake/src/threetears/agent/wake/rate_limit.py::COUNT_AGENT_FIRES_SQL",
+                "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_webhook_subs_agent",
+            },
         ),
     )
 
