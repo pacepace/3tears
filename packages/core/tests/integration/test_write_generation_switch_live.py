@@ -14,7 +14,6 @@ from collections.abc import AsyncIterator
 import asyncpg
 import pytest
 
-from threetears.core.collections.change_notes import install_change_notes
 from threetears.core.collections.generation import NotedTable
 from threetears.core.coordination.migrations import register as register_coordination
 from threetears.core.data.migrations import MigrationRunner
@@ -25,6 +24,7 @@ from threetears.core.data.migrations.write_marks import give_switched_tables_the
 from threetears.core.ddl.change_notes import NOTE_TRIGGERS, note_function_name
 from threetears.core.ddl.write_marks import WRITE_MARK_TRIGGER
 from threetears.core.tenancy import TENANT_BY_SCHEMA
+from threetears.core.testing.note_ring import install_note_ring
 
 pytestmark = pytest.mark.integration
 
@@ -40,7 +40,7 @@ async def _schema(conn: asyncpg.Connection, schema: str) -> ConnectionSession:
     register_coordination(runner)
     session = ConnectionSession(conn)
     await runner.apply_for_platform_schema(session)
-    await install_change_notes(conn, schema)
+    await install_note_ring(conn, schema)
     await conn.execute(f"CREATE TABLE {schema}.{_TABLE} (id TEXT PRIMARY KEY, n INTEGER)")
     await give_switched_tables_their_trigger(session, [_TABLE])
     await give_noted_tables_their_note_trigger(session, [NotedTable(_TABLE, keys=("id",), tenancy=TENANT_BY_SCHEMA)])

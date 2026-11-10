@@ -21,9 +21,10 @@ from typing import Any
 import asyncpg
 import pytest
 
-from threetears.core.collections.change_notes import ChangeNoteKeeper, install_change_notes
+from threetears.core.collections.change_notes import ChangeNoteKeeper
 from threetears.core.ddl.change_notes import note_table
 from threetears.core.testing.calibrate import budget_problem, plain_keyed_delete_seconds
+from threetears.core.testing.note_ring import install_note_ring
 from threetears.core.testing.plans import on_yugabyte
 
 pytestmark = pytest.mark.integration
@@ -56,7 +57,7 @@ async def ring(db_container: str) -> AsyncIterator[_Ring]:
     assert pool is not None
     try:
         await pool.execute(f"CREATE SCHEMA {schema}")
-        await install_change_notes(pool, schema)
+        await install_note_ring(pool, schema)
         await pool.execute(
             f"INSERT INTO {schema}.{note_table(_IDLE)} (table_name, keys, key_text) "
             f"SELECT 'table_' || (g % 2000), ARRAY[g::text], g::text FROM generate_series(1, {_NOTES}) g"

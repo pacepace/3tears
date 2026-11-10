@@ -16,13 +16,12 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
 
 import asyncpg
 import pytest
 
-from threetears.core.collections.change_notes import ChangeNoteKeeper
 from threetears.core.ddl.change_notes import note_table
+from threetears.core.testing.note_ring import install_note_ring
 
 pytestmark = pytest.mark.integration
 
@@ -38,38 +37,6 @@ class _Ring:
     schema: str
 
 
-class _NoLog:
-    """the keeper's change log, never read by an install."""
-
-    def __getattr__(self, name: str) -> Any:
-        raise AssertionError(f"an install reads no change log ({name})")
-
-
-class _Pool:
-    """one connection as the keeper's pool: ``fetch`` and ``execute`` on it, ``acquire`` handing it out."""
-
-    def __init__(self, conn: Any) -> None:
-        self._conn = conn
-
-    async def fetch(self, query: str, *args: Any) -> Any:
-        return await self._conn.fetch(query, *args)
-
-    async def execute(self, query: str, *args: Any) -> Any:
-        return await self._conn.execute(query, *args)
-
-    def acquire(self) -> Any:
-        conn = self._conn
-
-        class _Held:
-            async def __aenter__(self) -> Any:
-                return conn
-
-            async def __aexit__(self, *exc: object) -> None:
-                return None
-
-        return _Held()
-
-
 @pytest.fixture
 async def ring(db_container: str) -> AsyncIterator[_Ring]:
     """an installed ring whose current table's ``(table_name, noted_at)`` index a failed build left invalid."""
@@ -77,7 +44,7 @@ async def ring(db_container: str) -> AsyncIterator[_Ring]:
     conn = await asyncpg.connect(db_container, command_timeout=600)
     try:
         await conn.execute(f"CREATE SCHEMA {schema}")
-        await ChangeNoteKeeper(_Pool(conn), notes_schema=schema, log=_NoLog()).install()
+        await install_note_ring(conn, schema)
         assert await conn.fetch(_INVALID, schema) == []
         notes = f"{schema}.{note_table(0)}"
         index = f"{note_table(0)}_table"
@@ -98,7 +65,8 @@ async def ring(db_container: str) -> AsyncIterator[_Ring]:
 
 async def test_installing_the_ring_builds_an_invalid_index_of_it_again(ring: _Ring) -> None:
     """Flips if an install takes a ring index a failed build left invalid as present, and the reads scan the table."""
-    await ChangeNoteKeeper(_Pool(ring.conn), notes_schema=ring.schema, log=_NoLog()).install()
+    # the keeper's install (ChangeNoteKeeper.install), as the platform runs it
+    await install_note_ring(ring.conn, ring.schema)
 
     assert await ring.conn.fetch(_INVALID, ring.schema) == []
     definition = await ring.conn.fetchval(

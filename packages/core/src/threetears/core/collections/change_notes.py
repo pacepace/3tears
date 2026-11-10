@@ -146,7 +146,6 @@ if TYPE_CHECKING:
 __all__ = [
     "RESTORE_BUDGET_RATIO",
     "NotedRows",
-    "install_change_notes",
     "noted_rows_since",
     "noted_keys_page",
     "NotedKeysCursor",
@@ -192,7 +191,7 @@ _INVALID_INDEXES_SQL: Final = (
 )
 
 
-async def install_change_notes(conn: Any, schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> None:
+async def _install_change_notes(conn: Any, schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> None:
     """create the ring where missing (:func:`~threetears.core.ddl.change_notes.change_notes_ddl`), every index of it
     usable: one a failed build left invalid is dropped and built again.
 
@@ -793,7 +792,7 @@ class ChangeNoteKeeper:
         :rtype: None
         """
         async with self._pool.acquire() as conn, database_ddl_lock(ConnectionSession(conn), policy):
-            await install_change_notes(conn, self._schema, fence=self._fence)
+            await _install_change_notes(conn, self._schema, fence=self._fence)
 
     async def install_triggers(self, tables: Iterable[NotedTable], policy: DdlLockPolicy = _LOCK_POLICY) -> list[str]:
         """give every noted table of the keeper's own schema its note function and triggers; say which it gave.
@@ -2166,11 +2165,13 @@ async def _put_back(conn: Any, was: tuple[str, str, str]) -> None:
             "set_config('enable_sort', $3, false)",
             *was,
         )
-    # prawduct:allow prawduct/broad-except -- a page's own failure is raised by its caller; this one is said
+    # prawduct:allow prawduct/broad-except -- a page's own failure is raised by its caller; this one is contained
     except Exception as exc:
-        log.warning(
-            "a noted keys page could not put its planner settings back on its connection",
-            extra={"extra_data": {"error": f"{type(exc).__name__}: {exc}"}},
+        contain(
+            exc,
+            log=log,
+            what="a noted keys page could not put its planner settings back on its connection",
+            level="warning",
         )
 
 
