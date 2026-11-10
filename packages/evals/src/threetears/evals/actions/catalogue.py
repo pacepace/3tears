@@ -217,9 +217,6 @@ class Action:
     :ivar detail: More help, shown on the action's own page.
     :ivar happy_path: For a ``spend`` action, required: what reaches its work, for the jobs conformance kit.
         ``None`` for every other class.
-    :ivar text_field: The one field of the result its ``render`` returns verbatim (``report_read``'s ``body``), so a
-        transport sending the text and the result's JSON in one reply leaves that field out of the JSON rather than
-        send it twice; ``None``, the default, for a render that composes its text, whose result is sent whole.
     :ivar cut: The cut whose tools alone mount it (:attr:`ToolSpec.cut`); ``None``, the default, for an action the
         standard tools mount.
     :ivar paged: Its result is one page of a listing: its parameters declare ``offset`` and its result ``next_offset``
@@ -249,7 +246,6 @@ class Action:
     long_running: bool = False
     detail: str = ""
     happy_path: HappyPath | None = None
-    text_field: str | None = None
     cut: str | None = None
     paged: bool = False
     idempotent: bool = False
@@ -333,11 +329,6 @@ class Action:
             raise ValueError(
                 f"{where}: appends is declared by a read that may append a feedback record; a {self.permission} "
                 "action's class already says it changes what it changes"
-            )
-        if self.text_field is not None and self.text_field not in self.result.model_fields:
-            raise ValueError(
-                f"{where}: text_field {self.text_field!r} is no field of {self.result.__name__}: it names the field "
-                "the render returns verbatim"
             )
         try:
             self.params.model_validate(dict(self.example))
@@ -600,8 +591,6 @@ class ActionOutcome:
     :ivar structured: The result model's JSON form; ``None`` for help and for a refusal.
     :ivar refusal: Why the call was refused, as data; ``None`` for a call that was not.
     :ivar action: The action called, when the call named one the tool has.
-    :ivar text_field: The field of :attr:`structured` that :attr:`text` is verbatim, as the action declares it
-        (:attr:`Action.text_field`); ``None`` when the text is composed.
     :ivar recovery: How to correct the refused call, as fields (:class:`Recovery`), which the text's last line
         mirrors as compact JSON (``recovery: {…}``), since a client may forward only the text; ``None`` for a result,
         help, and a refusal with no corrected call to build.
@@ -611,7 +600,6 @@ class ActionOutcome:
     structured: dict[str, Any] | None = None
     refusal: Refusal | None = None
     action: str | None = None
-    text_field: str | None = None
     recovery: Recovery | None = None
 
     def __post_init__(self) -> None:
@@ -854,7 +842,7 @@ class MountedTool:
         text, structured = action.render(result), result.model_dump(mode="json")
         if action.paged:
             text, structured = render.render_page(name, params, text, structured, render.page_unit(result))
-        return ActionOutcome(text, structured=structured, action=name, text_field=action.text_field)
+        return ActionOutcome(text, structured=structured, action=name)
 
     def _names(self) -> tuple[str, ...]:
         """Every value ``action`` takes on this tool: ``help``, then its actions."""

@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an MCP client reads a report from structured content alone
+
+**Fixed:** over MCP, `report_read` returned no page to a client that shows a result's structured content in place of
+its text (Claude Code's does): the transport sent the report's `body` as the text block and left it out of the
+structured content, and a code-only report's structured content held nothing readable. A result's structured content
+is now the result model's JSON whole for every action, `report_read`'s `body` included; the text block is unchanged.
+`Action.text_field` and `ActionOutcome.text_field`, which declared the field to leave out, are removed.
+
+**Hosts:** a host's own `Action` that declared `text_field` drops it. An MCP client now gets `report_read`'s body in
+its structured content too, beside the same body as text, so that call's reply carries the body twice.
+
 ### evals: a table cell holding a number carries its decided text
 
 **Changed:**
