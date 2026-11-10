@@ -103,6 +103,9 @@ DEFAULT_PAGER_CALLS: Final[frozenset[str]] = frozenset(
 #: predicate on no key, a per-row filter
 _KEYED_FRAGMENT_TEXT: Final[str] = "__keyed_fragment__ = $9"
 
+#: the keyset pagers whose pages are written out to record the purposed index they read through
+_CREDITED_PAGERS: Final[frozenset[str]] = frozenset({"keyset_pages", "read_keyset_pages", "keyset_arrow_pages"})
+
 #: helpers that read a whole table whatever they are passed
 _ALWAYS_WHOLE_CALLS: Final[frozenset[str]] = frozenset({"copy_table"})
 
@@ -1387,6 +1390,8 @@ class _ModuleWalk(ast.NodeVisitor):
             self._hit(node, "truncate-call truncate", spelled)
         if name in self._exec_calls:
             self._judge_named_sql(node)
+        if name in _CREDITED_PAGERS:
+            self._credit_pager(node)
         narrowed = narrowed or any(
             isinstance(value, ast.Dict)
             or (isinstance(value, ast.Call) and _final(value) == "dict")
@@ -1408,6 +1413,40 @@ class _ModuleWalk(ast.NodeVisitor):
             receiver = "store"
         if receiver != "other" or whole_named:
             self._call(node, name, receiver, spelled, narrowed=narrowed, whole_named=whole_named)
+
+    def _credit_pager(self, node: ast.Call) -> None:
+        """record the purposed index a keyset pager's pages read through (``keyset_pages(l3, head, key, where=...,
+        conditions=[Fragment(...)])``): its page is written out and judged in the calling function for the index it
+        uses only; whether the pager is narrowed is the pager rules' to say.
+
+        :param node: the pager call
+        :ptype node: ast.Call
+        :return: nothing
+        :rtype: None
+        """
+        head = _string_text(node.args[1], self._envs[-1]) if len(node.args) > 1 else None
+        key_node = node.args[2] if len(node.args) > 2 else _keyword_value(node, "key")
+        key = [
+            e.value for e in getattr(key_node, "elts", []) if isinstance(e, ast.Constant) and isinstance(e.value, str)
+        ]
+        if head is None or not key:
+            return
+        conditions: list[str] = []
+        for argument, form in (("where", "{} = $9"), ("where_any", "{} = ANY($9)")):
+            mapping = _keyword_value(node, argument)
+            if isinstance(mapping, ast.Dict):
+                conditions.extend(
+                    form.format(k.value)
+                    for k in mapping.keys
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str)
+                )
+        listed = _keyword_value(node, "conditions")
+        for element in getattr(listed, "elts", []):
+            fragment = element.args[0] if isinstance(element, ast.Call) and element.args else element
+            written = _string_text(fragment, self._envs[-1])
+            conditions.append(written if written is not None else "{}")
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        judge_sql(f"{head}{where} ORDER BY {key[0]} LIMIT 100", self._reader(node))
 
     def _judge_named_sql(self, node: ast.Call) -> None:
         """a head run through a name bound to it: ``sql = f"SELECT ... FROM {t}"; conn.fetch(sql)``.
