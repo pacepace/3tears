@@ -14,6 +14,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
+import asyncpg
+from asyncpg.pool import PoolConnectionProxy
+
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
@@ -22,6 +25,7 @@ __all__ = [
     "Fragment",
     "Lock",
     "batched_join_hint",
+    "binds_native_arrays",
     "by_conditions",
     "quoted_table",
     "relation",
@@ -107,6 +111,22 @@ def batched_join_hint(outer: str, inner: str) -> str:
     :rtype: str
     """
     return f"/*+ YbBatchedNL({outer} {inner}) */ "
+
+
+def binds_native_arrays(conn: Any) -> bool:
+    """whether ``conn`` binds a typed array natively (``$1::bigint[]`` from a list of ints): asyncpg's own
+    connection, pool or pooled connection, or anything saying so (``binds_native_arrays = True``: a wrapper of one).
+    The L3 rail carries its parameters as JSON, so a keyed read through it binds text arrays cast to the column's
+    type (``$1::text[]::bigint[]``); identity, not truthiness, so a mock's auto-attribute never reads as yes.
+
+    :param conn: the connection a keyed helper reads through
+    :ptype conn: Any
+    :return: whether its arrays bind natively
+    :rtype: bool
+    """
+    if isinstance(conn, asyncpg.Connection | asyncpg.Pool | PoolConnectionProxy):
+        return True
+    return getattr(conn, "binds_native_arrays", None) is True
 
 
 def quoted_table(table: str) -> str:

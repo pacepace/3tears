@@ -5,14 +5,16 @@ whole to the column's type, so the column is compared with values of its own typ
 
     SELECT <columns> FROM <table> AS t WHERE t."id" = ANY($1::text[]::uuid[]) AND t."tenant" = $2
 
-    SELECT <columns> FROM <table> AS t
-     WHERE t."a" = ANY($1::text[]) AND t."b" = ANY($2::text[]::bigint[])
-       AND (t."a", t."b") IN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1)
+    /*+ YbBatchedNL(ANY_subquery t) */ SELECT <columns> FROM <table> AS t
+     WHERE (t."a", t."b") IN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1)
 
-Each key column is an index condition (``= ANY``), whatever join the planner picks for the rest. A join of the
-keys alone (``JOIN (SELECT unnest(...)) k ON t."id" = CAST(k.k0 AS uuid)``) is keyed only while the planner picks a
-nested loop; at other statistics it hash-joins and reads the whole table (the hub's credit rates: 3,004 rows read for
-3 keys).
+One key column is an index condition (``= ANY``). Several are joined to the table as rows, a nested loop over the
+key's index (batched on YugabyteDB by the hint). Never a column = ANY its values beside the keys when those values'
+cross product names many more rows than the keys (600 keys over 50 states, 200 geographies and 30 ids name the whole
+table, and the planner reads it whole); but when it names few more (prefixes sharing their lead, a page's 200
+geographies of one state), each column is bound to its distinct values too (``AND t."a" = ANY($3::text[])``): the
+index's own condition, where the keys alone, each naming many rows, plan on PostgreSQL as a hash join over the whole
+table (300,000 rows read for 6,000).
 
 With the key columns a leading part of the table's primary key (or of an index declared for the caller's read),
 PostgreSQL, YugabyteDB and DuckDB each answer it by the key: a lookup whose cost is the keys', whatever the table
@@ -37,13 +39,27 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
-from threetears.core.keyed._filters import IN_SUBQUERY, Derived, Lock, batched_join_hint, by_conditions, relation
+from threetears.core.keyed._filters import (
+    IN_SUBQUERY,
+    Derived,
+    Lock,
+    batched_join_hint,
+    binds_native_arrays,
+    by_conditions,
+    relation,
+)
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = ["DEFAULT_KEY_BATCH", "KeyBatch", "KeyTooWide", "read_joined", "read_keyed", "read_keyed_arrow"]
 
 #: keys a statement names when the caller does not say: well under a statement's parameter and reply bounds
 DEFAULT_KEY_BATCH: Final = 1000
+
+#: a batch's key columns are each bound to their distinct values when those name at most this many times its keys
+_TIGHT_BOUND_FACTOR: Final = 2
+
+#: the key column types bound as text arrays, with no cast
+_TEXT_TYPES: Final = frozenset({"text", "varchar"})
 
 
 class KeyTooWide(ValueError):
@@ -121,11 +137,14 @@ class _Statement:
         ordered = ", ".join(f"t.{quote_identifier(column)}" for column in self.keys.columns)
         return f"{sql} ORDER BY {ordered}{self.lock.of('t')}"
 
-    def render(self, chunk: Sequence[tuple[Any, ...]]) -> tuple[str, tuple[Any, ...]]:
+    def render(self, chunk: Sequence[tuple[Any, ...]], natively: bool = False) -> tuple[str, tuple[Any, ...]]:
         """the statement naming ``chunk``'s keys, and its parameters.
 
         :param chunk: the keys
         :ptype chunk: Sequence[tuple[Any, ...]]
+        :param natively: whether the connection binds typed arrays natively (:func:`binds_native_arrays`): a column
+            whose values are of its type (no str) is then bound as ``$n::<type>[]`` from the values themselves
+        :ptype natively: bool
         :return: the statement, and its parameters
         :rtype: tuple[str, tuple[Any, ...]]
         """
@@ -147,8 +166,12 @@ class _Statement:
         # each key column's values bound as one text array, the ARRAY cast to the column's type: the column is
         # compared with values of its own type, never wrapped or compared element by element through a cast, so the
         # planner reads the key's index by them (an Index Cond), as a hand-written "col = ANY($1::uuid[])" would
-        typed = [self._typed_array(index + 1) for index in range(width)]
-        arrays = tuple([_text(key[index]) for key in chunk] for index in range(width))
+        native = self._native(chunk, natively)
+        typed = [self._typed_array(index + 1, index, native[index]) for index in range(width)]
+        arrays = tuple(
+            [key[index] for key in chunk] if native[index] else [_text(key[index]) for key in chunk]
+            for index in range(width)
+        )
         conditions, pinned = by_conditions(self.by, first=width + 1, alias="t")
         columns = [f"t.{quote_identifier(column)}" for column in self.keys.columns]
         if width == 1 and not self.keys.null_safe:
@@ -165,13 +188,54 @@ class _Statement:
         # geographies and 30 ids name the whole table), and the planner reads it whole. YugabyteDB is told to batch
         # the loop (batched_join_hint): one storage request for the batch, not one a key
         named = f"({', '.join(columns)}) IN (SELECT {unnested})"
-        where = " AND ".join([named, *conditions])
-        return self._locked(f"{batched_join_hint(IN_SUBQUERY, 't')}{head} WHERE {where}"), (*arrays, *pinned)
+        bounds, bounded = self._tight_bounds(arrays, native, len(chunk), first=width + len(pinned) + 1)
+        where = " AND ".join([named, *conditions, *bounds])
+        return (
+            self._locked(f"{batched_join_hint(IN_SUBQUERY, 't')}{head} WHERE {where}"),
+            (*arrays, *pinned, *bounded),
+        )
 
-    def _typed_array(self, place: int) -> str:
-        """placeholder ``place``'s text array, cast as a whole to its key column's type."""
-        cast = self.keys.cast(place - 1)
-        return f"${place}::text[]" if cast.lower() in {"text", "varchar"} else f"${place}::text[]::{cast}[]"
+    def _tight_bounds(
+        self, arrays: tuple[list[Any], ...], native: Sequence[bool], keys: int, *, first: int
+    ) -> tuple[list[str], tuple[list[Any], ...]]:
+        """each key column bound to its distinct values (``t."a" = ANY($n)``), when their cross product names at most
+        :data:`_TIGHT_BOUND_FACTOR` times the keys; no bound otherwise.
+
+        A batch of prefixes that share their lead (a page's 200 geographies of one state) names its rows by those
+        bounds exactly: PostgreSQL reads them as the index's own condition, where the keys alone, each naming many
+        rows, plan as a hash join over the whole table (300,000 rows read for 6,000). A batch of scattered keys
+        (600 keys over 50 states, 200 geographies and 30 ids) names the whole table by them, so it gets none and is
+        read by its keys, one lookup a key.
+        """
+        distinct = [list(dict.fromkeys(values)) for values in arrays]
+        product = 1
+        for values in distinct:
+            product *= len(values)
+        if product > _TIGHT_BOUND_FACTOR * keys:
+            return [], ()
+        bounds = [
+            f"t.{quote_identifier(column)} = ANY({self._typed_array(first + index, index, native[index])})"
+            for index, column in enumerate(self.keys.columns)
+        ]
+        return bounds, tuple(distinct)
+
+    def _native(self, chunk: Sequence[tuple[Any, ...]], natively: bool) -> tuple[bool, ...]:
+        """which key columns bind their values as they are: on a connection binding typed arrays natively, each
+        column of a type other than text whose values hold no str (a caller's text form stays text, cast in SQL)."""
+        if not natively:
+            return (False,) * len(self.keys.columns)
+        return tuple(
+            self.keys.cast(index).lower() not in _TEXT_TYPES and not any(isinstance(key[index], str) for key in chunk)
+            for index in range(len(self.keys.columns))
+        )
+
+    def _typed_array(self, place: int, column: int, native: bool) -> str:
+        """placeholder ``place``'s array of key column ``column``: of the column's type, bound natively, or a text
+        array cast as a whole to it."""
+        cast = self.keys.cast(column)
+        if cast.lower() in _TEXT_TYPES:
+            return f"${place}::text[]"
+        return f"${place}::{cast}[]" if native else f"${place}::text[]::{cast}[]"
 
 
 def _statement(
@@ -249,9 +313,10 @@ async def read_keyed(
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
     statement = _statement(table, columns, keys, by or {}, lock)
+    natively = binds_native_arrays(conn)
 
     async def fetch(chunk: Sequence[tuple[Any, ...]]) -> list[Any]:
-        sql, params = statement.render(chunk)
+        sql, params = statement.render(chunk, natively)
         return list(await conn.fetch(sql, *params))
 
     rows: list[dict[str, Any]] = []
@@ -294,9 +359,10 @@ async def read_keyed_arrow(
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
     statement = _statement(table, list(types), keys, by or {})
+    natively = binds_native_arrays(conn)
 
     async def fetch(chunk: Sequence[tuple[Any, ...]]) -> Any:
-        sql, params = statement.render(chunk)
+        sql, params = statement.render(chunk, natively)
         return await l3_fetch_arrow(conn, sql, *params, types=types)
 
     tables: list[Any] = []

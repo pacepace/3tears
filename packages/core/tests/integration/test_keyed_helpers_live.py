@@ -3,8 +3,9 @@
 A table shaped like the reports pod's results (300,000 rows: 50 states, 200 geographies a state, 30 rows each, keyed
 ``(state, geo, id)``, a stamp index for change records and expiry), seeded in a schema of its own. Each helper's
 statements are planned for real (:class:`~threetears.core.testing.plans.PlanRecorder`) and judged by the shared
-plan check (rows scanned within 1.1x the rows answered; a count's within its bound), then timed against the bare
-operation on a plain table holding only the rows it reads (:mod:`threetears.core.testing.calibrate`), held to 2x.
+plan check (rows scanned within 1.1x the rows answered; a count's within its bound), then timed against the bare:
+the best hand-written statement doing the same work on the same table, natively bound, best of N
+(:mod:`threetears.core.testing.calibrate`), held to 2x. Each test's docstring names its bare and why.
 
 Against the session ``db_container`` (Postgres); set ``THREETEARS_TEST_POSTGRES_URL`` to a YugabyteDB URL to run
 them there, the platform's database.
@@ -41,7 +42,7 @@ from threetears.core.keyed import (
     read_past_marks,
     update_before,
 )
-from threetears.core.testing.calibrate import best_seconds, budget_problem, plain_copies
+from threetears.core.testing.calibrate import best_seconds, budget_problem
 from threetears.core.testing.plans import (
     PlanRecorder,
     StatementPlan,
@@ -111,10 +112,11 @@ class _Settling:
         yield _Write()
 
 
-async def _baseline(conn: asyncpg.Connection, rows_sql: str, *args: Any) -> float:
-    """the bare read of the same rows: one statement over a plain table holding only them."""
-    async with plain_copies(conn, {"rows": (rows_sql, args)}) as plain:
-        return await best_seconds(lambda: conn.fetch(f"SELECT * FROM {plain['rows']}"))  # noqa: S608
+async def _bare(conn: asyncpg.Connection, sql: str, *args: Any) -> float:
+    """the bare: the best of N runs of the best hand-written statement doing the helper's work, on the same real table,
+    its parameters bound natively. Never a scan of a plain copy holding only the answer: that skips the lookups, the
+    seek and the sort the helper must make, and times a different statement."""
+    return await best_seconds(lambda: conn.fetch(sql, *args))
 
 
 class _WritePlans:
@@ -221,7 +223,12 @@ class TestReadKeyed:
 
 class TestKeysetPage:
     async def test_a_page_reads_about_its_rows_within_budget(self, seeded: _Seeded) -> None:
-        """Flips if a page reads the prefix whole (a sort of every row) or is over 2x the bare page read."""
+        """Flips if a page reads the prefix whole (a sort of every row) or is over 2x the bare page read.
+
+        The bare is the best hand-written statement doing the same work on the same table: the same page past the
+        same last row, seeking the key's index by the row-value comparison ``(geo, id) > ($2, $3)`` with natively
+        typed binds, LIMIT 201. Never a scan of a plain copy holding only the page's rows: that skips the seek
+        (it measured 0.39 ms on YugabyteDB, against the helper's 0.79 ms)."""
         order = [Sort("geo"), Sort("id", "bigint")]
         first = await keyset_page(
             seeded.conn, _TABLE, columns=["geo", "id", "votes"], by={"state": "S10"}, order=order, limit=200
@@ -242,7 +249,7 @@ class TestKeysetPage:
         assert [(r["geo"], r["id"]) for r in page.rows] == [(r["geo"], r["id"]) for r in expected]
         _plans_ok(recorder, seeded)
         last = first.rows[-1]
-        baseline = await _baseline(
+        baseline = await _bare(
             seeded.conn,
             f"SELECT geo, id, votes FROM {_TABLE} WHERE state = $1 AND (geo, id) > ($2, $3) ORDER BY geo, id LIMIT 201",
             "S10",
@@ -266,14 +273,21 @@ class TestKeysetPage:
 
 class TestCounts:
     async def test_counts_by_counts_only_its_keys_rows(self, seeded: _Seeded) -> None:
-        """Flips if a keyed count reads rows no key names, or is over 2x the bare read of the rows it counts."""
+        """Flips if a keyed count reads rows no key names, or is over 2x the bare count of them.
+
+        The bare is the best hand-written statement doing the same work on the same table: the same GROUP BY count of
+        the state's 100 geographies by the key (``geo = ANY`` a natively typed array). Never a read of a plain copy
+        holding only the counted rows: that returns rows where the count returns 100, and skips the key's seek."""
         geos = [f"{g:03d}" for g in range(1, 101)]
         recorder = PlanRecorder(seeded.conn)
         counted = await counts_by(recorder, _TABLE, column="geo", values=AnyOf(geos), by={"state": "S20"})
         assert counted == dict.fromkeys(geos, _IDS)
         assert all(plan.rows_scanned <= 1.1 * len(geos) * _IDS for plan in recorder.plans), recorder.plans
-        baseline = await _baseline(
-            seeded.conn, f"SELECT state, geo FROM {_TABLE} WHERE state = $1 AND geo = ANY($2::text[])", "S20", geos
+        baseline = await _bare(
+            seeded.conn,
+            f"SELECT geo, count(*) FROM {_TABLE} WHERE state = $1 AND geo = ANY($2::text[]) GROUP BY geo",
+            "S20",
+            geos,
         )
         took = await best_seconds(
             lambda: counts_by(seeded.conn, _TABLE, column="geo", values=AnyOf(geos), by={"state": "S20"})
@@ -299,7 +313,11 @@ class TestCounts:
 
 class TestMarks:
     async def test_a_read_past_a_mark_reads_only_what_moved_within_budget(self, seeded: _Seeded) -> None:
-        """Flips if a change-record read scans past the rows that moved, or is over 2x the bare read of them."""
+        """Flips if a change-record read scans past the rows that moved, or is over 2x the bare read of them.
+
+        The bare is the best hand-written statement doing the same work on the same table: the rows past the mark,
+        found by the stamp index (``stamp > $1``). Never a scan of a plain copy holding only the moved rows: that skips
+        the index range (it measured 2.93 ms on YugabyteDB, against the helper's 6.91 ms, 2.36x)."""
         newest = await seeded.conn.fetchval(f"SELECT stamp FROM {_TABLE} ORDER BY stamp DESC LIMIT 1")
         mark = newest - timedelta(seconds=1500)
         recorder = PlanRecorder(seeded.conn)
@@ -307,7 +325,7 @@ class TestMarks:
         assert len(read.rows) == 1500
         assert read.marks == {"stamp": newest}
         _plans_ok(recorder, seeded)
-        baseline = await _baseline(seeded.conn, f"SELECT state, geo, id, stamp FROM {_TABLE} WHERE stamp > $1", mark)
+        baseline = await _bare(seeded.conn, f"SELECT state, geo, id, stamp FROM {_TABLE} WHERE stamp > $1", mark)
         took = await best_seconds(
             lambda: read_past_marks(seeded.conn, _TABLE, columns=["state", "geo", "id", "stamp"], marks={"stamp": mark})
         )
@@ -415,7 +433,11 @@ class TestUpdateBefore:
 
 class TestReadJoined:
     async def test_a_page_s_joined_rows_are_read_by_its_values_within_budget(self, seeded: _Seeded) -> None:
-        """Flips if a joined read scans past the rows the page's values name, or is over 2x the bare read of them."""
+        """Flips if a joined read scans past the rows the page's values name, or is over 2x the bare read of them.
+
+        The bare is the best hand-written statement doing the same work on the same table: the rows of the page's 200
+        (state, geo) values, looked up by the key (IN-unnest of natively typed arrays), as a caller knowing only the
+        page's values must. Never a read of a plain copy holding only the answer: that skips the 200 lookups."""
         page = [{"state": "S11", "geo": f"{g:03d}"} for g in range(1, 201)]
         recorder = PlanRecorder(seeded.conn)
         joined = await read_joined(
@@ -427,10 +449,11 @@ class TestReadJoined:
         assert plan_uses_index(plan, "results_pkey"), plan.plan
         assert plan.rows_scanned <= 1.1 * len(page) * _IDS, plan
         _batched_on_yugabyte(plan, seeded)
-        baseline = await _baseline(
+        baseline = await _bare(
             seeded.conn,
-            f"SELECT state, geo, id, votes FROM {_TABLE} WHERE state = $1 AND geo = ANY($2::text[])",
-            "S11",
+            f"SELECT state, geo, id, votes FROM {_TABLE} WHERE (state, geo) IN "
+            "(SELECT * FROM unnest($1::text[], $2::text[]))",
+            [row["state"] for row in page],
             [row["geo"] for row in page],
         )
         took = await best_seconds(
@@ -444,7 +467,10 @@ class TestReadJoined:
 
 class TestCountsByRelations:
     async def test_two_relations_count_only_their_keys_rows_within_budget(self, seeded: _Seeded) -> None:
-        """Flips if a count over several relations reads rows no key names, or is over 2x the bare read of them."""
+        """Flips if a count over several relations reads rows no key names, or is over 2x the bare count of them.
+
+        The bare is the best hand-written statement doing the same work on the same tables: one UNION ALL of each
+        relation's GROUP BY count by the key. Never a read of a plain copy holding only the counted rows."""
         # a second relation as large as the first, its rows clustered by state (the key's rows together at one end of
         # the heap): a count reads its keys' rows by the key on each, however the rows lie
         await seeded.conn.execute(f"CREATE TABLE results_b AS SELECT * FROM {_TABLE} ORDER BY state")
@@ -456,10 +482,11 @@ class TestCountsByRelations:
         counted = await counts_by_relations(recorder, tables, column="geo", values=AnyOf(geos), by={"state": "S50"})
         assert counted == {"a": dict.fromkeys(geos, _IDS), "b": dict.fromkeys(geos, _IDS)}
         assert all(plan.rows_scanned <= 1.1 * 2 * len(geos) * _IDS for plan in recorder.plans), recorder.plans
-        baseline = await _baseline(
+        baseline = await _bare(
             seeded.conn,
-            f"SELECT state, geo FROM {_TABLE} WHERE state = $1 AND geo = ANY($2::text[]) "  # noqa: S608
-            "UNION ALL SELECT state, geo FROM results_b WHERE state = $1 AND geo = ANY($2::text[])",
+            f"SELECT 0 AS relation, geo, count(*) FROM {_TABLE} "  # noqa: S608
+            "WHERE state = $1 AND geo = ANY($2::text[]) GROUP BY geo "
+            "UNION ALL SELECT 1, geo, count(*) FROM results_b WHERE state = $1 AND geo = ANY($2::text[]) GROUP BY geo",
             "S50",
             geos,
         )
@@ -475,10 +502,11 @@ class TestDeleteOldest:
         """Flips if a cache trim reads past the rows it deletes (a sort of the table) or is over 2x the bare trim.
 
         The bare is the best hand-written statement doing the same work on the same table through the same thread
-        hop: the same 3,000 oldest rows by rowid, deleted through asyncio.to_thread, since IO in a thread is the rule on
-        both sides. Never a range delete to a rowid the test already knows, run in the loop: that skips finding the
-        oldest rows and the hop (0.17 ms against 0.54 ms). Each side is the best of several runs, each rolled back,
-        so every run deletes from the same 300,000 rows."""
+        hop: the 3,000 oldest rows deleted as one rowid range up to the 3,000th rowid (found by one seek, OFFSET 2999),
+        through asyncio.to_thread, since IO in a thread is the rule on both sides. Never a range delete to a rowid the
+        test already knows, run in the loop: that skips finding the 3,000th row and the hop (0.17 ms against 0.54 ms
+        for the helper's first form, a list of rowids probed). Each side is the best of several runs, each rolled
+        back, so every run deletes from the same 300,000 rows."""
         local = sqlite3.connect(":memory:", check_same_thread=False, isolation_level=None)
         try:
             local.execute("CREATE TABLE cached (state TEXT, geo TEXT, id INTEGER, pad TEXT)")
@@ -491,12 +519,15 @@ class TestDeleteOldest:
             plan = " ".join(
                 str(row[-1])
                 for row in local.execute(
-                    "EXPLAIN QUERY PLAN DELETE FROM cached WHERE rowid IN "
-                    "(SELECT rowid FROM cached ORDER BY rowid LIMIT 3000)"
+                    "EXPLAIN QUERY PLAN DELETE FROM cached WHERE rowid <= COALESCE((SELECT rowid FROM cached "
+                    "ORDER BY rowid LIMIT 1 OFFSET 2999), (SELECT max(rowid) FROM cached))"
                 )
             )
             assert "USE TEMP B-TREE" not in plan, plan
-            bare = "DELETE FROM cached WHERE rowid IN (SELECT rowid FROM cached ORDER BY rowid LIMIT 3000)"
+            bare = (
+                "DELETE FROM cached WHERE rowid <= COALESCE((SELECT rowid FROM cached ORDER BY rowid LIMIT 1 "
+                "OFFSET 2999), (SELECT max(rowid) FROM cached))"
+            )
 
             async def rolled_back(run: Any) -> float:
                 async def once() -> None:

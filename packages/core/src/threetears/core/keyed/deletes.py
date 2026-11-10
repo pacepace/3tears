@@ -254,9 +254,11 @@ async def delete_oldest(
 ) -> int:
     """delete ``table``'s ``count`` oldest rows (within ``by``) by its key's order: a cache's trim back to its cap.
 
-    ``DELETE FROM t WHERE "rowid" IN (SELECT "rowid" FROM t WHERE <by> ORDER BY "rowid" LIMIT $n)``: an L1 table's
-    rowid is the key it is stored by, so the trim reads its first ``count`` keys and no more. The caller knows how far
-    past its cap the table is from a count it keeps (a trigger's) or a bounded probe
+    ``DELETE FROM t WHERE <by> AND "rowid" <= COALESCE((SELECT "rowid" FROM t WHERE <by> ORDER BY "rowid" LIMIT 1
+    OFFSET $n), (SELECT max("rowid") FROM t WHERE <by>))``: an L1 table's rowid is the key it is stored by, so the
+    trim seeks its ``count``-th oldest key and deletes the range up to it, every row when fewer are held, none from
+    an empty table. The key is unique within ``by`` (rowid, a growing id): a range to it holds ``count`` rows. The
+    caller knows how far past its cap the table is from a count it keeps (a trigger's) or a bounded probe
     (:func:`~threetears.core.keyed.count_at_most` with no ``by``, ``at_most`` the cap plus the most it trims).
 
     :param conn: the local cache's connection: :class:`~threetears.core.keyed.ThreadedSQLite` or
@@ -281,9 +283,14 @@ async def delete_oldest(
         return 0
     conditions, params = by_conditions(by or {})
     where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    pinned = "".join(f"{condition} AND " for condition in conditions)
     named = quote_identifier(key)
+    quoted = quoted_table(table)
+    # one range delete up to the count-th oldest key, found by one seek of the key's order (its OFFSET), or to the
+    # newest when fewer are held: no list of keys built and probed (0.37 ms against 0.54 ms for 3,000 of 300,000)
     sql = (
-        f"DELETE FROM {quoted_table(table)} WHERE {named} IN (SELECT {named} FROM {quoted_table(table)}{where} "
-        f"ORDER BY {named} LIMIT ${len(params) + 1})"
+        f"DELETE FROM {quoted} WHERE {pinned}{named} <= COALESCE("
+        f"(SELECT {named} FROM {quoted}{where} ORDER BY {named} LIMIT 1 OFFSET ${len(params) + 1}), "
+        f"(SELECT max({named}) FROM {quoted}{where}))"
     )
-    return rows_affected(await conn.execute(sql, *params, count))
+    return rows_affected(await conn.execute(sql, *params, count - 1))

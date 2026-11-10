@@ -50,6 +50,7 @@ from threetears.core.keyed import (
     rows_affected,
     update_before,
 )
+from threetears.core.keyed._filters import binds_native_arrays
 from threetears.core.keyset import read_keyset_pages
 from threetears.core.pagination import CursorError
 
@@ -133,6 +134,51 @@ class TestReadKeyed:
             assert '(t."a", t."b") IN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1)' in sql
             assert "= ANY(" not in sql, sql
             assert "CAST(" not in sql
+
+    async def test_keys_sharing_their_lead_are_bound_to_each_column_s_values(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a batch whose columns' distinct values name about its keys (one group's rows) is not bound to them
+        (Postgres then hash-joins the keys over the whole table), if the bounds take the wrong placeholders beside a
+        pinned column, or if they change the rows read."""
+        reader = _Recording(db)
+        keys = KeyBatch(("a", "b"), [("k1", 1), ("k1", 11), ("k1", 21), ("k1", 1)], ("text", "bigint"))
+        rows = await read_keyed(reader, "t", keys=keys, columns=["a", "b"], by={"v": AnyOf([1, 21], "integer")})
+        assert sorted((row["a"], row["b"]) for row in rows) == [("k1", 1), ("k1", 21)]
+        ((sql, params),) = reader.statements
+        assert '(t."a", t."b") IN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1)' in sql
+        assert 't."a" = ANY($4::text[]) AND t."b" = ANY($5::text[]::bigint[])' in sql, sql
+        assert params[3:] == (["k1"], ["1", "11", "21"])
+
+    async def test_a_connection_binding_typed_arrays_gets_each_column_s_values_as_they_are(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a connection that binds typed arrays natively (asyncpg's, or one saying so) is sent text arrays cast
+        in SQL for a column whose values are of its type, if a column given as text there is not kept text, or if the
+        L3 rail (JSON parameters) is sent anything but text arrays."""
+        keys = [("k1", 1), ("k2", 12), ("k3", 23)]
+        native = _Recording(db)
+        native.binds_native_arrays = True  # type: ignore[attr-defined]
+        rows = await read_keyed(native, "t", keys=KeyBatch(("a", "b"), keys, ("text", "bigint")), columns=["b"])
+        assert sorted(row["b"] for row in rows) == [1, 12, 23]
+        ((sql, params),) = native.statements
+        assert "unnest($1::text[]) AS k0, unnest($2::bigint[]) AS k1" in sql, sql
+        assert params[:2] == (["k1", "k2", "k3"], [1, 12, 23])
+        as_text = _Recording(db)
+        as_text.binds_native_arrays = True  # type: ignore[attr-defined]
+        given = [(a, str(b)) for a, b in keys]
+        await read_keyed(as_text, "t", keys=KeyBatch(("a", "b"), given, ("text", "bigint")), columns=["b"])
+        assert "unnest($2::text[]::bigint[])" in as_text.statements[0][0]
+        rail = _Recording(db)
+        await read_keyed(rail, "t", keys=KeyBatch(("a", "b"), keys, ("text", "bigint")), columns=["b"])
+        ((sql, params),) = rail.statements
+        assert "unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1" in sql, sql
+        assert params[:2] == (["k1", "k2", "k3"], ["1", "12", "23"])
+        single = _Recording(db)
+        single.binds_native_arrays = True  # type: ignore[attr-defined]
+        await read_keyed(single, "t", keys=KeyBatch(("b",), [(1,), (12,)], ("bigint",)), columns=["b"])
+        assert '"b" = ANY($1::bigint[])' in single.statements[0][0]
+        assert binds_native_arrays(object()) is False
 
     async def test_by_pins_a_prefix_beside_the_keys(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if ``by`` is dropped (the read answers rows of every group) or bound to the wrong placeholder."""
@@ -494,6 +540,31 @@ class TestWithoutArrays:
         assert await delete_oldest(conn, "t", count=30) == 30
         assert await count_at_most(conn, "t", order=["a", "b"], at_most=100) == BoundedCount(count=50, more=False)
         assert lite.execute("SELECT min(rowid) FROM t").fetchone() == (51,)
+
+    async def test_delete_oldest_trims_past_what_is_held_and_within_its_prefix(self) -> None:
+        """Flips if a trim of more rows than are held deletes other than all of them, a trim of an empty table fails or
+        deletes, a trim pinned by ``by`` deletes another prefix's rows or other than its own oldest, or a trim on
+        DuckDB by a growing id deletes other than its count."""
+        lite = sqlite3.connect(":memory:", check_same_thread=False)
+        try:
+            lite.execute("CREATE TABLE c (a TEXT, v INTEGER)")
+            conn = ThreadedSQLite(lite)
+            assert await delete_oldest(conn, "c", count=5) == 0
+            lite.executemany("INSERT INTO c VALUES (?, ?)", [("k" + str(i % 2), i) for i in range(10)])
+            assert await delete_oldest(conn, "c", count=3, by={"a": "k1"}) == 3
+            assert [row[0] for row in lite.execute("SELECT v FROM c WHERE a = 'k1' ORDER BY rowid")] == [7, 9]
+            assert lite.execute("SELECT count(*) FROM c WHERE a = 'k0'").fetchone() == (5,)
+            assert await delete_oldest(conn, "c", count=50) == 7
+            assert lite.execute("SELECT count(*) FROM c").fetchone() == (0,)
+        finally:
+            lite.close()
+        duck = duckdb.connect()
+        try:
+            duck.execute("CREATE TABLE g AS SELECT i AS id FROM range(20) r(i)")
+            assert await delete_oldest(ThreadedDuckDB(duck), "g", count=4, key="id") == 4
+            assert duck.execute("SELECT min(id), count(*) FROM g").fetchone() == (4, 16)
+        finally:
+            duck.close()
 
     async def test_delete_oldest_refuses_anything_but_a_local_cache(self) -> None:
         """Flips if a cache trim, which settles no cache, is run on an L3 connection."""
