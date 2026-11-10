@@ -87,7 +87,7 @@ from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
 from threetears.evals.analysis.summary import CaseResult, DimensionSummary, EvalSummary
 from threetears.evals.analysis.quantities import PERCENT
-from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, reads_as_rate
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor, reads_as_rate, reads_as_share
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report.figures import report_rulers
 from threetears.evals.analysis.report.forms import PageForms
@@ -549,9 +549,12 @@ class Result:
             figures = held.get(measure.name)
             descriptor = catalog.get(measure.name) or METRIC_DESCRIPTORS.get(measure.name)
             if measure.state == "measured" and figures is not None:
-                rate = measure.name == MATCH_MEASURE or reads_as_rate("measure", measure.name, descriptor=descriptor)
+                counted = _counted_rate(measure.name, descriptor)
+                rate = counted or (descriptor is not None and reads_as_share(descriptor))
                 level = self._page_rate(measure.name, figures.mean) if rate else None
-                said = _measured_text(forms, measure.name, said, figures.mean, figures.n, rate=rate, level=level)
+                said = _measured_text(
+                    forms, measure.name, said, figures.mean, figures.n, rate=rate, counted=counted, level=level
+                )
             # Each measure under the name the page gives it, never its key.
             texts.append(f"{self._printed_name(measure.name)}{said}")
         if (omitted := summary.uncarried_text) is not None:
@@ -598,10 +601,13 @@ class Result:
         count of trials, any other measure with its trials named (:func:`_measured_text`)."""
         name = measured["name"]
         descriptor = self.report.bundle.measure_catalog.get(name) or METRIC_DESCRIPTORS.get(name)
-        rate = not measured["unit"] and (name == MATCH_MEASURE or reads_as_rate("measure", name, descriptor=descriptor))
+        counted = not measured["unit"] and _counted_rate(name, descriptor)
+        rate = counted or (not measured["unit"] and descriptor is not None and reads_as_share(descriptor))
         mean = float(measured["mean"]) if rate else 0.0
         level = self._page_rate(name, mean) if rate else None
-        said = _measured_text(forms, name, measured["said"], mean, int(measured["n"]), rate=rate, level=level)
+        said = _measured_text(
+            forms, name, measured["said"], mean, int(measured["n"]), rate=rate, counted=counted, level=level
+        )
         return f"{self._printed_name(name)}{said}"
 
     def _verdict_line(self) -> str:
@@ -1010,6 +1016,16 @@ def _aspect_forms(page: CampaignReport, bundle: AnalysisContextBundle) -> PageFo
     return PageForms.of_aspects([fold.report.bundle for fold in page.aspects], page.readings)[bundle.aspect]
 
 
+def _counted_rate(name: str, descriptor: MetricDescriptor | None) -> bool:
+    """Whether a measure is a rate counted over trials, which the quiet print states with its count: a label match,
+    a measure that reads as a rate (:func:`~threetears.evals.kernel.metrics.reads_as_rate`), or a boolean's share."""
+    return (
+        name == MATCH_MEASURE
+        or reads_as_rate("measure", name, descriptor=descriptor)
+        or (descriptor is not None and descriptor.data_type == "boolean")
+    )
+
+
 def _measured_text(
     forms: PageForms,
     measure: str,
@@ -1018,22 +1034,26 @@ def _measured_text(
     n: int,
     *,
     rate: bool,
+    counted: bool = True,
     level: str | None = None,
 ) -> str:
-    """A measure's figures as the quiet print says them, after its name: a rate in percent with its count of trials
-    (``: 83%, 75 of 90 trials``), the level as the campaign's page prints it (``level``, one form per measure, number
-    rule 1) where the page states it, else as a lone rate; any other measure's mean with its trials
-    named (``: mean 950 ms (90 trials, min 700 ms, max 1.2 s)``). Anything the line leaves out, and what follows it (a
-    guardrail's standing), is kept."""
+    """A measure's figures as the quiet print says them, after its name: a rate in percent (number rule 4, as every
+    page reads it), with its count of trials where it is counted over them (``: 83%, 75 of 90 trials``), else with
+    its trials named (a host's fraction: ``: 38% (12 trials)``), the level as the campaign's page prints it (``level``,
+    one form per measure, number rule 1) where the page states it, else as a lone rate; any other measure's mean with
+    its trials named (``: mean 950 ms (90 trials, min 700 ms, max 1.2 s)``). Anything the line leaves out, and what
+    follows it (a guardrail's standing), is kept."""
     read = _MEASURE_LINE.fullmatch(said)
     if read is None or mean is None:
         return said
     rest, tail = read["rest"].removeprefix(", "), read["tail"]
     if rate:
-        counted = f"{forms.hits(mean, n, measure=measure).text} of {n} trials"
         if level is None:
             level = forms.in_unit(100 * mean, PERCENT, role="level", measure=measure).text
-        return f": {level}, {counted}{f' ({rest})' if rest else ''}{tail}"
+        if not counted:
+            return f": {level} ({n} trials{f', {rest}' if rest else ''}){tail}"
+        hits = f"{forms.hits(mean, n, measure=measure).text} of {n} trials"
+        return f": {level}, {hits}{f' ({rest})' if rest else ''}{tail}"
     left = f", {rest}" if rest else ""
     return f": mean {read['mean']} ({n} trials, min {read['low']}, max {read['high']}{left}){tail}"
 
