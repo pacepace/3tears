@@ -27,7 +27,7 @@ from threetears.agent.acl.collections import (
     RoleCollection,
 )
 from threetears.agent.acl.migrations.v001_create_acl_tables import ACL_TABLES_DDL, create_acl_tables
-from threetears.agent.acl.migrations.v002_reader_indexes import ACL_READER_INDEXES_DDL, create_acl_reader_indexes
+from threetears.agent.acl.migrations.v002_reader_indexes import create_acl_reader_indexes
 from threetears.core.data.migrations import MigrationRunner, MigrationScope, PackageMigrations
 
 PACKAGE_NAME = "agent_acl"
@@ -58,10 +58,8 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 
 
 __all__ = [
-    "ACL_READER_INDEXES_DDL",
     "ACL_TABLES_DDL",
     "PACKAGE_NAME",
-    "create_acl_reader_indexes",
     "create_acl_tables",
     "register",
 ]

@@ -19,12 +19,12 @@ from __future__ import annotations
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
-__all__ = ["ACL_READER_INDEXES_DDL", "create_acl_reader_indexes"]
+__all__ = ["create_acl_reader_indexes"]
 
 log = get_logger(__name__)
 
 #: Every statement, in order. Each is safe to run twice.
-ACL_READER_INDEXES_DDL: tuple[str, ...] = (
+_ACL_READER_INDEXES_DDL: tuple[str, ...] = (
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::MEMBERS_NAMING_SQL\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_members_reverse\n"
     "CREATE INDEX IF NOT EXISTS idx_group_members_reverse ON group_members (member_type, member_id)",
@@ -45,6 +45,6 @@ async def create_acl_reader_indexes(store: DataStore) -> None:
     :return: nothing
     :rtype: None
     """
-    for statement in ACL_READER_INDEXES_DDL:
+    for statement in _ACL_READER_INDEXES_DDL:
         await store.execute(statement)
     log.info("agent-acl v002: reader indexes created")
