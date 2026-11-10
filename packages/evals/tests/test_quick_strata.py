@@ -163,6 +163,21 @@ class TestAComparisonReadsEachArmPerKind:
         assert TOO_FEW_CASES not in candidate[0]["strata"]["plain"]
         assert all(summary.strata for summary in comparison.arms.values())
 
+    async def test_the_page_prints_a_stratum_s_name_and_the_comparison_keys_it_by_its_id(self) -> None:
+        """A stratum's id with an underscore (``plain_ticket``): the page prints the name every surface prints for it
+        (``plain ticket``), in its By stratum header and its cases' Stratum cells, never the id; a program reads it by
+        the id it declared."""
+        renamed = [{**case, "stratum": f"{case['stratum']}_ticket"} for case in CASES]
+        comparison = await _compared(renamed, [QUEUE])
+
+        rendered = report_markdown(comparison.report)
+        assert "plain ticket" in rendered and "lookalike ticket" in rendered
+        assert "plain_ticket" not in rendered and "lookalike_ticket" not in rendered
+        rows = comparison.strata(reading="Accuracy")
+        assert rows and all(set(row["strata"]) == {"lookalike_ticket", "plain_ticket"} for row in rows)
+        (cases,) = [block for block in comparison.report.blocks if getattr(block, "name", None) == "cases"]
+        assert {row["stratum"].text for row in cases.rows} == {"lookalike ticket", "plain ticket"}
+
     async def test_unstratified_cases_have_no_strata_rows(self) -> None:
         unkinded = [{key: value for key, value in case.items() if key != "stratum"} for case in CASES]
         comparison = await _compared(unkinded, [answered])

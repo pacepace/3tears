@@ -352,7 +352,7 @@ class TestTheReportCarriesStrata:
         recall = _row(table, "sonnet", "Recall of NONE")
         assert recall[_column(table, "lookalike")] == "1 of 3 (n=3)"
         assert recall[_column(table, "plain")] == "100% (76 to 100) (n=12)"
-        assert _row(table, "sonnet", "Conversation tone (judged)")[_column(table, "lookalike")] == "2.0 ± 0 (n=3)"
+        assert _row(table, "sonnet", "conversation tone (judged)")[_column(table, "lookalike")] == "2.0 ± 0 (n=3)"
 
     def test_a_money_measure_s_spread_reads_in_its_mean_s_form(self) -> None:
         """A cost per turn is a rate, so its standard error reads as one beside its mean: two figures, whole dollars

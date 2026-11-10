@@ -13,6 +13,7 @@ import re
 from collections.abc import Iterable, Sequence
 
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
+from threetears.evals.analysis.report.words import table_label
 
 
 def code_span(text: str) -> str:
@@ -80,9 +81,11 @@ def table_lines(block: TableBlock) -> list[str]:
 
 
 def _words(cell: TableCell) -> str:
-    """A cell as Markdown prints it: its text, after its arm's tag where it names an arm (``A · Spark``). A status
-    is the text's own word; Markdown has no colour to add."""
-    return cell.text if cell.tag is None else f"{cell.tag} · {cell.text}"
+    """A cell as Markdown prints it: its text as a table prints words (:func:`~threetears.evals.analysis.report.words.
+    table_label`), after its arm's tag where it names an arm (``A · Spark``). A status is the text's own word; Markdown
+    has no colour to add."""
+    text = table_label(cell.text)
+    return text if cell.tag is None else f"{cell.tag} · {text}"
 
 
 def markdown_table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> list[str]:

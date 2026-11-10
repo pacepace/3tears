@@ -124,7 +124,14 @@ from threetears.evals.analysis.report.cost_unit import (
     priced_in_part,
 )
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
-from threetears.evals.analysis.report.words import TOLD_APART, arm_tags, reader_arm_name, text_levers, told_apart
+from threetears.evals.analysis.report.words import (
+    TOLD_APART,
+    arm_tags,
+    reader_arm_name,
+    stratum_name,
+    text_levers,
+    told_apart,
+)
 from threetears.evals.analysis.report_input import (
     SHARE_UNIT,
     Arm,
@@ -3537,7 +3544,7 @@ def reader_name(kind: NamedKind, identifier: str, report_input: ReportInput) -> 
         return report_input.judged[identifier].label or humanize("dimension", identifier)
     if kind == "stratum":
         stratum = _stratum(report_input, identifier)
-        return stratum.name or humanize("dimension", stratum.id)
+        return stratum_name(stratum.id, stratum.name)
     if kind == "task":
         task = _task(report_input, identifier)
         return task.name or humanize("dimension", task.id)
