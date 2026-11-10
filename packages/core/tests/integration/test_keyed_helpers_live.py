@@ -141,7 +141,8 @@ def _batched_on_yugabyte(plan: StatementPlan, seeded: _Seeded) -> None:
     """on YugabyteDB the keys are joined by a batched nested loop: one storage request a batch, never one a key (the
     hint every keyed join carries; this fails if the hint is ignored)."""
     if seeded.yugabyte:
-        assert "YB Batched Nested Loop Join" in _node_types(plan), plan.plan
+        # YugabyteDB's JSON plan names the node "YB Batched Nested Loop" (its text plan adds " Join")
+        assert any(node.startswith("YB Batched Nested Loop") for node in _node_types(plan)), plan.plan
 
 
 async def _rolled_back(conn: asyncpg.Connection, run: Any) -> float:
