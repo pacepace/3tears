@@ -487,7 +487,7 @@ turns came from (each path printed whole):
 writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gemini-3.8-flash
 | reading | shipped | lead-first |
 |---|---|---|
-| Report finished | 0.43 | 0.86 |
+| Report finished | 43% (3 of 7) | 86% (6 of 7) |
 | Bounces | 0.86 | 1.00 |
 ...
 | Must-fix findings open | 0.43 | 0.29 |
@@ -496,21 +496,21 @@ writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gem
 | Writer turns | 12.57 | 12.29 |
 ...
 | report_writer.first_screen (judged) | 5.00 | 5.00 |
-| report_writer.coherent_story (judged) | 4.71 | 5.00 |
+| report_writer.coherent_story (judged) | 5.00 | 4.86 |
 | report_writer.honest_emphasis (judged) | 5.00 | 5.00 |
 | report_writer.sound_elision (judged) | 5.00 | 5.00 |
 | report_writer.confounds_handled (judged) | 5.00 | 5.00 |
 | report_writer.actionable_next_steps (judged) | 5.00 | 5.00 |
-| report_writer.evidence_fits_claims (judged) | 4.43 | 4.71 |
+| report_writer.evidence_fits_claims (judged) | 4.71 | 5.00 |
 ...
 | Candidate | Pairs | Reads | Candidate's share (%) | Control's share (%) | 95% interval (%) |
 |---|---|---|---|---|---|
-| lead-first | every pair | cannot tell apart | 52 | 48 | 15 to 89 |
-| lead-first | both pages finished | cannot tell apart (too few cases) | 50 | 50 | 0 to 100 |
+| lead-first | every pair | cannot tell apart | 73 | 27 | 36 to 100 |
+| lead-first | both pages finished | cannot tell apart (too few cases) | 58 | 42 | 0 to 100 |
 
 | Candidate | Order consistency | First-slot lean (pts) | Can't tell | Held-out cases to settle | Spent |
 |---|---|---|---|---|---|
-| lead-first | 86% (6 of 7) | 9 | 0 | 3,115 | $0.14 of $1.95 |
+| lead-first | 86% (6 of 7) | -5 | 0 | 21 | $0.13 of $1.95 |
 ...
 promotion of lead-first: Undecided: on the primary reading the evidence cannot tell lead-first and shipped apart, and only an improved primary reading promotes.
 shipped: writer turns replayed from .../examples/5-writer/recordings/turns/shipped-4e14e276b568-claude-sonnet-5-5-medium-r2
@@ -522,14 +522,14 @@ A report finished is one the editor cleared, so it is stored finished rather tha
 sentence, and the same two side-by-side tables head its Scorecard:
 
 ```text
-**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 52% of its preference over shipped (50% is even), too few cases to tell from an even split; if the share stayed near 52%, roughly 3,000 cases would settle it.**
+**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 73% of its preference over shipped (50% is even), too few cases to tell from an even split; if the share stayed near 73%, roughly 20 cases would settle it.**
 ```
 
 Further down it reads the two code measures that moved most:
 
 ```text
-| Report finished | 43% [16%, 75%] | 86% [49%, 97%] | +42.9 pts | [-49.5, 100.0] pts | cannot tell apart | 7 paired |
-| Must-fix findings open | 0.43 [0, 0.92] | 0.29 [0, 0.98] | -0.14 | [-1.31, 1.03] | cannot tell apart | 7 paired |
+| Report finished | 43% (16 to 75) | 86% (49 to 97) | +43 pts | -49 to +100 pts | cannot tell apart | 7 paired |
+| Must-fix findings open | 0.4 (0 to 0.9) | 0.3 (0 to 1.0) | -0.1 | -1.3 to +1.0 | cannot tell apart | 7 paired |
 ```
 
 | What | Recorded |
