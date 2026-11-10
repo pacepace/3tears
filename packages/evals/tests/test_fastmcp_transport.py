@@ -21,10 +21,7 @@ from typing import Any
 import pytest
 from fastmcp import Client, FastMCP
 
-from pydantic import Field
-
 from threetears.evals.actions import (
-    Action,
     Caller,
     analyst_tools,
     catalogue_primer,
@@ -32,8 +29,6 @@ from threetears.evals.actions import (
     read_only_tools,
     standard_tools,
 )
-from threetears.evals.ops import OpsHost
-from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.ops import report_read
 from threetears.evals.transports.fastmcp import CallTimedOut, mount_fastmcp
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
@@ -108,7 +103,7 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
         assert document["doc"] is not None and f"# {document['doc']['headline']}" in report
 
 
-async def test_a_report_s_body_is_sent_once_as_the_text_and_every_other_field_as_data() -> None:
+async def test_a_report_s_body_is_its_text_and_its_structured_content_is_the_whole_document() -> None:
     fixture = off_loop(ops_fixture)
     async with Client(_served(fixture)) as client:
         for form in ("markdown", "html", "json"):
@@ -120,66 +115,31 @@ async def test_a_report_s_body_is_sent_once_as_the_text_and_every_other_field_as
                 report_read, fixture.host.eval_host, fixture.campaign.id, fixture.campaign.scope_id, format=form
             )
             assert _undated(block.text) == _undated(expected.body)
-            assert result.structured_content == {
-                "campaign_id": fixture.campaign.id,
-                "basis": expected.basis,
-                "analysis_id": expected.analysis_id,
-                "analysis_basis": expected.analysis_basis,
-                "doc": expected.doc,
-                "needs_regeneration": expected.needs_regeneration,
-                "draft": expected.draft,
-                "format": form,
+            structured = result.structured_content
+            assert structured is not None
+            assert {**structured, "body": _undated(structured["body"])} == {
+                **expected.model_dump(mode="json"),
+                "body": _undated(expected.body),
             }
-        # A result whose text is composed from its fields keeps every field.
-        _, listed, _ = await _text(client, "evals", {"action": "templates_list"})
-    assert listed is not None and [template["id"] for template in listed["templates"]] == [toyhost_template().id]
 
 
-class _Note(EvalBaseModel):
-    """A host action's parameters."""
-
-    echoed: str = Field(description="The words to echo.")
-
-
-class _Noted(EvalBaseModel):
-    """A host action's result, whose text is its note verbatim."""
-
-    note: str
-    scope_id: str
-
-
-async def _echo(host: OpsHost, caller: Caller, params: _Note) -> _Noted:
-    return _Noted(note=params.echoed, scope_id=caller.scope_id)
-
-
-def _echo_action(**declared: Any) -> Action:
-    return Action(
-        name="note_echo",
-        summary="Echo a note back.",
-        workflow="Host",
-        permission="read",
-        params=_Note,
-        result=_Noted,
-        handler=_echo,
-        render=lambda result: result.note,
-        example={"echoed": "hello"},
-        **declared,
-    )
-
-
-async def test_a_field_the_text_repeats_is_left_out_only_where_its_action_declares_it() -> None:
+async def test_a_client_reading_structured_content_alone_reads_the_report_code_only_and_written() -> None:
+    """A client may show a result's structured content in place of its text, so the page is there too."""
     fixture = off_loop(ops_fixture)
-    for declared, sent in (
-        ({}, {"note": "hi", "scope_id": CALLER.scope_id}),
-        ({"text_field": "note"}, {"scope_id": CALLER.scope_id}),
-    ):
-        server = FastMCP("toyhost")
-        mount_fastmcp(server, eval_catalogue((_echo_action(**declared),)), host=fixture.host, caller=lambda: CALLER)
-        async with Client(server) as client:
-            text, structured, is_error = await _text(client, "evals", {"action": "note_echo", "echoed": "hi"})
-        assert (text, structured, is_error) == ("hi", sent, False)
-    with pytest.raises(ValueError, match="text_field 'body' is no field of _Noted"):
-        _echo_action(text_field="body")
+    read = {"action": "report_read", "campaign_id": fixture.campaign.id}
+    async with Client(_served(fixture)) as client:
+        code_only = await client.call_tool("evals", read)
+        _, generation, _ = await _text(
+            client, "evals", {"action": "analysis_generate", "campaign_id": fixture.campaign.id}
+        )
+        assert generation is not None
+        assert (await _done(client, generation["jobs"][0]["job_id"]))["state"] == "completed"
+        written = await client.call_tool("evals", read)
+    for result, basis in ((code_only, "code_only"), (written, "analysis")):
+        structured = result.structured_content
+        assert structured is not None and structured["basis"] == basis
+        (block,) = result.content
+        assert block.text and structured.get("body") == block.text
 
 
 def _undated(text: str) -> str:

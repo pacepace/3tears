@@ -54,8 +54,9 @@ These hooks are what a multi-tenant host needs, so no host rebuilds :meth:`Catal
   the call (a 5xx status) — so a client branches on the kind, never on the text — and, where the call has a corrected
   form, ``"recovery"``: the parameters at fault, the ones accepted, an example, the valid values or the action that
   lists them, and the help call that explains (:class:`~threetears.evals.actions.Recovery`). A
-  result carries its text and the result model's JSON as structured content, less the one field an action declares
-  its text is (``Action.text_field``): ``report_read``'s body is its text, so the body is sent once.
+  result carries its text and, as structured content, the result model's JSON whole: the structured content is the
+  result and the text its rendering, and a client that shows structured content in place of the text must still see
+  everything, so ``report_read``'s body is both its text and a field of its structured content.
 
 **One call timeout, never one computed from the call.** No action's call waits on a model — work that calls one
 runs as a job the caller polls — so a call is a few store round-trips, and every call is held to one timeout
@@ -728,10 +729,8 @@ class CatalogueTool(Tool):
 
         :param arguments: The call's arguments, ``action`` among them.
         :ptype arguments: dict[str, Any]
-        :return: The result: text always; as structured content, the result model's JSON when the call
-            succeeded, less the field its action declares its text is (``report_read``'s ``body``), so a long body is
-            sent once,
-            or ``{"ending": "refused" | "raised", "refusal": {"kind": ..., "status": ...}}``, with ``recovery``
+        :return: The result: text always; as structured content, the result model's JSON whole when the call
+            succeeded (``report_read``'s ``body`` included, which is also its text), or ``{"ending": "refused" | "raised", "refusal": {"kind": ..., "status": ...}}``, with ``recovery``
             (the corrected call's fields) where the refusal carries one, and the error flag when it was refused or
             raised (:attr:`~threetears.evals.actions.ActionOutcome.ending`); and the
             error flag alone, with text saying so and to read what it may have done before calling it again, when it
@@ -754,7 +753,9 @@ class CatalogueTool(Tool):
                 is_error=True,
             )
         structured = (
-            _beside(outcome) if outcome.refusal is None else _refusal(outcome.ending, outcome.refusal, outcome.recovery)
+            outcome.structured
+            if outcome.refusal is None
+            else _refusal(outcome.ending, outcome.refusal, outcome.recovery)
         )
         note = (
             await _note(binding.annotate, call, outcome) if binding.annotate is not None and call is not None else None
@@ -773,17 +774,6 @@ def _refusal(ending: str, refusal: Refusal, recovery: Recovery | None) -> dict[s
     if recovery is not None:
         structured["recovery"] = recovery.as_data()
     return structured
-
-
-def _beside(outcome: ActionOutcome) -> dict[str, Any] | None:
-    """A result's JSON as it is sent beside its text: the field its action declares the text is
-    (:attr:`~threetears.evals.actions.Action.text_field`) left out, so a report's body, which can run to megabytes,
-    reaches the client once. Every other result is sent whole.
-    """
-    structured = outcome.structured
-    if structured is None or outcome.text_field is None:
-        return structured
-    return {key: value for key, value in structured.items() if key != outcome.text_field}
 
 
 #: What :func:`mount_fastmcp` names the server it builds around a host it is handed alone.
