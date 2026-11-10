@@ -49,7 +49,7 @@ from threetears.core.keyed import (
     update_from,
     update_keyed,
 )
-from threetears.core.testing.calibrate import best_seconds, budget_problem
+from threetears.core.testing.calibrate import best_seconds, best_seconds_interleaved, budget_problem
 from threetears.core.testing.plans import (
     PlanRecorder,
     StatementPlan,
@@ -501,9 +501,9 @@ class TestKeyedWrites:
         """Flips if keyset_rows loses or doubles a row of a state's 6,000, a page's plan reads past its rows, or the
         drain is over 2x the bare.
 
-        The bare is the one hand-written statement reading the same rows in the same order through the same index
-        (``SELECT ... WHERE state = $1 ORDER BY geo, id``): the drain pays a statement a page for never reading a
-        prefix past the transport's cap in one."""
+        The bare is the same drain hand-written: a keyset loop of 1,000-row pages, the same key predicate and ORDER BY
+        (``SELECT ... WHERE state = $1 [AND (geo, id) > ($2, $3)] ORDER BY geo, id LIMIT 1000``) until a short page,
+        natively bound; the two run turn about, best of N each, so a busy machine's load lands on both."""
         order = [Sort("geo"), Sort("id", cast="bigint")]
         columns = ["state", "geo", "id", "votes"]
         recorder = PlanRecorder(seeded.conn)
@@ -514,9 +514,24 @@ class TestKeyedWrites:
         ]
         assert len(rows) == _GEOS * _IDS
         _plans_ok(recorder, seeded)
-        baseline = await best_seconds(lambda: seeded.conn.fetch(bare_sql, "S23"))
-        took = await best_seconds(
-            lambda: keyset_rows(seeded.conn, _TABLE, columns=columns, by={"state": "S23"}, order=order, page=1000)
+        first_sql = f"{bare_sql} LIMIT 1000"
+        next_sql = (
+            f"SELECT state, geo, id, votes FROM {_TABLE} WHERE state = $1 AND (geo, id) > ($2, $3) "
+            "ORDER BY geo, id LIMIT 1000"
+        )
+
+        async def bare_drain() -> list[Any]:
+            drained = list(await seeded.conn.fetch(first_sql, "S23"))
+            page = drained
+            while len(page) == 1000:
+                page = list(await seeded.conn.fetch(next_sql, "S23", page[-1]["geo"], page[-1]["id"]))
+                drained += page
+            return drained
+
+        assert len(await bare_drain()) == len(rows)
+        baseline, took = await best_seconds_interleaved(
+            bare_drain,
+            lambda: keyset_rows(seeded.conn, _TABLE, columns=columns, by={"state": "S23"}, order=order, page=1000),
         )
         problem = _budget("keyset_rows of a state's 6,000 rows, 1,000 a page", took, baseline)
         assert problem is None, problem
