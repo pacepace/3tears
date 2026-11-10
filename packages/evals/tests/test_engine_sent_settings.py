@@ -27,7 +27,6 @@ from typing import Any, Self
 
 import pytest
 
-from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis import inter_judge_agreement, judge_drift, judge_self_agreement, tier_sentence
 from threetears.evals.analysis.agreement import (
     judge_agreement,
@@ -355,8 +354,8 @@ class TestAJudgeSentDifferentlyIsAnotherJudge:
         (sent,) = judge_evidence_tiers(empty, alone, [budget_judge])
         (silent,) = judge_evidence_tiers(empty, alone, [silent_judge])
 
-        assert f", sent {request_settings_words(_WORD)}" in tier_sentence(sent, PageForms.off_page())
-        assert ", request settings unconfirmed" in tier_sentence(silent, PageForms.off_page())
+        assert f", sent {request_settings_words(_WORD)}" in tier_sentence(sent)
+        assert ", request settings unconfirmed" in tier_sentence(silent)
 
 
 def _seconded(result_id: str, case: str, pass_id: str, sent: ClientRequestSettings | None, score: int) -> EvalResult:

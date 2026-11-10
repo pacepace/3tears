@@ -44,7 +44,6 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis import (
     JudgeKey,
     assemble_context_bundle,
@@ -444,9 +443,7 @@ class TestTheTiersFromResults:
         assert criterion.agreement is not None and criterion.agreement > CALIBRATION_MIN_AGREEMENT
         assert (criterion.state, tier.tier) == ("undecided", "undetermined")
         assert criterion.results_needed is not None and criterion.results_needed > 0
-        assert f"about {criterion.results_needed} more results would decide it" in tier_sentence(
-            tier, PageForms.off_page()
-        )
+        assert f"about {criterion.results_needed} more results would decide it" in tier_sentence(tier)
 
     def test_nineteen_ratings_do_not(self) -> None:
         tier = self._tiers(rated=CALIBRATION_MIN_RESULTS - 1)
@@ -466,12 +463,12 @@ class TestTheTiersFromResults:
         tier = self._tiers(repeated=20)
         assert (tier.separation.agreement, tier.separation.state, tier.tier) == (1.0, "insufficient", "undetermined")
         assert tier.separation.results_needed == SEPARATION_MIN_RESULTS - 20
-        assert f"needs {SEPARATION_MIN_RESULTS - 20} more results" in tier_sentence(tier, PageForms.off_page())
+        assert f"needs {SEPARATION_MIN_RESULTS - 20} more results" in tier_sentence(tier)
 
     def test_an_unmeasured_calibration_says_how_many_ratings_it_needs(self) -> None:
         tier = self._tiers(repeated=SEPARATING_RESULTS)
         assert (tier.calibration.state, tier.calibration.results_needed) == ("insufficient", CALIBRATION_MIN_RESULTS)
-        assert f"needs {CALIBRATION_MIN_RESULTS} results" in tier_sentence(tier, PageForms.off_page())
+        assert f"needs {CALIBRATION_MIN_RESULTS} results" in tier_sentence(tier)
         assert (tier.separation.state, tier.separation.results_needed, tier.tier) == ("met", None, "separation")
 
     def test_an_undefined_kappa_below_the_floor_still_says_how_many_more_results_it_needs(self) -> None:
@@ -486,7 +483,7 @@ class TestTheTiersFromResults:
             separation=separation_criterion(0, 0, None),
         )
         assert tier.calibration.results_needed == CALIBRATION_MIN_RESULTS - 7
-        sentence = tier_sentence(tier, PageForms.off_page())
+        sentence = tier_sentence(tier)
         assert "undefined over 7 pairs from 7 results" in sentence
         assert f"needs {CALIBRATION_MIN_RESULTS - 7} more results" in sentence
 
@@ -797,7 +794,7 @@ class TestATierBelongsToTheWholeJudge:
         (tier,) = judge_evidence_tiers(
             judge_agreement([], []), judge_self_agreement([]), {_key(config="cfg-v1@aaaaaaaaaaaa")}
         )
-        assert tier_sentence(tier, PageForms.off_page()).startswith(
+        assert tier_sentence(tier).startswith(
             f"{TONE} (judge-a, config cfg-v1@aaaaaaaaaaaa, temperature 0, request settings unconfirmed): undetermined"
         )
 
@@ -949,7 +946,7 @@ class TestTheWordsClaimOnlyWhatWasMeasured:
             separation=separation_criterion(SEPARATION_MIN_RESULTS, SEPARATION_MIN_RESULTS, 0.9, (0.85, 1.0)),
         )
         assert tier.calibration.state == "not_met", "the case the words must stay true for"
-        words = tier_sentence(tier, PageForms.off_page())
+        words = tier_sentence(tier)
         assert "not checked" not in words
         assert (
             ": separation — agreement with people 0.1 (bounds -0.1 to 0.3) over 20 pairs from 20 results, misses"

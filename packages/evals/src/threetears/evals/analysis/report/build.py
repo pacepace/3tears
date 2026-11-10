@@ -33,7 +33,7 @@ from dataclasses import replace
 from itertools import chain
 from typing import Literal, NamedTuple, Protocol, TypedDict
 
-from threetears.evals.analysis.agreement import tier_sentence
+from threetears.evals.analysis.agreement import tier_sentence_in
 from threetears.evals.analysis.arms import (
     arm_levels,
     arm_names,
@@ -3919,10 +3919,10 @@ _DIMS = "\x00"
 def _judge_sentences(bundle: AnalysisContextBundle, forms: PageForms) -> list[str]:
     """Each judge's tier, one sentence per judge that reads alike: the dimensions it holds for named together, its
     settings as words, never ``key=value``, and its prompt's id left to the bundle's JSON, which names it by dimension
-    (``tier_sentence`` states one dimension in full)."""
+    (``tier_sentence_in`` states one dimension in full)."""
     alike: dict[str, list[str]] = {}
     for tier in bundle.judge_evidence_tiers:
-        said = tier_sentence(tier.model_copy(update={"rubric_dim": _DIMS, "judge_config_id": None}), forms)
+        said = tier_sentence_in(tier.model_copy(update={"rubric_dim": _DIMS, "judge_config_id": None}), forms)
         said = said.replace(sent_settings_phrase(tier.judge_sent_settings), _sent_words(tier.judge_sent_settings))
         # The dimension by the name every other surface gives it, never its stored id.
         if (dim := judged_name(tier.rubric_dim)) not in alike.setdefault(said, []):
