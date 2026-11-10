@@ -488,9 +488,9 @@ writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gem
 | reading | shipped | lead-first |
 |---|---|---|
 | Report finished | 43% (3 of 7) | 86% (6 of 7) |
-| Bounces | 0.86 | 1.00 |
+| Bounces | 0.9 | 1.0 |
 ...
-| Must-fix findings open | 0.43 | 0.29 |
+| Must-fix findings open | 0.4 | 0.3 |
 | Should-fix findings open | 2.43 | 1.57 |
 ...
 | Writer turns | 12.57 | 12.29 |
