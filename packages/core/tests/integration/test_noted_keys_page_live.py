@@ -109,7 +109,9 @@ async def ring(db_container: str) -> AsyncIterator[_Ring]:
         await conn.close()
 
 
-async def _every_page(conn: Any, ring: _Ring, *, limit: int, max_bytes: int) -> tuple[set[tuple[str, ...]], int]:
+async def _every_page(
+    conn: Any, ring: _Ring, *, limit: int, max_bytes: int, every_tenant: bool = False
+) -> tuple[set[tuple[str, ...]], int]:
     keys: set[tuple[str, ...]] = set()
     cursor: NotedKeysCursor | None = None
     pages = 0
@@ -123,6 +125,7 @@ async def _every_page(conn: Any, ring: _Ring, *, limit: int, max_bytes: int) -> 
             cursor=cursor,
             limit=limit,
             max_bytes=max_bytes,
+            every_tenant=every_tenant,
         )
         assert isinstance(page, NotedKeysPage), page
         assert not page.whole_table
@@ -147,6 +150,15 @@ class TestACommitsKeysAreReadBackFromItsNotes:
         keys, pages = await _every_page(ring.conn, ring, limit=limit, max_bytes=max_bytes)
         assert keys == {(str(g), "TX") for g in range(1, _COMMIT + 1)}
         assert pages >= _COMMIT // limit
+
+    async def test_every_tenant_names_the_other_tenants_keys_too(self, ring: _Ring) -> None:
+        """Flips if an operator's read of every tenant's notes misses another tenant's, or a tenant's reader sees
+        them."""
+        mine, _ = await _every_page(ring.conn, ring, limit=5000, max_bytes=4 << 20)
+        every, _ = await _every_page(ring.conn, ring, limit=5000, max_bytes=4 << 20, every_tenant=True)
+        theirs = {(f"theirs-{g}",) for g in range(1, 101)}
+        assert not mine & theirs
+        assert every == mine | theirs
 
     async def test_the_index_order_a_page_is_read_in_is_never_left_on_its_connection(self, ring: _Ring) -> None:
         """Flips if the planner settings a page's transaction takes outlive it on the (pooled) connection."""

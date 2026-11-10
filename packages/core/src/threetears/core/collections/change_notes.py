@@ -1985,7 +1985,7 @@ def _noted_time(micros: int) -> datetime:
     return _EPOCH + timedelta(microseconds=micros)
 
 
-def _noted_keys_sql(owner: str, slot: int, *, all_tenants: bool) -> str:
+def _noted_keys_sql(owner: str, slot: int, *, all_tenants: bool, every_tenant: bool = False) -> str:
     """one ring note table's notes of a table and tenant in a bracket, after a time, in ``noted_at`` order.
 
     Answered from the ``(table_name, noted_at)`` index, which carries ``keys``, ``key_text``, ``columns`` and
@@ -2005,6 +2005,8 @@ def _noted_keys_sql(owner: str, slot: int, *, all_tenants: bool) -> str:
     :ptype slot: int
     :param all_tenants: the notes of ``_all`` (``tenant IS NULL``) rather than of the tenant ``$2`` names
     :ptype all_tenants: bool
+    :param every_tenant: every tenant's notes of the table (``$2`` unused): an operator's check
+    :ptype every_tenant: bool
     :return: the statement, answering ``noted`` (``noted_at`` in microseconds since the epoch, :data:`_NOTED_MICROS`),
         ``keys``, ``columns``, ``bytes`` by position: ``$1`` table,
         ``$2`` tenant (NULL for ``_all``), ``$3`` after (the last time read, or one microsecond before the bracket:
@@ -2012,7 +2014,13 @@ def _noted_keys_sql(owner: str, slot: int, *, all_tenants: bool) -> str:
         ``$8`` the planner settings to put back (:data:`_RESTORED`)
     :rtype: str
     """
-    tenant = "tenant IS NULL AND $2::text IS NULL" if all_tenants else "tenant = $2::text"
+    if every_tenant:
+        # $2 still names its type, so the statement takes the same parameters
+        tenant = "($2::text IS NULL OR TRUE)"
+    elif all_tenants:
+        tenant = "tenant IS NULL AND $2::text IS NULL"
+    else:
+        tenant = "tenant = $2::text"
     return (  # each interpolated piece is a fixed name this module builds
         f"SELECT {_NOTED_MICROS} AS noted, {_KEYS_UNLESS_SPLIT} AS keys, columns, "
         "char_length(key_text) + 7 * cardinality(keys) + 1 AS bytes, key_text "
@@ -2101,6 +2109,7 @@ async def noted_keys_page(
     cursor: NotedKeysCursor | None,
     limit: int,
     max_bytes: int,
+    every_tenant: bool = False,
 ) -> NotedKeysPage | str:
     """a page of the keys ``table``'s notes of ``tenant_token`` name in a commit's notes bracket, or why they cannot be read.
 
@@ -2133,6 +2142,9 @@ async def noted_keys_page(
     :ptype limit: int
     :param max_bytes: the most bytes of keys a page holds
     :ptype max_bytes: int
+    :param every_tenant: read every tenant's notes of the table, ``tenant_token`` unused: for an operator's check of a
+        table whose rows carry their tenant in their key (a backup's live check), never a tenant's own reader
+    :ptype every_tenant: bool
     :return: the page; or ``"notes_unavailable"`` (no ring) or ``"not_covered"`` (the ring no longer holds every
         note of the bracket, or moved past the cursor's table between pages)
     :rtype: NotedKeysPage | str
@@ -2144,7 +2156,9 @@ async def noted_keys_page(
     # one connection: a pool's own, or the one given
     held = conn.acquire() if not hasattr(conn, "transaction") else nullcontext(conn)
     async with held as one:
-        return await _noted_keys_page(one, owner, table, tenant_token, since, until, cursor, limit, max_bytes)
+        return await _noted_keys_page(
+            one, owner, table, tenant_token, since, until, cursor, limit, max_bytes, every_tenant
+        )
 
 
 async def _noted_keys_page(
@@ -2157,6 +2171,7 @@ async def _noted_keys_page(
     cursor: NotedKeysCursor | None,
     limit: int,
     max_bytes: int,
+    every: bool,
 ) -> NotedKeysPage | str:
     try:
         # the ring row, and the planner told to keep the index's order for the notes read after it (_INDEX_ORDER),
@@ -2189,7 +2204,9 @@ async def _noted_keys_page(
         return found
 
     try:
-        return await _noted_keys_read(notes, owner, table, tenant, since, until, cursor, limit, max_bytes, ring)
+        return await _noted_keys_read(
+            notes, owner, table, tenant, since, until, cursor, limit, max_bytes, ring, every=every
+        )
     finally:
         if told[0]:
             await _put_back(conn, was)
@@ -2232,6 +2249,8 @@ async def _noted_keys_read(
     limit: int,
     max_bytes: int,
     ring: Any,
+    *,
+    every: bool = False,
 ) -> NotedKeysPage | str:
     current = int(ring["current_ring"])
     previous = (current - 1 + NOTE_RING_SIZE) % NOTE_RING_SIZE
@@ -2283,7 +2302,7 @@ async def _noted_keys_read(
         start = at.after if slot == at.slot else None
         # the time read up to, or a microsecond (the clock's grain) before the bracket: one range for the index
         after = start if start is not None else since - _CLOCK_GRAIN
-        sql = _noted_keys_sql(owner, slot, all_tenants=tenant is None)
+        sql = _noted_keys_sql(owner, slot, all_tenants=tenant is None, every_tenant=every)
         found = await notes(sql, table, tenant, after, until, left + 1)
         if not found:
             continue
