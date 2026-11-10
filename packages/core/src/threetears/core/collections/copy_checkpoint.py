@@ -636,11 +636,8 @@ class CopyCheckpoints:
             await asyncio.to_thread(self._backend.stage_rows, stage, table.name, pa.table({}), table.key)
             for object_name, _, rows in source.tables[table.name].parts:
                 data = await self._store.get(object_name)
-                part = await asyncio.to_thread(_decode_part, data)
-                if part.num_rows != rows:
-                    raise ValueError(f"part {object_name} holds {part.num_rows} rows, its manifest says {rows}")
-                await asyncio.to_thread(self._backend.stage_rows, stage, table.name, part, table.key)
-                del part, data
+                await asyncio.to_thread(self._stage_part, stage, table, object_name, data, rows)
+                del data
         except Exception as exc:  # noqa: BLE001 - the table loads from the previous checkpoint or is read whole, said
             contain(
                 exc,
@@ -651,6 +648,16 @@ class CopyCheckpoints:
             await asyncio.to_thread(self._backend.drop_stage, stage)
             return False
         return True
+
+    def _stage_part(self, stage: str, table: FollowedTable, object_name: str, data: bytes, rows: int) -> None:
+        """one part decoded and staged, on the caller's worker thread: one hop a part.
+
+        :raises ValueError: when the part holds other than the rows its manifest says
+        """
+        part = _decode_part(data)
+        if part.num_rows != rows:
+            raise ValueError(f"part {object_name} holds {part.num_rows} rows, its manifest says {rows}")
+        self._backend.stage_rows(stage, table.name, part, table.key)
 
     # --- writing ---------------------------------------------------------------------------------
 
@@ -1121,14 +1128,47 @@ def _split_by_scope(reader: Any, table: FollowedTable) -> Iterator[tuple[str | N
         if table.scope is None:
             yield None, batch
             continue
-        column = batch.column(batch.schema.get_field_index(table.scope[0]))
-        values = column.unique().to_pylist()
-        if len(values) == 1:
-            yield table.scope_of(values[0]), batch
-            continue
-        for value in values:
-            mask = pc.is_null(column) if value is None else pc.fill_null(pc.equal(column, value), False)
-            yield table.scope_of(value), batch.filter(mask)
+        for value, rows in _scope_runs(batch, table.scope[0]):
+            yield table.scope_of(value), rows
+
+
+def _scope_runs(batch: Any, column: str) -> Iterator[tuple[Any, Any]]:
+    """each value of a batch's scope column with the rows holding it, in the order the values first appear: the batch
+    cut where the value changes (slices, no copy) when each value's rows run together, as a copy's rows of one scope
+    do; else cut the same way after one stable sort by value. One pass over the column, never one per value.
+
+    :param batch: the rows
+    :ptype batch: pyarrow.RecordBatch
+    :param column: the scope column
+    :ptype column: str
+    :return: each value and its rows
+    :rtype: Iterator[tuple[Any, pyarrow.RecordBatch]]
+    """
+    if batch.num_rows == 0:
+        return
+    encoded = batch.column(batch.schema.get_field_index(column)).dictionary_encode(null_encoding="encode")
+    values = encoded.dictionary.to_pylist()
+    codes = encoded.indices
+    starts = _run_starts(codes)
+    if len(starts) != len(values):
+        order = pc.sort_indices(codes)
+        batch, codes = batch.take(order), codes.take(order)
+        starts = _run_starts(codes)
+    for start, end in zip(starts, [*starts[1:], batch.num_rows], strict=True):
+        yield values[codes[start].as_py()], batch.slice(start, end - start)
+
+
+def _run_starts(codes: Any) -> list[int]:
+    """where each run of equal codes starts.
+
+    :param codes: the codes, none null
+    :ptype codes: pyarrow.Array
+    :return: the first row of each run, in order
+    :rtype: list[int]
+    """
+    rows = len(codes)
+    changed = pc.not_equal(codes.slice(1), codes.slice(0, rows - 1))
+    return [0, *(int(index) + 1 for index in pc.indices_nonzero(changed).to_pylist())]
 
 
 def _scope_batches(cursor: Any, table: str, column: str, cast: str, value: str, rows: int) -> Any:

@@ -4,7 +4,7 @@ The whole reads the no-whole-reads ledger keeps, each held within 2x its bare op
 (:func:`threetears.core.testing.calibrate.budget_problem`):
 
 - ``CopyFollower._stage_whole`` (a cold start, a reset, a schema change): reading a table from L3 a keyset page at a
-  time and staging it beside the copy, against the bare keyset read of the same pages;
+  time and staging it beside the copy, against the bare keyset read of the same pages and their copy-in to DuckDB;
 - ``CopyCheckpoints.stage`` (a start from a checkpoint): every part read back from the Object Store and staged, against
   the bare decode and copy-in of the same parts into DuckDB;
 - ``copy_checkpoint._batches`` (a checkpoint write at a table's cold start): the table read from the copy and stored
@@ -216,15 +216,28 @@ def _reader(backend: DuckDBBackend) -> Any:
 async def test_stage_whole_speed_at_real_size(db: _Db) -> None:
     """a cold start, end to end (CopyFollower.warm and the catch-up that applies it): CopyFollower._stage_whole's
     whole read of the table from L3, which CopyFollower._stage stages, and the one apply, within 2x a bare keyset
-    read of the same pages."""
+    read of the same pages and their copy-in to DuckDB (the work a cold start must do: the rows read, and held)."""
     types = rail_arrow_types(_COLUMNS)
     selected = ", ".join(types)
 
+    def copy_in(con: Any, page: Any, first: bool) -> None:
+        con.register("page", page)
+        try:
+            con.execute("CREATE TABLE plain AS SELECT * FROM page" if first else "INSERT INTO plain SELECT * FROM page")
+        finally:
+            con.unregister("page")
+
     async def bare() -> None:
-        async for _ in keyset_arrow_pages(
-            db.pool, f"SELECT {selected} FROM {_TABLE}", _KEY, types=types, page_size=DEFAULT_PAGE_SIZE
-        ):
-            pass
+        con = duckdb.connect(":memory:")
+        try:
+            first = True
+            async for page in keyset_arrow_pages(
+                db.pool, f"SELECT {selected} FROM {_TABLE}", _KEY, types=types, page_size=DEFAULT_PAGE_SIZE
+            ):
+                await asyncio.to_thread(copy_in, con, page, first)
+                first = False
+        finally:
+            con.close()
 
     async def cold_start() -> None:
         registry = CollectionRegistry()
@@ -245,7 +258,9 @@ async def test_stage_whole_speed_at_real_size(db: _Db) -> None:
 
     baseline = await best_seconds(bare)
     took = await best_seconds(cold_start)
-    print(f"cold start of {_ROWS} rows {took:.2f} s, bare keyset read {baseline:.2f} s, {took / baseline:.2f}x")
+    print(
+        f"cold start of {_ROWS} rows {took:.2f} s, bare keyset read and copy-in {baseline:.2f} s, {took / baseline:.2f}x"
+    )
     problem = budget_problem(f"a cold start (_stage_whole) of {_ROWS} rows", took, baseline)
     assert problem is None, problem
 
