@@ -69,15 +69,12 @@ from threetears.evals.kernel.usage_capture import (
     production_rows,
 )
 from threetears.evals.kernel.provider import sum_optional_tokens
-from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID, USAGE_ROLES, rubric_dim_scale
+from threetears.evals.schema.models import USAGE_ROLES, rubric_dim_scale
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.result_reading import ResultView, UsageView
     from threetears.evals.schema.models import EvalResult, JudgeEvidence, RubricScale, RubricScore
 
-
-#: How a reserved judge axis is named on a trial, where a reader sees it: never by its stored id.
-_AXIS_NAMES: dict[str, str] = {TRANSCRIPT_DIM_ID: "transcript", OUTCOME_DIM_ID: "outcome"}
 
 #: How much worse a lost or failed trial is than a passed one, for keeping trials under the cap: lost first.
 _KEEP_WEIGHT: dict[TrialState, int] = {"lost": 2, "failed": 1, "passed": 0}
@@ -150,17 +147,8 @@ def read_trial(result: ResultView, *, rubric_threshold: int, catalog: Mapping[st
 
 def _failed_checks(result: ResultView, catalog: Mapping[str, MetricDescriptor]) -> list[TrialCheck]:
     """Every check the trial failed, as pass^k reads them (:func:`~threetears.evals.kernel.scoring.failed_checks`),
-    each by its reader name."""
-    return [
-        TrialCheck(name=_reader_name(check.measure, catalog), expression=check.expression)
-        for check in failed_checks(result, catalog)
-    ]
-
-
-def _reader_name(name: str, catalog: Mapping[str, MetricDescriptor]) -> str:
-    """A measure by the name a reader knows it by: its declared reader name, else its key."""
-    descriptor = catalog.get(name)
-    return (descriptor.reader_name if descriptor is not None else None) or name
+    each by its measure's key: a page names it when it is rendered, never the bundle."""
+    return [TrialCheck(name=check.measure, expression=check.expression) for check in failed_checks(result, catalog)]
 
 
 @dataclass(frozen=True)
@@ -456,7 +444,7 @@ def _row(
     ]
     judge = [
         TrialJudgement(
-            dim=_AXIS_NAMES.get(score.dim, score.dim),
+            dim=score.dim,
             criterion=criteria.get(score.dim),
             score=score.score,
             scale=score.scale,
@@ -466,7 +454,7 @@ def _row(
     ]
     judge += [
         TrialJudgement(
-            dim=_AXIS_NAMES.get(dim, dim),
+            dim=dim,
             criterion=criteria.get(dim),
             score=None,
             scale=rubric_dim_scale(dim, scales),
@@ -494,7 +482,7 @@ def _row(
         state=reading.state,
         cause=reading.cause,
         failed_checks=list(reading.failed_checks),
-        judged={_AXIS_NAMES.get(score.dim, score.dim): score.score for score in scores},
+        judged={score.dim: score.score for score in scores},
         judge=judge,
         first_input=capped_text(evidence.case_material, MAX_INPUT_CHARS) if evidence is not None else "",
         excerpt=tail_text(evidence.artifact, MAX_EXCERPT_CHARS) if evidence is not None else "",

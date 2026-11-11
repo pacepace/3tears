@@ -814,9 +814,12 @@ a name, else the host's), an arm's or an aspect's short name, a goal check's or 
 fingerprint. A derived arm's label is frozen with its levers spelled by their ids read as words (`chunk tokens 1024tok,
 retriever top k 3`) and printed with their stored names (`Chunk size 1024tok, retrieval depth 3`); the sentences on
 factors that moved in lockstep, on how many factor pairs were examined and on each co-varying pair are worded at render
-from the facts the bundle holds, each factor by its name. So renaming a lever moves no fingerprint and stales no
-analysis; a page built now prints the new name, and a stored analysis's page prints the names frozen with it until it
-is regenerated.
+from the facts the bundle holds, each factor by its name. A measure is held by its key (a trial's failed check, a
+campaign reading, a bar) and named from the measure catalog when the page is rendered, its reader name outside every
+fingerprint; a level is held by its content hash, the name a campaign's declaration gives it (else the host's display)
+outside every fingerprint, and nothing the bundle orders is ordered by a declared name. So renaming a lever, a measure
+or a level moves no fingerprint and stales no analysis; a page built now prints the new name, and a stored analysis's
+page prints the names frozen with it until it is regenerated.
 
 **The transcripts are kept.** Each session, the analyst's and each editor round's, is stored whole beside the report,
 so `report_read` with a report's id and `include_sessions` returns what the analyst read and did, for an audit.
@@ -840,7 +843,7 @@ recorded before the rounding has no prefix, and every comparison computes the fr
 (`fingerprint(like=recorded)`). Re-assembling a stored analysis's bundle (`inspect_analysis_bundle`) compares
 fingerprints, and when they differ `mismatch_cause` names why: `package_shape` (the bundle schema moved),
 `host_declarations` (the host added, removed or renamed a declaration), or `evidence` (the runs, results or insights
-did). Renaming a lever is none of these: a name is no part of a fingerprint.
+did). Renaming a lever, a measure or a level is none of these: a name is no part of a fingerprint.
 
 **Insights.** A claim the analyst marks durable becomes an insight later campaigns read in their overview. Two claims
 stating one thing mint it once, and a later analysis restating a claim retires the earlier insight, so regenerating

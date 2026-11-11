@@ -157,14 +157,14 @@ def _undecided_bound(
         return f"{head}, neither arm failed any, {tail}"
     if bundle.trials_omitted:
         return None
-    name = descriptor.reader_name or check.name
 
     def failed(key: str) -> int:
+        # A trial holds each check it failed by its measure's key, never by the name a page prints for it.
         return len(
             {
                 trial.case_id
                 for trial in bundle.trials
-                if trial.arm == key and any(failure.name == name for failure in trial.failed_checks)
+                if trial.arm == key and any(failure.name == check.name for failure in trial.failed_checks)
             }
         )
 

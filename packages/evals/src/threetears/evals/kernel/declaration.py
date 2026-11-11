@@ -952,6 +952,14 @@ ARM_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"short_name"})
 AXIS_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"reader_name"})
 
 
+#: The fields of a level (:class:`~threetears.evals.schema.values.SweepableValue`) that say only how a page prints it:
+#: its ``display``, which a campaign's declaration may name in place of the host's (``"current text"`` for a prompt's
+#: digest). A level's identity is its ``content_hash``. An aspect bundle's fingerprint leaves them out of every level
+#: its variant index, its coverage and its declared design carry, and a campaign bundle's out of its declaration's, so
+#: naming or renaming a level stales no analysis and moves no reporter case (owner ruling, 2026-11-11).
+LEVEL_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"display"})
+
+
 #: The fields of an aspect that say only how a page prints it: the one list every reader that must not see them reads.
 #: A bundle carries them under the same names and leaves them out of its fingerprint, and a campaign bundle's
 #: fingerprint leaves them out of its declaration's aspects.

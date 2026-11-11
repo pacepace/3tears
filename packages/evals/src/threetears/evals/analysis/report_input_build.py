@@ -67,7 +67,7 @@ from threetears.evals.analysis.bundle.schema import (
     TrialRow,
 )
 from threetears.evals.analysis.campaign_bundle import KIND_MEANS, CampaignBundle
-from threetears.evals.analysis.campaign_readings import AspectReading, PairReading
+from threetears.evals.analysis.campaign_readings import AspectReading, PairReading, reading_name
 from threetears.evals.analysis.depth import REPEATS_FLOOR
 from threetears.evals.analysis.depth import Precision as BundlePrecision
 from threetears.evals.analysis.depth_reading import AspectDepth, aspect_depth
@@ -110,7 +110,7 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Unanswered,
 )
-from threetears.evals.analysis.report.words import declared_arm_names, printed_arm_labels
+from threetears.evals.analysis.report.words import declared_arm_names, printed_arm_labels, trial_dimension
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import check_held, declared_check_name, measure_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
@@ -527,10 +527,15 @@ class _Builder:
                 status=status.status,
                 value=status.value,
                 interval=status.interval,
-                why=status.reason or None,
+                # Worded here, the measure named as its aspect's catalog names it: the readings hold its key.
+                why=status.reason(reading_name(self.of_aspect(status.aspect), status.measure)),
             )
             for status in self.bundle.readings.bars
         ]
+
+    def of_aspect(self, label: str) -> AnalysisContextBundle:
+        """The evidence of the aspect the label names."""
+        return next(aspect for aspect in self.bundle.aspects if aspect.aspect == label)
 
     def guardrails(self) -> list[dict[str, object]]:
         """Every guardrail check on every aspect, as the pipeline read it, each arm by its label."""
@@ -716,7 +721,7 @@ class _Builder:
                 facts.setdefault(
                     measured.measure,
                     {
-                        "label": measured.name,
+                        "label": reading_name(aspect, measured.measure),
                         "unit": _unit(described, grade) if described is not None else None,
                         "higher_is_better": measured.higher_is_better,
                         "grade": grade,
@@ -928,7 +933,7 @@ class _Builder:
     ) -> Example:
         """One failed trial as an example, its excerpt cut where ``at`` says; with ``inputs``, the start of what its
         case asked and every judged dimension's reason."""
-        reason = _reason(trial, primary)
+        reason = _reason(trial, primary, aspect)
         text = _unescaped(trial.excerpt)
         cut = text[:EXAMPLE_EXCERPT_CHARS] if at == "start" else _failure_excerpt(text, reason, EXAMPLE_EXCERPT_CHARS)
         asked = _unescaped(trial.first_input) if inputs else ""
@@ -1218,20 +1223,20 @@ def _started(text: str, chars: int) -> str:
     return text if len(text) <= chars else text[: chars - len(_CUT)] + _CUT
 
 
-def _reason(trial: TrialRow, primary: str | None) -> str | None:
-    """Why a shown trial failed: the judge's reason on the primary dimension, else the checks it failed, else its
-    error."""
+def _reason(trial: TrialRow, primary: str | None, aspect: AnalysisContextBundle) -> str | None:
+    """Why a shown trial failed: the judge's reason on the primary dimension, else the checks it failed, each as its
+    aspect's catalog names it (a trial holds the check's measure key), else its error."""
     if primary is not None:
         return next((judged.reason.strip() or None for judged in trial.judge if judged.dim == primary), None)
     if trial.failed_checks:
-        return "; ".join(check.name for check in trial.failed_checks)
+        return "; ".join(aspect.catalog_name(check.name) for check in trial.failed_checks)
     return trial.error_words
 
 
 def _reasons(trial: TrialRow) -> dict[str, str] | None:
-    """Each judged dimension's reason on a shown trial, by dimension in the order the judge gave them, each whole as
-    the bundle capped it; None where no dimension gave one."""
-    held = {judged.dim: reason for judged in trial.judge if (reason := judged.reason.strip())}
+    """Each judged dimension's reason on a shown trial, by dimension as a trial names it (:func:`trial_dimension`) in
+    the order the judge gave them, each whole as the bundle capped it; None where no dimension gave one."""
+    held = {trial_dimension(judged.dim): reason for judged in trial.judge if (reason := judged.reason.strip())}
     return held or None
 
 

@@ -1016,6 +1016,10 @@ def _declared_level_names(index: list[VariantIndexEntry], declared: AspectDesign
     author reading the declaration top to bottom would expect. A level with no declared name keeps the host's
     display, and so does a lever's "not a run of this kind" level, which is the engine's and no declaration's.
     Only ``display`` changes: the variant key digests content hashes alone, so no key moves and no cell regroups.
+    And it is presentation (owner ruling, 2026-11-11: names are presentation, never evidence): the bundle's
+    fingerprint leaves every level's display out (``LEVEL_PRESENTATION_FIELDS``), and nothing the bundle orders is
+    ordered by it, so naming or renaming a level stales no analysis, and a page built from a stored analysis prints the
+    names it was frozen with.
 
     :param index: The variant index, its arms already named by :func:`_name_arms`.
     :ptype index: list[VariantIndexEntry]

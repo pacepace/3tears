@@ -60,7 +60,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from statistics import NormalDist, variance
-from typing import Literal, Self
+from typing import Final, Literal, Self
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
@@ -90,7 +90,7 @@ from threetears.evals.analysis.stats import (
     pooled_rate_interval,
 )
 from threetears.evals.analysis.style import code, measure_name
-from threetears.evals.kernel.analysis_measures import BarVerdict
+from threetears.evals.kernel.analysis_measures import BarDecision, BarVerdict
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm, Floor, RateDrop
 from threetears.evals.kernel.errors import RefusedInput
@@ -115,8 +115,13 @@ __all__ = [
     "campaign_aggregate",
     "campaign_kind",
     "campaign_readings",
+    "PASSED_READING",
+    "reading_name",
     "reading_reason",
 ]
+
+#: The measure a measurement's readings give an arm's own pass rate, every grader's reading together.
+PASSED_READING: Final[str] = "passed"
 
 #: The fields of the readings that hold an arm's label, which :meth:`CampaignReadings.relabelled` prints by a name.
 _LABEL_FIELDS = frozenset({"arm_label", "control_label", "first_label", "second_label", "ahead_label"})
@@ -406,22 +411,25 @@ class BarStatus(EvalDocumentModel):
         description="The interval the status was read on, in the measure's units; None below two observations."
     )
     margin: float | None = Field(description="The measure's declared margin the bar was read with; None with none.")
-    reason: str = Field(default="", description="Why, in one plain sentence naming the arm.")
+    decision: BarDecision = Field(
+        description=(
+            "The bundle's decision the status was read from (`BarVerdict.decision`): what the reason a page words for "
+            "it says (:meth:`reason`)."
+        )
+    )
 
-    def missed_reason(self, measure: str) -> str:
-        """:attr:`reason` for a missed bar, with the measure called ``measure``: what a page says where it names the
-        measure by a name the readings do not carry (a goal check's declared display name), since a reading's words
-        never move with a name.
+    def reason(self, measure: str) -> str:
+        """Why, in one plain sentence naming the arm and the measure, the measure called ``measure``: worded when a
+        page is rendered, since the readings hold the measure by its key and no name is evidence (owner ruling,
+        2026-11-11). A page names it as its aspect's catalog does (:func:`reading_name`), or a goal check by its
+        declared display name.
 
         :param measure: What the page calls the bar's measure.
         :ptype measure: str
         :return: The sentence.
         :rtype: str
-        :raises ValueError: The bar is not missed; only a missed bar's why follows from its status alone.
         """
-        if self.status != "missed":
-            raise ValueError(f"the bar on {self.measure} is {self.status}, not missed, so its why is not its status's")
-        return _bar_reason(self.arm_label, "missed", measure, _BAR_STATES["missed"][1])
+        return _bar_reason(self.arm_label, self.status, measure, _BAR_STATES[self.decision][1])
 
 
 class MeasureReading(EvalDocumentModel):
@@ -430,8 +438,12 @@ class MeasureReading(EvalDocumentModel):
     aspect: str = Field(description="The aspect's label.")
     arm: str = Field(description="The arm's variant key.")
     arm_label: str = Field(description="What a reader calls the arm.")
-    measure: str = Field(description="The measure's key; `passed` for the trials' own pass rate.")
-    name: str = Field(description="The measure as a reader names it.")
+    measure: str = Field(
+        description=(
+            "The measure's key; `passed` for the trials' own pass rate. A page names it when it is rendered "
+            "(:func:`reading_name`): the readings hold no name."
+        )
+    )
     rig: str | None = Field(
         default=None,
         description=(
@@ -1527,8 +1539,6 @@ def _bar_statuses(
                 by_arm.setdefault(verdict.variant_key, []).append(verdict)
             order = [arm.variant_key for arm in arms if arm.variant_key in by_arm]
             order += [key for key in by_arm if key not in order]
-            descriptor = bundles[aspect.label].measure_catalog.get(bar.measure_id)
-            heading = _read_name(bar.measure_id, descriptor.reader_name if descriptor is not None else None)
             for key in order:
                 verdicts = by_arm[key]
                 decisions = [verdict.decision for verdict in verdicts]
@@ -1540,7 +1550,7 @@ def _bar_statuses(
                     else next(decision for decision in decisions if decision != "cleared")
                 )
                 shown = next(verdict for verdict in verdicts if verdict.decision == decided)
-                status, why = _BAR_STATES[decided]
+                status = _BAR_STATES[decided][0]
                 label = labels.get(key, f"arm {key[:12]}")
                 statuses.append(
                     BarStatus(
@@ -1556,20 +1566,34 @@ def _bar_statuses(
                         if shown.ci_low is not None and shown.ci_high is not None
                         else None,
                         margin=shown.margin,
-                        reason=_bar_reason(label, status, heading, why),
+                        decision=decided,
                     )
                 )
     return statuses
 
 
-def _read_name(name: str, reader_name: str | None) -> str:
-    """A measure as the readings store it, in every name and reason sentence: a goal check by its expression, as code,
-    any other measure as :func:`~threetears.evals.analysis.style.measure_name` names it. These words are frozen into
-    the campaign's bundle and fingerprinted with it, so no name a page gives a check may move them: a page names the
-    check at render time (``BarStatus.missed_reason``,
-    :func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`)."""
-    check = goal_check_of(name)
-    return code(check) if check is not None else measure_name(name, reader_name)
+def reading_name(bundle: AnalysisContextBundle, measure: str) -> str:
+    """A reading's measure as a measurement's figures and a bar's reason name it, read when a page is rendered from
+    the aspect's frozen catalog: the trials' own pass rate as ``pass rate``, a goal check by its expression, as code,
+    any other measure as :func:`~threetears.evals.analysis.style.measure_name` names it by the catalog's reader name.
+    The readings hold the measure by its key (:attr:`MeasureReading.measure`, :attr:`BarStatus.measure`), never a name,
+    so renaming a measure moves no campaign fingerprint; a page that names a goal check by its declared display name
+    reads :func:`~threetears.evals.analysis.report.campaign.names.measure_name_of` instead.
+
+    :param bundle: The evidence of the reading's aspect.
+    :ptype bundle: AnalysisContextBundle
+    :param measure: The measure's key, as the readings hold it.
+    :ptype measure: str
+    :return: Its name.
+    :rtype: str
+    """
+    if measure == PASSED_READING:
+        return "pass rate"
+    check = goal_check_of(measure)
+    if check is not None:
+        return code(check)
+    descriptor = bundle.measure_catalog.get(measure)
+    return measure_name(measure, descriptor.reader_name if descriptor is not None else None)
 
 
 def _measure_readings(
@@ -1589,8 +1613,7 @@ def _measure_readings(
                     aspect=aspect.label,
                     arm=board.variant_key,
                     arm_label=label,
-                    measure="passed",
-                    name="pass rate",
+                    measure=PASSED_READING,
                     value=board.passed / board.usable if board.usable else None,
                     interval=pooled_rate_interval(board.passed, board.usable, cases=board.usable_cases),
                     passed=board.passed,
@@ -1607,14 +1630,12 @@ def _measure_readings(
                     # A figure with no interval is a derived one (an f1 over the cells), not a reading to report.
                     if value is None or summary.ci_low is None or summary.ci_high is None:
                         continue
-                    descriptor = bundle.measure_catalog.get(summary.name)
                     found.append(
                         MeasureReading(
                             aspect=aspect.label,
                             arm=board.variant_key,
                             arm_label=label,
                             measure=summary.name,
-                            name=_read_name(summary.name, descriptor.reader_name if descriptor else None),
                             rig=cell.apparatus_class_id,
                             value=value,
                             interval=(summary.ci_low, summary.ci_high)

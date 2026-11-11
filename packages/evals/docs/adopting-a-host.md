@@ -89,7 +89,10 @@ pass it to every entrypoint. It holds:
   refuses a measure without one, and one whose `reader_name` matches another measure's (yours or the engine's,
   ignoring case), so the mistake surfaces at startup, not on a chart. It refuses a measure with a better end
   (`higher_is_better`) or declared a `diagnostic` and no `data_type` too, since no bundle would carry it. The key stays what the store files the
-  number under and what a reader cites. Every lever you declare carries a reader name the same way, the words every page names it by
+  number under and what a reader cites. The reader name is no identity either: a bundle holds the measure by its key
+  and its `reader_name` and `reader_prose` outside every fingerprint, so renaming a measure stales no analysis (a
+  stored analysis's page keeps the name it was written with until it is regenerated). The same holds for the name a
+  campaign's declaration gives a level (`SweptAxis.values[].display`): a level is held by its content hash. Every lever you declare carries a reader name the same way, the words every page names it by
   (`prompt style`, never `extractor.prompt_style`): `Sweepable(reader_name=...)` on each fixed lever,
   `member_reader_name=` (a function from a member's lever name to its words) on each open family, and `title=` on
   each overlay field of a kind contract (a map field's entries are named by its title and the entry's key). The

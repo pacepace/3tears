@@ -45,6 +45,7 @@ from threetears.evals.kernel.campaign import (
 from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface, GuardrailDecision
+from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID
 
 if TYPE_CHECKING:
     from threetears.evals.analysis.campaign_bundle import CampaignBundle
@@ -287,6 +288,23 @@ def judged_heading(name: str) -> str:
     :rtype: str
     """
     return f"{judged_name(name)} (judged)"
+
+
+#: How a trial's drill-down names a reserved judge axis, where a reader sees it: never by its stored id.
+_RESERVED_AXIS_WORDS: dict[str, str] = {TRANSCRIPT_DIM_ID: "transcript", OUTCOME_DIM_ID: "outcome"}
+
+
+def trial_dimension(dimension: str) -> str:
+    """A judged dimension as a trial's drill-down and its examples name it: a reserved axis by its word (``outcome``),
+    any other by its id as the rubric names it. A bundle's trials hold every dimension by its id
+    (:attr:`~threetears.evals.analysis.bundle.schema.TrialJudgement.dim`); this names it when a page is rendered.
+
+    :param dimension: The dimension's id.
+    :ptype dimension: str
+    :return: What a trial prints for it.
+    :rtype: str
+    """
+    return _RESERVED_AXIS_WORDS.get(dimension, dimension)
 
 
 def judged_name(dimension: str, declared: str | None = None) -> str:
@@ -862,6 +880,7 @@ __all__ = [
     "given_name",
     "judged_heading",
     "judged_name",
+    "trial_dimension",
     "label_case",
     "table_label",
     "stratum_name",

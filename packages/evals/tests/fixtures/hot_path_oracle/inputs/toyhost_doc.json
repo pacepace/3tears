@@ -8878,7 +8878,6 @@
       }
      ],
      "factor_pairs": {
-      "completeness": "1 factor varied, so no pair of factors could co-vary.",
       "factors": [
        "chunk_tokens"
       ],
@@ -9922,7 +9921,7 @@
        "status": "completed"
       }
      ],
-     "schema_version": 65,
+     "schema_version": 66,
      "scope_divergences": [],
      "scope_id": "toyhost-scope",
      "scoreboard": [
@@ -10139,7 +10138,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10171,7 +10170,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10203,7 +10202,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10235,7 +10234,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10267,7 +10266,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10299,7 +10298,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10331,7 +10330,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10363,7 +10362,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10395,7 +10394,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10427,7 +10426,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10459,7 +10458,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10491,7 +10490,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10523,7 +10522,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10555,7 +10554,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10587,7 +10586,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10619,7 +10618,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10651,7 +10650,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10683,7 +10682,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10715,7 +10714,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10747,7 +10746,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10779,7 +10778,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10811,7 +10810,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10843,7 +10842,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10875,7 +10874,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10907,7 +10906,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10939,7 +10938,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -10971,7 +10970,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11003,7 +11002,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11035,7 +11034,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11067,7 +11066,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11099,7 +11098,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11131,7 +11130,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11163,7 +11162,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11195,7 +11194,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11227,7 +11226,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11259,7 +11258,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11291,7 +11290,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11377,7 +11376,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11409,7 +11408,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11441,7 +11440,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11473,7 +11472,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11559,7 +11558,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11591,7 +11590,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11623,7 +11622,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11736,7 +11735,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11768,7 +11767,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11800,7 +11799,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11913,7 +11912,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11945,7 +11944,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -11977,7 +11976,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -12090,7 +12089,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -12122,7 +12121,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -12154,7 +12153,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -12267,7 +12266,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -12299,7 +12298,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -12331,7 +12330,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -12712,9 +12711,9 @@
       ],
       "margin": null,
       "measure": "cost_usd",
-      "reason": "256tok meets the bar on Measuring spend, all roles: its whole interval is on the good side of the bar",
       "status": "met",
-      "value": 0.02
+      "value": 0.02,
+      "decision": "cleared"
      },
      {
       "arm": "8e0032bccaca6a9cb6693607cc862ae8ad732ea02fc993fc8d3d82c39707fee6",
@@ -12728,9 +12727,9 @@
       ],
       "margin": null,
       "measure": "cost_usd",
-      "reason": "1024tok misses the bar on Measuring spend, all roles: its whole interval is on the bad side of the bar",
       "status": "missed",
-      "value": 0.030000000000000002
+      "value": 0.030000000000000002,
+      "decision": "missed"
      },
      {
       "arm": "4b8240d7a853b161e1dfc2b1ee0bae7c8cd6cdece4c61fb95711c6e272e872b1",
@@ -12744,9 +12743,9 @@
       ],
       "margin": null,
       "measure": "field_accuracy",
-      "reason": "256tok misses the bar on Field accuracy: its whole interval is on the bad side of the bar",
       "status": "missed",
-      "value": 0.7799999999999999
+      "value": 0.7799999999999999,
+      "decision": "missed"
      },
      {
       "arm": "8e0032bccaca6a9cb6693607cc862ae8ad732ea02fc993fc8d3d82c39707fee6",
@@ -12760,9 +12759,9 @@
       ],
       "margin": null,
       "measure": "field_accuracy",
-      "reason": "1024tok is unclear on the bar on Field accuracy: its interval straddles the bar",
       "status": "unclear",
-      "value": 0.9099999999999999
+      "value": 0.9099999999999999,
+      "decision": "undecided"
      }
     ],
     "campaign_id": "2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03",
@@ -12833,7 +12832,7 @@
    "subject_kind": "extractor_config"
   },
   "bundle_assembled_at": "2026-11-09T23:45:12.772212+00:00",
-  "bundle_fingerprint": "v3:0dffedceba180a6b32b9440d1d0e4cdda04c93f90e71c82cf9b4a4cd6b130aad",
+  "bundle_fingerprint": "v3:bf5a93707d56ebddcd1c15af1a64a6a1550af6ba55f4e11e0b328663871218e5",
   "campaign_id": "2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03",
   "created_at": "2026-11-09T23:45:12.840349+00:00",
   "created_by": "agent:test",
@@ -14653,7 +14652,6 @@
       }
      ],
      "factor_pairs": {
-      "completeness": "1 factor varied, so no pair of factors could co-vary.",
       "factors": [
        "chunk_tokens"
       ],
@@ -15697,7 +15695,7 @@
        "status": "completed"
       }
      ],
-     "schema_version": 65,
+     "schema_version": 66,
      "scope_divergences": [],
      "scope_id": "toyhost-scope",
      "scoreboard": [
@@ -15914,7 +15912,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -15946,7 +15944,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -15978,7 +15976,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16010,7 +16008,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16042,7 +16040,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16074,7 +16072,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16106,7 +16104,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16138,7 +16136,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16170,7 +16168,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16202,7 +16200,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16234,7 +16232,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16266,7 +16264,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16298,7 +16296,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16330,7 +16328,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16362,7 +16360,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16394,7 +16392,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16426,7 +16424,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16458,7 +16456,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16490,7 +16488,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16522,7 +16520,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16554,7 +16552,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16586,7 +16584,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16618,7 +16616,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16650,7 +16648,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16682,7 +16680,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16714,7 +16712,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16746,7 +16744,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16778,7 +16776,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16810,7 +16808,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16842,7 +16840,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16874,7 +16872,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16906,7 +16904,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16938,7 +16936,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -16970,7 +16968,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17002,7 +17000,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17034,7 +17032,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17066,7 +17064,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17152,7 +17150,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17184,7 +17182,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17216,7 +17214,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17248,7 +17246,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17334,7 +17332,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17366,7 +17364,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17398,7 +17396,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17511,7 +17509,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17543,7 +17541,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17575,7 +17573,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17688,7 +17686,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17720,7 +17718,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17752,7 +17750,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17865,7 +17863,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17897,7 +17895,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -17929,7 +17927,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -18042,7 +18040,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -18074,7 +18072,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -18106,7 +18104,7 @@
        "failed_checks": [
         {
          "expression": "field_accuracy >= 0.92",
-         "name": "Pass rate of field_accuracy >= 0.92"
+         "name": "goal_state:field_accuracy >= 0.92"
         }
        ],
        "first_input": "",
@@ -18336,7 +18334,7 @@
       "start": "2026-03-14T09:30:00+00:00"
      }
     },
-    "bundle_fingerprint": "v2:1508841e3272cc16bf86d0a280272e44bf4cb77f5899fe5c337006929940b7f3",
+    "bundle_fingerprint": "v2:8d81e9d62bdcdede01d82aa507ad0cf0b70246a4bb335dd9556625017fcf1f90",
     "coverage": {
      "levers": [
       {
@@ -19302,7 +19300,7 @@
    "aspects": [
     {
      "aspect": "extract_invoice_fields",
-     "fingerprint": "v2:1508841e3272cc16bf86d0a280272e44bf4cb77f5899fe5c337006929940b7f3"
+     "fingerprint": "v2:8d81e9d62bdcdede01d82aa507ad0cf0b70246a4bb335dd9556625017fcf1f90"
     }
    ],
    "behavior": "extract_invoice_fields",
@@ -19455,9 +19453,9 @@
       ],
       "margin": null,
       "measure": "cost_usd",
-      "reason": "256tok meets the bar on Measuring spend, all roles: its whole interval is on the good side of the bar",
       "status": "met",
-      "value": 0.02
+      "value": 0.02,
+      "decision": "cleared"
      },
      {
       "arm": "8e0032bccaca6a9cb6693607cc862ae8ad732ea02fc993fc8d3d82c39707fee6",
@@ -19471,9 +19469,9 @@
       ],
       "margin": null,
       "measure": "cost_usd",
-      "reason": "1024tok misses the bar on Measuring spend, all roles: its whole interval is on the bad side of the bar",
       "status": "missed",
-      "value": 0.030000000000000002
+      "value": 0.030000000000000002,
+      "decision": "missed"
      },
      {
       "arm": "4b8240d7a853b161e1dfc2b1ee0bae7c8cd6cdece4c61fb95711c6e272e872b1",
@@ -19487,9 +19485,9 @@
       ],
       "margin": null,
       "measure": "field_accuracy",
-      "reason": "256tok misses the bar on Field accuracy: its whole interval is on the bad side of the bar",
       "status": "missed",
-      "value": 0.7799999999999999
+      "value": 0.7799999999999999,
+      "decision": "missed"
      },
      {
       "arm": "8e0032bccaca6a9cb6693607cc862ae8ad732ea02fc993fc8d3d82c39707fee6",
@@ -19503,9 +19501,9 @@
       ],
       "margin": null,
       "measure": "field_accuracy",
-      "reason": "1024tok is unclear on the bar on Field accuracy: its interval straddles the bar",
       "status": "unclear",
-      "value": 0.9099999999999999
+      "value": 0.9099999999999999,
+      "decision": "undecided"
      }
     ],
     "campaign_id": "2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03",
@@ -19652,8 +19650,8 @@
   "document": null,
   "generation": {
    "bundle_assembled_at": "2026-11-09T23:45:12.772212+00:00",
-   "bundle_fingerprint": "v3:0dffedceba180a6b32b9440d1d0e4cdda04c93f90e71c82cf9b4a4cd6b130aad",
-   "bundle_schema_version": 65,
+   "bundle_fingerprint": "v3:bf5a93707d56ebddcd1c15af1a64a6a1550af6ba55f4e11e0b328663871218e5",
+   "bundle_schema_version": 66,
    "cell_model_version": 14,
    "generated_at": "2026-11-09T23:45:12.898523+00:00",
    "generator_model": "toy-analyst-model",

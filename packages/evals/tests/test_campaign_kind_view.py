@@ -87,7 +87,7 @@ def _bar(bundle: CampaignBundle, level: int, status: str = "missed") -> BarStatu
         value=0.85,
         interval=(0.8, 0.9),
         margin=None,
-        reason="its whole interval is below 0.92",
+        decision={"met": "cleared", "missed": "missed"}.get(status, "undecided"),  # type: ignore[arg-type]
     )
 
 

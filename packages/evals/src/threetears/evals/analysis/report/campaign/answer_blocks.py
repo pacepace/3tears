@@ -221,14 +221,14 @@ def call_blocks(
 
     for bar in call.bars_overridden:
         if (still := missed.get((bar.aspect, bar.measure))) is not None:
-            said = still.missed_reason(measure(bar.aspect, bar.measure))
+            said = still.reason(measure(bar.aspect, bar.measure))
             lines.append(f"The call overrides a missed bar on {names(bar.aspect)}: {said}.")
         else:
             on = names(bar.aspect)
             lines.append(f"The call overrides the bar on {stored(bar.aspect, bar.measure)} on {on} (no longer missed).")
     for (aspect, key), unnamed in missed.items():
         if (aspect, key) not in overridden:
-            said = unnamed.missed_reason(measure(aspect, key))
+            said = unnamed.reason(measure(aspect, key))
             lines.append(f"The call does not name the missed bar on {names(aspect)} as overridden: {said}.")
     for pair in readings.pairs:
         if pair.ahead is not None and pair.ahead not in keys and keys & {pair.first, pair.second}:

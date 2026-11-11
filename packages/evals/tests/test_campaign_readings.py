@@ -15,6 +15,7 @@ from typing import Literal
 import pytest
 
 from threetears.evals.analysis import AnalysisContextBundle, CampaignReadings, campaign_kind, campaign_readings
+from threetears.evals.analysis.campaign_readings import reading_name
 from threetears.evals.analysis.report.decision import evaluate_floor, floor_projection, floor_readings, read_floor
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
@@ -611,7 +612,9 @@ async def test_every_kind_reads_each_arm_against_its_bars_as_the_bundle_adjudica
     assert measurement.kind == "measurement" and measurement.pairs == [] and measurement.readings == []
     (bar,) = measurement.bars
     assert (bar.status, bar.bar, bar.direction, bar.measure) == ("missed", 0.001, "lower_is_better", "cost_usd")
-    assert bar.reason.startswith("alpha misses the bar on")
+    # The readings hold the bar's decision and its measure by key; a page words the reason, naming the measure.
+    assert bar.decision == "missed"
+    assert bar.reason(reading_name(solo.bundle, bar.measure)).startswith("alpha misses the bar on ")
     measures = {reading.measure: reading for reading in measurement.measures}
     passed = measures["passed"]
     assert passed.value == pytest.approx(0.75) and passed.cases == CASES

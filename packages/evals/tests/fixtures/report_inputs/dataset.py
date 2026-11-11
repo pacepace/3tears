@@ -9,9 +9,11 @@
   ``migrate_bundle_shape_65.py kairo-round2-bundle.json.gz``, which moved eight rate contrasts' intervals (the pass
   rate, a goal check and two pass/fail judged dimensions, two arms each) onto their stored bounded intervals, every
   verdict holding, named each corrected comparison's interval basis, and moved the shape. At shape 66 it was
-  ``migrate_bundle_shape_66.py kairo-round2-bundle.json.gz``, which dropped the pair scan's completeness sentence (a
-  page words it from the scan's counts) and moved the shape; the same script moved the retired writers' stored
-  analyses (``fixtures/retired_writers``) and the fingerprints they record over their bundles.
+  ``migrate_bundle_shape_66.py kairo-round2-bundle.json.gz``, run over the shape-65 file, which dropped the pair
+  scan's completeness sentence (a page words it from the scan's counts), held each trial's failed check by its
+  measure's key and each judged dimension by its id where they held names, and moved the shape; the same script moved
+  the retired writers' stored analyses (``fixtures/retired_writers``), the held-out writer cases and the hot-path
+  oracle's ``toyhost_doc`` capture, and the fingerprints each records over its bundles.
 
 The plans the retired report planner stored beside these inputs, and its scoring dataset, left with it. The charts a
 few of those plans stored are kept for the chart resolver's tests (``fixtures/plan_charts/``).
