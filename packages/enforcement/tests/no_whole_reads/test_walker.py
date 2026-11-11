@@ -1057,6 +1057,71 @@ def test_a_purpose_may_name_several_reads_each_of_which_uses_the_index(tmp_path:
     assert not any("index-purpose-unused -- src/grants.py::one" in finding for finding in findings), findings
 
 
+_TWO_SERVING = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+
+    NOTES = TableSchema(
+        name="notes",
+        primary_key="note_id",
+        columns=[],
+        indexes=(
+            Index("by_owner", "agent_id", "user_id", purpose="src/notes.py::nearest", plan_test="tests/test_plans.py::test_owner"),
+            Index("by_user_date", "user_id", "date_created", purpose="src/notes.py::nearest", plan_test="tests/test_plans.py::test_user_date"),
+            Index("by_kind", "kind", purpose="src/notes.py::nearest", plan_test="tests/test_plans.py::test_kind"),
+        ),
+    )
+
+    async def nearest(conn, agent_id, user_id, older_than):
+        return await conn.fetch(
+            "SELECT note_id FROM notes WHERE agent_id = $1 AND user_id = $2 AND date_created < $3 ORDER BY score LIMIT 5",
+            agent_id,
+            user_id,
+            older_than,
+        )
+"""
+
+
+def test_every_purposed_index_serving_a_read_is_credited_with_it(tmp_path: Path) -> None:
+    """Flips if, of two purposed indexes that both serve one read no key prefix keys (the owner pair; the user and a
+    date range), only the first declared is credited (the other reports its purpose unused), or if an index naming the
+    read whose leading column the read never binds is credited. (A read a key prefix keys already credits every
+    purposed index serving it.)"""
+    _plans(
+        tmp_path,
+        "def test_owner(plan):\n    assert plan_uses_index(plan, 'by_owner')\n"
+        "def test_user_date(plan):\n    assert plan_uses_index(plan, 'by_user_date')\n"
+        "def test_kind(plan):\n    assert plan_uses_index(plan, 'by_kind')\n",
+    )
+    findings = no_whole_reads_findings(_config(tmp_path, {"notes.py": _TWO_SERVING}))
+    unused = [finding for finding in findings if "index-purpose-unused" in finding]
+    assert not any("index by_owner" in finding for finding in unused), unused
+    assert not any("index by_user_date" in finding for finding in unused), unused
+    assert any("index by_kind" in finding for finding in unused), findings
+
+
+_PARTLY_SERVING = _TWO_SERVING.replace(
+    'Index("by_kind", "kind",',
+    'Index("by_user_kind", "user_id", "kind", purpose="src/notes.py::nearest", '
+    'plan_test="tests/test_plans.py::test_user_kind"),\n            Index("by_kind", "kind",',
+)
+
+
+def test_an_index_whose_next_column_the_read_neither_binds_ranges_nor_orders_is_not_credited(tmp_path: Path) -> None:
+    """Flips if a purposed index led by a bound column whose next column the read neither binds, ranges nor orders
+    by (``(user_id, kind)`` under the owner pair and a date range) is credited beside the indexes that serve it."""
+    _plans(
+        tmp_path,
+        "def test_owner(plan):\n    assert plan_uses_index(plan, 'by_owner')\n"
+        "def test_user_date(plan):\n    assert plan_uses_index(plan, 'by_user_date')\n"
+        "def test_user_kind(plan):\n    assert plan_uses_index(plan, 'by_user_kind')\n"
+        "def test_kind(plan):\n    assert plan_uses_index(plan, 'by_kind')\n",
+    )
+    findings = no_whole_reads_findings(_config(tmp_path, {"notes.py": _PARTLY_SERVING}))
+    unused = [finding for finding in findings if "index-purpose-unused" in finding]
+    assert any("index by_user_kind" in finding for finding in unused), findings
+    assert not any("index by_owner" in finding or "index by_user_date" in finding for finding in unused), unused
+
+
 def test_a_purpose_may_be_a_tuple_of_the_reads_it_serves(tmp_path: Path) -> None:
     """Flips if purpose=("<path>::<fn>", ...) is not read as the reads it names: both found and using the index
     pass; neither using it is named, each one."""

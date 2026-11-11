@@ -1130,7 +1130,8 @@ def _key_hit(
             serving.append(((prefix, ordered_next), name, columns, prefix, ranged_next))
     if serving:
         best = max(rank for rank, *_ in serving)
-        _, name, columns, prefix, ranged_next = next(entry for entry in serving if entry[0] == best)
+        chosen = next(entry for entry in serving if entry[0] == best)
+        _, name, columns, prefix, ranged_next = chosen
         if table is not None and ranged_next and prefix == 0 and not _local(reader, table):
             # a range on the index's first column, nothing bound before it: a hashed first column cannot seek it
             reader.schema.use_from_lead(table, name, reader.names)
@@ -1139,6 +1140,18 @@ def _key_hit(
         elif reader.template is not None:
             # a table its module builds from a template (``FROM {table}``): the template's index is used
             reader.schema.use(reader.template.name, name, reader.names)
+        # every other purposed index the read's bound columns serve whole, or whose next column the read ranges or
+        # orders by, is credited too: which of them the planner routes the read through is its own (an owner's
+        # memories by the owner triple, or by the user and a date range), each index's plan test showing it used;
+        # one whose next column the read neither binds, ranges nor orders by serves it no better than its lead
+        for entry in serving:
+            (_, ordered), other, other_columns, other_prefix, _ = entry
+            if entry is chosen or not (other_prefix == len(other_columns) or ordered):
+                continue
+            if table is not None:
+                reader.schema.use(table, other, reader.names)
+            elif reader.template is not None:
+                reader.schema.use(reader.template.name, other, reader.names)
         return True
     order = level.order
     if level.limited and order is not None and index in _owner(level, order[0]) and not filters:
