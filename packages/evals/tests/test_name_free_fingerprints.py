@@ -19,7 +19,9 @@ The same holds for a measure and for a level:
   by its key, and each bar's decision for the reason a page words;
 - a level's declared ``display`` is left out of every fingerprint wherever the bundle carries the level (its variant
   index, its coverage, its declared design and the campaign's declaration), a declared crossing's cell holds each level
-  by its content hash, and nothing the bundle orders is ordered by a declared name.
+  by its content hash, and nothing the bundle orders is ordered by a declared name;
+- a test case's label, the name its author gave it, rides on each trial (``case_label``) and is left out of every
+  fingerprint: the bundle holds the case by its id and orders its trials by it.
 
 A page rebuilt from a stored analysis prints the names it was frozen with, and a rename stales no analysis (owner
 ruling): the stored fingerprint still matches the evidence assembled under the new names.
@@ -28,7 +30,8 @@ Mutations that turn this file red: a derived arm labelled with its levers' reade
 arm's frozen label instead of naming its levers; a factor sentence stored in the bundle, or worded with lever ids; a
 measure's reader name, or a level's declared display, read into any fingerprint; a trial's check, a reading's measure
 or a bar's reason frozen under a measure's reader name; a crossing cell frozen under its levels' names; a decision
-surface ordered by a declared level name; a stored page naming a measure or a level by the live declaration.
+surface ordered by a declared level name; a stored page naming a measure or a level by the live declaration; a trial's
+case label read into any fingerprint, or its trials ordered by it; a stored page naming a case by its live name.
 """
 
 from __future__ import annotations
@@ -60,6 +63,7 @@ from packages.evals.tests.factories import (
     make_analysis,
     make_campaign,
     make_eval_result,
+    make_test_case,
     memory_storage,
 )
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_aspect_design, toyhost_campaign_of_one_aspect
@@ -530,3 +534,55 @@ def test_a_page_rebuilt_from_a_stored_analysis_keeps_the_level_names_it_was_froz
     assert fresh.fingerprint() == frozen.fingerprint()
     assert "never run: 2048tok." in page
     assert "widest chunks" not in page
+
+
+# --- a test case's label is presentation -----------------------------------------------------------------------------
+
+#: The case renamed, the name its author gave it, and the one it is renamed to: each one token, as a page names a case.
+_CASE, _OLD_CASE_NAME, _NEW_CASE_NAME = "doc-01", "torn-invoice", "creased-invoice"
+
+
+def _name_case(host: EvalHost, name: str) -> None:
+    """Store the toy document :data:`_CASE` as a test case its author named ``name``."""
+    host.storage.save_test_case(make_test_case(id=_CASE, scope_id=TOYHOST_SCOPE, name=name))
+
+
+def _labels(bundle: CampaignBundle) -> set[str]:
+    """Every label the campaign's trials of :data:`_CASE` carry."""
+    return {trial.case_label for aspect in bundle.aspects for trial in aspect.trials if trial.case_id == _CASE}
+
+
+def test_renaming_a_case_moves_no_fingerprint_or_digest_and_the_page_prints_the_new_label() -> None:
+    host, campaign = _armed_campaign()
+    _name_case(host, _OLD_CASE_NAME)
+    before = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+    _name_case(host, _NEW_CASE_NAME)
+
+    after = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+
+    assert (_labels(before), _labels(after)) == ({_OLD_CASE_NAME}, {_NEW_CASE_NAME}), "the control: the label moved"
+    assert _identities(after) == _identities(before)
+    # The trials are ordered by case id, whatever a case is called.
+    assert [(trial.trial_id, trial.case_id) for trial in after.aspects[0].trials] == [
+        (trial.trial_id, trial.case_id) for trial in before.aspects[0].trials
+    ]
+    page = campaign_report_markdown(campaign_report(host, campaign.id, campaign.scope_id))
+    assert _NEW_CASE_NAME in page
+    assert _OLD_CASE_NAME not in page
+
+
+def test_a_page_rebuilt_from_a_stored_analysis_keeps_the_case_label_it_was_frozen_with() -> None:
+    host, campaign = _armed_campaign()
+    _name_case(host, _OLD_CASE_NAME)
+    frozen = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+    analysis_id = _stored(host, campaign, frozen)
+    _name_case(host, _NEW_CASE_NAME)
+
+    fresh = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+    page = campaign_report_markdown(analysis_report(host.storage, analysis_id, campaign.scope_id))
+
+    # The rename stales nothing, and the page keeps the label it was written with until it is regenerated.
+    assert _labels(fresh) == {_NEW_CASE_NAME}
+    assert fresh.fingerprint() == frozen.fingerprint()
+    assert _OLD_CASE_NAME in page
+    assert _NEW_CASE_NAME not in page
