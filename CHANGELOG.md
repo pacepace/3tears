@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the retired per-1,000 money mark is removed
+
+**Removed:** the per-1,000 money mark (`$8/1000` for $0.008), retired on 2026-11-07, which the package kept only so a
+chart or form a report stored with it still drew: the chart kit's `usdpk` format, `MoneyForm.per_thousand`, and
+`PER_THOUSAND` and `PER_THOUSAND_MARK` in `threetears.evals.kernel.numbers`. Money per 1,000 replies is unchanged: the
+count is said in the header or the axis title, never on the amount.
+
+**Hosts:** a stored chart that names `usdpk` in a format field is refused on read, and the kit throws on it; write
+`usd` and say the count in the axis title. No page the package writes moves but for the kit's text it embeds.
+
 ### evals: a broken floor caps an option's standing, and an uncalibrated judge's gain raises nothing
 
 **Changed:** code's dominance read (`options_dominance`, `decision_at`, `asked_standing`) gave a candidate the standing
