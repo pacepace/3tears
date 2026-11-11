@@ -40,6 +40,7 @@ from threetears.core.keyed import (
     delete_keyed,
     delete_oldest,
     holds_any,
+    keyset_cursor,
     keyset_page,
     keyset_rows,
     read_joined,
@@ -49,7 +50,12 @@ from threetears.core.keyed import (
     update_from,
     update_keyed,
 )
-from threetears.core.testing.calibrate import best_seconds, best_seconds_interleaved, budget_problem
+from threetears.core.testing.calibrate import (
+    DEFAULT_BUDGET_FACTOR,
+    best_seconds,
+    best_seconds_interleaved,
+    budget_problem,
+)
 from threetears.core.testing.plans import (
     PlanRecorder,
     StatementPlan,
@@ -169,10 +175,10 @@ async def _rolled_back(conn: asyncpg.Connection, run: Any) -> float:
     return await best_seconds(once)
 
 
-def _budget(what: str, took: float, baseline: float) -> str | None:
+def _budget(what: str, took: float, baseline: float, *, factor: float = DEFAULT_BUDGET_FACTOR) -> str | None:
     """the budget's verdict, its numbers printed (``-s``) for the run's record."""
     print(f"BUDGET {what} | baseline {baseline * 1000:.2f} ms | took {took * 1000:.2f} ms | {took / baseline:.2f}x")
-    return budget_problem(what, took, baseline)
+    return budget_problem(what, took, baseline, factor=factor)
 
 
 def _plans_ok(recorder: PlanRecorder, seeded: _Seeded, *, scan_ratio: float | None = 1.1) -> None:
@@ -265,8 +271,9 @@ class TestKeysetPage:
         else:
             # PostgreSQL seeks the key's index by the row comparison: an index range in the page's order, never a
             # bitmap scan of every row past the lead and a sort of them
-            # the pinned state leads the comparison: one range of the key's index
-            assert '(t."state", t."geo", t."id") > ($1, ' in plan.sql, plan.sql
+            # the pinned state is bound by equality beside the comparison of the sort's columns, never inside it:
+            # one range of the key's index, sought by both
+            assert 't."state" = $1 AND (t."geo", t."id") > ($2::text, $3::text::bigint)' in plan.sql, plan.sql
             assert plan_uses_index(plan, "results_pkey"), plan.plan
             nodes = set(_node_types(plan))
             assert not nodes & {"Sort", "Bitmap Heap Scan", "Bitmap Index Scan", "Incremental Sort"}, nodes
@@ -331,6 +338,50 @@ class TestKeysetPage:
             "SELECT max(n) FROM (SELECT count(*) AS n FROM listed WHERE kind = 'a' GROUP BY name) AS g"
         )
         assert plan.rows_scanned <= 21 + (group if seeded.yugabyte else 0), (plan, group)
+
+    async def test_a_near_constant_pin_beside_a_unique_index_of_the_next_column_reads_about_a_page(
+        self, seeded: _Seeded
+    ) -> None:
+        """Flips if a cursor page pinning a near-constant column (kind: 4,032 of 4,040 rows one value) reads a unique
+        index of the sort's next column from its start, filtering (the hub's datasource page: 2,041 rows read for
+        21), rather than either index sought by the comparison: at most two pages and one row read.
+
+        The hub's own table shape: varchar kind and name, a uuid key, a UNIQUE index of name beside the listing's
+        (kind, name, id) range index, and the cursor deep in the listing."""
+        await seeded.conn.execute(
+            "CREATE TABLE sources (kind VARCHAR(32) NOT NULL, name VARCHAR(255) NOT NULL, id UUID NOT NULL, "
+            "pad TEXT, PRIMARY KEY (id))"
+        )
+        await seeded.conn.execute("CREATE INDEX sources_by_kind_name ON sources (kind ASC, name ASC, id ASC)")
+        await seeded.conn.execute("CREATE UNIQUE INDEX sources_by_name ON sources (name ASC)")
+        await seeded.conn.execute(
+            "INSERT INTO sources SELECT CASE WHEN i % 500 = 0 THEN 'postgres' ELSE 'redshift' END, "
+            "'n' || lpad(i::text, 6, '0'), md5('s' || i)::uuid, repeat('x', 200) FROM generate_series(1, 4040) i"
+        )
+        await seeded.conn.execute("ANALYZE sources")
+        order = [Sort("name"), Sort("id", "uuid")]
+        limit = 20
+        last = await seeded.conn.fetchrow(
+            "SELECT name, id FROM sources WHERE kind = 'redshift' ORDER BY name, id OFFSET 2019 LIMIT 1"
+        )
+        assert last is not None
+        cursor = keyset_cursor(order, {"name": last["name"], "id": last["id"]})
+        recorder = PlanRecorder(seeded.conn)
+        page = await keyset_page(
+            recorder,
+            "sources",
+            columns=["name", "id"],
+            by={"kind": "redshift"},
+            order=order,
+            limit=limit,
+            cursor=cursor,
+        )
+        expected = await seeded.conn.fetch(
+            "SELECT name, id FROM sources WHERE kind = 'redshift' ORDER BY name, id OFFSET 2020 LIMIT 20"
+        )
+        assert [(r["name"], r["id"]) for r in page.rows] == [(r["name"], r["id"]) for r in expected]
+        (plan,) = [recorded for recorded in recorder.plans if " LIMIT " in recorded.sql]
+        assert plan.rows_scanned <= 2 * limit + 1, plan
 
 
 class TestCounts:
@@ -869,3 +920,69 @@ class TestAKeyedReadIsAnIndexCondition:
         (plan,) = recorder.plans
         assert plan_uses_index(plan, "credit_rates_by_model"), plan.plan
         assert plan.rows_scanned <= 1.1 * len(models) * _RATES_A_MODEL, plan
+
+
+_GRANTS = "grants"
+_GRANT_ROWS = 500_000
+_GRANT_KEYS = 2_000
+#: runs each side of a 1.1x budget is timed over, turn about: a tenth is inside one run's noise on a busy machine
+_RECORD_RUNS = 40
+
+
+@pytest.fixture
+async def grants(db_container: str) -> AsyncIterator[_Seeded]:
+    """a grants table keyed by a uuid (the hub's grant reads), 500,000 rows laid in key order as a time-ordered uuid
+    (uuid7) table's are, with fresh statistics. Laid in random order, PostgreSQL reads 2,000 keys of it by a scan,
+    the hand-written read and the helper's alike."""
+    schema = f"keyed_grants_{uuid.uuid4().hex[:8]}"
+    conn = await asyncpg.connect(db_container)
+    try:
+        await conn.execute(f"CREATE SCHEMA {schema}")
+        await conn.execute(f"SET search_path = {schema}")
+        await conn.execute(
+            f"CREATE TABLE {_GRANTS} (id UUID PRIMARY KEY, principal_id UUID NOT NULL, grant_kind TEXT NOT NULL, "
+            "scope TEXT, date_created TIMESTAMPTZ NOT NULL)"
+        )
+        await conn.execute(
+            f"""INSERT INTO {_GRANTS}
+            SELECT md5('g' || i)::uuid, md5('p' || i)::uuid, 'k' || (i % 7), 'scope/' || i, $1::timestamptz
+            FROM generate_series(1, {_GRANT_ROWS}) i ORDER BY 1""",
+            _START,
+        )
+        await conn.execute(f"ANALYZE {_GRANTS}")
+        yield _Seeded(conn=conn, yugabyte=await on_yugabyte(conn))
+    finally:
+        await conn.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        await conn.close()
+
+
+class TestReadKeyedRecords:
+    async def test_uuid_keys_read_as_records_within_a_tenth_of_the_hand_written_any(self, grants: _Seeded) -> None:
+        """Flips if read_keyed(records=True) of 2,000 uuid keys on a direct connection is over 1.1x the bare, or
+        answers other rows.
+
+        The bare is the hand-written statement doing the same work on the same table: ``id = ANY($1::uuid[])`` for
+        the same 2,000 keys, natively bound, answering the same asyncpg Records. The helper's statement is that
+        statement (an Index Cond on the key), so what is left is its own Python: the batch, the statement's text
+        (rendered once a shape) and no copy of a row. Timed turn about, best of 40."""
+        ids = [
+            row["id"]
+            for row in await grants.conn.fetch(f"SELECT id FROM {_GRANTS} ORDER BY md5(id::text) LIMIT {_GRANT_KEYS}")
+        ]
+        columns = ["id", "principal_id", "grant_kind", "scope", "date_created"]
+        keys = KeyBatch(("id",), [(key,) for key in ids], ("uuid",))
+        hand = f"SELECT {', '.join(columns)} FROM {_GRANTS} WHERE id = ANY($1::uuid[])"
+        recorder = PlanRecorder(grants.conn)
+        await read_keyed(recorder, _GRANTS, keys=keys, columns=columns, records=True)
+        (plan,) = recorder.plans
+        assert plan_uses_index(plan, f"{_GRANTS}_pkey"), plan.plan
+        rows = await read_keyed(grants.conn, _GRANTS, keys=keys, columns=columns, records=True)
+        assert isinstance(rows[0], asyncpg.Record)
+        assert sorted(tuple(row) for row in rows) == sorted(tuple(row) for row in await grants.conn.fetch(hand, ids))
+        baseline, took = await best_seconds_interleaved(
+            lambda: grants.conn.fetch(hand, ids),
+            lambda: read_keyed(grants.conn, _GRANTS, keys=keys, columns=columns, records=True),
+            runs=_RECORD_RUNS,
+        )
+        problem = _budget(f"read_keyed(records=True) of {len(ids)} uuid keys", took, baseline, factor=1.1)
+        assert problem is None, problem

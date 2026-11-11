@@ -36,8 +36,9 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import cached_property
 from operator import itemgetter
-from typing import Any, Final
+from typing import Any, Final, Literal, overload
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.protocol import L3AnswerCutError
@@ -99,6 +100,20 @@ _TIGHT_BOUND_FACTOR: Final = 2
 
 #: the key column types bound as text arrays, with no cast
 _TEXT_TYPES: Final = frozenset({"text", "varchar"})
+
+#: the most statement shapes whose text is kept rendered; past it the oldest is let go
+_RENDERED_SHAPES: Final = 4096
+
+#: an array statement's text by its shape (:attr:`_Statement._shape`, which columns bind natively, whether bounded):
+#: a shape read again (the same caller's next read) binds its batch's arrays to the text already rendered
+_RENDERED: dict[tuple[Any, ...], str] = {}
+
+
+def _remember(shape: tuple[Any, ...], sql: str) -> None:
+    """keep ``sql`` as ``shape``'s text, letting the oldest shape go past :data:`_RENDERED_SHAPES`."""
+    if len(_RENDERED) >= _RENDERED_SHAPES:
+        _RENDERED.pop(next(iter(_RENDERED)), None)
+    _RENDERED[shape] = sql
 
 
 class KeyTooWide(ValueError):
@@ -198,8 +213,8 @@ class _Statement:
         :rtype: tuple[str, tuple[Any, ...]]
         """
         width = len(self.keys.columns)
-        head = f"SELECT {self.selected} FROM {relation(self.table, 't')}"
         if self.keys.as_list:
+            head = f"SELECT {self.selected} FROM {relation(self.table, 't')}"
             columns = [f"t.{quote_identifier(column)}" for column in self.keys.columns]
             if width == 1:
                 named = f"{columns[0]} IN ({', '.join(f'${place + 1}' for place in range(len(chunk)))})"
@@ -217,51 +232,89 @@ class _Statement:
                 *pinned,
                 *guarded,
             )
-        # each key column's values bound as one text array, the ARRAY cast to the column's type: the column is
-        # compared with values of its own type, never wrapped or compared element by element through a cast, so the
-        # planner reads the key's index by them (an Index Cond), as a hand-written "col = ANY($1::uuid[])" would
-        native = self._native(chunk, natively)
-        typed = [self._typed_array(index + 1, index, native[index]) for index in range(width)]
+        # each key column's values bound as one array: of the column's type where the connection binds it natively
+        # and the values are of it, else a text array cast as a whole to it. The column is compared with values of its
+        # own type, never wrapped or compared element by element through a cast, so the planner reads the key's index
+        # by them (an Index Cond), as a hand-written "col = ANY($1::uuid[])" would
+        held = [list(map(itemgetter(index), chunk)) for index in range(width)]
+        native = self._native(held, natively)
         arrays = tuple(
-            [key[index] for key in chunk] if native[index] else [_text(key[index]) for key in chunk]
-            for index in range(width)
+            values if native[index] else [_text(value) for value in values] for index, values in enumerate(held)
         )
-        conditions, pinned = by_conditions(self.by, first=width + 1, alias="t")
+        bounded: tuple[list[Any], ...] = ()
+        if width > 1 and not self.keys.null_safe:
+            bounded = self._tight_values(arrays, len(chunk))
+        guarded = [param for fragment in self.where for param in fragment.params]
+        # the statement's text follows only its shape (which columns bind natively, whether bounded): rendered once a
+        # shape, here or by an earlier read of the same shape, and each batch binds its own arrays to it
+        shape = (self._shape, native, bool(bounded))
+        sql = _RENDERED.get(shape)
+        if sql is None:
+            sql = self._array_text(native, bool(bounded))
+            _remember(shape, sql)
+        return sql, (*arrays, *self._by[1], *bounded, *guarded)
+
+    @cached_property
+    def _by(self) -> tuple[list[str], list[Any]]:
+        """``by``'s conditions and values in an array statement, its placeholders following the key columns'."""
+        return by_conditions(self.by, first=len(self.keys.columns) + 1, alias="t")
+
+    @cached_property
+    def _shape(self) -> tuple[Any, ...]:
+        """everything an array statement's text follows but the batch: its relation, columns, keys' columns and
+        types, ``by``'s conditions, lock and filters (each filter's text and how many parameters it binds)."""
+        return (
+            self.table,
+            self.selected,
+            self.keys.columns,
+            self.keys.casts,
+            self.keys.null_safe,
+            self.lock,
+            tuple(self._by[0]),
+            tuple((fragment.sql, len(fragment.params)) for fragment in self.where),
+        )
+
+    def _array_text(self, native: tuple[bool, ...], bounded: bool) -> str:
+        """the array statement's text: ``= ANY`` for one key column, else the keys joined as rows (null-safe, or by
+        ``IN (SELECT unnest ...)``, each key column bounded to its distinct values when ``bounded``)."""
+        width = len(self.keys.columns)
+        head = f"SELECT {self.selected} FROM {relation(self.table, 't')}"
+        typed = [self._typed_array(index + 1, index, native[index]) for index in range(width)]
+        conditions, pinned = self._by
         columns = [f"t.{quote_identifier(column)}" for column in self.keys.columns]
         if width == 1 and not self.keys.null_safe:
-            guards, guarded = self._guards(width + len(pinned))
+            guards, _ = self._guards(width + len(pinned))
             where = " AND ".join([f"{columns[0]} = ANY({typed[0]})", *conditions, *guards])
-            return self._locked(f"{head} WHERE {where}"), (*arrays, *pinned, *guarded)
+            return self._locked(f"{head} WHERE {where}")
         unnested = ", ".join(f"unnest({array}) AS k{index}" for index, array in enumerate(typed))
         if self.keys.null_safe:
             # a NULL bucket matches only by IS NOT DISTINCT FROM, which = ANY cannot say: joined to the keys
             joined = " AND ".join(f"{column} IS NOT DISTINCT FROM k.k{index}" for index, column in enumerate(columns))
-            guards, guarded = self._guards(width + len(pinned))
+            guards, _ = self._guards(width + len(pinned))
             kept = [*conditions, *guards]
-            where = f" WHERE {' AND '.join(kept)}" if kept else ""
-            return self._locked(f"{head} JOIN (SELECT {unnested}) AS k ON {joined}{where}"), (
-                *arrays,
-                *pinned,
-                *guarded,
-            )
+            clause = f" WHERE {' AND '.join(kept)}" if kept else ""
+            return self._locked(f"{head} JOIN (SELECT {unnested}) AS k ON {joined}{clause}")
         # the keys joined to the table as rows: a nested loop over the key's index, each key one lookup. Never a
         # column = ANY its values beside it: those name the values' cross product (600 keys over 50 states, 200
         # geographies and 30 ids name the whole table), and the planner reads it whole. YugabyteDB is told to batch
         # the loop (batched_join_hint): one storage request for the batch, not one a key
         named = f"({', '.join(columns)}) IN (SELECT {unnested})"
-        bounds, bounded = self._tight_bounds(arrays, native, len(chunk), first=width + len(pinned) + 1)
-        guards, guarded = self._guards(width + len(pinned) + len(bounded))
-        where = " AND ".join([named, *conditions, *bounds, *guards])
-        return (
-            self._locked(f"{batched_join_hint(IN_SUBQUERY, 't')}{head} WHERE {where}"),
-            (*arrays, *pinned, *bounded, *guarded),
+        first = width + len(pinned) + 1
+        bounds = (
+            [
+                f"t.{quote_identifier(column)} = ANY({self._typed_array(first + index, index, native[index])})"
+                for index, column in enumerate(self.keys.columns)
+            ]
+            if bounded
+            else []
         )
+        guards, _ = self._guards(width + len(pinned) + len(bounds))
+        where = " AND ".join([named, *conditions, *bounds, *guards])
+        return self._locked(f"{batched_join_hint(IN_SUBQUERY, 't')}{head} WHERE {where}")
 
-    def _tight_bounds(
-        self, arrays: tuple[list[Any], ...], native: Sequence[bool], keys: int, *, first: int
-    ) -> tuple[list[str], tuple[list[Any], ...]]:
-        """each key column bound to its distinct values (``t."a" = ANY($n)``), when their cross product names at most
-        :data:`_TIGHT_BOUND_FACTOR` times the keys; no bound otherwise.
+    def _tight_values(self, arrays: tuple[list[Any], ...], keys: int) -> tuple[list[Any], ...]:
+        """each key column's distinct values, bound beside the keys (``t."a" = ANY($n)``) when their cross product
+        names at most :data:`_TIGHT_BOUND_FACTOR` times the keys; none otherwise.
 
         A batch of prefixes that share their lead (a page's 200 geographies of one state) names its rows by those
         bounds exactly: PostgreSQL reads them as the index's own condition, where the keys alone, each naming many
@@ -274,21 +327,19 @@ class _Statement:
         for values in distinct:
             product *= len(values)
         if product > _TIGHT_BOUND_FACTOR * keys:
-            return [], ()
-        bounds = [
-            f"t.{quote_identifier(column)} = ANY({self._typed_array(first + index, index, native[index])})"
-            for index, column in enumerate(self.keys.columns)
-        ]
-        return bounds, tuple(distinct)
+            return ()
+        return tuple(distinct)
 
-    def _native(self, chunk: Sequence[tuple[Any, ...]], natively: bool) -> tuple[bool, ...]:
+    def _native(self, held: Sequence[list[Any]], natively: bool) -> tuple[bool, ...]:
         """which key columns bind their values as they are: on a connection binding typed arrays natively, each
-        column of a type other than text whose values hold no str (a caller's text form stays text, cast in SQL)."""
+        column of a type other than text whose values hold no str (a caller's text form stays text, cast in SQL).
+        Judged by the values' distinct types, not value by value (2,000 keys: a few types)."""
         if not natively:
             return (False,) * len(self.keys.columns)
         return tuple(
-            self.keys.cast(index).lower() not in _TEXT_TYPES and not any(isinstance(key[index], str) for key in chunk)
-            for index in range(len(self.keys.columns))
+            self.keys.cast(index).lower() not in _TEXT_TYPES
+            and not any(issubclass(kind, str) for kind in set(map(type, values)))
+            for index, values in enumerate(held)
         )
 
     def _typed_array(self, place: int, column: int, native: bool) -> str:
@@ -317,7 +368,7 @@ def _statement(
 def _batches(keys: KeyBatch, batch: int) -> list[list[tuple[Any, ...]]]:
     if batch < 1:
         raise ValueError(f"a keyed read names at least one key a statement, got {batch}")
-    unique = list(dict.fromkeys(tuple(key) for key in keys.values))
+    unique = list(dict.fromkeys(map(tuple, keys.values)))
     return [unique[start : start + batch] for start in range(0, len(unique), batch)]
 
 
@@ -370,6 +421,38 @@ async def _read_split(
     ]
 
 
+@overload
+async def read_keyed(
+    conn: Any,
+    table: str | Derived,
+    *,
+    keys: KeyBatch,
+    columns: Sequence[str | Selected],
+    by: Mapping[str, Any] | None = ...,
+    batch: int | None = ...,
+    row_cap: int | None = ...,
+    lock: Lock | None = ...,
+    where: Sequence[Fragment] = ...,
+    records: Literal[False] = ...,
+) -> list[dict[str, Any]]: ...
+
+
+@overload
+async def read_keyed(
+    conn: Any,
+    table: str | Derived,
+    *,
+    keys: KeyBatch,
+    columns: Sequence[str | Selected],
+    by: Mapping[str, Any] | None = ...,
+    batch: int | None = ...,
+    row_cap: int | None = ...,
+    lock: Lock | None = ...,
+    where: Sequence[Fragment] = ...,
+    records: Literal[True],
+) -> list[Any]: ...
+
+
 async def read_keyed(
     conn: Any,
     table: str | Derived,
@@ -381,7 +464,8 @@ async def read_keyed(
     row_cap: int | None = None,
     lock: Lock | None = None,
     where: Sequence[Fragment] = (),
-) -> list[dict[str, Any]]:
+    records: bool = False,
+) -> list[dict[str, Any]] | list[Any]:
     """the rows of ``table`` the keys name (within ``by``), ``batch`` keys a statement.
 
     :param conn: anything with an asyncpg-shaped ``fetch(query, *params)``: an L3 backend, the rail's proxy, a
@@ -406,8 +490,12 @@ async def read_keyed(
     :param where: filters beside the key, each a fragment written as ``t."col"`` from ``$1`` (a status the row must
         not hold, a range); none when empty
     :ptype where: Sequence[Fragment]
+    :param records: answer the rows as the connection answers them (asyncpg ``Record``s on a direct connection:
+        read by name or place, never written), with no copy of each into a dict (2,000 rows: 0.45 ms); dicts when
+        False
+    :ptype records: bool
     :return: the rows, in no promised order (in the key's order when locked)
-    :rtype: list[dict[str, Any]]
+    :rtype: list[dict[str, Any]] | list[Any]
     :raises ValueError: when no column is named, ``batch`` is under one, or a key does not match the columns
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
@@ -418,12 +506,15 @@ async def read_keyed(
         sql, params = statement.render(chunk, natively)
         return list(await conn.fetch(sql, *params))
 
-    rows: list[dict[str, Any]] = []
+    rows: list[Any] = []
     fit = _Fit()
     for chunk in _batches(keys, key_batch_for(conn) if batch is None else batch):
         for answered in await _read_split(fetch, len, chunk, row_cap, table, fit):
-            # mapped, not a generator: a row a call less, at a page's 6,000 rows a millisecond
-            rows.extend(map(dict, answered))
+            if records:
+                rows.extend(answered)
+            else:
+                # mapped, not a generator: a row a call less, at a page's 6,000 rows a millisecond
+                rows.extend(map(dict, answered))
     return rows
 
 

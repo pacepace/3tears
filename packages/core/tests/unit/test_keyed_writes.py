@@ -186,8 +186,11 @@ class TestKeysetRows:
             assert asked[1].startswith("SELECT version()")
             pages = asked[2:]
             assert len(pages) == -(-len(plain) // 8) - 1
-            # the pinned column leads the comparison and the order: one range of the index it leads
-            assert all(('(t."s", t."a", t."b") > ($1, ' in sql) is by_row for sql in pages), pages[0]
+            # the pinned column is bound by equality beside the comparison, never inside it (there only an index it
+            # leads takes the comparison as its condition), and leads the order
+            assert all('t."s" = $1 AND ' in sql for sql in pages), pages[0]
+            assert all(('(t."a", t."b") > ($2::text, $3::text::bigint)' in sql) is by_row for sql in pages), pages[0]
+            assert not any('(t."s", ' in sql for sql in pages), pages[0]
             assert all('ORDER BY t."s" ASC, t."a" ASC, t."b" ASC' in sql for sql in pages), pages[0]
         single = _Recording(db)
         rows = await keyset_rows(single, "t", columns=["a", "b"], by={"a": "k1"}, order=order, page=50)
