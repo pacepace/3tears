@@ -53,6 +53,7 @@ from threetears.enforcement.no_whole_reads.flow import (
     Callee,
     RelationFlow,
     RepoForwarders,
+    step_builders,
     step_relation_arguments,
 )
 from threetears.enforcement.no_whole_reads.helpers import (
@@ -971,6 +972,7 @@ class _ModuleWalk(ast.NodeVisitor):
         relation_producers: frozenset[str] = frozenset(),
         match_builders: Mapping[str, MatchBuilder] | None = None,
         forwarders: RepoForwarders | None = None,
+        builders: frozenset[str] = frozenset(),
     ) -> None:
         """prepare a walk of one module.
 
@@ -1019,6 +1021,8 @@ class _ModuleWalk(ast.NodeVisitor):
         :param forwarders: the repo's public forwarders, followed across modules; None follows only each module's
             private ones
         :ptype forwarders: RepoForwarders | None
+        :param builders: the repo's step builders (:func:`~threetears.enforcement.no_whole_reads.flow.step_builders`)
+        :ptype builders: frozenset[str]
         :return: nothing
         :rtype: None
         """
@@ -1154,6 +1158,7 @@ class _ModuleWalk(ast.NodeVisitor):
             path=path,
             imports=self.imports,
             repo=forwarders,
+            builders=builders,
         )
         self._envs[0].update(imported or {})
         self._envs[0].update(_module_strings(tree))
@@ -4968,8 +4973,12 @@ def scan_whole_reads(
             relation_producers=relation_producers,
             match_builders=match_builders,
             forwarders=forwarders,
+            builders=builders,
         )
 
+    # the repo's step builders, by name across every walked module: a call of one is a step judged where it is
+    # written (R11)
+    builders = step_builders([parse_python_path(path) for _, path in walked])
     forwarders: RepoForwarders | None = None
     if public_forwarders:
         # each module's flow settles into the repo's shared state; once a pass over every module adds nothing, a

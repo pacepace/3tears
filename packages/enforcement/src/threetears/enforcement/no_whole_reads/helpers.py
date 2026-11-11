@@ -823,6 +823,10 @@ def _step(call: ast.Call) -> list[str]:
     for position, keyword in STEP_RELATIONS.get(helper, ()):
         statements += _step_relation(_argument(call, keyword, position), keyword, narrowed if position == 0 else ())
     for position, keyword in STEP_TARGETS.get(helper, ()):
+        replaced = _argument(call, "replace", None)
+        if helper == "materialize" and isinstance(replaced, ast.Constant) and replaced.value is False:
+            # a table made new (``CREATE TABLE ... AS``, no drop first): no row of one there is written
+            continue
         target = _argument(call, keyword, position)
         if isinstance(target, ast.Call) and _name(target) == "change_relation":
             target = _argument(target, "name", 0)

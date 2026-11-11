@@ -23,11 +23,13 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+import re
 from typing import Final, Literal
 
+from threetears.enforcement.common import dotted
 from threetears.enforcement.no_whole_reads.helpers import COPY_CALLS, STEP_CALLS, STEP_RELATIONS, STEP_TARGETS
 
-__all__ = ["CLEAN", "HANDED", "Callee", "RelationFlow", "step_relation_arguments"]
+__all__ = ["CLEAN", "HANDED", "Callee", "RelationFlow", "step_builders", "step_relation_arguments"]
 
 #: what an expression a step names is: a change relation or a step judged where it is written (``clean``), a
 #: forwarder's parameter judged at its call sites (``handed``), or None for anything the walk cannot tell
@@ -184,6 +186,59 @@ def _annotations(tree: ast.Module) -> set[int]:
     return inside
 
 
+#: a return or field annotation naming a keyed step (``keyed.Step``, ``Step | None``)
+_STEP_ANNOTATION: Final = re.compile(r"\bStep\b")
+
+
+def _names_step(annotation: ast.expr | None) -> bool:
+    """whether an annotation names a keyed step."""
+    return annotation is not None and bool(_STEP_ANNOTATION.search(ast.unparse(annotation)))
+
+
+def _callable_of_step(annotation: ast.expr | None) -> bool:
+    """whether an annotation is (or holds) a callable returning a keyed step (``Callable[[...], keyed.Step]``)."""
+    return annotation is not None and any(
+        isinstance(node, ast.Subscript)
+        and (dotted(node.value) or "").rsplit(".", 1)[-1] == "Callable"
+        and isinstance(node.slice, ast.Tuple)
+        and len(node.slice.elts) == 2
+        and _names_step(node.slice.elts[1])
+        for node in ast.walk(annotation)
+    )
+
+
+def step_builders(modules: list[ast.Module]) -> frozenset[str]:
+    """the names of the repo's step builders: each function or method whose return annotation names a keyed step
+    (``-> keyed.Step``, ``-> keyed.Step | None``), and each class field annotated a callable returning one
+    (``select: str | Callable[[Sequence[str]], keyed.Step]``). A name some other definition of the repo shares
+    without such an annotation is none.
+
+    A step a builder returns is judged where the builder writes it: every keyed step the builder makes is judged in
+    its body (or, a forwarder's, at its calls by what each hands it), so a step got by calling one (``made.step(())``,
+    ``newest_projections(states)``, a field holding one called as ``self.select(...)``) is a step judged where it is
+    written, as a step call is (R11).
+
+    :param modules: every walked module
+    :ptype modules: list[ast.Module]
+    :return: the names
+    :rtype: frozenset[str]
+    """
+    building: set[str] = set()
+    other: set[str] = set()
+    for tree in modules:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                (building if _names_step(node.returns) and not _callable_of_step(node.returns) else other).add(
+                    node.name
+                )
+            elif isinstance(node, ast.ClassDef):
+                for member in node.body:
+                    if isinstance(member, ast.AnnAssign) and isinstance(member.target, ast.Name):
+                        if _callable_of_step(member.annotation):
+                            building.add(member.target.id)
+    return frozenset(building - other)
+
+
 def _origin_module(origin: str) -> str:
     """the module file an imported name's origin (``pkg.mod.name``) is defined in, as a path suffix."""
     return origin.rsplit(".", 1)[0].replace(".", "/") + ".py"
@@ -334,6 +389,8 @@ class RelationFlow:
     :ptype produced: Callable[[ast.ClassDef], frozenset[str]]
     :param producer: whether a definition is a declared transient producer (never a forwarder)
     :ptype producer: Callable[[Function, ast.ClassDef | None], bool]
+    :param builders: the repo's step builders (:func:`step_builders`)
+    :ptype builders: frozenset[str]
     """
 
     def __init__(
@@ -347,8 +404,11 @@ class RelationFlow:
         path: str = "",
         imports: dict[str, str] | None = None,
         repo: RepoForwarders | None = None,
+        builders: frozenset[str] = frozenset(),
     ) -> None:
         self._path = path
+        #: the repo's step builders (:func:`step_builders`): a call of one is a step judged where it is written
+        self._builders = builders
         self._imports = imports or {}
         self._repo = repo
         self._keyed_step = keyed_step
@@ -657,6 +717,9 @@ class RelationFlow:
             if len(node.args) > 1:
                 kinds.append(self._kind(node.args[1], scope, depth + 1))
             return _combine(kinds)
+        if name in self._builders:
+            # a step builder's return: judged where the builder writes it (R11)
+            return CLEAN
         return None
 
     def _elements(self, node: ast.expr, scope: _Scope, depth: int = 0) -> _Kind | str:

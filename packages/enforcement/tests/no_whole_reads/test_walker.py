@@ -4423,3 +4423,76 @@ def test_a_purpose_may_name_a_consumer_repo_s_read_under_a_declared_consumer_pat
     assert not any("idx_conv_agent_status" in finding for finding in on), on
     assert any("purpose 'src/elsewhere.py::nothing'" in finding for finding in on), on
     assert any(consumer in finding and "index-purpose-unknown" in finding for finding in off), off
+
+
+_STEP_BUILDERS = {
+    "tables.py": """
+        from threetears.core.collections.schema_backed import TableSchema
+
+        PROJECTIONS = TableSchema(name="projections", primary_key=("state", "race"), columns=[])
+    """,
+    "builders.py": """
+        from threetears.core import keyed
+
+        def newest(states) -> keyed.Step:
+            return keyed.scan("projections", where=[keyed.Fragment('"state" = ANY($1)', (list(states),))])
+
+        def everything(states) -> keyed.Step:
+            return keyed.scan("projections")
+
+        def unannotated(states):
+            return keyed.scan("projections", where=[keyed.Fragment('"state" = ANY($1)', (list(states),))])
+    """,
+    "derived.py": """
+        from collections.abc import Callable, Sequence
+        from dataclasses import dataclass
+
+        from threetears.core import keyed
+        from threetears.core.keyed import InlineDuckDB, run_inline
+
+        from builders import everything, newest, unannotated
+
+        @dataclass(frozen=True)
+        class Derived:
+            sources: tuple[str, ...]
+            select: str | Callable[[Sequence[str]], keyed.Step]
+
+            def step(self, states) -> keyed.Step | None:
+                return None if isinstance(self.select, str) else self.select(sorted(states))
+
+        class Copy:
+            def created(self, name, made):
+                step = made.step(())
+                if step is not None:
+                    run_inline(keyed.materialize(InlineDuckDB(self._db), f"main.{name}", step, replace=False))
+
+            def built(self, name):
+                step = newest(())
+                run_inline(keyed.materialize(InlineDuckDB(self._db), f"main.{name}", step, replace=False))
+
+            def built_whole(self, name):
+                run_inline(keyed.materialize(InlineDuckDB(self._db), f"main.{name}", everything(()), replace=False))
+
+            def unknown(self, name):
+                step = unannotated(())
+                run_inline(keyed.materialize(InlineDuckDB(self._db), f"main.{name}", step, replace=False))
+
+            def replaced(self, name):
+                run_inline(keyed.materialize(InlineDuckDB(self._db), f"main.{name}", newest(())))
+    """,
+}
+
+
+def test_a_step_a_builder_returns_is_judged_where_the_builder_writes_it(tmp_path: Path) -> None:
+    """Flips if a step got from a step builder (a function annotated to return a keyed step, a Derived's ``step()``
+    calling its field annotated a callable returning one) reads as a whole select of an unknown relation where it is
+    materialized (R11), if a builder's own whole scan stops being named in it, if a step from a function not annotated
+    as a builder stops being unknown, or if ``materialize(replace=False)`` (a table made new) is read as a whole
+    delete of its target while ``replace=True`` (dropped first) is not."""
+    found = _symbols(_config(tmp_path, _STEP_BUILDERS))
+    judged = {function for function, _ in found}
+    assert not judged & {"Copy.created", "Copy.built"}, found
+    assert ("everything", 'whole-select "projections"') in found, found
+    assert ("Copy.built_whole", "calls-whole-read everything") in found, found
+    assert ("Copy.unknown", "whole-select {}") in found, found
+    assert ("Copy.replaced", "whole-delete copy.{}") in found, found
