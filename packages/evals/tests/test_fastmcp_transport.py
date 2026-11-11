@@ -340,11 +340,23 @@ async def test_an_ops_host_handed_alone_keeps_its_launch_tools() -> None:
         assert sorted(tool.name for tool in await client.list_tools()) == ["evals", "evals_admin"]
 
 
+def _served_instructions(client: Client) -> str | None:
+    """The instructions a connected server sent, on either fastmcp major the 1.x CI step installs.
+
+    fastmcp 4 negotiates through `server/discover` and reads them as `Client.instructions` (its
+    `initialize_result` is None there); fastmcp 3, the one mcp 1.x allows, has only the `InitializeResult`.
+    """
+    if hasattr(client, "instructions"):
+        return client.instructions
+    result = client.initialize_result
+    return None if result is None else result.instructions
+
+
 async def test_a_server_built_here_hands_a_client_the_primer_of_the_tools_it_mounts() -> None:
     tools = (*standard_tools(), *analyst_tools())
     server = mount_fastmcp(off_loop(ops_fixture).host, scope=CALLER.scope_id, tools=tools)
     async with Client(server) as client:
-        instructions = client.instructions
+        instructions = _served_instructions(client)
     assert instructions == catalogue_primer(eval_catalogue().mount_all(tools))
     assert (
         instructions is not None and "evals_analyst" in instructions and "figure_keys" in instructions.splitlines()[1]
