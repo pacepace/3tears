@@ -106,6 +106,12 @@ def _judged(code: str, schema: SchemaCatalog, name: str = "src/app.py::reader") 
         'holds_any(c, "results", by={"state": s}, order=["state", "geo", "id"])',
         'holds_any(c, "results", order=("state", "geo", "id"))',
         'read_after(c, "results", columns=cols, id_column="id", after=0, limit=3, by={"state": s, "geo": g})',
+        # an export's SELECT written out with literals: keyed as the bound read it writes out
+        'literal_select("results", columns=cols, by={"state": AnyOf(ss)})',
+        'literal_select("results", columns=cols, by={"state": s}, where=[Fragment(\'t."geo" IS NOT NULL\')])',
+        # a change record read past its marks within the key prefix its by pins
+        'read_past_marks(c, "results", columns=cols, marks={"up": m}, by={"state": s})',
+        'read_past_marks(c, "results", columns=cols, marks={"up": m}, by={"state": s}, where=[Fragment(\'"geo" IS NULL\')])',
     ],
 )
 def test_a_helper_naming_a_key_is_keyed(code: str, schema: SchemaCatalog) -> None:
@@ -162,6 +168,10 @@ def test_a_keyed_count_is_a_keyed_count(schema: SchemaCatalog) -> None:
         ('keyset_rows(c, "results", columns=cols, by={}, order=[Sort("kind"), Sort("id")], page=500)', "non-key-where"),
         # group hashes scoped by a column no key leads with: every row is read to find the scopes'
         ('group_hashes(c, "results", scope="kind", scopes=ss, group="geo", hash_columns=hc)', "non-key-where"),
+        # a literal select pinning no key column: every row is read for its filter
+        ('literal_select("results", columns=cols, by={"kind": AnyOf(ks)})', "non-key-where"),
+        # a change record read past its marks pinning no key: every row's stamps are read
+        ('read_past_marks(c, "results", columns=cols, marks={"up": m}, by={"kind": k})', "non-key-where"),
         # a changed-rows read keyed by no key of its relation: its hash pages read and sort every row
         (
             'read_changed(c, "results", key=["kind", "id"], columns=cols, held=h, hash_columns=hc, by={})',

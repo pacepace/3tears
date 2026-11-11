@@ -2678,3 +2678,90 @@ def test_a_copy_of_a_prefix_is_judged_as_the_keyed_drain_it_is(tmp_path: Path) -
     assert {function for function, _ in found} == {"every_one"}, found
     findings = no_whole_reads_findings(_config(tmp_path, {"fence.py": _COPIED}))
     assert not any("index-purpose-unused" in finding for finding in findings), findings
+
+
+_RELATION_PRODUCED = """
+    from dataclasses import dataclass
+    from collections.abc import Sequence
+
+    from threetears.core import keyed
+
+
+    @dataclass
+    class SourceTable:
+        name: str
+        relation: str
+
+
+    def derived(relation):
+        return keyed.Derived(relation)
+
+
+    async def by_state(reader, source: SourceTable, state):
+        return await keyed.read_past_marks(reader, source.relation, columns=["a"], marks={"up": 1}, by={"state": state})
+
+
+    async def by_kind(reader, source: SourceTable | None, kinds):
+        return await keyed.counts_by(reader, source.relation, column="kind", values=keyed.AnyOf(kinds))
+
+
+    async def every_state(reader, sources: Sequence[SourceTable], states):
+        for source in sources:
+            await keyed.counts_by(reader, source.relation, column="state", values=keyed.AnyOf(states))
+
+
+    async def every_marked(reader, marks: Sequence[tuple[SourceTable, int | None]], states):
+        marked: dict[str, tuple[int, SourceTable]] = {s.name: (m, s) for s, m in marks if m is not None}
+        return await keyed.counts_by_relations(
+            reader,
+            {name: source.relation for name, (_, source) in marked.items()},
+            column="state",
+            values=keyed.AnyOf(states),
+        )
+
+
+    async def derived_by_run(reader, part, runs):
+        return await keyed.counts_by(reader, derived(part.relation), column="run_id", values=keyed.AnyOf(runs))
+
+
+    async def derived_by_office(reader, part, offices):
+        return await keyed.counts_by(reader, derived(part.relation), column="office", values=keyed.AnyOf(offices))
+
+
+    async def untyped(reader, source, state):
+        return await keyed.counts_by(reader, source.relation, column="state", values=keyed.AnyOf([state]))
+
+
+    class Inputs:
+        def __init__(self, inputs):
+            self._inputs = inputs
+
+        async def named(self, reader, names):
+            return await keyed.read_keyed(reader, self._inputs, keys=keyed.KeyBatch(("name",), names), columns=["n"])
+
+        async def every(self, reader, kinds):
+            return await keyed.counts_by(reader, self._inputs, column="kind", values=keyed.AnyOf(kinds))
+"""
+
+_PRODUCERS = {"SourceTable.relation": ("state",), "derived": ("run_id",), "Inputs._inputs": ("name",)}
+
+
+def test_a_relation_a_declared_producer_yields_is_judged_by_its_declared_key(tmp_path: Path) -> None:
+    """Flips if a helper handed a run-time relation a declared producer yields (a typed receiver's attribute, a
+    producer function's return, a ``self`` attribute in its class) is not judged by the declared key: a read bound by
+    the key passes, one bound by another column is the whole read it is, and one the walk cannot type stays unseen."""
+    found = _symbols(_config(tmp_path, {"produced.py": _RELATION_PRODUCED}, relation_producers=_PRODUCERS))
+    functions = {function for function, _ in found}
+    for keyed_read in ("by_state", "every_state", "every_marked", "derived_by_run", "Inputs.named"):
+        assert keyed_read not in functions, found
+    assert ("by_kind", "whole-aggregate produced.sourcetable__relation") in found, found
+    assert ("derived_by_office", "whole-aggregate produced.derived") in found, found
+    assert ("Inputs.every", "whole-aggregate produced.inputs___inputs") in found, found
+    assert any(function == "untyped" and symbol.startswith("unknown-predicate") for function, symbol in found), found
+
+
+def test_a_run_time_relation_with_no_producer_declared_stays_unseen(tmp_path: Path) -> None:
+    """Flips if a run-time relation passes, or is judged against any key, with no producer declaring it."""
+    found = _symbols(_config(tmp_path, {"produced.py": _RELATION_PRODUCED}))
+    for function in ("by_state", "every_state", "every_marked", "derived_by_run", "Inputs.named"):
+        assert any(f == function and s.startswith("unknown-predicate") for f, s in found), (function, found)

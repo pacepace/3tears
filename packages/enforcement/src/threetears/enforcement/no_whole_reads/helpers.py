@@ -42,6 +42,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final
 
+from threetears.enforcement.no_whole_reads.schema import PRODUCED_PREFIX
+
 __all__ = [
     "KEYED_FRAGMENT_BUILDERS",
     "KEYED_HELPER_CALLS",
@@ -75,6 +77,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "holds_any",
         "read_after",
         "read_past_marks",
+        "literal_select",
         "delete_before",
         "delete_oldest",
         "delete_keyed",
@@ -316,6 +319,16 @@ def _read_by(call: ast.Call) -> list[str]:
     return [f"SELECT * FROM {table} AS t{_where(pinned)}", *own]
 
 
+def _literal_select(call: ast.Call) -> list[str]:
+    """a keyed read written out with literals (``literal_select``, an export's ``SELECT``): the rows its ``by`` pins
+    (``=`` a value, ``IN`` a set) and its ``where`` narrows, as the bound read it writes out; one pinning nothing is
+    the whole read it is."""
+    table, own = _relation(_argument(call, "relation", 0), "relation")
+    pinned, place = _conditions(_by(_argument(call, "by", None)), alias="t")
+    filtered, _ = _filters(call, place)
+    return [f"SELECT * FROM {table} AS t{_where([*pinned, *filtered])}", *own]
+
+
 def _visible(call: ast.Call) -> list[str]:
     """each ``exists_keyed`` probe a listing's ``visible=`` names, as the keyed read it is; reviewed builders (and a
     ``VisibleCustomers.fragment(...)``, the caller's customers as a bound set) pass."""
@@ -457,6 +470,9 @@ def _read_joined(call: ast.Call) -> list[str]:
 def _relation(node: ast.expr | None, argument: str) -> tuple[str, list[str]]:
     """a relation a helper reads, as its statement names it, and the statements it holds of its own: a table literal
     (``schema.table`` quoted a segment at a time), or a ``Derived("SELECT ...")`` judged on its own text."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith(PRODUCED_PREFIX):
+        # a declared producer's run-time relation (the walk wrote it): the catalog's own name for it, as declared
+        return node.value, []
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return ".".join(_quoted(part) for part in node.value.split(".")), []
     if isinstance(node, ast.Call) and _name(node) == "Derived":
@@ -563,12 +579,15 @@ def _read_after(call: ast.Call) -> list[str]:
 
 
 def _read_past_marks(call: ast.Call) -> list[str]:
-    relation = _text(_argument(call, "relation", 1), "relation")
+    """the rows past the marks, as the helper sends it: its ``by`` pins and ``where`` filters, then the stamps."""
+    relation, own = _relation(_argument(call, "relation", 1), "relation")
     marks = _by(_argument(call, "marks", None), "marks")
     if not marks:
         raise _Unseen("marks")
-    past = " OR ".join(f"{_quoted(stamp)} > ${place}" for place, (stamp, _) in enumerate(marks, start=1))
-    return [f"SELECT * FROM {_quoted(relation)} WHERE {past}"]
+    pinned, place = _conditions(_by(_argument(call, "by", None)))
+    filtered, place = _filters(call, place)
+    past = " OR ".join(f"{_quoted(stamp)} > ${number}" for number, (stamp, _) in enumerate(marks, start=place))
+    return [f"SELECT * FROM {relation}{_where([*pinned, *filtered, f'({past})'])}", *own]
 
 
 def _delete_before(call: ast.Call) -> list[str]:
@@ -708,6 +727,7 @@ _SYNTHESIZERS: Final = {
     "holds_any": _probe,
     "read_after": _read_after,
     "read_past_marks": _read_past_marks,
+    "literal_select": _literal_select,
     "delete_before": _delete_before,
     "delete_oldest": _delete_oldest,
     "delete_keyed": _keyed_write,

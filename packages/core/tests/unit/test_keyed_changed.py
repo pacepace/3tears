@@ -571,6 +571,28 @@ def test_past_full_rows_at_most_the_changed_keys_are_named_and_no_full_row_is_re
         _grouped_changed(InlineDuckDB(grouped), held, group="name")
 
 
+def test_past_group_rows_at_most_the_moved_groups_are_named_and_no_key_is_read(
+    grouped: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if a move whose moved groups hold more rows than the cap reads a key's hash or a full row (phase 1 or
+    2), or names the moved groups wrong: broad is judged on phase 0 alone, on the rows of the groups whose hash moved,
+    and a held group the scope no longer answers is named too."""
+    held = _grouped_held(grouped)
+    grouped.execute("UPDATE grouped SET votes = -1 WHERE state = 'PA' AND id IN (1, 11)")  # c0 and c1 moved
+    held[("PA", "c9", 900)] = held[("PA", "c0", 0)]  # c9: held, answered no more
+    counted = _Counted(grouped)
+    capped = _grouped_changed(counted, held, group_rows_at_most=19)
+    assert capped.capped and capped.rows == [] and capped.changed_keys == []
+    assert sorted(capped.moved_groups) == ["c0", "c1", "c9"] and capped.moved_group_rows == 20
+    assert capped.gone_keys == [("PA", "c9", 900)]
+    assert len(counted.statements) == 1, "a read capped on phase 0 reads no key's hash and no full row"
+    under = _grouped_changed(InlineDuckDB(grouped), held, group_rows_at_most=20)
+    assert not under.capped and sorted(row["id"] for row in under.rows) == [1, 11]
+    assert sorted(under.moved_groups) == ["c0", "c1", "c9"] and under.moved_group_rows == 20
+    with pytest.raises(ValueError, match="group_rows_at_most"):
+        _grouped_changed(InlineDuckDB(grouped), held, group=None, group_rows_at_most=5)
+
+
 def test_a_group_holding_a_row_stored_with_no_hash_is_read_again(grouped: duckdb.DuckDBPyConnection) -> None:
     """Flips if a group with a row held under no hash (stored before hashes) passes phase 0 as unchanged."""
     held = _grouped_held(grouped)

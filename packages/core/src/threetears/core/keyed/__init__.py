@@ -84,6 +84,7 @@ from threetears.core.keyed.counts import (
 from threetears.core.keyed.deletes import SweptRows, delete_before, delete_oldest, update_before
 from threetears.core.keyed.inline import InlineDuckDB, InlineTransaction, run_inline
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
+from threetears.core.keyed.literal import literal_select
 from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_past_marks
 from threetears.core.keyed.point import read_by, read_row, read_value
 from threetears.core.keyed.page import KeyPage, Sort, copy_keyed, exists_keyed, keyset_cursor, keyset_page, keyset_rows
@@ -178,6 +179,7 @@ __all__ = [
     "WholeReads",
     "any_rows",
     "key_batch_for",
+    "literal_select",
     "apply_stage",
     "copy_keyed",
     "count_at_most",
