@@ -28,9 +28,9 @@ cell (a format-2 line, or a call made outside every cell) when it is left, and o
 which is deterministic only while each repeat asks such a prompt once. A cell the recording names nowhere (its arm,
 case or eval renamed since) and left no such call stands for the one recorded cell line (a subject, arm and case)
 that asked the prompt at its repeat as often and shares its subject, arm or case: it is bound to that line for the
-rest of the replay and served its calls, so a renamed arm replays as it was recorded, on every replay. Where several
-recorded lines fit, which is its own cannot be told, and it is refused rather than handed one of them, in whatever
-order the cells ask; so is a call outside every cell when only calls made in cells are left. Where the one line that
+rest of the replay and served its calls, so a renamed arm replays as it was recorded, on every replay. Where none
+fits it is refused, saying so; where several fit, which is its own cannot be told, and it is refused rather than
+handed one of them, in whatever order the cells ask; so is a call outside every cell when only calls made in cells are left. Where the one line that
 fits has asked as itself, or another cell already stands for it, it is refused too. So no cell is ever served a call
 recorded for a cell that has asked as itself, and only two cells fitting one recorded line alone (the recorded cell
 and an arm added beside it that shares its every prompt, which cannot be told from a rename) turn on order: the
@@ -607,8 +607,8 @@ class RecordedCompletions:
            call of index ``i`` when it names none and is left, and otherwise the first such call left.
         4. **Otherwise the one recorded line it can be**: a cell named nowhere in the recording (its arm, its case or
            its eval renamed since) is bound, for the rest of the replay, to the one recorded line under the key that
-           asked at its repeat as often, and shares its subject, its arm or its case. With none it is refused as
-           spent; with several, as ambiguous, whatever order they ask in; and where that one line has asked as
+           asked at its repeat as often, and shares its subject, its arm or its case. With none it is refused, saying
+           so; with several, as ambiguous, whatever order they ask in; and where that one line has asked as
            itself, or is already stood for by another cell, as not its own. A call outside every cell, when only
            calls made inside cells are left, is refused as ambiguous too.
 
@@ -677,8 +677,16 @@ class RecordedCompletions:
                 f"({', '.join(_spelled(c) for c in candidates)}): which is its own cannot be told",
                 self._remedy,
             )
+        if not candidates and not free:
+            return None  # every call under the key is served: the refusal names who took them
         if not candidates:
-            return None
+            raise RecordingRefused(
+                self.path,
+                f"the cell {_spelled(line)} is named nowhere in the recording, and no recorded cell it could stand for "
+                f"(one sharing its subject, arm or case) asked the prompt {_head(user)} at its repeat {ask + 1} "
+                "time(s): its case, arm and eval all changed since it was recorded, or it asks what it did not ask then",
+                self._remedy,
+            )
         (stands_for,) = candidates
         holder = next((by for by, to in self._bound.items() if to == stands_for), None)
         if stands_for in self._live or holder is not None:

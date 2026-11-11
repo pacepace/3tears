@@ -379,6 +379,14 @@ async def test_a_cell_matching_none_is_refused_the_one_recorded_cell_it_fits_onc
         assert (await replay.generate(system=SYSTEM, user="Grade it.")).content == "a1 grade"
 
 
+async def test_a_cell_matching_none_that_no_recorded_cell_fits_is_refused_saying_so(tmp_path: Path) -> None:
+    path = tmp_path / "rec.jsonl"
+    await _record_arms(path, ["a"], own_prompt=False)
+    replay = RecordedCompletions.replay(path, settings=BUDGETED)
+    with bind_cell_identity(_arm("c", 5)), pytest.raises(RecordingRefused, match="no recorded cell it could stand for"):
+        await replay.generate(system=SYSTEM, user="Grade it.")
+
+
 # parity-with: threetears.evals.schema.CompletionClient
 class _FakeFirstLandsLast(_FakeInner):
     """A client whose first call's answer lands only after its second's: the first asked is the last written."""
