@@ -6,7 +6,7 @@ package ships, six misfits), scored by a judge of another family. The control is
 (``skills/control/``); the candidate puts the lead claim first (``skills/lead-first.md``). Each arm writes the
 held-out cases once, and the engine reads the promotion.
 
-It replays ``recordings/`` with no key, recorded 2026-11-03 (the judge's calls again 2026-11-10) for $7.54;
+It replays ``recordings/`` with no key, recorded 2026-11-03 (the judge's calls again 2026-11-10) for $7.53;
 ``recordings/README.md`` holds the one command that records them again.
 """
 
@@ -34,6 +34,6 @@ writer_eval = WriterEval(
     turns=45,  # each report's turn cap, the analyst's and the editor's together
     max_cost_usd=39.0,  # the whole eval's, judge and pairwise pass included
     pairwise_share=0.05,  # of max_cost_usd, for the pairwise pass: $1.95; each arm gets half the rest, $18.52
-    held_out_fraction=0.35,  # 7 held-out cases of 11: the 0.3 default leaves 4, under the 5 a rate needs
+    held_out_fraction=0.35,  # the default, stated: 7 held-out cases of 11, past the 5 a rate needs
     name="writer",
 )
