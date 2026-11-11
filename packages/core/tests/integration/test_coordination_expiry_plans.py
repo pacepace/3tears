@@ -1,7 +1,8 @@
 """Integration: each coordination table's expiry sweep finds its expired rows through the table's expiry index.
 
 The sweep (``CoordinationCollection.sweep_expired``) deletes a bounded batch of the rows whose expiry passed. Each
-table's statement (``sweep_expired_sql``) is the purpose of that table's ``idx_coordination_<table>_expiry``: seeded
+table's statement (``sweep_expired_sql``) is the purpose of that table's ``idx_coordination_<table>_expiry_range``
+(``expires_at ASC``: range-sharded on YugabyteDB, where a hashed index answers no range): seeded
 past the size where the planner would rather scan, with few rows expired, its plan reads the index by its condition
 on ``expires_at``, never every row of the table.
 """
@@ -77,10 +78,10 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
 async def test_each_expiry_sweep_finds_its_rows_through_its_expiry_index(conn: asyncpg.Connection) -> None:
     """Flips if a table's sweep reaches its expired rows by any way but its expiry index's condition."""
     sweeps = {
-        "idx_coordination_counters_expiry": CoordinationCountersCollection.sweep_expired_sql,
-        "idx_coordination_claims_expiry": CoordinationClaimsCollection.sweep_expired_sql,
-        "idx_coordination_revocations_expiry": CoordinationRevocationsCollection.sweep_expired_sql,
-        "idx_coordination_redemptions_expiry": CoordinationRedemptionsCollection.sweep_expired_sql,
+        "idx_coordination_counters_expiry_range": CoordinationCountersCollection.sweep_expired_sql,
+        "idx_coordination_claims_expiry_range": CoordinationClaimsCollection.sweep_expired_sql,
+        "idx_coordination_revocations_expiry_range": CoordinationRevocationsCollection.sweep_expired_sql,
+        "idx_coordination_redemptions_expiry_range": CoordinationRedemptionsCollection.sweep_expired_sql,
     }
     for index, sql in sweeps.items():
         plan = await explain_write(conn, sql, datetime.now(UTC), 1_000)

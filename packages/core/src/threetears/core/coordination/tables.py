@@ -516,8 +516,9 @@ class CoordinationCountersCollection(CoordinationCollection):
         cas_column="date_updated",
         indexes=(
             SchemaIndex(
-                "idx_coordination_counters_expiry",
+                "idx_coordination_counters_expiry_range",
                 "expires_at",
+                asc=("expires_at",),
                 purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationCountersCollection.sweep_expired_sql",
                 plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
@@ -557,8 +558,9 @@ class CoordinationClaimsCollection(CoordinationCollection):
         cas_column="date_updated",
         indexes=(
             SchemaIndex(
-                "idx_coordination_claims_expiry",
+                "idx_coordination_claims_expiry_range",
                 "expires_at",
+                asc=("expires_at",),
                 purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationClaimsCollection.sweep_expired_sql",
                 plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
@@ -594,8 +596,9 @@ class CoordinationRevocationsCollection(CoordinationCollection):
         cas_column="date_updated",
         indexes=(
             SchemaIndex(
-                "idx_coordination_revocations_expiry",
+                "idx_coordination_revocations_expiry_range",
                 "expires_at",
+                asc=("expires_at",),
                 purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationRevocationsCollection.sweep_expired_sql",
                 plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
@@ -632,8 +635,9 @@ class CoordinationRedemptionsCollection(CoordinationCollection):
         cas_column="date_updated",
         indexes=(
             SchemaIndex(
-                "idx_coordination_redemptions_expiry",
+                "idx_coordination_redemptions_expiry_range",
                 "expires_at",
+                asc=("expires_at",),
                 purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationRedemptionsCollection.sweep_expired_sql",
                 plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
@@ -705,7 +709,7 @@ def table_def_for(schema: TableSchema) -> TableDef:
     :return: the DDL definition
     :rtype: TableDef
     :raises KeyError: when a column carries a type tag this renderer does not map
-    :raises ValueError: when an index declares what the DDL definition cannot carry (``desc``, ``asc``,
+    :raises ValueError: when an index declares what the DDL definition cannot carry (``desc``,
         ``collate``, ``where``, ``using``, ``ops``, ``pg_with`` or ``nulls_not_distinct``), so the migration would create a different index
     """
     for index in schema.indexes:
@@ -713,7 +717,6 @@ def table_def_for(schema: TableSchema) -> TableDef:
             field
             for field, value in (
                 ("desc", index.desc),
-                ("asc", index.asc),
                 ("collate", index.collate),
                 ("where", index.where),
                 ("using", index.using),
@@ -743,7 +746,13 @@ def table_def_for(schema: TableSchema) -> TableDef:
             for column in schema.columns
         ],
         indexes=[
-            DdlIndexDef(name=index.name, columns=list(index.columns), unique=index.unique, include=list(index.include))
+            DdlIndexDef(
+                name=index.name,
+                columns=list(index.columns),
+                unique=index.unique,
+                include=list(index.include),
+                asc=list(index.asc),
+            )
             for index in schema.indexes
         ],
     )

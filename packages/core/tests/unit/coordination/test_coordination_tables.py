@@ -33,6 +33,7 @@ from threetears.core.coordination.migrations.v003_create_collection_write_marks 
     create_collection_write_marks,
 )
 from threetears.core.coordination.migrations.v004_index_write_marks_by_table import index_write_marks_by_table
+from threetears.core.coordination.migrations.v005_range_expiry_indexes import range_expiry_indexes
 from threetears.core.coordination.tables import (
     COORDINATION_TABLE_SCHEMAS,
     CoordinationClaimsCollection,
@@ -261,7 +262,32 @@ class TestTheMigrationMatchesTheDeclaredSchemas:
             2: add_l2_order_columns,
             3: create_collection_write_marks,
             4: index_write_marks_by_table,
+            5: range_expiry_indexes,
         }
+
+    @pytest.mark.asyncio
+    async def test_every_expiry_index_is_range_sharded_on_expires_at(self) -> None:
+        # YugabyteDB hashes an index's first column unless it is declared ASC; a hashed index answers no range,
+        # and the sweep reads expires_at < $1
+        store = _RecordingStore()
+        await create_coordination_tables(store)  # type: ignore[arg-type]
+        for schema in COORDINATION_TABLE_SCHEMAS:
+            assert (
+                f"CREATE INDEX IF NOT EXISTS idx_{schema.name}_expiry_range ON {schema.name} (expires_at ASC)"
+                in store.statements
+            ), store.statements
+
+    @pytest.mark.asyncio
+    async def test_v005_builds_each_range_expiry_index_before_it_drops_the_hashed_one(self) -> None:
+        # built beside: the sweep always has an index to read
+        store = _RecordingStore()
+        await range_expiry_indexes(store)  # type: ignore[arg-type]
+        for schema in COORDINATION_TABLE_SCHEMAS:
+            build = store.statements.index(
+                f"CREATE INDEX IF NOT EXISTS idx_{schema.name}_expiry_range ON {schema.name} (expires_at ASC)"
+            )
+            drop = store.statements.index(f"DROP INDEX IF EXISTS idx_{schema.name}_expiry")
+            assert build < drop, store.statements
 
     @pytest.mark.asyncio
     async def test_v002_adds_both_columns_then_backfills_each_compare_and_swap_table(self) -> None:
