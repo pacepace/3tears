@@ -791,7 +791,7 @@ class TestHubTableParity:
 
 
 def _make_coll_with_pool(cls: type[Any], row: dict[str, Any] | None = None) -> tuple[Any, AsyncMock]:
-    """build a collection with a mocked L3 pool returning ``row`` from fetchrow.
+    """build a collection with a mocked L3 pool returning ``row`` from fetch (the keyed point read's one call).
 
     used by the natural-key tests below; isolates the collection
     instance from real L3 wiring so the assertion is purely about the
@@ -799,7 +799,7 @@ def _make_coll_with_pool(cls: type[Any], row: dict[str, Any] | None = None) -> t
 
     :param cls: Collection class to instantiate
     :ptype cls: type
-    :param row: row dict that ``pool.fetchrow`` returns; None means
+    :param row: the one row ``pool.fetch`` returns; None means
         the lookup miss path
     :ptype row: dict[str, Any] | None
     :return: ``(collection, mock_pool)`` so tests can assert the SQL
@@ -808,7 +808,7 @@ def _make_coll_with_pool(cls: type[Any], row: dict[str, Any] | None = None) -> t
     registry, config = _make_registry_and_config()
     coll = cls(registry=registry, config=config)
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=row)
+    pool.fetch = AsyncMock(return_value=[] if row is None else [row])
     coll.l3_pool = pool
     return coll, pool
 
@@ -846,8 +846,8 @@ class TestDataSourceTableGetByNaturalKey:
         coll, pool = _make_coll_with_pool(DataSourceTableCollection, row=None)
         ds_id = uuid4()
         await coll.get_by_natural_key(ds_id, "schema_x", "table_y")
-        pool.fetchrow.assert_called_once()
-        args = pool.fetchrow.call_args.args
+        pool.fetch.assert_called_once()
+        args = pool.fetch.call_args.args
         # ds_id + schema + table are the three positional bind params
         assert args[1:] == (ds_id, "schema_x", "table_y")
 
@@ -928,8 +928,8 @@ class TestDataSourceColumnGetByNaturalKey:
         coll, pool = _make_coll_with_pool(DataSourceColumnCollection, row=None)
         ds_id = uuid4()
         await coll.get_by_natural_key(ds_id, "s", "t", "col")
-        pool.fetchrow.assert_called_once()
-        args = pool.fetchrow.call_args.args
+        pool.fetch.assert_called_once()
+        args = pool.fetch.call_args.args
         assert args[1:] == (ds_id, "s", "t", "col")
 
     @pytest.mark.asyncio
@@ -957,17 +957,27 @@ class TestATemplateDeleteAnnouncesTheTablesItUnbinds:
         registry.get_collection.side_effect = {"datasource_tables": tables, "table_templates": templates}.get
         template_id, bound = uuid4(), [uuid4(), uuid4()]
         pool = AsyncMock()
-        pool.fetch = AsyncMock(return_value=[{"id": table_id} for table_id in bound])
-        # the template's own row, read first so its customer column rides with the delete's change
-        pool.fetchrow = AsyncMock(return_value={"id": template_id, "customer_id": None})
+        template_read = 'SELECT t.* FROM "table_templates" AS t WHERE t."id" = $1 LIMIT 1'
+
+        async def _fetch(sql: str, *args: Any) -> list[dict[str, Any]]:
+            if sql == template_read:
+                # the template's own row (a keyed point read), read first so its customer column rides with the
+                # delete's change
+                return [{"id": template_id, "customer_id": None}]
+            return [{"id": table_id} for table_id in bound]
+
+        pool.fetch = AsyncMock(side_effect=_fetch)
         templates.l3_pool = pool
 
         await templates.delete(template_id)
 
-        # the bound tables were read before the delete, by the column the action clears
-        read_sql, read_ids = pool.fetch.await_args.args
+        # the template's row was read by its key, then the bound tables before the delete, by the column the
+        # action clears: one statement each
+        (own_sql, own_id), (read_sql, read_ids) = (call.args for call in pool.fetch.await_args_list)
+        assert own_sql == template_read
+        assert own_id == template_id
         assert "FROM datasource_tables WHERE template_id = ANY($1)" in read_sql
         assert read_ids == [template_id]
-        assert pool.fetch.await_count == 1
+        assert pool.fetch.await_count == 2
         tables.invalidate_cache_many.assert_awaited_once()
         assert tables.invalidate_cache_many.await_args.args[0] == bound

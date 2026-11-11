@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+from threetears.agent.workspace.entities import Workspace, WorkspaceFile, WorkspaceFileVersion
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -22,16 +23,19 @@ from threetears.core.collections.schema_backed import (
     STRING_TYPE,
     UUID_TYPE,
     Column,
-    ForeignKey as SchemaForeignKey,
-    Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
 )
+from threetears.core.collections.schema_backed import (
+    ForeignKey as SchemaForeignKey,
+)
+from threetears.core.collections.schema_backed import (
+    Index as SchemaIndex,
+)
 from threetears.core.config import CoreConfig
-from threetears.observe import get_logger
-
-from threetears.agent.workspace.entities import Workspace, WorkspaceFile, WorkspaceFileVersion
+from threetears.core.keyed import read_by, read_row
 from threetears.core.tenancy import TENANT_BY_SCHEMA
+from threetears.observe import get_logger
 
 __all__ = [
     "WorkspaceCollection",
@@ -204,10 +208,11 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         :return: matching live workspace entity or None
         :rtype: Workspace | None
         """
-        row = await self.required_l3_pool.fetchrow(
-            "SELECT * FROM workspaces WHERE workspace_id = $1 AND agent_id = $2 AND date_deleted IS NULL",
-            workspace_id,
-            agent_id,
+        row = await read_row(
+            self.required_l3_pool,
+            "workspaces",
+            by={"workspace_id": workspace_id, "agent_id": agent_id, "date_deleted": None},
+            records=True,
         )
         result: Workspace | None = None
         if row is not None:
@@ -234,10 +239,8 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         :return: matching workspace entity or None
         :rtype: Workspace | None
         """
-        row = await self.required_l3_pool.fetchrow(
-            "SELECT * FROM workspaces WHERE workspace_id = $1 AND agent_id = $2",
-            workspace_id,
-            agent_id,
+        row = await read_row(
+            self.required_l3_pool, "workspaces", by={"workspace_id": workspace_id, "agent_id": agent_id}, records=True
         )
         result: Workspace | None = None
         if row is not None:
@@ -265,11 +268,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         :return: matching workspace entity or None
         :rtype: Workspace | None
         """
-        row = await self.required_l3_pool.fetchrow(
-            "SELECT * FROM workspaces WHERE agent_id = $1 AND name = $2",
-            agent_id,
-            name,
-        )
+        row = await read_row(self.required_l3_pool, "workspaces", by={"agent_id": agent_id, "name": name}, records=True)
         result: Workspace | None = None
         if row is not None:
             data = dict(row)
@@ -389,10 +388,11 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
         :return: matching file entity or None
         :rtype: WorkspaceFile | None
         """
-        row = await self.required_l3_pool.fetchrow(
-            "SELECT * FROM workspace_files WHERE workspace_id = $1 AND relative_path = $2",
-            workspace_id,
-            relative_path,
+        row = await read_row(
+            self.required_l3_pool,
+            "workspace_files",
+            by={"workspace_id": workspace_id, "relative_path": relative_path},
+            records=True,
         )
         result: WorkspaceFile | None = None
         if row is not None:
@@ -416,10 +416,7 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
         :return: list of file entities for workspace
         :rtype: list[WorkspaceFile]
         """
-        rows = await self.required_l3_pool.fetch(
-            "SELECT * FROM workspace_files WHERE workspace_id = $1",
-            workspace_id,
-        )
+        rows = await read_by(self.required_l3_pool, "workspace_files", by={"workspace_id": workspace_id}, records=True)
         entities: list[WorkspaceFile] = []
         for row in rows:
             data = dict(row)

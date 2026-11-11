@@ -74,6 +74,8 @@ def registry(l1_backend: SQLiteBackend) -> CollectionRegistry:
     l3_pool = MagicMock()
     l3_pool.execute = AsyncMock(return_value="INSERT 0 1")
     l3_pool.fetchrow = AsyncMock(return_value=None)
+    # the by-pk store read is a keyed point read (threetears.core.keyed.read_row), sent through fetch: no row
+    l3_pool.fetch = AsyncMock(return_value=[])
     reg = CollectionRegistry()
     reg.configure(l1_backend=l1_backend, l3_pool=l3_pool)
     return reg

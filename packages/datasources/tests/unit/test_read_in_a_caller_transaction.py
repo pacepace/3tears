@@ -23,9 +23,10 @@ class _Reads:
     def __init__(self) -> None:
         self.reads: list[tuple[str, tuple[Any, ...]]] = []
 
-    async def fetchrow(self, query: str, *params: Any) -> dict[str, Any]:
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        # the store read is a keyed point read (threetears.core.keyed.read_row), sent through fetch
         self.reads.append((query, params))
-        return {"key": params[0], "tags": ["a"]}
+        return [{"key": params[0], "tags": ["a"]}]
 
 
 @pytest.mark.parametrize(

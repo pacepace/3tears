@@ -8,7 +8,8 @@ Gated on its OWN connection, never the central-reporting production user the oth
 part of it is named by the environment, and it skips (fails in CI) when any part is missing. The password is a
 reference (``env://THREETEARS_LIVE_REDSHIFT_PASSWORD``), resolved only by the driver, never printed. The gate logs
 in once per session (:func:`~tests.unit.helpers.redshift_live_gate.gated`), so a wrong password costs one refused
-login.
+login; its fixture, ``live_redshift_config``, lives beside ``redshift_config`` in this directory's conftest, the one
+place a live test's connection is built.
 
 run locally, from the repo root, with the password injected by reference:
 
@@ -24,7 +25,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from collections.abc import Iterator
 from typing import Any
 
@@ -33,14 +33,8 @@ import pytest
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers import redshift_driver as redshift_driver_module
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
-from threetears.datasources.entities import DataSourceType
-
-from ..unit.helpers.redshift_live_gate import gated
 
 pytestmark = [pytest.mark.integration, pytest.mark.live]
-
-#: the environment naming the cluster; every one is required
-_ENV = ("THREETEARS_LIVE_REDSHIFT_HOST", "THREETEARS_LIVE_REDSHIFT_DATABASE", "THREETEARS_LIVE_REDSHIFT_USER")
 
 #: the rows a page reads in these tests
 _PAGE_ROWS = 100
@@ -57,32 +51,6 @@ def _encode(rows: list[dict[str, Any]]) -> bytes:
     :rtype: bytes
     """
     return json.dumps(rows, default=str, separators=(",", ":")).encode()
-
-
-@pytest.fixture(scope="session")
-def live_redshift_config() -> RedshiftConnectionConfig:
-    """the cluster the environment names, once its one login was accepted.
-
-    :return: the connection, one cached connection so a reuse is visible as the same backend
-    :rtype: RedshiftConnectionConfig
-    """
-    missing = [name for name in _ENV if not os.environ.get(name)]
-    if missing:
-        if os.environ.get("CI"):
-            pytest.fail(f"{', '.join(missing)} not set; the live fetch_within proof must run in CI")
-        pytest.skip(f"{', '.join(missing)} not set; live fetch_within proof skipped")
-    return gated(
-        RedshiftConnectionConfig(
-            datasource_type=DataSourceType.REDSHIFT,
-            host=os.environ["THREETEARS_LIVE_REDSHIFT_HOST"],
-            port=int(os.environ.get("THREETEARS_LIVE_REDSHIFT_PORT", "5439")),
-            database=os.environ["THREETEARS_LIVE_REDSHIFT_DATABASE"],
-            username=os.environ["THREETEARS_LIVE_REDSHIFT_USER"],
-            password_ref="env://THREETEARS_LIVE_REDSHIFT_PASSWORD",
-            connection_cache_size=1,
-            query_timeout_seconds=60,
-        )
-    )
 
 
 @pytest.fixture
@@ -135,7 +103,9 @@ async def test_a_cursor_with_bind_parameters_reads_pages_to_the_cut_and_keeps_it
         assert len(pages) <= math.ceil(kept / _PAGE_ROWS) + 1, (kept, pages)
         after = await _pid(driver)
         assert after == before, "the connection read past the cut went back to the cache, not evicted"
-        print(f"\nLIVE fetch_within: whole={len(whole)} cap={cap}B kept={kept} pages={pages} pid reused={after == before}")
+        print(
+            f"\nLIVE fetch_within: whole={len(whole)} cap={cap}B kept={kept} pages={pages} pid reused={after == before}"
+        )
     finally:
         await driver.close()
 

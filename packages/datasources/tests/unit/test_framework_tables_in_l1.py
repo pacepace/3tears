@@ -36,6 +36,9 @@ from threetears.datasources.collections import (
     TableTemplateCollection,
 )
 
+#: the store's read of one row by id: a keyed point read (``threetears.core.keyed.read_row``), sent through ``fetch``
+_READ_BY_ID = 'SELECT t.* FROM "datasource_columns" AS t WHERE t."id" = $1 LIMIT 1'
+
 #: the columns ``DataSourceColumnCollection``'s upsert binds, in its parameter order
 _NATURAL_KEY = ("datasource_id", "schema_name", "table_name", "column_name")
 
@@ -51,10 +54,8 @@ class _ColumnTable:
         self.rows: dict[UUID, dict[str, Any]] = {}
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
-        if sql.startswith("INSERT"):
-            return self._upsert(sql, args)
-        row = self.rows.get(args[0])
-        return None if row is None else dict(row)
+        assert sql.startswith("INSERT"), f"only the upsert goes through fetchrow: {sql}"
+        return self._upsert(sql, args)
 
     def _upsert(self, sql: str, args: tuple[Any, ...]) -> dict[str, Any]:
         """the upsert on the natural key, its columns named by the statement, returning the stored id."""
@@ -72,6 +73,9 @@ class _ColumnTable:
         return "INSERT 0 1"
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if sql == _READ_BY_ID:
+            row = self.rows.get(args[0])
+            return [] if row is None else [dict(row)]
         return []
 
 

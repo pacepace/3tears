@@ -26,9 +26,32 @@ from typing import Any, ClassVar, cast
 from uuid import UUID
 
 from sqlalchemy import MetaData, Table
-
+from threetears.agent.memory.authorize import (
+    ACTION_MEMORY_READ,
+    ACTION_MEMORY_WRITE,
+    MemoryAuthorizerDependencies,
+    authorize_memory_access,
+    ensure_memory_owner_assignment,
+)
+from threetears.agent.memory.entities import (
+    MediaContentEntity,
+    MediaEntity,
+    MemoryChunkEntity,
+    MemoryConsolidationEntity,
+    MemoryEntity,
+    MemoryRefEntity,
+)
+from threetears.agent.memory.read_filter import ReadFilter, ReadFiltered, filter_clause
+from threetears.agent.memory.retrieval_scope import (
+    RetrievalScope,
+    build_scope_conditions,
+    scope_matches_nothing,
+)
+from threetears.agent.memory.revisions import RETRACTED_BECAUSE_PREFIX, RETRACTED_SALIENCE_PREFIX
+from threetears.core.backends.schema_sql import decode_vector
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.salience import apply_salience_decay
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     DATETIMETZ_TYPE,
@@ -41,43 +64,25 @@ from threetears.core.collections.schema_backed import (
     UUID_TYPE,
     VECTOR_TYPE,
     Column,
-    ForeignKey as SchemaForeignKey,
-    Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
-    UniqueConstraint as SchemaUniqueConstraint,
     spans_partitions,
 )
-from threetears.core.backends.schema_sql import decode_vector
-from threetears.core.collections.salience import apply_salience_decay
+from threetears.core.collections.schema_backed import (
+    ForeignKey as SchemaForeignKey,
+)
+from threetears.core.collections.schema_backed import (
+    Index as SchemaIndex,
+)
+from threetears.core.collections.schema_backed import (
+    UniqueConstraint as SchemaUniqueConstraint,
+)
 from threetears.core.config import CoreConfig
 from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, schema_with_embedding_dim
 from threetears.core.data.gin import gin_filter
-from threetears.observe import get_logger
-
-from threetears.agent.memory.authorize import (
-    ACTION_MEMORY_READ,
-    ACTION_MEMORY_WRITE,
-    MemoryAuthorizerDependencies,
-    authorize_memory_access,
-    ensure_memory_owner_assignment,
-)
-from threetears.agent.memory.read_filter import ReadFilter, ReadFiltered, filter_clause
-from threetears.agent.memory.revisions import RETRACTED_BECAUSE_PREFIX, RETRACTED_SALIENCE_PREFIX
-from threetears.agent.memory.retrieval_scope import (
-    RetrievalScope,
-    build_scope_conditions,
-    scope_matches_nothing,
-)
-from threetears.agent.memory.entities import (
-    MediaContentEntity,
-    MediaEntity,
-    MemoryChunkEntity,
-    MemoryConsolidationEntity,
-    MemoryEntity,
-    MemoryRefEntity,
-)
+from threetears.core.keyed import read_by
 from threetears.core.tenancy import TENANT_BY_SCHEMA
+from threetears.observe import get_logger
 
 __all__ = [
     "ConsolidationCycleError",
@@ -4780,10 +4785,12 @@ class MemoryConsolidationsCollection(SchemaBackedCollection[MemoryConsolidationE
         # consolidated_memory_id) prefix of the composite pk is not
         # full-pk-addressable, so the L1 row cache does not serve it;
         # keeping it on the Collection preserves the single entry point.
-        rows = await self.l3_pool.fetch(
-            "SELECT source_memory_id FROM memory_consolidations WHERE agent_id = $1 AND consolidated_memory_id = $2",
-            agent_id,
-            consolidated_memory_id,
+        rows = await read_by(
+            self.l3_pool,
+            "memory_consolidations",
+            by={"agent_id": agent_id, "consolidated_memory_id": consolidated_memory_id},
+            columns=("source_memory_id",),
+            records=True,
         )
         return [_as_pk_uuid(row["source_memory_id"]) for row in rows]
 

@@ -48,17 +48,7 @@ from typing import Any, Final
 from threetears.enforcement.no_whole_reads import NoWholeReadsConfig, _hits, _producers
 from threetears.enforcement.no_whole_reads.use_the_helper import _helper_hits
 
-__all__ = [
-    "Pin",
-    "PointSql",
-    "Refusal",
-    "Rewrite",
-    "apply_rewrites",
-    "parse_point",
-    "plan_point_rewrites",
-    "render_test_module",
-    "write_manifest",
-]
+__all__ = ["main"]
 
 #: the connection methods a point read is sent through, onto the helper that replaces each
 _HELPER_OF: Final[dict[str, str]] = {"fetch": "read_by", "fetchrow": "read_row", "fetchval": "read_value"}

@@ -1,0 +1,601 @@
+[
+ {
+  "args": [
+   "agent_id",
+   "consolidated_memory_id"
+  ],
+  "columns": [
+   "source_memory_id"
+  ],
+  "function": "MemoryConsolidationsCollection.find_sources",
+  "helper": "read_by",
+  "line": 4784,
+  "method": "fetch",
+  "new_call": "read_by(self.l3_pool, 'memory_consolidations', by={'agent_id': agent_id, 'consolidated_memory_id': consolidated_memory_id}, columns=('source_memory_id',), records=True)",
+  "old_sql": "SELECT source_memory_id FROM memory_consolidations WHERE agent_id = $1 AND consolidated_memory_id = $2",
+  "path": "packages/agent/memory/src/threetears/agent/memory/collections.py",
+  "pins": [
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "consolidated_memory_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "table": "memory_consolidations"
+ },
+ {
+  "args": [
+   "workspace_id",
+   "agent_id"
+  ],
+  "columns": null,
+  "function": "WorkspaceCollection.find_by_id",
+  "helper": "read_row",
+  "line": 208,
+  "method": "fetchrow",
+  "new_call": "read_row(self.required_l3_pool, 'workspaces', by={'workspace_id': workspace_id, 'agent_id': agent_id, 'date_deleted': None}, records=True)",
+  "old_sql": "SELECT * FROM workspaces WHERE workspace_id = $1 AND agent_id = $2 AND date_deleted IS NULL",
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/collections.py",
+  "pins": [
+   {
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "column": "date_deleted",
+    "kind": "null",
+    "literal": null,
+    "param": null
+   }
+  ],
+  "table": "workspaces"
+ },
+ {
+  "args": [
+   "workspace_id",
+   "agent_id"
+  ],
+  "columns": null,
+  "function": "WorkspaceCollection.find_by_id_and_agent",
+  "helper": "read_row",
+  "line": 238,
+  "method": "fetchrow",
+  "new_call": "read_row(self.required_l3_pool, 'workspaces', by={'workspace_id': workspace_id, 'agent_id': agent_id}, records=True)",
+  "old_sql": "SELECT * FROM workspaces WHERE workspace_id = $1 AND agent_id = $2",
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/collections.py",
+  "pins": [
+   {
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "table": "workspaces"
+ },
+ {
+  "args": [
+   "agent_id",
+   "name"
+  ],
+  "columns": null,
+  "function": "WorkspaceCollection.find_by_agent_and_name",
+  "helper": "read_row",
+  "line": 269,
+  "method": "fetchrow",
+  "new_call": "read_row(self.required_l3_pool, 'workspaces', by={'agent_id': agent_id, 'name': name}, records=True)",
+  "old_sql": "SELECT * FROM workspaces WHERE agent_id = $1 AND name = $2",
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/collections.py",
+  "pins": [
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "name",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "table": "workspaces"
+ },
+ {
+  "args": [
+   "workspace_id",
+   "relative_path"
+  ],
+  "columns": null,
+  "function": "WorkspaceFileCollection.find_by_workspace_and_relative_path",
+  "helper": "read_row",
+  "line": 393,
+  "method": "fetchrow",
+  "new_call": "read_row(self.required_l3_pool, 'workspace_files', by={'workspace_id': workspace_id, 'relative_path': relative_path}, records=True)",
+  "old_sql": "SELECT * FROM workspace_files WHERE workspace_id = $1 AND relative_path = $2",
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/collections.py",
+  "pins": [
+   {
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "relative_path",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "table": "workspace_files"
+ },
+ {
+  "args": [
+   "workspace_id"
+  ],
+  "columns": null,
+  "function": "WorkspaceFileCollection.find_by_workspace",
+  "helper": "read_by",
+  "line": 420,
+  "method": "fetch",
+  "new_call": "read_by(self.required_l3_pool, 'workspace_files', by={'workspace_id': workspace_id}, records=True)",
+  "old_sql": "SELECT * FROM workspace_files WHERE workspace_id = $1",
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/collections.py",
+  "pins": [
+   {
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "table": "workspace_files"
+ },
+ {
+  "args": [
+   "datasource_id"
+  ],
+  "columns": null,
+  "function": "CapabilitySourceCollection.find_by_id",
+  "helper": "read_row",
+  "line": 503,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'datasources', by={'id': datasource_id}, records=True)",
+  "old_sql": "SELECT * FROM datasources WHERE id = $1",
+  "path": "packages/datasources/src/threetears/datasources/collections.py",
+  "pins": [
+   {
+    "column": "id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "table": "datasources"
+ },
+ {
+  "args": [
+   "datasource_id"
+  ],
+  "columns": [
+   "origin_datasource_id"
+  ],
+  "function": "CapabilitySourceCollection.resolve_origin_datasource_id",
+  "helper": "read_row",
+  "line": 539,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'datasources', by={'id': datasource_id}, columns=('origin_datasource_id',), records=True)",
+  "old_sql": "SELECT origin_datasource_id FROM datasources WHERE id = $1",
+  "path": "packages/datasources/src/threetears/datasources/collections.py",
+  "pins": [
+   {
+    "column": "id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "table": "datasources"
+ },
+ {
+  "args": [
+   "entity_id"
+  ],
+  "columns": null,
+  "function": "DataSourceTableCollection._select_row",
+  "helper": "read_row",
+  "line": 614,
+  "method": "fetchrow",
+  "new_call": "read_row(target, 'datasource_tables', by={'id': entity_id}, records=True)",
+  "old_sql": "SELECT * FROM datasource_tables WHERE id = $1",
+  "path": "packages/datasources/src/threetears/datasources/collections.py",
+  "pins": [
+   {
+    "column": "id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "table": "datasource_tables"
+ },
+ {
+  "args": [
+   "datasource_id",
+   "schema_name",
+   "table_name"
+  ],
+  "columns": null,
+  "function": "DataSourceTableCollection.get_by_natural_key",
+  "helper": "read_row",
+  "line": 695,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'datasource_tables', by={'datasource_id': datasource_id, 'schema_name': schema_name, 'table_name': table_name}, records=True)",
+  "old_sql": "\n                SELECT * FROM datasource_tables\n                WHERE datasource_id = $1\n                AND schema_name = $2\n                AND table_name = $3\n                ",
+  "path": "packages/datasources/src/threetears/datasources/collections.py",
+  "pins": [
+   {
+    "column": "datasource_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "schema_name",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "column": "table_name",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   }
+  ],
+  "table": "datasource_tables"
+ },
+ {
+  "args": [
+   "entity_id"
+  ],
+  "columns": null,
+  "function": "DataSourceColumnCollection._select_row",
+  "helper": "read_row",
+  "line": 770,
+  "method": "fetchrow",
+  "new_call": "read_row(target, 'datasource_columns', by={'id': entity_id}, records=True)",
+  "old_sql": "SELECT * FROM datasource_columns WHERE id = $1",
+  "path": "packages/datasources/src/threetears/datasources/collections.py",
+  "pins": [
+   {
+    "column": "id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "table": "datasource_columns"
+ },
+ {
+  "args": [
+   "datasource_id",
+   "schema_name",
+   "table_name",
+   "column_name"
+  ],
+  "columns": null,
+  "function": "DataSourceColumnCollection.get_by_natural_key",
+  "helper": "read_row",
+  "line": 855,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'datasource_columns', by={'datasource_id': datasource_id, 'schema_name': schema_name, 'table_name': table_name, 'column_name': column_name}, records=True)",
+  "old_sql": "\n                SELECT * FROM datasource_columns\n                WHERE datasource_id = $1\n                AND schema_name = $2\n                AND table_name = $3\n                AND column_name = $4\n                ",
+  "path": "packages/datasources/src/threetears/datasources/collections.py",
+  "pins": [
+   {
+    "column": "datasource_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "schema_name",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "column": "table_name",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   },
+   {
+    "column": "column_name",
+    "kind": "param",
+    "literal": null,
+    "param": 4
+   }
+  ],
+  "table": "datasource_columns"
+ },
+ {
+  "args": [
+   "entity_id"
+  ],
+  "columns": null,
+  "function": "DataSourceSchemaDigestCollection._select_row",
+  "helper": "read_row",
+  "line": 940,
+  "method": "fetchrow",
+  "new_call": "read_row(target, 'datasource_schema_digests', by={'datasource_id': entity_id}, records=True)",
+  "old_sql": "SELECT * FROM datasource_schema_digests WHERE datasource_id = $1",
+  "path": "packages/datasources/src/threetears/datasources/collections.py",
+  "pins": [
+   {
+    "column": "datasource_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "table": "datasource_schema_digests"
+ },
+ {
+  "args": [
+   "entity_id"
+  ],
+  "columns": null,
+  "function": "DataSourceRelationCollection._select_row",
+  "helper": "read_row",
+  "line": 1050,
+  "method": "fetchrow",
+  "new_call": "read_row(target, 'datasource_relations', by={'id': entity_id}, records=True)",
+  "old_sql": "SELECT * FROM datasource_relations WHERE id = $1",
+  "path": "packages/datasources/src/threetears/datasources/collections.py",
+  "pins": [
+   {
+    "column": "id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "table": "datasource_relations"
+ },
+ {
+  "args": [
+   "entity_id"
+  ],
+  "columns": null,
+  "function": "TableTemplateCollection._select_row",
+  "helper": "read_row",
+  "line": 1185,
+  "method": "fetchrow",
+  "new_call": "read_row(target, 'table_templates', by={'id': entity_id}, records=True)",
+  "old_sql": "SELECT * FROM table_templates WHERE id = $1",
+  "path": "packages/datasources/src/threetears/datasources/collections.py",
+  "pins": [
+   {
+    "column": "id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "table": "table_templates"
+ },
+ {
+  "args": [
+   "subject.path"
+  ],
+  "columns": [
+   "epoch"
+  ],
+  "function": "EpochClient.current",
+  "helper": "read_value",
+  "line": 261,
+  "method": "fetchval",
+  "new_call": "read_value(self._pool, 'config_epochs', by={'subject_path': subject.path}, column='epoch')",
+  "old_sql": "SELECT epoch FROM config_epochs WHERE subject_path = $1",
+  "path": "packages/epoch/src/threetears/epoch/client.py",
+  "pins": [
+   {
+    "column": "subject_path",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "table": "config_epochs"
+ },
+ {
+  "args": [
+   "path"
+  ],
+  "columns": [
+   "epoch",
+   "previous_epoch"
+  ],
+  "function": "EpochClient.versions",
+  "helper": "read_row",
+  "line": 281,
+  "method": "fetchrow",
+  "new_call": "read_row(self._pool, 'config_epochs', by={'subject_path': path}, columns=('epoch', 'previous_epoch'), records=True)",
+  "old_sql": "SELECT epoch, previous_epoch FROM config_epochs WHERE subject_path = $1",
+  "path": "packages/epoch/src/threetears/epoch/client.py",
+  "pins": [
+   {
+    "column": "subject_path",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "table": "config_epochs"
+ },
+ {
+  "args": [
+   "storage_thread_id",
+   "checkpoint_ns",
+   "checkpoint_id"
+  ],
+  "columns": [
+   "checkpoint_id",
+   "parent_checkpoint_id",
+   "type",
+   "checkpoint",
+   "metadata_"
+  ],
+  "function": "ThreeTierCheckpointSaver._l3_get_tuple",
+  "helper": "read_row",
+  "line": 1206,
+  "method": "fetchrow",
+  "new_call": "read_row(self._exec, 'checkpoints', by={'thread_id': storage_thread_id, 'checkpoint_ns': checkpoint_ns, 'checkpoint_id': checkpoint_id}, columns=('checkpoint_id', 'parent_checkpoint_id', 'type', 'checkpoint', 'metadata_'), records=True)",
+  "old_sql": "SELECT checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata_ FROM checkpoints WHERE thread_id = $1 AND checkpoint_ns = $2 AND checkpoint_id = $3",
+  "path": "packages/langgraph/src/threetears/langgraph/checkpoint.py",
+  "pins": [
+   {
+    "column": "thread_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "checkpoint_ns",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "column": "checkpoint_id",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   }
+  ],
+  "table": "checkpoints"
+ },
+ {
+  "args": [
+   "grant_id"
+  ],
+  "columns": [
+   "grant_id",
+   "principal_type",
+   "principal_id",
+   "tool_name",
+   "permission",
+   "date_created"
+  ],
+  "function": "McpToolGrantCollection.read_grant",
+  "helper": "read_row",
+  "line": 245,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'mcp_tool_grants', by={'grant_id': grant_id}, columns=('grant_id', 'principal_type', 'principal_id', 'tool_name', 'permission', 'date_created'), records=True)",
+  "old_sql": "SELECT grant_id, principal_type, principal_id, tool_name, permission, date_created FROM mcp_tool_grants WHERE grant_id = $1",
+  "path": "packages/mcp/src/threetears/mcp/rbac.py",
+  "pins": [
+   {
+    "column": "grant_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "table": "mcp_tool_grants"
+ },
+ {
+  "args": [
+   "job_id"
+  ],
+  "columns": [
+   "partition_key",
+   "job_id",
+   "kind",
+   "payload",
+   "schedule_type",
+   "schedule_config",
+   "status",
+   "next_fire_at",
+   "last_fired_at",
+   "missed_fire_policy",
+   "name",
+   "date_created",
+   "date_updated"
+  ],
+  "function": "ScheduledJobCollection.get_by_job_id",
+  "helper": "read_row",
+  "line": 431,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'scheduled_jobs', by={'job_id': job_id}, columns=('partition_key', 'job_id', 'kind', 'payload', 'schedule_type', 'schedule_config', 'status', 'next_fire_at', 'last_fired_at', 'missed_fire_policy', 'name', 'date_created', 'date_updated'), records=True)",
+  "old_sql": "SELECT partition_key, job_id, kind, payload, schedule_type, schedule_config, status, next_fire_at, last_fired_at, missed_fire_policy, name, date_created, date_updated FROM scheduled_jobs WHERE job_id = $1",
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "column": "job_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "table": "scheduled_jobs"
+ },
+ {
+  "args": [
+   "partition_key",
+   "job_id"
+  ],
+  "columns": [
+   "schedule_type",
+   "missed_fire_policy",
+   "last_fired_at"
+  ],
+  "function": "ScheduledJobCollection.update_schedule",
+  "helper": "read_row",
+  "line": 573,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'scheduled_jobs', by={'partition_key': partition_key, 'job_id': job_id}, columns=('schedule_type', 'missed_fire_policy', 'last_fired_at'), records=True)",
+  "old_sql": "SELECT schedule_type, missed_fire_policy, last_fired_at FROM scheduled_jobs WHERE partition_key = $1 AND job_id = $2",
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "column": "partition_key",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "job_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "table": "scheduled_jobs"
+ }
+]

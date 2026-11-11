@@ -33,6 +33,40 @@ from threetears.nats.subjects import Subject, Subjects
 _NATS_KV_KEY_GRAMMAR = re.compile(r"^[-/_=.a-zA-Z0-9]+$")
 
 
+#: the durable reads the client sends, written out: the keyed point-read helpers' statements
+#: (``read_value`` for :meth:`EpochClient.current`, ``read_row`` for :meth:`EpochClient.versions`)
+_CURRENT_READ = 'SELECT t."epoch" FROM "config_epochs" AS t WHERE t."subject_path" = $1 LIMIT 1'
+_VERSIONS_READ = 'SELECT t."epoch", t."previous_epoch" FROM "config_epochs" AS t WHERE t."subject_path" = $1 LIMIT 1'
+
+
+def _pool() -> Any:
+    """a pool stub whose ``fetch`` (the one call the keyed helpers make) answers from its ``fetchval`` / ``fetchrow``.
+
+    The client reads a durable row through the keyed point-read helpers, which send ONE statement through
+    ``fetch`` and take its first row. A test keeps setting what each read answers where it always did --
+    ``fetchval`` the current epoch, ``fetchrow`` the versions row (and the bump / advance writes, which still
+    go through ``fetchrow``) -- so every answer and every count a test asserts stays as written: each ``fetch``
+    is exactly one await of the stub its statement names, looked up at call time so a test can swap it. A
+    statement other than the two reads above fails the test.
+
+    :return: the stub
+    :rtype: Any
+    """
+    pool = MagicMock()
+
+    async def _fetch(sql: str, *args: Any) -> list[Any]:
+        if sql == _CURRENT_READ:
+            value = await pool.fetchval(sql, *args)
+            return [] if value is None else [{"epoch": value}]
+        if sql == _VERSIONS_READ:
+            row = await pool.fetchrow(sql, *args)
+            return [] if row is None else [row]
+        raise AssertionError(f"the client sent a read this stub does not know: {sql}")
+
+    pool.fetch = AsyncMock(side_effect=_fetch)
+    return pool
+
+
 async def _counter_key(subject: Subject) -> str:
     """bump *subject* on a fresh client and return the one counter key it wrote.
 
@@ -56,7 +90,7 @@ def _subject(path: str = "app.capabilities.epoch") -> Subject:
 
 def _pool_with_bump(returning_epoch: int) -> Any:
     """build a pool stub whose fetchrow returns one ``epoch`` column."""
-    pool = MagicMock()
+    pool = _pool()
     pool.fetchrow = AsyncMock(return_value={"epoch": returning_epoch})
     pool.fetchval = AsyncMock(return_value=None)
     return pool
@@ -96,7 +130,7 @@ class TestEpochClientAdvanceTo:
 
     @pytest.mark.asyncio
     async def test_a_move_is_one_conditional_upsert_and_is_broadcast(self) -> None:
-        pool = MagicMock()
+        pool = _pool()
         pool.fetchrow = AsyncMock(return_value={"epoch": 4, "previous_epoch": 3})
         nats = _nats_mock()
         subject = _durable_subject()
@@ -110,7 +144,7 @@ class TestEpochClientAdvanceTo:
 
     @pytest.mark.asyncio
     async def test_a_subject_already_there_is_left_alone_and_not_broadcast(self) -> None:
-        pool = MagicMock()
+        pool = _pool()
         # the conditional upsert returns no row; the read that follows answers the row as it stands
         pool.fetchrow = AsyncMock(side_effect=[None, {"epoch": 6, "previous_epoch": 2}])
         nats = _nats_mock()
@@ -150,8 +184,7 @@ class TestEpochClientCurrentReadsTheDurableRow:
         assert await client.current(subject) == 0
         pool.fetchval.assert_awaited_once()
         sql, *args = pool.fetchval.await_args.args
-        assert "SELECT epoch FROM config_epochs" in sql
-        assert "WHERE subject_path" in sql
+        assert sql == _CURRENT_READ
         assert args == [subject.path]
 
     @pytest.mark.asyncio
@@ -276,7 +309,7 @@ class TestEpochClientDurableCarveOut:
 
     @pytest.mark.asyncio
     async def test_a_tile_epoch_raises_when_returning_yields_no_row(self) -> None:
-        pool = MagicMock()
+        pool = _pool()
         pool.fetchrow = AsyncMock(return_value=None)
         client = EpochClient(pool, _nats_mock())
 
@@ -314,7 +347,7 @@ class TestEpochClientCurrentRouting:
 
     @pytest.mark.asyncio
     async def test_a_durable_subject_reads_postgres(self) -> None:
-        pool = MagicMock()
+        pool = _pool()
         pool.fetchval = AsyncMock(return_value=17)
         client = EpochClient(pool, _nats_mock())
 
@@ -322,7 +355,7 @@ class TestEpochClientCurrentRouting:
 
     @pytest.mark.asyncio
     async def test_a_durable_subject_with_no_row_reads_zero(self) -> None:
-        pool = MagicMock()
+        pool = _pool()
         pool.fetchval = AsyncMock(return_value=None)
         client = EpochClient(pool, _nats_mock())
 
@@ -340,7 +373,7 @@ class TestEpochClientWildcardSubjects:
 
     @pytest.mark.asyncio
     async def test_a_star_wildcard_reads_zero_without_touching_kv(self) -> None:
-        pool = MagicMock()
+        pool = _pool()
         pool.fetchval = AsyncMock(side_effect=AssertionError("must not read postgres"))
         client = EpochClient(pool, _nats_mock())
 
@@ -511,7 +544,7 @@ class TestBucketIdentityFailsSafe:
 
 def _versions_pool(*answers: Any) -> Any:
     """a pool whose ``fetchrow`` answers each call in turn: a row, ``None``, or an exception to raise."""
-    pool = MagicMock()
+    pool = _pool()
     pool.fetchrow = AsyncMock(side_effect=list(answers))
     pool.fetchval = AsyncMock(return_value=None)
     return pool
@@ -820,7 +853,7 @@ class TestCachedVersions:
                 return {"epoch": 3, "previous_epoch": 2}
             return {"epoch": 5, "previous_epoch": 3}
 
-        pool = MagicMock()
+        pool = _pool()
         pool.fetchrow = AsyncMock(side_effect=_fetchrow)
         subject = _durable_subject()
         client, _listener, _nats = await _following(pool, subject, primed_epoch=5)
@@ -854,7 +887,7 @@ class TestCachedVersions:
                 await release.wait()
             return answer
 
-        pool = MagicMock()
+        pool = _pool()
         pool.fetchrow = AsyncMock(side_effect=_fetchrow)
         subject = _durable_subject()
         client, _listener, _nats = await _following(pool, subject)
@@ -880,7 +913,7 @@ class TestCachedVersions:
                 await release.wait()
             return answer
 
-        pool = MagicMock()
+        pool = _pool()
         pool.fetchrow = AsyncMock(side_effect=_fetchrow)
         nats = FakeNatsClient()
         client = EpochClient(pool, nats)

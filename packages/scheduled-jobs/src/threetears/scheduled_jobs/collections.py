@@ -40,12 +40,12 @@ from threetears.core.collections.schema_backed import (
     Column,
     TableSchema,
 )
+from threetears.core.keyed import read_row
+from threetears.core.tenancy import no_tenant
 from threetears.observe import get_logger
-
 from threetears.scheduled_jobs.entities import JobFireEntity, ScheduledJobEntity
 from threetears.scheduled_jobs.reschedule import compute_next_fire_at
 from threetears.scheduled_jobs.types import ScheduleStatus
-from threetears.core.tenancy import no_tenant
 
 __all__ = [
     "REAPED_DISPATCH_ERROR",
@@ -427,12 +427,26 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
             # UNIQUE constraint. The column list is written out literally so
             # the partition-column enforcement walker sees ``partition_key``
             # as a static literal.
-            row = await self.l3_pool.fetchrow(
-                "SELECT partition_key, job_id, kind, payload, schedule_type, "
-                "schedule_config, status, next_fire_at, last_fired_at, "
-                "missed_fire_policy, name, date_created, date_updated "
-                "FROM scheduled_jobs WHERE job_id = $1",
-                job_id,
+            row = await read_row(
+                self.l3_pool,
+                "scheduled_jobs",
+                by={"job_id": job_id},
+                columns=(
+                    "partition_key",
+                    "job_id",
+                    "kind",
+                    "payload",
+                    "schedule_type",
+                    "schedule_config",
+                    "status",
+                    "next_fire_at",
+                    "last_fired_at",
+                    "missed_fire_policy",
+                    "name",
+                    "date_created",
+                    "date_updated",
+                ),
+                records=True,
             )
             if row is not None:
                 result = ScheduledJobEntity(dict(row), is_new=False, collection=self)
@@ -569,11 +583,12 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
             # cache-bypass: reads the discriminators the recompute needs
             # before a targeted UPDATE; the row cache cannot answer the
             # read-then-write as one operation.
-            row = await self.l3_pool.fetchrow(
-                "SELECT schedule_type, missed_fire_policy, last_fired_at "
-                "FROM scheduled_jobs WHERE partition_key = $1 AND job_id = $2",
-                partition_key,
-                job_id,
+            row = await read_row(
+                self.l3_pool,
+                "scheduled_jobs",
+                by={"partition_key": partition_key, "job_id": job_id},
+                columns=("schedule_type", "missed_fire_policy", "last_fired_at"),
+                records=True,
             )
             if row is not None:
                 next_fire_at = compute_next_fire_at(

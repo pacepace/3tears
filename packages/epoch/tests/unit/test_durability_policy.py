@@ -69,15 +69,16 @@ _DURABLE_FAMILIES = _declared_table("_DURABLE_FAMILIES")
 _EPHEMERAL_FAMILIES = _declared_table("_EPHEMERAL_FAMILIES")
 
 
-# parity-exempt: records which substrate EpochClient reads; it reads a durable row with fetchval alone
+# parity-exempt: records which substrate EpochClient reads; it reads a durable row with fetch alone
 class _RecordingPool:
     """the Postgres pool a durable subject's read goes to; it has no rows."""
 
     def __init__(self) -> None:
         self.reads: list[str] = []
 
-    async def fetchval(self, _sql: str, subject_path: str) -> None:
+    async def fetch(self, _sql: str, subject_path: str) -> list[object]:
         self.reads.append(subject_path)
+        return []
 
 
 async def _counts_durably(subject: Subject) -> bool:

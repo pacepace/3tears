@@ -50,14 +50,14 @@ from dataclasses import dataclass
 from typing import Any, Final, Protocol
 
 from threetears.core.coordination.distributed_counter import DistributedCounter
-from threetears.nats import NatsClient
-from threetears.nats.kv import KvBucketLike
-from threetears.nats.errors import PublishError
-from threetears.nats.subjects import Subject
-from uuid_utils import uuid7
-from threetears.observe import contain, get_logger, traced
-
+from threetears.core.keyed import read_row, read_value
 from threetears.epoch.wire import EpochBumpMessage
+from threetears.nats import NatsClient
+from threetears.nats.errors import PublishError
+from threetears.nats.kv import KvBucketLike
+from threetears.nats.subjects import Subject
+from threetears.observe import contain, get_logger, traced
+from uuid_utils import uuid7
 
 __all__ = [
     "DurableEpoch",
@@ -71,7 +71,7 @@ log = get_logger(__name__)
 class PoolLike(Protocol):
     """minimal pool surface :class:`EpochClient` needs.
 
-    matches the top-level ``fetchrow``/``fetchval`` methods that
+    matches the top-level ``fetchrow``/``fetch`` methods that
     :class:`asyncpg.Pool` exposes (the pool acquires + releases a
     connection internally). callers pass an :class:`asyncpg.Pool`
     directly in production; tests pass a duck-typed mock.
@@ -92,14 +92,18 @@ class PoolLike(Protocol):
         """
         ...
 
-    async def fetchval(self, query: str, *args: object) -> Any:
-        """run query and return the first column of the first row.
+    async def fetch(self, query: str, *args: object) -> Any:
+        """run query and return every row it answers (an empty list when none).
+
+        the durable reads (:meth:`EpochClient.current`, :meth:`EpochClient.versions`) go
+        through the keyed point-read helpers (:mod:`threetears.core.keyed`), which read
+        through ``fetch``.
 
         :param query: parameterized SQL with ``$N`` placeholders
         :ptype query: str
         :param args: positional parameter values
         :ptype args: object
-        :return: scalar value or None
+        :return: the rows
         :rtype: Any
         """
         ...
@@ -258,7 +262,6 @@ _BUMP_SQL = (
     "RETURNING epoch"
 )
 
-_CURRENT_SQL = "SELECT epoch FROM config_epochs WHERE subject_path = $1"
 
 #: moves a durable epoch forward to a target in one statement, and never back: the row lock
 #: serializes concurrent writers and the WHERE leaves a row already at or past the target
@@ -276,9 +279,6 @@ _ADVANCE_SQL = (
     "WHERE config_epochs.epoch < EXCLUDED.epoch "
     "RETURNING epoch, previous_epoch"
 )
-
-#: a durable subject's epoch and the one its latest move replaced, in one read
-_VERSIONS_SQL = "SELECT epoch, previous_epoch FROM config_epochs WHERE subject_path = $1"
 
 
 def _covers(pattern: str, path: str) -> bool:
@@ -339,7 +339,7 @@ class EpochClient:
     single writer in a multi-writer system.
 
     :param pool: asyncpg-compatible pool exposing ``fetchrow`` /
-        ``fetchval``; production passes :class:`asyncpg.Pool`. Used ONLY by
+        ``fetch``; production passes :class:`asyncpg.Pool`. Used ONLY by
         the durable subject family -- every other epoch counts in NATS KV
         and never touches it.
     :ptype pool: PoolLike
@@ -467,7 +467,7 @@ class EpochClient:
             # would raise on an illegal key rather than miss.
             return 0
         if _is_durable(subject):
-            value = await self._pool.fetchval(_CURRENT_SQL, subject.path)
+            value = await read_value(self._pool, "config_epochs", by={"subject_path": subject.path}, column="epoch")
             epoch = 0 if value is None else int(value)
             held = self._versions.get(subject.path)
             if held is not None and held.epoch != epoch:
@@ -668,7 +668,13 @@ class EpochClient:
         read = object()
         self._versions_reads.setdefault(path, set()).add(read)
         try:
-            row = await self._pool.fetchrow(_VERSIONS_SQL, path)
+            row = await read_row(
+                self._pool,
+                "config_epochs",
+                by={"subject_path": path},
+                columns=("epoch", "previous_epoch"),
+                records=True,
+            )
         finally:
             unchanged = self._end_versions_read(path, read)
         result = DurableEpoch(epoch=0, previous=None)

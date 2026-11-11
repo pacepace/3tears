@@ -807,8 +807,9 @@ class TestWorkspaceCollectionFindByAgent:
         assert found.name == "main"
         assert found.agent_id == agent_id
         issued_sql = pool.executed[0][0]
-        assert "SELECT * FROM workspaces" in issued_sql
-        assert "WHERE agent_id = $1 AND name = $2" in issued_sql
+        # a keyed point read (threetears.core.keyed.read_row): the statement it sends, written out
+        assert issued_sql == 'SELECT t.* FROM "workspaces" AS t WHERE t."agent_id" = $1 AND t."name" = $2 LIMIT 1'
+        assert pool.executed[0][1] == (agent_id, "main")
 
     async def test_find_by_agent_and_name_returns_none_when_missing(
         self,
@@ -925,8 +926,9 @@ class TestWorkspaceFileCollectionFindByWorkspace:
         assert all(isinstance(e, WorkspaceFile) for e in entities)
         assert {e.relative_path for e in entities} == {"a.md", "b.md"}
         issued_sql = executed[0][0]
-        assert "SELECT * FROM workspace_files" in issued_sql
-        assert "WHERE workspace_id = $1" in issued_sql
+        # a keyed read of one key's rows (threetears.core.keyed.read_by): the statement it sends, written out
+        assert issued_sql == 'SELECT t.* FROM "workspace_files" AS t WHERE t."workspace_id" = $1'
+        assert executed[0][1] == (workspace_id,)
 
     async def test_find_by_workspace_empty(
         self,

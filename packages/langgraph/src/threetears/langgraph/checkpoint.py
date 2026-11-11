@@ -62,18 +62,8 @@ from typing import Any, Final, cast
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
-
-from langgraph.checkpoint.base import (
-    WRITES_IDX_MAP,
-    BaseCheckpointSaver,
-    ChannelVersions,
-    Checkpoint,
-    CheckpointMetadata,
-    CheckpointTuple,
-    get_checkpoint_id,
-    get_checkpoint_metadata,
-)
-
+from threetears.core.keyed import read_row
+from threetears.core.operator import operator_command
 from threetears.langgraph.anonymize import (
     METADATA_CHANNEL,
     CheckpointAnonymization,
@@ -93,8 +83,18 @@ from threetears.langgraph.protocols import (
     FlushCallback,
 )
 from threetears.langgraph.serde import UUIDSafeSerializer
-from threetears.core.operator import operator_command
 from threetears.observe import contain, get_logger
+
+from langgraph.checkpoint.base import (
+    WRITES_IDX_MAP,
+    BaseCheckpointSaver,
+    ChannelVersions,
+    Checkpoint,
+    CheckpointMetadata,
+    CheckpointTuple,
+    get_checkpoint_id,
+    get_checkpoint_metadata,
+)
 
 __all__ = [
     "CheckpointCacheError",
@@ -1202,15 +1202,12 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         storage_thread_id = self.storage_thread_id(thread_id, customer=customer)
 
         if checkpoint_id:
-            row = await self._exec.fetchrow(
-                "SELECT checkpoint_id, parent_checkpoint_id, type, "
-                "checkpoint, metadata_ "
-                "FROM checkpoints "
-                "WHERE thread_id = $1 AND checkpoint_ns = $2 "
-                "AND checkpoint_id = $3",
-                storage_thread_id,
-                checkpoint_ns,
-                checkpoint_id,
+            row = await read_row(
+                self._exec,
+                "checkpoints",
+                by={"thread_id": storage_thread_id, "checkpoint_ns": checkpoint_ns, "checkpoint_id": checkpoint_id},
+                columns=("checkpoint_id", "parent_checkpoint_id", "type", "checkpoint", "metadata_"),
+                records=True,
             )
         else:
             row = await self._exec.fetchrow(

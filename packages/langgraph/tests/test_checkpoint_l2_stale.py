@@ -391,7 +391,15 @@ class TestAPinnedReadDoesNotWarmTheCache:
         l1 = AsyncMock()
         executor = _make_executor()
         saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
-        executor.fetchrow.return_value = _row(saver, "cp-1")
+        pinned = _row(saver, "cp-1")
+
+        async def _fetch(sql: str, *args: object) -> list[dict[str, Any]]:
+            # the pinned read is a keyed point read of the checkpoint (threetears.core.keyed.read_row), through fetch
+            return (
+                [pinned] if sql.startswith('SELECT t."checkpoint_id", ') and ' FROM "checkpoints" AS t ' in sql else []
+            )
+
+        executor.fetch.side_effect = _fetch
 
         tup = await saver.aget_tuple(
             {"configurable": {"thread_id": "t-1", "checkpoint_ns": "", "checkpoint_id": "cp-1"}}

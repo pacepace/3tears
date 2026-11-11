@@ -61,9 +61,9 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
     UniqueConstraint,
 )
+from threetears.core.keyed import read_row
 from threetears.core.security.secret_refs import validate_ref
-from threetears.observe import get_logger
-
+from threetears.datasources.customer_scope import BY_CUSTOMER, COLUMN_CATALOGUE, TABLE_CATALOGUE
 from threetears.datasources.entities import (
     CapabilitySourceEntity,
     CapabilitySourceKind,
@@ -74,7 +74,7 @@ from threetears.datasources.entities import (
     DataSourceTableEntity,
     TableTemplateEntity,
 )
-from threetears.datasources.customer_scope import BY_CUSTOMER, COLUMN_CATALOGUE, TABLE_CATALOGUE
+from threetears.observe import get_logger
 
 log = get_logger(__name__)
 
@@ -499,10 +499,7 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
         read_ticket = self.scan_ticket()  # before the first await
         result: CapabilitySourceEntity | None = None
         if self.l3_pool is not None:
-            row = await self.l3_pool.fetchrow(
-                "SELECT * FROM datasources WHERE id = $1",
-                datasource_id,
-            )
+            row = await read_row(self.l3_pool, "datasources", by={"id": datasource_id}, records=True)
             if row is not None:
                 data = self._coerce_row(dict(row))
                 self.write_to_cache_sync(data, read_since=read_ticket)
@@ -535,9 +532,8 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
             # Collection get would decode the full row + write the L1
             # cache, but this is a hot per-turn lookup that only needs
             # the single origin column.
-            row = await self.l3_pool.fetchrow(
-                "SELECT origin_datasource_id FROM datasources WHERE id = $1",
-                datasource_id,
+            row = await read_row(
+                self.l3_pool, "datasources", by={"id": datasource_id}, columns=("origin_datasource_id",), records=True
             )
             if row is not None:
                 origin = row["origin_datasource_id"]
@@ -610,10 +606,7 @@ class DataSourceTableCollection(DeclaredTableCollection[DataSourceTableEntity]):
         :return: table data dictionary or None if not found
         :rtype: dict[str, Any] | None
         """
-        row = await target.fetchrow(
-            "SELECT * FROM datasource_tables WHERE id = $1",
-            entity_id,
-        )
+        row = await read_row(target, "datasource_tables", by={"id": entity_id}, records=True)
         result: dict[str, Any] | None = None
         if row is not None:
             data = dict(row)
@@ -691,16 +684,11 @@ class DataSourceTableCollection(DeclaredTableCollection[DataSourceTableEntity]):
         """
         result: DataSourceTableEntity | None = None
         if self.l3_pool is not None:
-            row = await self.l3_pool.fetchrow(
-                """
-                SELECT * FROM datasource_tables
-                WHERE datasource_id = $1
-                AND schema_name = $2
-                AND table_name = $3
-                """,
-                datasource_id,
-                schema_name,
-                table_name,
+            row = await read_row(
+                self.l3_pool,
+                "datasource_tables",
+                by={"datasource_id": datasource_id, "schema_name": schema_name, "table_name": table_name},
+                records=True,
             )
             if row is not None:
                 data = dict(row)
@@ -766,10 +754,7 @@ class DataSourceColumnCollection(DeclaredTableCollection[DataSourceColumnEntity]
         :return: column data dictionary or None if not found
         :rtype: dict[str, Any] | None
         """
-        row = await target.fetchrow(
-            "SELECT * FROM datasource_columns WHERE id = $1",
-            entity_id,
-        )
+        row = await read_row(target, "datasource_columns", by={"id": entity_id}, records=True)
         result: dict[str, Any] | None = None
         if row is not None:
             # ``tags`` comes back as a python list via the jsonb codec / proxy
@@ -851,18 +836,16 @@ class DataSourceColumnCollection(DeclaredTableCollection[DataSourceColumnEntity]
         """
         result: DataSourceColumnEntity | None = None
         if self.l3_pool is not None:
-            row = await self.l3_pool.fetchrow(
-                """
-                SELECT * FROM datasource_columns
-                WHERE datasource_id = $1
-                AND schema_name = $2
-                AND table_name = $3
-                AND column_name = $4
-                """,
-                datasource_id,
-                schema_name,
-                table_name,
-                column_name,
+            row = await read_row(
+                self.l3_pool,
+                "datasource_columns",
+                by={
+                    "datasource_id": datasource_id,
+                    "schema_name": schema_name,
+                    "table_name": table_name,
+                    "column_name": column_name,
+                },
+                records=True,
             )
             if row is not None:
                 # ``tags`` is a python list via the jsonb codec / proxy decode.
@@ -936,10 +919,7 @@ class DataSourceSchemaDigestCollection(
         :return: digest data dictionary or None if not found
         :rtype: dict[str, Any] | None
         """
-        row = await target.fetchrow(
-            "SELECT * FROM datasource_schema_digests WHERE datasource_id = $1",
-            entity_id,
-        )
+        row = await read_row(target, "datasource_schema_digests", by={"datasource_id": entity_id}, records=True)
         result: dict[str, Any] | None = None
         if row is not None:
             # ``tables`` comes back already decoded to a python list: the hub
@@ -1046,10 +1026,7 @@ class DataSourceRelationCollection(DeclaredTableCollection[DataSourceRelationEnt
         :return: relation data dictionary or None if not found
         :rtype: dict[str, Any] | None
         """
-        row = await target.fetchrow(
-            "SELECT * FROM datasource_relations WHERE id = $1",
-            entity_id,
-        )
+        row = await read_row(target, "datasource_relations", by={"id": entity_id}, records=True)
         result: dict[str, Any] | None = None
         if row is not None:
             # ``datasource_ids`` / ``join_paths`` come back as python lists via
@@ -1181,10 +1158,7 @@ class TableTemplateCollection(DeclaredTableCollection[TableTemplateEntity]):
         :return: template data dictionary or None if not found
         :rtype: dict[str, Any] | None
         """
-        row = await target.fetchrow(
-            "SELECT * FROM table_templates WHERE id = $1",
-            entity_id,
-        )
+        row = await read_row(target, "table_templates", by={"id": entity_id}, records=True)
         result: dict[str, Any] | None = None
         if row is not None:
             result = dict(row)

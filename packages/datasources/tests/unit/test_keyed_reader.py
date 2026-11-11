@@ -251,7 +251,9 @@ async def test_a_backfill_of_wide_rows_reads_on_past_replies_the_hub_cut_by_byte
     cut reply as every row, or pays a cut on every batch after the first (the fit it found is kept for the read)."""
     db = duckdb.connect()
     db.execute("CREATE TABLE geos (state VARCHAR, geo BIGINT, shape VARCHAR, PRIMARY KEY (state, geo))")
-    db.execute("INSERT INTO geos SELECT 'TX', i, repeat(chr(CAST(65 + (i % 26) AS INTEGER)), 2000) || i FROM range(400) r(i)")
+    db.execute(
+        "INSERT INTO geos SELECT 'TX', i, repeat(chr(CAST(65 + (i % 26) AS INTEGER)), 2000) || i FROM range(400) r(i)"
+    )
     hashed = [HashColumn("shape")]
     hub = _ByteCappedHub(db, cap=64_000)
     reader = _DuckReader(hub, "stand-in")  # type: ignore[arg-type]

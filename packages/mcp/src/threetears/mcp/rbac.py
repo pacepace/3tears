@@ -33,23 +33,24 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
-from uuid_utils import uuid7
-
 from sqlalchemy import MetaData, Table
-
 from threetears.core.collections.generation import WRITE_GENERATION
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
     STRING_TYPE,
     UUID_TYPE,
     Column,
-    Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
 )
+from threetears.core.collections.schema_backed import (
+    Index as SchemaIndex,
+)
 from threetears.core.entities.base import BaseEntity
-from threetears.observe import get_logger
+from threetears.core.keyed import read_row
 from threetears.core.tenancy import no_tenant
+from threetears.observe import get_logger
+from uuid_utils import uuid7
 
 __all__ = [
     "McpToolGrantCollection",
@@ -241,10 +242,12 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
                 "wire CollectionRegistry.configure(l3_pool=...) before "
                 "calling read_grant",
             )
-        row = await self.l3_pool.fetchrow(
-            "SELECT grant_id, principal_type, principal_id, tool_name, permission, date_created FROM mcp_tool_grants "
-            "WHERE grant_id = $1",
-            grant_id,
+        row = await read_row(
+            self.l3_pool,
+            "mcp_tool_grants",
+            by={"grant_id": grant_id},
+            columns=("grant_id", "principal_type", "principal_id", "tool_name", "permission", "date_created"),
+            records=True,
         )
         return None if row is None else dict(row)
 

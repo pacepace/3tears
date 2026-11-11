@@ -43,7 +43,6 @@ from threetears.core.keyed import read_by, read_row, read_value
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
 __all__ = [
-    "Overrides",
     "assert_rewrite_same",
     "assert_source_says",
     "entry_id",
@@ -51,7 +50,7 @@ __all__ = [
 ]
 
 #: per table, column -> its value for a seed, where the catalog's row does not fit
-Overrides = Mapping[str, Mapping[str, Callable[[Seeded], Any]]]
+_Overrides = Mapping[str, Mapping[str, Callable[[Seeded], Any]]]
 
 _BASE_TIME: Final = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -304,7 +303,7 @@ def _by(entry: Mapping[str, Any], params: Sequence[Any]) -> dict[str, Any]:
     return by
 
 
-async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides: Overrides | None = None) -> None:
+async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides: _Overrides | None = None) -> None:
     """the entry's helper call gives what its old statement gave, over every seed case, on ``conn``'s database.
 
     :param conn: an asyncpg connection to a migrated test database, as a superuser
@@ -312,7 +311,7 @@ async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides:
     :param entry: the manifest entry
     :ptype entry: Mapping[str, Any]
     :param overrides: per table, column -> value of a seed, where the generic row does not fit
-    :ptype overrides: Overrides | None
+    :ptype overrides: _Overrides | None
     :return: nothing
     :rtype: None
     :raises AssertionError: naming each case whose rows differ

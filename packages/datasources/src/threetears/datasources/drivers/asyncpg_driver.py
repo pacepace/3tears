@@ -1193,9 +1193,7 @@ class AsyncpgDriver(Driver):
         async def _bounded(conn: Any) -> Any:
             # a cursor lives in a transaction; nested in the timeout's own one, this is a savepoint
             async with conn.transaction():
-                cursor = await bind_as_declared(
-                    conn, translated, params, lambda bound: conn.cursor(translated, *bound)
-                )
+                cursor = await bind_as_declared(conn, translated, params, lambda bound: conn.cursor(translated, *bound))
                 return await cursor.fetch(max_rows)
 
         records = await self._acquire_and_run(_bounded, timeout_seconds=timeout_seconds)
@@ -1249,9 +1247,7 @@ class AsyncpgDriver(Driver):
 
         async def _paged(conn: Any) -> None:
             async with conn.transaction():
-                cursor = await bind_as_declared(
-                    conn, translated, params, lambda bound: conn.cursor(translated, *bound)
-                )
+                cursor = await bind_as_declared(conn, translated, params, lambda bound: conn.cursor(translated, *bound))
                 going = True
                 while going:
                     wanted = budget.wanted(page_rows)
