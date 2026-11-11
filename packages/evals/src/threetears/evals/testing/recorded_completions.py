@@ -17,14 +17,24 @@ the ``k`` answers they were.
 once, so serving a prompt's calls in the order they are asked would hand a recorded answer to a different cell on each
 replay. A call made inside an eval's cell is recorded with the cell it was made for (format 3): the arm's subject and
 contestant identity, the case and the repeat (:class:`~threetears.evals.schema.CellIdentity`'s ``subject_id``,
-``variant_key``, ``test_case_id`` and ``k_iteration``), and how many times that cell had asked the prompt before. A
-replay serves a cell the call recorded for that very cell, so two arms that send a judge the same prompt, or a
-follow-up asked by several repeats, get back what each got when it was recorded, on every replay, in any order. Where
-no recorded call names the asking cell (a line from format 2, which noted no cell; a call made outside every cell; a
-cell whose case or arm was renamed since), repeat ``i`` is served the call of index ``i`` when it is left, and
-otherwise the first call left, in the order the calls were made. That fallback is deterministic only while each
-repeat asks a prompt once: when two askers share one repeat of a prompt recorded with different answers, which gets
-which turns on the order they ask in. Two asks of one prompt by one cell at once are ordered by when each asks. The
+``variant_key``, ``test_case_id`` and ``k_iteration``), and its ask number: how many times that cell had asked the
+prompt before, **counted when the call is asked**, never when its answer lands, so two asks of one prompt by one cell
+at once are numbered in the order they were asked, recording and replaying alike. A replay serves a cell the calls
+recorded for that very cell, its ``n``-th ask its ``n``-th by ask number, so two arms that send a judge the same
+prompt, or a follow-up asked by several repeats, get back what each got when it was recorded, on every replay, in any
+order; a cell asking a prompt more often than it was recorded is refused, and is never served another cell's call.
+Where no recorded call names the asking cell, repeat ``i`` is served the call of index ``i`` among those that name no
+cell (a format-2 line, or a call made outside every cell) when it is left, and otherwise the first of those left,
+which is deterministic only while each repeat asks such a prompt once. A cell the recording names nowhere (its arm,
+case or eval renamed since) and left no such call stands for the one recorded cell line (a subject, arm and case)
+that asked the prompt at its repeat as often and shares its subject, arm or case: it is bound to that line for the
+rest of the replay and served its calls, so a renamed arm replays as it was recorded, on every replay. Where several
+recorded lines fit, which is its own cannot be told, and it is refused rather than handed one of them, in whatever
+order the cells ask; so is a call outside every cell when only calls made in cells are left. Where the one line that
+fits has asked as itself, or another cell already stands for it, it is refused too. So no cell is ever served a call
+recorded for a cell that has asked as itself, and only two cells fitting one recorded line alone (the recorded cell
+and an arm added beside it that shares its every prompt, which cannot be told from a rename) turn on order: the
+second of them to ask is refused, naming the first. The
 settings never reach ``generate``, so :meth:`RecordedCompletions.record` and
 :meth:`RecordedCompletions.replay` are told them. They are matched because they change the answer, so one file can
 hold one model under two settings (two efforts), each client replaying its own, and a replay asked under settings a
@@ -182,6 +192,9 @@ class _CellAsk(NamedTuple):
 #: A cell as a recording notes it: :class:`_CellAsk` without the ask.
 _CellCoordinates = tuple[str, str | None, str, int | None]
 
+#: A cell less its repeat — its subject, arm and case: every repeat of one case by one arm.
+_CellLine = tuple[str, str | None, str]
+
 
 def _coordinates(cell: CellIdentity) -> _CellCoordinates:
     """The coordinates of ``cell`` a recording notes: the ones that name the same cell on every run of the eval."""
@@ -310,8 +323,16 @@ class RecordedCompletions:
         self._cells: dict[str, list[_CellAsk | None]] = {
             key: [None] * len(calls) for key, (_, calls) in recorded.items()
         }
-        #: How many times each cell has asked each key, so a cell's second ask of a prompt is served its second call.
+        #: Replaying, how many times each cell has asked each key, so a cell's second ask of a prompt is served its
+        #: second call.
         self._asks: dict[tuple[str, _CellCoordinates], int] = {}
+        #: Recording, the ask number each cell's next ask of each prompt (by its digest) takes, given as it is asked.
+        self._next_ask: dict[tuple[str, _CellCoordinates], int] = {}
+        #: Replaying, each cell line (a cell less its repeat) that matches none the recording names, bound to the
+        #: recorded line it stands for: the one line its first unmatched ask could only have been (:meth:`_index_of`).
+        self._bound: dict[_CellLine, _CellLine] = {}
+        #: Replaying, every recorded line a cell has asked as itself: never bound to a cell that matches none.
+        self._live: set[_CellLine] = set()
         self._remedy = _rerecord_remedy(path, rerecord)
         #: Each key's served calls, by index, with the eval run each went to (None outside every one).
         self._taken: dict[str, dict[int, RunningEval | None]] = {}
@@ -514,9 +535,35 @@ class RecordedCompletions:
         """
         if self._inner is None:
             return self._serve(system, user, response_format)
+        tag = self._numbered(system, user, response_format)  # numbered as it is asked, as a replay numbers it
         completion = await self._inner.generate(system=system, user=user, response_format=response_format)
-        self._append(system, user, response_format, completion)
+        self._append(system, user, response_format, completion, tag)
         return completion
+
+    def _numbered(self, system: str, user: str, response_format: dict[str, Any] | None) -> _CellAsk | None:
+        """The cell a call about to be made is made for, and its ask number: the cell's asks of the prompt so far.
+
+        Numbered when the call is asked, never when its answer lands, so two asks of one prompt by one cell at once
+        are numbered in the order they were asked, as a replay numbers them. Numbers rise from past every ask the
+        file already holds for the cell under the prompt, so recording onto a file never repeats one. An ask whose
+        call fails is not written, and leaves a gap a replay does not see: it serves a cell's asks in number order.
+        """
+        cell = current_cell_identity()
+        if cell is None:
+            return None
+        coordinates = _coordinates(cell)
+        prompt = canonical_digest({"system": system, "user": user, "response_format": response_format})
+        with self._lock:
+            ask = self._next_ask.get((prompt, coordinates))
+            if ask is None:
+                ask = 0
+                if self._recorded:
+                    model, temperature = _client_of(self._recorded)
+                    key = _call_key(system, user, response_format, model, temperature, self._settings)
+                    held = [tag.ask for tag in self._cells.get(key, []) if tag is not None and tag[:4] == coordinates]
+                    ask = max(held, default=-1) + 1
+            self._next_ask[(prompt, coordinates)] = ask + 1
+        return _CellAsk(*coordinates, ask)
 
     def _serve(self, system: str, user: str, response_format: dict[str, Any] | None) -> ReplayedCompletion:
         key, others = _lookup(self._recorded, RecordedPrompt(system, user, response_format), self._settings)
@@ -536,37 +583,120 @@ class RecordedCompletions:
                 self._remedy,
             )
         cell = current_cell_identity()
-        repeat = cell.k_iteration if cell is not None else None
         asking = running_eval()
         with self._lock:
             _, calls = self._recorded[key]
-            tags = self._cells[key]
             taken = self._taken.setdefault(key, {})
-            index: int | None = None
-            if cell is not None:
-                # The call recorded for this very cell's this ask, so which cell gets which answer never turns on the
-                # order the cells ask in (shuffled by the run's id, and concurrent), nor on which arm asks first.
-                coordinates = _coordinates(cell)
-                ask = self._asks.get((key, coordinates), 0)
-                self._asks[(key, coordinates)] = ask + 1
-                index = next(
-                    (at for at, tag in enumerate(tags) if at not in taken and tag == _CellAsk(*coordinates, ask)),
-                    None,
-                )
-            if index is None:
-                # No call names this cell (format 2 noted none, or the call is made outside every cell): repeat i is
-                # served call i when it is left, and otherwise the first call left, a call that names no cell first, so
-                # a cell that names its own is not robbed of it.
-                free = [at for at in range(len(calls)) if at not in taken]
-                unnamed = [at for at in free if tags[at] is None]
-                if repeat is not None and repeat in unnamed:
-                    index = repeat
-                else:
-                    index = next(iter(unnamed or free), None)
+            index = self._index_of(key, cell, user)
             if index is None:
                 raise self._spent(user, len(calls), taken.values(), asking)
             taken[index] = asking
         return calls[index]
+
+    def _index_of(self, key: str, cell: CellIdentity | None, user: str) -> int | None:
+        """Which of ``key``'s calls the asking ``cell`` is served; ``None`` when every one it could be is served.
+
+        Called under the lock. In order:
+
+        1. **A cell the recording names under the key** is served its own calls, its ``n``-th ask its ``n``-th by
+           ask number, and nothing else: one asking more often than it was recorded is refused. A cell the recording
+           names under other keys only is served by rule 3 alone, never as another cell.
+        2. **A cell line bound to a recorded one** (rule 4) is served that line's call of its repeat, ``n``-th ask
+           ``n``-th.
+        3. **Otherwise a call that names no cell** (format 2, or made outside every cell): repeat ``i`` is served the
+           call of index ``i`` when it names none and is left, and otherwise the first such call left.
+        4. **Otherwise the one recorded line it can be**: a cell named nowhere in the recording (its arm, its case or
+           its eval renamed since) is bound, for the rest of the replay, to the one recorded line under the key that
+           asked at its repeat as often, and shares its subject, its arm or its case. With none it is refused as
+           spent; with several, as ambiguous, whatever order they ask in; and where that one line has asked as
+           itself, or is already stood for by another cell, as not its own. A call outside every cell, when only
+           calls made inside cells are left, is refused as ambiguous too.
+
+        So a cell is never served a call recorded for a cell that has asked as itself, and which call a cell is
+        served turns on no order but in one case: two cells that fit one recorded line and no other, the recorded
+        cell itself or a second stand-in (an arm added beside a recorded arm whose every prompt it shares, rather than
+        one renamed), where the second to ask is refused, naming the first.
+        """
+        tags = self._cells[key]
+        taken = self._taken.get(key, {})
+        repeat = cell.k_iteration if cell is not None else None
+        coordinates = _coordinates(cell) if cell is not None else None
+        ask = 0
+        if coordinates is not None:
+            ask = self._asks.get((key, coordinates), 0)
+            self._asks[(key, coordinates)] = ask + 1
+            line = coordinates[:3]
+            if line in self._lines():
+                self._live.add(line)
+                if (bound := next((by for by, to in self._bound.items() if to == line), None)) is not None:
+                    raise RecordingRefused(
+                        self.path,
+                        f"the calls recorded for the cell {_spelled(line)} were served to the cell {_spelled(bound)}, "
+                        "which the recording names nowhere and which asked before this one did, the one recorded cell "
+                        "it fit: an arm added beside one whose every prompt it shares cannot be told from a rename",
+                        self._remedy,
+                    )
+            own = _ranked(tags, coordinates)
+            if own:
+                return own[ask] if ask < len(own) and own[ask] not in taken else None
+            if (stands_for := self._bound.get(line)) is not None:
+                recorded = _ranked(tags, (*stands_for, repeat))
+                return recorded[ask] if ask < len(recorded) and recorded[ask] not in taken else None
+        free = [at for at in range(len(tags)) if at not in taken]
+        unnamed = [at for at in free if tags[at] is None]
+        if unnamed:
+            return repeat if repeat in unnamed else unnamed[0]
+        if coordinates is not None and coordinates[:3] in self._live:
+            return None  # a cell the recording names stands for no other, however many calls are left
+        if coordinates is None:
+            if not free:
+                return None
+            raise RecordingRefused(
+                self.path,
+                f"the prompt {_head(user)} is asked outside every cell, and every call recorded for it that is left "
+                "was made for a cell: which one this ask stands for cannot be told",
+                self._remedy,
+            )
+        line = coordinates[:3]
+        candidates = sorted(
+            {
+                tag[:3]
+                for tag in tags
+                if tag is not None
+                and tag.repeat == repeat
+                and (tag.subject == line[0] or tag.variant == line[1] or tag.case == line[2])
+                and len(_ranked(tags, tag[:4])) > ask
+            },
+            key=repr,
+        )
+        if len(candidates) > 1:
+            raise RecordingRefused(
+                self.path,
+                f"the cell {_spelled(line)} is named nowhere in the recording, and the prompt {_head(user)} was asked "
+                f"at its repeat by {len(candidates)} recorded cells it could stand for "
+                f"({', '.join(_spelled(c) for c in candidates)}): which is its own cannot be told",
+                self._remedy,
+            )
+        if not candidates:
+            return None
+        (stands_for,) = candidates
+        holder = next((by for by, to in self._bound.items() if to == stands_for), None)
+        if stands_for in self._live or holder is not None:
+            raise RecordingRefused(
+                self.path,
+                f"the cell {_spelled(line)} is named nowhere in the recording, and the one recorded cell it could "
+                f"stand for, {_spelled(stands_for)}, is "
+                + ("asking as itself" if holder is None else f"already stood for by the cell {_spelled(holder)}")
+                + ": its calls are not this cell's",
+                self._remedy,
+            )
+        self._bound[line] = stands_for
+        recorded = _ranked(tags, (*stands_for, repeat))
+        return recorded[ask] if recorded[ask] not in taken else None
+
+    def _lines(self) -> set[_CellLine]:
+        """Every cell line the recording names, under any key."""
+        return {tag[:3] for tags in self._cells.values() for tag in tags if tag is not None}
 
     def _spent(
         self, user: str, recorded: int, takers: Iterable[RunningEval | None], asking: RunningEval | None
@@ -590,14 +720,18 @@ class RecordedCompletions:
         )
 
     def _append(
-        self, system: str, user: str, response_format: dict[str, Any] | None, completion: CompletionResult
+        self,
+        system: str,
+        user: str,
+        response_format: dict[str, Any] | None,
+        completion: CompletionResult,
+        tag: _CellAsk | None,
     ) -> None:
         check_completion_conformance(completion)
         members = _recordable_members(completion)
         sent = sent_settings_of(completion)
         extra = _declared_extras(completion)
         key = _call_key(system, user, response_format, members["model"], members["temperature"], self._settings)
-        cell = current_cell_identity()
         with _APPEND_LOCK, self._lock:
             if _file_size(self.path) != self._size:
                 self._recorded, self._cells = (
@@ -612,10 +746,6 @@ class RecordedCompletions:
                 )
             _, calls = self._recorded.setdefault(key, (self._settings, []))
             tags = self._cells.setdefault(key, [])
-            tag: _CellAsk | None = None
-            if cell is not None:
-                coordinates = _coordinates(cell)
-                tag = _CellAsk(*coordinates, sum(1 for held in tags if held is not None and held[:4] == coordinates))
             line = {
                 "recorder_version": _FORMAT_VERSION,
                 "recorded_at": datetime.now(UTC).isoformat(),
@@ -652,6 +782,20 @@ class RecordedCompletions:
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
         """Close on the way out, whether or not the body raised."""
         await self.aclose()
+
+
+def _ranked(tags: Sequence[_CellAsk | None], coordinates: _CellCoordinates) -> list[int]:
+    """The indexes of the calls recorded for the cell at ``coordinates``, in the order it asked them (by ask number)."""
+    return [
+        at
+        for _, at in sorted((tag.ask, at) for at, tag in enumerate(tags) if tag is not None and tag[:4] == coordinates)
+    ]
+
+
+def _spelled(line: _CellLine) -> str:
+    """A cell line as a refusal names it."""
+    subject, variant, case = line
+    return f"(subject {subject!r}, arm {variant!r}, case {case!r})"
 
 
 def _rerecord_remedy(path: Path, rerecord: str | None) -> str:

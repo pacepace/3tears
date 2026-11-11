@@ -48,6 +48,18 @@ prompt once. Every shipped recording replays the same under that fallback: repla
 prompt once per repeat, except rung 2's four judge-example prompts, graded outside any cell, whose two recorded calls
 each are identical; rung 5's judge recording holds one call per prompt. Nothing was re-recorded. A recording made in format 1 is still refused.
 
+**Fixed:** in a format-3 recording, a cell the recording names nowhere (its arm, case or eval renamed since recording)
+was served the first call left in recorded order, which turned on the order cells asked in and could take a call
+recorded for another cell. It now stands for the one recorded cell that asked the prompt at its repeat and shares its
+subject, arm or case, for the rest of the replay, so a renamed arm replays its own calls on every replay. Where several
+recorded cells fit it is refused as ambiguous, in any order; where the one that fits has asked as itself, it is refused
+too, so no cell is served a call recorded for a cell that asked as itself. A cell the recording names is served its own
+calls and nothing else: one asking a prompt more often than recorded is refused, where it was served another's.
+
+**Fixed:** recording numbered a cell's asks of a prompt as their answers landed, a replay as they were asked, so two
+concurrent asks of one prompt by one cell could replay swapped. Both number an ask when it is asked; a replay serves a
+cell's asks in number order, so the gap an ask whose call failed leaves is never seen.
+
 **Fixed:** a `Model` shared by two evals in one process (or one eval run twice) serves the second nothing, since a
 replay serves each recorded call once per model; the second eval's calls were refused as "the code asks it more often
 than it did when it was recorded" with a remedy to re-record, which spends money on a recording that is whole. The
@@ -74,12 +86,26 @@ landed against its cap. `Eval.max_cost_usd`'s docstring says the examples draw o
 judge completion that breaks the protocol) is contained and stated on the reading ("not graded, since the grading
 failed ..."), and the eval files its campaign and returns its result, where the arms' spent results were lost.
 
-### evals: a shutdown lets an expiry already running finish
+### evals: a shutdown lets an expiry already running finish, within the shutdown's own timeout
 
 **Fixed:** a graceful shutdown cancelled a lease expiry partway through: its record, already let go, was skipped by the
 shutdown's pass, its job never stopped and its fault never written, so it later read lost by lapse with no cause. An
-expiry now runs in a task of its own, shielded from the renewal that found the lease lapsed, and `JobLeases.shut_down`
-waits for every one still running, within the expiry's own bound (two leases), so the record reads lost with its cause.
+expiry now runs in a task of its own, shielded from the renewal that found the lease lapsed, and a shutdown lets it
+finish within the shutdown's timeout: it writes why it stopped (a fault naming the failed renewal) and then the record
+lost with the shutdown's cause, so the record ends at once with both. An expiry still running when the timeout ends is
+cancelled, its job stopped and its cause logged; its record then reads lost once its lease lapses.
+
+**Fixed:** a shutdown waited for those writes before it cancelled a single job: the held jobs' losses with no bound at
+all, then the expiries for up to two leases and a renewal interval (140 s at the default 60 s lease), far past
+`EvalJobManager.shutdown`'s 5 s timeout. A degraded store at SIGTERM kept live runs making model calls until the pod
+was killed. `EvalJobManager.shutdown(timeout)` now bounds the whole shutdown by `timeout`: the held jobs' losses are
+written together, and the jobs are cancelled once they land or once half the timeout has passed, whichever is first;
+the expiries under way get what is left. `JobLeases.shut_down` takes `within=` (the bound) and `then=` (called when
+the losses are written or their half has passed: where the caller cancels its jobs).
+
+**Fixed:** an expiry's failure after the renewal awaiting it was cancelled went unretrieved; each expiry now retrieves
+and logs what it raised itself. An expiry left running past a shutdown made a new lease pool after the shutdown had
+closed the last one, which nothing closed; none makes a store call after the shutdown has ended.
 
 ### evals: an unnamed comparison is refused
 
