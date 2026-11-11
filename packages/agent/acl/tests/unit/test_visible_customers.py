@@ -153,9 +153,10 @@ async def test_a_platform_wide_grant_reads_every_customer_but_not_another_users_
 
 
 async def test_a_set_of_customers_admits_platform_rows_and_pages_to_a_short_page() -> None:
-    """the customers bind beside platform rows; a full page reads on past its cursor until a page comes back short."""
+    """the customers bind beside platform rows; a full page (page + 1 rows) reads on past its last row until a page
+    comes back short."""
     caller, customer = uuid4(), uuid4()
-    conn = _Conn({"is_all": False, "customer_ids": [customer]}, [_rows(3), _rows(1, start=2)])
+    conn = _Conn({"is_all": False, "customer_ids": [customer]}, [_rows(3), _rows(1, start=3)])
 
     rows = await visible_rows(
         conn,
@@ -168,13 +169,13 @@ async def test_a_set_of_customers_admits_platform_rows_and_pages_to_a_short_page
         page=2,
     )
 
-    assert rows == [*_rows(2), *_rows(1, start=2)]
+    assert rows == [*_rows(3), *_rows(1, start=3)]
     first_sql, first_params = conn.page_reads[0]
     assert '(t."source_customer_id" IS NULL OR t."source_customer_id" = ANY($1::uuid[]))' in first_sql
     assert "user_id" not in first_sql
     assert first_params == ([customer],)
     second_sql, second_params = conn.page_reads[1]
     assert len(conn.page_reads) == 2
-    assert len(second_params) == 3, "the second page binds the cursor's two sort values and the customers"
+    assert len(second_params) == 3, "the second page binds the last row's two sort values and the customers"
     assert second_params[-1] == [customer]
     assert "ANY($3::uuid[])" in second_sql

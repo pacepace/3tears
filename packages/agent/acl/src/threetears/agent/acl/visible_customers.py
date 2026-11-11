@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 from uuid import UUID
 
-from threetears.core.keyed import Fragment, Sort, keyset_page
+from threetears.core.keyed import Fragment, Sort, keyset_rows
 from threetears.core.sql_fragments import quote_identifier
 
 from threetears.agent.acl.query_visibility import caller_visible_customers_query
@@ -138,7 +138,7 @@ async def visible_rows(
     """every row of ``table`` the caller sees, in ``order``: a whole listing read a page at a time, by key.
 
     The caller's customers are read once (:func:`visible_customers`); the rows are then read page after page through
-    :func:`threetears.core.keyed.keyset_page`, each statement one page of ``page`` rows past the last one's cursor,
+    :func:`threetears.core.keyed.keyset_rows`, each statement one page of ``page`` rows past the last one's row,
     filtered on those customers. A platform row (no customer) is seen by every caller, as
     :func:`threetears.agent.acl.customer_scope_visibility_clause` admits it. With ``user_column``, a row owned by
     another user is not seen, whatever the grant (:func:`threetears.agent.acl.three_scope_visibility_clause`'s
@@ -172,21 +172,13 @@ async def visible_rows(
     if user_column is not None:
         owner = f"t.{quote_identifier(user_column)}"
         clauses.append(Fragment(f"({owner} IS NULL OR {owner} = $1)", (user_id,)))
-    rows: list[dict[str, Any]] = []
-    cursor: str | None = None
-    while True:
-        found = await keyset_page(
-            conn,
-            table,
-            columns=columns,
-            by={},
-            order=order,
-            limit=page,
-            cursor=cursor,
-            visible=clauses,
-            where=where,
-        )
-        rows.extend(found.rows)
-        if found.next_cursor is None:
-            return rows
-        cursor = found.next_cursor
+    return await keyset_rows(
+        conn,
+        table,
+        columns=columns,
+        by={},
+        order=order,
+        page=page,
+        visible=clauses,
+        where=where,
+    )
