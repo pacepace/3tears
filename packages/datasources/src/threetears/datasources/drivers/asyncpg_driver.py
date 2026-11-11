@@ -169,6 +169,7 @@ from threetears.datasources.config import (
     PostgresConnectionConfig,
     YugabyteConnectionConfig,
 )
+from threetears.datasources.bounded_rows import DEFAULT_PAGE_ROWS, BoundedRows, RowBudget, start_budget
 from threetears.datasources.drivers.statement_rows import rows_from_command_tag
 from threetears.datasources.drivers.sql_fragments import (
     translate_placeholders,
@@ -209,6 +210,7 @@ __all__ = [
     "AsyncpgDriver",
     "DriverCancellationError",
     "DriverQueryError",
+    "bind_as_declared",
 ]
 
 log = get_logger(__name__)
@@ -562,13 +564,18 @@ def _note_typed_retry(sql: str) -> None:
     )
 
 
-async def _bound_as_declared(
+async def bind_as_declared(
     conn: Any,
     sql: str,
     params: Sequence[Any],
     run: Callable[[Sequence[Any]], Awaitable[_BoundT]],
 ) -> _BoundT:
     """run a statement; when asyncpg refuses a text parameter, once more with each cast to its declared type.
+
+    The one place a text value meets a typed placeholder on asyncpg: every :class:`AsyncpgDriver` path binds through
+    it, and so may a caller holding a raw connection (a test's rail, say) that hands a page's last key back as text --
+    ``2026-11-04 05:33:12`` for a timestamp, ``7`` for an integer -- rather than rewriting placeholders to ``::text``.
+    The statement's own declared parameter types decide (``prepare().get_parameters()``), never the caller.
 
     Only asyncpg's own bind refusal is retried (:func:`_refused_bind`): it is raised before the statement is
     sent, so a transaction it runs in is unharmed and the statement has not run. A server's error is raised
@@ -1147,7 +1154,7 @@ class AsyncpgDriver(Driver):
         # consistent across drivers.
         translated = translate_placeholders(sql, "asyncpg")
         records = await self._acquire_and_run(
-            lambda conn: _bound_as_declared(conn, translated, params, lambda bound: conn.fetch(translated, *bound)),
+            lambda conn: bind_as_declared(conn, translated, params, lambda bound: conn.fetch(translated, *bound)),
             timeout_seconds=timeout_seconds,
         )
         result: list[dict[str, Any]] = [dict(r) for r in records]
@@ -1186,7 +1193,7 @@ class AsyncpgDriver(Driver):
         async def _bounded(conn: Any) -> Any:
             # a cursor lives in a transaction; nested in the timeout's own one, this is a savepoint
             async with conn.transaction():
-                cursor = await _bound_as_declared(
+                cursor = await bind_as_declared(
                     conn, translated, params, lambda bound: conn.cursor(translated, *bound)
                 )
                 return await cursor.fetch(max_rows)
@@ -1194,6 +1201,65 @@ class AsyncpgDriver(Driver):
         records = await self._acquire_and_run(_bounded, timeout_seconds=timeout_seconds)
         result: list[dict[str, Any]] = [dict(r) for r in records]
         return result
+
+    @traced
+    @observed(driver_type="asyncpg")
+    async def fetch_within(
+        self,
+        sql: str,
+        *params: Any,
+        max_bytes: int,
+        encode: Callable[[list[dict[str, Any]]], bytes],
+        max_rows: int | None = None,
+        page_rows: int = DEFAULT_PAGE_ROWS,
+        timeout_seconds: int | None = None,
+    ) -> BoundedRows:
+        """run a SELECT through a server-side cursor, a page at a time, until its rows pass ``max_bytes``.
+
+        The cursor (a portal in its own transaction, as :meth:`fetch_at_most` opens it) is asked for
+        ``page_rows`` rows at a time; each page is turned into rows and encoded in a worker thread, never on
+        the event loop, and the first row that does not fit ends the read. The rows past that page are never
+        sent; the cursor closes with the transaction and the connection goes back to the pool.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param max_bytes: the most bytes the kept rows' JSON array may take, at least 2
+        :ptype max_bytes: int
+        :param encode: rows to their JSON array, as the caller's reply will carry them
+        :ptype encode: Callable[[list[dict[str, Any]]], bytes]
+        :param max_rows: the most rows kept, at least 1; None for no row bound
+        :ptype max_rows: int | None
+        :param page_rows: the rows a page reads, at least 1
+        :ptype page_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: the rows kept, their encodings, and whether the result had more
+        :rtype: BoundedRows
+        :raises ValueError: if a bound is out of range, or ``timeout_seconds`` is not a positive int
+        :raises RuntimeError: if the driver was previously closed
+        """
+        budget = start_budget(max_bytes=max_bytes, encode=encode, max_rows=max_rows, page_rows=page_rows)
+        if self._closed:
+            raise RuntimeError("AsyncpgDriver is closed")
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
+        translated = translate_placeholders(sql, "asyncpg")
+
+        async def _paged(conn: Any) -> None:
+            async with conn.transaction():
+                cursor = await bind_as_declared(
+                    conn, translated, params, lambda bound: conn.cursor(translated, *bound)
+                )
+                going = True
+                while going:
+                    wanted = budget.wanted(page_rows)
+                    page = await cursor.fetch(wanted)
+                    going = await asyncio.to_thread(_take_records, budget, page) and len(page) == wanted
+
+        await self._acquire_and_run(_paged, timeout_seconds=timeout_seconds)
+        return budget.result()
 
     @traced
     @observed(driver_type="asyncpg")
@@ -1221,7 +1287,7 @@ class AsyncpgDriver(Driver):
             build_set_local_statement_timeout_sql(timeout_seconds)
         translated = translate_placeholders(sql, "asyncpg")
         status = await self._acquire_and_run(
-            lambda conn: _bound_as_declared(conn, translated, params, lambda bound: conn.execute(translated, *bound)),
+            lambda conn: bind_as_declared(conn, translated, params, lambda bound: conn.execute(translated, *bound)),
             timeout_seconds=timeout_seconds,
         )
         return rows_from_command_tag(status)
@@ -1298,7 +1364,7 @@ class AsyncpgDriver(Driver):
         translated = translate_placeholders(sql, "asyncpg")
         await self._apply_transaction_timeout(checkout, timeout_seconds)
         records = await self._with_cancellation(
-            lambda: _bound_as_declared(
+            lambda: bind_as_declared(
                 checkout.conn, translated, params, lambda bound: checkout.conn.fetch(translated, *bound)
             ),
             cancel_callback=self._observe_cancellation,
@@ -1332,7 +1398,7 @@ class AsyncpgDriver(Driver):
         translated = translate_placeholders(sql, "asyncpg")
         await self._apply_transaction_timeout(checkout, timeout_seconds)
         status = await self._with_cancellation(
-            lambda: _bound_as_declared(
+            lambda: bind_as_declared(
                 checkout.conn, translated, params, lambda bound: checkout.conn.execute(translated, *bound)
             ),
             cancel_callback=self._observe_cancellation,
@@ -1720,3 +1786,16 @@ class AsyncpgDriver(Driver):
 # alone which driver module is loaded. DEBUG so production logging
 # configurations stay quiet by default.
 log.debug("threetears.datasources.drivers.asyncpg_driver module loaded")
+
+
+def _take_records(budget: RowBudget, records: Sequence[Any]) -> bool:
+    """one page of asyncpg records into the budget (run in a worker thread: it encodes every row).
+
+    :param budget: the read's budget
+    :ptype budget: RowBudget
+    :param records: the page's records
+    :ptype records: Sequence[Any]
+    :return: whether the read may go on
+    :rtype: bool
+    """
+    return budget.take(dict(record) for record in records)

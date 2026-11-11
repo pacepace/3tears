@@ -49,8 +49,9 @@ type StoredBlob = tuple[str, bytes, bool]
 #: it would not)
 type BlobOutcome = tuple[bytes | None, str, str]
 
-#: each worker's serializers, made once per class
-_serdes: BuildOnce[type[Any], Any] = BuildOnce()
+#: each worker's serializers, made once per class, keyed by its qualified name (a class is no Hashable to the type
+#: checker)
+_serdes: BuildOnce[str, Any] = BuildOnce()
 
 #: what a worker logs for a blob its serializer could not decode or re-encode; the caller reports the row
 _SERDE_FAILED: Final = (
@@ -86,7 +87,7 @@ def anonymize_blobs(
     :return: each blob's outcome, in order, and every turn-metadata key the classification does not name
     :rtype: tuple[list[BlobOutcome], frozenset[str]]
     """
-    serde = _serdes.get(serde_type, serde_type)
+    serde = _serdes.get(f"{serde_type.__module__}.{serde_type.__qualname__}", serde_type)
     classification = MetadataKeyClassification(identifying=identifying, kept=kept)
     outcomes: list[BlobOutcome] = []
     unclassified: set[str] = set()

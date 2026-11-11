@@ -295,6 +295,11 @@ class ScopeEpochs:
         self._since = 0
         self._reading = asyncio.Lock()
 
+    @property
+    def table_name(self) -> str:
+        """the epochs table's name: every replica hears its row messages when a write begins or commits."""
+        return self._collection.table_name
+
     async def _bound_idle(self, conn: Any) -> None:
         """bound how long the caller's transaction may sit idle, when an idle timeout was given.
 

@@ -29,6 +29,7 @@ from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import CallerTransaction
 from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.keyed_statements import decode
 from threetears.core.testing.kv import FakeNatsClient
 
 from threetears.agent.wake import tick as tick_mod
@@ -79,6 +80,9 @@ class _Conn:
     async def fetchval(self, sql: str, *args: Any) -> Any:
         return await self.store.fetchval(sql, *args)
 
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        return await self.store.fetch(sql, *args)
+
 
 # parity-with: asyncpg.Pool (fetchrow / execute / fetchval / fetch / acquire)
 class _Store:
@@ -87,7 +91,8 @@ class _Store:
     The tests are about the cache tiers, not the SQL, so a write does not interpret its
     statement: it replaces each staged key's row with the row the test says L3 holds after
     the UPDATE. ``reads`` counts primary-key reads, which is how a test tells an answer
-    from L3 from an answer out of a cache.
+    from L3 from an answer out of a cache. A read by key is the keyed helper's statement
+    (``fetch``, read back by the decoder) or a hand-written one (``fetchrow``); both count.
     """
 
     def __init__(self) -> None:
@@ -124,8 +129,19 @@ class _Store:
         return uuid.uuid4()
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
-        del sql, args
-        return []
+        if not sql.lstrip().startswith(("SELECT t.", 'UPDATE "')):
+            return []
+        statement = decode(sql, args)
+        if statement.kind == "update":
+            # a write naming its rows back (the claim): applied as the test staged it, one row won
+            self._apply()
+            return [{column: uuid.uuid4() for column in statement.returning}]
+        if statement.order:
+            # a listing: the tests list nothing
+            return []
+        # a read by key: the pk for ``get``, the agent and bare id for ``find_for_agent``
+        self.reads += 1
+        return statement.select(row for (row_table, _, _), row in self.rows.items() if row_table == statement.table)
 
     def acquire(self) -> _Conn:
         return _Conn(self)
@@ -270,11 +286,12 @@ class TestAScheduleUpdateReachesEveryReader:
         store.rows[("agent_wake_schedules", str(conv), str(sid))] = _schedule_row(conv, sid)
         writer = WakeScheduleCollection(registry=await _replica(nats, store), config=_config())
 
-        async def _missed(sql: str, *args: Any) -> Any:
-            del sql, args
-            return None
+        async def _missed(sql: str, *args: Any) -> list[dict[str, Any]]:
+            # the claim's CAS UPDATE ... RETURNING answers no row: another tick advanced it
+            assert decode(sql, args).kind == "update", sql
+            return []
 
-        store.fetchval = _missed  # type: ignore[method-assign]
+        store.fetch = _missed  # type: ignore[method-assign]
         claimed = await writer.claim_and_reschedule(
             conversation_id=conv,
             schedule_id=sid,
@@ -514,8 +531,9 @@ class _DueStore(_Store):
         self.due_row = due_row
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
-        del args
-        return [dict(self.due_row)] if "FROM agent_wake_schedules" in sql else []
+        if sql.lstrip().startswith("SELECT t.") and decode(sql, args).order and '"agent_wake_schedules"' in sql:
+            return [dict(self.due_row)]
+        return await super().fetch(sql, *args)
 
 
 async def _listed_by_the_tick(

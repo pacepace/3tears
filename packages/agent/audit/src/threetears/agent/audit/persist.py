@@ -45,7 +45,11 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from pydantic import ValidationError
-from threetears.agent.audit.migrations.v001_create_audit_events import AUDIT_EVENTS_V001_DDL
+from threetears.agent.audit.migrations.v001_create_audit_events import (
+    AUDIT_EVENTS_V001_DDL,
+    AUDIT_EVENTS_V001_TIME_INDEX,
+)
+from threetears.agent.audit.migrations.v002_audit_time_range_index import AUDIT_EVENTS_V002_DDL
 from threetears.core.serialization import json_datetime, to_stored_json
 from threetears.nats import Subjects
 from threetears.observe import cancel_and_wait, get_logger, spawn_background
@@ -77,8 +81,13 @@ AUDIT_STREAM_NAME = "audit"
 AUDIT_MAX_DELIVER = 5
 
 #: the table and its indexes; idempotent (``IF NOT EXISTS``). Defined by the package's migrations,
-#: which never change once applied: a new column is a new migration, and joins this list there.
-AUDIT_EVENTS_DDL: tuple[str, ...] = AUDIT_EVENTS_V001_DDL
+#: which never change once applied: a new column is a new migration, and joins this list there. v001's
+#: retention index is left out: v002 replaces it, and building it on every ensure only for v002 to drop it would
+#: rebuild an index over the whole table at each start.
+AUDIT_EVENTS_DDL: tuple[str, ...] = (
+    *(statement for statement in AUDIT_EVENTS_V001_DDL if statement != AUDIT_EVENTS_V001_TIME_INDEX),
+    *AUDIT_EVENTS_V002_DDL,
+)
 
 #: an instant as JSON text: a full date-time with a ``T``, an optional fraction and an explicit offset or ``Z``.
 #: pydantic's wire spelling (``2026-10-01T12:30:00Z``) and the stored one both match; a date, a naive

@@ -32,6 +32,8 @@ CAS.
 
 from __future__ import annotations
 
+import re
+
 import asyncio
 import inspect
 import json
@@ -91,6 +93,7 @@ from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter
 
 __all__ = [
+    "sql_cast",
     "BIGINT_TYPE",
     "MAX_INDEX_COLUMNS",
     "BOOL_TYPE",
@@ -205,6 +208,29 @@ INT_TYPE = "int"
 BIGINT_TYPE = "bigint"
 BOOL_TYPE = "bool"
 VECTOR_TYPE = "vector"
+
+#: the SQL type a column's value is cast to where a statement binds it in an array, by its type tag; ``text`` for
+#: every tag not here
+_SQL_CASTS: Final[Mapping[str, str]] = {
+    UUID_TYPE: "uuid",
+    INT_TYPE: "bigint",
+    BIGINT_TYPE: "bigint",
+    BOOL_TYPE: "boolean",
+    NUMERIC_TYPE: "numeric",
+    DATETIMETZ_TYPE: "timestamptz",
+}
+
+
+def sql_cast(column_type: str) -> str:
+    """the SQL type a value of a column of ``column_type`` is cast to where a statement binds it in an array.
+
+    :param column_type: the column's type tag
+    :ptype column_type: str
+    :return: the SQL type (``uuid``, ``bigint``, ``timestamptz``; ``text`` for a string and every other tag)
+    :rtype: str
+    """
+    return _SQL_CASTS.get(column_type, "text")
+
 
 #: the most columns one index may hold on YugabyteDB, its ``INCLUDE`` columns and a primary key's columns counted:
 #: 2026.1 refuses more ("cannot use more than 32 columns in an index", measured on 2026.1.0.0-b118). A schema naming
@@ -325,6 +351,16 @@ class IndexDef:
         ``column.desc()`` so the declared index equals a migration
         that creates the column ``DESC``. a column cannot carry both
         ``desc`` and an operator class in ``ops``.
+    :cvar asc: names of the covered columns declared ascending in so many words (``expires_at ASC``). Postgres
+        sorts them the same either way; YugabyteDB range-shards an index whose first column is declared ``ASC`` (or
+        ``DESC``) and hashes it otherwise, and a hashed first column seeks no range and answers no order: a read of a
+        range (``expires_at < $1``) or in order (``ORDER BY expires_at LIMIT``) with nothing bound before that column
+        reads every row. Such an index names its first column here. Each name must also be in ``columns``, and in
+        neither ``desc`` nor ``ops``.
+    :cvar collate: per-column collations, as ``(column_name, collation)`` pairs (``(("signal", "C"),)``): the
+        column is indexed ``COLLATE "C"``, so a range by byte order (a prefix read, ``signal >= $1 AND signal < $2
+        COLLATE "C"``) seeks it whatever the database's own collation; with ``asc`` it is range-sharded on
+        YugabyteDB. Each name must be in ``columns`` and carry no operator class; each collation a plain name.
     :cvar nulls_not_distinct: when ``True`` (a ``unique`` index only), two
         rows whose covered columns are both NULL collide, as
         ``NULLS NOT DISTINCT`` says (Postgres 15+): a key with an optional
@@ -334,8 +370,8 @@ class IndexDef:
         the index alone. On YugabyteDB a read through an index that does
         not carry a column visits the table for each row, several times the
         index read's cost. none may also be in ``columns``.
-    :cvar purpose: ``<path>::<qualified function>`` of the one keyed read
-        that uses this index; the no-whole-reads rule
+    :cvar purpose: ``<path>::<qualified function>`` of the keyed read
+        that uses this index, or a tuple of them when it serves several; the no-whole-reads rule
         (:mod:`threetears.enforcement.no_whole_reads`) counts a read through
         it as keyed only in that function, and refuses an index with none.
         Not part of the DDL, so it never makes two indexes differ.
@@ -358,7 +394,9 @@ class IndexDef:
     desc: tuple[str, ...] = ()
     nulls_not_distinct: bool = False
     include: tuple[str, ...] = ()
-    purpose: str = field(default="", compare=False)
+    asc: tuple[str, ...] = ()
+    collate: tuple[tuple[str, str], ...] = ()
+    purpose: str | tuple[str, ...] = field(default="", compare=False)
     plan_test: str = field(default="", compare=False)
     reason: str = field(default="", compare=False)
 
@@ -396,11 +434,27 @@ class IndexDef:
             raise ValueError(
                 f"IndexDef(name={self.name!r}): include names {twice!r}, which are already its columns",
             )
+        loose = [col for col in self.asc if col not in self.columns or col in self.desc or col in dict(self.ops or ())]
+        if loose:
+            raise ValueError(
+                f"IndexDef(name={self.name!r}): asc names {loose!r}, each of which must be one of its columns "
+                f"{self.columns!r} and neither desc nor carry an operator class",
+            )
         both = [col for col in self.desc if col in dict(self.ops or ())]
         if both:
             raise ValueError(
                 f"IndexDef(name={self.name!r}): {both!r} carry both an operator class and desc, which "
                 "to_sqlalchemy_table cannot emit (SQLAlchemy drops the operator class of a descending column)",
+            )
+        collated = [
+            col
+            for col, collation in self.collate
+            if col not in self.columns or col in dict(self.ops or ()) or not re.fullmatch(r"\w+", collation)
+        ]
+        if collated:
+            raise ValueError(
+                f"IndexDef(name={self.name!r}): collate names {collated!r}, each of which must be one of its columns "
+                f"{self.columns!r}, carry no operator class, and name a plain collation",
             )
 
 
@@ -466,9 +520,11 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
     desc: str | Sequence[str] = (),
     nulls_not_distinct: bool = False,
     include: Sequence[str] = (),
-    purpose: str = "",
+    purpose: str | Sequence[str] = "",
     plan_test: str = "",
     reason: str = "",
+    asc: str | Sequence[str] = (),
+    collate: Mapping[str, str] | Sequence[tuple[str, str]] = (),
 ) -> IndexDef:
     """factory for :class:`IndexDef`.
 
@@ -491,6 +547,7 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         Index("idx_memories_tags", "tags", using="gin")
         Index("idx_history", "agent_id", "date_created", desc="date_created")
         Index("t_by_state", "state", "geo", *primary_key, include=("votes", "pad"))
+        Index("t_by_expiry", "expires_at", asc="expires_at")  # a range read: range-sharded on YugabyteDB
 
     The ``ops`` and ``pg_with`` arguments accept any
     :class:`collections.abc.Mapping` (typically ``dict``) and are
@@ -531,14 +588,19 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         ``postgresql_include`` dialect kwarg
     :ptype include: Sequence[str]
     :param purpose: ``<path>::<qualified function>`` of the keyed read
-        that uses the index (:attr:`IndexDef.purpose`)
-    :ptype purpose: str
+        that uses the index, or several (:attr:`IndexDef.purpose`)
+    :ptype purpose: str | Sequence[str]
     :param plan_test: ``<test file>::<test function>`` proving that read
         uses it (:attr:`IndexDef.plan_test`)
     :ptype plan_test: str
     :param reason: why it is wide, or why its table carries more than
         three indexes (:attr:`IndexDef.reason`)
     :ptype reason: str
+    :param asc: the covered column(s) declared ``ASC`` in so many words, so YugabyteDB range-shards an index led by
+        one (:attr:`IndexDef.asc`); a bare ``str`` names one
+    :ptype asc: str | Sequence[str]
+    :param collate: per-column collations (``{"signal": "C"}``, :attr:`IndexDef.collate`)
+    :ptype collate: Mapping[str, str] | Sequence[tuple[str, str]]
     :return: validated :class:`IndexDef` instance
     :rtype: IndexDef
     :raises ValueError: when validation in
@@ -565,7 +627,9 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         desc=(desc,) if isinstance(desc, str) else tuple(desc),
         nulls_not_distinct=nulls_not_distinct,
         include=tuple(include),
-        purpose=purpose,
+        asc=(asc,) if isinstance(asc, str) else tuple(asc),
+        collate=tuple(collate.items()) if isinstance(collate, Mapping) else tuple(tuple(pair) for pair in collate),  # type: ignore[misc]
+        purpose=purpose if isinstance(purpose, str) else tuple(purpose),
         plan_test=plan_test,
         reason=reason,
     )
@@ -1256,6 +1320,21 @@ class TableSchema:
                 best, order = led, tuple(columns[led:])
         return order
 
+    def hashed_lead_array(self, order: Sequence[str]) -> str | None:
+        """the SQL array type of ``order``'s first column when a keyset read on ``order`` pages a hashed lead: when
+        ``order`` is the primary key (what :meth:`keyset_order` answers for a read no filter leads), whose first
+        column YugabyteDB hashes (no declaration here names a range-sharded key). None for an order a filter leads,
+        which pages inside the bucket of the pinned lead (:mod:`threetears.core.keyset`, "A hashed lead").
+
+        :param order: the columns the read pages on
+        :ptype order: Sequence[str]
+        :return: the lead's array type (``text[]``), or None
+        :rtype: str | None
+        """
+        if len(order) < 2 or tuple(order) != tuple(self._pk_columns):
+            return None
+        return f"{sql_cast(self.column(order[0]).column_type)}[]"
+
     @property
     def partition_column(self) -> str | None:
         """return the partition-column name, or ``None`` for non-partitioned tables.
@@ -1446,11 +1525,13 @@ class TableSchema:
                 idx_kwargs["postgresql_nulls_not_distinct"] = True
             if idx.include:
                 idx_kwargs["postgresql_include"] = list(idx.include)
-            sa.Index(
-                idx.name,
-                *(table.c[col].desc() if col in idx.desc else table.c[col] for col in idx.columns),
-                **idx_kwargs,
-            )
+            collations = dict(idx.collate)
+
+            def _item(col: str) -> Any:
+                item = table.c[col].collate(collations[col]) if col in collations else table.c[col]
+                return item.desc() if col in idx.desc else item.asc() if col in idx.asc else item
+
+            sa.Index(idx.name, *(_item(col) for col in idx.columns), **idx_kwargs)
 
         return table
 
@@ -2217,6 +2298,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             f"SELECT {build_select_column_list(schema)} FROM {schema.name}",  # noqa: S608 - the declared schema
             list(schema.pk_columns),
             page_size=page_size,
+            lead_array=schema.hashed_lead_array(schema.pk_columns),
         )
 
         async def coerced() -> AsyncIterator[list[dict[str, Any]]]:
