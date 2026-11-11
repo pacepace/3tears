@@ -46,6 +46,8 @@ __all__ = [
     "KEYED_FRAGMENT_BUILDERS",
     "KEYED_HELPER_CALLS",
     "START_KEYWORDS",
+    "STEP_CALLS",
+    "STEP_RELATIONS",
     "UNSEEN",
     "HelperStatement",
     "helper_statements",
@@ -59,7 +61,11 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "read_keyed",
         "read_keyed_arrow",
         "read_joined",
+        "any_rows",
         "keyset_page",
+        "keyset_rows",
+        "copy_keyed",
+        "read_changed",
         "counts_by",
         "count_at_most",
         "holds_any",
@@ -67,10 +73,54 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "read_past_marks",
         "delete_before",
         "delete_oldest",
+        "delete_keyed",
+        "update_keyed",
         "counts_by_relations",
         "update_before",
+        "apply_stage",
+        "update_from",
     }
 )
+
+#: the relational steps over change relations (:mod:`threetears.core.keyed.steps`), judged by the relations a call
+#: names: each one read whole, as the step reads it, so a step over a change relation (one a module registers or
+#: declares with ``change_relation``) passes and one over a data table is the whole read it is; a step a step reads
+#: is judged at its own call. Judged only where the call is the keyed helper's (imported from ``threetears.core.keyed``)
+STEP_CALLS: Final[frozenset[str]] = frozenset(
+    {
+        "scan",
+        "semi",
+        "anti",
+        "distinct",
+        "grouped",
+        "latest_per_key",
+        "windowed",
+        "except_rows",
+        "union",
+        "read_step",
+        "read_step_arrow",
+        "count_step",
+        "delete_matching",
+        "first_difference",
+    }
+)
+
+#: where each step names the relations it reads: a positional index or a keyword; ``*`` every positional
+STEP_RELATIONS: Final[Mapping[str, tuple[tuple[int | None, str], ...]]] = {
+    "scan": ((0, "rel"),),
+    "semi": ((0, "rel"), (1, "keys")),
+    "anti": ((0, "rel"), (1, "keys")),
+    "distinct": ((0, "rel"),),
+    "grouped": ((0, "rel"),),
+    "latest_per_key": ((0, "rel"),),
+    "windowed": ((0, "rel"),),
+    "except_rows": ((0, "rel"), (1, "other")),
+    "read_step": ((1, "step"),),
+    "read_step_arrow": ((1, "step"),),
+    "count_step": ((1, "step"),),
+    "delete_matching": ((2, "keys"),),
+    "first_difference": ((1, "rel"), (2, "other")),
+}
 
 #: builders of a visibility clause reviewed once where it is written: a keyed predicate wherever it is placed
 KEYED_FRAGMENT_BUILDERS: Final[frozenset[str]] = frozenset(
@@ -80,6 +130,10 @@ KEYED_FRAGMENT_BUILDERS: Final[frozenset[str]] = frozenset(
         "three_scope_visibility_clause",
     }
 )
+
+#: methods building a reviewed visibility fragment for a keyed read's ``visible=``
+#: (``threetears.agent.acl.VisibleCustomers.fragment``): the caller's customers bound as a set, a keyed predicate
+_KEYED_FRAGMENT_METHODS: Final[frozenset[str]] = frozenset({"fragment"})
 
 #: keywords that say where a pager starts, not which rows it reads
 START_KEYWORDS: Final[frozenset[str]] = frozenset({"after", "since"})
@@ -210,13 +264,20 @@ def _key_batch_columns(node: ast.expr | None) -> list[str]:
 
 
 def _sort_columns(node: ast.expr | None) -> list[str]:
+    """each sort's term as the page's statement orders by it: the column, quoted, or the sort's expression."""
     if not isinstance(node, ast.Tuple | ast.List) or not node.elts:
         raise _Unseen("order")
     columns = []
     for element in node.elts:
         if not (isinstance(element, ast.Call) and _name(element) == "Sort"):
             raise _Unseen("order")
-        columns.append(_text(_argument(element, "column", 0), "order"))
+        expression = _argument(element, "expression", None)
+        if expression is None:
+            columns.append(_quoted(_text(_argument(element, "column", 0), "order")))
+        else:
+            # a sort by an expression of the paged row's columns (``lower(t."name")``), as an expression index reads it
+            written = re.sub(r'\bt\.(?="|\w)', "", _text(expression, "order"))
+            columns.append(re.sub(r'"(\w+)"', r"\1", written))
     return columns
 
 
@@ -244,7 +305,8 @@ def _read_keyed(call: ast.Call) -> list[str]:
 
 
 def _visible(call: ast.Call) -> list[str]:
-    """each ``exists_keyed`` probe a listing's ``visible=`` names, as the keyed read it is; reviewed builders pass."""
+    """each ``exists_keyed`` probe a listing's ``visible=`` names, as the keyed read it is; reviewed builders (and a
+    ``VisibleCustomers.fragment(...)``, the caller's customers as a bound set) pass."""
     node = _argument(call, "visible", None)
     if node is None:
         return []
@@ -257,6 +319,12 @@ def _visible(call: ast.Call) -> list[str]:
         )
         if isinstance(built, ast.Call) and _name(built) in KEYED_FRAGMENT_BUILDERS:
             continue
+        if (
+            isinstance(built, ast.Call)
+            and isinstance(built.func, ast.Attribute)
+            and built.func.attr in _KEYED_FRAGMENT_METHODS
+        ):
+            continue
         if not (isinstance(built, ast.Call) and _name(built) == "exists_keyed"):
             raise _Unseen("visible")
         probed = _text(_argument(built, "table", 0), "visible")
@@ -266,6 +334,25 @@ def _visible(call: ast.Call) -> list[str]:
         conditions, _ = _conditions([(column, "eq") for column, _ in on] + _by(_argument(built, "by", None), "visible"))
         probes.append(f"SELECT 1 FROM {_quoted(probed)}{_where(conditions)}")
     return probes
+
+
+def _visible_columns(call: ast.Call) -> list[str]:
+    """the columns a listing's ``visible=`` binds to the caller's customers (``customers.fragment('t."customer_id"')``,
+    a :class:`threetears.agent.acl.VisibleCustomers` fragment): each a set the page is narrowed to, as its statement
+    reads it (``"customer_id" = ANY($n)``)."""
+    node = _argument(call, "visible", None)
+    if not isinstance(node, ast.Tuple | ast.List):
+        return []
+    columns = []
+    for element in node.elts:
+        if (
+            isinstance(element, ast.Call)
+            and isinstance(element.func, ast.Attribute)
+            and element.func.attr in _KEYED_FRAGMENT_METHODS
+        ):
+            written = _text(_argument(element, "column", 0), "visible")
+            columns.append(written.split(".")[-1].strip('"'))
+    return columns
 
 
 def _filters(call: ast.Call, first: int) -> tuple[list[str], int]:
@@ -290,11 +377,40 @@ def _filters(call: ast.Call, first: int) -> tuple[list[str], int]:
 def _keyset_page(call: ast.Call) -> list[str]:
     table, own = _relation(_argument(call, "table", 1), "table")
     order = _sort_columns(_argument(call, "order", None))
-    pinned, place = _conditions(_by(_argument(call, "by", None)))
+    pinned, place = _conditions(
+        _by(_argument(call, "by", None)) + [(column, "any") for column in _visible_columns(call)]
+    )
     filtered, place = _filters(call, place)
-    page = [*pinned, *filtered, f"{_quoted(order[0])} > ${place}"]
-    ordered = ", ".join(_quoted(column) for column in order)
+    page = [*pinned, *filtered, f"{order[0]} > ${place}"]
+    ordered = ", ".join(order)
     return [f"SELECT * FROM {table} AS t{_where(page)} ORDER BY {ordered} LIMIT {_LIMIT}", *_visible(call), *own]
+
+
+def _read_changed(call: ast.Call) -> list[str]:
+    """phase 1, the scope's keys and hashes, is a keyset page in the key's order (``relation`` / ``key`` as
+    ``keyset_rows`` takes ``table`` / ``order``; a key column named by its string a sort of it); phase 2 reads by
+    those keys, keyed whenever phase 1 is."""
+    key = _argument(call, "key", None)
+    if isinstance(key, ast.Tuple | ast.List):
+        key = ast.List(
+            elts=[
+                ast.Call(func=ast.Name("Sort", ast.Load()), args=[element], keywords=[])
+                if isinstance(element, ast.Constant)
+                else element
+                for element in key.elts
+            ],
+            ctx=ast.Load(),
+        )
+    page = ast.Call(
+        func=call.func,
+        args=[call.args[0]] if call.args else [],
+        keywords=[
+            *(keyword for keyword in call.keywords if keyword.arg not in {"relation", "key"}),
+            ast.keyword(arg="table", value=_argument(call, "relation", 1) or ast.Name("_unseen", ast.Load())),
+            *([ast.keyword(arg="order", value=key)] if key is not None else []),
+        ],
+    )
+    return _keyset_page(page)
 
 
 def _read_joined(call: ast.Call) -> list[str]:
@@ -361,7 +477,41 @@ def _probe(call: ast.Call) -> list[str]:
     # holds_any reads one row; count_at_most at most its bound, bound as a parameter (a probe of a table's first rows
     # when it names no key)
     limit = "1" if _name(call) == "holds_any" else f"${place}"
-    return [f"SELECT 1 FROM {relation} AS r{_where(pinned)} LIMIT {limit}", *own]
+    # the probe walks the key it names (order=): with no order it is a scan stopped at the LIMIT, never keyed
+    order = ", ".join(f"r.{column}" for column in _texts(_argument(call, "order", None), "order"))
+    return [f"SELECT 1 FROM {relation} AS r{_where(pinned)} ORDER BY {order} LIMIT {limit}", *own]
+
+
+def _any_rows(call: ast.Call) -> list[str]:
+    """a bounded look (``any_rows``): its rows up to its ``limit``, which it must name; ``by`` and ``where`` judged."""
+    if _argument(call, "limit", None) is None:
+        raise _Unseen("limit")
+    relation, own = _relation(_argument(call, "table", 1), "table")
+    pinned, place = _conditions(_by(_argument(call, "by", None)))
+    filtered, place = _filters(call, place)
+    return [f"SELECT * FROM {relation} AS t{_where([*pinned, *filtered])} LIMIT ${place}", *own]
+
+
+def _keyed_write(call: ast.Call) -> list[str]:
+    """a delete or update by key (``delete_keyed`` / ``update_keyed``): judged only where it writes by a prefix
+    (``prefix={"signal": p}``), as the code-point range it sends (``"signal" >= $n AND "signal" < $m``, judged as a
+    page of that range); one by ``by``/``keys`` sends nothing here to judge. A table its caller names (a fence's,
+    ``clear_signals(conn, table)``) is the module's template (``TableSchema(name=<parameter>)``), as a generic read's
+    ``FROM {table}`` is: keyed by the template's index whose purpose names the caller, and a whole read where the
+    module declares no template."""
+    node = _argument(call, "prefix", None)
+    if node is None:
+        return []
+    started = _by(node, "prefix")
+    if not started:
+        raise _Unseen("prefix")
+    table_node = _argument(call, "table", 1)
+    table = _relation(table_node, "table")[0] if isinstance(table_node, ast.Constant) else '"{}"'
+    pinned, place = _conditions(_by(_argument(call, "by", None)))
+    # the prefix's rows are a range read in the column's order: keyed exactly when an index ranges that column for
+    # the reader (a C-ordered, ASC one), as a page of the range is
+    column = _quoted(started[0][0])
+    return [f"SELECT 1 FROM {table}{_where([*pinned, f'{column} > ${place}'])} ORDER BY {column} LIMIT {_LIMIT}"]
 
 
 def _delete_oldest(call: ast.Call) -> list[str]:
@@ -422,11 +572,104 @@ def _update_before(call: ast.Call) -> list[str]:
     ]
 
 
+def _step_relation(node: ast.expr | None, argument: str) -> list[str]:
+    """the read a step makes of one relation it names: the relation whole; nothing for a step or derived select (each
+    judged where it is written)."""
+    if isinstance(node, ast.Call) and _name(node) == "change_relation":
+        node = _argument(node, "name", 0)
+    if isinstance(node, ast.Call) and (_name(node) in STEP_CALLS or _name(node) == "Derived"):
+        return []
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [f"SELECT * FROM {'.'.join(_quoted(part) for part in node.value.split('.'))} AS t"]
+    return [f"SELECT * FROM {_named(node, argument)} AS t"]
+
+
+def _match_columns(node: ast.expr | None) -> list[str]:
+    """the step relation's columns a ``Match`` list names."""
+    if not isinstance(node, ast.Tuple | ast.List) or not node.elts:
+        raise _Unseen("on")
+    columns = []
+    for element in node.elts:
+        if not (isinstance(element, ast.Call) and _name(element) == "Match"):
+            raise _Unseen("on")
+        columns.append(_text(_argument(element, "column", 0), "on"))
+    return columns
+
+
+def _step(call: ast.Call) -> list[str]:
+    """each relation a step names, read whole; a delete by a change relation's keys as the keyed delete it is."""
+    helper = _name(call)
+    statements: list[str] = []
+    if helper == "union":
+        for index, node in enumerate(call.args):
+            if isinstance(node, ast.Starred):
+                raise _Unseen("rels")
+            statements += _step_relation(node, f"rels[{index}]")
+    for position, keyword in STEP_RELATIONS.get(helper, ()):
+        statements += _step_relation(_argument(call, keyword, position), keyword)
+    if helper == "delete_matching":
+        table, _ = _relation(_argument(call, "table", 1), "table")
+        pinned = [
+            f"{_quoted(column)} = ANY(${place})"
+            for place, column in enumerate(_match_columns(_argument(call, "on", None)), 1)
+        ]
+        statements.append(f"DELETE FROM {table}{_where(pinned)}")
+    return statements
+
+
+def _apply_stage(call: ast.Call) -> list[str]:
+    """the stage read whole, as the helper reads it to write the target by its key: a stage that is a change relation
+    (registered, declared, a transient producer's) passes, and one that is a data table is the whole read it is.
+    The target is written by the stage's key (``replace``/``difference``: its rows of the stage's keys deleted, as a
+    delete by those keys is; ``upsert``: by its conflict key); a scope (``by``) deletes the target's rows of that
+    scope. A target its caller names is the caller module's template (``TableSchema(name=<parameter>)``), as
+    ``delete_keyed``'s is; an ``append`` names no target row."""
+    statements = _step_relation(_argument(call, "stage", 2), "stage")
+    mode = _argument(call, "mode", None)
+    spelled = mode.value if isinstance(mode, ast.Constant) else mode.attr if isinstance(mode, ast.Attribute) else None
+    if mode is not None and spelled is None:
+        raise _Unseen("mode")
+    if str(spelled).lower() == "append":
+        return statements
+    target = _argument(call, "target", 1)
+    table = _relation(target, "target")[0] if isinstance(target, ast.Constant) else '"{}"'
+    keyed = [
+        f"{_quoted(column)} = ANY(${place})"
+        for place, column in enumerate(_texts(_argument(call, "key", None), "key"), 1)
+    ]
+    statements.append(f"DELETE FROM {table}{_where(keyed)}")
+    scope, _ = _conditions(_by(_argument(call, "by", None)))
+    if scope:
+        statements.append(f"DELETE FROM {table}{_where(scope)}")
+    return statements
+
+
+def _update_from(call: ast.Call) -> list[str]:
+    """the source read whole where it is a relation (a step or derived select is judged where it is written), and the
+    target written by the key it joins on, as a keyed update by those keys is. A target its caller names is the
+    caller module's template (``TableSchema(name=<parameter>)``), as ``apply_stage``'s is."""
+    statements = _step_relation(_argument(call, "source", None), "source")
+    target = _argument(call, "table", 1)
+    table = _relation(target, "table")[0] if isinstance(target, ast.Constant) else '"{}"'
+    keyed = [
+        f"{_quoted(column)} = ANY(${place})"
+        for place, column in enumerate(_texts(_argument(call, "key", None), "key"), 1)
+    ]
+    pinned, place = _conditions(_by(_argument(call, "by", None)), first=len(keyed) + 1)
+    statements.append(f"UPDATE {table} SET {_quoted('_')} = ${place}{_where([*keyed, *pinned])}")
+    return statements
+
+
 _SYNTHESIZERS: Final = {
+    **dict.fromkeys(STEP_CALLS, _step),
     "read_keyed": _read_keyed,
     "read_keyed_arrow": _read_keyed,
     "read_joined": _read_joined,
+    "any_rows": _any_rows,
     "keyset_page": _keyset_page,
+    "keyset_rows": _keyset_page,
+    "copy_keyed": _keyset_page,
+    "read_changed": _read_changed,
     "counts_by": _counts_by,
     "count_at_most": _probe,
     "holds_any": _probe,
@@ -434,8 +677,12 @@ _SYNTHESIZERS: Final = {
     "read_past_marks": _read_past_marks,
     "delete_before": _delete_before,
     "delete_oldest": _delete_oldest,
+    "delete_keyed": _keyed_write,
+    "update_keyed": _keyed_write,
     "counts_by_relations": _counts_by_relations,
     "update_before": _update_before,
+    "apply_stage": _apply_stage,
+    "update_from": _update_from,
 }
 
 

@@ -18,6 +18,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy import MetaData
 from threetears.agent.skills.tables import agent_skills_table
+from threetears.core.testing.keyed_statements import decode
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -47,7 +48,7 @@ def _metadata() -> MetaData:
     return metadata
 
 
-# parity-with: asyncpg.Pool (fetchrow / fetchval / execute -- the seam the receive path drives)
+# parity-with: asyncpg.Pool (fetch / fetchrow / fetchval / execute -- the seam the receive path drives)
 class _Store:
     """an L3 holding one subscription whose template renders the decoded payload as JSON."""
 
@@ -74,6 +75,16 @@ class _Store:
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
         assert "FROM webhook_subscriptions" in sql, sql
         return dict(self.row) if self.row["subscription_id"] in args else None
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        """the subscription's lookup by id, and the rate limit's window count (no fire in the window): the keyed
+        helpers' statements."""
+        statement = decode(sql, args)
+        if statement.kind == "count":
+            assert statement.table == "wake_fires", sql
+            return statement.count([])
+        assert statement.kind == "select" and statement.table == "webhook_subscriptions", sql
+        return statement.select([self.row])
 
     async def fetchval(self, sql: str, *args: Any) -> Any:
         del args

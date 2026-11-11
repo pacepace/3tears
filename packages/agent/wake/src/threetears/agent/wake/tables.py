@@ -231,8 +231,8 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
             name="agent_wake_schedules_protected_type_check",
         ),
         Index(
-            "idx_wake_schedules_next_fire",
-            "next_fire_at",
+            "idx_wake_schedules_next_fire_asc",
+            sa_text("next_fire_at ASC"),
             postgresql_where=sa_text(
                 "status = 'active' AND next_fire_at IS NOT NULL",
             ),

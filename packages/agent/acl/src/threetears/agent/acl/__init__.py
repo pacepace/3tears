@@ -231,6 +231,12 @@ from threetears.agent.acl.query_visibility import (
     customer_scope_visibility_clause,
     three_scope_visibility_clause,
 )
+from threetears.agent.acl.visible_customers import (
+    VISIBLE_LIST_PAGE,
+    VisibleCustomers,
+    visible_customers,
+    visible_rows,
+)
 from threetears.agent.acl.shape_answers import (
     AccessShapeAnswers,
     ShapeAnswer,
@@ -347,6 +353,8 @@ __all__ = [
     "ScopeType",
     "Trail",
     "UndeclaredPermission",
+    "VISIBLE_LIST_PAGE",
+    "VisibleCustomers",
     "WILDCARD_RESOURCE_TYPE",
     "WRITE_FILE_MATCHING_PREFIX",
     "authorize",
@@ -370,5 +378,7 @@ __all__ = [
     "resolve_held_permissions",
     "row_scope_for_customer",
     "three_scope_visibility_clause",
+    "visible_customers",
+    "visible_rows",
     "validate_permissions",
 ]

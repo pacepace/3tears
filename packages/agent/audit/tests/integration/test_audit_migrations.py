@@ -37,7 +37,7 @@ async def test_the_package_builds_the_table_the_consumer_ensures_and_a_rerun_doe
         runner = MigrationRunner()
         register(runner)
 
-        assert await runner.apply_for_platform_schema(_Store(conn)) == 1  # type: ignore[arg-type]
+        assert await runner.apply_for_platform_schema(_Store(conn)) == 2  # type: ignore[arg-type]
         assert await runner.apply_for_platform_schema(_Store(conn)) == 0  # type: ignore[arg-type]
         indexes = {
             r["indexname"] for r in await conn.fetch("SELECT indexname FROM pg_indexes WHERE schemaname = $1", schema)
@@ -50,8 +50,10 @@ async def test_the_package_builds_the_table_the_consumer_ensures_and_a_rerun_doe
         await conn.close()
 
     assert {
-        "idx_audit_events_time",
+        "idx_audit_events_time_asc",
         "idx_audit_events_customer_time",
         "idx_audit_events_type",
         "idx_audit_events_actor",
     } <= indexes
+    # v002 built retention's range-sharded index beside v001's and dropped it; the consumer's ensure never rebuilt it
+    assert "idx_audit_events_time" not in indexes

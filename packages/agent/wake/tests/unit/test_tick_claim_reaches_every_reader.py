@@ -24,6 +24,7 @@ from threetears.agent.skills.tables import agent_skills_table
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.keyed_statements import decode
 from threetears.core.testing.kv import FakeNatsClient
 
 from threetears.agent.wake.collections import WakeFireCollection, WakeScheduleCollection
@@ -47,30 +48,29 @@ def _metadata() -> MetaData:
     return metadata
 
 
-# parity-with: asyncpg.Pool (fetch / fetchrow / fetchval / execute -- the seam one tick drives)
+# parity-with: asyncpg.Pool (fetch / execute -- the seam one tick drives)
 class _Store:
-    """an L3 holding one due one-shot; the claim expires it."""
+    """an L3 holding one due one-shot; the claim expires it.
+
+    The schedule statements are the keyed helpers' (read back by the decoder): a read by key counts in ``reads``,
+    the due listing answers the row while it is active, and the claim's UPDATE applies to the row it names.
+    """
 
     def __init__(self, row: dict[str, Any]) -> None:
         self.row = row
         self.reads = 0
 
-    async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
-        assert "FROM agent_wake_schedules" in sql, sql
-        self.reads += 1
-        return dict(self.row) if args[1] == self.row["schedule_id"] else None
-
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
-        del args
-        if "FROM agent_wake_schedules" in sql and self.row["status"] == "active":
-            return [dict(self.row)]
-        return []
-
-    async def fetchval(self, sql: str, *args: Any) -> Any:
-        assert sql.startswith("UPDATE agent_wake_schedules"), sql
-        computed_next_fire, now, new_status = args[0], args[1], args[2]
-        self.row.update(next_fire_at=computed_next_fire, last_fired_at=now, date_updated=now, status=new_status)
-        return self.row["schedule_id"]
+        if '"agent_wake_schedules"' not in sql:
+            return []
+        statement = decode(sql, args)
+        if statement.kind == "update":
+            assert set(statement.values) >= {"next_fire_at", "last_fired_at", "status"}, sql
+            return statement.update([self.row])
+        assert statement.kind == "select", sql
+        if not statement.order:
+            self.reads += 1
+        return statement.select([self.row])
 
     async def execute(self, sql: str, *args: Any) -> str:
         del sql, args

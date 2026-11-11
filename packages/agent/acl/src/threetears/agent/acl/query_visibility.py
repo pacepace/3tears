@@ -261,6 +261,7 @@ def caller_visible_customers_query(
     *,
     user_id: UUID,
     param_offset: int = 1,
+    scope_namespace_type: str | None = None,
 ) -> tuple[str, list[Any]]:
     """build a query resolving the caller's visible-customer SET, for the RLS session GUC.
 
@@ -271,7 +272,10 @@ def caller_visible_customers_query(
 
     - ``scope_type='all'`` (platform admin) -> ``is_all = true`` (the GUC becomes the ``*``
       wildcard; every customer's rows admitted by the policy).
-    - ``scope_type='type_customer'`` -> ``scope_customer_id`` joins the set.
+    - ``scope_type='type_customer'`` -> ``scope_customer_id`` joins the set; with
+      ``scope_namespace_type``, only a grant on that namespace type does, as
+      :func:`caller_visible_customer_clause` (and so :func:`three_scope_visibility_clause`) admits
+      rows of that type: the set a listing of one type pages by (``keyset_page(visible=...)``).
     - ``scope_type='namespace'`` -> the namespace's ``customer_id`` joins the set.
 
     Returns a query yielding exactly ONE row with columns ``is_all`` (bool) and ``customer_ids``
@@ -285,16 +289,25 @@ def caller_visible_customers_query(
     :ptype user_id: UUID
     :param param_offset: 1-based position of the ``$N`` placeholder for the caller user_id
     :ptype param_offset: int
-    :return: ``(sql, bind_params)``; ``bind_params`` has exactly one element (the caller user_id)
+    :param scope_namespace_type: the namespace type a ``type_customer`` grant must be on to add its
+        customer, bound as ``$(param_offset + 1)``; None (the RLS GUC's set) admits a grant on any type
+    :ptype scope_namespace_type: str | None
+    :return: ``(sql, bind_params)``; ``bind_params`` is the caller user_id, then the namespace type
+        when one is given
     :rtype: tuple[str, list[Any]]
     """
+    params: list[Any] = [user_id]
+    of_type = ""
+    if scope_namespace_type is not None:
+        of_type = f" AND ra.scope_namespace_type = ${param_offset + 1}"
+        params.append(scope_namespace_type)
     sql = f"""SELECT
         COALESCE(bool_or(ra.scope_type = 'all'), false) AS is_all,
         COALESCE(
             array_remove(
                 array_agg(DISTINCT
                     CASE
-                        WHEN ra.scope_type = 'type_customer' THEN ra.scope_customer_id
+                        WHEN ra.scope_type = 'type_customer'{of_type} THEN ra.scope_customer_id
                         WHEN ra.scope_type = 'namespace' THEN ns.customer_id
                     END
                 ),
@@ -306,7 +319,7 @@ def caller_visible_customers_query(
       JOIN group_members gm ON gm.group_id = ra.group_id
       LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id
      WHERE {_caller_membership_predicate(param_offset)}"""
-    return sql, [user_id]
+    return sql, params
 
 
 def three_scope_visibility_clause(

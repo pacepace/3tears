@@ -16,7 +16,7 @@ import asyncpg
 import pytest
 
 from threetears.datasources.config import PostgresConnectionConfig
-from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
+from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver, bind_as_declared
 from threetears.datasources.entities import DataSourceType
 from threetears.datasources.query_client import keyset_condition
 
@@ -177,3 +177,36 @@ class TestAStreamPaysNothingForTextItBinds:
         rows = [row["id"] async for row in driver.fetch_iter(f"SELECT id FROM {_SCHEMA}.runs WHERE label = $1", "c")]
         assert rows == [1]
         assert prepared == [], f"a stream prepared on a bind nothing refused: {prepared}"
+
+
+class TestARawConnectionBindsThroughTheSameHelper:
+    """bind_as_declared on a raw asyncpg connection (a test's rail): every key value as text, the integer too."""
+
+    async def test_a_page_keyed_on_a_timestamp_and_an_integer_is_read_from_text(
+        self, driver: AsyncpgDriver, db_container: str
+    ) -> None:
+        """Flips if text for a timestamp or an integer placeholder is refused rather than bound as its declared type."""
+        condition, params = keyset_condition(["observed_at", "id"], ["2026-11-04 05:33:12", "2"], earlier=">", last=">")
+        sql = f"SELECT id, observed_at FROM {_SCHEMA}.runs WHERE {condition} ORDER BY observed_at, id"
+        conn = await asyncpg.connect(**_connect_kwargs(db_container))
+        try:
+            with pytest.raises(asyncpg.exceptions.DataError):
+                await conn.fetch(sql, *params)
+            rows = await bind_as_declared(conn, sql, params, lambda bound: conn.fetch(sql, *bound))
+        finally:
+            await conn.close()
+        assert [(row["observed_at"].isoformat(sep=" "), row["id"]) for row in rows] == [
+            ("2026-11-04 06:00:00", 1),
+            ("2026-11-05 00:00:00", 1),
+        ]
+
+    async def test_a_servers_type_error_is_raised_as_it_is(self, driver: AsyncpgDriver, db_container: str) -> None:
+        """Flips if a statement the server refuses (an integer compared to an explicitly text placeholder) is retried
+        or swallowed: only asyncpg's own client-side bind refusal is bound again."""
+        sql = f"SELECT id FROM {_SCHEMA}.runs WHERE id = ANY($1::text[])"
+        conn = await asyncpg.connect(**_connect_kwargs(db_container))
+        try:
+            with pytest.raises(asyncpg.exceptions.UndefinedFunctionError):
+                await bind_as_declared(conn, sql, [["1"]], lambda bound: conn.fetch(sql, *bound))
+        finally:
+            await conn.close()

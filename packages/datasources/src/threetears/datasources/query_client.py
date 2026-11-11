@@ -50,12 +50,14 @@ from __future__ import annotations
 import asyncio
 import random
 import re
+import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 from uuid import UUID, uuid7
 
+import pydantic_core
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -74,8 +76,10 @@ from threetears.core.security.door_request import (
     datasource_query_op,
     omit_absent_proof,
 )
+from threetears.core.keyed import Fragment, Selected, renumbered, selected_column
 from threetears.core.sql_fragments import FilterValue, as_written, filter_conditions
 from threetears.core.wire import TolerantWireModel
+from threetears.datasources.bounded_rows import json_with_rows
 from threetears.datasources.export import ExportResult, check_destination
 from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subject, Subjects
@@ -116,6 +120,7 @@ __all__ = [
     "RelationFingerprintRequest",
     "RelationFingerprintResult",
     "read_all",
+    "read_scope_pages",
     "read_counted",
 ]
 
@@ -721,9 +726,13 @@ class DatasourceQueryResponse(BaseModel):
     :ptype rows: list[dict[str, Any]]
     :param row_count: how many rows ``rows`` carries
     :ptype row_count: int
-    :param truncated: whether the hub cut the result at its row cap, so
-        ``rows`` is a prefix of what the query produced
+    :param truncated: whether the hub cut the result (at its row cap, or at
+        ``max_reply_bytes``), so ``rows`` is a prefix of what the query produced
     :ptype truncated: bool
+    :param max_reply_bytes: the bytes the hub cut this reply's rows at; ``None``
+        while it cuts at its row cap (and from a hub that predates the byte cap),
+        so a caller reading by rows sees no change
+    :ptype max_reply_bytes: int | None
     :param error_code: the machine-readable refusal code, ``None`` on success
     :ptype error_code: str | None
     :param error_message: the human-readable refusal, never parsed
@@ -737,6 +746,7 @@ class DatasourceQueryResponse(BaseModel):
     rows: list[dict[str, Any]] = Field(default_factory=list)
     row_count: int = 0
     truncated: bool = False
+    max_reply_bytes: int | None = None
     error_code: str | None = None
     error_message: str | None = None
     correlation_id: UUID | None = None
@@ -754,6 +764,20 @@ class DatasourceQueryResponse(BaseModel):
     #: set only in answer to an ``export_list`` request: one page of the caller's recorded exports
     export_list: DatasourceExportListResult | None = None
 
+    def json_with_rows(self, rows_json: bytes) -> bytes:
+        """this reply's JSON with ``rows_json`` as its ``rows``, spliced in, never re-encoded.
+
+        For a hub that encoded the rows once while it read them (``Driver.fetch_within``'s
+        :meth:`~threetears.datasources.bounded_rows.BoundedRows.json_array`); see
+        :func:`~threetears.datasources.bounded_rows.json_with_rows`.
+
+        :param rows_json: the rows as one JSON array
+        :ptype rows_json: bytes
+        :return: the reply's JSON
+        :rtype: bytes
+        """
+        return json_with_rows(self, rows_json)
+
 
 class DatasourceQueryResult(BaseModel):
     """what a successful query hands the caller: the rows, and whether they are all of them.
@@ -768,13 +792,17 @@ class DatasourceQueryResult(BaseModel):
     :ptype rows: list[dict[str, Any]]
     :param row_count: how many rows ``rows`` carries
     :ptype row_count: int
-    :param truncated: whether the hub cut the result at its row cap, so
-        ``rows`` is a prefix of what the query produced. a caller deriving
-        state from a full read must refuse a truncated one rather than treat
-        the missing rows as absent upstream
+    :param truncated: whether the hub cut the result (at its row cap, or at
+        ``max_reply_bytes``), so ``rows`` is a prefix of what the query
+        produced. a caller deriving state from a full read must refuse a
+        truncated one, or read on past its last whole key group, rather than
+        treat the missing rows as absent upstream
     :ptype truncated: bool
     :param correlation_id: the request's id, echoed by the hub
     :ptype correlation_id: UUID
+    :param max_reply_bytes: the bytes the hub cut this reply's rows at; ``None``
+        while it cuts at its row cap
+    :ptype max_reply_bytes: int | None
     """
 
     model_config = ConfigDict(frozen=True)
@@ -783,6 +811,7 @@ class DatasourceQueryResult(BaseModel):
     row_count: int
     truncated: bool
     correlation_id: UUID
+    max_reply_bytes: int | None = None
 
 
 class DatasourceQueryError(RuntimeError):
@@ -1504,12 +1533,13 @@ class DatasourceQueryClient:
                 # the flag is the failure this warns about, and the hub's own
                 # line is on the other side of the bus.
                 log.warning(
-                    "datasource query result was cut at the hub's row cap; rows is a prefix",
+                    "datasource query result was cut by the hub (its row cap or its reply's bytes); rows is a prefix",
                     extra={
                         "extra_data": {
                             "datasource": datasource_name,
                             "correlation_id": f"{request.correlation_id}",
                             "row_count": response.row_count,
+                            "max_reply_bytes": response.max_reply_bytes,
                         }
                     },
                 )
@@ -1520,6 +1550,7 @@ class DatasourceQueryClient:
                 correlation_id=response.correlation_id
                 if response.correlation_id is not None
                 else request.correlation_id,
+                max_reply_bytes=response.max_reply_bytes,
             )
         else:
             error_code = response.error_code or "UNKNOWN"
@@ -1634,7 +1665,7 @@ async def read_all(
     client: DatasourceQueryClient,
     datasource_name: str,
     *,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     relation: str,
     key: Sequence[str],
     where: Mapping[str, FilterValue] | None = None,
@@ -1710,11 +1741,12 @@ async def read_all(
     rows that existed a moment ago are gone -- a concurrent delete, and an
     incomplete read either way.
 
-    ``DatasourceQueryResult.truncated`` is NOT part of any of this. The hub
-    computes it as ``total > cap`` over what a query returned, so under any
-    ``LIMIT n <= cap`` it is permanently false. It answers "did the hub cut an
-    UNBOUNDED result", which is a different question from "are there more rows";
-    reading it as the latter is what shipped three releases with a dead guard.
+    ``DatasourceQueryResult.truncated`` is NOT the has-more signal: under its row cap the hub computes it
+    as ``total > cap`` over what a query returned, so under any ``LIMIT n <= cap`` it is false, and the
+    sentinel decides. But a hub that cuts replies by their bytes (``max_reply_bytes``) cuts a page short
+    of its sentinel, and then ``truncated`` is the only word that more rows follow: such a page is never
+    the end. Its rows up to its last whole key group are kept, and the next page reads on from there,
+    asking for about as many rows as the cut reply carried.
 
     ``OFFSET`` is not offered. It looks correct in testing and silently drops a
     row when anything is deleted between pages, which is the failure mode this
@@ -1729,8 +1761,10 @@ async def read_all(
     :ptype client: DatasourceQueryClient
     :param datasource_name: the datasource to read, as the hub names it
     :ptype datasource_name: str
-    :param columns: columns to select, TRUSTED identifiers, never caller input
-    :ptype columns: Sequence[str]
+    :param columns: columns to select, TRUSTED identifiers, never caller input; or
+        :class:`~threetears.core.keyed.Selected` expressions under their names (a row's hash beside the columns:
+        :func:`~threetears.core.keyed.row_hash_selected` with ``alias=None``)
+    :ptype columns: Sequence[str | Selected]
     :param relation: the table or view to read, TRUSTED, never caller input
     :ptype relation: str
     :param key: the ordering key. Must be unique for the read to be complete;
@@ -1842,6 +1876,59 @@ async def read_all(
     raise AssertionError("unreachable: the last attempt returns or raises")  # pragma: no cover
 
 
+async def read_scope_pages(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    *,
+    columns: Sequence[str | Selected],
+    relation: str,
+    key: Sequence[str],
+    conditions: Sequence[Fragment] = (),
+    user_identity_token: str | None = None,
+    page_size: int = _DEFAULT_PAGE_SIZE,
+    max_pages: int = 10_000,
+) -> list[dict[str, Any]]:
+    """every row the trusted ``conditions`` name, in ``key``'s order, by :func:`read_all`'s pages: sized from the reply
+    cap the hub announces, reading on past a reply it cut, the sentinel row and the key group held back alike. For a
+    keyed helper's scope (``t."col" = $1`` fragments; the relation is read as ``t``), where :func:`read_all` takes
+    equality and set filters.
+
+    :param client: the query client
+    :ptype client: DatasourceQueryClient
+    :param datasource_name: the datasource
+    :ptype datasource_name: str
+    :param columns: the columns as written, or :class:`~threetears.core.keyed.Selected` expressions under their names
+    :ptype columns: Sequence[str | Selected]
+    :param relation: the relation, TRUSTED; read as ``t``
+    :ptype relation: str
+    :param key: the ordering columns, TRUSTED identifiers among ``columns``
+    :ptype key: Sequence[str]
+    :param conditions: the scope, each fragment written from ``$1`` with its own parameters
+    :ptype conditions: Sequence[Fragment]
+    :param user_identity_token: the user's assertion when a human is in the loop
+    :ptype user_identity_token: str | None
+    :param page_size: the rows a page asks for before the hub's cap is known
+    :ptype page_size: int
+    :param max_pages: the pages read before refusing to go on
+    :ptype max_pages: int
+    :return: the rows
+    :rtype: list[dict[str, Any]]
+    :raises IncompleteReadError: when paging cannot step past every row
+    """
+    _check_read(columns, key, page_size)
+    return await _pages(
+        client,
+        datasource_name,
+        columns=columns,
+        relation=f"{relation} AS t",
+        key=key,
+        filters=_Filters(where={}, where_in={}, fragments=tuple(conditions)),
+        page_size=page_size,
+        max_pages=max_pages,
+        user_identity_token=user_identity_token,
+    )
+
+
 async def read_counted(
     client: DatasourceQueryClient,
     datasource_name: str,
@@ -1932,11 +2019,11 @@ async def read_counted(
     return read
 
 
-def _check_read(columns: Sequence[str], key: Sequence[str], page_size: int) -> None:
+def _check_read(columns: Sequence[str | Selected], key: Sequence[str], page_size: int) -> None:
     """refuse arguments that cannot describe a complete paged read.
 
-    :param columns: the columns selected
-    :ptype columns: Sequence[str]
+    :param columns: the columns selected, as written or as expressions under their names
+    :ptype columns: Sequence[str | Selected]
     :param key: the ordering key
     :ptype key: Sequence[str]
     :param page_size: rows per page
@@ -1951,31 +2038,145 @@ def _check_read(columns: Sequence[str], key: Sequence[str], page_size: int) -> N
         raise ValueError("key must not be empty: keyset paging has no cursor without one")
     if page_size < 1:
         raise ValueError(f"page_size must be positive, got {page_size}")
-    if page_size >= _HUB_ROW_CAP:
-        # The query asks for page_size + 1, so page_size must leave room for the
-        # sentinel under the hub's cap. At page_size == cap the hub would cut the
-        # result at the cap and the sentinel would be the row it dropped, turning
-        # "there are more rows" into "this was the last page" -- the exact silent
-        # short read this function exists to prevent.
-        raise ValueError(
-            f"page_size must be UNDER the hub's row cap of {_HUB_ROW_CAP}, got {page_size}. "
-            f"this function reads page_size + 1 rows and uses the extra one as a has-more "
-            f"sentinel, so the sentinel must fit under the cap; at or above it the cap would "
-            f"eat the sentinel and a short read would be returned as a complete one. "
-            f"the default is {_DEFAULT_PAGE_SIZE}."
-        )
+
+
+def _row_cap_refusal(page_size: int) -> ValueError:
+    """the refusal of a page at or over the hub's row cap, from a hub that cuts its replies by rows.
+
+    The query asks for page_size + 1, so page_size must leave room for the sentinel under the hub's cap. At
+    page_size == cap the hub would cut the result at the cap and the sentinel would be the row it dropped, turning
+    "there are more rows" into "this was the last page" -- the exact silent short read the pagers exist to prevent.
+    A hub that cuts its replies by their bytes (its replies announce ``max_reply_bytes``) applies no row cap, so a
+    larger page is refused only by a hub that answers with none.
+
+    :param page_size: the page asked for
+    :ptype page_size: int
+    :return: the refusal
+    :rtype: ValueError
+    """
+    return ValueError(
+        f"page_size must be UNDER the hub's row cap of {_HUB_ROW_CAP}, got {page_size}. "
+        f"this function reads page_size + 1 rows and uses the extra one as a has-more "
+        f"sentinel, so the sentinel must fit under the cap; at or above it the cap would "
+        f"eat the sentinel and a short read would be returned as a complete one. "
+        f"the default is {_DEFAULT_PAGE_SIZE}. (a hub with a reply byte cap, max_reply_bytes, takes larger pages.)"
+    )
+
+
+#: the share of a hub's announced reply byte cap a page is sized to fill: room for the reply's envelope and for rows
+#: a little wider than those measured
+_CAP_FILL: Final[float] = 0.95
+
+#: per client, the rows one reply of a byte-capping hub carried for a (datasource, relation, columns) read, so the
+#: next read of it sizes its FIRST page from the announced cap too. A hint only: a page it oversizes comes back cut
+#: and is read on from its last whole key group, as any cut page is.
+_REPLY_ROWS: weakref.WeakKeyDictionary[Any, dict[tuple[str, str, str], int]] = weakref.WeakKeyDictionary()
+
+
+def _remembered_reply_rows(client: Any, read: tuple[str, str, str]) -> int | None:
+    """the rows one reply carried the last time ``client`` read ``read`` under a byte cap, if it did.
+
+    :param client: the query client
+    :ptype client: Any
+    :param read: the datasource, relation and selected columns
+    :ptype read: tuple[str, str, str]
+    :return: the rows, or None
+    :rtype: int | None
+    """
+    try:
+        return _REPLY_ROWS.get(client, {}).get(read)
+    except TypeError:
+        # a client that cannot be weakly referenced or hashed keeps no memory
+        return None
+
+
+def _remember_reply_rows(client: Any, read: tuple[str, str, str], rows: int | None) -> None:
+    """remember (or, with None, forget) the rows one reply carries for ``read`` on ``client``.
+
+    :param client: the query client
+    :ptype client: Any
+    :param read: the datasource, relation and selected columns
+    :ptype read: tuple[str, str, str]
+    :param rows: the rows, or None to forget
+    :ptype rows: int | None
+    """
+    try:
+        held = _REPLY_ROWS.setdefault(client, {})
+    except TypeError:
+        return
+    if rows is None:
+        held.pop(read, None)
+    else:
+        held[read] = rows
+
+
+def _rows_a_reply_carries(rows: list[dict[str, Any]], max_reply_bytes: int) -> int:
+    """about how many rows like ``rows`` one reply cut at ``max_reply_bytes`` carries, with a margin.
+
+    Measured as the hub measures its cut: pydantic's compact JSON, in UTF-8 bytes (the broker's ``reply_rows``).
+
+    :param rows: a page's rows, as the hub sent them
+    :ptype rows: list[dict[str, Any]]
+    :param max_reply_bytes: the hub's announced reply byte cap
+    :ptype max_reply_bytes: int
+    :return: the rows, at least 1
+    :rtype: int
+    """
+    per_row = len(pydantic_core.to_json(rows, serialize_unknown=True)) / len(rows)
+    return max(1, int(_CAP_FILL * max_reply_bytes / per_row))
+
+
+def select_list(columns: Sequence[str | Selected]) -> str:
+    """the select list: each column as written (unquoted, as the relation and key are), each
+    :class:`~threetears.core.keyed.Selected` expression under its quoted name (a row's hash beside the columns).
+
+    :param columns: the columns as written, or expressions under their names
+    :ptype columns: Sequence[str | Selected]
+    :return: the select list, TRUSTED SQL
+    :rtype: str
+    """
+    return ", ".join(column if isinstance(column, str) else selected_column(column) for column in columns)
+
+
+def column_names(columns: Sequence[str | Selected]) -> list[str]:
+    """the names a read's rows carry: each column as written, each :class:`~threetears.core.keyed.Selected` under
+    its alias.
+
+    :param columns: the columns as written, or expressions under their names
+    :ptype columns: Sequence[str | Selected]
+    :return: the names, in order
+    :rtype: list[str]
+    """
+    return [column if isinstance(column, str) else column.alias for column in columns]
+
+
+def plain_columns(columns: Sequence[str | Selected]) -> list[str]:
+    """the columns a fingerprint covers: those read as written. A :class:`~threetears.core.keyed.Selected`
+    expression (a row's hash) is computed from them, so the digest over them already moves when it would.
+
+    :param columns: the columns as written, or expressions under their names
+    :ptype columns: Sequence[str | Selected]
+    :return: the plain columns, in order
+    :rtype: list[str]
+    :raises ValueError: when every column is an expression: a fingerprint needs a column as written
+    """
+    plain = [column for column in columns if isinstance(column, str)]
+    if columns and not plain:
+        raise ValueError("a fingerprinted read names at least one column as written, not only expressions")
+    return plain
 
 
 async def _pages(
     client: DatasourceQueryClient,
     datasource_name: str,
     *,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     relation: str,
     key: Sequence[str],
     filters: _Filters,
     page_size: int,
     max_pages: int,
+    user_identity_token: str | None = None,
 ) -> list[dict[str, Any]]:
     """every row of the filtered part, page after page in key order: the one paging loop.
 
@@ -1987,14 +2188,26 @@ async def _pages(
     :rtype: list[dict[str, Any]]
     :raises IncompleteReadError: when paging cannot step past every row
     """
-    selected = ", ".join(columns)
+    selected = select_list(columns)
     ordering = ", ".join(key)
+    # the user's assertion when a human is in the loop; the principal's own grants (nothing passed) otherwise
+    asserted: dict[str, Any] = {} if user_identity_token is None else {"user_identity_token": user_identity_token}
 
     rows: list[dict[str, Any]] = []
     cursor: tuple[Any, ...] | None = None
     previous_had_more = False
 
     size = page_size
+    # the most rows a page grows back to: the asked-for size, or, under a hub that cuts its replies by their bytes,
+    # about the rows one reply carries (so the cap's larger replies are reached through this pager)
+    ceiling = page_size
+    # a byte-capped hub read here before: the first page asks what one of its replies carried then
+    read = (datasource_name, relation, selected)
+    remembered = _remembered_reply_rows(client, read)
+    if remembered is not None and remembered > page_size:
+        size = ceiling = remembered
+    # the first whole page under a byte cap is measured, and the pages after it ask what one reply carries
+    measured = False
     for _ in range(max_pages):
         predicate, params = _filtered(filters, key, cursor)
         # LIMIT size + 1: the extra row is a SENTINEL, not data. Getting it
@@ -2011,7 +2224,7 @@ async def _pages(
         # question the hub is not being asked.
         sql = f"SELECT {selected} FROM {relation}{predicate} ORDER BY {ordering} LIMIT {int(size) + 1}"
         try:
-            page = await client.query(datasource_name, sql, params=params)
+            page = await client.query(datasource_name, sql, params=params, **asserted)
         except DatasourceQueryError as exc:
             # more bytes than one reply may carry: the same rows in smaller pages. Row counts
             # cannot bound bytes when one row can be a thousand times another (a polygon)
@@ -2024,6 +2237,16 @@ async def _pages(
             )
             continue
 
+        if page.max_reply_bytes is None and size >= _HUB_ROW_CAP:
+            if remembered is None or size <= page_size:
+                raise _row_cap_refusal(size)
+            # the hub cut by bytes before and cuts by rows now: its row cap may have eaten the sentinel, so the page
+            # is read again at the asked-for size, and nothing is remembered
+            _remember_reply_rows(client, read, None)
+            remembered = None
+            size = ceiling = page_size
+            continue
+
         if not page.rows:
             if previous_had_more:
                 raise IncompleteReadError(
@@ -2034,6 +2257,55 @@ async def _pages(
                     f"are NOT the whole relation."
                 )
             return rows
+
+        if page.truncated and len(page.rows) <= size:
+            # THE HUB CUT THE REPLY (its bytes, or its row cap): the rows are a prefix of the page, so more rows
+            # follow and this is never the end. The last row's key group may be cut short too, so it is dropped
+            # and re-read at the head of the next page, as the sentinel's group is; the next page asks for about
+            # as many rows as this reply could carry.
+            kept = list(page.rows)
+            cut_key = tuple(kept[-1][column] for column in key)
+            while kept and tuple(kept[-1][column] for column in key) == cut_key:
+                kept.pop()
+            if not kept:
+                # every row of the reply shares one key (one row a reply, when rows are wide): it is whole when the
+                # part holds no more rows of that key, which one keyed count says
+                conditions, values = filters.conditions()
+                same = " AND ".join(f"{column} = ${len(values) + index}" for index, column in enumerate(key, 1))
+                where_sql = f"({conditions}) AND {same}" if conditions else same
+                counted = await client.query(
+                    datasource_name,
+                    f"SELECT count(*) AS n FROM {relation} WHERE {where_sql}",  # noqa: S608 - trusted identifiers
+                    params=[*values, *cut_key],
+                    **asserted,
+                )
+                if not counted.rows or int(counted.rows[0]["n"]) != len(page.rows):
+                    raise IncompleteReadError(
+                        f"{datasource_name}: the hub cut a page of {relation} at {page.max_reply_bytes or 'its'} "
+                        f"reply bytes within one value of {tuple(key)}, so paging cannot step past it without "
+                        f"dropping rows: one key group is wider than one reply. {len(rows)} rows were read and they "
+                        "are NOT the whole relation."
+                    )
+                kept = list(page.rows)
+            rows.extend(kept)
+            cursor = tuple(kept[-1][column] for column in key)
+            previous_had_more = True
+            size = max(1, len(page.rows) - 1)
+            ceiling = max(page_size, size)
+            if page.max_reply_bytes is not None:
+                _remember_reply_rows(client, read, ceiling)
+            log.info(
+                "read_all page cut by the hub's reply cap; reading on from its last whole key group",
+                extra={
+                    "extra_data": {
+                        "datasource": datasource_name,
+                        "relation": relation,
+                        "page_size": size,
+                        "max_reply_bytes": page.max_reply_bytes,
+                    }
+                },
+            )
+            continue
 
         had_more = len(page.rows) > size
         if not had_more:
@@ -2081,8 +2353,13 @@ async def _pages(
         rows.extend(kept)
         cursor = advanced
         previous_had_more = had_more
-        # back toward the asked-for size: one oversized stretch should not slow the rest
-        size = min(page_size, size * 2)
+        if page.max_reply_bytes is not None and not measured:
+            # the hub cuts by bytes, and a whole page fitted: the next pages ask about what one reply carries
+            measured = True
+            ceiling = max(page_size, _rows_a_reply_carries(page.rows, page.max_reply_bytes) - 1)
+            _remember_reply_rows(client, read, ceiling)
+        # back toward the ceiling (one oversized stretch should not slow the rest); a byte-capped hub's ceiling at once
+        size = ceiling if ceiling > page_size else min(page_size, size * 2)
 
     raise IncompleteReadError(
         f"{datasource_name}: still reading after {max_pages} pages ({len(rows)} rows). raising rather than "
@@ -2182,6 +2459,9 @@ class _Filters:
     where: Mapping[str, FilterValue]
     where_in: Mapping[str, tuple[FilterValue, ...]]
     not_null: tuple[str, ...] = ()
+    #: trusted conditions written from ``$1`` with their own parameters (a keyed helper's scope: its ``by`` and
+    #: ``where``), after the filters
+    fragments: tuple[Fragment, ...] = ()
 
     @classmethod
     def of(
@@ -2235,7 +2515,15 @@ class _Filters:
         :return: the conditions (empty without filters) and their values in order
         :rtype: tuple[str, list[FilterValue]]
         """
-        return filter_conditions(self.where, self.where_in, self.not_null, first=first, quote=as_written)
+        conditions, values = filter_conditions(self.where, self.where_in, self.not_null, first=first, quote=as_written)
+        if not self.fragments:
+            return conditions, values
+        parts = [conditions] if conditions else []
+        bound: list[Any] = list(values)
+        for fragment in self.fragments:
+            parts.append(f"({renumbered(fragment, first - 1 + len(bound))})")
+            bound += list(fragment.params)
+        return " AND ".join(parts), bound
 
 
 @dataclass(frozen=True)
