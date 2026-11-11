@@ -1706,7 +1706,7 @@ async def test_a_lease_asked_for_during_a_shutdown_is_refused_naming_it_and_held
         await leases.shut_down()
 
 
-@pytest.mark.parametrize("ends", ["raises", "is cancelled"])
+@pytest.mark.parametrize("ends", ["raises", "is cancelled", "is cancelled waiting for its renewer"])
 async def test_a_shutdown_cut_short_leaves_the_leases_down_and_the_next_hold_opens_them(
     ends: str, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1726,12 +1726,22 @@ async def test_a_shutdown_cut_short_leaves_the_leases_down_and_the_next_hold_ope
                 leases.hold(RUN_JOB, "run-held", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
                 with pytest.raises(RuntimeError, match="cancel broke"):
                     await leases.shut_down(then=broke)
-            else:
+            elif ends == "is cancelled":
                 shutting = await _a_shutdown_under_way(store, storage, leases)
                 shutting.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await shutting
+            else:
+                # Cut short at its first await, the wait for its renewer: the lease it took is not held after it.
+                _seeded_run(storage, "run-held", off_loop(leases.grant))
+                leases.hold(RUN_JOB, "run-held", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+                shutting = asyncio.ensure_future(leases.shut_down())
+                await asyncio.sleep(0)
+                shutting.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await shutting
         assert any("was cut short" in record.getMessage() for record in caplog.records)
+        assert not leases.holds("run-held"), "no lease the shutdown took is held after it, for a renewer to renew"
 
         store.release.set()
         _seeded_run(storage, "run-after", off_loop(leases.grant))

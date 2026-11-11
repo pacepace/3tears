@@ -37,9 +37,10 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 from pydantic import Field, ValidationError, field_validator
 
-from threetears.evals.analysis.arms import arm_names, short_digest
+from threetears.evals.analysis.arms import arm_names, distinguishing_axes, elide_level, naming_levels, short_digest
 from threetears.evals.analysis.campaign_bundle import ArmSpelling
-from threetears.evals.analysis.style import arm_name
+from threetears.evals.analysis.style import arm_name, level_arm_name
+from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.analysis.revisions import refuse_pooled_revisions
 from threetears.evals.kernel.authoring_fields import edited_core_document, reject_unknown_authoring_fields
@@ -1877,7 +1878,10 @@ def campaign_arms_spelled(
                 derived[addressed.key] = addressed
     if not derived:
         return named, {}
-    names = arm_names([_index_entry(arm) for arm in [*map(_addressed, named), *derived.values()]])
+    entries = [_index_entry(arm) for arm in [*map(_addressed, named), *derived.values()]]
+    names = arm_names(entries)
+    distinguishing = distinguishing_axes(entries)
+    by_key = {entry.variant_key: entry for entry in entries}
     taken = {arm.label for arm in named}
     arms = list(named)
     spellings: dict[str, ArmSpelling] = {}
@@ -1886,23 +1890,13 @@ def campaign_arms_spelled(
         # read as words (`prompt style v2, effort low`), never by a reader name: the label is frozen with the evidence
         # and fingerprinted, and a page prints it from its spelling, with the levers' stored names
         # (`printed_arm_labels`).
-        spelled = arm_name(names[key])
-        word = spelled.label
-        label, suffix = word, 2
+        word, spelling = _derived_name(by_key[key], distinguishing, names[key])
+        label, number, held = word, 2, None
         while label in taken:
-            label, suffix = f"{word} ({suffix})", suffix + 1
+            label, number, held = f"{word} ({number})", number + 1, number
         taken.add(label)
-        if spelled.levers:
-            # The digest arm_names gave the name to tell it from another spelled alike rides on its last level as
-            # spelled: it is held apart, beside any taken label's number, so each level is the level alone.
-            levels = list(spelled.levels)
-            told = next(
-                (apart for digest in (short_digest(key), key) if levels[-1].endswith(apart := f" (arm {digest})")), ""
-            )
-            levels[-1] = levels[-1].removesuffix(told)
-            spellings[key] = ArmSpelling(
-                levers=list(spelled.levers), levels=levels, suffix=told + label.removeprefix(word)
-            )
+        if spelling is not None:
+            spellings[key] = spelling.model_copy(update={"taken": held})
         arms.append(
             CampaignArm(
                 label=label,
@@ -1913,6 +1907,52 @@ def campaign_arms_spelled(
             )
         )
     return arms, spellings
+
+
+def _derived_name(
+    entry: VariantIndexEntry, distinguishing: frozenset[str], name: str
+) -> tuple[str, ArmSpelling | None]:
+    """A derived arm's word, read from its index entry's levels as data, never from its name's text; and its spelling
+    where it is spelled from several levers. The levels are the ones its name is spelled from
+    (:func:`~threetears.evals.analysis.arms.naming_levels`, each cut as a name cuts it), the candidate's kind dropped
+    where one other lever names it; several levers spell it (each lever by its id read as words), one names it by its
+    level (:func:`~threetears.evals.analysis.style.level_arm_name`), so a level holding ``, `` (a prompt) is read
+    whole. The digest :func:`~threetears.evals.analysis.arms.arm_names` gave a name two arms would share follows the
+    levels. An arm whose levels are unavailable, or that moved no lever, is named as ``name`` says.
+
+    :param entry: The arm's index entry.
+    :ptype entry: VariantIndexEntry
+    :param distinguishing: The levers the arms differ on (:func:`~threetears.evals.analysis.arms.distinguishing_axes`).
+    :ptype distinguishing: frozenset[str]
+    :param name: Its name as :func:`~threetears.evals.analysis.arms.arm_names` spells it, read only for its digest.
+    :ptype name: str
+    :return: The word, and the spelling where several levers spell it.
+    :rtype: tuple[str, ArmSpelling | None]
+    """
+    shown = next(
+        (
+            digest
+            for digest in (short_digest(entry.variant_key), entry.variant_key)
+            if name.endswith(f" (arm {digest})")
+        ),
+        None,
+    )
+    told = f" (arm {shown})" if shown else ""
+    levels = naming_levels(entry, distinguishing) if entry.levels_unavailable is None else []
+    if not levels:
+        return arm_name(name).label, None
+    if len(levels) > 1:
+        # The candidate's kind is no name: an arm named by its kind and one other lever is named by that lever.
+        others = [level for level in levels if level.axis_id != CANDIDATE_KIND_LEVER]
+        levels = others if len(others) == 1 else levels
+    if len(levels) == 1:
+        return level_arm_name(elide_level(levels[0].display) + told).label, None
+    spelling = ArmSpelling(
+        levers=[level.axis_id for level in levels],
+        levels=[elide_level(level.display) for level in levels],
+        digest=shown,
+    )
+    return spelling.label(), spelling
 
 
 def _addressed(arm: CampaignArm) -> _AddressedArm:

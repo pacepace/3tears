@@ -680,19 +680,25 @@ def _read_part(
 ) -> tuple[str, bool] | None:
     """One part of a computed name as a reader reads it, and whether it was a cut: a cut level as its lever alone, an
     empty text level as ``no <lever>``, each lever by its stored reader name (``declared``); None for a part no level of
-    ``levels`` spells."""
+    ``levels`` spells, and for one several levels spell (two long settings cut to one text): which lever it names
+    cannot be told, so it keeps its level's text rather than take one lever's name."""
+    matched: list[tuple[str, str]] = []
     for axis, display in levels.items():
         if not isinstance(display, str):
             continue
         shown = _whole(display)
         reader = lever_reader_name(axis, declared)
         spelled = {elide_level(shown), f"{reader} {elide_level(shown)}"}
-        if part not in spelled and part[:1].lower() + part[1:] not in spelled:
-            continue
-        if _too_long(shown):
-            return reader, True
-        if shown in _PLACEHOLDERS and axis in text:
-            return EMPTY_LEVEL.format(lever=reader), False
+        if part in spelled or part[:1].lower() + part[1:] in spelled:
+            matched.append((axis, shown))
+    if len(matched) != 1:
+        return None
+    ((axis, shown),) = matched
+    reader = lever_reader_name(axis, declared)
+    if _too_long(shown):
+        return reader, True
+    if shown in _PLACEHOLDERS and axis in text:
+        return EMPTY_LEVEL.format(lever=reader), False
     return None
 
 
@@ -743,7 +749,7 @@ def _spelled_reader_name(
     words = ", ".join(parts)
     # A computed name opens upper case, as every page prints it (``arm_display_name``).
     words = words[:1].upper() + words[1:]
-    return words if cut else words + spelling.suffix
+    return words if cut else words + spelling.suffix()
 
 
 def reader_arm_name(

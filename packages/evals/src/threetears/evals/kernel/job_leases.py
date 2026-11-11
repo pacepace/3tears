@@ -736,16 +736,18 @@ class _ShuttingDown:
 #: them again.
 @dataclass(frozen=True, kw_only=True)
 class _Down:
-    """A shutdown that has ended, however it ended: the loss it wrote, and what cut it short, ``None`` where nothing did.
+    """A shutdown that has ended, however it ended.
 
-    A shutdown that raised or was cancelled ends here too, so the next hold opens the leases again rather than every
-    later one being refused for the life of the process; a lease it never reached is renewed by nothing, and reads
-    lost once it lapses (logged where it was cut short).
+    A shutdown that raised or was cancelled ends here too (what cut it short is logged), so the next hold opens the
+    leases again rather than every later one being refused for the life of the process. The shutdown takes every held
+    lease as its first step, before it awaits anything, so however soon it is cut short no lease it took is held
+    after it: one it had not yet written lost is renewed by nothing, its renewer cancelled or never started again for
+    it, and reads lost once it lapses; the next hold renews its own lease alone.
     """
 
-    cause: str
-    cut_short: str | None = None
 
+#: The one value :class:`_Down` takes.
+_DOWN: Final = _Down()
 
 _Shutdown = _ShuttingDown | _Down | None
 
@@ -1591,6 +1593,9 @@ class JobLeases:
         bound = within if within is not None else 2 * self._lease_s + self.renew_every_s
         deadline = time.monotonic() + bound
         self._shutdown = _ShuttingDown(cause=cause, deadline=deadline)
+        # Every held lease is the shutdown's from its first step, before it awaits anything: cut short at any await, it
+        # leaves no lease held for a later hold's renewer to renew.
+        held, self._held = list(self._held.values()), {}
         cut_short: BaseException | None = None
         try:
             try:
@@ -1598,7 +1603,6 @@ class JobLeases:
                     self._renewer = None
                     renewer.cancel()
                     await asyncio.wait({renewer})  # its own teardown cancels its renewals and awaits nothing
-                held, self._held = list(self._held.values()), {}
                 ended = await self._write_losses(held, cause, bound / 2)
             finally:
                 if then is not None:
@@ -1610,7 +1614,7 @@ class JobLeases:
         finally:
             # Down however it ended: a shutdown that raised or was cancelled must not leave every later hold refused.
             why = None if cut_short is None else f"{type(cut_short).__name__}: {cut_short}"
-            self._shutdown = _Down(cause=cause, cut_short=why)
+            self._shutdown = _DOWN
             self._close_pool()
             if why is not None:
                 log.error(

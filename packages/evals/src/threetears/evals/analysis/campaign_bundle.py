@@ -102,13 +102,27 @@ class ArmSpelling(EvalDocumentModel):
             "Each lever's level as the label spells it, in the same order: the level alone, cut as a name cuts a level."
         ),
     )
-    suffix: str = Field(
-        default="",
+    digest: str | None = Field(
+        default=None,
         description=(
-            "What follows the levers in the label and tells the arm from another: the digest where two arms spelled "
-            "alike (` (arm 0123456789ab)`), then ` (2)`, ` (3)` … where the label was already taken; empty for none."
+            "The digest that tells the arm from another spelled alike, as its label shows it (`0123456789ab`, after "
+            "`arm`); None where no other arm reads alike."
         ),
     )
+    taken: int | None = Field(
+        default=None,
+        ge=2,
+        description="The number the label carries where its spelling was already taken (`(2)`, `(3)` …); None for none.",
+    )
+
+    def suffix(self) -> str:
+        """What follows the levers in the label and tells the arm from another: `` (arm <digest>)``, then
+        `` (<taken>)``; empty for neither.
+
+        :return: The suffix.
+        :rtype: str
+        """
+        return (f" (arm {self.digest})" if self.digest else "") + (f" ({self.taken})" if self.taken else "")
 
     def label(self, declared: Mapping[str, str] | None = None) -> str:
         """The arm's name, each lever by its stored name (``declared``), or by its id read as words with none: the
@@ -119,7 +133,7 @@ class ArmSpelling(EvalDocumentModel):
         :return: The name.
         :rtype: str
         """
-        return lever_spelled(self.levers, self.levels, declared) + self.suffix
+        return lever_spelled(self.levers, self.levels, declared) + self.suffix()
 
 
 class CampaignBundle(EvalDocumentModel):

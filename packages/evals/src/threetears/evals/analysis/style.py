@@ -489,7 +489,22 @@ def arm_name(display: str, *, control: bool = False, declared: Mapping[str, str]
         levers = tuple(match["axis"] for match in pairs if match)
         levels = tuple(match["level"] for match in pairs if match)
         return ArmName(label=lever_spelled(levers, levels, declared), control=control, levers=levers, levels=levels)
-    level = pairs[0]["level"] if len(pairs) == 1 and pairs[0] else display
+    return level_arm_name(pairs[0]["level"] if len(pairs) == 1 and pairs[0] else display, control=control)
+
+
+def level_arm_name(level: str, *, control: bool = False) -> ArmName:
+    """An arm named by one level, read as a reader reads it: a labelled model (``deepseek-v4.1-flash (production)``)
+    by its label, a model's path by its name, any other level as written. The one rule :func:`arm_name` reads a
+    single level by, and a derived arm is labelled by from its level as data
+    (:func:`~threetears.evals.analysis.campaigns.campaign_arms_spelled`), so a level holding ``, `` is read whole.
+
+    :param level: The level, as a name spells it (cut as a name cuts it).
+    :ptype level: str
+    :param control: Whether it is the control.
+    :ptype control: bool
+    :return: The arm's name.
+    :rtype: ArmName
+    """
     if labelled := _LABELLED.match(level):
         return ArmName(label=labelled["label"], model=labelled["model"], control=control)
     if "/" in level and " " not in level:
@@ -803,6 +818,7 @@ __all__ = [
     "is_dump",
     "lever_reader_name",
     "lever_spelled",
+    "level_arm_name",
     "lint_prose",
     "measure_name",
     "page_date",

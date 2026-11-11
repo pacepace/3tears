@@ -54,6 +54,7 @@ from threetears.evals.analysis.report.figure_keys import render, written_arm
 from threetears.evals.analysis.report.words import (
     campaign_arm_tags,
     input_arm_tags,
+    printed_arm_labels,
     reader_arm_labels,
     reader_arm_name,
     told_apart,
@@ -193,9 +194,9 @@ _PROMPTS = tuple(
 _PROMPTS_CAMPAIGN = "7b0e2c55-5d0f-4c8e-9a3c-1f2e3d4c5b6c"
 
 
-def _batch(label: str, instructions: str | None) -> Any:
+def _batch(label: str, instructions: str | None, chunk_tokens: int = 256) -> Any:
     run = toyhost_batch(
-        chunk_tokens=256,
+        chunk_tokens=chunk_tokens,
         retriever_top_k=3,
         extraction_schema="v1",
         ocr_engine_version="tess-5.3.1",
@@ -296,6 +297,132 @@ def test_no_listing_line_holds_a_cut_of_a_prompt_or_of_the_question() -> None:
     assert line.question == question, "the question prints whole, in its own field"
 
 
+#: Two prompts that keep a ``, `` once a name cuts them, each beside its own chunk size: arms spelled from two levers.
+_COMMA_ARMS: tuple[tuple[str, int, str], ...] = (
+    ("comma-a", 256, "Read every invoice, line by line, twice and quote the vendor's own words for each total"),
+    ("comma-b", 512, "Read every invoice, line by line, once and quote the vendor's own words for each total"),
+)
+
+
+def test_a_derived_arm_whose_cut_level_keeps_a_comma_is_spelled_and_printed_by_its_levers_names() -> None:
+    """A derived arm's spelling was read back off its name's text, split on ``, ``: a cut prompt that kept a comma
+    left it unspelled, and its frozen label printed raw, lever ids and all, on every page. It is spelled from its
+    levels as data now, and the campaign page and the listing name it by its levers' names."""
+    host = _levered_host(_COMMA_ARMS)
+    bundle = assemble_campaign_bundle(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE)
+
+    derived = [arm for arm in bundle.arms if arm.role == "candidate"]
+    assert len(derived) == 2
+    for arm in derived:
+        spelling = bundle.arm_spellings[arm.variant_key]
+        assert len(spelling.levers) == 2 and spelling.label() == arm.label
+        assert any(", " in level for level in spelling.levels), "the cut prompt keeps its comma, as data"
+        assert "=" not in arm.label, arm.label
+    named = reader_arm_labels(bundle, input_arm_tags(bundle))
+    page = serialize_report(campaign_report(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE), "markdown")
+    line = _analysed(host, _PROMPTS_CAMPAIGN)
+    assert line.report is not None
+    for arm in derived:
+        name = named[arm.variant_key]
+        assert "=" not in name and "chunk_tokens" not in name, name
+        assert _bare(name) in page, name
+    for printed in _lines(line):
+        assert "chunk_tokens" not in printed and "instructions=" not in printed, printed
+
+
+#: Two prompts the host displays alike (they part only past where its display cuts them), each at one chunk size, and a
+#: third arm at another: the first two are spelled from the same two levers alike, told apart by their digests alone.
+_SHARED_HEAD = "Read every invoice line and quote, for each total, the words the vendor printed beside it"
+_TOLD_BY_DIGEST: tuple[tuple[str, int, str], ...] = (
+    ("today", 512, f"{_SHARED_HEAD}, today"),
+    ("always", 512, f"{_SHARED_HEAD}, always"),
+    ("small", 256, f"{_SHARED_HEAD}, today"),
+)
+
+
+def _levered_host(arms: tuple[tuple[str, int, str], ...]) -> EvalHost:
+    """A host holding a campaign whose arms differ by their chunk size and extractor instructions, named by neither."""
+    profile = toyhost_profile()
+    host = toyhost_host(profile=profile)
+    runs = [_batch(label, instructions, chunk_tokens=chunk) for label, chunk, instructions in arms]
+    for run in runs:
+        host.storage.save_eval_run(run)
+        for result in toyhost_measurements(
+            run, profile=profile, cost_usd=0.02, total_ms=900.0, field_accuracy=0.8, layout_fidelity=3
+        ):
+            host.storage.save_eval_result(result)
+    host.storage.save_campaign(
+        toyhost_campaign_of_one_aspect(
+            id=_PROMPTS_CAMPAIGN,
+            scope_id=TOYHOST_SCOPE,
+            name="instructions",
+            subject_id=TOYHOST_SUBJECT.subject_id,
+            subject_kind="extractor_config",
+            behavior="extract_invoice_fields",
+            template_id="",
+            run_ids=[run.id for run in runs],
+            design=toyhost_aspect_design(),
+            created_by="test:fixture",
+        )
+    )
+    return host
+
+
+def test_two_arms_spelled_alike_each_print_their_own_digest() -> None:
+    """Two arms spelled from the same levers at levels a name cuts alike are told apart only by the digest their
+    spelling holds apart from their levels (``ArmSpelling.digest``): each prints its own, never the other's."""
+    host = _levered_host(_TOLD_BY_DIGEST)
+    bundle = assemble_campaign_bundle(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE)
+    printed = printed_arm_labels(bundle)
+
+    alike = [arm for arm in bundle.arms if bundle.arm_spellings[arm.variant_key].digest]
+    assert len(alike) == 2, [arm.label for arm in bundle.arms]
+    first, second = (bundle.arm_spellings[arm.variant_key] for arm in alike)
+    assert first.levers == second.levers and first.levels == second.levels, "spelled alike, level for level"
+    assert first.digest != second.digest
+    for arm in alike:
+        spelling = bundle.arm_spellings[arm.variant_key]
+        told = f" (arm {arm.variant_key[:12]})"
+        assert (spelling.digest, spelling.suffix()) == (arm.variant_key[:12], told)
+        assert arm.label.endswith(told) and printed[arm.variant_key].endswith(told), (arm.label, printed)
+        assert not any(level.endswith(told) for level in spelling.levels), "held apart from its levels"
+
+
+#: Two prompts that keep a ``, `` once a name cuts them, at one chunk size: arms named by that one lever.
+_ONE_LEVER_COMMA_ARMS: tuple[tuple[str, int, str], ...] = (
+    ("brief", 256, "You are a support agent, answer in two lines and quote the vendor's own words for each total"),
+    ("full", 256, "You are a support agent, answer in full and quote the vendor's own words for each total today"),
+)
+
+
+def test_a_derived_arm_named_by_one_cut_level_holding_a_comma_reads_by_its_lever_s_name() -> None:
+    """An arm named by one level was read back off its ``axis=level`` name split on ``, ``: a cut prompt that kept a
+    comma left the split unread, and the frozen label carried the lever id and ``=`` on every page. It is named by its
+    level as data now, holds no spelling (one lever names it), and every surface prints it by its lever's name, the
+    text reader reading the name whole before it splits it."""
+    host = _levered_host(_ONE_LEVER_COMMA_ARMS)
+    bundle = assemble_campaign_bundle(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE)
+    levers = {lever for aspect in bundle.aspects for entry in aspect.variant_index for lever in entry.named_levers}
+
+    derived = [arm for arm in bundle.arms if arm.role == "candidate"]
+    assert len(derived) == 2
+    for arm in derived:
+        assert "=" not in arm.label and not any(lever in arm.label for lever in levers), arm.label
+        assert ", " in arm.label, "the label is the cut prompt, its comma kept"
+        assert arm.variant_key not in bundle.arm_spellings, "one lever names it: no spelling"
+    named = reader_arm_labels(bundle, input_arm_tags(bundle))
+    page = serialize_report(campaign_report(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE), "markdown")
+    line = _analysed(host, _PROMPTS_CAMPAIGN)
+    assert line.report is not None
+    listed = " ".join(_lines(line))
+    for arm in derived:
+        name = named[arm.variant_key]
+        assert _bare(name) == "Extractor instructions", name
+        assert name in page and name in listed, (name, listed)
+    for printed in _lines(line):
+        assert "=" not in printed and not any(lever in printed for lever in levers), printed
+
+
 def _bare(name: str) -> str:
     """A name without the tag that tells it apart."""
     return re.sub(r" \([A-Z]+\)$", "", name)
@@ -394,6 +521,17 @@ def test_an_arm_a_person_labelled_is_listed_by_its_label() -> None:
     assert "Adopting Extractor instructions overrides the bar it misses on extract_invoice_fields." in (
         line.report.caveats
     ), "the arm no one labelled reads one name in the headline and its caveats"
+
+
+def test_a_cut_level_two_settings_share_keeps_its_text_rather_than_take_one_lever_s_name() -> None:
+    """Two settings whose long values cut to one text both spell the name: the first matched lever named it, which
+    could print the wrong lever. Which one the name means cannot be told, so it keeps its level's text."""
+    shown = _PROMPTS[0][:59] + ELISION
+    cut = _FROZEN_LABELS[0]
+    text = frozenset({"system_prompt", "tool_prompt"})
+    levels = {"system_prompt": shown, "tool_prompt": shown}
+    assert reader_arm_name(cut, levels, text=text) == cut
+    assert reader_arm_name(cut, {"system_prompt": shown}, text=text) == "System prompt", "one alone is named"
 
 
 def test_an_empty_text_level_reads_no_lever_and_an_empty_number_keeps_its_placeholder() -> None:
