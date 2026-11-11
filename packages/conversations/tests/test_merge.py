@@ -37,14 +37,15 @@ async def test_repoints_conversations_user_id() -> None:
         ]
     )
 
-    moved = await repoint_user(conn, from_user_id=from_id, to_user_id=to_id)
+    moved = await repoint_user(conn, from_user_id=from_id, to_user_id=to_id, agent_id=agent_id)
 
     sql, params = conn.calls[0]
-    # the keyed update's spelling (threetears.core.keyed.update_keyed): $1 master, $2 touch timestamp, $3 source
+    # the keyed update's spelling (threetears.core.keyed.update_keyed): $1 master, $2 touch timestamp, $3 the
+    # schema's agent, $4 source
     assert 'UPDATE "conversations" SET "user_id" = $1' in sql
-    assert 'WHERE "user_id" = $3' in sql
+    assert 'WHERE "agent_id" = $3 AND "user_id" = $4' in sql
     assert 'RETURNING "agent_id", "conversation_id"' in sql
-    assert params[2] == from_id
+    assert params[3] == from_id
     assert params[0] == to_id
     assert moved == [(agent_id, conv_a), (agent_id, conv_b)]
 
@@ -57,6 +58,7 @@ async def test_no_rows_is_noop() -> None:
         conn,
         from_user_id=uuid4(),
         to_user_id=uuid4(),
+        agent_id=uuid4(),
     )
     assert moved == []
 

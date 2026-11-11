@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 import asyncpg
 import pytest
@@ -20,6 +21,7 @@ import pytest
 from threetears.agent.memory.merge import repoint_user
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.conversations import repoint_user as repoint_conversations_user
+from threetears.core.collections import repoint_user_rows
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.data.migrations import MigrationRunner
 
@@ -149,7 +151,7 @@ async def test_every_row_the_collision_cascade_removed_is_named(pg_schema: tuple
         await _edge(conn, agent_id=agent, gist_id=gist, source_id=survivor)
 
         async with conn.transaction():
-            result = await repoint_user(conn, from_user_id=source, to_user_id=master)
+            result = await repoint_user(conn, from_user_id=source, to_user_id=master, agent_id=agent)
 
         assert result.removed["memories"] == [(agent, colliding)]
         assert result.removed["media"] == [(agent, media)]
@@ -195,7 +197,7 @@ async def test_a_merge_with_no_collision_deletes_and_names_nothing(pg_schema: tu
         moved = await _memory(conn, agent_id=agent, user_id=source, alias="home")
 
         async with conn.transaction():
-            result = await repoint_user(conn, from_user_id=source, to_user_id=master)
+            result = await repoint_user(conn, from_user_id=source, to_user_id=master, agent_id=agent)
 
         assert all(keys == [] for keys in result.removed.values())
         assert result.repointed["memories"] == [(agent, moved)]
@@ -214,34 +216,46 @@ _STATE_SQL = (
 )
 
 
-async def _merged(
-    conn: asyncpg.Connection, *, source: uuid.UUID, master: uuid.UUID, agent_id: uuid.UUID | None
-) -> tuple[object, ...]:
-    """one merge of ``source`` into ``master`` in a transaction rolled back after it: what it named and what it left.
+#: the merge's statements before it named the schema's agent: the collision delete and each repoint by user alone
+_BY_USER_COLLISIONS = (
+    "DELETE FROM memories m WHERE m.user_id = $1 AND m.alias IS NOT NULL AND EXISTS ("
+    "SELECT 1 FROM memories m2 WHERE m2.user_id = $2 AND m2.agent_id = m.agent_id AND m2.alias = m.alias"
+    ") RETURNING agent_id, memory_id"
+)
+_BY_USER_REPOINTS = (
+    ("conversations", "conversation_id", "date_updated"),
+    ("memories", "memory_id", "date_updated"),
+    ("media", "media_id", None),
+    ("media_content", "content_id", None),
+    ("memory_chunks", "chunk_id", None),
+)
 
-    :return: the conversation keys, the memory keys removed and repointed (sorted), and every table's rows after
+
+async def _rolled_back(conn: asyncpg.Connection, merge: Any) -> tuple[object, ...]:
+    """``merge`` in a transaction rolled back after it: the keys it moved per table (sorted), the memories it
+    deleted, and every table's rows after.
+
+    :param conn: the schema's connection
+    :ptype conn: asyncpg.Connection
+    :param merge: the merge, answering ``(moved by table, deleted memories)``
+    :ptype merge: Any
+    :return: what it moved, what it deleted, what it left
+    :rtype: tuple[object, ...]
     """
     transaction = conn.transaction()
     await transaction.start()
     try:
-        conversations = await repoint_conversations_user(
-            conn, from_user_id=source, to_user_id=master, agent_id=agent_id
-        )
-        result = await repoint_user(conn, from_user_id=source, to_user_id=master, agent_id=agent_id)
+        moved, deleted = await merge()
         after = [[tuple(row) for row in await conn.fetch(sql)] for sql in _STATE_SQL]
     finally:
         await transaction.rollback()
-    return (
-        sorted(conversations),
-        {table: sorted(keys) for table, keys in result.removed.items()},
-        {table: sorted(keys) for table, keys in result.repointed.items()},
-        after,
-    )
+    return {table: sorted(keys) for table, keys in moved.items()}, sorted(deleted), after
 
 
 async def test_a_merge_naming_its_agent_moves_the_same_rows(pg_schema: tuple[str, str]) -> None:
-    """Flips if a merge pinning the schema's agent (each statement by agent and user) moves, removes or names other
-    rows than the merge by user alone: the schema holds one agent's rows, so the two are the same merge."""
+    """Flips if the merge pinning the schema's agent (each statement by agent and user) moves, deletes or leaves other
+    rows than the statements by user alone it replaced: the schema holds one agent's rows, so the two are the same
+    merge."""
     url, schema = pg_schema
     runner = MigrationRunner()
     register_conversations(runner)
@@ -274,14 +288,37 @@ async def test_a_merge_naming_its_agent_moves_the_same_rows(pg_schema: tuple[str
                 owner,
             )
 
-        by_user = await _merged(conn, source=source, master=master, agent_id=None)
-        by_agent = await _merged(conn, source=source, master=master, agent_id=agent)
+        async def by_user() -> tuple[dict[str, list[tuple[Any, ...]]], list[tuple[Any, ...]]]:
+            deleted = [tuple(row) for row in await conn.fetch(_BY_USER_COLLISIONS, source, master)]
+            moved = {
+                table: await repoint_user_rows(
+                    conn,
+                    table=table,
+                    user_column="user_id",
+                    pk_columns=["agent_id", key],
+                    from_user_id=source,
+                    to_user_id=master,
+                    touch_column=touch,
+                )
+                for table, key, touch in _BY_USER_REPOINTS
+            }
+            return moved, deleted
 
-        assert by_agent == by_user
-        conversations, removed, repointed, _ = by_agent
-        # the case is not empty: the merge moved, removed and named rows in every table
-        assert len(conversations) == 2
-        assert removed["memories"] == [(agent, colliding)]
-        assert all(repointed[table] for table in ("memories", "media", "media_content", "memory_chunks"))
+        async def by_agent() -> tuple[dict[str, list[tuple[Any, ...]]], list[tuple[Any, ...]]]:
+            conversations = await repoint_conversations_user(
+                conn, from_user_id=source, to_user_id=master, agent_id=agent
+            )
+            result = await repoint_user(conn, from_user_id=source, to_user_id=master, agent_id=agent)
+            return {"conversations": conversations, **result.repointed}, result.removed["memories"]
+
+        old = await _rolled_back(conn, by_user)
+        new = await _rolled_back(conn, by_agent)
+
+        assert new == old
+        moved, deleted, _ = new
+        # the case is not empty: the merge moved rows in every table and deleted the colliding memory
+        assert len(moved["conversations"]) == 2
+        assert deleted == [(agent, colliding)]
+        assert all(moved[table] for table in ("memories", "media", "media_content", "memory_chunks"))
     finally:
         await conn.close()

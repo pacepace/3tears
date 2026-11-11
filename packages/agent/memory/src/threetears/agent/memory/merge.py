@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
-from threetears.core.collections import repoint_agent_user_rows, repoint_user_rows
+from threetears.core.collections import repoint_agent_user_rows
 from threetears.core.operator import operator_command
 from threetears.observe import get_logger
 
@@ -107,22 +107,10 @@ class MemoryRepointResult:
         return merged
 
 
-# the collision predicate: a source memory whose alias a master memory under the same agent
-# already holds. ``$1`` is the source user, ``$2`` the master.
+# the collision predicate: a source memory of the schema's agent whose alias a master memory under that agent
+# already holds. ``$1`` is the source user, ``$2`` the master, ``$3`` the agent: the source's memories are read
+# through ``ix_memories_user_alias`` (agent_id, user_id, alias), the master's alias by the same index.
 _COLLISION_PREDICATE = (
-    "m.user_id = $1 AND m.alias IS NOT NULL "
-    "AND EXISTS ("
-    "    SELECT 1 FROM memories m2 "
-    "    WHERE m2.user_id = $2 "
-    "      AND m2.agent_id = m.agent_id "
-    "      AND m2.alias = m.alias"
-    ")"
-)
-
-
-# the same predicate pinned to the schema's agent (``$3``): the source's memories read through
-# ``ix_memories_user_alias`` (agent_id, user_id, alias), the master's alias by the same index.
-_AGENT_COLLISION_PREDICATE = (
     "m.agent_id = $3 AND m.user_id = $1 AND m.alias IS NOT NULL "
     "AND EXISTS ("
     "    SELECT 1 FROM memories m2 "
@@ -169,7 +157,7 @@ async def _delete_alias_collisions(
     *,
     from_user_id: UUID,
     to_user_id: UUID,
-    agent_id: UUID | None = None,
+    agent_id: UUID,
 ) -> MemoryRepointResult:
     """delete source memories whose alias collides with a master memory, naming every row it removes.
 
@@ -194,22 +182,19 @@ async def _delete_alias_collisions(
     :ptype from_user_id: UUID
     :param to_user_id: master user whose memories win the alias
     :ptype to_user_id: UUID
-    :param agent_id: the agent the schema holds, pinned beside the users; ``None`` for none
-    :ptype agent_id: UUID | None
+    :param agent_id: the agent the schema holds, pinned beside the users
+    :ptype agent_id: UUID
     :return: the deleted memories and every child their deletion cascaded to, in
         :attr:`MemoryRepointResult.removed`; nothing repointed yet
     :rtype: MemoryRepointResult
     """
     result = MemoryRepointResult()
     removed = result.removed
-    # pinned to the schema's agent ($3) when the caller names it; the key arrays bind after it
-    pinned = _COLLISION_PREDICATE if agent_id is None else _AGENT_COLLISION_PREDICATE
-    agent = () if agent_id is None else (agent_id,)
     locked = await conn.fetch(
-        f"SELECT m.agent_id, m.memory_id FROM memories m WHERE {pinned} FOR UPDATE OF m",
+        f"SELECT m.agent_id, m.memory_id FROM memories m WHERE {_COLLISION_PREDICATE} FOR UPDATE OF m",
         from_user_id,
         to_user_id,
-        *agent,
+        agent_id,
     )
     if not locked:
         return result
@@ -248,69 +233,18 @@ async def _delete_alias_collisions(
         (row["agent_id"], row["consolidated_memory_id"], row["source_memory_id"]) for row in edge_rows
     ]
 
-    first = 3 + len(agent)
     deleted = await conn.fetch(
-        f"DELETE FROM memories m WHERE {pinned} "
-        f"AND (m.agent_id, m.memory_id) IN {_key_set(f'${first}', f'${first + 1}')} "
+        f"DELETE FROM memories m WHERE {_COLLISION_PREDICATE} "
+        f"AND (m.agent_id, m.memory_id) IN {_key_set('$4', '$5')} "
         "RETURNING agent_id, memory_id",
         from_user_id,
         to_user_id,
-        *agent,
+        agent_id,
         memory_agents,
         memory_ids,
     )
     removed["memories"] = [(row["agent_id"], row["memory_id"]) for row in deleted]
     return result
-
-
-async def _repoint(
-    conn: Any,
-    table: str,
-    pk_columns: tuple[str, ...],
-    touch_column: str | None,
-    agent_id: UUID | None,
-    from_user_id: UUID,
-    to_user_id: UUID,
-) -> list[tuple[Any, ...]]:
-    """repoint one memory table's ``user_id``: by the schema's agent and the user when the caller names the agent
-    (the table's ``(agent_id, user_id)`` index), by the user alone when it does not.
-
-    :param conn: asyncpg transaction connection bound to the agent schema
-    :ptype conn: Any
-    :param table: the memory table
-    :ptype table: str
-    :param pk_columns: its primary-key columns, in order
-    :ptype pk_columns: tuple[str, ...]
-    :param touch_column: its ``date_updated``-style column to stamp, or None
-    :ptype touch_column: str | None
-    :param agent_id: the agent the schema holds, or None
-    :ptype agent_id: UUID | None
-    :param from_user_id: source user whose rows move
-    :ptype from_user_id: UUID
-    :param to_user_id: master user the rows move to
-    :ptype to_user_id: UUID
-    :return: the moved rows' primary-key tuples
-    :rtype: list[tuple[Any, ...]]
-    """
-    if agent_id is None:
-        return await repoint_user_rows(
-            conn,
-            table=table,
-            user_column="user_id",
-            pk_columns=pk_columns,
-            from_user_id=from_user_id,
-            to_user_id=to_user_id,
-            touch_column=touch_column,
-        )
-    return await repoint_agent_user_rows(
-        conn,
-        table=table,
-        agent_id=agent_id,
-        pk_columns=pk_columns,
-        from_user_id=from_user_id,
-        to_user_id=to_user_id,
-        touch_column=touch_column,
-    )
 
 
 @operator_command(
@@ -322,7 +256,7 @@ async def repoint_user(
     *,
     from_user_id: UUID,
     to_user_id: UUID,
-    agent_id: UUID | None = None,
+    agent_id: UUID,
 ) -> MemoryRepointResult:
     """repoint every memory owned by ``from_user_id`` to ``to_user_id``.
 
@@ -341,10 +275,9 @@ async def repoint_user(
     relying on a parent join.
 
     the caller names the agent whose schema ``conn`` is bound to as
-    ``agent_id``: every statement then pins ``agent_id`` beside ``user_id``
-    and reads the table's ``(agent_id, user_id)`` index. the schema holds only
-    that agent's rows, so the same rows move. ``None`` moves by ``user_id``
-    alone, as before.
+    ``agent_id``: every statement pins ``agent_id`` beside ``user_id`` and
+    reads the table's ``(agent_id, user_id)`` index. the schema holds only
+    that agent's rows, so it moves every row the source user holds there.
 
     :param conn: asyncpg transaction connection bound to the agent schema
     :ptype conn: Any
@@ -352,8 +285,8 @@ async def repoint_user(
     :ptype from_user_id: UUID
     :param to_user_id: master user the memories move to
     :ptype to_user_id: UUID
-    :param agent_id: the agent the schema holds; ``None`` repoints by user alone
-    :ptype agent_id: UUID | None
+    :param agent_id: the agent the schema holds
+    :ptype agent_id: UUID
     :return: keys removed + repointed, grouped by table
     :rtype: MemoryRepointResult
     """
@@ -364,17 +297,40 @@ async def repoint_user(
         agent_id=agent_id,
     )
     repointed = result.repointed
-    repointed["memories"] = await _repoint(
-        conn, "memories", ("agent_id", "memory_id"), "date_updated", agent_id, from_user_id, to_user_id
+    repointed["memories"] = await repoint_agent_user_rows(
+        conn,
+        table="memories",
+        agent_id=agent_id,
+        pk_columns=["agent_id", "memory_id"],
+        from_user_id=from_user_id,
+        to_user_id=to_user_id,
     )
-    repointed["media"] = await _repoint(
-        conn, "media", ("agent_id", "media_id"), None, agent_id, from_user_id, to_user_id
+    repointed["media"] = await repoint_agent_user_rows(
+        conn,
+        table="media",
+        agent_id=agent_id,
+        pk_columns=["agent_id", "media_id"],
+        from_user_id=from_user_id,
+        to_user_id=to_user_id,
+        touch_column=None,
     )
-    repointed["media_content"] = await _repoint(
-        conn, "media_content", ("agent_id", "content_id"), None, agent_id, from_user_id, to_user_id
+    repointed["media_content"] = await repoint_agent_user_rows(
+        conn,
+        table="media_content",
+        agent_id=agent_id,
+        pk_columns=["agent_id", "content_id"],
+        from_user_id=from_user_id,
+        to_user_id=to_user_id,
+        touch_column=None,
     )
-    repointed["memory_chunks"] = await _repoint(
-        conn, "memory_chunks", ("agent_id", "chunk_id"), None, agent_id, from_user_id, to_user_id
+    repointed["memory_chunks"] = await repoint_agent_user_rows(
+        conn,
+        table="memory_chunks",
+        agent_id=agent_id,
+        pk_columns=["agent_id", "chunk_id"],
+        from_user_id=from_user_id,
+        to_user_id=to_user_id,
+        touch_column=None,
     )
     removed = result.removed
     log.info(

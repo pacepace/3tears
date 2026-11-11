@@ -52,7 +52,7 @@ async def test_deletes_alias_collisions_before_repoint() -> None:
         }
     )
 
-    result = await repoint_user(conn, from_user_id=from_id, to_user_id=to_id)
+    result = await repoint_user(conn, from_user_id=from_id, to_user_id=to_id, agent_id=agent)
 
     assert isinstance(result, MemoryRepointResult)
     # the DELETE must run before the memories repoint or the unique index
@@ -84,16 +84,17 @@ async def test_child_tables_repoint_without_touch() -> None:
         _CapturingConn(),
         from_user_id=uuid4(),
         to_user_id=uuid4(),
+        agent_id=uuid4(),
     )
 
     # the keyed update's spelling (threetears.core.keyed.update_keyed): its table quoted
     by_table = {sql.split()[1].strip('"') if sql.startswith("UPDATE") else "DELETE": params for sql, params in captured}
-    # children: only $1 (where) + $2 (set) — no $3 touch parameter.
-    assert len(by_table["media"]) == 2
-    assert len(by_table["media_content"]) == 2
-    assert len(by_table["memory_chunks"]) == 2
-    # memories: $1, $2, plus $3 date_updated touch.
-    assert len(by_table["memories"]) == 3
+    # children: the set ($1) and the agent + user pins ($2, $3) — no touch parameter.
+    assert len(by_table["media"]) == 3
+    assert len(by_table["media_content"]) == 3
+    assert len(by_table["memory_chunks"]) == 3
+    # memories: the set, the date_updated touch, and the two pins.
+    assert len(by_table["memories"]) == 4
 
 
 @pytest.mark.asyncio
@@ -144,7 +145,7 @@ async def test_alias_delete_is_scoped_to_source_and_master() -> None:
 
     from_id = uuid4()
     to_id = uuid4()
-    await repoint_user(_SqlConn(), from_user_id=from_id, to_user_id=to_id)
+    await repoint_user(_SqlConn(), from_user_id=from_id, to_user_id=to_id, agent_id=uuid4())
 
     delete_sql = captured["delete"]
     assert "m.user_id = $1" in delete_sql  # source rows only
@@ -181,7 +182,7 @@ async def test_the_children_an_alias_collision_cascades_to_are_named() -> None:
         }
     )
 
-    result = await repoint_user(conn, from_user_id=uuid4(), to_user_id=uuid4())
+    result = await repoint_user(conn, from_user_id=uuid4(), to_user_id=uuid4(), agent_id=uuid4())
 
     assert result.removed == {
         "memories": [(agent, memory_id)],
@@ -216,7 +217,7 @@ async def test_evict_names_every_touched_key_by_table_in_one_map() -> None:
         }
     )
 
-    result = await repoint_user(conn, from_user_id=uuid4(), to_user_id=uuid4())
+    result = await repoint_user(conn, from_user_id=uuid4(), to_user_id=uuid4(), agent_id=uuid4())
 
     assert result.evict == {
         "memories": [(agent, moved), (agent, deleted)],
@@ -281,7 +282,7 @@ async def test_the_summary_log_counts_what_the_cascade_removed(caplog: pytest.Lo
     )
 
     with caplog.at_level("INFO", logger="threetears.agent.memory.merge"):
-        await repoint_user(conn, from_user_id=uuid4(), to_user_id=uuid4())
+        await repoint_user(conn, from_user_id=uuid4(), to_user_id=uuid4(), agent_id=uuid4())
 
     [record] = [r for r in caplog.records if r.name == "threetears.agent.memory.merge" and r.levelname == "INFO"]
     assert record.extra_data["removed"] == {  # type: ignore[attr-defined]
