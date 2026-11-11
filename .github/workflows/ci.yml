@@ -20,12 +20,78 @@ on:
     branches: [develop]
 
 jobs:
-  # The unit + enforcement suite, as eleven shards running side by side: one session after another
+  # The unit + enforcement suite takes one of two routes, and exactly one runs:
+  # - `unit-pool`, when the repo holds the TESTAMENT_KEY secret: one job hands the suite to the
+  #   testament pool (scripts/ci-unit-pool.sh), and GitHub's runner only waits.
+  # - `unit`, the GitHub shards, when it does not: a fork's pull request never gets secrets.
+  # A job's `if:` cannot read a secret, so `route` turns its presence into an output.
+  route:
+    runs-on: ubuntu-latest
+    outputs:
+      pool: ${{ steps.key.outputs.pool }}
+    steps:
+      - name: Choose the testament pool when the repo holds its key
+        id: key
+        env:
+          HAS_KEY: ${{ secrets.TESTAMENT_KEY != '' }}
+        run: |
+          echo "pool=${HAS_KEY}" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_KEY" = true ]; then echo "unit suite: the testament pool"; else echo "unit suite: GitHub shards"; fi
+
+  # The suite on the testament pool: .testament.toml selects what ci-unit-tests.sh runs (packages/
+  # and tests/, -m "not integration"). docs/testing.md, "CI on the testament pool".
+  unit-pool:
+    name: unit (testament pool)
+    needs: route
+    if: needs.route.outputs.pool == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      # fetch-depth 0: the scope step diffs against the PR base, and the client sends the worktree
+      # as a commit whose objects it walks, with the release tags the manifest asks for.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide whether this change needs the suite
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: ./scripts/ci-scope.sh
+
+      - uses: astral-sh/setup-uv@v8.2.0
+        if: steps.scope.outputs.needed == 'true'
+        with:
+          version: "latest"
+
+      - name: Test (unit + enforcement, on the testament pool)
+        if: steps.scope.outputs.needed == 'true'
+        env:
+          TESTAMENT_KEY: ${{ secrets.TESTAMENT_KEY }}
+          TESTAMENT_COORDINATOR: ${{ vars.TESTAMENT_COORDINATOR }}
+          # the console the client downloads from; the variable overrides it if the pool moves
+          TESTAMENT_CONSOLE: ${{ vars.TESTAMENT_CONSOLE || 'https://testament.rodeo.illuminati.org/' }}
+          TESTAMENT_BRANCH: ${{ github.head_ref || github.ref_name }}
+          OUT: ${{ runner.temp }}/testament
+        run: ./scripts/ci-unit-pool.sh
+
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.scope.outputs.needed == 'true'
+        with:
+          name: testament-unit
+          path: ${{ runner.temp }}/testament
+          if-no-files-found: ignore
+
+  # The suite on GitHub's runners, as eleven shards running side by side: one session after another
   # took ~25 of `check`'s ~27 minutes, evals alone 12. The shards partition exactly what
   # `./scripts/ci-unit-tests.sh` runs with no selector (see its header), so every test still runs
   # once. `check` below waits for all of them and is the one status the branches require.
   unit:
     name: unit (${{ matrix.shard }})
+    needs: route
+    if: needs.route.outputs.pool != 'true'
     runs-on: ubuntu-latest
     strategy:
       # every shard reports, so one failure does not hide another's
@@ -67,24 +133,32 @@ jobs:
         run: ./scripts/ci-unit-tests.sh --shard ${{ matrix.shard }} -v
 
   check:
-    # the required status: it reports whatever the shards did, so it never waits on a check that
-    # cannot arrive, and it is red unless every shard passed.
-    needs: unit
+    # the required status: it reports whatever the unit route did, so it never waits on a check
+    # that cannot arrive, and it is red unless the route that ran passed.
+    needs: [route, unit, unit-pool]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      # A shard runs its suite or, for a doc-only PR, skips its steps and still succeeds; the
-      # job itself is never skipped, so anything but success (failure, cancelled, or skipped
-      # because the run broke before it started) means the suite did not pass.
-      - name: Every unit shard passed
+      # The chosen route runs its suite or, for a doc-only PR, skips its steps and still succeeds;
+      # that job itself is never skipped, so anything but success (failure, cancelled, or skipped
+      # because the run broke before it started) means the suite did not pass. The other route is
+      # skipped by design, and a `route` that never decided fails here too.
+      - name: The unit suite passed
         env:
+          ROUTE: ${{ needs.route.outputs.pool }}
           UNIT_RESULT: ${{ needs.unit.result }}
+          POOL_RESULT: ${{ needs.unit-pool.result }}
         run: |
-          if [ "$UNIT_RESULT" != "success" ]; then
-            echo "::error::the unit shards finished '$UNIT_RESULT'; see the failing unit (...) job."
+          case "$ROUTE" in
+            true) ran="unit (testament pool)"; result="$POOL_RESULT" ;;
+            false) ran="the unit shards"; result="$UNIT_RESULT" ;;
+            *) echo "::error::the route job chose no unit route ('$ROUTE')"; exit 1 ;;
+          esac
+          if [ "$result" != "success" ]; then
+            echo "::error::$ran finished '$result'; see the failing unit (...) job."
             exit 1
           fi
-          echo "every unit shard passed."
+          echo "$ran passed."
 
       # fetch-depth 0 because the scope step below diffs against the PR base,
       # which a shallow clone does not have.

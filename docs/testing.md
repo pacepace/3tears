@@ -84,6 +84,33 @@ whose tests would skip on runners without it, and one that passes its own `-m`. 
 goes local only with `TESTAMENT=off` and a stated reason, `TESTAMENT_OFF_REASON="..."`, which
 `test.sh` prints; without the reason it refuses and exits 2.
 
+### CI on the testament pool
+
+CI's unit + enforcement suite takes one of two routes, and `check` is red unless the one that ran
+passed:
+
+- **The testament pool**, when the repo holds the Actions secret `TESTAMENT_KEY`. One job,
+  `unit (testament pool)`, runs `./scripts/ci-unit-pool.sh`: it downloads the client from the
+  console (`/api/v1/cli/wheel`, which hands any client key the pool's own build, checked against
+  the sha256 its release names, so no GitHub token for the private testament repo is needed), then
+  runs `testament run --no-fallback`. GitHub's runner only waits. The pool's address is the Actions
+  variable `TESTAMENT_COORDINATOR`; the console defaults to `https://testament.rodeo.illuminati.org/`,
+  and an Actions variable `TESTAMENT_CONSOLE` overrides it.
+- **The GitHub shards** (above) when it does not. A fork's pull request never gets secrets, so it
+  always takes this route.
+
+The pool runs what the shards run: `.testament.toml` selects `packages/` and `tests/` with
+`-m "not integration"`, the same tests `ci-unit-tests.sh` partitions. Two differences: the pool runs
+each batch serially rather than in xdist groups, and the `loop_timing` tests run in its batches
+rather than in a serial session of their own, as every local `test.sh` run on the pool already
+does.
+
+The key is a client key the owner mints in the testament console: People, their own page,
+**+ New client key**, named `ci-3tears`. Store it as the repo's Actions secret `TESTAMENT_KEY`
+(*Settings → Secrets and variables → Actions*), and revoke it there in the console when CI no
+longer needs it. Integration, lint, typecheck, the mcp 1.x and OpenTelemetry-floor suites and the
+attribution check stay on GitHub either way.
+
 ### Where the unit suite's time goes
 
 testament records every test it runs, so it can say which area is slow, large or sparse. The

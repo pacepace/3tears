@@ -5,6 +5,10 @@
 is a slice of the suite that silently never runs, with every job green. And the shards only gate
 anything through the job that waits for them: ``check`` in ``ci.yml`` (the required status) and
 ``check`` in ``release.yml`` (which ``build`` needs). This module pins both.
+
+``ci.yml`` has a second route: when the repo holds the ``TESTAMENT_KEY`` secret, ``unit-pool``
+runs the same suite on the testament pool instead of the shards. Exactly one route runs, and
+``check`` is red unless the one that ran passed; this module pins that too.
 """
 
 from __future__ import annotations
@@ -119,6 +123,45 @@ def test_check_waits_for_the_shards_and_fails_unless_all_passed(workflow: str) -
     first = steps[0]
     assert "needs.unit.result" in str(first.get("env", "")), f"{workflow}: check's first step must read the shards"
     assert '!= "success"' in str(first.get("run", "")) and "exit 1" in str(first.get("run", ""))
+
+
+def test_ci_runs_exactly_one_unit_route() -> None:
+    """``unit-pool`` runs when the repo holds TESTAMENT_KEY and the shards when it does not, never both."""
+    jobs = _jobs("ci.yml")
+    route = jobs["route"]
+    steps = route["steps"]
+    assert isinstance(steps, list)
+    assert "secrets.TESTAMENT_KEY != ''" in str(steps[0].get("env", "")), "route must decide on the key's presence"
+    assert "steps.key.outputs.pool" in str(route.get("outputs", ""))
+    assert jobs["unit-pool"].get("if") == "needs.route.outputs.pool == 'true'"
+    assert jobs["unit"].get("if") == "needs.route.outputs.pool != 'true'"
+    assert "route" in _needs(jobs["unit-pool"]) and "route" in _needs(jobs["unit"])
+
+
+def test_the_pool_route_runs_the_pool_script_as_the_ci_key() -> None:
+    """the pool job runs scripts/ci-unit-pool.sh with the key from the secret and the pool from the variable."""
+    steps = _jobs("ci.yml")["unit-pool"]["steps"]
+    assert isinstance(steps, list)
+    runs = [step for step in steps if "./scripts/ci-unit-pool.sh" in str(step.get("run", ""))]
+    assert len(runs) == 1, "ci.yml's unit-pool job no longer runs ./scripts/ci-unit-pool.sh"
+    env = runs[0]["env"]
+    assert env["TESTAMENT_KEY"] == "${{ secrets.TESTAMENT_KEY }}"
+    assert env["TESTAMENT_COORDINATOR"] == "${{ vars.TESTAMENT_COORDINATOR }}"
+    assert env["TESTAMENT_BRANCH"] == "${{ github.head_ref || github.ref_name }}"
+
+
+def test_check_fails_unless_the_route_that_ran_passed() -> None:
+    """ci.yml's ``check`` needs both routes and reads the one ``route`` chose, refusing an undecided route."""
+    check = _jobs("ci.yml")["check"]
+    assert {"route", "unit", "unit-pool"} <= set(_needs(check))
+    steps = check["steps"]
+    assert isinstance(steps, list)
+    env, run = str(steps[0].get("env", "")), str(steps[0].get("run", ""))
+    for read in ("needs.route.outputs.pool", "needs.unit.result", "needs.unit-pool.result"):
+        assert read in env, f"check's first step must read {read}"
+    assert 'true) ran="unit (testament pool)"; result="$POOL_RESULT"' in run
+    assert 'false) ran="the unit shards"; result="$UNIT_RESULT"' in run
+    assert "*) echo" in run and run.count("exit 1") == 2
 
 
 def test_the_release_build_waits_for_check() -> None:
