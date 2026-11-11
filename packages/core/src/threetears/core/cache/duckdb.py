@@ -1656,15 +1656,18 @@ class DuckDBBackend:
 
     @staticmethod
     def staged_mark(cursor: Any) -> int | None:
-        """the mark of the change a read holds (:meth:`apply_staged`'s ``mark``), read on its own cursor.
+        """the mark of the change a read holds (:meth:`apply_staged`'s ``mark``), read on its own cursor: from the
+        table :meth:`apply_staged` writes, or from a view of that name, as a copy that publishes its versions as views
+        over shared files publishes it (each version's mark beside its tables).
 
-        :param cursor: a cursor of :meth:`read_snapshot`
+        :param cursor: a cursor of :meth:`read_snapshot`, or of a published version
         :ptype cursor: duckdb.DuckDBPyConnection
         :return: the mark; None when no change with one was applied
         :rtype: int | None
         """
+        # information_schema.tables lists views too
         found = cursor.execute(
-            "SELECT count(*) FROM duckdb_tables() WHERE table_name = ?", [_STAGE_MARK_TABLE]
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = ?", [_STAGE_MARK_TABLE]
         ).fetchone()
         if not found or not found[0]:
             return None
