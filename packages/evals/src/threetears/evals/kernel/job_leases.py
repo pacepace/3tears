@@ -1258,43 +1258,49 @@ class JobLeases:
             f"job lease: its holder, process {self._holder_id}, could not renew it for {self._lease_s:g}s, its "
             f"whole lease, and stopped the job — {why}"
         )
+        # The stop is in a ``finally``: the two writes below are awaits, and the renewal task running this is
+        # cancelled when the renewer exits — which it does once nothing is held, and this record was just let go. A
+        # cancel landing on either write (a slow store, a loaded machine) would otherwise skip the stop, and the job
+        # would run on, spending, past a lease it already gave up.
         try:
-            async with asyncio.timeout(self._lease_s):  # a hung store must not keep the job from stopping
-                await run_blocking(
-                    self._pool(), _note_fault, self._store, held.kind, held.record_id, held.scope_id, entry
+            try:
+                async with asyncio.timeout(self._lease_s):  # a hung store must not keep the job from stopping
+                    await run_blocking(
+                        self._pool(), _note_fault, self._store, held.kind, held.record_id, held.scope_id, entry
+                    )
+            # prawduct:ok-broad-except — the store may be what failed; logged with the renewal failure it was to record
+            except Exception as unwritten:
+                # NOSILENT: the job is still fenced and stopped below and its record still reads lost; only the cause it
+                # was to carry is missing, because the store that would hold it is what failed, so it is logged whole.
+                contain(
+                    unwritten,
+                    log=log,
+                    what=(
+                        f"eval.job_lease {held.kind.name}={held.record_id} scope={held.scope_id}: why it was stopped "
+                        f"could not be written on its record either; the renewal failure: {why}"
+                    ),
+                    level="error",
                 )
-        # prawduct:ok-broad-except — the store may be what failed; logged with the renewal failure it was to record
-        except Exception as unwritten:
-            # NOSILENT: the job is still fenced and stopped below and its record still reads lost; only the cause it
-            # was to carry is missing, because the store that would hold it is what failed, so it is logged whole.
-            contain(
-                unwritten,
-                log=log,
-                what=(
-                    f"eval.job_lease {held.kind.name}={held.record_id} scope={held.scope_id}: why it was stopped "
-                    f"could not be written on its record either; the renewal failure: {why}"
-                ),
-                level="error",
-            )
-        try:
-            async with asyncio.timeout(self._lease_s):  # likewise: the stop below never waits on the store
-                await run_blocking(
-                    self._pool(), settle_job_record, self._store, held.kind, held.record_id, held.scope_id
+            try:
+                async with asyncio.timeout(self._lease_s):  # likewise: the stop below never waits on the store
+                    await run_blocking(
+                        self._pool(), settle_job_record, self._store, held.kind, held.record_id, held.scope_id
+                    )
+            # prawduct:ok-broad-except — the store may be what failed; the record reads lost to the next reader regardless
+            except Exception as unsettled:
+                # NOSILENT: the job is fenced and stopped below regardless, and its lapsed lease reads lost to every
+                # reader, the first of which writes the loss this write could not.
+                contain(
+                    unsettled,
+                    log=log,
+                    what=(
+                        f"eval.job_lease {held.kind.name}={held.record_id} scope={held.scope_id}: the loss could not be "
+                        f"written here; the next reader writes it. The renewal failure: {why}"
+                    ),
+                    level="error",
                 )
-        # prawduct:ok-broad-except — the store may be what failed; the record reads lost to the next reader regardless
-        except Exception as unsettled:
-            # NOSILENT: the job is fenced and stopped below regardless, and its lapsed lease reads lost to every
-            # reader, the first of which writes the loss this write could not.
-            contain(
-                unsettled,
-                log=log,
-                what=(
-                    f"eval.job_lease {held.kind.name}={held.record_id} scope={held.scope_id}: the loss could not be "
-                    f"written here; the next reader writes it. The renewal failure: {why}"
-                ),
-                level="error",
-            )
-        held.stop()
+        finally:
+            held.stop()
 
     async def end_lost(self, record_id: str, cause: str) -> bool:
         """Stop renewing a held record and write it lost with ``cause``, unless it has already ended.
