@@ -179,8 +179,8 @@ def test_a_statement_the_helpers_do_not_write_is_refused() -> None:
 
 
 async def test_keyed_fetch_answers_each_read_by_key_in_turn_and_hands_every_other_statement_on() -> None:
-    """Flips if keyed_fetch answers a keyed page, another table's read or a hand-written statement from its queue,
-    or answers the reads by key out of turn."""
+    """Flips if keyed_fetch answers from its queue a keyed page, another table's read, a hand-written statement or a
+    hand-written select of a named table, or answers the reads by key out of turn."""
     first, second = {"id": uuid.UUID(int=1), "name": "a"}, {"id": uuid.UUID(int=2), "name": "b"}
     handed: list[str] = []
 
@@ -201,10 +201,11 @@ async def test_keyed_fetch_answers_each_read_by_key_in_turn_and_hands_every_othe
     await keyset_page(pool, "widgets", columns=("id", "name"), by={"tenant": 1}, order=(Sort("name"),), limit=5)
     assert await read_keyed(pool, "gadgets", keys=keys, columns=("id",)) == []
     assert await pool.fetch("SELECT 1") == []
+    assert await pool.fetch("SELECT id FROM widgets WHERE id = $1", first["id"]) == [], "hand-written: handed on"
     assert await read_keyed(pool, "widgets", keys=keys, columns=("id", "name")) == []
     assert await read_keyed(pool, "widgets", keys=keys, columns=("id", "name")) == [second]
     assert [sql.split(" FROM ")[-1][:10] for sql in handed[:2]] == ['"widgets" ', '"gadgets" '], handed
-    assert handed[2] == "SELECT 1"
+    assert handed[2:] == ["SELECT 1", "SELECT id FROM widgets WHERE id = $1"]
     with pytest.raises(AssertionError, match="past the queued answers"):
         await read_keyed(pool, "widgets", keys=keys, columns=("id", "name"))
-    assert fetch.await_count == 7
+    assert fetch.await_count == 8

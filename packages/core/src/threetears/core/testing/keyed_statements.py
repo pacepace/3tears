@@ -337,8 +337,16 @@ def _condition(text: str, args: Sequence[Any]) -> _Condition:
     raise ValueError(f"a condition the decoder cannot read: {text}")
 
 
+#: how a keyed helper names the table it reads: quoted, aliased ``t`` (a hand-written statement seldom is)
+_HELPER_RELATION: Final = re.compile(r'\bFROM\s+"(\w+)"\s+AS\s+t\b', re.IGNORECASE)
+
+
 def _read_by_key(sql: str, args: Sequence[Any], tables: Collection[str]) -> bool:
-    """whether ``sql`` is a keyed helper's read by key (a select with no ORDER BY) of one of ``tables``."""
+    """whether ``sql`` is a keyed helper's read by key (a select with no ORDER BY, the table named as the helpers
+    name it) of one of ``tables``; a hand-written select of the same table is not."""
+    named = _HELPER_RELATION.search(sql)
+    if named is None or named.group(1) not in tables:
+        return False
     try:
         statement = decode(sql, args)
     except ValueError:
@@ -355,9 +363,10 @@ def keyed_fetch(
 
     For a unit test whose mock pool stubbed one row per read (``pool.fetchrow`` with ordered answers) once the code
     under test reads through :func:`~threetears.core.keyed.read_keyed`, which issues ``pool.fetch``: the reads by key
-    (a select of one of ``tables`` with no ORDER BY, as :func:`decode` reads it back) take the queued answers in the
-    order the code makes them, one row each or none; a keyed page (ordered) and any statement the helpers did not
-    write go to ``rest``. A read by key past the last answer fails the test.
+    (a select of one of ``tables`` with no ORDER BY, the table named as the helpers name it, as :func:`decode`
+    reads it back) take the queued answers in the order the code makes them, one row each or none; a keyed page
+    (ordered), a hand-written select and any other statement go to ``rest``. A read by key past the last answer fails
+    the test.
 
     :param answers: the row each read by key finds, in order (None: it finds none)
     :ptype answers: dict[str, Any] | None
