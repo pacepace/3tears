@@ -36,7 +36,7 @@ are its `report_doc.doc.recommends`. Each aspect's evidence bundle is written wh
 `AnalysisContextBundle.from_json(...).fingerprint(like=named)` over the file returns the fingerprint the page names
 (`like` computes it in the named one's version: see below). A host that
 wants its own pictures reads the bundles. `report_read(format="json")` and the command line's `--format json` return
-`campaign.json`. [`examples/3-invoices/extract.py`](../examples/3-invoices/extract.py) writes one, offline.
+`campaign.json`. [`examples/3-invoices/ci.py`](../examples/3-invoices/ci.py) writes one, offline.
 
 ### The campaign's first screen
 
@@ -205,7 +205,8 @@ links to its fold.
 
 In a fold, the campaign's first screen holds the title, the question and the warnings, so the fold opens on its
 reading (`v2 unclear, a lead.`), then the arms line and the scoreboard. Laid out alone (`result.report`), an aspect's
-page opens on its own first screen; the invoices example (rung 3) renders this (the date is the render's):
+page opens on its own first screen; the invoices guardrail example (rung 3c, `guardrail.py`) renders this (the date is
+the render's):
 
 ```markdown
 # invoices
@@ -563,7 +564,7 @@ so (`Cost per 1,000 replies`, `Production cost, per 1,000 replies`). The policy 
 A guardrail is something an arm must not get worse on: a judged dimension on the `boundary` axis, or a
 measure the host declared `guardrail`. On the quick path, `grader(fn, guard=margin)` declares one on a grader and
 `Judge(guard={dimension: margin})` one on a judged dimension, every grade higher-is-better
-([rung 3](ladder.md#rung-3-two-prompts-compared)). The Guardrails table
+([rung 3c](ladder.md#rung-3c-a-guardrail-decided-on-its-own)). The Guardrails table
 (`guardrails` in the bundle, under the contrasts on every report, `Result.guardrails()` in code) decides each one
 for each arm, on its own 95% interval on `arm − control`. A guardrail has no row in the contrasts table and joins no
 composite, so a gain there cannot hide a loss here. A guardrail that is a check (a pass/fail grader, or a host's

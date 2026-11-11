@@ -177,5 +177,5 @@ readers still read a run whole (the CHANGELOG lists them).
 
 Not built (no issue filed yet). A `World` with state refuses `recording=`, since its tools move the state it
 is graded on, and one world cannot also hold stateless lookups whose answers are recorded, while `as_host` refuses
-evals on two worlds, so no host can pair the two. Rung 4 (`examples/4-booking/`) therefore has no recorded tool
+evals on two worlds, so no host can pair the two. Rung 4a (`examples/4-booking/agent.py`) therefore has no recorded tool
 lookup beside its calendar: every tool it calls runs live in each cell.

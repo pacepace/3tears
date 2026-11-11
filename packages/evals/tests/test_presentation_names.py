@@ -83,11 +83,11 @@ from threetears.evals.ops import WriterLimits, analysis_generate, campaigns_list
 from threetears.evals.ops.analysis import QUESTION_SHORT_CHARS, CampaignDefinition, campaign_create
 
 #: The rungs held here: one arm named as its campaign is (rung 1), a judge (rung 2), a classifier with a guardrail
-#: (rung 3), each with the file declaring its eval and the attribute holding it.
+#: (rung 3c, ``guardrail.py``), each with the file declaring its eval and the attribute holding it.
 _RUNGS: dict[str, tuple[str, str, str]] = {
     "rung1": ("1-triage", "triage.py", "triage_eval"),
     "rung2": ("2-replies", "replies.py", "replies_eval"),
-    "rung3": ("3-invoices", "extract.py", "invoices"),
+    "rung3": ("3-invoices", "guardrail.py", "invoices"),
 }
 
 

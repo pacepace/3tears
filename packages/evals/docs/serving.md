@@ -1,6 +1,6 @@
 # Serving: the command line, the actions and MCP
 
-**For** anyone at rung 4 who wants the team to read an eval's runs, run evals from CI, or let an agent launch and
+**For** anyone at rung 4b who wants the team to read an eval's runs, run evals from CI, or let an agent launch and
 read them, and anyone mounting the same commands under their own app. **Answers:** how a file runs from the command
 line, how runs are kept and read back, how [`examples/4-booking/serve.py`](../examples/4-booking/serve.py) serves
 them, what each host command does and exits with, and how operations, the action catalogue and the FastMCP
@@ -90,7 +90,7 @@ Run it twice. The second run reads the first run's results from the file, becaus
 
 ## Serving the runs to the team
 
-[`serve.py`](../examples/4-booking/serve.py), beside rung 4's agent, is the whole server. Its `host()` is
+[`serve.py`](../examples/4-booking/serve.py), rung 4b, beside rung 4a's agent, is the whole server. Its `host()` is
 `as_host([booking], store=".evals/evals.sqlite")`, the store every run of `agent.py` fills; hand `as_host` any
 `DocumentStore` instead (your own database) to share the runs. It serves them two ways:
 

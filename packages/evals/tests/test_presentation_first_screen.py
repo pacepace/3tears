@@ -57,7 +57,7 @@ _RUNGS: dict[str, tuple[str, str, str | None]] = {
     "rung0": ("1-triage", "triage.toml", None),
     "rung1": ("1-triage", "triage.py", "triage_eval"),
     "rung2": ("2-replies", "replies.py", "replies_eval"),
-    "rung3": ("3-invoices", "extract.py", "invoices"),
+    "rung3": ("3-invoices", "guardrail.py", "invoices"),
     "rung4": ("4-booking", "agent.py", "booking"),
 }
 

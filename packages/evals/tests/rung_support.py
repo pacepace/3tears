@@ -16,6 +16,7 @@ import pytest
 
 from threetears.evals.schema import ClientRequestSettings
 from packages.evals.tests.example_loader import EXAMPLES
+from packages.evals.tests.ladder_support import evict_siblings
 
 
 def rung_copy(name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -23,7 +24,8 @@ def rung_copy(name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
 
     The copy is also put first on ``sys.path``, through the monkeypatch, which gives the process its ``sys.path`` back
     when the test ends: loading a rung's file puts its directory there for the process, and a test's copy must not
-    stay there for the tests after it.
+    stay there for the tests after it. Every module named after one of its files is evicted, so its files import this
+    copy's siblings (:func:`~packages.evals.tests.ladder_support.evict_siblings`).
 
     :param name: The rung's directory, ``"1-triage"``.
     :ptype name: str
@@ -40,6 +42,7 @@ def rung_copy(name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.chdir(copy)
     monkeypatch.syspath_prepend(str(copy))
+    evict_siblings(copy, monkeypatch)
     return copy
 
 

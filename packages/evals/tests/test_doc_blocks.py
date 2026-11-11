@@ -8,9 +8,9 @@ here. The ladder runs nothing of its own: each of its blocks is a verbatim excer
 own test runs, so the page is held to the files it quotes. What the ladder and the examples' README show a rung
 printing is held to a replay: each rung's file is run through the door from a copy with no key, and every line of
 each ``text`` block under its heading is found in what it printed or in the ``report.md`` it wrote, ``...`` standing
-for what the page leaves out. ``reading-reports.md``'s aspect first screen is held to the page the invoices rung
-lays out alone (``Result.report``), line for line, but for the render's date, and its campaign first screen and
-scorecard to the campaign pages they show.
+for what the page leaves out. ``reading-reports.md``'s aspect first screen is held to the page the invoices
+guardrail (``guardrail.py``) lays out alone (``Result.report``), line for line, but for the render's date, and its
+campaign first screen and scorecard to the campaign pages they show.
 
 Each block is compiled as a reader's REPL compiles it (``PyCF_ALLOW_TOP_LEVEL_AWAIT``) and awaited on the test's own
 loop. A block the page presents as a fragment, or one that needs more than the page builds, is named below with
@@ -100,11 +100,16 @@ def _quotes(block: str, source: str) -> bool:
 _TEXT = re.compile(r"```text\n(.*?)```", re.S)
 
 #: The rungs whose output the ladder shows from a replay: each rung's heading, its directory and the file the door runs.
+#: Rungs 3 and 4 are a heading a step (``Rung 3a:``), so each step that shows output is keyed by its own; 3d, 3f and 4b
+#: show none.
 REPLAYED = {
     "Rung 1": ("1-triage", "triage.py"),
     "Rung 2": ("2-replies", "replies.py"),
-    "Rung 3": ("3-invoices", "extract.py"),
-    "Rung 4": ("4-booking", "agent.py"),
+    "Rung 3a": ("3-invoices", "compare.py"),
+    "Rung 3b": ("3-invoices", "margin.py"),
+    "Rung 3c": ("3-invoices", "guardrail.py"),
+    "Rung 3e": ("3-invoices", "grid.py"),
+    "Rung 4a": ("4-booking", "agent.py"),
     "Rung 5": ("5-writer", "writer.py"),
 }
 
@@ -169,7 +174,7 @@ async def test_what_reading_reports_shows_an_aspect_page_opening_on_is_the_invoi
     """The aspect first screen ``reading-reports.md`` shows is the invoices rung's own page, laid out alone."""
     shown = _markdown_under(DOCS / "reading-reports.md", "### An aspect's first screen")
     copy = rung_copy("3-invoices", tmp_path, monkeypatch)
-    spec = importlib.util.spec_from_file_location(f"doc_blocks_invoices_{id(tmp_path)}", copy / "extract.py")
+    spec = importlib.util.spec_from_file_location(f"doc_blocks_invoices_{id(tmp_path)}", copy / "guardrail.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

@@ -1,7 +1,7 @@
-"""Serve the booking eval's runs to the team, from this directory: ``python serve.py`` is an MCP server on stdio
-(``[fastmcp]`` extra), and ``python -m threetears.evals ls --host serve:host --scope booking`` is the command line
-(``report CAMPAIGN`` too, the campaign's page, the harness door's report once it has written one; ``gate`` needs a
-comparison, and this eval has one arm). Both read the store ``python -m threetears.evals agent.py`` fills when run here.
+"""Rung 4b: serve the booking eval's runs to the team, from this directory: ``python serve.py`` is an MCP server on
+stdio (``[fastmcp]`` extra), and ``python -m threetears.evals ls --host serve:host --scope booking`` is the command line
+(``report CAMPAIGN`` too, the campaign's page, the harness door's report once it has written one). Both read the store
+``python -m threetears.evals agent.py`` fills when run here.
 """
 
 from agent import booking

@@ -5,7 +5,7 @@ cases that carry a second label's words. Compared with ``hasty`` as the control 
 declares one axis at the two arm names, its control resolves to the variant key ``hasty``'s run
 carries, and the code-only report tests ``careful`` against it and finds it improved — under the
 campaign's name, or by its id when it has none. Two prompts compared on a model's recorded answers are rung 3
-(``examples/3-invoices/``), held by ``test_invoices_rung.py``.
+(``examples/3-invoices/``, one concept a file: the comparison is ``compare.py``), held by ``test_invoices_rung.py``.
 """
 
 from __future__ import annotations
