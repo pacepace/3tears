@@ -2053,6 +2053,9 @@ class _ModuleWalk(ast.NodeVisitor):
             text = _constant_text(value, self._envs[-1])
             if text is not None and not isinstance(value, ast.Constant):
                 return ast.Constant(text)
+            # a collection's own schema name (``self.schema.name``): the table its class declares
+            if (schema_name := self._schema_name_text(value)) is not None:
+                return ast.Constant(schema_name)
             # a mapping keyed by constants (``by={STATE_COLUMN: state}``): each key the string it names
             if isinstance(value, ast.Dict):
                 keys = [
@@ -3066,15 +3069,116 @@ class _ModuleWalk(ast.NodeVisitor):
             )
         return known
 
-    def _produced_by(self, node: ast.expr) -> str | None:
-        """what an expression reads as when it names a relation judged elsewhere, where the walk is: a declared
-        transient producer's return (a change set), or a keyed helper's relation parameter (judged at its call sites).
+    def _schema_name_text(self, node: ast.expr) -> str | None:
+        """the table a collection's own schema name reads as: ``<schema>.name`` where ``<schema>`` is the walked class's
+        declared ``TableSchema`` (``self.schema``, ``type(self).schema``, ``cls.schema``, ``<Class>.schema``), a
+        ``dataclasses.replace`` of it naming the same table (``name=f"{audit_schema}.audit_events"``), or a local the
+        function binds once to either. It reads as the declared name (``platform_audit.audit_events``), so the catalog
+        finds the table by its last segment and judges the read with that table's declared indexes.
 
         :param node: the expression
         :ptype node: ast.expr
-        :return: :data:`TRANSIENT_PRODUCED`, :data:`HELPER_RELATION`, or None for any other expression
+        :return: the declared table name, or None when the expression is no such name
         :rtype: str | None
         """
+        if not (isinstance(node, ast.Attribute) and node.attr == "name"):
+            return None
+        return self._declared_schema(node.value, 0)
+
+    def _declared_schema(self, node: ast.expr, depth: int) -> str | None:
+        """the declared table name of an expression that is the walked class's ``TableSchema`` (see
+        :meth:`_schema_name_text`).
+
+        :param node: the expression
+        :ptype node: ast.expr
+        :param depth: how many local bindings and replaces the walk followed
+        :ptype depth: int
+        :return: the declared table name, or None
+        :rtype: str | None
+        """
+        owner = self._class_nodes[-1] if self._class_nodes else None
+        if depth > 3 or owner is None:
+            return None
+        if isinstance(node, ast.Attribute) and node.attr == "schema":
+            receiver = node.value
+            own = (isinstance(receiver, ast.Name) and receiver.id in {"self", "cls", owner.name}) or (
+                isinstance(receiver, ast.Call)
+                and isinstance(receiver.func, ast.Name)
+                and receiver.func.id == "type"
+                and len(receiver.args) == 1
+                and isinstance(receiver.args[0], ast.Name)
+                and receiver.args[0].id == "self"
+            )
+            return self._class_schema_name(owner, 0) if own else None
+        if isinstance(node, ast.Call) and _final(node) == "replace" and node.args:
+            declared = self._declared_schema(node.args[0], depth + 1)
+            renamed = _keyword_value(node, "name")
+            if declared is None or renamed is None:
+                return declared
+            # a copy renamed onto the same table in another schema (``f"{audit_schema}.audit_events"``) is that table;
+            # one renamed onto any other table is not the declaration's
+            text = _string_text(renamed, self._envs[-1], self._produced_by)
+            return declared if text is not None and bare_table(text) == bare_table(declared) else None
+        function = self._function_node
+        if isinstance(node, ast.Name) and function is not None:
+            bound = [
+                statement.value
+                for statement in ast.walk(function)
+                if isinstance(statement, ast.Assign)
+                and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Name)
+                and statement.targets[0].id == node.id
+            ]
+            return self._declared_schema(bound[0], depth + 1) if len(bound) == 1 else None
+        return None
+
+    def _class_schema_name(self, owner: ast.ClassDef, depth: int) -> str | None:
+        """the table name a class declares as its ``schema = TableSchema(name=...)`` (or a module constant bound to
+        one), or that a base class of the same module declares.
+
+        :param owner: the class
+        :ptype owner: ast.ClassDef
+        :param depth: how many base classes the walk followed
+        :ptype depth: int
+        :return: the declared name, or None
+        :rtype: str | None
+        """
+        for statement in owner.body:
+            value: ast.expr | None = None
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+                target = statement.targets[0]
+                value = statement.value if isinstance(target, ast.Name) and target.id == "schema" else None
+            elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+                value = statement.value if statement.target.id == "schema" else None
+            if isinstance(value, ast.Name):
+                value = self._module_values.get(value.id)
+            if isinstance(value, ast.Call) and _final(value) == "TableSchema":
+                named = _keyword_value(value, "name")
+                return _constant_text(named, self._envs[0]) if named is not None else None
+        if depth > 3:
+            return None
+        bases = {base.id for base in owner.bases if isinstance(base, ast.Name)}
+        for node in self._tree.body:
+            if isinstance(node, ast.ClassDef) and node.name in bases:
+                found = self._class_schema_name(node, depth + 1)
+                if found is not None:
+                    return found
+        return None
+
+    def _produced_by(self, node: ast.expr) -> str | None:
+        """what an expression reads as when it names a relation judged elsewhere, where the walk is: a declared
+        transient producer's return (a change set), or a keyed helper's relation parameter (judged at its call sites);
+        a collection's own schema name (``self.schema.name``) reads as the table its class declares.
+
+        :param node: the expression
+        :ptype node: ast.expr
+        :return: :data:`TRANSIENT_PRODUCED`, :data:`HELPER_RELATION`, the declared table name, or None for any other
+            expression
+        :rtype: str | None
+        """
+        declared = self._schema_name_text(node)
+        if declared is not None:
+            return declared
         if self._helper_change_parameter(node):
             return TRANSIENT_PRODUCED
         if self._helper_relation(node):

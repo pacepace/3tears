@@ -4219,3 +4219,155 @@ def test_with_only_3tears_tables_a_side_database_s_tables_are_no_data_tables(tmp
     )
     assert "every_audit" in helper_off and "every_audit" not in helper_on
     assert "every_result" in helper_off and "every_result" in helper_on
+
+
+_DECLARED_SCHEMA_NAME = {
+    "audit.py": """
+        import dataclasses
+
+        from threetears.core.collections.schema_backed import Index, SchemaBackedCollection, TableSchema
+        from threetears.core.keyed import Sort, keyset_page, read_row
+
+        class AuditEventCollection(SchemaBackedCollection):
+            schema = TableSchema(
+                name="platform_audit.audit_events",
+                primary_key=("id",),
+                columns=[],
+                indexes=(
+                    Index(
+                        "idx_audit_actor",
+                        ("actor_user_id", "timestamp"),
+                        purpose=(
+                            "src/audit.py::AuditEventCollection.by_actor; "
+                            "src/audit.py::AuditEventCollection.by_actor_local; "
+                            "src/audit.py::AuditEventCollection.by_actor_replaced; "
+                            "src/audit.py::AuditEventCollection.page_actor"
+                        ),
+                        plan_test="tests/test_plans.py::test_by_actor_uses_idx_audit_actor",
+                    ),
+                ),
+            )
+
+            def __init__(self, audit_schema):
+                object.__setattr__(
+                    self, "schema", dataclasses.replace(type(self).schema, name=f"{audit_schema}.audit_events")
+                )
+
+            async def by_actor(self, conn, actor):
+                return await conn.fetch(
+                    f"SELECT id FROM {self.schema.name} WHERE actor_user_id = $1 ORDER BY timestamp LIMIT 10", actor
+                )
+
+            async def by_actor_local(self, conn, actor):
+                table = self.schema.name
+                return await conn.fetch(
+                    f"SELECT id FROM {table} WHERE actor_user_id = $1 ORDER BY timestamp LIMIT 10", actor
+                )
+
+            async def by_actor_replaced(self, conn, audit, actor):
+                schema = dataclasses.replace(type(self).schema, name=f"{audit}.audit_events")
+                return await conn.fetch(
+                    f"SELECT id FROM {schema.name} WHERE actor_user_id = $1 ORDER BY timestamp LIMIT 10", actor
+                )
+
+            async def one(self, conn, key):
+                return await read_row(conn, self.schema.name, by={"id": key})
+
+            async def page_actor(self, conn, actor):
+                table = self.schema.name
+                return await keyset_page(
+                    conn, table, columns=("id",), by={"actor_user_id": actor}, order=(Sort("timestamp"),), limit=10
+                )
+
+            async def by_details(self, conn, details):
+                return await conn.fetch(f"SELECT id FROM {self.schema.name} WHERE details = $1", details)
+    """,
+    "conversations/schema.py": """
+        from threetears.core.collections.schema_backed import Index, TableSchema
+
+        CONVERSATIONS = TableSchema(
+            name="conversations",
+            primary_key=("conversation_id",),
+            columns=[],
+            indexes=(
+                Index(
+                    "idx_conv_agent_status",
+                    ("agent_id", "status", "conversation_id"),
+                    purpose="src/admin.py::by_status; src/admin.py::page_status",
+                    plan_test="tests/test_plans.py::test_by_status_uses_idx_conv_agent_status",
+                ),
+            ),
+        )
+    """,
+    "admin.py": """
+        from threetears.core.keyed import Sort, keyset_page
+
+        def agent_schema_name(agent_id):
+            return f"agent_{agent_id}"
+
+        async def by_status(pool, agent_id, status):
+            schema = agent_schema_name(agent_id)
+            return await pool.fetch(
+                f"SELECT * FROM {schema}.conversations WHERE agent_id = $1 AND status = $2 "
+                "ORDER BY conversation_id LIMIT 20",
+                agent_id,
+                status,
+            )
+
+        async def page_status(pool, agent_id, status):
+            return await keyset_page(
+                pool,
+                f"{agent_schema_name(agent_id)}.conversations",
+                columns=("conversation_id",),
+                by={"agent_id": agent_id, "status": status},
+                order=(Sort("conversation_id"),),
+                limit=20,
+            )
+
+        async def by_title(pool, agent_id, title):
+            return await pool.fetch(f"SELECT * FROM {agent_schema_name(agent_id)}.conversations WHERE title = $1", title)
+    """,
+}
+
+_DECLARED_SCHEMA_PLANS = """
+    from threetears.core.testing.plans import explain_statement, plan_uses_index
+
+    async def test_by_actor_uses_idx_audit_actor(conn):
+        sql = "SELECT id FROM platform_audit.audit_events WHERE actor_user_id = $1 ORDER BY timestamp LIMIT 10"
+        assert plan_uses_index(await explain_statement(conn, sql, "pg"), "idx_audit_actor")
+
+    async def test_by_status_uses_idx_conv_agent_status(conn):
+        sql = "SELECT * FROM conversations WHERE agent_id = $1 AND status = $2 ORDER BY conversation_id LIMIT 20"
+        assert plan_uses_index(await explain_statement(conn, sql, "pg"), "idx_conv_agent_status")
+"""
+
+
+def test_a_collection_s_own_schema_name_and_a_schema_qualified_table_read_as_the_declared_table(
+    tmp_path: Path,
+) -> None:
+    """Flips if a SchemaBackedCollection method's ``self.schema.name`` (directly, through a local bound from it, or
+    through ``dataclasses.replace`` of the class's TableSchema) is not the class's declared table (by its last segment:
+    ``audit_events`` of ``platform_audit.audit_events``), or a per-agent schema's table (``f"{schema}.conversations"``,
+    ``f"{agent_schema_name(...)}.conversations"``) is not the declared ``conversations``; each judged with that table's
+    declared indexes: the purposed reads pass and keep their index's purpose used, a read by an unindexed column is a
+    non-key read of the declared table, never an unknown one."""
+    _plans(tmp_path, _DECLARED_SCHEMA_PLANS)
+    config = _config(tmp_path, _DECLARED_SCHEMA_NAME)
+    findings = no_whole_reads_findings(config)
+    found = _symbols(config)
+    assert not [finding for finding in findings if "unknown-" in finding], findings
+    assert not [finding for finding in findings if ": index-" in finding], findings
+    assert ("AuditEventCollection.by_details", "non-key-where audit_events") in {
+        (function, re.sub(r"^(\S+) .*?(\w+)$", r"\1 \2", symbol)) for function, symbol in found
+    }, found
+    assert any(function == "by_title" and symbol.startswith("non-key-where") for function, symbol in found), found
+    judged = {function for function, _ in found}
+    assert not judged & {
+        "AuditEventCollection.by_actor",
+        "AuditEventCollection.by_actor_local",
+        "AuditEventCollection.by_actor_replaced",
+        "AuditEventCollection.one",
+        "AuditEventCollection.page_actor",
+        "by_status",
+        "page_status",
+    }, found
