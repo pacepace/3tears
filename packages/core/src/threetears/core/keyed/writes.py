@@ -400,6 +400,7 @@ async def apply_stage(
     mode: StageMode | str = StageMode.REPLACE,
     by: Mapping[str, Any] | None = None,
     where: Sequence[Fragment] = (),
+    distinct: bool = False,
 ) -> StageWrite:
     """write ``stage``'s rows into ``target`` by the stage's ``key``, never reading ``target`` but by that key.
 
@@ -438,10 +439,14 @@ async def apply_stage(
     :param where: ``difference`` only: filters of that scope beside ``by``, each a fragment from ``$1`` on the
         target's columns, unqualified (``"state" = $1``)
     :ptype where: Sequence[Fragment]
+    :param distinct: ``difference`` only: the stage's rows written once each however often staged (``SELECT
+        DISTINCT``), as a set difference (``stage EXCEPT held``) writes them; each staged row as often as staged when
+        False
+    :ptype distinct: bool
     :return: the rows deleted and written
     :rtype: StageWrite
-    :raises ValueError: when the key is empty or not among the columns, the mode is unknown, or a scope is given to
-        a mode other than ``difference``
+    :raises ValueError: when the key is empty or not among the columns, the mode is unknown, or a scope or
+        ``distinct`` is given to a mode other than ``difference``
     """
     chosen = StageMode(mode)
     if (not key and chosen is not StageMode.APPEND) or any(column not in columns for column in key):
@@ -449,6 +454,8 @@ async def apply_stage(
     scoped = bool(by) or bool(where)
     if scoped and chosen is not StageMode.DIFFERENCE:
         raise ValueError(f"a stage's scope (by=, where=) deletes the absent keys of a difference; {chosen} has none")
+    if distinct and chosen is not StageMode.DIFFERENCE:
+        raise ValueError(f"a stage's rows are de-duplicated (distinct=) by a difference's insert; {chosen} has none")
     table = quoted_table(target)
     staged = quoted_table(stage)
     cols = ", ".join(quote_identifier(column) for column in columns)
@@ -496,7 +503,7 @@ async def apply_stage(
     absent = " AND ".join(f"{table}.{quote_identifier(column)} = s.{quote_identifier(column)}" for column in key)
     selected = ", ".join(f"s.{quote_identifier(column)}" for column in columns)
     written = await conn.execute(
-        f"INSERT INTO {table} ({cols}) SELECT {selected} FROM {staged} AS s "
+        f"INSERT INTO {table} ({cols}) SELECT {'DISTINCT ' if distinct else ''}{selected} FROM {staged} AS s "
         f"WHERE NOT EXISTS (SELECT 1 FROM {table} WHERE {absent})"
     )
     return StageWrite(deleted=removed + rows_affected(str(deleted or "")), written=rows_affected(str(written or "")))

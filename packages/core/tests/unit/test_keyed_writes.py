@@ -456,6 +456,28 @@ class TestApplyStageDifferenceScope:
                 )
 
 
+class TestApplyStageDistinctDifference:
+    async def test_a_distinct_difference_writes_a_row_staged_twice_once(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if distinct=True writes a doubled stage row twice, the default stops writing it twice, or a mode
+        other than difference takes distinct."""
+        db.execute("CREATE TABLE seen (k INTEGER, v VARCHAR)")
+        db.execute("INSERT INTO seen VALUES (1, 'a')")
+        db.execute("CREATE TABLE stg (k INTEGER, v VARCHAR)")
+        db.execute("INSERT INTO stg VALUES (1, 'a'), (2, 'b'), (2, 'b')")
+        reader = ThreadedDuckDB(db)
+        applied = await apply_stage(
+            reader, "seen", "stg", key=["k"], columns=["k", "v"], mode="difference", distinct=True
+        )
+        assert (applied.deleted, applied.written) == (0, 1)
+        assert _plain(db, "SELECT k, v FROM seen ORDER BY k") == [(1, "a"), (2, "b")]
+        db.execute("DELETE FROM seen WHERE k = 2")
+        applied = await apply_stage(reader, "seen", "stg", key=["k"], columns=["k", "v"], mode="difference")
+        assert applied.written == 2
+        for mode in (StageMode.REPLACE, StageMode.UPSERT, StageMode.APPEND):
+            with pytest.raises(ValueError, match="distinct"):
+                await apply_stage(reader, "seen", "stg", key=["k"], columns=["k", "v"], mode=mode, distinct=True)
+
+
 class TestCountsEveryValue:
     async def test_every_value_of_a_prefix_is_counted_a_page_at_a_time(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a value is lost or double-counted across pages, a value outside the prefix is counted, or the

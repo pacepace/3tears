@@ -56,6 +56,11 @@ size (a hub that has since dropped the cap is read again at the asked size).
 duplicates kept (a key staged again, or already held, is written again); `key=` may be empty. PostgreSQL, DuckDB,
 SQLite and `InlineDuckDB`.
 
+### core.keyed: a difference writes its stage as a set
+**Added:** `apply_stage(mode=difference, distinct=True)`: the stage's rows written once each however often staged
+(`SELECT DISTINCT`), as the set difference it replaces (`INSERT ... SELECT ... FROM stage EXCEPT SELECT ... FROM
+target`) writes them; the default is unchanged, and any other mode refuses it.
+
 ### core.keyed: changed rows by hash
 **Added:** `read_changed(conn, relation, *, key, columns, held, hash_columns, by=, where=)` -> `ChangedRows(rows,
 gone_keys)`: phase 1 reads the scope's keys and each row's hash only, paged by the key; phase 2 reads in full, by key
