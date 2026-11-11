@@ -317,7 +317,8 @@ uv sync                      # install all packages in dev mode
 
 Use the scripts. Never invoke `pytest`, `ruff`, or `mypy` directly.
 
-`check-all.sh` runs lint, typecheck, the workspace suite and the sidecar suite.
+`check-all.sh` runs lint, typecheck, the workspace suite, the mcp-1.x and OpenTelemetry-floor
+suites CI's `check` job runs (`test-mcp-v1.sh`, `test-otel-floor.sh`), and the sidecar suite.
 It does **not** run the integration tests: those need Docker, so folding them in
 would break the gate wherever Docker is absent. `test.sh` excludes them too
 (`-m "not integration"`). Cross-pod behaviour lives entirely in that suite, so

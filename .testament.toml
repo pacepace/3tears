@@ -32,6 +32,43 @@ command = ["uv", "run", "--frozen", "pytest", "-m", "not integration and not loo
 default_selection = ["packages/", "tests/"]
 default_for_paths = true
 
+# Areas divide each suite for reporting and selection without splitting it (manifest version 3 holds them in
+# each suite, the same map in both): `testament run
+# --area core` or `--not-area evals`, `testament time --by area`, `trend --by area`. They join no
+# cache or environment key and change no batching. Order matters: a test belongs to the FIRST area
+# whose glob matches its path (fnmatch, where `*` crosses `/`). `platform` names its packages rather
+# than ending in a catch-all `packages/**`, which would overlap every area above it and fail
+# `testament areas check --strict`; a new package needs its glob here, and
+# tests/enforcement/test_testament_areas_cover_the_tree.py says so. Needs testament 0.44.0 or later.
+[suites.default.areas]
+evals = ["packages/evals/**"]
+enforcement = ["packages/enforcement/**", "tests/enforcement/**"]
+core = ["packages/core/**"]
+agent = ["packages/agent/**"]
+platform = [
+    "packages/backup/**",
+    "packages/channels/**",
+    "packages/conversations/**",
+    "packages/datasources/**",
+    "packages/epoch/**",
+    "packages/geo/**",
+    "packages/iam/**",
+    "packages/interfaces/**",
+    "packages/langgraph/**",
+    "packages/mcp/**",
+    "packages/models/**",
+    "packages/nats/**",
+    "packages/object-store/**",
+    "packages/observe/**",
+    "packages/registry/**",
+    "packages/scheduled-jobs/**",
+    "packages/scrape/**",
+    "packages/search/**",
+    "packages/tool-schema/**",
+    "tests/test_*.py",
+    "tests/integration/**",
+]
+
 # The event loop's wall-clock tests (`loop_timing`), as scripts/ci-unit-tests.sh runs them apart and serially: a
 # runner takes one batch of them at a time, never two beside each other. Their bounds are still calibrated against
 # the load beside them, since a runner runs other suites' and projects' batches meanwhile. A path's loop_timing tests
@@ -41,3 +78,32 @@ adapter = "pytest"
 command = ["uv", "run", "--frozen", "pytest", "-m", "loop_timing and not integration"]
 default_selection = ["packages/", "tests/"]
 max_batches_per_runner = 1
+
+[suites.loop_timing.areas]
+evals = ["packages/evals/**"]
+enforcement = ["packages/enforcement/**", "tests/enforcement/**"]
+core = ["packages/core/**"]
+agent = ["packages/agent/**"]
+platform = [
+    "packages/backup/**",
+    "packages/channels/**",
+    "packages/conversations/**",
+    "packages/datasources/**",
+    "packages/epoch/**",
+    "packages/geo/**",
+    "packages/iam/**",
+    "packages/interfaces/**",
+    "packages/langgraph/**",
+    "packages/mcp/**",
+    "packages/models/**",
+    "packages/nats/**",
+    "packages/object-store/**",
+    "packages/observe/**",
+    "packages/registry/**",
+    "packages/scheduled-jobs/**",
+    "packages/scrape/**",
+    "packages/search/**",
+    "packages/tool-schema/**",
+    "tests/test_*.py",
+    "tests/integration/**",
+]
