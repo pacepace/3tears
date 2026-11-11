@@ -152,11 +152,17 @@ def test_a_frozen_campaign_bundle_or_frame_of_the_old_shape_is_refused_naming_wh
     frozen = {**bundle.to_dict(), "schema_version": 1}
     frame = {**bundle.frame(), "schema_version": 1}
 
-    with pytest.raises(RefusedInput, match="frozen by a build whose readings carried another shape") as refused:
+    # An earlier shape was frozen before names left the readings, and the refusal names its shape and this build's.
+    with pytest.raises(RefusedInput, match="frozen before names left the readings") as refused:
         CampaignBundle.from_dict(frozen)
-    assert "this build's shape (3)" in str(refused.value)
-    with pytest.raises(RefusedInput, match="frozen by a build whose readings carried another shape"):
+    assert "evidence of shape 1" in str(refused.value) and "this build's shape (4)" in str(refused.value)
+    with pytest.raises(RefusedInput, match="frozen before names left the readings") as refused:
         CampaignBundle.from_frame(frame, bundle.aspects)
+    assert "evidence of shape 1" in str(refused.value) and "this build's shape (4)" in str(refused.value)
+    # A shape this build does not know of was frozen by a build whose readings carried another shape.
+    with pytest.raises(RefusedInput, match="frozen by a build whose readings carried another shape") as refused:
+        CampaignBundle.from_dict({**frozen, "schema_version": 5})
+    assert "evidence of shape 5" in str(refused.value) and "this build's shape (4)" in str(refused.value)
 
 
 # =============================================================================

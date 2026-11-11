@@ -405,34 +405,39 @@ def test_every_line_the_aggregate_writes_keeps_the_style_rules(name: str) -> Non
 
 
 # =============================================================================
-# A campaign bundle frozen at shape 2
+# A campaign bundle frozen at shape 2 or 3
 # =============================================================================
 
 
-def _at_shape_2(document: dict[str, Any]) -> dict[str, Any]:
-    """A campaign bundle or frame as a build at shape 2 wrote it: no figures across aspects in its readings."""
-    readings = {key: value for key, value in document["readings"].items() if key != "aggregate"}
-    return {**document, "schema_version": 2, "readings": readings}
+def _frozen_at(shape: int, document: dict[str, Any]) -> dict[str, Any]:
+    """A campaign bundle or frame as a build at ``shape`` wrote it: at shape 2, no figures across aspects in its
+    readings."""
+    readings = document["readings"]
+    if shape == 2:
+        readings = {key: value for key, value in readings.items() if key != "aggregate"}
+    return {**document, "schema_version": shape, "readings": readings}
 
 
-def test_a_bundle_and_a_frame_frozen_at_shape_2_read_as_this_shape_fingerprinting_alike() -> None:
+@pytest.mark.parametrize("frozen_shape", [2, 3])
+def test_a_bundle_and_a_frame_frozen_at_shape_2_or_3_are_refused_as_frozen_before_names_left_the_readings(
+    frozen_shape: int,
+) -> None:
     shape = s1_change()
     bundle = build_campaign_bundle(
         shape.campaign, list(shape.bundles.values()), arms=shape.arms, readings=shape.readings
     )
-    assert CAMPAIGN_BUNDLE_SHAPE == 3 and bundle.readings.aggregate is not None
-    frozen = _at_shape_2(bundle.to_dict())
-    # The figures across aspects add no evidence, so the shape-2 document fingerprints as this shape's bundle does.
-    assert (
-        CampaignBundle.from_dict(frozen).fingerprint()
-        == bundle.fingerprint()
-        == CampaignBundle.from_dict(bundle.to_dict()).fingerprint()
-    )
-    read = CampaignBundle.from_dict(frozen)
+    assert CAMPAIGN_BUNDLE_SHAPE == 4 and bundle.readings.aggregate is not None
+    # This build's own shape reads back whole, fingerprinting alike.
+    read = CampaignBundle.from_dict(bundle.to_dict())
     assert read.schema_version == CAMPAIGN_BUNDLE_SHAPE
     assert read.readings == bundle.readings and read.fingerprint() == bundle.fingerprint()
-    stored = CampaignBundle.from_frame(_at_shape_2(bundle.frame()), bundle.aspects)
-    assert stored.readings.aggregate == bundle.readings.aggregate
-    # A shape before 2 is still refused, naming this build's.
-    with pytest.raises(RefusedInput, match=r"this build's shape \(3\) or one it reads as that \(2\)"):
-        CampaignBundle.from_dict({**frozen, "schema_version": 1})
+    assert CampaignBundle.from_frame(bundle.frame(), bundle.aspects).fingerprint() == bundle.fingerprint()
+    # A shape 2 or 3 copy worded its floors' reasons and spelled its derived arms when frozen: refused, naming why.
+    why = "frozen before names left the readings"
+    named = (f"evidence of shape {frozen_shape}", "this build's shape (4)")
+    with pytest.raises(RefusedInput, match=why) as refused:
+        CampaignBundle.from_dict(_frozen_at(frozen_shape, bundle.to_dict()))
+    assert all(part in str(refused.value) for part in named)
+    with pytest.raises(RefusedInput, match=why) as refused:
+        CampaignBundle.from_frame(_frozen_at(frozen_shape, bundle.frame()), bundle.aspects)
+    assert all(part in str(refused.value) for part in named)

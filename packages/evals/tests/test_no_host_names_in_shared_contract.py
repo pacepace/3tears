@@ -195,6 +195,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "schema/campaign_upgrade.py",
     # The one rule naming an aspect after its campaign's behavior, which every site that does so calls.
     "schema/aspect_label.py",
+    # The one function reading a lever id as words, which every surface naming a lever calls.
+    "schema/lever_words.py",
     "kernel/declaration.py",
     "kernel/eval_scope.py",
     # The measure names one result carries, read off the result model, below the declaration and the host profile.
