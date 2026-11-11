@@ -994,6 +994,8 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: None
         """
         self.path = path
+        #: the names the module's imports bind: ``x.read_by()`` on any other name is a method of an object
+        self._module_names = _imported_names(tree)
         self._parameter_values = parameter_values or {}
         self._tuples = tuples or {}
         self.source = source
@@ -2047,10 +2049,13 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: None
         """
         name = _final(node)
-        if _on_an_attribute(node) or not (
-            name in KEYED_HELPER_CALLS or (name in STEP_CALLS and self._keyed_step(node))
+        if (
+            _on_an_attribute(node)
+            or _on_an_object(node, self._module_names)
+            or not (name in KEYED_HELPER_CALLS or (name in STEP_CALLS and self._keyed_step(node)))
         ):
-            # a call on an object's attribute (``self._store.holds_any``) is the repo's own method, judged in its body
+            # a call on an object's attribute (``self._store.holds_any``) or on an object a name holds
+            # (``readings.read_by(clause)``) is the repo's own method, judged in its body
             return
         if self._hands_on_helper_relation(node, name):
             # a helper calling a helper on its own relation parameter: judged where the outer helper is called
@@ -3253,6 +3258,24 @@ def _on_an_attribute(call: ast.Call) -> bool:
     :rtype: bool
     """
     return isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Attribute)
+
+
+def _on_an_object(call: ast.Call, module_names: frozenset[str]) -> bool:
+    """whether ``call`` is a method of an object a plain name holds (``readings.read_by(clause)``, a parameter or a
+    local), never a function of a module the file imports (``keyed.read_by(...)``).
+
+    :param call: the call
+    :ptype call: ast.Call
+    :param module_names: the names the module's imports bind (:func:`_imported_names`)
+    :ptype module_names: frozenset[str]
+    :return: whether it is
+    :rtype: bool
+    """
+    return (
+        isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id not in module_names
+    )
 
 
 def _imported_names(tree: ast.Module) -> frozenset[str]:

@@ -2312,6 +2312,33 @@ def test_a_repo_method_named_as_a_keyed_helper_is_the_repo_s_and_its_body_is_jud
     assert not any(function in ("Store.holds_any", "Pull._held") for function, _ in found), found
 
 
+_READINGS = """
+    from threetears.core import keyed
+
+
+    class FloorReadings:
+        def read_by(self, clause):
+            return [rate for rate in self.rates if rate.clause == clause]
+
+
+    def rate_floor(clause, readings):
+        return readings.read_by(clause)
+
+
+    async def undeclared(conn):
+        return await keyed.read_by(conn, "undeclared_widgets", by={"id": 1})
+"""
+
+
+def test_a_method_of_an_object_a_name_holds_named_as_a_keyed_helper_is_not_the_helper(tmp_path: Path) -> None:
+    """Flips if a call of a method on an object a parameter holds (``readings.read_by(clause)``, evals'
+    ``FloorReadings``) is judged as the keyed helper's call (an unknown-predicate ``read_by(table)``), or if the
+    helper's own call through the imported module (``keyed.read_by``) stops being judged."""
+    found = _symbols(_config(tmp_path, {"pkg/floor.py": _READINGS}))
+    assert not any(function == "rate_floor" for function, _ in found), found
+    assert any(function == "undeclared" for function, _ in found), found
+
+
 _PRUNED = """
     from threetears.core.collections.schema_backed import Index, TableSchema
     from threetears.core.keyed import delete_before, read_after
