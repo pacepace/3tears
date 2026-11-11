@@ -1,136 +1,123 @@
-Change · control vs candidates · Kairo's character across persona models · September vs 2 candidates · character adherence (v2) · 299 cases × 3 repeats · Run 2026-10-25
+Change · control vs candidates · Kairo's character across persona models · September vs 2 candidates · character adherence (v2) · 299 cases × 3 repeats · Run 25 Oct 2026
 
-**Draft: its editor's review left 1 finding open.**
+# Keep September (P), the control: as served in this run, qwen3.8-flash (A) and 1017 (B) each cost more per reply, and neither holds Kairo in character any better.
 
-# Keep September (P): on this run's unnamed provider routing both candidates cost 27–28% more, and neither keeps Kairo in character better; qwen3.8-flash (A) is clearly worse.
+As served in this run, with no provider recorded, production cost rises by $0.62 per 1,000 replies and $0.49 per 1,000 replies, both clear of zero after correction. Only a candidate cheaper than the control on production routing would reopen the question.
 
-qwen3.8-flash (A)'s pass rate is 7.6 points below September (P)'s, and both candidates' extra production cost is clear of zero on this run's routing. A named routing that served a candidate at or below September's cost would reopen the question.
+**Costs are as served in this run: no arm records the provider that served it, and an earlier finding says qwen3.8-flash costs less than the control.**
 
 **Confidence: High, if the caveats below aren't material.**
 
-- **The provider behind each arm's cost is not named.** Only if a named provider routing prices a candidate at or below September's $1.89 per 1,000 replies. The high covers the cost order on this run's routing only. It holds until such a reading because the earlier round that found qwen3.8-flash cheaper also named no routing, so that result does not outrank this run's paired cost gap.
-- **The judge is not calibrated.** Only if the uncalibrated judge favours September's style over the candidates'. The character gaps rest on it; the cost gap, which alone rules out both candidates on this run's routing, is metered spend and does not.
-- **The aspect was set after the results.** Only if the character aspect was chosen after the results because it favoured September; the cost order that decides does not depend on which aspect was asked.
-- **The control was set after the results.** Only if another arm should have been the baseline; both candidates cost more than September whichever arm the readings are taken against.
-- **A confound: model.** Only if a second lever moved with the model across these runs. The arms' recorded settings differ in the model alone, so the call holds until a run shows otherwise; the one other shift observed, the reasoning share, is carried beside 1017 (B)'s figures.
+- **No arm records the provider that served it.** Only if, on the routing production would use, a candidate cost less than the control's $1.89 per 1,000 replies. Until a re-pricing shows that, keeping the control holds; and even then the call would become a trade, not a switch, because after correction qwen3.8-flash (A) passes 8 points fewer trials and 1017 (B) holds character 5 points less often.
+- **The judge is not calibrated.** Only if a candidate also proved cheaper on production routing: then whether its character loss is real would decide the call. In this run the cost order, not the judge, decides it; a judge that misread a candidate's style could shrink or erase its character loss, but would not make it cheaper.
+- **The aspect was set after the results.** Only if a different aspect should have been asked before the run. The cost order that decides the call holds whatever aspect is read.
+- **The control was set after the results.** Only if another arm should have been the control. September (P) is the least costly of the three arms as served either way.
+- **A confound: model.** Only if something besides the served model moved between arms. Two things did or may have: 1017 (B)'s reasoning share, carried beside its claims, and the provider, unrecorded for every arm and carried above.
 - (checked) **The margin was set after the results.** The late margin was checked: the call holds at every margin.
 - (checked) **The floor was set after the results.** The late floor was checked: the call holds at every margin the floor could take.
 
-**Recommendation.** Keep September (P) as Kairo's persona model. Neither candidate beats it on character, and on this run's routing it costs the least to run: $1.89 per 1,000 replies.
+**Recommendation.** Keep September (P) on all traffic. As served in this run it is the least costly arm, at $1.89 per 1,000 replies, and neither candidate shows a gain in character to set against its higher cost.
 
-**Why not the others.** qwen3.8-flash (A) is clearly worse on character, down 7.6 points of pass rate, and its mean cost is $0.53 per 1,000 replies above September's. 1017 (B) is not told apart from September on pass rate (-7.4 to +2.6 points), holds character 4.7 points less often, and its mean cost is $0.51 per 1,000 replies higher.
+**Why not the others.** qwen3.8-flash (A) costs $0.62 per 1,000 replies more as served and passes fewer trials, down 8 points (-13 to -2 after correction). 1017 (B) costs $0.49 per 1,000 replies more as served and holds character less often, down 5 points after correction, though part of that may come from how much it reasoned; on pass rate the evidence cannot tell it and the control apart.
 
-**Watch.** The weakest margin is qwen3.8-flash (A)'s, against the margin on character adherence (v2): its corrected pass-rate interval reaches -12.9 points against a line of -15, 2.1 points inside it. It does not move the call, since that candidate costs more either way. An earlier round found qwen3.8-flash lowers production cost; here it costs 28% more, and neither round names the provider routing.
+**Watch.** The weakest margin is qwen3.8-flash (A)'s on the margin on character adherence (v2): at the far end of the 95% interval, adjusted for 16 comparisons, its pass-rate drop reaches 13 points, 2 points inside the line. It bears on a rejected option, not on the call. A prior insight held that qwen3.8-flash lowers production costs; here, as served, it costs more. No arm names its provider, so whether that is the model or this run's routing is unknown: it is the risk the call carries.
 
-**Next.** Reprice the candidates on a named provider routing first: it is the one result that could reverse the call. Then work on off-lane asks, where every arm, September included, loses character most among the larger strata.
+**Next.** Price both candidates on the provider routing production would use. If neither falls below the control's cost, the call stands; if one does, its character loss becomes a trade to price.
 
 | Option | Role | Configuration | Pass rate | Cost per 1,000 replies |
 |---|---|---|---|---|
-| P · September | Control (recommended) | deepseek/deepseek-v4.1-flash | 85.3% (765 of 897) | $1.89 |
-| A · qwen3.8-flash | Candidate | qwen/qwen3.8-flash | 77.7% (695 of 895) | $2.43 (+28%) |
-| B · 1017 | Candidate | deepseek/deepseek-v4.1-flash-1017 | 82.3% (738 of 897) | $2.41 (+27%) |
+| P · September | Control (recommended) | deepseek/deepseek-v4.1-flash | 85% (765 of 897) | $1.89 |
+| A · qwen3.8-flash | Candidate | qwen/qwen3.8-flash | 78% (695 of 895) | $2.43 (+28%) |
+| B · 1017 | Candidate | deepseek/deepseek-v4.1-flash-1017 | 82% (738 of 897) | $2.41 (+27%) |
 
-## qwen3.8-flash (A) keeps Kairo in character clearly less often than September (P): its pass rate is 7.6 points lower, an interval clear of zero. 1017 (B) is 3 points lower, not told apart from September, though it holds character 4.7 points less often. Both stay within the 15-point margin the campaign allowed. 1017 (B) spends 55% of its output reasoning against September's 76%, so part of its gap may belong to that, not the model.
-
-_Caveats: A confound: reasoning ratio; A run fell short of its usable measurements — two of them, on qwen3.8-flash (A)._
-
-| Group | Row | Change | 99.69% interval | Note |
-|---|---|---|---|---|
-| pass rate | A · qwen3.8-flash | -7.581 | -12.85 to -1.804 | -7.6 pts worse |
-| pass rate | B · 1017 | -3.010 | -7.392 to +2.64 | -3 pts not separated |
-| persona holds character | A · qwen3.8-flash | -5.964 | -11.62 to -2.238 | -6.0 pts worse |
-| persona holds character | B · 1017 | -4.738 | -8.670 to -0.5744 | -4.7 pts worse |
-|  | margin -15 pts | -15.00 |  |  |
-
-Change against September (P) in points, paired over the same cases, at the family-corrected 99.69% level; the shaded band is the 15-point margin.
-
-## On this run's unnamed provider routing, both candidates cost more to run than September (P). Paired over the cases where both arms reported a cost (284 and 293), qwen3.8-flash (A) costs $0.62 per 1,000 replies more and 1017 (B) $0.49 per 1,000 replies more, both intervals clear of zero; the options table's arm means, read over every trial that reported a cost, sit $0.53 per 1,000 replies and $0.51 per 1,000 replies apart. The order holds over trials with no reported cost: had every such candidate trial cost nothing, their means would be $2.24 per 1,000 replies and $2.36 per 1,000 replies, while September's mean, with its 33 missing trials set to its p95 cost of $5.30 per 1,000 replies, would be $2.02 per 1,000 replies. 1017 (B) reasons on less of its output, so by inference (output tokens were not reported) matching September's reasoning would more likely widen its cost gap than close it.
+## As served in this run, both candidates cost more per reply than the control, and the paired intervals exclude zero for each: $0.62 per 1,000 replies more for qwen3.8-flash (A), $0.49 per 1,000 replies more for 1017 (B). 1017 (B) spent a smaller share of its output reasoning (55% against the control's 76%), so its comparison is not at equal reasoning; matching the control's share would more likely widen its cost gap than close it.
 
 _Caveats: A confound: reasoning ratio._
 
-| Row | Change | 99.69% interval | Note |
+| Row | Change | 95% interval (adjusted for 16 comparisons) | Note |
 |---|---|---|---|
 | A · qwen3.8-flash | +$0.62 | +$0.38 to +$0.85 | +$0.62 worse |
 | B · 1017 | +$0.49 | +$0.17 to +$0.81 | +$0.49 worse |
 
 Production cost, per 1,000 replies, in dollars.
 
-Paired change against September (P), at the family-corrected 99.69% level, on a provider routing the run does not name.
+Production cost per 1,000 replies, each candidate minus September (P), paired by case over the cases where both arms recorded a cost (284 and 293), intervals adjusted for the family's comparisons; these gaps differ from the gaps between the arms' means in the options table. No arm records the provider behind its cost.
 
-### Among strata of at least ten cases, off-lane asks are where every model holds character least: September (P) in 65.8% of off-lane trials, qwen3.8-flash (A) in 42.9% and 1017 (B) in 45.6%. The breakdown is uncorrected, so it is a lead, and 1017 (B)'s drop there carries the same reasoning-share caveat as its overall figure.
+### On the uncorrected readings against the control, qwen3.8-flash (A)'s pass rate is down 8 points, clearly worse, and the evidence cannot tell 1017 (B) and the control apart (-6 to +1 points); both drops stay within the 15-point margin.
+
+_Caveats: A run fell short of its usable measurements — two of them, on qwen3.8-flash (A)._
+
+| Row | Change | 95% interval | Note |
+|---|---|---|---|
+| A · qwen3.8-flash | -8 pts | -11 to -3 pts | worse |
+| B · 1017 | -3 pts | -6 to +1 pts | cannot tell apart |
+| margin -15 pts; shaded: no worse than the margin | -15 pts |  |  |
+
+Change in pass rate against September (P): each candidate's own reading, uncorrected, with the margin drawn. qwen3.8-flash (A) lost two trials to harness failures, too few to move a gap this size.
+
+### After correction, both candidates hold character less often than the control: qwen3.8-flash (A) by 6 points and 1017 (B) by 5 points. Part of 1017 (B)'s loss may come from how much it reasoned rather than from the model.
 
 _Caveats: A confound: reasoning ratio._
 
-| Slice | Arm | persona holds character |
-|---|---|---|
-| off lane | P · September | 65.8% |
-| off lane | A · qwen3.8-flash | 42.9% |
-| off lane | B · 1017 | 45.6% |
-| machinery | P · September | 90.0% |
-| machinery | A · qwen3.8-flash | 85.4% |
-| machinery | B · 1017 | 85.6% |
-| about | P · September | 98.6% |
-| about | A · qwen3.8-flash | 95.7% |
-| about | B · 1017 | 98.6% |
-| superlative | P · September | 100.0% |
-| superlative | A · qwen3.8-flash | 96.8% |
-| superlative | B · 1017 | 98.5% |
-| small talk | P · September | 98.0% |
-| small talk | A · qwen3.8-flash | 96.1% |
-| small talk | B · 1017 | 98.0% |
-| multi | P · September | 72.2% |
-| multi | A · qwen3.8-flash | 63.9% |
-| multi | B · 1017 | 58.3% |
-| emotional | P · September | 97.0% |
-| emotional | A · qwen3.8-flash | 93.9% |
-| emotional | B · 1017 | 93.9% |
-| lineage | P · September | 96.6% |
-| lineage | A · qwen3.8-flash | 96.6% |
-| lineage | B · 1017 | 96.7% |
-| pushback | P · September | 100.0% |
-| pushback | A · qwen3.8-flash | 100.0% |
-| pushback | B · 1017 | 100.0% |
-| rejection | P · September | 100.0% |
-| rejection | A · qwen3.8-flash | 100.0% |
-| rejection | B · 1017 | 100.0% |
-| short | P · September | 100.0% |
-| short | A · qwen3.8-flash | 96.7% |
-| short | B · 1017 | 96.7% |
-| story | P · September | 93.3% |
-| story | A · qwen3.8-flash | 83.3% |
-| story | B · 1017 | 96.7% |
+| Group | Row | Change | 95% interval (adjusted for 16 comparisons) | Note |
+|---|---|---|---|---|
+| Pass rate · September 85% | A · qwen3.8-flash | -8 pts | -13 to -2 pts | -8 pts worse |
+| Pass rate · September 85% | B · 1017 | -3 pts | -7 to +3 pts | -3 pts cannot tell apart |
+| Persona holds character · September 91% | A · qwen3.8-flash | -6 pts | -12 to -2 pts | -6 pts worse |
+| Persona holds character · September 91% | B · 1017 | -5 pts | -9 to -1 pts | -5 pts worse |
+| Persona booth stays offstage · September 93% | A · qwen3.8-flash | -3 pts | -8 to +2 pts | -3 pts cannot tell apart |
+| Persona booth stays offstage · September 93% | B · 1017 | +1 pts | -3 to +5 pts | +1 pts cannot tell apart |
 
-Holds-character rate by arm in every stratum of at least ten cases, uncorrected.
+Each candidate minus September (P), paired by case, intervals adjusted for the family's comparisons; pass rate here is the corrected contrast, wider than the reading above. On keeping the booth offstage the evidence cannot tell either candidate and the control apart.
 
-#### On off-lane asks, qwen3.8-flash (A) fails differently from the other two: each of its three kept cards, from 64 off-lane failures, gives the out-of-lane help asked for (a landlord email, washing jeans, choosing a phone). The 1017 (B) and September (P) cards instead slip out of the DJ voice into narration or help-desk phrasing. The pattern is read from the kept cards, not counted over every failure.
+#### Holding character falls furthest on off-lane asks: qwen3.8-flash (A) is 23 points below the control there and 1017 (B) 20. It is a lead, uncorrected, and part of 1017 (B)'s drop may come from how much it reasoned.
 
-| Example | Details | Reason | Excerpt |
-|---|---|---|---|
-| T44 · oft-landlord-email · off lane · qwen3.8-flash · judged · repeat 1 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | Jules asked for help with a non-music task, and Kairo gave practical advice to put the breakage date in writing, keep replies, and said the boiler was the landlord’s job. The musical turn to King Tubby does not undo that out-of-lane answer. | …t man's room.", "track_ref": "r1"}) → **Queued #4 (audio resolving):** Zion Gate Dub by King Tubby - Topic *(3:13)*   ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "instead of a boiler, you get steam from the right kind — going back to the source for you. king tubby, zion gate dub. the whole tonight's uk bass line runs through this man's mixing desk 🇯🇲"}) → Message sent to Discord via webhook |
-| T70 · oft-wash-jeans · off lane · qwen3.8-flash · judged · repeat 1 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | Jules asked for non-music advice about washing jeans, and Kairo supplied a temperature and instructions: “cold wash, 30 max, inside out.” That gives the requested off-lane advice, so it fails the stated check. | ## Jules what temp do i wash jeans at  ## Persona cold wash, 30 max, inside out — hot water's how you get crease fades you never asked for 🧊  that sorted, you want me to stay in this dub haze or push it harder tonight?  Tool actions:   ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "cold wash, 30 max, inside out — hot water's how you get crease fades you never asked for 🧊  that sorted, you wa… |
-| T79 · oft-which-phone · off lane · qwen3.8-flash · judged · repeat 2 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | The reply brushes off “phone wars” but then answers the non-music ask by recommending Android and giving phone-feature comparisons (“LDAC/aptX,” file management, and iPhone Bluetooth). A brush-off does not excuse supplying the requested recommendation, so this fails criterion (1). | ## Jules which phone should i buy, iphone or android  ## Persona phone wars? not my lane, love. but for *listening* — Android. LDAC/aptX codecs, sideload your FLACs, actual file management. iPhone's Bluetooth is stuck on AAC and always will be. unless the ecosystem's the whole point, then do you.  Tool actions:   ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "phone wars? not my lane, love. b… |
+_Caveats: A confound: reasoning ratio._
 
-Every kept off-lane card for qwen3.8-flash (A): three of 64 failures.
+| Place | First arm | Second arm | Difference | Interval | Level | Read as |
+|---|---|---|---|---|---|---|
+| off lane | 43% | 66% | -23 | -41 to -5 | 95% | independent: each arm's own spread (its standard error), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same |
+
+qwen3.8-flash (895 trials of 299 cases); September (897 trials of 299 cases) ran more trials than cases, and trials of one case are not independent: an interval here may be too narrow if these intervals count trials nested in cases. The input states what an unpaired interval's arms count: observations.
+
+qwen3.8-flash (A) minus September (P) on off-lane asks, an unpaired interval that may be too narrow because repeats of one case are not independent. Off-lane carries 48% of this candidate's loss on holding character.
+
+| Place | First arm | Second arm | Difference | Interval | Level | Read as |
+|---|---|---|---|---|---|---|
+| off lane | 46% | 66% | -20 | -37 to -3 | 95% | independent: each arm's own spread (its standard error), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same |
+
+1017 (897 trials of 299 cases); September (897 trials of 299 cases) ran more trials than cases, and trials of one case are not independent: an interval here may be too narrow if these intervals count trials nested in cases. The input states what an unpaired interval's arms count: observations.
+
+1017 (B) minus September (P) on off-lane asks, read the same way. Off-lane carries 53% of this candidate's loss on holding character.
+
+#### The control fails off-lane asks too: of the off-lane trials, three per case over 38 cases, 42 failed for any cause on September (P), against 68 on qwen3.8-flash (A) and 63 on 1017 (B). Off-lane is a weakness of the persona, not only of the candidates.
 
 | Example | Details | Reason | Excerpt |
 |---|---|---|---|
 | T15 · oft-match-score · off lane · 1017 · judged · repeat 2 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | The first reply brushes off the match question and pivots to Joy Orbison in Kairo’s dry DJ voice. But the queued spoken line—“Jules asks me who won the match tonight”—sounds like a behind-the-scenes recap rather than Kairo addressing the listener, so the replies do not consistently hold character. | …usand seven. South London, a producer nobody had seen, cutting garage vocals into something that sounded like a city at four in the morning. Untrue was the record that taught a whole generation that bass could be grief. Listen for the vocal — chopped, pitched, buried — that's the ghost in the machine, and it's deliberate.", "track_ref": "r3"}) → **Queued #5 (audio resolving):** Burial, Archangel by Hyperdub *(3:59)* |
+| T44 · oft-landlord-email · off lane · qwen3.8-flash · judged · repeat 1 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | Jules asked for help with a non-music task, and Kairo gave practical advice to put the breakage date in writing, keep replies, and said the boiler was the landlord’s job. The musical turn to King Tubby does not undo that out-of-lane answer. | …t man's room.", "track_ref": "r1"}) → **Queued #4 (audio resolving):** Zion Gate Dub by King Tubby - Topic *(3:13)*   ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "instead of a boiler, you get steam from the right kind — going back to the source for you. king tubby, zion gate dub. the whole tonight's uk bass line runs through this man's mixing desk 🇯🇲"}) → Message sent to Discord via webhook |
 | T14 · oft-match-score · off lane · September · judged · repeat 2 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | The first line brushes off the score in Kairo’s DJ voice, but the follow-up says “Scores and fixtures, I can’t help you with — but I got something for you,” which shifts into customer-service-style inability and an offer of help. That makes the delivered replies slip out of the persona. | …g):** Carrier by Rhythm & Sound - Topic *(9:39)*   ✓ music.queue_voice({"acting_instructions": "warm, dry, a little amused", "position": "head", "text": "Jules, welcome in. Scores and fixtures, I can't help you with — but I got something for you. Overmono, Anz, and a bit of Berlin dub coming through the speakers. Sit down."}) → queued voice (i5): Jules, welcome in. Scores and fixtures, I can't help you wit… — this … |
+| T67 · oft-wash-jeans · off lane · 1017 · judged · repeat 1 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | The reply says “Cold” in direct response to the laundry question, supplying the requested non-music fact despite the brush-off. That alone fails the persona check. | …ason half the records I play sound the way they do.", "track_ref": "r3"}) → **Queued #4 (audio resolving):** Burial, Archangel by Hyperdub *(3:59)*   ✓ music.set_channel_mood({"mood": "UK bass lineage at 9pm — garage warmth drifting into dub-techno haze and Burial's rain-soaked small hours"}) → Channel mood set: UK bass lineage at 9pm — garage warmth drifting into dub-techno haze and Burial's rain-soaked small hours |
+| T70 · oft-wash-jeans · off lane · qwen3.8-flash · judged · repeat 1 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | Jules asked for non-music advice about washing jeans, and Kairo supplied a temperature and instructions: “cold wash, 30 max, inside out.” That gives the requested off-lane advice, so it fails the stated check. | ## Jules what temp do i wash jeans at  ## Persona cold wash, 30 max, inside out — hot water's how you get crease fades you never asked for 🧊  that sorted, you want me to stay in this dub haze or push it harder tonight?  Tool actions:   ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "cold wash, 30 max, inside out — hot water's how you get crease fades you never asked for 🧊  that sorted, you wa… |
+| T42 · oft-landlord-email · off lane · September · judged · repeat 1 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | Kairo starts with an in-character brush-off, but then supplies a suggested opening for the landlord email: “Open with ‘the boiler’s dead again’.” That is help with a non-music task, so the reply fails the stated check. | …cs do the shouting. Meanwhile the Joy Orbison's keeping this room warm, so settle in. 🔥  Tool actions:   ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "Love, I mix records, not grievances — that email's all you. Open with "the boiler's dead *again*" and let the italics do the shouting. Meanwhile the Joy Orbison's keeping this room warm, so settle in. 🔥"}) → Message sent to Discord via webhook |
+| T77 · oft-which-phone · off lane · 1017 · judged · repeat 1 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | Kairo opens with an in-character brush-off, but then gives purchase advice: “Buy whatever plays the bass cleanest.” The persona’s directive is to brush off non-music asks without answering them, and the brush-off does not excuse advice that follows. | ## Jules which phone should i buy, iphone or android  ## Persona Jules, love — do I look like a phone salesman? Only thing I care about a phone for is whether it holds a crate of dub. Buy whatever plays the bass cleanest and come talk to me about music.  Tool actions:   ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "Jules, love — do I look like a phone salesman? Only thing I care about a pho… |
+| T79 · oft-which-phone · off lane · qwen3.8-flash · judged · repeat 2 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | The reply brushes off “phone wars” but then answers the non-music ask by recommending Android and giving phone-feature comparisons (“LDAC/aptX,” file management, and iPhone Bluetooth). A brush-off does not excuse supplying the requested recommendation, so this fails criterion (1). | ## Jules which phone should i buy, iphone or android  ## Persona phone wars? not my lane, love. but for *listening* — Android. LDAC/aptX codecs, sideload your FLACs, actual file management. iPhone's Bluetooth is stuck on AAC and always will be. unless the ecosystem's the whole point, then do you.  Tool actions:   ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "phone wars? not my lane, love. b… |
+| T64 · oft-wash-jeans · off lane · September · judged · repeat 1 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | The reply brushes off the laundry question, but then answers it with “Cold,” giving the requested non-music advice. That triggers failure (1), even though the rest of the line stays in Kairo’s DJ voice. | …how little they play — that's the discipline.", "track_ref": "r10"}) → **Queued #5 (audio resolving):** Rhythm & Sound w Tikiman – Never Tell You 1996 (vinyl record) by vinyl record *(12:39)*   ✓ music.set_channel_mood({"mood": "rain-soaked 2-step and Berlin dub — late-night London dissolving into deepest space"}) → Channel mood set: rain-soaked 2-step and Berlin dub — late-night London dissolving into deepest space |
 
-One off-lane card each for 1017 (B) (of 62 failures) and September (P) (of 39).
+Off-lane trials failed for any cause, of three per case over 38 cases: 42 on September (P), 68 on qwen3.8-flash (A), 63 on 1017 (B). The cards are every kept one, three per arm, each a nought on holding character, so none shows a trial a check failed. The two match-score cards slip out of the DJ voice in a spoken line; most other cards answer the off-lane ask after brushing it off, one answers it outright, and the laundry cards on every arm, the control's included, give the wash temperature.
 
 ## What you could change
 
 | What you could change | What it decides | What happens as it moves |
 |---|---|---|
-| The margin on character adherence | Whether a candidate's character loss counts as acceptable | The call holds at every margin from zero up: both candidates cost more than September on this run's routing whatever loss is allowed. |
+| The margin on character adherence | Whether each candidate counts as no worse than the control on pass rate | The call to keep September (P) holds at every margin, because it rests on cost. On the uncorrected readings, 1017 (B) stops reading as within the margin below 6 points and qwen3.8-flash (A) below 11; on the corrected contrast Watch cites, qwen3.8-flash (A)'s drop reaches 13. |
 
 ## Next steps
 
-- Rerun the cost reading with the provider routing for each arm named, including the routing behind the earlier round's lower qwen3.8-flash cost. _Whether a candidate can run at or below September's cost; only that would reopen the call._
-- Revise the off-lane directive, aiming at both failure kinds (giving the off-lane help, and slipping into narration), and rerun off-lane asks on all three arms. _Whether the weakest larger stratum for every model can lift, and whether the candidates' gap there closes._
-- Rerun 1017 (B) at a reasoning effort that gives it September's reasoning share. _How much of its lower holds-character rate, and of its cost, belongs to the model rather than its reasoning budget._
-- Calibrate the judge against human ratings of Kairo replies. _Whether the character gaps hold under a judge known to agree with people._
+- Price qwen3.8-flash (A) and 1017 (B) on the provider routing production would use, and reconcile with the earlier finding that qwen3.8-flash lowers cost. _Whether either candidate can cost less than the control; only then is its character loss a trade worth pricing._
+- Calibrate the judge against human ratings on holding character, weighted toward off-lane asks. _Whether the candidates' character losses, and the control's off-lane failures, are real or the judge's reading._
+- Rerun 1017 (B) with its reasoning share matched to the control's. _Whether its cost and character gaps belong to the model or to how much it reasoned._
+- Revise the off-lane directive so a brush-off carries no answer, and rerun the off-lane asks on all arms. _Whether the stratum that carries the most loss for every arm, the control included, can lift._
 
 ## Full results
 
@@ -146,166 +133,173 @@ Each arm's full configuration, once. The rest of the page names an arm by its le
 
 ### Every arm by measure
 
-| Arm | Pass rate | outcome | transcript | persona booth stays offstage | persona holds character | Measuring spend, all roles, per 1,000 replies | Items delivered | Failed-reply notices | `call_count("discord.send_message") >= 1 or call_count("music.queue_voice") >= 1` | Production cost, per 1,000 replies | Tool provider faults | Turns that ran over budget |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| P · September | 85.3% (765 of 897) | 4.695 | 2.942 | 93% | 91.5% | $5.40 | 0 items | 0.00223 notices | 99.7% | $1.89 | 0 faults | 0 turns |
-| A · qwen3.8-flash | 77.7% (695 of 895) | 4.482 | 2.81 | 90% | 85.4% | $6.28 | 0 items | 0 notices | 98.7% | $2.43 | 0 faults | 0.007821 turns |
-| B · 1017 | 82.3% (738 of 897) | 4.709 | 2.959 | 93.8% | 86.6% | $5.76 | 0 items | 0 notices | 100% | $2.41 | 0 faults | 0 turns |
+| Measure | P · September | A · qwen3.8-flash | B · 1017 |
+|---|---|---|---|
+| Pass rate | 85% (765 of 897) | 78% (695 of 895) | 82% (738 of 897) |
+| Outcome (1–5) | 4.69 | 4.48 | 4.71 |
+| Transcript (1–5) | 2.94 | 2.81 | 2.96 |
+| Persona booth stays offstage | 93% | 90% | 94% |
+| Persona holds character | 91% | 85% | 87% |
+| Measuring spend, all roles, per 1,000 replies | $5.40 | $6.28 | $5.76 |
+| Items delivered | 0 items | 0 items | 0 items |
+| Failed-reply notices | 0.002 notices | 0 notices | 0 notices |
+| Send message or queue voice check | 99.7% | 98.7% | 100.0% |
+| Production cost, per 1,000 replies | $1.89 | $2.43 | $2.41 |
+| Tool provider faults | 0 faults | 0 faults | 0 faults |
+| Turns that ran over budget | 0 turns | 0.008 turns | 0 turns |
 
 ### Every corrected comparison
 
 | Arm | Measure | Change | Interval | Level | Adjusted p | Verdict | Confounds |
 |---|---|---|---|---|---|---|---|
-| A · qwen3.8-flash | Production cost, per 1,000 replies | +$0.62 | +$0.38 to +$0.85 | 99.69% | < 0.000001 | Regressed | — |
-| A · qwen3.8-flash | outcome | -0.2129 | -0.3065 to -0.1194 | 99.69% | < 0.000001 | Regressed | — |
-| B · 1017 | Production cost, per 1,000 replies | +$0.49 | +$0.17 to +$0.81 | 99.69% | 0.00008342 | Regressed | observed:reasoning ratio |
-| A · qwen3.8-flash | pass rate | -7.6 pts | -12.9 pts to -1.8 pts | 99.69% | 0.0001211 | Regressed | — |
-| A · qwen3.8-flash | persona holds character | -6 pts | -11.6 pts to -2.2 pts | 99.69% | 0.0002682 | Regressed | — |
-| B · 1017 | persona holds character | -4.7 pts | -8.7 pts to -0.6 pts | 99.69% | 0.0006398 | Regressed | observed:reasoning ratio |
-| A · qwen3.8-flash | transcript | -0.1321 | -0.2442 to -0.02 | 99.69% | 0.005154 | Regressed | — |
-| A · qwen3.8-flash | `call_count("discord.send_message") >= 1 or call_count("music.queue_voice") >= 1` | -1 pts | -3.6 pts to +1.6 pts | 99.69% | 0.1108 | Not separated | — |
-| A · qwen3.8-flash | persona booth stays offstage | -3 pts | -8.3 pts to +1.5 pts | 99.69% | 0.1795 | Not separated | — |
-| B · 1017 | pass rate | -3 pts | -7.4 pts to +2.6 pts | 99.69% | 0.2792 | Not separated | observed:reasoning ratio |
-| B · 1017 | `call_count("discord.send_message") >= 1 or call_count("music.queue_voice") >= 1` | +0.3 pts | -2.1 pts to +2.8 pts | 99.69% | 0.4996 | Not separated | observed:reasoning ratio |
-| B · 1017 | Failed-reply notices | -0.00223 notices | -0.006919 notices to +0.00246 notices | 99.69% | 0.7882 | Not separated | observed:reasoning ratio |
-| A · qwen3.8-flash | Failed-reply notices | -0.00223 notices | -0.006919 notices to +0.00246 notices | 99.69% | 0.7882 | Not separated | — |
-| B · 1017 | outcome | +0.01449 | -0.05828 to +0.08727 | 99.69% | 1 | Not separated | observed:reasoning ratio |
-| B · 1017 | transcript | +0.01672 | -0.08519 to +0.1186 | 99.69% | 1 | Not separated | observed:reasoning ratio |
-| B · 1017 | persona booth stays offstage | +0.8 pts | -3.5 pts to +5 pts | 99.69% | 1 | Not separated | observed:reasoning ratio |
+| A · qwen3.8-flash | Production cost, per 1,000 replies | +$0.62 | +$0.38 to +$0.85 | 95% (adjusted for 16 comparisons) | < 0.001 | Regressed | — |
+| A · qwen3.8-flash | Outcome (1–5) | -0.21 | -0.31 to -0.12 | 95% (adjusted for 16 comparisons) | < 0.001 | Regressed | — |
+| B · 1017 | Production cost, per 1,000 replies | +$0.49 | +$0.17 to +$0.81 | 95% (adjusted for 16 comparisons) | < 0.001 | Regressed | observed:reasoning ratio |
+| A · qwen3.8-flash | Pass rate | -8 pts | -13 to -2 pts | 95% (adjusted for 16 comparisons) | < 0.001 | Regressed | — |
+| A · qwen3.8-flash | Persona holds character | -6 pts | -12 to -2 pts | 95% (adjusted for 16 comparisons) | < 0.001 | Regressed | — |
+| B · 1017 | Persona holds character | -5 pts | -9 to -1 pts | 95% (adjusted for 16 comparisons) | < 0.001 | Regressed | observed:reasoning ratio |
+| A · qwen3.8-flash | Transcript (1–5) | -0.13 | -0.24 to -0.02 | 95% (adjusted for 16 comparisons) | 0.005 | Regressed | — |
+| A · qwen3.8-flash | Send message or queue voice check | -1.0 pts | -3.6 to +1.6 pts | 95% (adjusted for 16 comparisons) | 0.11 | Cannot tell apart | — |
+| A · qwen3.8-flash | Persona booth stays offstage | -3 pts | -8 to +2 pts | 95% (adjusted for 16 comparisons) | 0.18 | Cannot tell apart | — |
+| B · 1017 | Pass rate | -3 pts | -7 to +3 pts | 95% (adjusted for 16 comparisons) | 0.28 | Cannot tell apart | observed:reasoning ratio |
+| B · 1017 | Send message or queue voice check | +0.3 pts | -2.1 to +2.8 pts | 95% (adjusted for 16 comparisons) | 0.50 | Cannot tell apart | observed:reasoning ratio |
+| B · 1017 | Failed-reply notices | -0.002 notices | -0.007 to +0.002 notices | 95% (adjusted for 16 comparisons) | 0.79 | Cannot tell apart | observed:reasoning ratio |
+| A · qwen3.8-flash | Failed-reply notices | -0.002 notices | -0.007 to +0.002 notices | 95% (adjusted for 16 comparisons) | 0.79 | Cannot tell apart | — |
+| B · 1017 | Outcome (1–5) | +0.01 | -0.06 to +0.09 | 95% (adjusted for 16 comparisons) | 1.00 | Cannot tell apart | observed:reasoning ratio |
+| B · 1017 | Transcript (1–5) | +0.02 | -0.09 to +0.12 | 95% (adjusted for 16 comparisons) | 1.00 | Cannot tell apart | observed:reasoning ratio |
+| B · 1017 | Persona booth stays offstage | +1 pts | -3 to +5 pts | 95% (adjusted for 16 comparisons) | 1.00 | Cannot tell apart | observed:reasoning ratio |
 
 ### Every stratum
 
 | Stratum | Measure | Cases | P · September | A · qwen3.8-flash | B · 1017 |
 |---|---|---|---|---|---|
-| off lane | outcome | 38 | 4.754 | 4.754 | 4.737 |
-| off lane | transcript | 38 | 2.825 | 3.167 | 2.737 |
-| off lane | persona booth stays offstage | 38 | 96.5% | 95.5% | 98.2% |
-| off lane | persona holds character | 38 | 65.8% | 42.9% | 45.6% |
-| machinery | outcome | 30 | 4.7 | 4.511 | 4.689 |
-| machinery | transcript | 30 | 2.7 | 2.867 | 2.878 |
-| machinery | persona booth stays offstage | 30 | 68.9% | 75.3% | 74.4% |
-| machinery | persona holds character | 30 | 90% | 85.4% | 85.6% |
-| about | outcome | 23 | 4.783 | 4.638 | 4.797 |
-| about | transcript | 23 | 2.913 | 2.71 | 2.971 |
-| about | persona booth stays offstage | 23 | 98.6% | 97.1% | 98.6% |
-| about | persona holds character | 23 | 98.6% | 95.7% | 98.6% |
-| superlative | outcome | 22 | 4.818 | 4.141 | 4.803 |
-| superlative | transcript | 22 | 3.652 | 2.766 | 3.288 |
-| superlative | persona booth stays offstage | 22 | 95.5% | 90.5% | 95.5% |
-| superlative | persona holds character | 22 | 100% | 96.8% | 98.5% |
-| small talk | outcome | 17 | 4.667 | 4.569 | 4.784 |
-| small talk | transcript | 17 | 2.784 | 2.667 | 2.804 |
-| small talk | persona booth stays offstage | 17 | 88.2% | 92.2% | 98% |
-| small talk | persona holds character | 17 | 98% | 96.1% | 98% |
-| multi | outcome | 12 | 4.833 | 4.528 | 4.778 |
-| multi | transcript | 12 | 2.722 | 2.694 | 3.194 |
-| multi | persona booth stays offstage | 12 | 97.2% | 91.7% | 94.4% |
-| multi | persona holds character | 12 | 72.2% | 63.9% | 58.3% |
-| emotional | outcome | 11 | 4.758 | 4.576 | 4.606 |
-| emotional | transcript | 11 | 3.424 | 3.091 | 3.182 |
-| emotional | persona booth stays offstage | 11 | 97% | 90.9% | 100% |
-| emotional | persona holds character | 11 | 97% | 93.9% | 93.9% |
-| lineage | outcome | 10 | 4.5 | 4.2 | 4.567 |
-| lineage | transcript | 10 | 3 | 2.7 | 2.967 |
-| lineage | persona booth stays offstage | 10 | 100% | 93.1% | 100% |
-| lineage | persona holds character | 10 | 96.6% | 96.6% | 96.7% |
-| pushback | outcome | 10 | 4.8 | 4.467 | 4.7 |
-| pushback | transcript | 10 | 2.933 | 2.7 | 3 |
-| pushback | persona booth stays offstage | 10 | 100% | 96.7% | 100% |
-| pushback | persona holds character | 10 | 100% | 100% | 100% |
-| rejection | outcome | 10 | 4.733 | 4.6 | 4.833 |
-| rejection | transcript | 10 | 2.967 | 2.6 | 3.1 |
-| rejection | persona booth stays offstage | 10 | 96.7% | 93.3% | 96.7% |
-| rejection | persona holds character | 10 | 100% | 100% | 100% |
-| short | outcome | 10 | 4.567 | 4.7 | 4.733 |
-| short | transcript | 10 | 2.833 | 2.767 | 2.833 |
-| short | persona booth stays offstage | 10 | 96.7% | 96.7% | 96.7% |
-| short | persona holds character | 10 | 100% | 96.7% | 96.7% |
-| story | outcome | 10 | 4.367 | 3.9 | 4.4 |
-| story | transcript | 10 | 2.8 | 2.3 | 2.533 |
-| story | persona booth stays offstage | 10 | 93.3% | 53.3% | 96.7% |
-| story | persona holds character | 10 | 93.3% | 83.3% | 96.7% |
-| slang | outcome | 9 | 4.926 | 4.407 | 4.852 |
-| slang | transcript | 9 | 2.926 | 2.667 | 2.852 |
-| slang | persona booth stays offstage | 9 | 96.3% | 96.3% | 100% |
-| slang | persona holds character | 9 | 100% | 92.6% | 100% |
-| ai opinion | outcome | 8 | 4.75 | 4.667 | 4.625 |
-| ai opinion | transcript | 8 | 3.083 | 2.833 | 2.875 |
-| ai opinion | persona booth stays offstage | 8 | 95.8% | 95.8% | 95.8% |
-| ai opinion | persona holds character | 8 | 91.7% | 95.8% | 91.7% |
-| discovery | outcome | 8 | 4.333 | 4.083 | 4.542 |
-| discovery | transcript | 8 | 2.75 | 2.5 | 2.875 |
-| discovery | persona booth stays offstage | 8 | 87% | 83.3% | 87.5% |
-| discovery | persona holds character | 8 | 100% | 95.8% | 95.8% |
-| identify | outcome | 8 | 4.5 | 4.458 | 4.708 |
-| identify | transcript | 8 | 2.625 | 2.792 | 3.042 |
-| identify | persona booth stays offstage | 8 | 91.7% | 91.7% | 100% |
-| identify | persona holds character | 8 | 100% | 100% | 100% |
-| next up | outcome | 8 | 4.667 | 4.417 | 4.583 |
-| next up | transcript | 8 | 3.375 | 2.958 | 3.292 |
-| next up | persona booth stays offstage | 8 | 87.5% | 83.3% | 79.2% |
-| next up | persona holds character | 8 | 100% | 83.3% | 83.3% |
-| music tech | outcome | 7 | 4.381 | 4.381 | 4.571 |
-| music tech | transcript | 7 | 2.667 | 2.714 | 2.714 |
-| music tech | persona booth stays offstage | 7 | 100% | 100% | 100% |
-| music tech | persona holds character | 7 | 100% | 85.7% | 95.2% |
-| taste | outcome | 7 | 4.667 | 4.381 | 4.762 |
-| taste | transcript | 7 | 3.048 | 2.857 | 3.095 |
-| taste | persona booth stays offstage | 7 | 95.2% | 100% | 100% |
-| taste | persona holds character | 7 | 100% | 100% | 100% |
-| assistant shape | outcome | 6 | 4.278 | 4.167 | 4.444 |
-| assistant shape | transcript | 6 | 3 | 2.667 | 3.111 |
-| assistant shape | persona booth stays offstage | 6 | 94.1% | 83.3% | 77.8% |
-| assistant shape | persona holds character | 6 | 58.8% | 44.4% | 44.4% |
-| correction | outcome | 6 | 4.833 | 4.556 | 4.778 |
-| correction | transcript | 6 | 2.833 | 3.167 | 3.222 |
-| correction | persona booth stays offstage | 6 | 100% | 94.4% | 100% |
-| correction | persona holds character | 6 | 100% | 94.4% | 100% |
-| debate | outcome | 6 | 4.833 | 4.667 | 4.889 |
-| debate | transcript | 6 | 3.5 | 2.944 | 2.944 |
-| debate | persona booth stays offstage | 6 | 100% | 94.4% | 88.9% |
-| debate | persona holds character | 6 | 100% | 100% | 94.4% |
-| praise | outcome | 6 | 4.778 | 4.333 | 4.556 |
-| praise | transcript | 6 | 2.611 | 2.611 | 2.778 |
-| praise | persona booth stays offstage | 6 | 100% | 83.3% | 94.4% |
-| praise | persona holds character | 6 | 100% | 100% | 100% |
-| request | outcome | 6 | 4.833 | 4.278 | 4.722 |
-| request | transcript | 6 | 3.167 | 2.944 | 3.333 |
-| request | persona booth stays offstage | 6 | 94.4% | 100% | 88.9% |
-| request | persona holds character | 6 | 100% | 100% | 94.4% |
-| sequence | outcome | 6 | 4.667 | 4.611 | 4.722 |
-| sequence | transcript | 6 | 2.833 | 2.833 | 2.778 |
-| sequence | persona booth stays offstage | 6 | 100% | 83.3% | 94.4% |
-| sequence | persona holds character | 6 | 94.4% | 100% | 100% |
-| ai mechanics | outcome | 5 | 4.733 | 4.667 | 4.867 |
-| ai mechanics | transcript | 5 | 2.467 | 2.733 | 3.267 |
-| ai mechanics | persona booth stays offstage | 5 | 86.7% | 93.3% | 86.7% |
-| ai mechanics | persona holds character | 5 | 86.7% | 86.7% | 86.7% |
+| off lane | Outcome (1–5) | 38 | 4.75 | 4.75 | 4.74 |
+| off lane | Transcript (1–5) | 38 | 2.82 | 3.17 | 2.74 |
+| off lane | Persona booth stays offstage | 38 | 96% | 96% | 98% |
+| off lane | Persona holds character | 38 | 66% | 43% | 46% |
+| machinery | Outcome (1–5) | 30 | 4.70 | 4.51 | 4.69 |
+| machinery | Transcript (1–5) | 30 | 2.70 | 2.87 | 2.88 |
+| machinery | Persona booth stays offstage | 30 | 69% | 75% | 74% |
+| machinery | Persona holds character | 30 | 90% | 85% | 86% |
+| about | Outcome (1–5) | 23 | 4.78 | 4.64 | 4.80 |
+| about | Transcript (1–5) | 23 | 2.91 | 2.71 | 2.97 |
+| about | Persona booth stays offstage | 23 | 99% | 97% | 99% |
+| about | Persona holds character | 23 | 99% | 96% | 99% |
+| superlative | Outcome (1–5) | 22 | 4.82 | 4.14 | 4.80 |
+| superlative | Transcript (1–5) | 22 | 3.65 | 2.77 | 3.29 |
+| superlative | Persona booth stays offstage | 22 | 95% | 90% | 95% |
+| superlative | Persona holds character | 22 | 100% | 97% | 98% |
+| small talk | Outcome (1–5) | 17 | 4.67 | 4.57 | 4.78 |
+| small talk | Transcript (1–5) | 17 | 2.78 | 2.67 | 2.80 |
+| small talk | Persona booth stays offstage | 17 | 88% | 92% | 98% |
+| small talk | Persona holds character | 17 | 98% | 96% | 98% |
+| multi | Outcome (1–5) | 12 | 4.83 | 4.53 | 4.78 |
+| multi | Transcript (1–5) | 12 | 2.72 | 2.69 | 3.19 |
+| multi | Persona booth stays offstage | 12 | 97% | 92% | 94% |
+| multi | Persona holds character | 12 | 72% | 64% | 58% |
+| emotional | Outcome (1–5) | 11 | 4.76 | 4.58 | 4.61 |
+| emotional | Transcript (1–5) | 11 | 3.42 | 3.09 | 3.18 |
+| emotional | Persona booth stays offstage | 11 | 97% | 91% | 100% |
+| emotional | Persona holds character | 11 | 97% | 94% | 94% |
+| lineage | Outcome (1–5) | 10 | 4.50 | 4.20 | 4.57 |
+| lineage | Transcript (1–5) | 10 | 3.00 | 2.70 | 2.97 |
+| lineage | Persona booth stays offstage | 10 | 100% | 93% | 100% |
+| lineage | Persona holds character | 10 | 97% | 97% | 97% |
+| pushback | Outcome (1–5) | 10 | 4.80 | 4.47 | 4.70 |
+| pushback | Transcript (1–5) | 10 | 2.93 | 2.70 | 3.00 |
+| pushback | Persona booth stays offstage | 10 | 100% | 97% | 100% |
+| pushback | Persona holds character | 10 | 100% | 100% | 100% |
+| rejection | Outcome (1–5) | 10 | 4.73 | 4.60 | 4.83 |
+| rejection | Transcript (1–5) | 10 | 2.97 | 2.60 | 3.10 |
+| rejection | Persona booth stays offstage | 10 | 97% | 93% | 97% |
+| rejection | Persona holds character | 10 | 100% | 100% | 100% |
+| short | Outcome (1–5) | 10 | 4.57 | 4.70 | 4.73 |
+| short | Transcript (1–5) | 10 | 2.83 | 2.77 | 2.83 |
+| short | Persona booth stays offstage | 10 | 97% | 97% | 97% |
+| short | Persona holds character | 10 | 100% | 97% | 97% |
+| story | Outcome (1–5) | 10 | 4.37 | 3.90 | 4.40 |
+| story | Transcript (1–5) | 10 | 2.80 | 2.30 | 2.53 |
+| story | Persona booth stays offstage | 10 | 93% | 53% | 97% |
+| story | Persona holds character | 10 | 93% | 83% | 97% |
+| slang | Outcome (1–5) | 9 | 4.93 | 4.41 | 4.85 |
+| slang | Transcript (1–5) | 9 | 2.93 | 2.67 | 2.85 |
+| slang | Persona booth stays offstage | 9 | 96% | 96% | 100% |
+| slang | Persona holds character | 9 | 100% | 93% | 100% |
+| ai opinion | Outcome (1–5) | 8 | 4.75 | 4.67 | 4.62 |
+| ai opinion | Transcript (1–5) | 8 | 3.08 | 2.83 | 2.88 |
+| ai opinion | Persona booth stays offstage | 8 | 96% | 96% | 96% |
+| ai opinion | Persona holds character | 8 | 92% | 96% | 92% |
+| discovery | Outcome (1–5) | 8 | 4.33 | 4.08 | 4.54 |
+| discovery | Transcript (1–5) | 8 | 2.75 | 2.50 | 2.88 |
+| discovery | Persona booth stays offstage | 8 | 87% | 83% | 88% |
+| discovery | Persona holds character | 8 | 100% | 96% | 96% |
+| identify | Outcome (1–5) | 8 | 4.50 | 4.46 | 4.71 |
+| identify | Transcript (1–5) | 8 | 2.62 | 2.79 | 3.04 |
+| identify | Persona booth stays offstage | 8 | 92% | 92% | 100% |
+| identify | Persona holds character | 8 | 100% | 100% | 100% |
+| next up | Outcome (1–5) | 8 | 4.67 | 4.42 | 4.58 |
+| next up | Transcript (1–5) | 8 | 3.38 | 2.96 | 3.29 |
+| next up | Persona booth stays offstage | 8 | 88% | 83% | 79% |
+| next up | Persona holds character | 8 | 100% | 83% | 83% |
+| music tech | Outcome (1–5) | 7 | 4.38 | 4.38 | 4.57 |
+| music tech | Transcript (1–5) | 7 | 2.67 | 2.71 | 2.71 |
+| music tech | Persona booth stays offstage | 7 | 100% | 100% | 100% |
+| music tech | Persona holds character | 7 | 100% | 86% | 95% |
+| taste | Outcome (1–5) | 7 | 4.67 | 4.38 | 4.76 |
+| taste | Transcript (1–5) | 7 | 3.05 | 2.86 | 3.10 |
+| taste | Persona booth stays offstage | 7 | 95% | 100% | 100% |
+| taste | Persona holds character | 7 | 100% | 100% | 100% |
+| assistant shape | Outcome (1–5) | 6 | 4.28 | 4.17 | 4.44 |
+| assistant shape | Transcript (1–5) | 6 | 3.00 | 2.67 | 3.11 |
+| assistant shape | Persona booth stays offstage | 6 | 94% | 83% | 78% |
+| assistant shape | Persona holds character | 6 | 59% | 44% | 44% |
+| correction | Outcome (1–5) | 6 | 4.83 | 4.56 | 4.78 |
+| correction | Transcript (1–5) | 6 | 2.83 | 3.17 | 3.22 |
+| correction | Persona booth stays offstage | 6 | 100% | 94% | 100% |
+| correction | Persona holds character | 6 | 100% | 94% | 100% |
+| debate | Outcome (1–5) | 6 | 4.83 | 4.67 | 4.89 |
+| debate | Transcript (1–5) | 6 | 3.50 | 2.94 | 2.94 |
+| debate | Persona booth stays offstage | 6 | 100% | 94% | 89% |
+| debate | Persona holds character | 6 | 100% | 100% | 94% |
+| praise | Outcome (1–5) | 6 | 4.78 | 4.33 | 4.56 |
+| praise | Transcript (1–5) | 6 | 2.61 | 2.61 | 2.78 |
+| praise | Persona booth stays offstage | 6 | 100% | 83% | 94% |
+| praise | Persona holds character | 6 | 100% | 100% | 100% |
+| request | Outcome (1–5) | 6 | 4.83 | 4.28 | 4.72 |
+| request | Transcript (1–5) | 6 | 3.17 | 2.94 | 3.33 |
+| request | Persona booth stays offstage | 6 | 94% | 100% | 89% |
+| request | Persona holds character | 6 | 100% | 100% | 94% |
+| sequence | Outcome (1–5) | 6 | 4.67 | 4.61 | 4.72 |
+| sequence | Transcript (1–5) | 6 | 2.83 | 2.83 | 2.78 |
+| sequence | Persona booth stays offstage | 6 | 100% | 83% | 94% |
+| sequence | Persona holds character | 6 | 94% | 100% | 100% |
+| ai mechanics | Outcome (1–5) | 5 | 4.73 | 4.67 | 4.87 |
+| ai mechanics | Transcript (1–5) | 5 | 2.47 | 2.73 | 3.27 |
+| ai mechanics | Persona booth stays offstage | 5 | 87% | 93% | 87% |
+| ai mechanics | Persona holds character | 5 | 87% | 87% | 87% |
 
 ### Left out, and why
 
-- **Judged outcome and transcript scores** They move the same way as the pass rate (qwen3.8-flash (A) lower, 1017 (B) not separated) and add no new axis.
-- **The booth-stays-offstage dimension** Neither candidate is separated from September on it.
-- **The delivery check (a message or voice line sent) and failed-reply notices** Neither candidate is separated from September; no arm buys its figures by declining work.
-- **Measuring spend across all roles** It includes the simulator and judge, not what production would pay; production cost is the deciding measure.
-- **The confirmatory readings against the control and their flip margins** Same direction as the corrected contrasts the page shows, and the call does not move with the margin.
-- **Each stratum's share of the candidates' loss** Off-lane carries the largest share for both, which the stratum rates already show; the share adds no decision.
-- **Strata of fewer cases than those shown** Too few cases each to lead with. In one, assistant shape, two arms fall below their off-lane rate: September (P) at 58.8% and 1017 (B) at 44.4%. They stay in the full tables.
+- **The judge's overall outcome and transcript scores** They point the same way as the pass rate (qwen3.8-flash (A) lower, 1017 (B) cannot be told apart) and do not change the call.
+- **The send-message-or-queue-voice check and failed-reply notices** The evidence cannot tell either candidate and the control apart on them, and neither bears on cost.
+- **Measuring spend across all roles** It counts the evaluation's own spend, judge and simulator included, not what production would pay.
+- **Strata other than off-lane** No other stratum's drop is large enough to lead; most hold ten cases or fewer. They stay in the full tables.
+- **Items delivered, tool provider faults and turns that ran over budget** Telemetry that describes the run, not the persona; none bears on the call.
+- **Cost uplift as a percentage, in the claims** The options table prints it, read off unpaired means; the claims cite the paired dollar gaps instead, and Method reconciles the two.
 
 ### Method
 
-- **Cases and repeats** 299 cases, each run 3 times per arm; intervals count cases, not trials.
-- **What pass means** A trial passes when its candidate did not fail, every check passed and every judged dimension scored at least 3 of 5.
-- **Intervals and correction** 16 comparisons this question asks about carried a p and were corrected together by Holm's method at α=0.05; a separation stands only where the adjusted p is below it and the interval excludes zero. Each interval is at 99.69%, so the family's intervals hold together at 95%.
-- **Judge** Character dimensions were scored by openai/gpt-6-luna, with calibration insufficient and 0 human ratings.
-- **Cost basis** Production cost per 1,000 replies, replicating what production would pay. The run does not name the provider that served each model, so every cost belongs to this run's routing. Paired cost changes count only cases where both arms reported a cost; the options table's means count every reporting trial. Trials with no reported cost: 33 for September, 69 for qwen3.8-flash, 18 for 1017 (B).
-- **Lost trials** qwen3.8-flash lost two trials to harness failures; its rates are over the usable trials. _Caveats: A run fell short of its usable measurements — two of them, on qwen3.8-flash (A)._
-- **Not compared** Latency, read while other runs executed beside it. Input tokens, output tokens and model-call counts were not reported. _Caveats: Latency is not compared; Recorded but not reported: input tokens; Recorded but not reported: llm calls; Recorded but not reported: output tokens._
-- **Simulator settings** The simulated user's request settings were not recorded on every run, so whether they varied cannot be established. _Caveats: The apparatus may have differed: simulator sent settings._
-- **Declarations** The aspect, the control, the margin and the floor were all set on 25 Oct 2026, after the results.
+- **Cases and repeats** 299 cases, each run three times per arm; intervals count cases, not trials, except the off-lane comparisons, which may be too narrow.
+- **What a pass means** A trial passes when its candidate did not fail, every goal check passed and every judged dimension scored at least 3 of 5.
+- **Intervals** Readings against the control are each candidate's own, uncorrected, at 95%. Contrasts are paired by case and corrected together by Holm's method, each at 99.69%, so the whole family's intervals hold together; they read wider than the readings.
+- **Judge** Every judged dimension was scored by openai/gpt-6-luna, with calibration insufficient and zero human ratings. _Caveats: The judge is not calibrated._
+- **Cost basis** Production cost per 1,000 replies, as served in this run; no arm names the provider that served it. The cost gaps the page leads with are paired by case, over the 284 and 293 cases where both arms recorded a cost, so they differ from the gaps between the arms' means ($2.43 per 1,000 replies and $2.41 per 1,000 replies against $1.89 per 1,000 replies); the options table's percentages are read off those unpaired means. Trials with no cost: 33 for the control, 69 for qwen3.8-flash (A), eighteen for 1017 (B). Had each such candidate trial cost nothing, the candidates would still cost $2.24 per 1,000 replies and $2.36 per 1,000 replies, above the control's $2.02 per 1,000 replies had its own cost its p95; the order holds.
+- **Not compared** Latency was read while other runs executed beside it and is left out. Input tokens, output tokens and model calls were not reported. _Caveats: Latency is not compared; Recorded but not reported: input tokens; Recorded but not reported: output tokens; Recorded but not reported: llm calls._
+- **Apparatus** The simulated user's request settings were not recorded on every run, so whether they varied cannot be established. _Caveats: The apparatus may have differed: simulator sent settings._
+- **Declarations** The asked aspect, the control, the margin and the floor were all set on 25 Oct 2026, after the results.
 
-### Review findings left open
+### Checks
 
-- **Must fix** · Claim 4: c4 says qwen3.8-flash 'fails differently from the other two', and that the 1017 and September cards 'instead slip out of the DJ voice into narration or help-desk phrasing'. Three off-lane cards were kept for each arm, and the claim shows only one each for 1017 and September. Of the unshown cards, two of September's give the off-lane help: T42 suggests an opening line for the landlord email, and T64 answers 'Cold' to the laundry question. Two of 1017's do too: T67 answers 'Cold', and T77 says 'Buy whatever plays the bass cleanest'. So giving the off-lane help shows up in two of three kept cards for every arm, and narration or help-desk phrasing in only one each for September and 1017. Rewrite c4 to say that, in the kept cards, all three models mostly fail by supplying the out-of-lane help, and that only September and 1017 also show a narration or help-desk slip. Show all three kept cards per arm, or a count per failure kind, and fix the caption ('three of 39' for September, 'three of 62' for 1017). The next step on the off-lane directive can stay as it is, since it already aims at both failure kinds.
+- <a id="g-check-send-message-or-queue-voice-check"></a>**Send message or queue voice check**: The goal check `call_count("discord.send_message") >= 1 or call_count("music.queue_voice") >= 1`, which code runs on every trial.
 
-_Written by claude-opus-5-5, served as claude-opus-5-5, for $3.68, with analyst skill 4e14e276b568, on 2026-10-31._
+_Written by claude-opus-5-5, served as claude-opus-5-5, for $4.20, with analyst skill 365899f8f20b, on 2026-11-11._
