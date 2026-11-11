@@ -373,8 +373,8 @@ class _NamedIn:
 
 
 def _appendix(report: CampaignReport, static: bool) -> list[str]:
-    """A planned page's appendix: each aspect's fold, as every campaign page lays it out, then the glossary its folds
-    link."""
+    """The document page's evidence record (:func:`doc_page_html`'s ``record``): each aspect's fold, as the campaign
+    page lays it out, then the glossary its folds link."""
     folds = [
         "\n".join(_aspect_fold(fold, slug, static=static))
         for fold, slug in zip(report.aspects, report.fold_ids, strict=True)

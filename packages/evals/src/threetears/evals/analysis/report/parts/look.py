@@ -2,10 +2,10 @@
 
 **An arm's look.** The control is ink-gray and marked by a square; each candidate takes the kit's series colours in
 fixed order and a mark shape in fixed order, so an arm reads apart without its colour (GENERATOR §5.2). Two keys
-pick it: an arm's letter tag (:func:`arm_token`, :func:`arm_shape`), which the report's own charts carry, and a
-plan's colour slot (:func:`slot_token`, :func:`slot_shape`: ``-1`` for the control, then ``0``, ``1``… in the
-input's order), which a planned page reads. A planned page holds each arm's look in a :class:`PageLook`, with the
-reader names the page writes in place of ids.
+pick it: an arm's letter tag (:func:`arm_token`, :func:`arm_shape`), which the report's own charts carry, and its
+colour slot as code's facts give it (``-1`` for the control, then ``0``, ``1``… in the input's order), which
+:func:`page_look` reads. The document's page and the analyst's blocks hold each arm's look in a :class:`PageLook`
+(:func:`~threetears.evals.analysis.report.block_spec.block_look`), with the reader names they write in place of ids.
 
 **A quantity on a chart** (:func:`quantity`): the factor from the input's figure to the drawn one, the kit's format,
 and the unit the package's number rule writes beside it (:func:`~threetears.evals.analysis.quantities.with_unit`).
@@ -194,7 +194,7 @@ def cost_axis_format(top: float, *, money: bool) -> str:
 
 @dataclass(frozen=True)
 class ArmLook:
-    """One arm as every part of a planned page shows it.
+    """One arm as every part of a page shows it.
 
     :ivar id: The arm's id.
     :ivar name: Its short name (its declared short name, else its alias, else its id).
@@ -219,7 +219,7 @@ class ArmLook:
 
 @dataclass(frozen=True)
 class PageLook:
-    """Every arm's look on one planned page, the order the page lists arms in, and the names it writes for ids.
+    """Every arm's look on one page, the order the page lists arms in, and the names it writes for ids.
 
     :ivar arms: Each arm's look, by id, in the input's order.
     :ivar order: The arms in the page's order, then every other arm in the input's order: the order a chart's rows
@@ -290,8 +290,9 @@ def page_look(
     recommended: str | None,
     names: Mapping[str, Mapping[str, str]],
 ) -> PageLook:
-    """A planned page's look: each arm's tag and name as code's facts give them, its colour and mark from the plan's
-    colour slot (an arm the plan holds no slot for takes the facts' own).
+    """A page's look: each arm's tag and name as code's facts give them, its colour and mark from its colour slot in
+    ``slots`` (an arm ``slots`` holds none for takes the facts' own). Its one caller,
+    :func:`~threetears.evals.analysis.report.block_spec.block_look`, passes the facts' slots, no order and no arm.
 
     :param arms: Each arm as code's facts tell of it, in the input's order.
     :ptype arms: Sequence[FactArm]

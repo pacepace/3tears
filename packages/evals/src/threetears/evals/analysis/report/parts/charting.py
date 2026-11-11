@@ -254,8 +254,8 @@ def chart_block(
     context: ChartContext, data: KitChart, *, read_at: str = "", table_unit: str | None = None
 ) -> ChartBlock:
     """The chart's block: its kind, its title and the kit's data, every value it draws carrying the text the page's
-    forms decide (:meth:`~threetears.evals.analysis.report.forms.PageForms.chart_texts`), on the planned page's fixed
-    section.
+    forms decide (:meth:`~threetears.evals.analysis.report.forms.PageForms.chart_texts`), in
+    :data:`~threetears.evals.analysis.report.parts.model.WRITER_SECTION`, which the page that lays it out ignores.
 
     :param context: The chart being resolved.
     :ptype context: ChartContext

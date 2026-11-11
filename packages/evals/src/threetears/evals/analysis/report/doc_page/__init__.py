@@ -14,5 +14,5 @@ writes. The parts, each its own module:
 - :mod:`~threetears.evals.analysis.report.doc_page.text`: the page as a reader reads it, as plain text with every
   block's values table: the editor's input, and the text above the appendix that no internal id may appear in.
 
-This package's own init imports nothing, as the planned page's does not.
+This package's own init imports nothing.
 """

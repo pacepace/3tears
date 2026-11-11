@@ -1,12 +1,13 @@
 """The analyst's block tools: the evidence block a claim would show, as its values table, and what blocks there are.
 
 **A block is a chart a page could draw** (a kind over a query of the report input), and :func:`block_render` draws
-it the way a planned page draws a stored chart, by the same code:
+it the way the document page draws an evidence block, by the same code:
 :func:`~threetears.evals.analysis.report.block_spec.complete_chart` completes it (its reference line's key, interval
 level, unit and axis), :func:`~threetears.evals.analysis.report.block_spec.chart_faults` and
-:func:`~threetears.evals.analysis.report.block_spec.small_multiple_faults` hold it to the plan checks' own rules, and
-the page's resolver draws it (:func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart`, under
-:func:`~threetears.evals.analysis.report.block_spec.block_look`), as the document page draws an evidence block. So
+:func:`~threetears.evals.analysis.report.block_spec.small_multiple_faults` hold it to the document checks' own rules
+(:mod:`~threetears.evals.analysis.report_doc_checks`), and the page's resolver draws it
+(:func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart`, under
+:func:`~threetears.evals.analysis.report.block_spec.block_look`), as the page does. So
 a block the analyst sees drawn is one a page draws, and a block refused here is refused there. What comes back is the block's values
 table (every value the chart would draw, as text), its level, unit, axis and reference line, and code's notes: never
 the picture or the kit's chart data. Every fault is refused together, each named by the parameter it sits at.

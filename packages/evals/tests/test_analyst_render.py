@@ -135,7 +135,7 @@ def test_the_sweep_meets_refusals_as_well_as_blocks() -> None:
 
 
 # =============================================================================
-# The anchors: the same values through block_render as through the planned page
+# The anchors: the same values through block_render as through the stored plans the retired planned page drew
 # =============================================================================
 
 

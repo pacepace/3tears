@@ -7,8 +7,8 @@ gathers them onto the analyst's cut, and the editor's cut of the analyst tool is
 lists their names.
 
 ``block_catalog`` comes first: it lists every kind ``block_render`` draws, the sources each reads, and the query
-fields that narrow a source's rows. ``block_render`` draws one block the way a planned page draws a chart, by the
-page's own code, and returns its values table, never the picture.
+fields that narrow a source's rows. ``block_render`` draws one block the way the document page draws an evidence
+block, by the page's own code, and returns its values table, never the picture.
 """
 
 from __future__ import annotations

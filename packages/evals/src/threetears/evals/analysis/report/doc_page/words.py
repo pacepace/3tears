@@ -5,9 +5,9 @@ the label of each caveat code assigns, the titles of the parts no analyst heads 
 explore's, the appendix's), the explore table's heads, the review findings' severity words, the draft line a page its
 editor's review did not clear carries first, and the lines a page read from a stored document adds where part of it no
 longer reads. The confidence's form words, the options table's role
-words and the Full results tables' words are the planned page's
-(:mod:`~threetears.evals.analysis.report.parts.words`), so both pages say them alike. Held here so a translation
-replaces them in one place.
+words and the Full results tables' words are the shared parts'
+(:mod:`~threetears.evals.analysis.report.parts.words`), so the page and the analyst's blocks say them alike.
+Held here so a translation replaces them in one place.
 """
 
 from __future__ import annotations
@@ -58,8 +58,8 @@ SLOT_TITLES: Final[dict[str, str]] = {
     "known_despite_it": "What we know despite it",
 }
 
-#: The slot words whose entries the decision block sets apart, as the planned page sets apart its recommendation and
-#: its lean: a look for the word, as a claim's weight is a type size.
+#: The slot words whose entries the decision block sets apart (the recommendation and the lean): a look for the word,
+#: as a claim's weight is a type size.
 SET_APART: Final = frozenset({"recommendation", "our_lean"})
 
 #: The label of each caveat code assigns, by its kind

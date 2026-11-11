@@ -255,8 +255,8 @@ def block_look(report_input: ReportInput, arms: Sequence[FactArm]) -> PageLook:
     """The look one chart is drawn with when no plan stands behind it: each arm's tag, name, colour and mark as code's
     facts give them, the arms in the input's order, the reader names, and no arm recommended.
 
-    It is :func:`~threetears.evals.analysis.report.parts.look.page_look`, the planned page's own, with nothing a
-    plan chooses: a chart whose query lists its arms draws them in that order on both.
+    It is :func:`~threetears.evals.analysis.report.parts.look.page_look` with nothing a plan chooses: the document's
+    page and the analyst's blocks draw with it, and a chart whose query lists its arms draws them in that order.
 
     :param report_input: The report input the chart reads.
     :ptype report_input: ReportInput

@@ -264,8 +264,9 @@ def _cell_code(text: str) -> str:
 def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
     """A table of served cells' text, scrolling inside its own ``.tbl`` frame rather than widening the page: a table
     block's rows alone, which :func:`table_html` heads with the block's title and a page that names the table itself
-    (the planned page's options table) lays out as it is. Its first column stays in view as it scrolls, and a table a
-    row is told apart in by two columns (``TableBlock.key_columns``) is framed ``tbl keys-2``, which keeps both.
+    (the document page's options table, explore table and arms key) lays out as it is. Its first column stays in
+    view as it scrolls, and a table a row is told apart in by two columns (``TableBlock.key_columns``) is framed
+    ``tbl keys-2``, which keeps both.
 
     A turned Every arm by measure heads each row with its figure (``<th scope="row">``, which reads as a body cell).
     A column of numbers is classed ``num`` on every cell, header included, so the stylesheet right-aligns it; a cell

@@ -8,7 +8,8 @@ digits alone as a number, so neither is rewritten; nor is an id inside the words
 
 Mutations that turn this file red: claim ids matched by one fixed shape (``c`` and digits), so ``c-cost`` or
 ``Q_margin`` prints raw; ids tried shortest first, so ``c3-b`` reads as ``claim 1-b``; a plain word or an id of digits
-alone rewritten; an id rewritten inside a figure's words (``character adherence (v2)``).
+alone rewritten; an id rewritten inside a figure's words (``character adherence (v2)``); an id read at the start of a
+longer hyphenated word (``c-cost-share`` as ``claim 2-share``).
 """
 
 from __future__ import annotations
@@ -77,6 +78,13 @@ def test_a_claim_id_that_is_a_plain_word_reads_as_the_word() -> None:
     page, said = _page(["lead", "c-cost"], "The lead repeats c-cost; lead with the cost instead.")
     places = {claim.id: claim.place for claim in page.claims}
     assert said == f"The lead repeats claim {places['c-cost']}; lead with the cost instead.", said
+
+
+def test_a_claim_id_inside_a_longer_hyphenated_word_stands() -> None:
+    """``c-cost-share`` is a word of its own, not the claim ``c-cost`` and a tail: only the id standing whole moves."""
+    page, said = _page(["c-cost"], "The c-cost-share row repeats c-cost.")
+    place = next(claim.place for claim in page.claims if claim.id == "c-cost")
+    assert said == f"The c-cost-share row repeats claim {place}.", said
 
 
 def test_a_claim_id_inside_a_figure_s_words_stands() -> None:

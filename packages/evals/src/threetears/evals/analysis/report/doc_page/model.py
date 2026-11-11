@@ -8,7 +8,8 @@ the document: every figure key is already written out, every block already drawn
 
 **Who wrote what.** A field the analyst wrote, its figure keys written out, is typed model prose; a line code wrote
 (the form words, a caveat's code label and checked line, the slot titles, a block's notes, the masthead) is plain
-text. The parts the planned page shares (the masthead, a drawn chart, the arms key, a decision entry) are its models.
+text. The parts it shares with the analyst's blocks (the masthead, a drawn chart, the arms key, a decision entry)
+are :mod:`~threetears.evals.analysis.report.parts.model`'s models.
 
 **Above the appendix, then the appendix.** The masthead, a draft's line or a finished page's open-findings line, the
 first screen (headline, lede, flag, confidence, decision, options), the claims with their evidence, explore and next steps are what a reader reads first;

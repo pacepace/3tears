@@ -563,7 +563,9 @@ def _claim_id(ids: Iterable[str]) -> re.Pattern[str] | None:
     named = sorted((claim for claim in ids if not claim.isdecimal() and reads_as_a_tag(claim)), key=len, reverse=True)
     if not named:
         return None
-    return re.compile(rf"(?<!\w)(?P<id>{'|'.join(re.escape(claim) for claim in named)})(?!\w)")
+    # a hyphen joins a word here as a letter does: an id is a tag that may hold one (``c-cost``), so ``c-cost-share``
+    # is another word, never ``c-cost`` and a tail
+    return re.compile(rf"(?<![\w-])(?P<id>{'|'.join(re.escape(claim) for claim in named)})(?![\w-])")
 
 
 def _finding_words(text: str, reader: _Reader, places: Mapping[str, int]) -> str:
