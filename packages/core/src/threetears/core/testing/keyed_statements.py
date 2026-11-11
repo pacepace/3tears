@@ -17,19 +17,24 @@ built on it fails loudly rather than matching rows it should not.
         if statement.kind == "update":
             return statement.update(self.rows)
         return statement.select(self.rows)
+
+A route test that stubs one row per read on a mock pool answers the helpers' reads by key with :func:`keyed_fetch`
+instead: each read by key of a table it names gets the next queued row, every other statement the test's own double.
 """
 
 from __future__ import annotations
 
 import functools
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
+from unittest.mock import AsyncMock
 
 __all__ = [
     "KeyedStatement",
     "decode",
+    "keyed_fetch",
 ]
 
 _IDENT: Final = r'(?:\w+\.)?"?(\w+)"?'
@@ -330,3 +335,47 @@ def _condition(text: str, args: Sequence[Any]) -> _Condition:
             pinned = (column, bound) if operator == "=" else None
             return _Condition(text, functools.partial(_compared, operator, column, bound), pinned)
     raise ValueError(f"a condition the decoder cannot read: {text}")
+
+
+def _read_by_key(sql: str, args: Sequence[Any], tables: Collection[str]) -> bool:
+    """whether ``sql`` is a keyed helper's read by key (a select with no ORDER BY) of one of ``tables``."""
+    try:
+        statement = decode(sql, args)
+    except ValueError:
+        return False
+    return statement.kind == "select" and statement.table in tables and not statement.order
+
+
+def keyed_fetch(
+    *answers: dict[str, Any] | None,
+    tables: Collection[str],
+    rest: Callable[..., Awaitable[Any]] | None = None,
+) -> AsyncMock:
+    """a pool ``fetch`` double: each read by key of ``tables`` answers the next of ``answers``, all else ``rest``.
+
+    For a unit test whose mock pool stubbed one row per read (``pool.fetchrow`` with ordered answers) once the code
+    under test reads through :func:`~threetears.core.keyed.read_keyed`, which issues ``pool.fetch``: the reads by key
+    (a select of one of ``tables`` with no ORDER BY, as :func:`decode` reads it back) take the queued answers in the
+    order the code makes them, one row each or none; a keyed page (ordered) and any statement the helpers did not
+    write go to ``rest``. A read by key past the last answer fails the test.
+
+    :param answers: the row each read by key finds, in order (None: it finds none)
+    :ptype answers: dict[str, Any] | None
+    :param tables: the tables whose reads by key the answers are for
+    :ptype tables: Collection[str]
+    :param rest: what answers every other statement (``rest(sql, *args)``); None: no rows
+    :ptype rest: Callable[..., Awaitable[Any]] | None
+    :return: the double, recording its calls
+    :rtype: AsyncMock
+    """
+    queued = list(answers)
+
+    async def _fetch(sql: str, *args: Any) -> Any:
+        if _read_by_key(sql, args, tables):
+            if not queued:
+                raise AssertionError(f"a read by key past the queued answers: {sql}")
+            row = queued.pop(0)
+            return [] if row is None else [row]
+        return [] if rest is None else await rest(sql, *args)
+
+    return AsyncMock(side_effect=_fetch)
