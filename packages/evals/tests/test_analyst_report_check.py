@@ -463,7 +463,9 @@ def _served(tool: MountedTool) -> list[str]:
 #: the promotion sentence names only readings the comparison counts).
 #: The evals tool moved again when campaign_export's built_by description came to say it is provenance the mint never
 #: imports (its operator names the factory with --host).
-_EVALS_BYTES = "ca0dc621a893d04cbf8315a6f0f8c4d45e15066b0ab2ecde73fe6cd6124db70d"
+#: The evals tool moved again when campaign_create's and campaign_update's floors description came to say a floor never
+#: blocks or removes an option and, read broken on an asked aspect, caps the candidate's standing in the dominance read.
+_EVALS_BYTES = "ad7243d4db5055a0b42e10db4acd6f83ba15aeb7593dbee3d29d9f97dba44d87"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).
@@ -475,7 +477,10 @@ _EVALS_BYTES = "ca0dc621a893d04cbf8315a6f0f8c4d45e15066b0ab2ecde73fe6cd6124db70d
 #: grammar's `signed` line (a criterion's gap and the weakest margin read as a bare distance, signed only when a writer
 #: asks, ``{criteria.p95.fast.v2.gap|signed}`` reading "+520 ms"), and, in the editor's, the stratum, aspect-stratum,
 #: cell and criterion examples read at their measure's one precision on the page ("-15.0", "55.0%", "90.0%").
-_EDITOR_BYTES = "732b6512f40df870ed40c75463cb97aa8da4ada2dbf0dd1646ae627e7bd2a469"
+#: The editor's and the analyst's moved again when ``count.failures`` came to count the trials the pass rule failed, the
+#: scoreboard's ``failed``: the counts family's line reads "the examples kept and the trials the pass rule failed", and,
+#: in the editor's, the count and scoreboard keys say the two count the same trials.
+_EDITOR_BYTES = "16e8efd95dafa7510f5bfc8347c236b2c7e0b511aa8a6f4f477f10ac9a4da955"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's
 #: description and its topics.
@@ -501,7 +506,9 @@ _ANALYST_ACTIONS_BEFORE = [
 ]
 #: Moved when each measure came to one form per page: the figure-key grammar's `signed` line, a criterion's gap and the weakest margin signed
 #: only when a writer asks (``{criteria.p95.fast.v2.gap|signed}`` reads "+520 ms").
-_ANALYST_BYTES = "71da0d922b25223640cfb868d85cb805a8f1474d7af02f58e98f3dfd1d3f496e"
+#: Moved again when ``count.failures`` came to count the trials the pass rule failed: the counts family's line reads
+#: "the examples kept and the trials the pass rule failed".
+_ANALYST_BYTES = "11151f9914ade36847c126d994e5f5195196e00b2d490fd82a64b31e2902a39e"
 
 
 def test_the_evals_tool_serves_the_bytes_it_served_before() -> None:
