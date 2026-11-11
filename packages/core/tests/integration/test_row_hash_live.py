@@ -9,6 +9,7 @@ session's ``db_container`` (PostgreSQL), or YugabyteDB through ``THREETEARS_TEST
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import date, datetime
@@ -336,3 +337,45 @@ async def test_every_scope_s_group_hashes_in_one_statement_match_each_scope_s_ow
         handed = await read_changed(conn, "scoped", groups=sliced[state], **options)
         assert (handed.rows, handed.gone_keys, handed.changed_keys) == (own.rows, own.gone_keys, own.changed_keys)
         assert sorted(row["id"] for row in handed.rows) == ([5, 6] if state == "PA" else [])
+
+
+async def test_phase_zero_hashes_each_row_once_on_the_database(conn: asyncpg.Connection) -> None:
+    """Flips if the database's plan of phase 0 (group_hashes) computes a row's hash anywhere but once a row below the
+    aggregate: an unfenced inner select is pulled up and the md5 inlined into each of the four lane sums, the scan
+    handing the aggregate the hashed columns and every row hashed four times (a broad upload's phase 0 went from ~2 s
+    to ~15-20 s on the warehouse stand-in). Fenced, the table's scan outputs the row's one md5 and none of the hashed
+    columns, so nothing above it can hash again (the nodes above print only references to that md5)."""
+    dialect = await dialect_of(conn)
+    await conn.execute("CREATE TABLE scoped (state TEXT, county TEXT, id BIGINT, name TEXT, votes BIGINT)")
+    await conn.execute(
+        "INSERT INTO scoped SELECT s, 'c' || (i % 4), i, 'n' || i, i FROM generate_series(0, 11) i, "
+        "(VALUES ('OH'), ('PA')) v(s)"
+    )
+    hashed = (HashColumn("name"), HashColumn("votes", HashKind.INTEGER))
+
+    class _Explained:
+        binds_native_arrays = True
+        sql_dialect = dialect
+
+        def __init__(self) -> None:
+            self.plans: list[dict[str, Any]] = []
+
+        async def fetch(self, query: str, *params: Any) -> Any:
+            [explained] = await conn.fetch(f"EXPLAIN (VERBOSE, FORMAT JSON) {query}", *params)
+            self.plans.append(json.loads(explained[0])[0]["Plan"])
+            return await conn.fetch(query, *params)
+
+    def _scans(node: dict[str, Any]) -> list[dict[str, Any]]:
+        own = [node] if node.get("Relation Name") == "scoped" else []
+        return own + [scan for child in node.get("Plans", ()) for scan in _scans(child)]
+
+    explained = _Explained()
+    answered = await group_hashes(
+        explained, "scoped", scope="state", scopes=["OH", "PA"], group="county", hash_columns=hashed
+    )
+    assert sorted(answered["PA"], key=str) == ["c0", "c1", "c2", "c3"]
+    [plan] = explained.plans
+    [scan] = _scans(plan)
+    outputs = list(scan["Output"])
+    assert sum("md5(" in output for output in outputs) == 1, outputs
+    assert not {"t.name", "t.votes", "name", "votes"} & set(outputs), outputs

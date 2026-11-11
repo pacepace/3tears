@@ -843,10 +843,13 @@ async def _group_hash_rows(
         if last is not None:
             conditions.append(_past(levels, last, params))
         filtered = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        # OFFSET 0 fences the inner select: unfenced, PostgreSQL (and YugabyteDB, Redshift) pull it up and inline the
+        # row hash into each lane's SUM, computing every row's md5 once a lane (4x, measured 7-9x slower on PG);
+        # fenced, each row is hashed once below the aggregate. Every dialect here accepts it; the answer is the same.
         sql = (
             f"SELECT {outer}, {items} FROM (SELECT {inner}, "
-            f"{row_hash_sql(hash_columns, dialect, alias='t')} AS h FROM {_relation(relation, 't')}{filtered}) AS s"
-            f" GROUP BY {grouped} ORDER BY {ordered} LIMIT {page}"
+            f"{row_hash_sql(hash_columns, dialect, alias='t')} AS h FROM {_relation(relation, 't')}{filtered}"
+            f" OFFSET 0) AS s GROUP BY {grouped} ORDER BY {ordered} LIMIT {page}"
         )
         rows = await conn.fetch(sql, *params)
         found.extend(rows)
