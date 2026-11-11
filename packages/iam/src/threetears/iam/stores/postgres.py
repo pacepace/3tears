@@ -79,7 +79,13 @@ CREATE TABLE IF NOT EXISTS {table} (
 """
 
 #: Index backing :meth:`PostgresTicketStore.purge_expired`, for either table.
-EXPIRES_INDEX_DDL: Final[str] = "CREATE INDEX IF NOT EXISTS {index} ON {table} (expires_at)"
+EXPIRES_INDEX_DDL: Final[str] = (
+    "-- purpose: packages/iam/src/threetears/iam/stores/postgres.py::PostgresTicketStore.purge_expired; "
+    "packages/iam/src/threetears/iam/stores/postgres.py::PostgresStateStore.purge_expired\n"
+    "-- plan_test: packages/iam/tests/integration/test_stores_postgres_live.py::"
+    "test_a_purge_page_reads_its_expired_rows_through_the_expires_index\n"
+    "CREATE INDEX IF NOT EXISTS {index} ON {table} (expires_at)"
+)
 
 #: Table names are interpolated, not parameterized -- SQL has no placeholder for an
 #: identifier. They come from application config rather than user input, and this bound keeps

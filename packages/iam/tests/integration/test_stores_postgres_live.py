@@ -11,11 +11,12 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncIterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
 
+from threetears.interfaces.keyed import delete_before_statement
 from threetears.iam.stores.postgres import (
     EXPIRES_INDEX_DDL,
     STATE_TABLE_DDL,
@@ -95,3 +96,32 @@ async def test_a_purge_deletes_every_expired_row_page_after_page_and_no_live_one
     await state.purge_expired()
     assert [row["hashed"] for row in await pool.fetch(f"SELECT hashed FROM {name}.tickets")] == [live.hashed]
     assert [row["key"] for row in await pool.fetch(f"SELECT key FROM {name}.state")] == ["live"]
+
+
+def _index_reads(node: dict[str, object]) -> list[str]:
+    """every index a plan node (and its children) reads."""
+    found = [str(node["Index Name"])] if "Index Name" in node else []
+    for child in node.get("Plans", []):  # type: ignore[union-attr]
+        found += _index_reads(child)  # type: ignore[arg-type]
+    return found
+
+
+async def test_a_purge_page_reads_its_expired_rows_through_the_expires_index(
+    schema: tuple[asyncpg.Pool, str],
+) -> None:
+    """Flips if a purge page of either store stops reading its table's expires_at index (EXPIRES_INDEX_DDL's
+    purpose) and scans the table for its expired rows."""
+    pool, name = schema
+    for table, key in ((f"{name}.tickets", "hashed"), (f"{name}.state", "key")):
+        await pool.execute(
+            f"INSERT INTO {table} ({key}, payload, expires_at) "  # noqa: S608 - the test's own schema
+            "SELECT 'x' || i, '{}'::jsonb, now() + CASE WHEN i % 50 = 0 THEN interval '-1 hour' ELSE interval '1 hour' END "
+            "FROM generate_series(1, 20000) AS i"
+        )
+        await pool.execute(f"ANALYZE {table}")
+        sql, params = delete_before_statement(
+            table, key=(key,), column="expires_at", before=datetime.now(UTC), page=100
+        )
+        async with pool.acquire() as conn, conn.transaction():
+            plan = json.loads(await conn.fetchval(f"EXPLAIN (FORMAT JSON) {sql}", *params))[0]["Plan"]
+        assert f"{table.split('.')[1]}_expires" in _index_reads(plan), (table, json.dumps(plan)[:2000])

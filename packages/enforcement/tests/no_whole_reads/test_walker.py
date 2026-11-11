@@ -3962,3 +3962,47 @@ def test_a_derived_select_handed_as_a_copy_s_relation_is_read_as_that_relation(t
     functions = {function for function, _ in found}
     assert "by_geo" not in functions, found
     assert "every_geo" in functions, found
+
+
+_PUBLISHED_DDL = '''
+    from threetears.interfaces.keyed import delete_before_statement, read_row_statement
+
+    TOKENS_DDL = """
+    CREATE TABLE IF NOT EXISTS {table} (
+        token TEXT PRIMARY KEY,
+        expires_at TIMESTAMPTZ NOT NULL
+    )
+    """
+
+    EXPIRES_DDL = (
+        "-- purpose: src/tokens.py::Tokens.purge\\n"
+        "-- plan_test: tests/test_tokens.py::test_purge_plan\\n"
+        "CREATE INDEX IF NOT EXISTS {index} ON {table} (expires_at)"
+    )
+
+    def _spelled(table):
+        return table.lower()
+
+    class Tokens:
+        def __init__(self, table):
+            self._table = table
+
+        def get(self, token):
+            return read_row_statement(_spelled(self._table), by={"token": token})
+
+        def purge(self, before):
+            return delete_before_statement(_spelled(self._table), key=("token",), column="expires_at", before=before)
+
+        def scan(self, before):
+            return read_row_statement(_spelled(self._table), by={"expires_at": before})
+'''
+
+
+def test_a_table_its_caller_names_is_judged_by_the_module_s_published_ddl(tmp_path: Path) -> None:
+    """Flips if a builder's statement over a table the caller names (through one spelling call) is not judged
+    against the module's published DDL (``CREATE TABLE IF NOT EXISTS {table}``, its ``{table}`` index): the key's
+    point read and the purposed purge keyed, a read by an unindexed column flagged."""
+    found = _symbols(_config(tmp_path, {"tokens.py": _PUBLISHED_DDL}))
+    functions = {function for function, _ in found}
+    assert not functions & {"Tokens.get", "Tokens.purge"}, found
+    assert "Tokens.scan" in functions, found

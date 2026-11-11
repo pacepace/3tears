@@ -739,6 +739,66 @@ def _notes_before(text: str, start: int) -> dict[str, str]:
     return notes
 
 
+def _templated_name(written: str) -> bool:
+    """whether a DDL table name is a named placeholder alone (``{table}`` in a published DDL constant): a name its
+    module's caller gives at run time. An f-string's interpolation (written ``{}``) is none: its name is the code's.
+
+    :param written: the name as the DDL writes it
+    :ptype written: str
+    :return: whether it is
+    :rtype: bool
+    """
+    return re.fullmatch(r"\{\w+\}", written.strip().strip('"')) is not None
+
+
+def _template_ddl(catalog: SchemaCatalog, kind: str, payload: Any, origin: str, *, local: bool) -> None:
+    """record a module's templated table or index (its name a placeholder) on the module's template.
+
+    :param catalog: the catalog
+    :ptype catalog: SchemaCatalog
+    :param kind: ``table`` or ``index``
+    :ptype kind: str
+    :param payload: the DDL event's payload
+    :ptype payload: Any
+    :param origin: ``<path>:<line>`` of the text
+    :ptype origin: str
+    :param local: whether the judged repo holds it
+    :ptype local: bool
+    :return: nothing
+    :rtype: None
+    """
+    relative = origin.rsplit(":", 1)[0]
+    template = catalog.templates.setdefault(relative, _DeclaredTable(f"{{}}@{relative}"))
+    if kind == "table":
+        key = tuple(column.lower() for column in payload[1])
+        if key and key not in template.primary_keys:
+            template.primary_keys.append(key)
+    else:
+        name, _, columns, include, (unique, partial, where_text, ranged, method), notes = payload
+        index_name = re.sub(r"\{\w*\}", "{}", name or "").strip('"').lower()
+        if index_name:
+            template.indexes.setdefault(
+                index_name,
+                _DeclaredIndex(
+                    template.name,
+                    index_name,
+                    columns,
+                    include,
+                    notes.get("purpose", ""),
+                    notes.get("plan_test", ""),
+                    notes.get("reason", ""),
+                    origin,
+                    local,
+                    unique=unique,
+                    partial=partial,
+                    where=where_text,
+                    ranged=ranged,
+                    method=method,
+                ),
+            )
+    template.origins.append(origin)
+
+
 def _apply_ddl(catalog: SchemaCatalog, text: str, origin: str, *, local: bool) -> None:
     """apply one SQL text's DDL to the catalog.
 
@@ -754,6 +814,11 @@ def _apply_ddl(catalog: SchemaCatalog, text: str, origin: str, *, local: bool) -
     :rtype: None
     """
     for kind, payload in _ddl_events(text):
+        if kind in {"table", "index"} and _templated_name(payload[0] if kind == "table" else payload[1]):
+            # a module's published DDL for a table its caller names (``CREATE TABLE IF NOT EXISTS {table} (...)``,
+            # applied by the caller's own migration): the module's template, as a ``TableSchema(name=<parameter>)``
+            _template_ddl(catalog, kind, payload, origin, local=local)
+            continue
         if kind in {"table", "unique"}:
             table = bare_table(payload[0])
             if table is not None and kind == "table":

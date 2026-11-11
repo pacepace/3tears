@@ -926,11 +926,30 @@ _READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
         ("table", 1),
     ),
     **dict.fromkeys(("read_changed", "group_hashes", "read_past_marks", "read_packed"), ("relation", 1)),
+    # the keyed writes, and the pure builders a package that may not depend on core sends on its own connection
+    **dict.fromkeys(("delete_keyed", "update_keyed"), ("table", 1)),
+    **dict.fromkeys(
+        (
+            "delete_before",
+            "update_before",
+            "read_row_statement",
+            "read_by_statement",
+            "read_keyed_statements",
+            "keyset_page_statement",
+            "keyset_rows_statement",
+            "delete_keyed_statements",
+            "update_keyed_statements",
+            "delete_before_statement",
+            "update_before_statement",
+        ),
+        ("table", 0),
+    ),
 }
 
 
 def templated(call: ast.Call) -> ast.Call | None:
-    """the keyed read with the table its caller names at run time (a name or an attribute: ``self.table_name``) as the
+    """the keyed read (or write, or builder) with the table its caller names at run time (a name or an attribute:
+    ``self.table_name``, perhaps through one spelling call) as the
     calling module's template (``"{}"``, judged against ``TableSchema(name=<parameter>)``, as ``FROM {table}`` in SQL
     the caller writes is); None when the read names its table any other way.
 
@@ -944,6 +963,9 @@ def templated(call: ast.Call) -> ast.Call | None:
         return None
     keyword, position = where
     named = _argument(call, keyword, position)
+    if isinstance(named, ast.Call) and len(named.args) == 1 and not named.keywords:
+        # the name passed through one spelling call (``_relation(self._table)``, a quoter or a lower-caser)
+        named = named.args[0]
     if not isinstance(named, ast.Name | ast.Attribute):
         return None
     template = ast.Constant("{}")
