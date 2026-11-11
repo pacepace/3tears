@@ -60,6 +60,7 @@ async def test_a_comparison_runs_tool_using_arms_on_two_factors() -> None:
         {"model=m, variant=right": arm(0), "model=m, variant=off-by-one": arm(1)},
         [exact],
         k=1,
+        name="variants",
     ).run(store=":memory:", scope=SCOPE)
     assert mean_exact(comparison.arms["model=m, variant=right"]) == 1
     assert mean_exact(comparison.arms["model=m, variant=off-by-one"]) == 0
@@ -96,6 +97,7 @@ async def test_a_comparison_runs_world_arms_and_grades_each_ones_end_state() -> 
         {"sensible": room(sensible), "always_on": room(always_on)},
         ['(state.lamp == "on") == state.dark'],
         k=1,
+        name="sensible vs always_on",
     ).run(store=":memory:", scope=SCOPE)
     assert [(goal.passed, goal.n) for goal in comparison.arms["sensible"].goal_checks] == [(2, 2)]
     assert [(goal.passed, goal.n) for goal in comparison.arms["always_on"].goal_checks] == [(1, 2)]

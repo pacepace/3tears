@@ -44,7 +44,9 @@ def keyword_classifier(rules: dict[str, tuple[str, ...]]) -> Any:
 
 async def test_assembling_the_same_campaign_twice_gives_the_same_fingerprint() -> None:
     arms = {"baseline": keyword_classifier(BASELINE_RULES), "candidate": keyword_classifier(CANDIDATE_RULES)}
-    comparison = await Eval(CASES, arms, ["queue"], k=2).run(store=":memory:", scope="determinism")
+    comparison = await Eval(CASES, arms, ["queue"], k=2, name=" vs ".join(arms)).run(
+        store=":memory:", scope="determinism"
+    )
     once, twice = (
         off_loop(assemble_campaign_bundle, comparison.host, comparison.campaign_id, comparison.scope_id)
         for _ in range(2)

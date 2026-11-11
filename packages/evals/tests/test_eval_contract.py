@@ -176,6 +176,7 @@ async def test_grader_declares_a_margin_a_range_or_a_guard_on_its_reading() -> N
         {"keywords": keywords, "crash-first": crash_first},
         [grader("label", margin=0.25), grader(rating, range=(1, 5)), grader(short_label, guard=0.1)],
         k=1,
+        name="keywords vs crash-first",
     )
     host = ev.host(":memory:")
 
@@ -217,9 +218,9 @@ def test_grader_refuses_a_declaration_no_reading_could_carry(declared: dict[str,
 
 
 async def test_a_mapping_is_a_comparison_whose_first_key_is_the_control() -> None:
-    result = await Eval(TICKETS, {"keywords": keywords, "crash-first": crash_first}, ["label"], k=2).run(
-        store=":memory:"
-    )
+    result = await Eval(
+        TICKETS, {"keywords": keywords, "crash-first": crash_first}, ["label"], k=2, name="keywords vs crash-first"
+    ).run(store=":memory:")
 
     assert isinstance(result, Result)
     assert result.control == "keywords" and list(result.arms) == ["keywords", "crash-first"]
@@ -237,6 +238,7 @@ async def test_arms_named_as_pairs_are_the_cells_of_a_factorial() -> None:
         {"prompt=v1, effort=low": keywords, "prompt=v2, effort=low": crash_first},
         ["label"],
         k=1,
+        name="factorial",
     )
     result = await ev.run(store=":memory:")
 
@@ -258,6 +260,22 @@ async def test_arms_named_as_pairs_are_the_cells_of_a_factorial() -> None:
 def test_unusable_runners_are_refused_where_the_eval_is_written(runner: Any, refusal: str) -> None:
     with pytest.raises(ValueError, match=refusal):
         Eval(TICKETS, runner, ["label"])
+
+
+def test_several_arms_with_no_name_and_no_cases_file_are_refused(tmp_path: Path) -> None:
+    """An eval's name is where its runs are kept. One built from its arms (``keywords vs crash-first``) would move
+    them, and split the comparison's history, each time an arm is added, renamed or dropped, so it is never built."""
+    arms = {"keywords": keywords, "crash-first": crash_first}
+    with pytest.raises(ValueError, match=r'^name this eval \(name="invoices"\): its name is where its runs are kept'):
+        Eval(TICKETS, arms, ["label"])
+    with pytest.raises(ValueError, match="'prompt=v1', 'prompt=v2'"):
+        Eval(TICKETS, {"prompt=v1": keywords, "prompt=v2": crash_first}, ["label"])  # factors are arms too
+    # Named by name=, by the cases file's stem, or by its one arm: never refused.
+    assert Eval(TICKETS, arms, ["label"], name="triage").name == "triage"
+    (tmp_path / "tickets.jsonl").write_text("".join(json.dumps(row) + "\n" for row in TICKETS), encoding="utf-8")
+    assert Eval(tmp_path / "tickets.jsonl", arms, ["label"]).name == "tickets"
+    assert Eval(TICKETS, {"keywords": keywords}, ["label"]).name == "keywords"
+    assert Eval(TICKETS, keywords, ["label"]).name == "keywords"
 
 
 # --- the runner slot: a world ---------------------------------------------------------------------------------------
@@ -561,7 +579,13 @@ async def test_a_host_of_your_own_holds_the_runs_and_a_store_beside_it_is_refuse
 
 def test_a_blank_question_is_refused_where_the_eval_is_written() -> None:
     with pytest.raises(ValueError, match="question is filed on its campaign, and this one is blank"):
-        Eval(TICKETS, {"keywords": keywords, "crash_first": crash_first}, ["label"], question="  ")
+        Eval(
+            TICKETS,
+            {"keywords": keywords, "crash_first": crash_first},
+            ["label"],
+            question="  ",
+            name="keywords vs crash_first",
+        )
 
 
 async def test_a_declared_question_reaches_the_result_and_the_page_and_its_campaign_asks_it() -> None:
@@ -570,8 +594,10 @@ async def test_a_declared_question_reaches_the_result_and_the_page_and_its_campa
     none: it is a superiority question, its pass rate read against zero. The same eval with none keeps that line."""
     question = "Does crash_first label tickets right more often than keywords?"
     arms = {"keywords": keywords, "crash_first": crash_first}
-    asked = await Eval(TICKETS, arms, ["label", short_label], k=1, question=question).run(store=":memory:")
-    unasked = await Eval(TICKETS, arms, ["label", short_label], k=1).run(store=":memory:")
+    asked = await Eval(TICKETS, arms, ["label", short_label], k=1, question=question, name=" vs ".join(arms)).run(
+        store=":memory:"
+    )
+    unasked = await Eval(TICKETS, arms, ["label", short_label], k=1, name=" vs ".join(arms)).run(store=":memory:")
 
     assert asked.question == question and unasked.question is None
     asked_page = campaign_report_markdown(asked.page).splitlines()
@@ -608,7 +634,7 @@ async def test_a_question_declared_over_finished_runs_reads_as_asked_with_the_la
     nothing of the kind."""
     question = "Does crash_first label tickets right more often than keywords?"
     arms = {"keywords": keywords, "crash_first": crash_first}
-    explored = await Eval(TICKETS, arms, ["label"], k=1).run(store=":memory:")
+    explored = await Eval(TICKETS, arms, ["label"], k=1, name=" vs ".join(arms)).run(store=":memory:")
     sharpened = await explored.against("keywords", question=question)
     first = campaign_report_markdown(sharpened.page).split("\n## ", 1)[0]
     assert first.splitlines()[1] == f'"{question}"' and sharpened.question == question
@@ -619,7 +645,7 @@ async def test_a_question_declared_over_finished_runs_reads_as_asked_with_the_la
     assert "aspect" in [late.criterion for late in bundle.reading_scope.late_criteria]
     assert all(row.confirmatory for row in sharpened.page.readings.readings)
 
-    asked = await Eval(TICKETS, arms, ["label"], k=1, question=question).run(store=":memory:")
+    asked = await Eval(TICKETS, arms, ["label"], k=1, question=question, name=" vs ".join(arms)).run(store=":memory:")
     assert _SET_LATE not in campaign_report_markdown(asked.page)
     (timely,) = [fold.report.bundle for fold in asked.page.aspects]
     assert timely.reading_scope.late_criteria == []

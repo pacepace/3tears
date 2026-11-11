@@ -986,7 +986,11 @@ async def run_one_result(
         sink = _CellSink()
     if sink.cell is None:
         sink.cell = CellIdentity(
-            run_id=eval_run_id, test_case_id=test_case.id, cell_id=str(uuid.uuid7()), subject_id=subject_id
+            run_id=eval_run_id,
+            test_case_id=test_case.id,
+            cell_id=str(uuid.uuid7()),
+            subject_id=subject_id,
+            k_iteration=k_iteration,
         )
     # Bound for the whole cell, the cassette flush included, so the judge phase and the cell's own log lines
     # read the cell the way the kind's turn does. Re-binding the run loop's own binding is harmless.
@@ -1314,6 +1318,7 @@ async def _run_one_result(
             test_case_id=test_case.id,
             cell_id=str(uuid.uuid7()),
             subject_id=subject_id,
+            k_iteration=k_iteration,
         ),
     )
 
@@ -3807,6 +3812,7 @@ async def execute_run(
             test_case_id=tc.id,
             cell_id=str(uuid.uuid7()),
             subject_id=run.subject_snapshot.subject_id,
+            k_iteration=k,
         )
         sink = _CellSink(cell=cell)
         cells_started += 1

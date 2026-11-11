@@ -6,20 +6,61 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a replay is deterministic, and a model shared between evals is named as the cause
+
+**Fixed:** replaying an eval twice could print different repeat numbers (rung 3e's c02 malformed reply on repeat 3,
+then repeat 1). A run's cells start in an order shuffled by its fresh id, several at once, and a replay served a
+prompt's recorded answers in the order they were asked. Inside a cell, repeat `i` is now served the recorded call of
+index `i`, so a replay hands each repeat the same answer every time; outside a cell, or where that index is taken
+(one prompt asked twice in a cell, or by two arms), the first call left is served, as before. `CellIdentity` gains
+`k_iteration` (default `None`), the cell's repeat, which the run loop sets.
+
+**Fixed:** a `Model` shared by two evals in one process (or one eval run twice) serves the second nothing, since a
+replay serves each recorded call once per model; the second eval's calls were refused as "the code asks it more often
+than it did when it was recorded" with a remedy to re-record, which spends money on a recording that is whole. The
+refusal now names the eval whose run took the calls and says to build a `Model` per eval, never to record again.
+`Eval.run` marks its extent as one eval's run (`threetears.evals.kernel.eval_scope`, no root), which the replay reads.
+`Model`'s docstring states the rule.
+
+### evals: an unnamed comparison is refused
+
+**Changed:** a quick-path `Eval` with several arms and neither `name=` nor a cases file is refused when it is written
+(`name this eval (name="invoices"): its name is where its runs are kept, ...`). It was named by its arms joined with
+` vs ` (`model=a, prompt=v1 vs ...`), a title of raw keys that was also where its runs were kept, so adding, renaming
+or dropping an arm moved them and split the comparison's history. One arm, a runner named by its function, and an
+eval over a cases file are named as before.
+
+**Hosts:** pass `name=`. To keep reading a comparison already stored under its arms' name, pass that name: the arms
+joined by ` vs `, in order. Pre-release, no shim (MIGRATIONS.toml).
+
 ### evals examples: rung 3 is one idea a file
 
 **Changed:** `examples/3-invoices/extract.py` taught six ideas at once; it is now a file each, numbered as steps of
 rung 3: `compare.py` (3a: two arms, a control and a verdict), `margin.py` (3b: a margin, so a reading can come out
-equivalent), `guardrail.py` (3c: a guardrail decided on its own; the old file's eval, unchanged and still named
-`invoices`), `ci.py` (3d: the gate in CI) and `grid.py` (3e: two levers at once, read by one lever with
-`Result.against`); 3f is `--write-report` over `compare.py`. The answer's shape and the two prompts move to
-`invoice.py`, which declares no eval, and each file builds its own `Model`. Rung 4's `agent.py` and `serve.py` are 4a
-and 4b. The grid's high-effort cells replay a new recording, `recordings/invoices-high.jsonl` (180 calls, $0.0188).
-Rung 5's frozen `3-invoices` case is the pre-split campaign and is not refrozen. No package code moves.
+equivalent, fixed before the run from what the decision is for), `guardrail.py` (3c: a guardrail decided on its own;
+the old file's eval, still named `invoices`, without the 5-point margin on `total` it carried, which is 3b's idea),
+`ci.py` (3d: the gate in CI) and `grid.py` (3e: two levers at once, read by one lever with `Result.against`); 3f is
+`--write-report` over `compare.py`. The answer's shape and the two prompts move to `invoice.py`, which declares no
+eval and builds no `Model`; every other file builds its own (`grid.py` two, one per effort) but `ci.py`, which runs
+`guardrail.py`'s eval. Rung 4's `agent.py` and `serve.py` are 4a and 4b. The grid's high-effort cells replay a new
+recording, `recordings/invoices-high.jsonl` (180 calls, $0.0188). Rung 5's frozen `3-invoices` case is the pre-split
+campaign (frozen 2026-11-03: no question, the 5-point margin on `total`), which no rung-3 file declares now; it is
+not refrozen. The grid's arm names moved package code: see the next entry.
 
 **Readers:** a link to `extract.py`, or to the ladder's `#rung-3-two-prompts-compared` or
-`#rung-4-an-agent-graded-on-the-world-it-leaves`, is dead: link `guardrail.py` (the same eval),
+`#rung-4-an-agent-graded-on-the-world-it-leaves`, is dead: link `guardrail.py` (the same eval, less the margin),
 `#rung-3a-two-prompts-compared` or `#rung-4a-an-agent-graded-on-the-world-it-leaves` instead.
+
+### evals: a factor arm reads by its declared factors everywhere
+
+**Fixed:** an eval whose arms are named as `k=v` factors (`"prompt=v1, effort=low"`) labelled only its control on
+the campaign, by its raw key, and every other arm by its variant's levers: the page and the verdict line read
+`Callable effort high, callable prompt v1` (the engine's kind as a word, the factors in sorted order) while the print
+read `prompt=v1, effort=low`. Every surface now names a factor arm by its factors, in the order the eval declares
+them (`Prompt v1, effort low`): the campaign's arm labels, the verdict line, the contrast rows, the scoreboard, the
+misses, the guardrail lines and `against()`'s default name. `Result.arm_labels` (new) holds each such arm's name by
+variant key; `contrast_rows` and `report_cell_labels` take `arm_labels=` as `aspect_verdict` already did
+(`quick/result.py`, `analysis/report/build.py`). An arm named plainly is unchanged.
 
 ### evals: a judge is checked on its examples in the run
 

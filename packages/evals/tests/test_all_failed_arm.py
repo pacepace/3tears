@@ -321,9 +321,9 @@ class TestTheRunnerCountsTheTurnsDelivered:
         assert count_delivered_turns([{"role": "user"}], reported=None) is None
 
     async def test_a_quick_call_stores_one_turn_answered_and_none_refused(self) -> None:
-        comparison = await Eval(_QUICK_CASES, {"control": _guess, "candidate": _refuse}, ["label"], k=1).run(
-            store=":memory:", scope="all-failed-turns"
-        )
+        comparison = await Eval(
+            _QUICK_CASES, {"control": _guess, "candidate": _refuse}, ["label"], k=1, name="control vs candidate"
+        ).run(store=":memory:", scope="all-failed-turns")
         bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, "all-failed-turns").bundle
         stored = [
             result
@@ -716,9 +716,9 @@ async def _refuse(case: Mapping[str, Any]) -> str:
 
 class TestAQuickClassifierLandsItsRefusalAsAMiss:
     async def _comparison(self) -> Result:
-        return await Eval(_QUICK_CASES, {"control": _guess, "candidate": _refuse}, ["label"], k=2).run(
-            store=":memory:", scope=_QUICK_SCOPE
-        )
+        return await Eval(
+            _QUICK_CASES, {"control": _guess, "candidate": _refuse}, ["label"], k=2, name="control vs candidate"
+        ).run(store=":memory:", scope=_QUICK_SCOPE)
 
     async def test_the_refusing_arm_has_an_accuracy_and_its_refusals_are_unusable_answers(self) -> None:
         comparison = await self._comparison()

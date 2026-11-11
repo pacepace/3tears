@@ -184,7 +184,7 @@ async def test_a_comparison_reads_each_arms_results_and_misses_by_its_key() -> N
     async def careful(case: Mapping[str, Any]) -> str:
         return "billing" if "refund" in case["text"] or "charged" in case["text"] else "bug"
 
-    comparison = await Eval(CASES, {"hasty": hasty, "careful": careful}, [QUEUE], k=1).run(
+    comparison = await Eval(CASES, {"hasty": hasty, "careful": careful}, [QUEUE], k=1, name="hasty vs careful").run(
         store=":memory:", scope=SCOPE
     )
     assert [result.case for result in comparison.misses("hasty")] == ["2"]
@@ -205,9 +205,9 @@ async def test_a_comparison_over_unnamed_cases_lists_its_misses_case_by_case_on_
     async def twin(case: Mapping[str, Any]) -> int:
         return int(case["n"])
 
-    comparison = await Eval([{"n": n} for n in range(12)], {"a": hasty_n, "b": twin}, [misses_two_and_ten], k=1).run(
-        store=":memory:", scope=SCOPE
-    )
+    comparison = await Eval(
+        [{"n": n} for n in range(12)], {"a": hasty_n, "b": twin}, [misses_two_and_ten], k=1, name="a vs b"
+    ).run(store=":memory:", scope=SCOPE)
     arm_of = {variant: arm for arm, variant in comparison.arm_variants.items()}
     page = [
         (trial.case_id.rsplit("-", 1)[1], arm_of[trial.arm])
@@ -496,7 +496,7 @@ def _decided(result: Result) -> str:
 
 
 async def test_a_comparison_leads_on_its_classifier_never_on_cost_and_names_a_guardrail_not_held_after() -> None:
-    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [QUEUE, no_leak], k=2).run(
+    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [QUEUE, no_leak], k=2, name="dear vs cheap").run(
         store=":memory:", scope=SCOPE
     )
     cost = [row for row in result.contrasts() if row["measure_id"] == "production_replicating_cost"]
@@ -519,7 +519,7 @@ async def test_with_no_classifier_a_comparison_leads_on_its_first_grader() -> No
     def short(case: Mapping[str, Any], out: Any) -> bool:
         return len(str(out)) < 1000
 
-    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [resolved, short], k=2).run(
+    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [resolved, short], k=2, name="dear vs cheap").run(
         store=":memory:", scope=SCOPE
     )
     (first,) = result.contrasts("resolved")
@@ -535,7 +535,9 @@ def _worded(rows: list[dict[str, Any]], *, joined: str = "; ") -> str:
 
 
 async def test_a_comparison_graded_by_a_guardrail_alone_never_leads_on_cost() -> None:
-    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [no_leak], k=2).run(store=":memory:", scope=SCOPE)
+    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [no_leak], k=2, name="dear vs cheap").run(
+        store=":memory:", scope=SCOPE
+    )
     (cost,) = result.contrasts("production_replicating_cost")
     assert cost["outcome"] == "improved"
     (guarded,) = result.guardrails("cheap")
@@ -547,9 +549,9 @@ async def test_a_comparison_graded_by_a_guardrail_alone_never_leads_on_cost() ->
 
 
 async def test_a_judge_only_comparison_leads_on_its_first_judged_dimension() -> None:
-    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [Judge(FakeJudge(), RUBRIC)], k=2).run(
-        store=":memory:", scope=SCOPE
-    )
+    result = await Eval(
+        PAIRED, {"dear": dear, "cheap": cheap}, [Judge(FakeJudge(), RUBRIC)], k=2, name="dear vs cheap"
+    ).run(store=":memory:", scope=SCOPE)
     (first,) = result.contrasts("answer.billing")
     (cost,) = result.contrasts("production_replicating_cost")
     assert first["outcome"] != "improved" and cost["outcome"] == "improved"
@@ -560,9 +562,9 @@ async def test_a_judge_listed_first_leads_before_a_function_listed_after_it() ->
     def short(case: Mapping[str, Any], out: Any) -> bool:
         return len(str(out)) < 1000
 
-    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [Judge(FakeJudge(), RUBRIC), short], k=2).run(
-        store=":memory:", scope=SCOPE
-    )
+    result = await Eval(
+        PAIRED, {"dear": dear, "cheap": cheap}, [Judge(FakeJudge(), RUBRIC), short], k=2, name="dear vs cheap"
+    ).run(store=":memory:", scope=SCOPE)
     (first,) = result.contrasts("answer.billing")
     assert _decided(result).startswith(f"{result.name}: Exploratory: {_worded([first])}")
 
@@ -575,9 +577,9 @@ async def cheapest(case: Mapping[str, Any]) -> Answer:
 
 
 async def test_three_arms_lead_on_the_classifier_for_every_arm_tested() -> None:
-    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap, "cheapest": cheapest}, [QUEUE], k=2).run(
-        store=":memory:", scope=SCOPE
-    )
+    result = await Eval(
+        PAIRED, {"dear": dear, "cheap": cheap, "cheapest": cheapest}, [QUEUE], k=2, name="dear vs cheap vs cheapest"
+    ).run(store=":memory:", scope=SCOPE)
     accuracy = result.contrasts("accuracy")
     cost = [row for row in result.contrasts("production_replicating_cost") if row["outcome"] == "improved"]
     assert sorted(row["arm"] for row in accuracy) == ["cheap", "cheapest"]
@@ -590,7 +592,9 @@ async def test_a_lead_with_nothing_else_told_apart_says_the_lead_alone() -> None
     async def twin(case: Mapping[str, Any]) -> Answer:
         return await cheap(case)
 
-    result = await Eval(PAIRED, {"cheap": cheap, "twin": twin}, [QUEUE], k=2).run(store=":memory:", scope=SCOPE)
+    result = await Eval(PAIRED, {"cheap": cheap, "twin": twin}, [QUEUE], k=2, name="cheap vs twin").run(
+        store=":memory:", scope=SCOPE
+    )
     (accuracy,) = result.contrasts("accuracy")
     assert not [row for row in result.contrasts() if row["outcome"] in ("improved", "regressed")]
     # The line says what the result is, never what else it is not.
@@ -609,9 +613,9 @@ async def test_the_printed_line_and_the_page_lead_on_one_measure_the_first_grade
     """A function listed before the classifier is the first grader: the printed first line and the page's lead both
     read it, never the classifier's accuracy, never the cost. Declared, the question is that measure's and the lead
     reads as asked, the line saying none was asked gone; undeclared, the lead is marked a lead and the line stays."""
-    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [resolved, QUEUE, no_leak], k=2, question=question).run(
-        store=":memory:", scope=SCOPE
-    )
+    result = await Eval(
+        PAIRED, {"dear": dear, "cheap": cheap}, [resolved, QUEUE, no_leak], k=2, question=question, name="dear vs cheap"
+    ).run(store=":memory:", scope=SCOPE)
     (first,) = result.contrasts("resolved")
     prefix = "" if question is not None else "Exploratory: "
     assert result.render().splitlines()[0].startswith(f"{result.name}: {prefix}{first['reading']}: {first['verdict']}")
@@ -660,9 +664,9 @@ async def test_a_question_with_no_margin_reads_the_pass_rate_against_zero_and_fi
     """A question alone is a superiority question: v2's pass rate against v1's (who misses half) is shown better,
     shown worse or undecided (the evidence cannot tell them apart), against zero, and no margin is filed anywhere: not on the aspect, not on the result,
     and the page never reads "no worse than the margin"."""
-    result = await Eval(_LABELLED, {"v1": _missing(15), "v2": _missing(misses)}, ["label"], k=1, question=_BETTER).run(
-        store=":memory:", scope=SCOPE
-    )
+    result = await Eval(
+        _LABELLED, {"v1": _missing(15), "v2": _missing(misses)}, ["label"], k=1, question=_BETTER, name="v1 vs v2"
+    ).run(store=":memory:", scope=SCOPE)
     campaign = off_loop(get_campaign, result.host.storage, result.campaign_id, result.scope_id)
     assert [aspect.margin for aspect in campaign.aspects] == [None]
     assert result.margin is None
@@ -684,7 +688,7 @@ async def test_a_question_with_no_margin_reads_the_pass_rate_against_zero_and_fi
 async def test_an_eval_margin_is_the_author_s_in_the_measure_s_units_and_makes_a_non_inferiority_question() -> None:
     """``Eval(margin=0.2)`` is 20 points of the pass rate, filed on the aspect: two arms alike read no worse than it."""
     result = await Eval(
-        _LABELLED, {"v1": _missing(0), "v2": _missing(0)}, ["label"], k=1, question=_BETTER, margin=0.2
+        _LABELLED, {"v1": _missing(0), "v2": _missing(0)}, ["label"], k=1, question=_BETTER, margin=0.2, name="v1 vs v2"
     ).run(store=":memory:", scope=SCOPE)
     campaign = off_loop(get_campaign, result.host.storage, result.campaign_id, result.scope_id)
     assert [aspect.margin for aspect in campaign.aspects] == [20.0]
@@ -713,7 +717,7 @@ def test_a_margin_with_no_question_or_out_of_its_units_is_refused_where_the_eval
 
 
 async def test_a_margin_read_again_with_no_question_is_refused_naming_why() -> None:
-    result = await Eval(_LABELLED, {"v1": _missing(15), "v2": _missing(0)}, ["label"], k=1).run(
+    result = await Eval(_LABELLED, {"v1": _missing(15), "v2": _missing(0)}, ["label"], k=1, name="v1 vs v2").run(
         store=":memory:", scope=SCOPE
     )
     with pytest.raises(ValueError, match="asks no question for it to apply to"):
@@ -726,9 +730,9 @@ async def test_a_no_margin_question_whose_candidate_reads_shown_worse_fails_the_
     """The question's pass rate is in its family whether or not a margin is written, so the page, the gate and the
     campaign's verdicts read it alike: v2, missing every case where v1 misses half, is shown worse on the row, its
     pass-rate contrast regressed in the verdicts, and the gate fails."""
-    result = await Eval(_LABELLED, {"v1": _missing(15), "v2": _missing(30)}, ["label"], k=1, question=_BETTER).run(
-        store=":memory:", scope=SCOPE
-    )
+    result = await Eval(
+        _LABELLED, {"v1": _missing(15), "v2": _missing(30)}, ["label"], k=1, question=_BETTER, name="v1 vs v2"
+    ).run(store=":memory:", scope=SCOPE)
     (row,) = result.page.readings.readings
     assert (row.reading, row.margin) == ("worse", None)
     verdicts = off_loop(campaign_verdicts, result.host, result.campaign_id, result.scope_id)

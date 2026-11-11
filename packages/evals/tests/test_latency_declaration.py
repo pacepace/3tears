@@ -117,7 +117,7 @@ async def test_a_comparison_declaring_latency_runs_every_arm_serially_and_its_ca
     clock = _Clock()
 
     comparison = await Eval(
-        _CASES, {"a": clock.candidate(), "b": clock.candidate()}, ["label"], measure_latency=True
+        _CASES, {"a": clock.candidate(), "b": clock.candidate()}, ["label"], measure_latency=True, name="a vs b"
     ).run(store=":memory:", scope="latency-compare")
 
     assert clock.peak == 1, "an arm or a case of a latency comparison ran beside another"

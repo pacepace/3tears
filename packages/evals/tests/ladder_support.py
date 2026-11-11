@@ -25,8 +25,7 @@ from typing import Any
 
 import pytest
 
-#: The examples directory.
-EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+from packages.evals.tests.example_loader import EXAMPLES
 
 #: Every variable a model reads a key from, and the switch that asks for a recording to be made again.
 _LIVE_VARIABLES = ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "RECORD")
@@ -34,6 +33,12 @@ _LIVE_VARIABLES = ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", 
 
 def offline_copy(rung: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Copy ``examples/<rung>`` into ``tmp_path``, make it the working directory and ``sys.path``'s head, offline.
+
+    The one copy every rung test runs from. A run's leftovers in the checkout (``.evals/``, ``report/``,
+    ``__pycache__``) are not copied. ``sys.path`` is changed through the monkeypatch, which gives the process its path
+    back when the test ends: loading a rung's file puts its directory there for the process, and a test's copy must
+    not stay there for the tests after it. Every module named after one of its files is evicted
+    (:func:`evict_siblings`), so its files import this copy's siblings.
 
     :param rung: The rung's directory name, ``"3-invoices"``.
     :ptype rung: str

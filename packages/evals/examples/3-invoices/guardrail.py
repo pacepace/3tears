@@ -24,6 +24,5 @@ invoices = Eval(
     "invoices.jsonl",
     runner={"v1": model.prompt(V1, Invoice), "v2": model.prompt(V2, Invoice)},
     question="Does v2 read the currency an invoice charges in right more often than v1?",
-    # A field each (total with a 5-point margin, tighter than 30 invoices can show: margin.py), then the guardrail.
-    grader=["currency", "number", "due", grader("total", margin=0.05), no_invented_total],
+    grader=["currency", "number", "due", "total", no_invented_total],  # compare.py's fields, then the guardrail
 )

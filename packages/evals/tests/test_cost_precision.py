@@ -84,7 +84,7 @@ def test_a_rate_priced_external_call_keeps_its_full_price() -> None:
 
 
 async def test_cheap_spend_survives_the_result_the_run_summary_and_the_bundle() -> None:
-    comparison = await Eval(CASES, {"cheap": cheap, "dearer": dearer}, ["label"], k=1).run(
+    comparison = await Eval(CASES, {"cheap": cheap, "dearer": dearer}, ["label"], k=1, name="cheap vs dearer").run(
         store=":memory:", scope=SCOPE
     )
     summary = comparison.arms["cheap"]

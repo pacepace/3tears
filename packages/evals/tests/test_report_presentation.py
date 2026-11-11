@@ -477,9 +477,9 @@ async def test_a_case_its_author_named_is_named_so_everywhere_and_numbered_other
     assert all(re.fullmatch(r"queue-\d", str(row["case"])) for row in passed.values())
     # The row anchors by the name; a numbered case keeps anchoring by its number.
     assert '<tr id="case-queue-0">' in report_html(report) and 'id="case-1"' not in report_html(report)
-    comparison = await Eval(CASES, {"a": answering(4, 0.001), "b": answering(1, 0.001)}, ["label"], k=2).run(
-        store=":memory:"
-    )
+    comparison = await Eval(
+        CASES, {"a": answering(4, 0.001), "b": answering(1, 0.001)}, ["label"], k=2, name="a vs b"
+    ).run(store=":memory:")
     assert '<tr id="case-1">' in report_html(comparison.report)
 
 
@@ -571,7 +571,7 @@ async def test_the_trials_section_lists_only_what_went_wrong_and_folds_the_passe
 
 
 async def test_the_records_open_up_to_a_cap_and_the_lost_follow_the_failed() -> None:
-    every = await Eval(CASES, {"a": answering(0, 0.001), "b": answering(0, 0.001)}, ["label"], k=3).run(
+    every = await Eval(CASES, {"a": answering(0, 0.001), "b": answering(0, 0.001)}, ["label"], k=3, name="a vs b").run(
         store=":memory:"
     )
     census, table, records, passed = _trials_section(every.report)
@@ -604,9 +604,9 @@ async def test_a_trial_s_summary_is_never_the_first_line_of_what_it_asked() -> N
         'The world as it stood before the persona\'s first turn:\n\n## music\n{\n  "catalog": [{"artist": "Anz"}]\n}'
     )
     cases = [{"text": f"{world} {index}", "label": "queued"} for index in range(2)]
-    comparison = await Eval(cases, {"a": answering(4, 0.001), "b": answering(1, 0.001)}, ["label"], k=2).run(
-        store=":memory:"
-    )
+    comparison = await Eval(
+        cases, {"a": answering(4, 0.001), "b": answering(1, 0.001)}, ["label"], k=2, name="a vs b"
+    ).run(store=":memory:")
     report = comparison.report
     trials = [block for block in report.blocks if isinstance(block, TrialBlock)]
     assert trials and all(re.fullmatch(r"case \d", trial.case_label) for trial in trials)

@@ -240,8 +240,10 @@ compare = Eval(
   against zero. A question of "no worse than v1" writes its own margin, in the measure's units:
   `Eval(question=..., margin=0.05)` is 5 points. Leave the question out and the readings are leads: the page says
   "Exploratory comparison." once and leads on the same first grader.
-- **Each file builds its own `Model`.** A replay serves each recorded call once per model, so two evals in one process
-  never share one; every rung-3 file but `ci.py` builds its own over the same recording.
+- **Each eval gets its own `Model`.** A replay serves each recorded call once per model, so two evals in one process
+  never share one: `compare.py`, `margin.py` and `guardrail.py` each build one over the same recording, `grid.py`
+  builds two (one per effort, each over its own recording), `ci.py` runs `guardrail.py`'s eval on its model, and
+  `invoice.py` holds no eval and builds none.
 
 What it printed (made at `max_tokens=8192`), first lines and errors:
 
@@ -271,7 +273,7 @@ counts against v2, stated, never excluded: a model's unusable answer is the cand
 [`margin.py`](../examples/3-invoices/margin.py) is 3a with a margin on `total`:
 
 ```python
-    # A difference on total under 20 points is too small to act on, so v2 can read "equivalent" there.
+    # Fixed before the run: totals are checked by hand, so a gap under 20 points would not change which prompt ships.
     grader=["currency", "number", "due", grader("total", margin=0.20)],
 ```
 
@@ -285,11 +287,15 @@ What its report said of `total`:
 | Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -19 to +19 pts | v2 and v1 equivalent, within the measure's margin (margin ±20 pts) | 30 paired |
 ```
 
-**The lesson: equivalence costs cases.** 30 invoices narrow v2's interval on `total` to 19 points either side, so
-20 points is the tightest margin they can show it inside. The margin is what is too small to act on, decided before the
-readings; a margin of 5 would need many more invoices, and with too few the reading is "cannot tell apart", never
-equivalent. [Measuring soundly](measuring-soundly.md#how-many-cases-how-many-repeats) says how many cases a question
-needs.
+**The lesson: a margin comes from the decision, and equivalence costs cases.** The margin is the largest difference
+that would not change what you do, fixed before the readings from what the decision is for: here a person checks
+every total before it is paid, so a prompt worse on `total` by less than 20 points would still ship on its other
+fields. It is never read off the interval a run produced: a margin chosen to fit the readings it judges is criterion
+selection ([Measuring soundly](measuring-soundly.md#declare-the-campaign-its-question-arms-and-aspects)), and it makes
+"equivalent" a foregone conclusion. The cost is honest too: 30 invoices narrow v2's interval on `total` to 19 points
+either side, so they can show equivalence only at a margin this wide. A decision that needs a 5-point margin needs
+many more invoices, and with too few the reading is "cannot tell apart", never equivalent.
+[Measuring soundly](measuring-soundly.md#how-many-cases-how-many-repeats) says how many cases a question needs.
 
 ## Rung 3c: a guardrail, decided on its own
 
@@ -340,7 +346,7 @@ v1 vs v2
 ```
 
 The page leads on the question's measure as the printed line does, and says beside it what leaves the guardrail
-undecided. (`total` keeps a 5-point margin here, tighter than 30 invoices can show, so it reads "cannot tell apart".)
+undecided.
 
 **The lesson: a report that cannot decide says which question it could not answer, and what would answer it.** The
 guardrail is the question the first screen's warning names as unanswered: each arm stated a total once on a noisy
@@ -597,7 +603,8 @@ writer_eval = WriterEval(
 
 - **A case is a campaign, frozen.** Each file in `cases/` holds one campaign's evidence exactly as the writer's tools
   read it: the four campaigns rungs 1 to 4 store when they replay (rung 3's is its campaign from before it split into a
-  file a step, the one `guardrail.py` still declares), a larger campaign the package ships as a fixture
+  file a step: the eval `guardrail.py` grew from, frozen on 2026-11-03 with a 5-point margin on `total` and no
+  question, so it is no longer the campaign any rung-3 file declares), a larger campaign the package ships as a fixture
   (the `kairo` stratum), and six of the package's report inputs reshaped to fit no exemplar (the `misfit` stratum).
   Each case's `stratum` is its domain, so the readings split by it, and its `withhold` names the skill's exemplar
   notes the analyst is not given: the one reasoned on that same campaign.

@@ -148,7 +148,9 @@ ARMS = {
 
 
 async def _factorial(arms: Mapping[str, Any] | None = None, *, host: EvalHost | None = None) -> Result:
-    ev = Eval(CASES, ARMS if arms is None else arms, ["label"], k=2)
+    arms = ARMS if arms is None else arms
+    # Named as the cells read, as a title in these tests; an eval never builds that name itself.
+    ev = Eval(CASES, arms, ["label"], k=2, name=" vs ".join(arms))
     if host is not None:
         return await ev.run(host=host, scope=SCOPE)
     return await ev.run(store=":memory:", scope=SCOPE)
@@ -264,7 +266,9 @@ async def test_a_callers_host_without_the_arm_lever_names_single_factor_arms_as_
 
 
 async def test_a_callers_host_declaring_the_arm_lever_names_arms_on_it() -> None:
-    host = as_host([Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"])], store=":memory:")
+    host = as_host(
+        [Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"], name="hasty vs careful")], store=":memory:"
+    )
     comparison = await _factorial({"hasty": hasty, "careful": careful}, host=host)
     (row,) = comparison.contrasts("accuracy")
     assert (row["arm"], row["contrast"], row["control"]) == ("careful", "careful", "hasty")

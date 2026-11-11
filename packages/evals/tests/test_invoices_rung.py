@@ -327,6 +327,8 @@ async def test_3e_the_grid_crosses_two_factors_and_reads_one_lever_against_anoth
     # The same runs read against another control, no run repeated: the prompt's effect at high effort.
     again = await result.against(_CELLS[2])
     assert again.control == _CELLS[2] and again.run_ids == result.run_ids
+    # Read again, it asks what the grid asked, on the same readings in the same order.
+    assert again.question == result.question and again.grader_readings == result.grader_readings
     assert {row["arm"] for row in again.contrasts("accuracy")} == set(_CELLS) - {_CELLS[2]}
 
 
@@ -339,6 +341,51 @@ def test_3e_run_as_a_script_it_prints_the_grid_then_reads_it_against_the_high_ef
     assert out[0].startswith("grid: ") and "Prompt v1, effort low (control): 90 result(s): 90 scored" in out
     assert [line for line in out if line.startswith("grid, against Prompt v1, effort high: ")]
     assert "Prompt v1, effort high (control): 90 result(s): 90 scored" in out
+
+
+def test_3e_replayed_twice_the_grid_prints_the_same_lines(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A replay is deterministic: each run's cells start in an order its fresh id shuffles, several at once, and the
+    recording once served a prompt's answers in the order they were asked, so c02's malformed reply landed on repeat 3
+    one run and repeat 1 the next. Each repeat is now served its own recorded answer."""
+    printed = []
+    for copy in ("first", "second"):
+        runpy.run_path(str(offline_copy("3-invoices", tmp_path / copy, monkeypatch) / "grid.py"), run_name="__main__")
+        printed.append(capsys.readouterr().out)
+    assert printed[0] == printed[1]
+    assert "  case c02 (Prompt v2, effort low, repeat " in printed[0]
+
+
+async def test_a_model_shared_by_two_evals_refuses_the_second_naming_the_first_and_never_says_to_record_again(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Why each file builds its own Model: a replay serves each recorded call once per model. A second eval on
+    compare.py's model is refused every call, the rig's fault (excluded, never scored), and the refusal names the
+    real cause, not a recording to make again."""
+    offline_copy("3-invoices", tmp_path, monkeypatch)
+    module = load(Path("compare.py"), "compare", monkeypatch)
+    again = Eval(
+        "invoices.jsonl",
+        runner={
+            "v1": module.model.prompt(module.V1, module.Invoice),
+            "v2": module.model.prompt(module.V2, module.Invoice),
+        },
+        grader=["currency"],
+        name="again",
+    )
+    await module.compare.run(store=":memory:")
+    result = await again.run(store=":memory:")
+
+    for summary in result.arms.values():
+        assert (summary.n_results, summary.n_excluded) == (90, 90)
+    errors = [line for line in str(result).splitlines() if line.startswith("  error: ")]
+    assert errors and all(
+        "every one was already served to another eval's run in this process ('compare')" in line
+        and "build a Model per eval" in line
+        and "re-record" not in line
+        for line in errors
+    ), errors[:2]
 
 
 #: Each cell as every surface names it: by its factors, in the order the eval declares them, each as its reader name

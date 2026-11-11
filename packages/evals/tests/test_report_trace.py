@@ -288,6 +288,7 @@ async def test_a_guardrail_s_figures_carry_their_readings_ids() -> None:
         {"current": answers(10, 0), "leaky": answers(0, 20)},
         [correct, grader(no_leak, guard=0.1)],
         k=1,
+        name="current vs leaky",
     ).run(store=":memory:", scope="trace-guardrails")
     bundle = comparison.report.bundle
     page = _page(bundle)

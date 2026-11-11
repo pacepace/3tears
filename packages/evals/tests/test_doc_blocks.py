@@ -37,7 +37,7 @@ from typing import Any
 import pytest
 
 from packages.evals.tests.report_shapes_support import ArmTrials, AspectTrials, s1_change, shape_of
-from packages.evals.tests.rung_support import rung_copy
+from packages.evals.tests.ladder_support import offline_copy
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown, report_markdown
 from threetears.evals.kernel.declaration import RateDrop
 from threetears.evals.quick.files import main
@@ -143,7 +143,7 @@ def test_what_the_ladder_shows_a_rung_printing_is_what_its_replay_prints(
     shown = shown_lines(rung)
     assert shown, f"no page shows what {rung} printed"
     # Run as the ladder runs it, from the directory above ``examples/``, so every path prints as the page shows it.
-    rung_copy(directory, tmp_path / "examples", monkeypatch)
+    offline_copy(directory, tmp_path / "examples", monkeypatch)
     monkeypatch.chdir(tmp_path)
     main([f"examples/{directory}/{program}"])
     said = capsys.readouterr()
@@ -173,7 +173,7 @@ async def test_what_reading_reports_shows_an_aspect_page_opening_on_is_the_invoi
 ) -> None:
     """The aspect first screen ``reading-reports.md`` shows is the invoices rung's own page, laid out alone."""
     shown = _markdown_under(DOCS / "reading-reports.md", "### An aspect's first screen")
-    copy = rung_copy("3-invoices", tmp_path, monkeypatch)
+    copy = offline_copy("3-invoices", tmp_path, monkeypatch)
     spec = importlib.util.spec_from_file_location(f"doc_blocks_invoices_{id(tmp_path)}", copy / "guardrail.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

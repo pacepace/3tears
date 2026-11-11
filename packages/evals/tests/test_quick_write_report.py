@@ -38,7 +38,7 @@ from packages.evals.tests.report_writer_support import (
     submitted,
 )
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.rung_support import rung_copy
+from packages.evals.tests.ladder_support import offline_copy
 from threetears.evals.actions.catalogue import Caller
 from threetears.evals.actions.report_writing import write_report
 from threetears.evals.harness.__main__ import PROG
@@ -138,7 +138,7 @@ def _session(snapshot: str) -> dict[str, list[TurnReply]]:
 @pytest.fixture
 def rung_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A copy of ``examples/1-triage/`` as the working directory, with no key."""
-    return rung_copy("1-triage", tmp_path, monkeypatch)
+    return offline_copy("1-triage", tmp_path, monkeypatch)
 
 
 # parity-with: threetears.evals.quick.files.RunResult

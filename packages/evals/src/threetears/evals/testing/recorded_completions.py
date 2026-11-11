@@ -4,15 +4,17 @@ A suite that exercises code calling a model has three choices for the model: cal
 never the same answer twice), stand a scripted double in for it (free, but what is scored is the double's text, not
 a model's), or call it once and keep what it said. :class:`RecordedCompletions` is the third.
 :meth:`RecordedCompletions.record` wraps the host's real client and appends every completion it returns to a JSONL
-file; :meth:`RecordedCompletions.replay` reads that file and hands the same completions back, in the order they were
-made, with no network. The package's examples run on it: live with a key, recorded with ``RECORD=1``, and otherwise
+file; :meth:`RecordedCompletions.replay` reads that file and hands the same completions back, with no network. The package's examples run on it: live with a key, recorded with ``RECORD=1``, and otherwise
 replayed from the ``recordings/`` beside each rung (``examples/README.md``).
 
 **What a call is matched on.** A recording holds one model's calls at one temperature. Each line is keyed by the
 sha256 of the canonical JSON of the call's ``system``, ``user`` and ``response_format``, the model and temperature, and
 the request settings the client was built with (a :class:`~threetears.evals.schema.ClientRequestSettings`, or ``None``
 for a client built with none), and carries the call's index under that key, so ``k`` repeats of one prompt replay as
-the ``k`` answers they were. The settings never reach ``generate``, so :meth:`RecordedCompletions.record` and
+the ``k`` answers they were. Inside an eval's cell, repeat ``i`` (the cell's ``k_iteration``,
+:class:`~threetears.evals.schema.CellIdentity`) is served the call of index ``i``, so a replay hands each repeat the
+same answer on every run, whatever order the cells ask in; outside a cell, or where that index is taken (one prompt
+asked twice in a cell, or by two arms), the first call left is served, in the order the calls were made. The settings never reach ``generate``, so :meth:`RecordedCompletions.record` and
 :meth:`RecordedCompletions.replay` are told them. They are matched because they change the answer, so one file can
 hold one model under two settings (two efforts), each client replaying its own, and a replay asked under settings a
 prompt was not recorded with is refused naming each setting that differs. A second model, or a second temperature,
@@ -28,7 +30,10 @@ the inner client's, read through, so the recorder is a bound client exactly when
 
 **A miss is refused, never served live.** A prompt the recording does not hold, one it holds only under other request
 settings, or one asked more times than it was recorded, raises :class:`RecordingRefused` naming the prompt (its first
-80 characters), the call's index or the settings that differ, and the command that re-records it. It is an
+80 characters) or the settings that differ, and the command that re-records it. Each call is served once per client:
+one whose every recorded call already went to another eval's run in the process (a ``Model`` shared by two evals, or
+an eval run twice on one) is refused for that cause, naming the eval, and the remedy is a client per eval, never a
+recording made again. It is an
 :class:`~threetears.evals.kernel.host.ApparatusError`: a replay that cannot serve is a fault of the rig, not of the code
 under test, so a candidate that raises it has its cell excluded rather than scored.
 :meth:`RecordedCompletions.check_covers` asks the same question of a list of prompts before any replay starts, which is
@@ -59,7 +64,6 @@ from __future__ import annotations
 import json
 import math
 import threading
-from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import UTC, datetime
@@ -68,6 +72,7 @@ from types import MappingProxyType
 from typing import Any, ClassVar, Literal, NamedTuple, Self, get_args
 
 from threetears.evals.kernel.capped_completion import refresh_prices
+from threetears.evals.kernel.eval_scope import RunningEval, running_eval
 from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.schema.completion import (
     COMPLETION_RESULT_ATTRIBUTES,
@@ -79,6 +84,7 @@ from threetears.evals.schema.completion import (
 )
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import ClientRequestSettings
+from threetears.evals.schema.traces import current_cell_identity
 from threetears.evals.testing.completion_conformance import (
     CompletionConformanceFailure,
     check_completion_conformance,
@@ -207,7 +213,8 @@ class RecordedCompletions:
     See the module docstring for what a call is matched on and what is kept.
 
     One replaying client per recorded client: two clients replaying the same calls from one file each serve the first
-    answer first, so ``k`` repeats split between them replay out of order. Two clients that differ only in their
+    answer first, so ``k`` repeats split between them replay out of order. One replaying client per eval, too: it
+    serves each recorded call once, so a second eval asking the same prompts is refused, naming the eval that took them. Two clients that differ only in their
     request settings are two recorded clients, and each replays its own calls.
 
     :ivar FORMAT_VERSION: The recording format this build writes, and the newest it reads.
@@ -250,7 +257,8 @@ class RecordedCompletions:
         self._settings = settings
         self._recorded = {key: (held, list(calls)) for key, (held, calls) in recorded.items()}
         self._remedy = _rerecord_remedy(path, rerecord)
-        self._served: Counter[str] = Counter()
+        #: Each key's served calls, by index, with the eval run each went to (None outside every one).
+        self._taken: dict[str, dict[int, RunningEval | None]] = {}
         self._lock = threading.Lock()
         # The file's size when this client last read or wrote it: a different size on disk means another client in
         # this process appended to it, or it was removed, and the indexes are read again before the next append.
@@ -439,7 +447,7 @@ class RecordedCompletions:
             :class:`ReplayedCompletion`.
         :rtype: CompletionResult
         :raises RecordingRefused: Replaying, the recording holds no call for this prompt, holds it only under other
-            request settings, or holds fewer calls for it than this one's index. Recording, the completion names
+            request settings, or has served every call it holds for it (to another eval's run, named as the cause). Recording, the completion names
             another model or temperature than the calls the recording holds.
         :raises CompletionConformanceFailure: Recording, the inner client's completion lacks a member, or holds a value
             of the wrong type or one JSON cannot hold.
@@ -467,18 +475,44 @@ class RecordedCompletions:
                 "or the code now asks something it did not ask then",
                 self._remedy,
             )
+        cell = current_cell_identity()
+        repeat = cell.k_iteration if cell is not None else None
+        asking = running_eval()
         with self._lock:
-            index = self._served[key]
             _, calls = self._recorded[key]
-            if index >= len(calls):
-                raise RecordingRefused(
-                    self.path,
-                    f"the prompt {_head(user)} is recorded {len(calls)} time(s), and this is call {index} (counting "
-                    "from 0): the code asks it more often than it did when it was recorded",
-                    self._remedy,
-                )
-            self._served[key] = index + 1
+            taken = self._taken.setdefault(key, {})
+            # A cell's repeat is served the recorded call of its own index, so which repeat gets which answer never
+            # turns on the order the cells asked in (shuffled by the run's id, and concurrent); a call no repeat
+            # claims, or whose index is taken, is served the first call left.
+            if repeat is not None and repeat < len(calls) and repeat not in taken:
+                index: int | None = repeat
+            else:
+                index = next((spare for spare in range(len(calls)) if spare not in taken), None)
+            if index is None:
+                raise self._spent(user, len(calls), taken.values(), asking)
+            taken[index] = asking
         return calls[index]
+
+    def _spent(
+        self, user: str, recorded: int, takers: Iterable[RunningEval | None], asking: RunningEval | None
+    ) -> RecordingRefused:
+        """The refusal of a prompt every recorded call of which is served: to another eval's run, or to this code."""
+        others = sorted({taker.name for taker in takers if taker is not None and taker is not asking})
+        if others:
+            return RecordingRefused(
+                self.path,
+                f"the prompt {_head(user)} is recorded {recorded} time(s), and every one was already served to "
+                f"another eval's run in this process ({', '.join(map(repr, others))}): a replay serves each recorded "
+                "call once per model, so one model shared by two evals, or by one eval run twice, serves the second "
+                "none",
+                "build a Model per eval; the recording is whole, so record nothing again",
+            )
+        return RecordingRefused(
+            self.path,
+            f"the prompt {_head(user)} is recorded {recorded} time(s), and this is call {recorded} (counting from 0): "
+            "the code asks it more often than it did when it was recorded",
+            self._remedy,
+        )
 
     def _append(
         self, system: str, user: str, response_format: dict[str, Any] | None, completion: CompletionResult

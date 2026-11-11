@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, TypeIs
 
 from threetears.evals.kernel.eval_file import beside_eval_file
+from threetears.evals.kernel.eval_scope import eval_running
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel import GuardrailMargin
 from threetears.evals.kernel.host import CompletionClients, EvalHost
@@ -235,8 +236,9 @@ class Eval:
         :ptype grader: Any
         :param k: Repeats per case, per arm.
         :ptype k: int
-        :param name: What titles its report and names its scope; ``None`` takes the cases file's stem, else the runner's
-            name, else the arms joined by ``vs``.
+        :param name: What titles its report and names its scope, where its runs are kept; ``None`` takes the cases
+            file's stem, else the runner's name (a single arm's name, for a mapping of one). Several arms with neither
+            are refused: a name built from the arms would move the runs every time an arm is added, renamed or dropped.
         :ptype name: str | None
         :param max_cost_usd: The most the eval may spend, shared equally between its arms.
         :ptype max_cost_usd: float | None
@@ -257,7 +259,8 @@ class Eval:
         :raises ValueError: A blank question, a margin that is no share strictly between 0 and 1 or one with no
             question, no cases, an unreadable case file, a runner of no known form, a mapping with no arm or a
             blank arm name, arms naming ``k=v`` factors unlike one another, arms on two worlds, no grader or one of no
-            known form, or an expression grader with no world with state to read.
+            known form, an expression grader with no world with state to read, or several arms with no name and no
+            cases file to name the eval by.
         """
         if question is not None and not question.strip():
             raise ValueError("an eval's question is filed on its campaign, and this one is blank")
@@ -290,11 +293,16 @@ class Eval:
             )
         self.factors = self._factors()
         named = [arm for arm in arms if arm is not None]
+        if not name and source is None and len(named) > 1:
+            raise ValueError(
+                'name this eval (name="invoices"): its name is where its runs are kept, and a name built from its arms '
+                f"({', '.join(map(repr, named))}) would move them every time an arm changes"
+            )
         self.name = (
             name
             or (source.stem if source is not None else None)
             or (_runner_name(arms[None]) if None in arms else None)
-            or " vs ".join(named)
+            or (named[0] if named else "")
         )
         if not self.name or not self.name.strip():
             raise ValueError("an eval is named by name=, its cases file or its runner, and this one has none of them")
@@ -419,6 +427,19 @@ class Eval:
             anything the cases, the runner or the graders refuse, before anything runs.
         :raises ValidationFailedError: The launch refused, or the host refuses the campaign's declaration.
         """
+        # Its arms, its judge and every task they start read as this one run, so a replay serving one of its calls
+        # can tell this eval's calls from another's in the process (eval_running).
+        with eval_running(self.name):
+            return await self._run(store=store, host=host, scope=scope)
+
+    async def _run(
+        self,
+        *,
+        store: DocumentStore | str | os.PathLike[str] | None,
+        host: EvalHost | None,
+        scope: str | None,
+    ) -> Result:
+        """:meth:`run`'s body, inside its eval's run."""
         if host is not None and store is not None:
             raise ValueError(
                 f"store= is where the host this eval builds keeps the runs, and host {host.profile.host_id!r} brings "

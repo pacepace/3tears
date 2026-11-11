@@ -42,9 +42,12 @@ uv run python -m threetears.evals examples/4-booking/agent.py      # rung 4a
 uv run python -m threetears.evals examples/5-writer/writer.py      # rung 5
 ```
 
-Two files run from their own directory instead, because each imports a sibling as a module: rung 3d's
-[`ci.py`](3-invoices/ci.py) (`cd examples/3-invoices && python ci.py`, which imports `guardrail.py`) and rung 4b's
-[`serve.py`](4-booking/serve.py) (from `examples/4-booking/`, which imports `agent.py`).
+Two files run from their own directory instead, because each is run with plain `python` rather than through the
+door, and outside the door a relative path is read from the working directory, not beside the file: rung 3d's
+[`ci.py`](3-invoices/ci.py) (`cd examples/3-invoices && python ci.py`; the eval it imports names `invoices.jsonl` and
+`recordings/invoices.jsonl`) and rung 4b's [`serve.py`](4-booking/serve.py) (from `examples/4-booking/`, whose store
+is `.evals/evals.sqlite` there). Importing a sibling is not the reason: plain `python` puts a script's own directory
+on `sys.path`, and the door puts a rung's there too.
 
 A recording that exists is replayed: no key, no network, no cost. `RECORD=1` with `OPENROUTER_API_KEY` set records it
 again, live (`RECORD=1 uv run python -m threetears.evals examples/1-triage/triage.py`). A recording holds one model at one
@@ -140,8 +143,9 @@ their own (`recordings/replies.jsonl`, `recordings/judge.jsonl`).
 
 Rung 3 is one directory and six steps, five of them a file each, over 30 invoices ([`invoices.jsonl`](3-invoices/invoices.jsonl))
 in three strata (clean, multi-currency, noisy OCR) and two prompts. What every file reads an invoice into, and the two
-prompts, are in [`invoice.py`](3-invoices/invoice.py), which declares no eval; each file builds its own `Model`, since a
-replay serves each recorded call once per model.
+prompts, are in [`invoice.py`](3-invoices/invoice.py), which declares no eval and builds no `Model`. Every eval gets its
+own `Model`, since a replay serves each recorded call once per model: `grid.py` builds two (one per effort), and
+`ci.py` runs `guardrail.py`'s eval on its model.
 
 [`compare.py`](3-invoices/compare.py) compares the prompts, as `runner={"v1": model.prompt(V1, Invoice), "v2": ...}`;
 the first is the control, and v2 is read against it on every reading: the delta, its interval and a verdict.
@@ -161,10 +165,12 @@ which 3b, 3c, 3d and the grid's low-effort cells replay too.
 
 ### Rung 3b: a margin, `3-invoices/margin.py`
 
-[`margin.py`](3-invoices/margin.py) is 3a with `grader("total", margin=0.20)`: a difference under 20 points on `total`
-is too small to act on, and only with a margin can a reading come out equivalent, the one verdict that says "good
-enough". 30 invoices narrow the interval on `total` to 19 points either side, so 20 is the tightest margin they can
-show it inside:
+[`margin.py`](3-invoices/margin.py) is 3a with `grader("total", margin=0.20)`, and only with a margin can a reading
+come out equivalent, the one verdict that says "good enough". The margin comes from the decision, fixed before any
+reading: a person checks every total before it is paid, so a prompt worse on `total` by under 20 points would still
+ship on its other fields. It is never read off the interval the run produced. 30 invoices narrow the interval on
+`total` to 19 points either side, so they can show equivalence only at a margin this wide; a tighter margin needs
+more invoices:
 
 ```text
 | Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -19 to +19 pts | v2 and v1 equivalent, within the measure's margin (margin ±20 pts) | 30 paired |
@@ -174,7 +180,7 @@ show it inside:
 
 [`guardrail.py`](3-invoices/guardrail.py) adds `@grader(guard=0.02) no_invented_total`, a guardrail: a pass/fail check
 that fails each trial it fails, with its own held/breached reading against v1 on top, decided apart from the contrasts.
-(It keeps a 5-point margin on `total`, tighter than 30 invoices can show.) The guardrail is undecided for v2, so it
+It grades the fields as compare.py does, with no margin. The guardrail is undecided for v2, so it
 exits 4, its last line saying why in the report's words
 (`exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. ... The gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
 screen quotes the question and leads on its measure, the classifier's accuracy, with the guardrail's warning beside
@@ -269,7 +275,7 @@ Its eleven cases ([`cases/`](5-writer/cases/), one `.json.gz` each) are frozen c
 | Stratum | Cases | Side |
 |---|---|---|
 | `support-triage` | rung 1's campaign | held-out |
-| `support-replies`, `invoices`, `booking` | rung 2's, rung 3's from before it split (the one `guardrail.py` declares), and rung 4a's | dev |
+| `support-replies`, `invoices`, `booking` | rung 2's, rung 3's from before it split (frozen 2026-11-03, the eval `guardrail.py` grew from; no rung-3 file declares it now), and rung 4a's | dev |
 | `kairo` | a larger campaign the package ships as a fixture | held-out |
 | `misfit` | five of the package's report inputs reshaped to fit no exemplar | held-out |
 | `misfit` | one more, in the r3 group | dev |

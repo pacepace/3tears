@@ -121,9 +121,9 @@ async def test_a_comparison_tests_the_arms_reported_cost_against_the_control() -
         assert cheaper.cost_usd is not None
         return Answer(cheaper.value, model="m-2", input_tokens=cheaper.input_tokens, cost_usd=cheaper.cost_usd * 10)
 
-    comparison = await Eval(COMPARED_CASES, {"dearer": dearer, "cheaper": priced}, [LABEL], k=2).run(
-        store=":memory:", scope=SCOPE
-    )
+    comparison = await Eval(
+        COMPARED_CASES, {"dearer": dearer, "cheaper": priced}, [LABEL], k=2, name="dearer vs cheaper"
+    ).run(store=":memory:", scope=SCOPE)
     assert comparison.arms["cheaper"].role_spend("candidate").cost_usd == pytest.approx(
         comparison.arms["dearer"].role_spend("candidate").cost_usd / 10  # type: ignore[operator]
     )

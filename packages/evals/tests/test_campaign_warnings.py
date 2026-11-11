@@ -206,7 +206,9 @@ def _answering(*, misses: int, leaks: int) -> Any:
 async def _guarded(**arms: Any) -> CampaignReport:
     """The campaign page of ``arms`` (the first the control) over thirty cases, graded by ``_right`` and the
     ``_no_leak`` guardrail at five points."""
-    result = await Eval(_THIRTY, arms, [_right, grader(_no_leak, guard=0.05)], k=1).run(store=":memory:")
+    result = await Eval(_THIRTY, arms, [_right, grader(_no_leak, guard=0.05)], k=1, name=" vs ".join(arms)).run(
+        store=":memory:"
+    )
     return result.page
 
 
@@ -248,6 +250,7 @@ async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_a
         {"current": _answering(misses=10, leaks=0), "same": _answering(misses=4, leaks=0)},
         [_right, grader(_no_leak, guard=0.05)],
         k=1,
+        name="current vs same",
     ).run(store=":memory:")
     page = result.page
     (right,) = [
@@ -278,6 +281,7 @@ async def test_a_campaign_stating_no_grader_order_and_asking_no_question_leads_o
         {"current": _answering(misses=10, leaks=0), "same": _answering(misses=4, leaks=0)},
         [_right, grader(_no_leak, guard=0.05)],
         k=1,
+        name="current vs same",
     ).run(store=":memory:")
     stated = off_loop(get_campaign, result.host.storage, result.campaign_id, result.scope_id)
     unstated = stated.model_copy(
@@ -317,7 +321,11 @@ async def test_with_no_question_the_lead_is_the_classifier_s_accuracy_in_the_asp
 
     cases = [{"n": index, "label": "a"} for index in range(30)]
     result = await Eval(
-        cases, {"current": labelled(10), "same": labelled(4)}, ["label", grader(no_secret, guard=0.05)], k=1
+        cases,
+        {"current": labelled(10), "same": labelled(4)},
+        ["label", grader(no_secret, guard=0.05)],
+        k=1,
+        name="current vs same",
     ).run(store=":memory:")
     (accuracy,) = [
         verdict
@@ -422,7 +430,11 @@ async def test_a_page_no_guardrail_warns_on_still_leads_on_its_first_grader() ->
     """Every page leads (W2, P1): with nothing that warns, the lead is the first screen's one bold line, the same
     sentence a guardrail's warning would sit beside."""
     result = await Eval(
-        _THIRTY, {"current": _answering(misses=10, leaks=0), "same": _answering(misses=4, leaks=0)}, [_right], k=1
+        _THIRTY,
+        {"current": _answering(misses=10, leaks=0), "same": _answering(misses=4, leaks=0)},
+        [_right],
+        k=1,
+        name="current vs same",
     ).run(store=":memory:")
     (lead,) = _warned(result.page.blocks, "verdict")
     assert lead.startswith("Right score: ") and "same" in lead and "current" in lead

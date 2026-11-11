@@ -98,7 +98,8 @@ ARMS = {
 async def _compare(arms: Mapping[str, Any] | None = None, graders: list[Any] | None = None, **run: Any) -> Result:
     """Compare the arms (``current``, the control, first), graded by ``correct`` and the ``no_leak`` guardrail."""
     graded = [correct, grader(no_leak, guard=NO_LEAK)] if graders is None else graders
-    ev = Eval(CASES, ARMS if arms is None else arms, graded, k=1)
+    arms = ARMS if arms is None else arms
+    ev = Eval(CASES, arms, graded, k=1, name=" vs ".join(arms))
     if "host" not in run:
         run["store"] = ":memory:"
     return await ev.run(scope="quick-guardrails", **run)

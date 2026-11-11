@@ -43,7 +43,9 @@ def test_the_cases_reading_prints_as_a_label_and_keeps_its_value() -> None:
 
 async def test_a_table_by_stratum_prints_its_cases_row_capitalised_and_a_program_reads_it_as_before() -> None:
     stratified = [{**case, "stratum": "plain" if index % 2 else "lookalike"} for index, case in enumerate(CASES)]
-    result = await Eval(stratified, {"hasty": hasty, "careful": careful}, ["label"], k=1).run(store=":memory:")
+    result = await Eval(stratified, {"hasty": hasty, "careful": careful}, ["label"], k=1, name="hasty vs careful").run(
+        store=":memory:"
+    )
     (strata,) = [block for block in result.report.blocks if isinstance(block, TableBlock) and block.name == "strata"]
     assert CASES_READING in {str(row["reading"].value) for row in strata.rows}
     at = [column.key for column in strata.columns].index("reading")

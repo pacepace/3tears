@@ -841,7 +841,13 @@ def test_an_arm_is_one_tag_and_one_colour_on_the_code_page_the_aspect_page_and_t
     Every page tags arms in one order, the campaign's declared arms first, so the letters and the colours agree."""
     declared = _CAMPAIGNS[name]
     result = asyncio.run(
-        Eval(_CASES, {arm: _answering(misses) for arm, misses in declared.items()}, [_right], k=1).run(store=":memory:")
+        Eval(
+            _CASES,
+            {arm: _answering(misses) for arm, misses in declared.items()},
+            [_right],
+            k=1,
+            name=" vs ".join(declared),
+        ).run(store=":memory:")
     )
     code = _code_page_tags(campaign_report(result.host, result.campaign_id, result.scope_id))
     bundle = assemble_campaign_bundle(result.host, result.campaign_id, result.scope_id)

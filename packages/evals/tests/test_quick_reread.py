@@ -85,6 +85,7 @@ async def _compare(path: Path) -> Result:
             {"current": same, "cheaper": same},
             [grader(correct, margin=0.1), grader(no_leak, guard=0.1)],
             k=1,
+            name="current vs cheaper",
         ).run(store=store, scope="kept")
 
 

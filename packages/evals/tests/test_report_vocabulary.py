@@ -62,7 +62,9 @@ async def test_a_comparison_s_first_two_screens_use_none_of_the_engine_s_nouns()
     cases = [{"text": f"refund {n}", "label": "billing"} for n in range(8)] + [
         {"text": f"refund crash {n}", "label": "billing"} for n in range(8)
     ]
-    comparison = await Eval(cases, {"hasty": _hasty, "careful": _classify}, ["label"]).run(store=":memory:")
+    comparison = await Eval(cases, {"hasty": _hasty, "careful": _classify}, ["label"], name="hasty vs careful").run(
+        store=":memory:"
+    )
     text = _screens_one_and_two(comparison.report)
     assert _banned(text) == []
     assert "careful better than hasty" in text
