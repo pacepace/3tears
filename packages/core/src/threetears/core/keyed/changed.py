@@ -23,10 +23,17 @@ The hash is ONE SQL expression, :func:`row_hash_sql`: an MD5 over a canonical, t
 each column length-prefixed and a NULL marked apart from every value, so the same values give the same hash on
 PostgreSQL (and YugabyteDB), DuckDB and Redshift. A full read selects the same expression and stores it beside the
 row (:func:`row_hash_selected` among its ``columns=``); the hash is never computed in Python.
+
+Every hash a read answers (a row's, a group's) is its 128 bits as unpadded base64 (:class:`HashEncoding`, 22
+characters where hex took 32). A held hash is compared with an answered one by its bytes, so a hash stored as hex
+before 3tears 0.95.0 matches the same row's base64: stored hashes move to base64 as their rows are written again,
+none rewritten in place.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -40,7 +47,14 @@ from threetears.core.keyed.threaded import ThreadedDuckDB
 from threetears.core.keyed.page import Sort, keyset_rows
 from threetears.core.keyed.rows import KeyBatch, read_keyed
 from threetears.core.sql_fragments import quote_identifier
-from threetears.interfaces.keyed.changed import ROW_HASH_COLUMN, ChangedRows, GroupHash, HashColumn, HashKind
+from threetears.interfaces.keyed.changed import (
+    ROW_HASH_COLUMN,
+    ChangedRows,
+    GroupHash,
+    HashColumn,
+    HashEncoding,
+    HashKind,
+)
 
 __all__ = [
     "ROW_HASH_COLUMN",
@@ -57,7 +71,7 @@ __all__ = [
 ]
 
 #: the scope's keys and hashes a phase-1 statement reads, on a transport that states no cap of its own (a key and a
-#: 32-digit hash: about 3.5 MB of JSON)
+#: 22-character hash: about 3 MB of JSON)
 DEFAULT_HASH_PAGE: Final = 50_000
 
 #: a hashed NULL: every value's text starts with its length's digits, so this mark is no value's
@@ -70,7 +84,10 @@ _LANES: Final = (1, 9, 17, 25)
 #: each lane is summed modulo this
 _LANE_MOD: Final = 2**32
 
-#: the groups a phase-0 statement answers (a group's row is its value, a count and four lanes: about 100 bytes of JSON)
+#: the bytes of a hash (an md5's 128 bits; a group's four 32-bit lanes)
+_HASH_BYTES: Final = 16
+
+#: the groups a phase-0 statement answers (a group's row is its value, a count and its hash: about 70 bytes of JSON)
 _GROUP_PAGE: Final = 10_000
 
 #: the moved groups a phase-1 statement names
@@ -123,13 +140,30 @@ async def dialect_of(conn: Any) -> Dialect:
     return Dialect.YUGABYTE if await known_on_yugabyte(conn) else Dialect.POSTGRES
 
 
-def row_hash_sql(columns: Sequence[HashColumn], dialect: Dialect, *, alias: str | None = "t") -> str:
-    """the SQL expression of a row's hash over ``columns``: the same text of hex digits on every dialect for the
-    same values.
+def _base64_of_hex(hexed: str, dialect: Dialect) -> str:
+    """the SQL of the bytes the hex text ``hexed`` spells, as unpadded base64, on ``dialect``: the same 22 characters
+    for 16 bytes everywhere (Redshift's spelling checked live against Python's, 2026-11-11; ``TO_VARCHAR`` refuses
+    there)."""
+    match dialect:
+        case Dialect.REDSHIFT:
+            return f"RTRIM(FROM_VARBYTE(FROM_HEX({hexed}), 'base64'), '=')"
+        case Dialect.DUCKDB:
+            return f"rtrim(to_base64(unhex({hexed})), '=')"
+    return f"rtrim(encode(decode({hexed}, 'hex'), 'base64'), '=')"
+
+
+def row_hash_sql(
+    columns: Sequence[HashColumn],
+    dialect: Dialect,
+    *,
+    alias: str | None = "t",
+    encoding: HashEncoding = HashEncoding.BASE64,
+) -> str:
+    """the SQL expression of a row's hash over ``columns``: the same text on every dialect for the same values.
 
     Each column's canonical text (:class:`HashKind`) is written as its length, ``:`` and the text, a NULL as ``~``,
     and the columns are joined in the order given, so no two rows of different values join to the same text. The
-    hash is ``md5`` of it (32 lowercase hex digits).
+    hash is ``md5`` of it, all 128 bits: as unpadded base64 (22 characters), or as 32 lowercase hex digits.
 
     :param columns: the hashed columns, in a fixed order
     :ptype columns: Sequence[HashColumn]
@@ -137,6 +171,8 @@ def row_hash_sql(columns: Sequence[HashColumn], dialect: Dialect, *, alias: str 
     :ptype dialect: Dialect
     :param alias: the alias the row's columns are named through (``t."col"``); bare names when None
     :ptype alias: str | None
+    :param encoding: how the hash is written; every read answers base64, hex is the spelling the group lanes slice
+    :ptype encoding: HashEncoding
     :return: the expression, TRUSTED SQL with no parameters
     :rtype: str
     :raises ValueError: when no column is named, or one is named twice
@@ -150,7 +186,8 @@ def row_hash_sql(columns: Sequence[HashColumn], dialect: Dialect, *, alias: str 
     for column in columns:
         text = _value_text(column, dialect, alias)
         parts.append(f"COALESCE(CAST(LENGTH({text}) AS VARCHAR) || ':' || {text}, {_NULL_MARK})")
-    return f"md5({' || '.join(parts)})"
+    hexed = f"md5({' || '.join(parts)})"
+    return hexed if encoding is HashEncoding.HEX else _base64_of_hex(hexed, dialect)
 
 
 def row_hash_selected(columns: Sequence[HashColumn], dialect: Dialect, *, alias: str | None = "t") -> Selected:
@@ -170,22 +207,57 @@ def row_hash_selected(columns: Sequence[HashColumn], dialect: Dialect, *, alias:
     return Selected(row_hash_sql(columns, dialect, alias=alias), ROW_HASH_COLUMN)
 
 
-def _group_hash(hashes: Sequence[str]) -> GroupHash:
-    """the group hash of rows held with these row hashes (the stored text of :func:`row_hash_sql`): what
-    :func:`_group_hash_sql` answers for the same rows on every dialect.
+def _hash_bytes(hashed: str) -> bytes:
+    """the 16 bytes a hash's text spells, either spelling (:class:`HashEncoding`): 32 hex digits or 22 characters of
+    unpadded base64.
 
-    :param hashes: each row's hash, 32 hex digits
+    :param hashed: the hash's text
+    :ptype hashed: str
+    :return: its bytes
+    :rtype: bytes
+    :raises ValueError: for a text that is neither spelling of 16 bytes
+    """
+    try:
+        if len(hashed) == 2 * _HASH_BYTES:
+            return bytes.fromhex(hashed)
+        if len(hashed) == 22:
+            spelled = base64.b64decode(hashed + "==", validate=True)
+            if len(spelled) == _HASH_BYTES and base64.b64encode(spelled).decode().rstrip("=") == hashed:
+                return spelled
+    except (ValueError, binascii.Error) as refused:
+        raise ValueError(f"a hash is 32 hex digits or 22 of unpadded base64, got {hashed!r}") from refused
+    raise ValueError(f"a hash is 32 hex digits or 22 of unpadded base64, got {hashed!r}")
+
+
+def _same_hash(held: str | None, answered: Any) -> bool:
+    """True when a held hash spells the same bytes as an answered one, whichever spelling each is in; False for a
+    held row stored with no hash, or a held text that is no hash (read again, as a row with none)."""
+    if held is None or answered is None:
+        return False
+    if held == answered:
+        return True
+    try:
+        return _hash_bytes(held) == _hash_bytes(str(answered))
+    except ValueError:  # NOSILENT: a held text that is no hash is a row to read again (False), as documented
+        return False
+
+
+def _group_hash(hashes: Sequence[str]) -> GroupHash:
+    """the group hash of rows held with these row hashes (the stored text of :func:`row_hash_sql`, either
+    spelling): what :func:`_group_hash_sql` answers for the same rows on every dialect.
+
+    :param hashes: each row's hash, 32 hex digits or 22 of unpadded base64
     :ptype hashes: Sequence[str]
     :return: the group hash
     :rtype: GroupHash
-    :raises ValueError: for a hash that is not 32 hex digits
+    :raises ValueError: for a hash in neither spelling
     """
     sums = [0, 0, 0, 0]
     for hashed in hashes:
-        if len(hashed) != 32:
-            raise ValueError(f"a row hash is 32 hex digits, got {hashed!r}")
+        spelled = _hash_bytes(hashed)
         for lane, start in enumerate(_LANES):
-            sums[lane] += int(hashed[start - 1 : start + 7], 16)
+            at = (start - 1) // 2
+            sums[lane] += int.from_bytes(spelled[at : at + 4], "big")
     return GroupHash(
         rows=len(hashes), lanes=(sums[0] % _LANE_MOD, sums[1] % _LANE_MOD, sums[2] % _LANE_MOD, sums[3] % _LANE_MOD)
     )
@@ -203,26 +275,29 @@ def _lane_value(hashed: str, start: int, dialect: Dialect) -> str:
 
 
 def _group_hash_sql(hashed: str, dialect: Dialect) -> list[str]:
-    """the select items of a group's hash over the row hash expression ``hashed`` (:func:`row_hash_sql`, or a column
-    holding it), for a ``GROUP BY``: the count as ``group_rows`` and each lane as ``lane0`` .. ``lane3``, as
-    :func:`_group_hash` computes them from the stored hashes.
+    """the select items of a group's hash over the hex row hash expression ``hashed`` (:func:`row_hash_sql` in
+    :attr:`HashEncoding.HEX`), for a ``GROUP BY``: the count as ``group_rows`` and the four lanes, each 8 hex digits
+    in lane order, as the unpadded base64 of their 16 bytes under ``group_hash`` (what :func:`_group_hash` computes
+    from the stored hashes, :func:`_answered_group_hash` reads).
 
-    :param hashed: the row hash, a TRUSTED expression
+    :param hashed: the hex row hash, a TRUSTED expression
     :ptype hashed: str
     :param dialect: the database the statement runs on
     :ptype dialect: Dialect
     :return: the items
     :rtype: list[str]
     """
-    items = ["count(*) AS group_rows"]
-    for lane, start in enumerate(_LANES):
-        items.append(f"CAST(MOD(SUM({_lane_value(hashed, start, dialect)}), {_LANE_MOD}) AS BIGINT) AS lane{lane}")
-    return items
+    lanes = " || ".join(
+        f"LPAD(TO_HEX(CAST(MOD(SUM({_lane_value(hashed, start, dialect)}), {_LANE_MOD}) AS BIGINT)), 8, '0')"
+        for start in _LANES
+    )
+    return ["count(*) AS group_rows", f"{_base64_of_hex(lanes, dialect)} AS group_hash"]
 
 
 def _answered_group_hash(row: Mapping[str, Any]) -> GroupHash:
-    """a phase-0 row's group hash."""
-    lanes = tuple(int(row[f"lane{lane}"]) % _LANE_MOD for lane in range(len(_LANES)))
+    """a phase-0 row's group hash: its four lanes from the 16 bytes ``group_hash`` spells."""
+    spelled = _hash_bytes(str(row["group_hash"]))
+    lanes = tuple(int.from_bytes(spelled[at : at + 4], "big") for at in range(0, _HASH_BYTES, 4))
     return GroupHash(rows=int(row["group_rows"]), lanes=lanes)  # type: ignore[arg-type]
 
 
@@ -360,7 +435,9 @@ async def read_changed(
     :param columns: the columns the full rows carry, as :func:`~threetears.core.keyed.read_keyed` takes them
     :ptype columns: Sequence[str | Selected]
     :param held: each key the caller holds INSIDE this scope (a tuple in ``key``'s order, each value of its kind or
-        its text: matched to the answered key by :func:`key_text`) onto the hash stored with it, None for a row stored with none (always read again); a held key outside the scope would be reported gone
+        its text: matched to the answered key by :func:`key_text`) onto the hash stored with it, in either
+        spelling (:class:`HashEncoding`: compared by its bytes), None for a row stored with none (always read again); a
+        held key outside the scope would be reported gone
     :ptype held: Mapping[tuple[Any, ...], str | None]
     :param hash_columns: the columns the hash covers, as the stored hashes were taken
     :ptype hash_columns: Sequence[HashColumn]
@@ -512,7 +589,7 @@ async def read_changed(
         text = canonical(answered_key)
         seen.add(text)
         holding = held_by_text.get(text)
-        if holding is None or holding[1] != row[ROW_HASH_COLUMN]:
+        if holding is None or not _same_hash(holding[1], row[ROW_HASH_COLUMN]):
             wanted.append(answered_key)
             answered_hashes[text] = row[ROW_HASH_COLUMN]
     gone = [*vanished, *(held_key for text, (held_key, _) in held_by_text.items() if text not in seen)]
@@ -745,7 +822,7 @@ async def _group_hash_rows(
         # fenced, each row is hashed once below the aggregate. Every dialect here accepts it; the answer is the same.
         sql = (
             f"SELECT {outer}, {items} FROM (SELECT {inner}, "
-            f"{row_hash_sql(hash_columns, dialect, alias='t')} AS h FROM {_relation(relation, 't')}{filtered}"
+            f"{row_hash_sql(hash_columns, dialect, alias='t', encoding=HashEncoding.HEX)} AS h FROM {_relation(relation, 't')}{filtered}"
             f" OFFSET 0) AS s GROUP BY {grouped} ORDER BY {ordered} LIMIT {page}"
         )
         rows = await conn.fetch(sql, *params)

@@ -9,6 +9,8 @@ session's ``db_container`` (PostgreSQL), or YugabyteDB through ``THREETEARS_TEST
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -35,6 +37,8 @@ from threetears.core.keyed import (
     row_hash_sql,
 )
 from threetears.core.testing.same_results import Seeded, assert_same_results
+from threetears.core.keyed import InlineDuckDB
+from threetears.interfaces.keyed import HashEncoding
 
 from packages.core.tests.unit.test_keyed_changed import grouped_same_results
 
@@ -139,6 +143,81 @@ async def test_only_changed_rows_are_read_again_on_the_database(conn: asyncpg.Co
     )
     assert sorted(row["id"] for row in changed.rows) == [1, 2, 3, 7]
     assert changed.gone_keys == [(6,)]
+
+
+class _Kept:
+    """a connection that keeps every reply it hands on (``group_hashes``' phase 0 rows, as the wire carries them)."""
+
+    binds_native_arrays = True
+
+    def __init__(self, conn: Any, dialect: Dialect) -> None:
+        self._conn = conn
+        self.sql_dialect = dialect
+        self.replies: list[dict[str, Any]] = []
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        rows = [dict(row) for row in await self._conn.fetch(query, *params)]
+        self.replies.extend(rows)
+        return rows
+
+
+async def test_a_hash_is_the_same_unpadded_base64_on_the_database_duckdb_python_and_in_redshift_s_spelling(
+    conn: asyncpg.Connection,
+) -> None:
+    """Flips if a row's hash or a group's hash, as a read answers it, is not byte-identical on this database, on
+    DuckDB and from Python's md5 of the same canonical text (22 characters of unpadded base64, the md5's 128 bits),
+    or Redshift's is spelled other than the form checked live there against Python
+    (``RTRIM(FROM_VARBYTE(FROM_HEX(md5(x)), 'base64'), '=')``; ``TO_VARCHAR`` refuses): a hash stored from one
+    engine would read as changed on another."""
+    dialect = await dialect_of(conn)
+    text = row_hash_sql(_HASHED, dialect, encoding=HashEncoding.HEX).removeprefix("md5(")[:-1]
+    live = {
+        row["id"]: (row["text"], row["h"])
+        for row in await conn.fetch(
+            f"SELECT id, {text} AS text, {row_hash_sql(_HASHED, dialect)} AS h FROM results AS t"
+        )
+    }
+    duck = duckdb.connect()
+    try:
+        duck.execute(_DDL)
+        duck.executemany("INSERT INTO results VALUES (?, ?, ?, ?, ?, ?, ?)", [list(row) for row in _ROWS])
+        local = dict(
+            duck.execute(f"SELECT id, {row_hash_sql(_HASHED, Dialect.DUCKDB)} AS h FROM results AS t").fetchall()
+        )
+        for found, (canonical, hashed) in live.items():
+            spelled = base64.b64encode(hashlib.md5(canonical.encode()).digest()).decode().rstrip("=")  # noqa: S324
+            assert hashed == local[found] == spelled and len(hashed) == 22, (found, hashed, local[found], spelled)
+        hexed = row_hash_sql(_HASHED, Dialect.REDSHIFT, encoding=HashEncoding.HEX)
+        assert row_hash_sql(_HASHED, Dialect.REDSHIFT) == f"RTRIM(FROM_VARBYTE(FROM_HEX({hexed}), 'base64'), '=')"
+
+        # a group's hash, as phase 0 answers it, over scopes and counties (a NULL county among them)
+        grouped = "CREATE TABLE scoped_b64 (state VARCHAR, county VARCHAR, id BIGINT, name VARCHAR, votes BIGINT)"
+        await conn.execute(grouped)
+        duck.execute(grouped)
+        rows = [
+            (state, None if i % 4 == 0 else f"c{i % 4}", i, None if i % 5 == 0 else f"n{i} ✓", i * 7_000_003)
+            for i in range(40)
+            for state in ("OH", "PA")
+        ]
+        await conn.executemany("INSERT INTO scoped_b64 VALUES ($1, $2, $3, $4, $5)", rows)
+        duck.executemany("INSERT INTO scoped_b64 VALUES (?, ?, ?, ?, ?)", rows)
+        hashed_columns = (HashColumn("name"), HashColumn("votes", HashKind.INTEGER))
+        answered = []
+        for reader in (_Kept(conn, dialect), _Kept(InlineDuckDB(duck), Dialect.DUCKDB)):
+            hashes = await group_hashes(
+                reader, "scoped_b64", scope="state", scopes=["OH", "PA"], group="county", hash_columns=hashed_columns
+            )
+            answered.append(
+                (
+                    hashes,
+                    sorted((row["scope_value"], str(row["group_value"]), row["group_hash"]) for row in reader.replies),
+                )
+            )
+        (on_db, db_replies), (on_duck, duck_replies) = answered
+        assert on_db == on_duck and db_replies == duck_replies and len(db_replies) == 8
+        assert all(len(group_hash) == 22 for _, _, group_hash in db_replies)
+    finally:
+        duck.close()
 
 
 async def test_the_rows_after_applying_the_changes_are_a_full_read_s_on_the_database(

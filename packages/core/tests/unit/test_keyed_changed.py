@@ -3,6 +3,8 @@ phase 2 reads by key only the rows whose hash differs from the held one; on an i
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 
 from datetime import date, datetime, timedelta, timezone
@@ -33,6 +35,7 @@ from threetears.core.keyed import (
     run_inline,
 )
 from threetears.core.testing.same_results import Seeded, assert_same_results
+from threetears.interfaces.keyed import HashEncoding
 
 _HASHED = (
     HashColumn("name"),
@@ -105,20 +108,28 @@ def _changed(db: Any, held: Mapping[tuple[Any, ...], str], state: str = "PA", **
 
 def test_the_hash_marks_null_apart_and_never_joins_two_rows_alike(conn: duckdb.DuckDBPyConnection) -> None:
     """Flips if a NULL hashes as an empty text, if two rows whose texts only move between columns hash alike
-    (``('a', 'bc')`` vs ``('ab', 'c')``), or the hash is not 32 lowercase hex digits."""
+    (``('a', 'bc')`` vs ``('ab', 'c')``), or the hash is not the md5's 128 bits: 22 characters of unpadded base64,
+    or 32 lowercase hex digits spelled as hex, both the same 16 bytes."""
     columns = (HashColumn("x"), HashColumn("y"))
     rows = [("a", "bc"), ("ab", "c"), ("", None), (None, ""), (None, None), ("~", None)]
     conn.execute("CREATE TABLE pairs (x VARCHAR, y VARCHAR)")
     conn.executemany("INSERT INTO pairs VALUES (?, ?)", rows)
-    hashes = [h for (h,) in conn.execute(f"SELECT {row_hash_sql(columns, Dialect.DUCKDB)} FROM pairs AS t").fetchall()]
+    both = (
+        f"SELECT {row_hash_sql(columns, Dialect.DUCKDB)}, "
+        f"{row_hash_sql(columns, Dialect.DUCKDB, encoding=HashEncoding.HEX)} FROM pairs AS t"
+    )
+    answered = conn.execute(both).fetchall()
+    hashes = [h for h, _ in answered]
     assert len(set(hashes)) == len(rows), hashes
-    assert all(len(h) == 32 and h == h.lower() and int(h, 16) >= 0 for h in hashes)
+    assert all(len(h) == 32 and h == h.lower() and int(h, 16) >= 0 for _, h in answered)
+    assert all(len(h) == 22 and "=" not in h for h in hashes)
+    assert all(base64.b64decode(b + "==") == bytes.fromhex(h) for b, h in answered)
 
 
 def test_each_kind_is_written_as_its_canonical_text(conn: duckdb.DuckDBPyConnection) -> None:
     """Flips if a kind's canonical text moves (a numeric at its column's own scale, a timestamp without its six
     fractional digits, a boolean as ``true``): the hashes stored beside rows would all differ from the next read."""
-    expression = row_hash_sql(_HASHED, Dialect.DUCKDB)
+    expression = row_hash_sql(_HASHED, Dialect.DUCKDB, encoding=HashEncoding.HEX)
     assert expression.startswith("md5(") and "'~'" in expression
     text = expression.removeprefix("md5(")[:-1]
     (found,) = conn.execute(f"SELECT {text} FROM results AS t WHERE geo = 3").fetchone() or (None,)
@@ -135,7 +146,7 @@ def test_the_postgres_and_redshift_spellings_name_the_same_canonical_forms() -> 
     assert 'CAST(CAST(t."share" AS DECIMAL(38, 4)) AS VARCHAR)' in postgres
     redshift = row_hash_sql(_HASHED, Dialect.REDSHIFT)
     assert 'CAST(t."name" AS VARCHAR)' not in redshift and 'LENGTH(t."name")' in redshift
-    assert row_hash_sql([HashColumn("a")], Dialect.POSTGRES, alias=None) == (
+    assert row_hash_sql([HashColumn("a")], Dialect.POSTGRES, alias=None, encoding=HashEncoding.HEX) == (
         "md5(COALESCE(CAST(LENGTH(CAST(\"a\" AS VARCHAR)) AS VARCHAR) || ':' || CAST(\"a\" AS VARCHAR), '~'))"
     )
     selected = row_hash_selected(_HASHED, Dialect.POSTGRES)
@@ -788,3 +799,93 @@ def grouped_same_results(dialect: Dialect) -> dict[str, Any]:
         "columns": columns,
         "ordered": False,
     }
+
+
+# --- the hash's spelling: the md5's 128 bits as unpadded base64, a held hex hash still matching -----------------------
+
+
+def _md5_base64(text: str) -> str:
+    return base64.b64encode(hashlib.md5(text.encode()).digest()).decode().rstrip("=")  # noqa: S324 - a fingerprint
+
+
+def test_every_dialect_answers_the_md5_s_128_bits_as_unpadded_base64(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a dialect's hash is other than the unpadded base64 of the md5 of the row's canonical text (a cut
+    hash, a padded one, hex on the wire), or Redshift's is spelled other than the form checked live against Python
+    (``TO_VARCHAR`` refuses there)."""
+    for dialect in Dialect:
+        hexed = row_hash_sql(_HASHED, dialect, encoding=HashEncoding.HEX)
+        spelled = row_hash_sql(_HASHED, dialect)
+        if dialect is Dialect.REDSHIFT:
+            assert spelled == f"RTRIM(FROM_VARBYTE(FROM_HEX({hexed}), 'base64'), '=')"
+        elif dialect is Dialect.DUCKDB:
+            assert spelled == f"rtrim(to_base64(unhex({hexed})), '=')"
+        else:
+            assert spelled == f"rtrim(encode(decode({hexed}, 'hex'), 'base64'), '=')"
+    text = row_hash_sql(_HASHED, Dialect.DUCKDB, encoding=HashEncoding.HEX).removeprefix("md5(")[:-1]
+    answered = conn.execute(
+        f"SELECT {text}, {row_hash_sql(_HASHED, Dialect.DUCKDB)} FROM results AS t ORDER BY geo"
+    ).fetchall()
+    assert len(answered) == 60
+    assert all(hashed == _md5_base64(canonical) for canonical, hashed in answered)
+
+
+def _hex_held(held: Mapping[tuple[Any, ...], str | None]) -> dict[tuple[Any, ...], str | None]:
+    return {key: None if hashed is None else base64.b64decode(hashed + "==").hex() for key, hashed in held.items()}
+
+
+def test_a_hash_held_as_hex_matches_its_base64_and_reads_nothing_again(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a hash stored as hex before the respelling (no stored hash is rewritten in place) reads as moved
+    against the base64 the scope answers, alone or mixed with hashes stored since: every held row would be read
+    again in full on the first read after the upgrade. A changed row still reads, stamped with its base64."""
+    held = _held(conn, "PA")
+    hexed = _hex_held(held)
+    mixed = {key: hexed[key] if key[1] % 2 else hashed for key, hashed in held.items()}
+    for holding in (hexed, mixed):
+        counted = _Counted(conn)
+        changed = _changed(counted, holding)
+        assert (changed.rows, changed.gone_keys, len(counted.statements)) == ([], [], 1)
+    conn.execute("UPDATE results SET votes = -1 WHERE geo IN (3, 6)")
+    changed = _changed(InlineDuckDB(conn), mixed)
+    assert sorted(row["geo"] for row in changed.rows) == [3, 6]
+    assert all(len(row[ROW_HASH_COLUMN]) == 22 for row in changed.rows)
+
+
+def test_a_group_held_as_hex_matches_the_base64_group_hash_phase_zero_answers(
+    grouped: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if phase 0 answers a group's hash other than as one 22-character base64 text of its four lanes (the
+    lanes as numbers, padding), or if the group hash of held hex hashes, or of hex and base64 mixed, differs from it:
+    every unchanged group would read as moved after the upgrade."""
+    held = _grouped_held(grouped)
+    hexed = _hex_held(held)
+    mixed = {key: hexed[key] if key[2] % 3 else hashed for key, hashed in held.items()}
+    for holding in (held, hexed, mixed):
+        counted = _Counted(grouped)
+        changed = _grouped_changed(counted, holding)
+        assert (changed.rows, changed.gone_keys, len(counted.statements)) == ([], [], 1)
+    replies: list[list[dict[str, Any]]] = []
+
+    class _Kept(_Counted):
+        async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+            rows = await super().fetch(query, *params)
+            replies.append(rows)
+            return rows
+
+    _grouped_changed(_Kept(grouped), held)
+    [rows] = replies
+    assert len(rows) == 6
+    assert all(set(row) == {"group_value", "group_rows", "group_hash"} for row in rows)
+    assert all(len(row["group_hash"]) == 22 and "=" not in row["group_hash"] for row in rows)
+
+
+def test_a_held_text_that_is_no_hash_in_either_spelling_is_read_again(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a held text that spells no 16 bytes (cut, padded, not base64, not hex) matches an answered hash or
+    raises: its row is read again, as a row stored with no hash is."""
+    held = _held(conn, "PA")
+    first, second, third, fourth = sorted(held)[:4]
+    held[first] = held[first] + "=="
+    held[second] = held[second][:21]
+    held[third] = "!" * 22
+    held[fourth] = "z" * 32
+    changed = _changed(InlineDuckDB(conn), held)
+    assert sorted(row["geo"] for row in changed.rows) == sorted(key[1] for key in (first, second, third, fourth))

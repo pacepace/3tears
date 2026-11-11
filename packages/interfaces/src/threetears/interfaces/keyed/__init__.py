@@ -110,6 +110,7 @@ from threetears.interfaces.keyed.changed import (
     ChangedRows,
     GroupHash,
     HashColumn,
+    HashEncoding,
     HashKind,
 )
 
@@ -126,6 +127,7 @@ __all__ = [
     "Fragment",
     "GroupHash",
     "HashColumn",
+    "HashEncoding",
     "HashKind",
     "IN_SUBQUERY",
     "Increment",

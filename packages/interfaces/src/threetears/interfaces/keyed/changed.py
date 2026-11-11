@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Final
 
-__all__ = ["ROW_HASH_COLUMN", "ChangedRows", "GroupHash", "HashColumn", "HashKind"]
+__all__ = ["ROW_HASH_COLUMN", "ChangedRows", "GroupHash", "HashColumn", "HashEncoding", "HashKind"]
 
 #: the name a row's hash is read under, in both phases and in a full read that stores it
 ROW_HASH_COLUMN: Final = "row_hash"
@@ -33,6 +33,20 @@ class HashKind(StrEnum):
     DATE = "date"
     #: a timestamp without time zone, ``YYYY-MM-DD HH:MM:SS.ffffff`` (six fractional digits always)
     TIMESTAMP = "timestamp"
+
+
+class HashEncoding(StrEnum):
+    """how a hash's 128 bits (a row's md5, a group's four lanes) are written as text.
+
+    Both spellings hold the same 16 bytes, and a held hash is compared with an answered one by those bytes, so a
+    hash stored in either spelling matches the same rows (stored hashes move to base64 as their rows are written
+    again; none is rewritten in place).
+    """
+
+    #: 32 lowercase hex digits (the spelling of every hash stored before 3tears 0.95.0)
+    HEX = "hex"
+    #: 22 characters of base64 with no ``=`` padding: what every read answers, 10 bytes a hash fewer on the wire
+    BASE64 = "base64"
 
 
 @dataclass(frozen=True)
