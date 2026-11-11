@@ -2415,3 +2415,38 @@ def test_a_step_over_a_change_relation_passes_and_one_over_a_table_is_the_whole_
     assert not functions & {"over_the_change", "drop_changed", "a_set"}, found
     assert {"over_a_table", "semi_of_a_table"} <= functions, found
     assert ("laundered", "change-relation-is-a-table results") in found, found
+
+
+_ANY_KIND_LEAD = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import AnyOf, Sort, keyset_page
+
+    DATASOURCES = TableSchema(
+        name="datasources",
+        primary_key="id",
+        columns=[],
+        indexes=(
+            Index("page_by_name", "kind", "name", "id", purpose="src/listing.py::name_page"),
+            Index("page_by_date_created", "kind", "date_created", "id", purpose="src/listing.py::source_page"),
+        ),
+    )
+
+    async def source_page(pool, kinds, cols):
+        return await keyset_page(
+            pool, "datasources", columns=cols, by={"kind": AnyOf(kinds)},
+            order=[Sort("date_created"), Sort("id")], limit=50,
+        )
+
+    async def name_page(pool, kind, cols):
+        return await keyset_page(pool, "datasources", columns=cols, by={"kind": kind}, order=[Sort("name"), Sort("id")], limit=50)
+"""
+
+
+def test_a_page_whose_lead_is_a_set_credits_the_index_it_orders_by_after_it(tmp_path: Path) -> None:
+    """Flips if a keyset page pinning its index's lead to a set (``by={"kind": AnyOf(...)}``) and ordered by the
+    index's next columns is flagged, or leaves that index's purpose unused (credited to the pinned-lead index of
+    another order instead)."""
+    found = _symbols(_config(tmp_path, {"listing.py": _ANY_KIND_LEAD}))
+    assert not any(function in {"source_page", "name_page"} for function, _ in found), found
+    findings = no_whole_reads_findings(_config(tmp_path, {"listing.py": _ANY_KIND_LEAD}))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
