@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from threetears.core.keyed._filters import Derived, Fragment, by_conditions, relation, renumbered
+from threetears.core.keyed._filters import Derived, Fragment, by_conditions, relation, narrowing
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = ["MarkedRead", "PageAfter", "read_after", "read_past_marks"]
@@ -102,7 +102,7 @@ async def read_past_marks(
     cast_of = dict(casts or {})
     pinned, params = by_conditions(by or {}, quote=quote)
     for fragment in where:
-        pinned.append(renumbered(fragment, len(params)))
+        pinned.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
     conditions = []
     for stamp, mark in marks.items():

@@ -204,7 +204,7 @@ def decode(sql: str, args: Sequence[Any]) -> KeyedStatement:
     if matched is None:
         raise ValueError(f"not a statement the keyed helpers write: {sql}")
     parts = matched.groupdict()
-    conditions = tuple(_condition(text, args) for text in _split(parts["where"] or "", " AND "))
+    conditions = tuple(_condition(text, args) for text in _conjuncts(parts["where"] or ""))
     pinned = dict(condition.pinned for condition in conditions if condition.pinned is not None)
     returning = tuple(_column(item) for item in _split(parts["returning"] or "", ","))
     common: dict[str, Any] = {"conditions": conditions, "pinned": pinned, "returning": returning}
@@ -229,6 +229,44 @@ def decode(sql: str, args: Sequence[Any]) -> KeyedStatement:
         limit = int(args[int(limit[1:]) - 1]) if limit.startswith("$") else int(limit)
     columns = tuple(_column(item) for item in _split(parts["columns"], ","))
     return KeyedStatement(kind="select", table=table, columns=columns, order=order, limit=limit, **common)
+
+
+def _conjuncts(text: str) -> list[str]:
+    """the conditions ``text`` ANDs, each fragment a helper wrapped in its own parentheses
+    (:func:`~threetears.core.keyed._filters.narrowing`) opened into the conditions it ANDs.
+
+    :param text: a ``WHERE`` clause, or a part of one
+    :ptype text: str
+    :return: its conditions, none parenthesized whole
+    :rtype: list[str]
+    """
+    found: list[str] = []
+    for piece in _split(text, " AND "):
+        found += _conjuncts(piece[1:-1]) if _wrapped(piece) else [piece]
+    return found
+
+
+def _wrapped(text: str) -> bool:
+    """whether ``text`` is one parenthesized expression: its first ``(`` closes at its last character.
+
+    :param text: a condition
+    :ptype text: str
+    :return: True when it is
+    :rtype: bool
+    """
+    if not (text.startswith("(") and text.endswith(")")):
+        return False
+    depth, quoted = 0, False
+    for index, char in enumerate(text):
+        if char == "'":
+            quoted = not quoted
+        elif not quoted and char == "(":
+            depth += 1
+        elif not quoted and char == ")":
+            depth -= 1
+            if depth == 0:
+                return index == len(text) - 1
+    return False
 
 
 def _split(text: str, separator: str) -> list[str]:

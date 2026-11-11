@@ -281,16 +281,47 @@ def test_a_generic_keyed_batch_is_judged_as_its_interpolated_sql(
 
 
 def test_a_page_s_filters_are_judged_with_it(schema: SchemaCatalog) -> None:
-    """Flips if a page's where= fragments are dropped from the statement judged, or a non-literal one passes."""
+    """Flips if a page's literal where= fragments are dropped from the statement judged, or written outside their own
+    parentheses (as the helper writes them)."""
     code = (
         'keyset_page(c, "results", columns=cols, by={"state": s}, where=[Fragment(\'t."geo" <= $1\', (g,))], '
         'order=[Sort("geo"), Sort("id")], limit=5)'
     )
     (statement,) = [s.sql for s in helper_statements(_call(code)) if s.sql]
-    assert 't."geo" <= $2' in statement
+    assert '(t."geo" <= $2)' in statement
     assert _judged(code, schema) == [[]]
-    unseen = 'keyset_page(c, "results", columns=cols, by={"state": s}, where=[w], order=[Sort("geo")], limit=5)'
-    assert [s.unseen for s in helper_statements(_call(unseen))] == ["where"]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        'literal_select("results", columns=cols, by={by}, where={where})',
+        'read_keyed(c, "results", keys=KeyBatch(("state",), ks), columns=cols, by={by}, where={where})',
+        'counts_by(c, "results", column="geo", by={by}, where={where})',
+        'keyset_page(c, "results", columns=cols, by={by}, where={where}, order=[Sort("geo")], limit=5)',
+    ],
+)
+@pytest.mark.parametrize(
+    "where",
+    ["where", "[Fragment(condition, tuple(params))]", "[*narrowing, Fragment(text)]"],
+)
+def test_a_run_time_where_only_narrows_so_the_call_is_judged_by_its_pins(
+    call: str, where: str, schema: SchemaCatalog
+) -> None:
+    """Flips if a where= the walk cannot read is named unknown-predicate, or lets a call pinning nothing pass: every
+    helper ANDs each fragment after its pins in its own parentheses (``keyed._filters.narrowing``), so a run-time
+    fragment only narrows, and the call is keyed exactly when its by= is."""
+    keyed = _call(call.replace("{by}", '{"state": s}').replace("{where}", where))
+    statements = list(helper_statements(keyed))
+    assert statements and not any(s.unseen for s in statements), [s.unseen for s in statements]
+    # a keyed count is named so (a count by a key prefix); anything else keyed is clean
+    keyed_kinds = {"keyed-count"}
+    judged = _judged(ast.unparse(keyed), schema)
+    assert judged and all(found[0] in keyed_kinds for findings in judged for found in findings), judged
+    if call.startswith("read_keyed"):
+        return  # its key batch keys it whatever it pins
+    whole = ast.unparse(_call(call.replace("{by}", "{}").replace("{where}", where)))
+    assert any(found[0] not in keyed_kinds for findings in _judged(whole, schema) for found in findings), whole
 
 
 def test_joined_rows_are_judged_as_the_keyed_read_they_send(schema: SchemaCatalog) -> None:

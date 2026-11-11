@@ -21,7 +21,9 @@ from threetears.core.keyed import (
     ThreadedDuckDB,
     any_rows,
     apply_stage,
+    counts_by,
     keyset_rows,
+    literal_select,
     read_keyed,
     read_keyed_arrow,
     run_inline,
@@ -270,3 +272,25 @@ def test_records_answers_what_the_any_it_replaces_answers(conn: duckdb.DuckDBPyC
             ordered=False,
         )
     )
+
+
+def test_a_where_fragment_holding_a_top_level_or_never_widens_past_the_pins(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a helper writes a where= fragment outside its own parentheses: a fragment true for every row (a
+    top-level ``OR``) must still keep only the rows the pins name, for a literal select, a keyed batch, a count and a
+    keyset walk alike. The no-whole-reads rule judges a run-time where= by the pins alone because of it."""
+    db = InlineDuckDB(conn)
+    every = Fragment('"v" < $1 OR 1 = 1', (0,))
+    pinned = conn.execute("SELECT a, b FROM t WHERE a = 'k1' ORDER BY b").fetchall()
+
+    selected = conn.execute(literal_select("t", columns=["a", "b"], by={"a": "k1"}, where=[every])).fetchall()
+    assert sorted(selected) == pinned
+    batch = run_inline(read_keyed(db, "t", keys=KeyBatch(("a",), [("k1",)]), columns=["a", "b"], where=[every]))
+    assert sorted((row["a"], row["b"]) for row in batch) == pinned
+    counted = run_inline(counts_by(db, "t", column="b", by={"a": "k1"}, where=[every]))
+    assert sum(counted.values()) == len(pinned)
+    walked = run_inline(
+        keyset_rows(
+            db, "t", columns=["a", "b"], by={"a": "k1"}, order=[Sort("b", cast="bigint")], page=4, where=[every]
+        )
+    )
+    assert [(row["a"], row["b"]) for row in walked] == pinned

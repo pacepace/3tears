@@ -34,6 +34,7 @@ from threetears.core.keyed._filters import (
     by_conditions,
     prefix_conditions,
     quoted_table,
+    narrowing,
     renumbered,
 )
 from threetears.core.keyed.counts import rows_affected
@@ -155,7 +156,7 @@ def _guarded(
         conditions += ranged
         params += bounds
     for fragment in where:
-        conditions.append(renumbered(fragment, first - 1 + len(params)))
+        conditions.append(narrowing(fragment, first - 1 + len(params)))
         params += list(fragment.params)
     return " WHERE " + " AND ".join(conditions), params
 
@@ -498,7 +499,7 @@ async def apply_stage(
     if scoped:
         conditions, params = by_conditions(by or {})
         for fragment in where:
-            conditions.append(renumbered(fragment, len(params)))
+            conditions.append(narrowing(fragment, len(params)))
             params += list(fragment.params)
         absent_key = await conn.execute(
             f"DELETE FROM {table} WHERE {' AND '.join(conditions)} "

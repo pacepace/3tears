@@ -87,7 +87,7 @@ class TestUpdateKeyed:
         ]
         assert _plain(db, "SELECT count(*) FROM t WHERE v >= 1000") == [(5,)]
         sql, params = reader.statements[0]
-        assert sql == 'UPDATE "t" SET "s" = $1, "v" = "v" + $2 WHERE "a" = $3 AND "b" < $4'
+        assert sql == 'UPDATE "t" SET "s" = $1, "v" = "v" + $2 WHERE "a" = $3 AND ("b" < $4)'
         assert params == ("off", 1000, "k1", 50)
 
     async def test_it_returns_the_rows_it_wrote(self, db: duckdb.DuckDBPyConnection) -> None:
@@ -139,7 +139,7 @@ class TestDeleteKeyed:
         assert deleted.count == len(on)
         assert sorted(row["b"] for row in deleted.rows) == on
         assert _plain(db, "SELECT count(*) FROM t") == [(100 - len(on),)]
-        assert reader.statements[0][0] == 'DELETE FROM "t" WHERE "a" = $1 AND "s" = $2 RETURNING "b"'
+        assert reader.statements[0][0] == 'DELETE FROM "t" WHERE "a" = $1 AND ("s" = $2) RETURNING "b"'
 
 
 class TestKeysetRows:

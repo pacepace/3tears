@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final, overload
 
-from threetears.core.keyed._filters import _SQL_TYPE, AnyOf, Derived, Fragment, by_conditions, relation, renumbered
+from threetears.core.keyed._filters import _SQL_TYPE, AnyOf, Derived, Fragment, by_conditions, relation, narrowing
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
@@ -538,7 +538,7 @@ async def counts_by_relations(
     for chunk in chunks:
         conditions, params = by_conditions({**pinned, **chunk})
         for fragment in where:
-            conditions.append(renumbered(fragment, len(params)))
+            conditions.append(narrowing(fragment, len(params)))
             params += list(fragment.params)
         clause = " AND ".join(conditions)
         parts = [
@@ -589,7 +589,7 @@ async def _counts_packed(
         return
     conditions, params = by_conditions(by)
     for fragment in where:
-        conditions.append(renumbered(fragment, len(params)))
+        conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
     clause = " AND ".join(conditions)
     quoted = quote_identifier(column)
@@ -682,7 +682,7 @@ async def _counts_since(
     answer: dict[str, list[MarkedCount]] = {label: [] for label in labels}
     conditions, params = by_conditions(pinned)
     for fragment in where:
-        conditions.append(renumbered(fragment, len(params)))
+        conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
     quoted = quote_identifier(column)
     newest = [f"CAST(max({quote_identifier(name)}) AS VARCHAR)" for name in max_of]
