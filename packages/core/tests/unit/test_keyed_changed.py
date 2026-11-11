@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
@@ -24,6 +26,7 @@ from threetears.core.keyed import (
     read_keyed,
     KeyBatch,
     dialect_of,
+    key_text,
     row_hash_selected,
     row_hash_sql,
     run_inline,
@@ -348,3 +351,119 @@ def test_a_large_scope_of_wide_rows_with_few_changes_is_a_few_statements_and_a_f
     assert full / 124000 > 2300
     assert counted.bytes <= 0.10 * full, (counted.bytes, full)
     db.close()
+
+
+def test_a_key_value_s_canonical_text_is_the_same_held_as_text_or_answered_typed() -> None:
+    """Flips if a key value held in one form (text, a zoned time) and answered in another (an integer, a naive time)
+    give different texts, or a value that is no value of its kind is taken."""
+    assert key_text("7001", HashKind.INTEGER) == key_text(7001, HashKind.INTEGER) == "7001"
+    naive = datetime(2026, 11, 3, 22, 30)  # noqa: DTZ001 - the warehouse's naive time
+    for held in (
+        "2026-11-03 22:30:00",
+        "2026-11-03T22:30:00+00:00",
+        "2026-11-03 17:30:00-05:00",
+        datetime(2026, 11, 3, 17, 30, tzinfo=timezone(timedelta(hours=-5))),
+    ):
+        assert key_text(held, HashKind.TIMESTAMP) == key_text(naive, HashKind.TIMESTAMP) == "2026-11-03 22:30:00.000000"
+    assert key_text("2024-11-05", HashKind.DATE) == key_text(date(2024, 11, 5), HashKind.DATE) == "2024-11-05"
+    assert key_text("true", HashKind.BOOLEAN) == key_text(True, HashKind.BOOLEAN) == "t"
+    assert key_text("1.5", HashKind.NUMERIC, 2) == key_text(Decimal("1.50"), HashKind.NUMERIC, 2) == "1.50"
+    assert key_text(None, HashKind.INTEGER) is None
+    for value, kind in (
+        ("x", HashKind.INTEGER),
+        (1.5, HashKind.INTEGER),
+        ("maybe", HashKind.BOOLEAN),
+        (naive, HashKind.DATE),
+        ("soon", HashKind.TIMESTAMP),
+    ):
+        with pytest.raises(ValueError):
+            key_text(value, kind)
+
+
+@pytest.fixture
+def typed() -> Iterator[duckdb.DuckDBPyConnection]:
+    """a warehouse table keyed by an integer id and a time (no zone), holding them typed."""
+    db = duckdb.connect()
+    db.execute(
+        "CREATE TABLE typed (state VARCHAR, cid INTEGER, stamp TIMESTAMP, name VARCHAR, PRIMARY KEY (state, cid, stamp))"
+    )
+    db.execute(
+        "INSERT INTO typed SELECT 'PA', 7000 + i, TIMESTAMP '2026-11-03 22:30:00' + to_seconds(i), 'n' || i "
+        "FROM range(6) r(i)"
+    )
+    yield db
+    db.close()
+
+
+_TYPED_HASH = (
+    HashColumn("cid", HashKind.INTEGER),
+    HashColumn("stamp", HashKind.TIMESTAMP),
+    HashColumn("name"),
+)
+
+
+def _held_as_text(db: duckdb.DuckDBPyConnection) -> dict[tuple[Any, ...], str]:
+    """each row's key as a follower holds it (its own text: the id's digits, the time zoned in UTC) onto its hash."""
+    sql = f"SELECT state, cid, stamp, {row_hash_sql(_TYPED_HASH, Dialect.DUCKDB)} FROM typed AS t"
+    return {
+        (state, str(cid), f"{stamp.isoformat(sep=' ')}+00:00"): h for state, cid, stamp, h in db.execute(sql).fetchall()
+    }
+
+
+def _typed_changed(db: Any, held: Mapping[tuple[Any, ...], str | None], **options: Any) -> ChangedRows:
+    return run_inline(
+        read_changed(
+            db,
+            "typed",
+            key=["state", "cid", "stamp"],
+            columns=["state", "cid", "stamp", "name"],
+            held=held,
+            hash_columns=_TYPED_HASH,
+            by={"state": "PA"},
+            **options,
+        )
+    )
+
+
+def test_a_typed_key_held_as_text_reads_no_false_change_and_no_false_gone(typed: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a key held as text (an integer id's digits, a zoned time) is compared with the warehouse's typed
+    answer as it is: every row would read as changed and every held key as gone."""
+    held = _held_as_text(typed)
+    counted = _Counted(typed)
+    changed = _typed_changed(counted, held)
+    assert (changed.rows, changed.gone_keys, len(counted.statements)) == ([], [], 1)
+
+
+def test_a_typed_key_s_changed_row_is_read_and_its_gone_key_named_as_held(typed: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a changed row under a typed key is missed or another read with it, a row that left is not named
+    gone in the form it is held in, or phase 2 binds the typed key as text (an integer = text comparison)."""
+    held = _held_as_text(typed)
+    typed.execute("UPDATE typed SET name = 'moved' WHERE cid = 7002")
+    typed.execute("DELETE FROM typed WHERE cid = 7004")
+    counted = _Counted(typed)
+    changed = _typed_changed(counted, held, page=2)
+    assert [(row["cid"], row["name"]) for row in changed.rows] == [(7002, "moved")]
+    assert changed.gone_keys == [("PA", "7004", "2026-11-03 22:30:04+00:00")]
+    keyed = counted.statements[-1]
+    assert "::text[]::bigint[]" in keyed and "::text[]::timestamp[]" in keyed, keyed
+    assert all("::text::bigint" in statement for statement in counted.statements[1:-1]), "pages cast the cursor"
+
+
+def test_a_key_the_hash_does_not_cover_is_typed_by_key_kinds(typed: duckdb.DuckDBPyConnection) -> None:
+    """Flips if ``key_kinds`` does not type a key column the hash leaves out."""
+    hashed = (HashColumn("name"),)
+    sql = f"SELECT state, cid, stamp, {row_hash_sql(hashed, Dialect.DUCKDB)} FROM typed AS t"
+    held = {(s, str(c), f"{a.isoformat(sep=' ')}+00:00"): h for s, c, a, h in typed.execute(sql).fetchall()}
+    changed = run_inline(
+        read_changed(
+            InlineDuckDB(typed),
+            "typed",
+            key=["state", "cid", "stamp"],
+            columns=["state", "cid", "stamp", "name"],
+            held=held,
+            hash_columns=hashed,
+            by={"state": "PA"},
+            key_kinds=[HashColumn("cid", HashKind.INTEGER), HashColumn("stamp", HashKind.TIMESTAMP)],
+        )
+    )
+    assert (changed.rows, changed.gone_keys) == ([], [])
