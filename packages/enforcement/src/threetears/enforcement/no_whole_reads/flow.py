@@ -1,0 +1,754 @@
+"""where the relation a keyed step reads comes from, as one module writes it.
+
+A step (``keyed.semi``, ``read_step_arrow``, ...) is judged by the relations it names. A relation named by a
+literal is judged as that table; this module says what the walk can tell of any other expression a step names:
+
+- **clean**: a change relation (a declared transient producer's return, ``change_relation(...)``), or a step or
+  derived select (judged where it is written), or a call of a function every return of which is one of these;
+  through a ``self`` attribute, a local name or a container every value of which is one: ``self.new = work.put(rows)``,
+  ``self.let_go[name] = work.put(rows)``, ``touched = distinct(...)`` then ``touched = union(touched, ...)``,
+  ``parts.append(semi(...))``, ``union(*parts)``, ``for name, rel in sorted(self.removed.items())``;
+- **handed**: a parameter of a *forwarder*, a private function (or a method or constructor of a private class) whose
+  every call in its module the walk sees, which hands the parameter on to a step (or returns it as one): the step
+  is judged at each call site instead, by the argument that site hands it (``_Work.step(step)``,
+  ``_union(parts)``, ``_Lsf(work, sources)`` whose ``self.sources[name]`` a step reads);
+- **None**: anything else, judged as the walk judges a relation it cannot read (an interpolation).
+
+A forwarder is private by its name, so its callers are in its module; one of the same name as another definition,
+or referenced other than by a call (handed on as a value), is none. A declared transient producer is never one.
+"""
+
+from __future__ import annotations
+
+import ast
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+from typing import Final, Literal
+
+from threetears.enforcement.no_whole_reads.helpers import STEP_CALLS, STEP_RELATIONS
+
+__all__ = ["CLEAN", "HANDED", "Callee", "Kind", "RelationFlow", "step_relation_arguments"]
+
+#: what an expression a step names is: a change relation or a step judged where it is written (``clean``), a
+#: forwarder's parameter judged at its call sites (``handed``), or None for anything the walk cannot tell
+Kind = Literal["clean", "handed"] | None
+
+CLEAN: Final = "clean"
+HANDED: Final = "handed"
+
+#: a binding that says nothing of its own (a cycle back to the name being read): left out of a combination
+_NEUTRAL: Final = "neutral"
+
+#: how one parameter is read: as a relation itself (``rel``), or as a container of relations (``each``)
+Mode = Literal["rel", "each"]
+
+#: the steps that are relations a step may read; the readers (``read_step``) and writes are not
+_RELATION_STEPS: Final = STEP_CALLS - {
+    "read_step",
+    "read_step_arrow",
+    "count_step",
+    "delete_matching",
+    "first_difference",
+}
+
+#: calls answering their one argument's elements (``sorted(self.removed.items())``)
+_PASSING: Final = frozenset({"sorted", "list", "tuple", "set", "frozenset", "dict", "reversed", "iter"})
+
+#: the deepest the walk follows bindings
+_DEPTH: Final = 24
+
+Function = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+@dataclass(frozen=True)
+class Callee:
+    """a forwarder a call reaches: the function, its class (None for a module function), and how many leading
+    parameters the call does not bind (``self`` of a method, of a constructor).
+
+    :ivar function: the forwarder
+    :ivar owner: its class
+    :ivar skipped: leading parameters a call leaves out
+    """
+
+    function: Function
+    owner: ast.ClassDef | None
+    skipped: int
+
+    def parameters(self) -> list[tuple[str, int | None]]:
+        """each parameter a call binds, with its position among the call's positional arguments (None for
+        keyword-only).
+
+        :return: the parameters
+        :rtype: list[tuple[str, int | None]]
+        """
+        arguments = self.function.args
+        positional = [*arguments.posonlyargs, *arguments.args][self.skipped :]
+        named: list[tuple[str, int | None]] = [(argument.arg, index) for index, argument in enumerate(positional)]
+        return named + [(argument.arg, None) for argument in arguments.kwonlyargs]
+
+
+@dataclass
+class _Binding:
+    """what one statement binds a name (or a ``self`` attribute) to.
+
+    :ivar value: the expression bound, None where the walk cannot read it
+    :ivar how: ``value`` (the name is the expression), ``element`` (one value the container holds), ``elements``
+        (the container holds the expression's values), ``iterated`` (the name is a value of the expression),
+        ``items`` (the name is a value of the mapping ``value``)
+    :ivar scope: the function the binding is written in
+    """
+
+    value: ast.expr | None
+    how: str
+    scope: Function
+
+
+@dataclass
+class _Scope:
+    function: Function
+    owner: ast.ClassDef | None
+    comprehension: dict[str, list[_Binding]] = field(default_factory=dict)
+
+
+def _final(call: ast.Call) -> str:
+    func = call.func
+    return func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else ""
+
+
+def _argument(call: ast.Call, keyword: str, position: int | None) -> ast.expr | None:
+    for given in call.keywords:
+        if given.arg == keyword:
+            return given.value
+    if position is None or any(isinstance(arg, ast.Starred) for arg in call.args[: position + 1]):
+        return None
+    return call.args[position] if len(call.args) > position else None
+
+
+def step_relation_arguments(call: ast.Call) -> Iterator[tuple[ast.expr, Mode]]:
+    """each argument a step call names a relation by, and how: a ``union``'s ``*parts`` names each of its values.
+
+    :param call: a step call
+    :ptype call: ast.Call
+    :return: each argument and its mode
+    :rtype: Iterator[tuple[ast.expr, Mode]]
+    """
+    name = _final(call)
+    if name == "union":
+        for argument in call.args:
+            if isinstance(argument, ast.Starred):
+                yield argument.value, "each"
+            else:
+                yield argument, "rel"
+    for position, keyword in STEP_RELATIONS.get(name, ()):
+        found = _argument(call, keyword, position)
+        if found is not None:
+            yield found, "rel"
+
+
+def _combine(kinds: list[Kind | str]) -> Kind:
+    if any(kind is None for kind in kinds):
+        return None
+    told = [kind for kind in kinds if kind != _NEUTRAL]
+    if not told:
+        return None
+    return HANDED if HANDED in told else CLEAN
+
+
+def _static(function: Function) -> bool:
+    return any(isinstance(d, ast.Name) and d.id == "staticmethod" for d in function.decorator_list)
+
+
+def _private(function: Function, owner: ast.ClassDef | None) -> bool:
+    if owner is not None and owner.name.startswith("_"):
+        return function.name == "__init__" or not function.name.startswith("__")
+    return function.name.startswith("_") and not function.name.startswith("__")
+
+
+class RelationFlow:
+    """what each expression a step names in one module is (:data:`Kind`), and the module's forwarders.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param keyed_step: whether a call is one of 3tears' keyed steps (imported from ``threetears.core.keyed``)
+    :ptype keyed_step: Callable[[ast.Call], bool]
+    :param produces: whether an expression is a declared transient producer's call, in a function of a class
+    :ptype produces: Callable[[ast.expr, Function | None, ast.ClassDef | None], bool]
+    :param produced: the ``self`` attributes of a class every assignment of which is a producer's return
+    :ptype produced: Callable[[ast.ClassDef], frozenset[str]]
+    :param producer: whether a definition is a declared transient producer (never a forwarder)
+    :ptype producer: Callable[[Function, ast.ClassDef | None], bool]
+    """
+
+    def __init__(
+        self,
+        tree: ast.Module,
+        *,
+        keyed_step: Callable[[ast.Call], bool],
+        produces: Callable[[ast.expr, Function | None, ast.ClassDef | None], bool],
+        produced: Callable[[ast.ClassDef], frozenset[str]],
+        producer: Callable[[Function, ast.ClassDef | None], bool],
+    ) -> None:
+        self._keyed_step = keyed_step
+        self._produces = produces
+        self._produced = produced
+        self._definitions: list[tuple[Function, ast.ClassDef | None]] = []
+        for statement in tree.body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self._definitions.append((statement, None))
+            elif isinstance(statement, ast.ClassDef):
+                self._definitions += [
+                    (member, statement)
+                    for member in statement.body
+                    if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                ]
+        self._owners = {id(function): owner for function, owner in self._definitions}
+        self._functions: dict[str, Function] = {}
+        self._methods: dict[str, tuple[Function, ast.ClassDef]] = {}
+        self._constructors: dict[str, tuple[Function, ast.ClassDef]] = {}
+        self._candidates: set[int] = set()
+        self._bindings: dict[int, dict[str, list[_Binding]]] = {}
+        self._fields: dict[int, dict[str, list[_Binding]]] = {}
+        #: per forwarder, each parameter it hands a step and how
+        self.forwarded: dict[int, dict[str, set[Mode]]] = {}
+        #: the forwarders every return of which is a relation (clean or handed)
+        self._returning: set[int] = set()
+        #: per relation-returning forwarder, each parameter only its returns hand on, and how: judged where a call of
+        #: it stands as a relation, by the argument that call hands it
+        self._returned: dict[int, dict[str, set[Mode]]] = {}
+        #: the relation-returning forwarder whose returns the walk reads: its own parameters read there are recorded
+        #: as returned, every other one as forwarded
+        self._returning_now: int | None = None
+        #: the forwarders a call of which stands where a relation is named: only these may return relations
+        self._wanted: set[int] = set()
+        self._recording = True
+        #: a parameter of a forwarder reads as handed without being recorded (whether a function returns relations)
+        self._dry = False
+        self._busy: set[tuple[int, str]] = set()
+        self._find_forwarders(tree, producer)
+        self._settle()
+        self._recording = False
+
+    # -- forwarders --------------------------------------------------------------------------------------------
+
+    def _find_forwarders(self, tree: ast.Module, producer: Callable[[Function, ast.ClassDef | None], bool]) -> None:
+        names: dict[str, int] = {}
+        for function, _ in self._definitions:
+            names[function.name] = names.get(function.name, 0) + 1
+        called: set[int] = set()
+        loose_names: set[str] = set()
+        loose_attributes: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                called.add(id(node.func))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and id(node) not in called:
+                loose_names.add(node.id)
+            elif isinstance(node, ast.Attribute) and id(node) not in called:
+                loose_attributes.add(node.attr)
+        for function, owner in self._definitions:
+            if not _private(function, owner) or producer(function, owner):
+                continue
+            if owner is None:
+                if function.name in loose_names:
+                    continue
+                self._functions[function.name] = function
+            elif function.name == "__init__":
+                self._constructors[owner.name] = (function, owner)
+            else:
+                if names[function.name] > 1 or function.name in loose_attributes:
+                    continue
+                self._methods[function.name] = (function, owner)
+            self._candidates.add(id(function))
+        sited: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and (matched := self._match(node)) is not None:
+                sited.add(id(matched.function))
+        self._candidates &= sited
+
+    def callee(self, call: ast.Call) -> Callee | None:
+        """the forwarder a call reaches, if it is one's call.
+
+        :param call: the call
+        :ptype call: ast.Call
+        :return: the forwarder, or None
+        :rtype: Callee | None
+        """
+        found = self._match(call)
+        return found if found is not None and id(found.function) in self._candidates else None
+
+    def _match(self, call: ast.Call) -> Callee | None:
+        """the private definition a call names, by its name: a module function, a constructor, a method of a name no
+        other definition shares."""
+        func = call.func
+        if isinstance(func, ast.Name):
+            if func.id in self._functions:
+                return Callee(self._functions[func.id], None, 0)
+            if func.id in self._constructors:
+                function, owner = self._constructors[func.id]
+                return Callee(function, owner, 1)
+        elif isinstance(func, ast.Attribute) and func.attr in self._methods:
+            function, owner = self._methods[func.attr]
+            return Callee(function, owner, 0 if _static(function) else 1)
+        return None
+
+    def _settle(self) -> None:
+        """follow forwarders to a fixed point: a parameter is handed once a step, a forwarder or a relation-returning
+        forwarder's return reads it."""
+        for _ in range(_DEPTH):
+            before = self._size()
+            for function, owner in self._definitions:
+                scope = _Scope(function, owner)
+                for expression, mode in self._positions(function):
+                    self._judged(expression, mode, scope)
+                if id(function) in self._returning:
+                    # a return hands its parameters on only where a call of the function stands as a relation
+                    self._returning_now = id(function)
+                    try:
+                        for node in ast.walk(function):
+                            if isinstance(node, ast.Return) and node.value is not None:
+                                self._judged(node.value, "rel", scope)
+                    finally:
+                        self._returning_now = None
+                elif id(function) in self._wanted:
+                    returned = [
+                        node.value
+                        for node in ast.walk(function)
+                        if isinstance(node, ast.Return) and node.value is not None
+                    ]
+                    self._dry = True
+                    try:
+                        kinds = [self._kind(value, scope) for value in returned]
+                    finally:
+                        self._dry = False
+                    if returned and _combine(kinds) is not None:
+                        self._returning.add(id(function))
+            if self._size() == before:
+                return
+
+    def _size(self) -> tuple[int, int, int, int]:
+        def count(found: dict[int, dict[str, set[Mode]]]) -> int:
+            return sum(len(modes) for handed in found.values() for modes in handed.values())
+
+        return count(self.forwarded), count(self._returned), len(self._returning), len(self._wanted)
+
+    def _positions(self, function: Function) -> Iterator[tuple[ast.expr, Mode]]:
+        """each expression a function names a relation by: a step's relation arguments, a forwarder's handed
+        arguments, and its returns where it is a relation-returning forwarder."""
+        for node in ast.walk(function):
+            if isinstance(node, ast.Call):
+                if _final(node) in STEP_CALLS and self._keyed_step(node):
+                    yield from step_relation_arguments(node)
+                callee = self.callee(node)
+                if callee is not None:
+                    yield from self.handed_arguments(node, callee)
+
+    def handed_arguments(self, call: ast.Call, callee: Callee) -> Iterator[tuple[ast.expr, Mode]]:
+        """each argument a forwarder's call hands a parameter the forwarder hands a step, and how it is read.
+
+        :param call: the call
+        :ptype call: ast.Call
+        :param callee: the forwarder it reaches
+        :ptype callee: Callee
+        :return: each argument and its mode
+        :rtype: Iterator[tuple[ast.expr, Mode]]
+        """
+        handed = self.forwarded.get(id(callee.function), {})
+        for name, position in callee.parameters():
+            modes = handed.get(name)
+            if not modes:
+                continue
+            argument = _argument(call, name, position)
+            if argument is None:
+                continue
+            for mode in sorted(modes):
+                yield argument, mode
+
+    # -- kinds -----------------------------------------------------------------------------------------------
+
+    def kind(self, expression: ast.expr, function: Function | None, owner: ast.ClassDef | None) -> Kind:
+        """what a relation expression is where the walk is.
+
+        :param expression: the expression a step names
+        :ptype expression: ast.expr
+        :param function: the function it is written in, None at module level
+        :ptype function: Function | None
+        :param owner: that function's class, None for a module function
+        :ptype owner: ast.ClassDef | None
+        :return: its kind
+        :rtype: Kind
+        """
+        if function is None:
+            return None
+        return self._judged(expression, "rel", _Scope(function, owner))
+
+    def elements(self, expression: ast.expr, function: Function | None, owner: ast.ClassDef | None) -> Kind:
+        """what every value of a container of relations is where the walk is.
+
+        :param expression: the container (``parts``, ``self.sources``)
+        :ptype expression: ast.expr
+        :param function: the function it is written in, None at module level
+        :ptype function: Function | None
+        :param owner: that function's class, None for a module function
+        :ptype owner: ast.ClassDef | None
+        :return: their kind
+        :rtype: Kind
+        """
+        if function is None:
+            return None
+        return self._judged(expression, "each", _Scope(function, owner))
+
+    def owner_of(self, function: Function | None) -> ast.ClassDef | None:
+        """the class a method is defined in, None for a module function (or a nested one).
+
+        :param function: the function
+        :ptype function: Function | None
+        :return: its class
+        :rtype: ast.ClassDef | None
+        """
+        return None if function is None else self._owners.get(id(function))
+
+    def _judged(self, expression: ast.expr, mode: Mode, scope: _Scope) -> Kind:
+        found = self._kind(expression, scope) if mode == "rel" else self._elements(expression, scope)
+        return CLEAN if found == CLEAN else HANDED if found == HANDED else None
+
+    def _kind(self, node: ast.expr, scope: _Scope, depth: int = 0) -> Kind | str:
+        if depth > _DEPTH:
+            return None
+        if isinstance(node, ast.Constant):
+            return CLEAN if node.value is None else None
+        if isinstance(node, ast.Call):
+            return self._call_kind(node, scope, depth)
+        if isinstance(node, ast.Attribute):
+            if self._self_attribute(node, scope):
+                if scope.owner is not None and node.attr in self._produced(scope.owner):
+                    return CLEAN
+                return self._field(node.attr, "rel", scope, depth)
+            return None
+        if isinstance(node, ast.Name):
+            return self._name(node.id, "rel", scope, depth)
+        if isinstance(node, ast.Subscript):
+            return self._elements(node.value, scope, depth + 1)
+        if isinstance(node, ast.IfExp):
+            return _combine([self._kind(node.body, scope, depth + 1), self._kind(node.orelse, scope, depth + 1)])
+        if isinstance(node, ast.BoolOp):
+            return _combine([self._kind(value, scope, depth + 1) for value in node.values])
+        if isinstance(node, ast.NamedExpr):
+            return self._kind(node.value, scope, depth + 1)
+        return None
+
+    def _call_kind(self, node: ast.Call, scope: _Scope, depth: int) -> Kind | str:
+        name = _final(node)
+        if name in {"change_relation", "Derived"}:
+            return CLEAN
+        if name in _RELATION_STEPS and self._keyed_step(node):
+            return CLEAN
+        if self._produces(node, scope.function, scope.owner):
+            return CLEAN
+        callee = self.callee(node)
+        if callee is not None and (self._recording or self._dry):
+            self._wanted.add(id(callee.function))
+        if callee is not None and id(callee.function) in self._returning:
+            # a relation-returning forwarder: what it returns is what each call hands the parameters its returns hand on
+            returned = self._returned.get(id(callee.function), {})
+            kinds: list[Kind | str] = [CLEAN]
+            for parameter, position in callee.parameters():
+                for mode in sorted(returned.get(parameter, set())):
+                    argument = _argument(node, parameter, position)
+                    if argument is not None:
+                        kinds.append(
+                            self._kind(argument, scope, depth + 1)
+                            if mode == "rel"
+                            else self._elements(argument, scope, depth + 1)
+                        )
+            return _combine(kinds)
+        if name == "get" and isinstance(node.func, ast.Attribute) and node.args:
+            kinds = [self._elements(node.func.value, scope, depth + 1)]
+            if len(node.args) > 1:
+                kinds.append(self._kind(node.args[1], scope, depth + 1))
+            return _combine(kinds)
+        return None
+
+    def _elements(self, node: ast.expr, scope: _Scope, depth: int = 0) -> Kind | str:
+        if depth > _DEPTH:
+            return None
+        if isinstance(node, ast.Constant):
+            return CLEAN if node.value is None else None
+        if isinstance(node, ast.Dict):
+            kinds: list[Kind | str] = [
+                self._elements(value, scope, depth + 1) if key is None else self._kind(value, scope, depth + 1)
+                for key, value in zip(node.keys, node.values, strict=True)
+            ]
+            return _combine(kinds) if kinds else CLEAN
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            kinds = [
+                self._elements(element.value, scope, depth + 1)
+                if isinstance(element, ast.Starred)
+                else self._kind(element, scope, depth + 1)
+                for element in node.elts
+            ]
+            return _combine(kinds) if kinds else CLEAN
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+            inner = _Scope(scope.function, scope.owner, dict(scope.comprehension))
+            for generator in node.generators:
+                for target, binding in self._targets(generator.target, generator.iter, scope.function):
+                    inner.comprehension[target] = [binding]
+            value = node.value if isinstance(node, ast.DictComp) else node.elt
+            return self._kind(value, inner, depth + 1)
+        if isinstance(node, ast.Call):
+            name = _final(node)
+            if isinstance(node.func, ast.Name) and name in _PASSING and len(node.args) == 1:
+                return self._elements(node.args[0], scope, depth + 1)
+            if isinstance(node.func, ast.Attribute) and name in {"values", "copy"} and not node.args:
+                return self._elements(node.func.value, scope, depth + 1)
+            return None
+        if isinstance(node, ast.Attribute):
+            if self._self_attribute(node, scope):
+                return self._field(node.attr, "each", scope, depth)
+            return None
+        if isinstance(node, ast.Name):
+            return self._name(node.id, "each", scope, depth)
+        if isinstance(node, ast.IfExp):
+            return _combine(
+                [self._elements(node.body, scope, depth + 1), self._elements(node.orelse, scope, depth + 1)]
+            )
+        if isinstance(node, ast.BoolOp):
+            return _combine([self._elements(value, scope, depth + 1) for value in node.values])
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return _combine([self._elements(node.left, scope, depth + 1), self._elements(node.right, scope, depth + 1)])
+        return None
+
+    @staticmethod
+    def _self_attribute(node: ast.Attribute, scope: _Scope) -> bool:
+        return isinstance(node.value, ast.Name) and node.value.id == "self" and scope.owner is not None
+
+    def _name(self, name: str, mode: Mode, scope: _Scope, depth: int) -> Kind | str:
+        if name in scope.comprehension:
+            return self._bound(scope.comprehension[name], mode, scope, depth)
+        function = scope.function
+        arguments = function.args
+        parameters = {argument.arg for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]}
+        bindings = self._local_bindings(function).get(name, [])
+        if name in parameters:
+            if bindings:
+                # a parameter the function rebinds: what it holds is no longer only what it was handed
+                return None
+            return self._parameter(function, name, mode)
+        if not bindings:
+            return None
+        return self._bound(bindings, mode, scope, depth)
+
+    def _parameter(self, function: Function, name: str, mode: Mode) -> Kind:
+        if id(function) not in self._candidates or name in {"self", "cls"}:
+            return None
+        if self._dry:
+            return HANDED
+        if self._recording:
+            into = self._returned if id(function) == self._returning_now else self.forwarded
+            into.setdefault(id(function), {}).setdefault(name, set()).add(mode)
+            return HANDED
+        handed = {**self._returned.get(id(function), {})}
+        for parameter, modes in self.forwarded.get(id(function), {}).items():
+            handed[parameter] = handed.get(parameter, set()) | modes
+        return HANDED if mode in handed.get(name, set()) else None
+
+    def _field(self, attribute: str, mode: Mode, scope: _Scope, depth: int) -> Kind | str:
+        owner = scope.owner
+        if owner is None:
+            return None
+        bindings = self._field_bindings(owner).get(attribute, [])
+        if not bindings:
+            return None
+        key = (id(owner), f"self.{attribute}:{mode}")
+        if key in self._busy:
+            return _NEUTRAL
+        self._busy.add(key)
+        try:
+            kinds = [self._one(binding, mode, _Scope(binding.scope, owner), depth + 1) for binding in bindings]
+        finally:
+            self._busy.discard(key)
+        return _combine(kinds)
+
+    def _bound(self, bindings: list[_Binding], mode: Mode, scope: _Scope, depth: int) -> Kind | str:
+        key = (id(bindings), mode)
+        if key in self._busy:
+            return _NEUTRAL
+        self._busy.add(key)
+        try:
+            kinds = [self._one(binding, mode, scope, depth + 1) for binding in bindings]
+        finally:
+            self._busy.discard(key)
+        return _combine(kinds)
+
+    def _one(self, binding: _Binding, mode: Mode, scope: _Scope, depth: int) -> Kind | str:
+        """what one binding says of a name read as a relation (``rel``) or as a container of them (``each``)."""
+        value = binding.value
+        if value is None:
+            return None
+        if binding.how == "value":
+            return self._kind(value, scope, depth) if mode == "rel" else self._elements(value, scope, depth)
+        if binding.how == "element":
+            # ``parts.append(x)``, ``held[name] = x``: one value of the container
+            return self._kind(value, scope, depth) if mode == "each" else _NEUTRAL
+        if binding.how == "elements":
+            # ``parts.extend(xs)``, ``parts += xs``
+            return self._elements(value, scope, depth) if mode == "each" else _NEUTRAL
+        if binding.how == "iterated":
+            return self._elements(value, scope, depth) if mode == "rel" else None
+        if binding.how == "items":
+            return self._elements(value, scope, depth) if mode == "rel" else None
+        return None
+
+    # -- bindings --------------------------------------------------------------------------------------------
+
+    def _local_bindings(self, function: Function) -> dict[str, list[_Binding]]:
+        cached = self._bindings.get(id(function))
+        if cached is not None:
+            return cached
+        found: dict[str, list[_Binding]] = {}
+
+        def add(name: str, binding: _Binding) -> None:
+            found.setdefault(name, []).append(binding)
+
+        for node in ast.walk(function):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    self._assigned(target, node.value, function, add)
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                self._assigned(node.target, node.value, function, add)
+            elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+                add(
+                    node.target.id,
+                    _Binding(node.value, "elements" if isinstance(node.op, ast.Add) else "value", function),
+                )
+                if not isinstance(node.op, ast.Add):
+                    add(node.target.id, _Binding(None, "value", function))
+            elif isinstance(node, ast.NamedExpr):
+                add(node.target.id, _Binding(node.value, "value", function))
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                # a comprehension's target too: a step written inside it reads the name the comprehension binds
+                for name, binding in self._targets(node.target, node.iter, function):
+                    add(name, binding)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    for name in _names(item.optional_vars):
+                        add(name, _Binding(None, "value", function))
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                add(node.name, _Binding(None, "value", function))
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                receiver = node.func.value
+                if isinstance(receiver, ast.Name):
+                    for binding in _mutation(node, function):
+                        add(receiver.id, binding)
+        self._bindings[id(function)] = found
+        return found
+
+    def _assigned(
+        self,
+        target: ast.expr,
+        value: ast.expr,
+        function: Function,
+        add: Callable[[str, _Binding], None],
+    ) -> None:
+        if isinstance(target, ast.Name):
+            add(target.id, _Binding(value, "value", function))
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            values = value.elts if isinstance(value, (ast.Tuple, ast.List)) else None
+            for index, element in enumerate(target.elts):
+                matched = values[index] if values is not None and len(values) == len(target.elts) else None
+                if isinstance(element, ast.Name):
+                    add(element.id, _Binding(matched, "value", function))
+                else:
+                    for name in _names(element):
+                        add(name, _Binding(None, "value", function))
+        elif isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+            add(target.value.id, _Binding(value, "element", function))
+        elif isinstance(target, ast.Starred):
+            for name in _names(target):
+                add(name, _Binding(None, "value", function))
+
+    def _targets(self, target: ast.expr, iterable: ast.expr, function: Function) -> list[tuple[str, _Binding]]:
+        """what a loop's (or a comprehension's) target names are bound to: each a value of the iterable; of a
+        mapping's ``.items()`` (sorted or not), the second the mapping's value; of ``enumerate``, the second the
+        iterable's value; any other unpacking, nothing the walk can tell."""
+        while isinstance(iterable, ast.Call) and isinstance(iterable.func, ast.Name) and _final(iterable) in _PASSING:
+            if len(iterable.args) != 1:
+                break
+            iterable = iterable.args[0]
+        if isinstance(target, ast.Name):
+            return [(target.id, _Binding(iterable, "iterated", function))]
+        if isinstance(target, ast.Tuple) and len(target.elts) == 2 and isinstance(iterable, ast.Call):
+            name = _final(iterable)
+            first, second = target.elts
+            if isinstance(iterable.func, ast.Attribute) and name == "items" and not iterable.args:
+                pairs: list[tuple[str, _Binding]] = [(n, _Binding(None, "value", function)) for n in _names(first)]
+                if isinstance(second, ast.Name):
+                    return [*pairs, (second.id, _Binding(iterable.func.value, "items", function))]
+                return pairs + [(n, _Binding(None, "value", function)) for n in _names(second)]
+            if isinstance(iterable.func, ast.Name) and name == "enumerate" and iterable.args:
+                pairs = [(n, _Binding(None, "value", function)) for n in _names(first)]
+                if isinstance(second, ast.Name):
+                    return [*pairs, (second.id, _Binding(iterable.args[0], "iterated", function))]
+                return pairs + [(n, _Binding(None, "value", function)) for n in _names(second)]
+        return [(name, _Binding(None, "value", function)) for name in _names(target)]
+
+    def _field_bindings(self, owner: ast.ClassDef) -> dict[str, list[_Binding]]:
+        cached = self._fields.get(id(owner))
+        if cached is not None:
+            return cached
+        found: dict[str, list[_Binding]] = {}
+
+        def attribute(node: ast.expr) -> str | None:
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self":
+                return node.attr
+            return None
+
+        for method in owner.body:
+            if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(method):
+                if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    value = node.value
+                    for target in targets:
+                        named = attribute(target)
+                        if named is not None and value is not None:
+                            how = "elements" if isinstance(node, ast.AugAssign) else "value"
+                            if isinstance(node, ast.AugAssign) and not isinstance(node.op, ast.Add):
+                                value = None
+                            found.setdefault(named, []).append(_Binding(value, how, method))
+                        elif isinstance(target, ast.Subscript) and (named := attribute(target.value)) is not None:
+                            found.setdefault(named, []).append(_Binding(value, "element", method))
+                        elif isinstance(target, (ast.Tuple, ast.List)):
+                            for element in target.elts:
+                                if (named := attribute(element)) is not None:
+                                    found.setdefault(named, []).append(_Binding(None, "value", method))
+                elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    named = attribute(node.func.value)
+                    if named is not None:
+                        for binding in _mutation(node, method):
+                            found.setdefault(named, []).append(binding)
+        self._fields[id(owner)] = found
+        return found
+
+
+def _names(node: ast.expr | None) -> list[str]:
+    return [] if node is None else [n.id for n in ast.walk(node) if isinstance(n, ast.Name)]
+
+
+#: a container's methods adding one value, or the values of their argument
+_ADDS_ONE: Final = frozenset({"append", "add", "appendleft"})
+_ADDS_MANY: Final = frozenset({"extend", "update"})
+_ADDS_AT: Final = frozenset({"insert", "setdefault"})
+
+
+def _mutation(call: ast.Call, function: Function) -> list[_Binding]:
+    """what a method call on a container adds to it: ``append(x)`` one value, ``extend(xs)`` / ``update(m)`` their
+    values, ``insert(i, x)`` / ``setdefault(k, x)`` one; nothing for any other call."""
+    name = _final(call)
+    if name in _ADDS_ONE and len(call.args) == 1:
+        return [_Binding(call.args[0], "element", function)]
+    if name in _ADDS_MANY and len(call.args) == 1:
+        return [_Binding(call.args[0], "elements", function)]
+    if name in _ADDS_AT and len(call.args) == 2:
+        return [_Binding(call.args[1], "element", function)]
+    return []

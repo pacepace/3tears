@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Final
 
 from threetears.enforcement.common import dotted, iter_python_files, parse_python_path, relative_posix_path
+from threetears.enforcement.no_whole_reads.flow import CLEAN, HANDED, RelationFlow, step_relation_arguments
 from threetears.enforcement.no_whole_reads.helpers import (
     KEYED_FRAGMENT_BUILDERS,
     KEYED_HELPER_CALLS,
@@ -947,6 +948,7 @@ class _ModuleWalk(ast.NodeVisitor):
         view_producers: Mapping[str, tuple[tuple[str, ...], ...]] | None = None,
         tuples: dict[str, list[Passed]] | None = None,
         relation_producers: frozenset[str] = frozenset(),
+        match_builders: Mapping[str, MatchBuilder] | None = None,
     ) -> None:
         """prepare a walk of one module.
 
@@ -990,10 +992,13 @@ class _ModuleWalk(ast.NodeVisitor):
         :ptype view_producers: Mapping[str, tuple[tuple[str, ...], ...]] | None
         :param relation_producers: the declared relation producers (``NoWholeReadsConfig.relation_producers``)
         :ptype relation_producers: frozenset[str]
+        :param match_builders: the repo's functions returning a step's ``Match`` list (:func:`_match_builders`)
+        :ptype match_builders: Mapping[str, MatchBuilder] | None
         :return: nothing
         :rtype: None
         """
         self.path = path
+        self._match_builders = dict(match_builders or {})
         #: the names the module's imports bind: ``x.read_by()`` on any other name is a method of an object
         self._module_names = _imported_names(tree)
         self._parameter_values = parameter_values or {}
@@ -1105,6 +1110,17 @@ class _ModuleWalk(ast.NodeVisitor):
         #: parameter (:func:`_helper_relations`): a statement over one is judged at the helper's call sites
         self._helper_parameters, self._helper_fields = (
             _helper_relations(tree) if _KEYED_PACKAGE in str(path) else ({}, {})
+        )
+        #: where each relation a step names comes from (:mod:`~threetears.enforcement.no_whole_reads.flow`): a change
+        #: relation through a name, an attribute or a container; a forwarder's parameter, judged at its call sites
+        self._flow = RelationFlow(
+            tree,
+            keyed_step=self._keyed_step,
+            produces=self._produces,
+            produced=self._attributes_produced,
+            producer=lambda function, owner: (
+                (owner.name if owner is not None else "", function.name) in self._producers
+            ),
         )
         self._envs[0].update(imported or {})
         self._envs[0].update(_module_strings(tree))
@@ -1866,6 +1882,7 @@ class _ModuleWalk(ast.NodeVisitor):
             self._judge_call(node, name)
             self._judge_helper(node)
             self._judge_change_relation(node)
+            self._judge_handed(node)
         self.generic_visit(node)
 
     def _relation_produced(self, value: ast.expr) -> str | None:
@@ -2060,19 +2077,209 @@ class _ModuleWalk(ast.NodeVisitor):
         if self._hands_on_helper_relation(node, name):
             # a helper calling a helper on its own relation parameter: judged where the outer helper is called
             return
+        self._judge_statements(node, self._flowed(node) if name in STEP_CALLS else node)
+
+    def _flowed(self, node: ast.Call) -> ast.Call:
+        """a step call with each relation it names that the flow says is a change relation, a step judged where it
+        is written, or a forwarder's parameter judged at its call sites written as a change set
+        (:data:`TRANSIENT_PRODUCED`); every other argument as it is.
+
+        :param node: the step call
+        :ptype node: ast.Call
+        :return: the call to judge
+        :rtype: ast.Call
+        """
+        function = self._function_node
+        owner = self._flow.owner_of(function)
+        settled: set[int] = set()
+        for argument, mode in step_relation_arguments(node):
+            judged = (
+                self._flow.kind(argument, function, owner)
+                if mode == "rel"
+                else self._flow.elements(argument, function, owner)
+            )
+            if judged in {CLEAN, HANDED}:
+                settled.add(id(argument))
+        if not settled:
+            return node
+
+        def written(argument: ast.expr) -> ast.expr:
+            if isinstance(argument, ast.Starred) and id(argument.value) in settled:
+                return ast.Constant(TRANSIENT_PRODUCED)
+            return ast.Constant(TRANSIENT_PRODUCED) if id(argument) in settled else argument
+
+        return ast.Call(
+            func=node.func,
+            args=[written(argument) for argument in node.args],
+            keywords=[ast.keyword(arg=k.arg, value=written(k.value)) for k in node.keywords],
+        )
+
+    def _judge_handed(self, node: ast.Call) -> None:
+        """judge what a call of a forwarder hands it, where the call is: each argument the forwarder hands a step,
+        read as that step reads it (a relation whole; a container's every value), unless it is a change relation, a
+        step judged where it is written, or the calling forwarder's own parameter.
+
+        :param node: the call
+        :ptype node: ast.Call
+        :return: nothing
+        :rtype: None
+        """
+        callee = self._flow.callee(node)
+        if callee is None:
+            return
+        function = self._function_node
+        owner = self._flow.owner_of(function)
+        for argument, mode in self._flow.handed_arguments(node, callee):
+            if mode == "rel":
+                if self._flow.kind(argument, function, owner) not in {CLEAN, HANDED}:
+                    self._judge_statements(
+                        node, ast.Call(func=ast.Name("scan", ast.Load()), args=[argument], keywords=[])
+                    )
+                continue
+            if self._flow.elements(argument, function, owner) in {CLEAN, HANDED}:
+                continue
+            values = (
+                argument.values
+                if isinstance(argument, ast.Dict)
+                else argument.elts
+                if isinstance(argument, (ast.List, ast.Tuple, ast.Set))
+                else None
+            )
+            if values is None or any(isinstance(value, ast.Starred) for value in values):
+                self._hit(node, f"unknown-predicate {callee.function.name}(each)", self._spelled(node))
+                continue
+            for value in values:
+                if self._flow.kind(value, function, owner) not in {CLEAN, HANDED}:
+                    self._judge_statements(node, ast.Call(func=ast.Name("scan", ast.Load()), args=[value], keywords=[]))
+
+    def _match_calls(self, call: ast.Call) -> list[ast.Call]:
+        """a ``delete_matching`` call once for each ``Match`` list its ``on=`` may be, where a repo function builds it
+        (:class:`MatchBuilder`): called there (``on=_alike(SETTLE_KEYS.get(name, _PANEL_KEY))``, each of the module
+        mapping's values in turn), or bound once from one (``on, also = let_go_on(table)``); the call itself
+        otherwise.
+
+        :param call: the helper call, its known strings already literals
+        :ptype call: ast.Call
+        :return: the calls to judge
+        :rtype: list[ast.Call]
+        """
+        given = next((keyword for keyword in call.keywords if keyword.arg == "on"), None)
+        if _final(call) != "delete_matching" or given is None or not self._match_builders:
+            return [call]
+        built: ast.expr = given.value
+        first = False
+        if isinstance(built, ast.Name) and self._function_node is not None:
+            bound = [
+                (target, node.value)
+                for node in ast.walk(self._function_node)
+                if isinstance(node, ast.Assign)
+                for target in node.targets
+                if (isinstance(target, ast.Name) and target.id == built.id)
+                or (
+                    isinstance(target, ast.Tuple)
+                    and any(isinstance(e, ast.Name) and e.id == built.id for e in target.elts)
+                )
+            ]
+            if len(bound) != 1:
+                return [call]
+            target, built = bound[0]
+            if isinstance(target, ast.Tuple):
+                if not (isinstance(target.elts[0], ast.Name) and target.elts[0].id == given.value.id):  # type: ignore[attr-defined]
+                    return [call]
+                first = True
+        if not isinstance(built, ast.Call):
+            return [call]
+        builder = self._match_builders.get(_final(built) or "")
+        if builder is None or builder.first != first:
+            return [call]
+        if builder.parameter is None:
+            choices: list[list[str | None]] = [list(builder.columns)]
+        else:
+            if len(built.args) <= builder.parameter:
+                return [call]
+            found = self._column_choices(built.args[builder.parameter])
+            if found is None:
+                return [call]
+            choices = found
+        calls = []
+        for columns in choices[:_MAX_PARAMETER_COMBINATIONS]:
+            matches = ast.List(
+                elts=[
+                    ast.Call(
+                        func=ast.Name("Match", ast.Load()),
+                        args=[ast.Constant(column) if column is not None else ast.Name("column", ast.Load())],
+                        keywords=[],
+                    )
+                    for column in columns
+                ],
+                ctx=ast.Load(),
+            )
+            calls.append(
+                ast.Call(
+                    func=call.func,
+                    args=call.args,
+                    keywords=[k if k.arg != "on" else ast.keyword(arg="on", value=matches) for k in call.keywords],
+                )
+            )
+        return calls
+
+    def _column_choices(self, node: ast.expr) -> list[list[str | None]] | None:
+        """the column lists an expression may be: a sequence of column names (a literal, a module constant), or a pick
+        from a module mapping of them (``SETTLE_KEYS[name]``, ``SETTLE_KEYS.get(name, _PANEL_KEY)``: each value, and the
+        default); None when the walk cannot tell."""
+        env = self._envs[-1]
+
+        def columns(value: ast.expr | None) -> list[str | None] | None:
+            if isinstance(value, ast.Name) and isinstance(self._module_values.get(value.id), (ast.Tuple, ast.List)):
+                value = self._module_values[value.id]
+            if not isinstance(value, (ast.Tuple, ast.List)) or not value.elts:
+                return None
+            return [_constant_text(element, env) for element in value.elts]
+
+        picked: list[ast.expr] = []
+        mapping: ast.expr | None = None
+        if isinstance(node, ast.Subscript):
+            mapping = node.value
+        elif isinstance(node, ast.Call) and _final(node) == "get" and isinstance(node.func, ast.Attribute):
+            mapping = node.func.value
+            picked += node.args[1:2]
+        if isinstance(mapping, ast.Name):
+            held = self._module_values.get(mapping.id)
+            if not isinstance(held, ast.Dict) or not held.values:
+                return None
+            choices = [columns(value) for value in [*held.values, *picked]]
+            return None if any(choice is None for choice in choices) else [c for c in choices if c is not None]
+        single = columns(node)
+        return None if single is None else [single]
+
+    def _judge_statements(self, site: ast.Call, node: ast.Call) -> None:
+        """judge each statement a keyed helper call sends, its findings recorded at ``site``.
+
+        :param site: where the findings are recorded
+        :ptype site: ast.Call
+        :param node: the helper call judged
+        :ptype node: ast.Call
+        :return: nothing
+        :rtype: None
+        """
         statement: HelperStatement
         resolved = self._resolved_call(node)
         hits: dict[str, str] = {}
-        for call in (each for picked in self._mapping_calls(resolved) for each in self._parameter_calls(picked)):
+        for call in (
+            matched
+            for picked in self._mapping_calls(resolved)
+            for each in self._parameter_calls(picked)
+            for matched in self._match_calls(each)
+        ):
             for statement in helper_statements(call):
                 if statement.sql is UNSEEN or statement.sql is None:
-                    hits.setdefault(f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(node))
+                    hits.setdefault(f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(site))
                     continue
-                for finding in judge_sql(statement.sql, self._reader(node)):
+                for finding in judge_sql(statement.sql, self._reader(site)):
                     if finding.kind not in {HEAD, KEYED_COUNT} and not self._transient_table(finding.table):
                         hits.setdefault(f"{finding.kind} {finding.table}", statement.sql)
         for symbol, statement_text in hits.items():
-            self._hit(node, symbol, statement_text)
+            self._hit(site, symbol, statement_text)
 
     def _hands_on_helper_relation(self, node: ast.Call, name: str | None) -> bool:
         """whether a keyed helper call inside a keyed helper's body reads only the outer helper's relation parameter
@@ -2472,6 +2679,15 @@ class _ModuleWalk(ast.NodeVisitor):
                 _assigned_class(function.body, lambda target: isinstance(target, ast.Name) and target.id == receiver.id)
                 or known
             )
+            if not known and owner is not None:
+                # ``work = self.work``, ``work, settled = self.work, self.settled``: the attribute's class
+                held = _self_attribute_bound(function, receiver.id)
+                if held is not None:
+                    known = self._receiver_class(
+                        ast.Call(func=ast.Attribute(value=held, attr="_", ctx=ast.Load()), args=[], keywords=[]),
+                        function,
+                        owner,
+                    )
         elif (
             isinstance(receiver, ast.Attribute)
             and isinstance(receiver.value, ast.Name)
@@ -2749,6 +2965,36 @@ def _assigned_class(body: list[ast.stmt], matches: Callable[[ast.expr], bool]) -
                 name = (dotted(node.value.func) or "").rsplit(".", 1)[-1]
                 known = name if name.lstrip("_")[:1].isupper() else known
     return known
+
+
+def _self_attribute_bound(function: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> ast.Attribute | None:
+    """the ``self`` attribute a function binds a name to, the one binding of it: ``work = self.work``, or a place in a
+    tuple assignment ``work, settled = self.work, self.settled``.
+
+    :param function: the function
+    :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+    :param name: the name
+    :ptype name: str
+    :return: the attribute, or None when the function binds the name to anything else, or more than once
+    :rtype: ast.Attribute | None
+    """
+    bound: list[ast.expr | None] = []
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == name:
+                bound.append(node.value)
+            elif isinstance(target, ast.Tuple) and any(isinstance(e, ast.Name) and e.id == name for e in target.elts):
+                values = node.value.elts if isinstance(node.value, ast.Tuple) else None
+                index = next(i for i, e in enumerate(target.elts) if isinstance(e, ast.Name) and e.id == name)
+                bound.append(values[index] if values is not None and len(values) == len(target.elts) else None)
+    if len(bound) != 1:
+        return None
+    value = bound[0]
+    if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name) and value.value.id == "self":
+        return value
+    return None
 
 
 def _keyed_exists(condition: str, table: str, reader: Reader) -> bool:
@@ -3463,6 +3709,94 @@ def _site_values(
     return [None] if texts is None else list(texts)
 
 
+@dataclass(frozen=True)
+class MatchBuilder:
+    """a repo function returning a step's ``Match`` list (``on=``): one ``Match`` of each column its argument names
+    (``_alike(columns)``: ``parameter`` its position), or a fixed list (``columns``, None for one named at run time),
+    the first of a returned pair where ``first`` (``on, also = let_go_on(table)``).
+
+    :ivar parameter: the position of the parameter naming the columns, or None for a fixed list
+    :ivar columns: a fixed list's columns
+    :ivar first: whether the list is the first of a returned tuple
+    """
+
+    parameter: int | None
+    columns: tuple[str | None, ...] = ()
+    first: bool = False
+
+
+def _match_list(
+    value: ast.expr, function: ast.FunctionDef | ast.AsyncFunctionDef, known: dict[str, str]
+) -> MatchBuilder | None:
+    """what one returned expression says of the ``Match`` list a function returns."""
+    if isinstance(value, ast.Name):
+        bound = [
+            node.value
+            for node in ast.walk(function)
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == value.id
+        ]
+        return (
+            _match_list(bound[0], function, known) if len(bound) == 1 and not isinstance(bound[0], ast.Name) else None
+        )
+    if isinstance(value, ast.Tuple) and value.elts and not isinstance(value.elts[0], ast.Tuple):
+        inner = _match_list(value.elts[0], function, known)
+        return None if inner is None or inner.first else MatchBuilder(inner.parameter, inner.columns, first=True)
+    if isinstance(value, ast.ListComp) and len(value.generators) == 1:
+        generator = value.generators[0]
+        element = value.elt
+        positional = [argument.arg for argument in [*function.args.posonlyargs, *function.args.args]]
+        if (
+            isinstance(element, ast.Call)
+            and _final(element) == "Match"
+            and element.args
+            and isinstance(element.args[0], ast.Name)
+            and isinstance(generator.target, ast.Name)
+            and element.args[0].id == generator.target.id
+            and isinstance(generator.iter, ast.Name)
+            and generator.iter.id in positional
+        ):
+            return MatchBuilder(positional.index(generator.iter.id))
+        return None
+    if isinstance(value, ast.List) and value.elts:
+        columns: list[str | None] = []
+        for element in value.elts:
+            if not (isinstance(element, ast.Call) and _final(element) == "Match" and element.args):
+                return None
+            columns.append(_constant_text(element.args[0], known))
+        return MatchBuilder(None, tuple(columns))
+    return None
+
+
+def _match_builders(
+    modules: list[tuple[str, ast.Module]], strings: dict[str, dict[str, str]]
+) -> dict[str, MatchBuilder]:
+    """every module function of the repo, defined once by its name, that returns a step's ``Match`` list
+    (:class:`MatchBuilder`): ``on=`` built by one is judged by the columns it names.
+
+    :param modules: each module's path and parse
+    :ptype modules: list[tuple[str, ast.Module]]
+    :param strings: every walked module's path onto its once-bound strings (:func:`_module_strings`)
+    :ptype strings: dict[str, dict[str, str]]
+    :return: the function's name onto what it builds
+    :rtype: dict[str, MatchBuilder]
+    """
+    found: dict[str, MatchBuilder | None] = {}
+    for relative, tree in modules:
+        known = {**_imported_strings(tree, strings), **strings.get(relative, {})}
+        for statement in tree.body:
+            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            returned = [node.value for node in ast.walk(statement) if isinstance(node, ast.Return) and node.value]
+            built = _match_list(returned[0], statement, known) if len(returned) == 1 else None
+            if built is None:
+                continue
+            found[statement.name] = built if statement.name not in found else None
+    return {name: built for name, built in found.items() if built is not None}
+
+
 def _parameter_values(
     modules: list[tuple[str, ast.Module]],
     strings: dict[str, dict[str, str]],
@@ -3882,6 +4216,7 @@ def scan_whole_reads(
     parameter_values = _parameter_values(
         [(relative, parse_python_path(path)) for relative, path in modules], strings, tuples
     )
+    match_builders = _match_builders([(relative, parse_python_path(path)) for relative, path in modules], strings)
     for relative, path in modules:
         excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
         used.update(excluded)
@@ -3906,6 +4241,7 @@ def scan_whole_reads(
             view_producers=view_producers,
             tuples=_imported_tuples(tree, relative, tuples),
             relation_producers=relation_producers,
+            match_builders=match_builders,
         )
         walk.visit(tree)
         stubs.update(walk.stubs)

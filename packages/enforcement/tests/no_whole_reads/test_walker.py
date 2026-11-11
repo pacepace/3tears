@@ -2792,3 +2792,251 @@ def test_a_run_time_relation_with_no_producer_declared_stays_unseen(tmp_path: Pa
     found = _symbols(_config(tmp_path, {"produced.py": _RELATION_PRODUCED}))
     for function in ("by_state", "every_state", "every_marked", "derived_by_run", "Inputs.named"):
         assert any(f == function and s.startswith("unknown-predicate") for f, s in found), (function, found)
+
+
+#: a settle's relations, as ``aibots_reports.pod.settle`` writes them: a change's rows registered by a transient
+#: producer (``_Work.put``) and read through ``self`` attributes, mappings of them, names bound more than once, lists
+#: of steps and forwarders that hand a step on (``_Work.step``, ``_union``, ``_undropped``, ``_Lsf(work, sources)``)
+_SETTLE_FLOW = """
+    from collections.abc import Mapping, Sequence
+
+    from threetears.core import keyed
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import InlineDuckDB, run_inline
+
+    RESULTS = TableSchema(name="results", primary_key=("state", "run_id"), columns=[])
+
+
+    class _Work:
+        def __init__(self, conn):
+            self.cursor = conn
+
+        def step(self, step):
+            return run_inline(keyed.read_step_arrow(InlineDuckDB(self.cursor), step))
+
+        def count(self, step):
+            return run_inline(keyed.count_step(InlineDuckDB(self.cursor), step))
+
+        def put(self, rows):
+            name = keyed.change_relation("_settle_1")
+            self.cursor.register(name, rows)
+            return name
+
+
+    def _step_rows(conn, step):
+        return run_inline(keyed.read_step_arrow(InlineDuckDB(conn), step))
+
+
+    def _union(parts: Sequence[str], *, keep_all: bool = False):
+        return parts[0] if len(parts) == 1 else keyed.union(*parts, keep_all=keep_all)
+
+
+    def _text(rel):
+        if isinstance(rel, keyed.Step):
+            return rel.sql
+        return keyed.scan(rel).sql
+
+
+    class _Lsf:
+        def __init__(self, work: _Work, sources: Mapping[str, str], *, removed: Mapping[str, str] | None = None):
+            self.work = work
+            self.sources = sources
+            self.removed: dict[str, str] = {name: rel for name, rel in (removed or {}).items()}
+            self.let_go: dict[str, str] = {}
+            self.dropped: str | None = None
+
+        def _undropped(self, rel):
+            if self.dropped is None:
+                return rel
+            return keyed.anti(rel, self.dropped, on=[keyed.Match("state")])
+
+        def entries(self, rows):
+            work, settled = self.work, None
+            self.new = work.put(rows)
+            self.annotated: dict[str, str] = {name: work.put(rows) for name in ("a", "b")}
+            for name, gone in sorted(self.removed.items()):
+                self.let_go[name] = work.put(gone)
+            self.dropped = work.put(rows)
+            touched = keyed.distinct(self.new, ["state"])
+            if self.removed:
+                touched = keyed.union(touched, keyed.distinct(self.removed["a"], ["state"]))
+            parts = [keyed.scan(annotated, ["state"]) for name, annotated in sorted(self.annotated.items())]
+            parts.append(keyed.semi(self._undropped(work.put(rows)), self.let_go["a"], on=[keyed.Match("state")]))
+            parts += [keyed.scan(self.sources[name]) for name in sorted(self.sources)]
+            runs = [self.new, work.put(rows)]
+            work.step(touched)
+            work.step(_union(parts))
+            work.step(keyed.union(*runs, keep_all=True))
+            _step_rows(work.cursor, keyed.distinct(self.new, ["state"]))
+            return self.work.count(keyed.semi(self._undropped(self.dropped), work.put(rows), on=[keyed.Match("state")]))
+
+        def holders(self):
+            return self.work.step(keyed.scan(self.work.put(None))), _text(_union([self.new, self.dropped]))
+
+
+    def _settle(work: _Work, sources: Mapping[str, str], removed: Mapping[str, str]) -> None:
+        _Lsf(work, sources, removed=removed).entries(None)
+
+
+    def settle(conn, written, gone):
+        work = _Work(conn)
+        sources = {name: work.put(rows) for name, rows in written.items()}
+        sources["x"] = work.put(None)
+        removed = {name: work.put(rows) for name, rows in gone.items()}
+        _settle(work, sources, removed)
+
+
+    def hands_a_table(conn):
+        return _Work(conn).step("results")
+
+
+    def hands_a_table_to_count(work: _Work):
+        return work.count(keyed.distinct(work.put(None), ["state"])), _step_rows(work.cursor, "results")
+
+
+    def unions_a_table(work: _Work):
+        return work.step(_union([work.put(None), "results"]))
+
+
+    def settles_over_a_table(work: _Work):
+        _settle(work, {"a": "results"}, {})
+
+
+    def steps_a_parameter(work: _Work, rel):
+        return work.step(rel)
+
+
+    def rebinds_to_a_table(work: _Work):
+        rel = keyed.distinct(work.put(None), ["state"])
+        rel = "results"
+        return work.step(keyed.scan(rel))
+
+
+    def appends_a_table(work: _Work):
+        parts = [work.put(None)]
+        parts.append("results")
+        return work.step(keyed.union(*parts))
+"""
+
+#: the functions of :data:`_SETTLE_FLOW` that read only change relations
+_FLOWED = {
+    "_Work.step",
+    "_Work.count",
+    "_step_rows",
+    "_union",
+    "_text",
+    "_Lsf._undropped",
+    "_Lsf.entries",
+    "_Lsf.holders",
+    "_settle",
+    "settle",
+}
+
+
+def test_a_step_over_a_producers_relation_held_by_a_name_an_attribute_or_a_mapping_reads_a_change_set(
+    tmp_path: Path,
+) -> None:
+    """Flips if a step naming a declared transient producer's relation through a ``self`` attribute
+    (``keyed.distinct(self.new, ...)``), a mapping attribute it fills (``self.let_go[name]``), a comprehension over one
+    (``for name, annotated in sorted(self.annotated.items())``) or a receiver bound by a tuple assignment
+    (``work, settled = self.work, self.settled``) is judged as a data table; or if ``self.removed[name]``, a mapping
+    the constructor's caller fills with the producer's relations, is."""
+    found = _symbols(_config(tmp_path, {"settle.py": _SETTLE_FLOW}, transient_producers=frozenset({"_Work.put"})))
+    assert not {function for function, _ in found} & {"_Lsf.entries", "_Lsf.holders"}, found
+
+
+def test_a_forwarder_handing_its_parameter_to_a_step_is_judged_at_each_call_by_what_the_call_hands_it(
+    tmp_path: Path,
+) -> None:
+    """Flips if a private function, method or constructor that hands a parameter on to a step, or returns a step over
+    it (``_Work.step``, ``_Work.count``, ``_step_rows``, ``_union``, ``_undropped``, ``_text``, ``_Lsf(work,
+    sources)``), is flagged in its own body or makes its callers whole readers when each hands it a change relation;
+    or if a caller handing one a data table (as the relation, in a list, or in the mapping a constructor keeps), or a
+    public function's own parameter, passes."""
+    found = _symbols(_config(tmp_path, {"settle.py": _SETTLE_FLOW}, transient_producers=frozenset({"_Work.put"})))
+    functions = {function for function, _ in found}
+    assert not functions & _FLOWED, found
+    for caller in ("hands_a_table", "hands_a_table_to_count", "unions_a_table", "settles_over_a_table"):
+        assert any(f == caller and not s.startswith("calls-whole-read") for f, s in found), (caller, found)
+    assert any(f == "steps_a_parameter" for f, _ in found), found
+
+
+def test_a_name_bound_more_than_once_or_a_list_of_steps_is_judged_by_every_value_it_holds(tmp_path: Path) -> None:
+    """Flips if a local bound to a step and bound again (``touched = union(touched, ...)``), a list of steps a
+    function appends to (``parts.append(semi(...))``, ``parts += [...]``) or a ``union(*runs)`` of change relations
+    is flagged, or if any of them passes once one value it holds is a data table."""
+    found = _symbols(_config(tmp_path, {"settle.py": _SETTLE_FLOW}, transient_producers=frozenset({"_Work.put"})))
+    functions = {function for function, _ in found}
+    assert "_Lsf.entries" not in functions, found
+    assert {"rebinds_to_a_table", "appends_a_table"} <= functions, found
+
+
+_MATCH_RULES = """
+    from threetears.core import keyed
+
+    STATE = "state"
+
+
+    def let_go_on(table):
+        on = [keyed.Match(STATE), keyed.Match("run_id"), keyed.Match(table.group, null_safe=True)]
+        return on, [keyed.Fragment("t.model IS NOT DISTINCT FROM k.model")]
+"""
+
+#: a settle's deletes, as ``aibots_reports.pod.settle.apply_settled`` writes them: ``on=`` built by a function of the
+#: module or of another, each copy table named ``main.<name>`` in a loop over the change's tables
+_MATCH_DELETES = """
+    from threetears.core import keyed
+    from threetears.core.keyed import InlineDuckDB, run_inline
+
+    from pkg.rules import STATE, let_go_on
+
+    _GONE = "_gone"
+    _KEYS = "_keys"
+    _RUN = (STATE, "office_key", "run_id")
+    SETTLE_KEYS = {"needle_rows": (STATE, "office_key", "run_id"), "runs": (STATE, "run_id")}
+    _PANEL_KEY = (STATE,)
+
+
+    def _alike(columns):
+        return [keyed.Match(column, null_safe=True) for column in columns]
+
+
+    def apply_settled(cursor, tables, settled):
+        db = InlineDuckDB(cursor)
+        for name, rows in sorted(settled.let_go.items()):
+            cursor.register(keyed.change_relation(_GONE), rows)
+            on, also = let_go_on(tables[name])
+            run_inline(keyed.delete_matching(db, f"main.{name}", _GONE, on=on, also=also))
+        for name, keys in sorted(settled.derived_keys.items()):
+            table = f"main.{name}"
+            cursor.register(keyed.change_relation(_KEYS), keys)
+            run_inline(keyed.delete_matching(db, table, _KEYS, on=_alike(SETTLE_KEYS.get(name, _PANEL_KEY))))
+            run_inline(keyed.delete_matching(db, table, _KEYS, on=_alike(_RUN)))
+
+
+    def drops_by_run(cursor, settled):
+        db = InlineDuckDB(cursor)
+        for name in settled.derived_keys:
+            cursor.register(keyed.change_relation(_KEYS), settled.derived_keys[name])
+            run_inline(keyed.delete_matching(db, f"main.{name}", _KEYS, on=_alike(("run_id",))))
+"""
+
+
+def test_a_delete_matching_on_built_by_a_function_over_a_copy_table_named_at_run_time_is_judged_by_its_columns(
+    tmp_path: Path,
+) -> None:
+    """Flips if ``delete_matching``'s ``on=`` built by a repo function (``_alike(columns)`` over a module constant or
+    a module mapping's pick, ``on, also = let_go_on(table)`` from another module) or its ``table=`` named
+    ``f"main.{name}"`` is unseen, so a delete by a copy's key passes; or if one by no key of the copy (``run_id``)
+    passes."""
+    found = _symbols(
+        _config(
+            tmp_path,
+            {"pkg/rules.py": _MATCH_RULES, "pkg/settle.py": _MATCH_DELETES},
+            local_relations={"*": (("state",),)},
+            transient_relations=r"^_(?:gone|keys)$",
+        )
+    )
+    functions = {function for function, _ in found}
+    assert "apply_settled" not in functions, found
+    assert "drops_by_run" in functions, found

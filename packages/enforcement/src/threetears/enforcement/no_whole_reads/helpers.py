@@ -42,7 +42,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final
 
-from threetears.enforcement.no_whole_reads.schema import PRODUCED_PREFIX
+from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, PRODUCED_PREFIX
 
 __all__ = [
     "KEYED_FRAGMENT_BUILDERS",
@@ -144,6 +144,9 @@ _KEYED_FRAGMENT_METHODS: Final[frozenset[str]] = frozenset({"fragment"})
 
 #: keywords that say where a pager starts, not which rows it reads
 START_KEYWORDS: Final[frozenset[str]] = frozenset({"after", "since"})
+
+#: a local database's table named at run time: ``main.`` and nothing but interpolations
+_LOCAL_RUN_TIME: Final[re.Pattern[str]] = re.compile(r"main\.(?:\{\})+")
 
 #: what :attr:`HelperStatement.sql` is when the walk cannot read the call's arguments
 UNSEEN: Final = None
@@ -480,7 +483,19 @@ def _relation(node: ast.expr | None, argument: str) -> tuple[str, list[str]]:
     if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith(PRODUCED_PREFIX):
         # a declared producer's run-time relation (the walk wrote it): the catalog's own name for it, as declared
         return node.value, []
+    if isinstance(node, ast.JoinedStr):
+        # ``f"main.{name}"``: its literal parts as written, each interpolation ``{}``
+        node = ast.Constant(
+            "".join(
+                part.value if isinstance(part, ast.Constant) and isinstance(part.value, str) else "{}"
+                for part in node.values
+            )
+        )
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        if _LOCAL_RUN_TIME.fullmatch(node.value):
+            # a table of the local database (DuckDB's or SQLite's ``main``) named at run time: a local copy's
+            # relation, judged against the default key every copy declares (``local_relations["*"]``)
+            return f"{COPY_PREFIX}{{}}", []
         return ".".join(_quoted(part) for part in node.value.split(".")), []
     if isinstance(node, ast.Call) and _name(node) == "Derived":
         derived = _text(_argument(node, "sql", 0), argument)
@@ -640,14 +655,20 @@ def _step_relation(node: ast.expr | None, argument: str) -> list[str]:
 
 
 def _match_columns(node: ast.expr | None) -> list[str]:
-    """the step relation's columns a ``Match`` list names."""
+    """the step relation's columns a ``Match`` list names; a column named at run time (``Match(group_column(t))``)
+    as an interpolation (``{}``), a predicate on no column the walk can see, beside the ones it can."""
     if not isinstance(node, ast.Tuple | ast.List) or not node.elts:
         raise _Unseen("on")
     columns = []
     for element in node.elts:
         if not (isinstance(element, ast.Call) and _name(element) == "Match"):
             raise _Unseen("on")
-        columns.append(_text(_argument(element, "column", 0), "on"))
+        column = _argument(element, "column", 0)
+        if column is None:
+            raise _Unseen("on")
+        columns.append(column.value if isinstance(column, ast.Constant) and isinstance(column.value, str) else "{}")
+    if all(column == "{}" for column in columns):
+        raise _Unseen("on")
     return columns
 
 
@@ -665,7 +686,7 @@ def _step(call: ast.Call) -> list[str]:
     if helper == "delete_matching":
         table, _ = _relation(_argument(call, "table", 1), "table")
         pinned = [
-            f"{_quoted(column)} = ANY(${place})"
+            f"{column if column == '{}' else _quoted(column)} = ANY(${place})"
             for place, column in enumerate(_match_columns(_argument(call, "on", None)), 1)
         ]
         statements.append(f"DELETE FROM {table}{_where(pinned)}")
