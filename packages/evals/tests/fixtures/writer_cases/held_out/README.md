@@ -10,27 +10,29 @@ These are held-out acceptance cases: never dev, and never rung-5 replays.
 | r2 | reference input r2 | reference | r2 | 4,577 | r2-config-sweep.md |
 | r3 | reference input r3 | reference | r3 | 3,495 | r3-classifier.md |
 | r4 | reference input r4 | reference | r4 | 2,943 | r4-tradeoff.md |
-| s1 | shape s1, three aspects | shape | s1 | 44,309 | none |
-| s2 | shape s2, a choice | shape | s2 | 17,874 | none |
-| s3 | shape s3, a measurement | shape | s3 | 19,878 | none |
-| s4 | shape s4, a change | shape | s4 | 13,480 | none |
-| dow-router-prompts | dungeons-of-wagons rung 3, `router_prompts.py` (router-v1 against router-v2) | dow | dow-router | 28,867 | none |
-| dow-forge | dungeons-of-wagons rung 2, `forge.py` (judged) | dow | dow-forge | 14,272 | none |
-| dow-router | dungeons-of-wagons rung 1, `router.py` | dow | dow-router | 17,684 | none |
-| toyhost | the toy host's corpus campaign | host | toyhost | 17,244 | none |
-| courierhost | the courier's planner bake-off | host | courier-planner | 9,789 | none |
-| hot-path-scaled | the hot-path `scaled` campaign, 41 runs | host | hot-path-scaled | 250,128 | none |
-| discodon-dj-character-01a1b3d4 | Discodon's campaign 01a1b3d4, "Character v2 apparatus 11-07" (see below) | host | discodon-dj-character | 49,021 | none |
-| discodon-judge-shortlist-01a14544 | Discodon's campaign 01a14544, "Judge shortlist" (see below) | host | discodon-judge-shortlist | 107,399 | none |
-| discodon-kairo-models-pilot-01a18f50 | Discodon's campaign 01a18f50, "kairo models pilot" (see below) | host | kairo | 1,322,138 | none |
-| discodon-1017-reasoning-effort-01a18d4d | Discodon's campaign 01a18d4d, "1017 reasoning effort" (see below) | host | kairo | 1,142,405 | none |
-| discodon-planted-effect-01a18b10 | Discodon's campaign 01a18b10, "Planted effect (declared)" (see below) | host | kairo | 610,860 | none |
-| discodon-kairo-directives-ab-01a16f8a | Discodon's campaign 01a16f8a, "Kairo directives A/B" (see below) | host | kairo | 592,021 | none |
-| discodon-kairo-persona-r1-01a16bd4 | Discodon's campaign 01a16bd4, "Kairo persona model, round 1" (see below) | host | kairo | 2,112,830 | none |
+| s1 | shape s1, three aspects | shape | s1 | 44,401 | none |
+| s2 | shape s2, a choice | shape | s2 | 17,882 | none |
+| s3 | shape s3, a measurement | shape | s3 | 19,887 | none |
+| s4 | shape s4, a change | shape | s4 | 13,489 | none |
+| dow-router-prompts | dungeons-of-wagons rung 3, `router_prompts.py` (router-v1 against router-v2) | dow | dow-router | 28,874 | none |
+| dow-forge | dungeons-of-wagons rung 2, `forge.py` (judged) | dow | dow-forge | 14,281 | none |
+| dow-router | dungeons-of-wagons rung 1, `router.py` | dow | dow-router | 17,691 | none |
+| toyhost | the toy host's corpus campaign | host | toyhost | 17,256 | none |
+| courierhost | the courier's planner bake-off | host | courier-planner | 9,796 | none |
+| hot-path-scaled | the hot-path `scaled` campaign, 41 runs | host | hot-path-scaled | 250,133 | none |
+| discodon-dj-character-01a1b3d4 | Discodon's campaign 01a1b3d4, "Character v2 apparatus 11-07" (see below) | host | discodon-dj-character | 49,031 | none |
+| discodon-judge-shortlist-01a14544 | Discodon's campaign 01a14544, "Judge shortlist" (see below) | host | discodon-judge-shortlist | 107,410 | none |
+| discodon-kairo-models-pilot-01a18f50 | Discodon's campaign 01a18f50, "kairo models pilot" (see below) | host | kairo | 1,322,249 | none |
+| discodon-1017-reasoning-effort-01a18d4d | Discodon's campaign 01a18d4d, "1017 reasoning effort" (see below) | host | kairo | 1,142,545 | none |
+| discodon-planted-effect-01a18b10 | Discodon's campaign 01a18b10, "Planted effect (declared)" (see below) | host | kairo | 610,958 | none |
+| discodon-kairo-directives-ab-01a16f8a | Discodon's campaign 01a16f8a, "Kairo directives A/B" (see below) | host | kairo | 592,102 | none |
+| discodon-kairo-persona-r1-01a16bd4 | Discodon's campaign 01a16bd4, "Kairo persona model, round 1" (see below) | host | kairo | 2,113,276 | none |
 
 There is no r5. Reference input r5 is the Kairo round 2 campaign's report input, copied byte for byte. It would be rung 5's Kairo case a second time, and it would read the skill's own note on that campaign. `test_held_out_cases.py` refuses two cases that report on one campaign unless they share a group and withhold the same notes.
 
 The export rewrites every case to the same bytes except the three dungeons-of-wagons cases. A replay mints a new campaign id, so those three are frozen once and kept. The export's docstring explains why.
+
+The cases kept as minted (the dungeons-of-wagons and Discodon cases) were moved to campaign bundle shape 4 by `fixtures/report_inputs/migrate_campaign_shape_4.py`: each floor's reason became its decision, read again on the frozen aspect bundle and checked to word the stored reason, and the bundle's shape and fingerprint moved with it. Their report inputs and snapshot ids did not move.
 
 The cases were minted on aarch64 (glibc 2.39). On another platform, s1 and hot-path-scaled rebuild under other snapshot ids: their report inputs hold statistics whose last digits differ by platform, and a snapshot id hashes them in full.
 
