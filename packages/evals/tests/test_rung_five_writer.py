@@ -99,7 +99,7 @@ def test_the_eleven_case_files_read_back_and_split_seven_held_out_to_four_dev() 
     assert len(cases) == 11
     sides = Counter(writer_group_side(case.group or case.name, 0.35) for case in cases)
     assert sides == {"held_out": 7, "dev": 4}
-    # The 0.3 default the README says it moves from leaves fewer than the 5 held-out cases a rate needs.
+    # 0.3, below WriterEval's 0.35 default, would leave fewer than the 5 held-out cases a rate needs.
     assert Counter(writer_group_side(case.group or case.name, 0.3) for case in cases)["held_out"] < 5
     # Every ladder rung's campaign is a case, in a stratum of its own, beside the misfits.
     ladder = sorted(path.name for path in EXAMPLES.iterdir() if path.is_dir() and path.name != RUNG.name)
