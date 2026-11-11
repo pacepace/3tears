@@ -47,7 +47,7 @@ validates never reaches here: its stored record is refused by its version first
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -553,8 +553,15 @@ def _key_words(path: str) -> str:
     return f"{said} ({', '.join(named)})" if named else said
 
 
-#: A claim's id in an editor's finding (``c2``), which the page names by its place.
-_CLAIM_ID = re.compile(r"\b(?P<id>c\d+)\b")
+def _claim_id(ids: Iterable[str]) -> re.Pattern[str] | None:
+    """The document's claim ids as an editor's finding quotes them, which the page names by their place: any id the
+    schema allows (``c2``, ``c-cost``), matched whole and in its own case, longest first so no id is read as a part of
+    a longer one. An id of digits alone reads as a number, not a name, so a finding's number is never taken for it
+    (``report_doc_checks``' rule for such an id); ``None`` when no id reads as a name."""
+    named = sorted((claim for claim in ids if not claim.isdecimal()), key=len, reverse=True)
+    if not named:
+        return None
+    return re.compile(rf"(?<!\w)(?P<id>{'|'.join(re.escape(claim) for claim in named)})(?!\w)")
 
 
 def _finding_words(text: str, reader: _Reader, places: Mapping[str, int]) -> str:
@@ -573,9 +580,7 @@ def _finding_words(text: str, reader: _Reader, places: Mapping[str, int]) -> str
             return _key_words(key) + tail if is_figure_key(key) else match.group(0)
 
     def claim(match: re.Match[str]) -> str:
-        place = places.get(match.group("id"))
-        if place is None:
-            return match.group(0)
+        place = places[match.group("id")]
         # ``Claim 2`` where it opens a sentence, ``claim 2`` inside one.
         opens = (
             not match.string[: match.start()].rstrip(" `") or match.string[: match.start()].rstrip(" `")[-1] in ".!?"
@@ -583,7 +588,9 @@ def _finding_words(text: str, reader: _Reader, places: Mapping[str, int]) -> str
         word = CLAIM_WORD.format(place=place)
         return word if opens else word[:1].lower() + word[1:]
 
-    return _CLAIM_ID.sub(claim, _FINDING_KEY.sub(figure, text))
+    keyed = _FINDING_KEY.sub(figure, text)
+    ids = _claim_id(places)
+    return keyed if ids is None else ids.sub(claim, keyed)
 
 
 def _findings(findings: Sequence[ReportFinding], places: Mapping[str, int], reader: _Reader) -> list[DocFinding]:

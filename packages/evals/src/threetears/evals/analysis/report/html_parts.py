@@ -337,9 +337,8 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
             pin = column.key in pinned
             tag, scope = ("th", ' scope="row"') if (block.name, column.key) in _ROW_HEADER_COLUMNS else ("td", "")
             # A cell holds a hyphenated word whole, as a pinned one does, so it wraps at its spaces alone; a prose cell
-            # (wrap) wraps as a paragraph does.
-            laid = held_whole(text) if pin or css != ' class="wrap"' else text
-            cells.append(f"<{tag}{scope}{anchor}{_pinned_class(css, cell.text, pin)}>{laid}</{tag}>")
+            # (wrap) wraps as a paragraph does, and a paragraph holds a model's name whole too.
+            cells.append(f"<{tag}{scope}{anchor}{_pinned_class(css, cell.text, pin)}>{held_whole(text)}</{tag}>")
         anchor = ""
         if block.name == "cases" and "case" in row:
             # prose-canary: allow — the cases table's "case N" cell, which code numbered, not anything a model wrote
@@ -578,8 +577,8 @@ def _pinned_text(markup: str, pinned: bool) -> str:
 
 def held_whole(markup: str) -> str:
     """Markup with each hyphenated word of its text set ``<span class="id">``, which the stylesheet keeps on one line:
-    ``deepseek-v4.1-flash`` is one word, never broken after a hyphen, in a pinned cell while its column can grow and in
-    a written page's running text (its headline, lede and cards) alike.
+    ``deepseek-v4.1-flash`` is one word, never broken after a hyphen, in a pinned cell while its column can grow, in a
+    prose cell and in a written page's running text (its headline, lede and cards) alike.
 
     Only text is read: a tag (a link's ``href`` holds a case id too) and a code span (an expression, which breaks
     anywhere instead) are left as they are. A word longer than :data:`_ONE_WORD_CHARS` is left free to wrap after its
@@ -887,14 +886,12 @@ _INTERVAL_CELL = re.compile(rf"{_INTERVAL_END} to {_INTERVAL_END}(?: [a-z%]+)?")
 
 def _value_cell(cell: str, pinned: bool) -> str:
     """One cell of a chart's table of values: a cell of words wrapping at a measure, an interval held on one line
-    (:func:`_held_figures`), any other holding its hyphenated words whole."""
+    (:func:`_held_figures`), every one holding its hyphenated words whole, as a paragraph does."""
     css = ' class="wrap"' if len(cell) >= _PROSE_CELL else ""
     if _INTERVAL_CELL.fullmatch(cell):
         css = ' class="interval"'
     text, css = _held_figures(escape(cell), css)
-    return (
-        f"<td{_pinned_class(css, cell, pinned)}>{held_whole(text) if pinned or len(cell) < _PROSE_CELL else text}</td>"
-    )
+    return f"<td{_pinned_class(css, cell, pinned)}>{held_whole(text)}</td>"
 
 
 def _column_class(block: TableBlock, key: str) -> str:
@@ -942,8 +939,8 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bo
         for at, header in enumerate(headers)
     )
     # A cell of words wraps at a measure, as a table block's does (:data:`_PROSE_CELL`), so a long label or reason never
-    # widens the table past what its frame can scroll to; the pinned first column breaks an id-like cell anywhere. Any
-    # other cell holds a hyphenated word whole, as a table block's does (``A · qwen3.8-flash``).
+    # widens the table past what its frame can scroll to; the pinned first column breaks an id-like cell anywhere. Every
+    # cell holds a hyphenated word whole, as a table block's does (``A · qwen3.8-flash``).
     body = "".join(
         "<tr>" + "".join(_value_cell(cell, at == 0) for at, cell in enumerate(row)) + "</tr>" for row in rows
     )

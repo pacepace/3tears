@@ -3931,7 +3931,8 @@ def _methods_table(
     rows.append(
         (
             "Evidence",
-            # The build as one token (``3tears-evals <version>,``), which a reader and the oracle read it by.
+            # The build as one token (``3tears-evals <version>,``), which a reader and the oracle read it by; an HTML
+            # page holds the package's hyphenated name whole in a span, as every prose cell holds such a name.
             f"3tears-evals {bundle.package_version or 'version not recorded'}, {len(bundle.run_ids)} runs; its JSON "
             "beside this page",
         )
