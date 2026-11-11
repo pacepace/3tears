@@ -27,11 +27,13 @@ from threetears.core.keyed import (
     KeyBatch,
     Sort,
     dialect_of,
+    group_hashes,
     read_changed,
     read_keyed,
     row_hash_selected,
     row_hash_sql,
 )
+from threetears.core.keyed import changed as changed_module
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
 from packages.core.tests.unit.test_keyed_changed import _grouped_same_results
@@ -291,3 +293,46 @@ async def test_the_rows_after_applying_a_grouped_read_are_a_full_read_s_on_the_d
         "PRIMARY KEY (tenant, grp, id))"
     )
     await assert_same_results(conn, **_grouped_same_results(await dialect_of(conn)))
+
+
+async def test_every_scope_s_group_hashes_in_one_statement_match_each_scope_s_own_phase_zero_on_the_database(
+    conn: asyncpg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if group_hashes on this database (one statement, paged by scope then group across a NULL group) answers
+    a scope's groups other than read_changed's own phase 0 for that scope: a state handed its slice would read an
+    unchanged group as moved or miss a moved one."""
+    dialect = await dialect_of(conn)
+    await conn.execute("CREATE TABLE scoped (state TEXT, county TEXT, id BIGINT, name TEXT, votes BIGINT)")
+    await conn.execute(
+        "INSERT INTO scoped SELECT s, CASE WHEN i % 4 = 0 THEN NULL ELSE 'c' || (i % 4) END, i, 'n' || i, i "
+        "FROM generate_series(0, 11) i, (VALUES ('OH'), ('PA'), ('WV')) v(s)"
+    )
+    hashed = (HashColumn("name"), HashColumn("votes", HashKind.INTEGER))
+    held: dict[tuple[Any, ...], str | None] = {
+        (row["state"], row["county"], row["id"]): row["h"]
+        for row in await conn.fetch(f"SELECT state, county, id, {row_hash_sql(hashed, dialect)} AS h FROM scoped AS t")
+    }
+    # two rows of two counties (a key holding a NULL county is no key a phase-2 read can bind)
+    await conn.execute("UPDATE scoped SET votes = -1 WHERE state = 'PA' AND id IN (5, 6)")
+    sliced = await group_hashes(
+        conn, "scoped", scope="state", scopes=["PA", "OH", "WV", "XX"], group="county", hash_columns=hashed
+    )
+    monkeypatch.setattr(changed_module, "_GROUP_PAGE", 2)
+    paged = await group_hashes(
+        conn, "scoped", scope="state", scopes=["PA", "OH", "WV", "XX"], group="county", hash_columns=hashed
+    )
+    assert paged == sliced and sliced["XX"] == {}
+    for state in ("PA", "OH", "WV"):
+        scope_held = {key: value for key, value in held.items() if key[0] == state}
+        options: dict[str, Any] = {
+            "key": ["state", "county", Sort("id", cast="bigint")],
+            "columns": ["state", "county", "id", "name", "votes"],
+            "held": scope_held,
+            "hash_columns": hashed,
+            "by": {"state": state},
+            "group": "county",
+        }
+        own = await read_changed(conn, "scoped", **options)
+        handed = await read_changed(conn, "scoped", groups=sliced[state], **options)
+        assert (handed.rows, handed.gone_keys, handed.changed_keys) == (own.rows, own.gone_keys, own.changed_keys)
+        assert sorted(row["id"] for row in handed.rows) == ([5, 6] if state == "PA" else [])

@@ -93,6 +93,10 @@ def _judged(code: str, schema: SchemaCatalog, name: str = "src/app.py::reader") 
         'read_changed(c, "results", key=["state", "geo", Sort("id", "bigint")], columns=cols, held=h, '
         'hash_columns=hc, by={"state": s})',
         'count_at_most(c, "results", by={"state": s}, at_most=3, order=["state", "geo", "id"])',
+        # many scopes' group hashes in one statement: the scopes' rows, bound by the key's leading column
+        'group_hashes(c, "results", scope="state", scopes=ss, group="geo", hash_columns=hc)',
+        'group_hashes(c, "results", scope=Sort("state"), scopes=ss, group="geo", hash_columns=hc, '
+        "where=[Fragment('t.\"geo\" = ANY($1)', (g,))])",
         # a delete of the rows a prefix names, through the C-ordered index its reader's purpose names
         'delete_keyed(c, "fence", prefix={"signal": p}, returning=("signal",))',
         'update_keyed(c, "fence", values={"run_id": r}, prefix={"signal": p})',
@@ -156,6 +160,8 @@ def test_a_keyed_count_is_a_keyed_count(schema: SchemaCatalog) -> None:
         ),
         # a drain ordered by no index: each page reads and sorts every row
         ('keyset_rows(c, "results", columns=cols, by={}, order=[Sort("kind"), Sort("id")], page=500)', "non-key-where"),
+        # group hashes scoped by a column no key leads with: every row is read to find the scopes'
+        ('group_hashes(c, "results", scope="kind", scopes=ss, group="geo", hash_columns=hc)', "non-key-where"),
         # a changed-rows read keyed by no key of its relation: its hash pages read and sort every row
         (
             'read_changed(c, "results", key=["kind", "id"], columns=cols, held=h, hash_columns=hc, by={})',
@@ -193,6 +199,8 @@ def test_a_helper_naming_no_key_is_a_whole_read(code: str, kind: str, schema: Sc
         ('delete_before("leases", collection=c, key=key, column="expires_at", before=t, page=5)', "key"),
         ('read_past_marks(c, "rel", columns=cols, marks=marks)', "marks"),
         ('read_changed(c, "results", key=key, columns=cols, held=h, hash_columns=hc, by={})', "order"),
+        ('group_hashes(c, "results", scope=column, scopes=ss, group="geo", hash_columns=hc)', "scope"),
+        ('group_hashes(c, "results", scope="state", group="geo", hash_columns=hc)', "scopes"),
         # a look with no bound is no bounded look
         ('any_rows(c, "results", cols)', "limit"),
     ],
