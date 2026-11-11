@@ -4,13 +4,15 @@ What a fake cannot prove, proved here with two ``NatsClient`` connections standi
 pod and a follower pod, each with its own registry and the real cache-invalidation listener, over
 the real epoch bucket:
 
-- a row broadcast the follower never received is caught by one catch-up pass;
-- a bucket the broker lost is caught by one pass, through the new incarnation the next write mints
-  -- a ``FakeKvBucket`` has no stream that can be deleted out from under it;
-- a transaction of many rows is one advance, and a follower that received every broadcast drops
+- a row broadcast the follower never received is caught by one catch-up pass, which applies that
+  epoch's change record and evicts only its row;
+- a bucket the broker lost leaves the follower behind -- serving what it holds, its mark unmoved --
+  through the new incarnation the next write mints; a ``FakeKvBucket`` has no stream that can be
+  deleted out from under it;
+- a transaction of many rows is one advance, and a follower that received every broadcast applies
   nothing;
-- the key watcher is pushed each advance by a real named consumer on the generation key, drops
-  nothing for a write whose broadcast arrived, and drops the table for one whose broadcast did not.
+- the key watcher is pushed each advance by a real named consumer on the generation key, applies
+  nothing for a write whose broadcast arrived, and evicts the row of one whose broadcast did not.
 
 Uses the session-scoped ``nats_container`` fixture; a checkout without docker skips cleanly.
 """
@@ -189,7 +191,7 @@ async def _pods(url: str) -> AsyncIterator[tuple[_Pod, _Pod, Callable[[], Any]]]
         try:
 
             async def lose_epoch_bucket() -> None:
-                await writer_nc.jetstream_context().delete_stream(f"KV_{namespace}-epochs")
+                await writer_nc.jetstream_context().delete_stream(f"KV_{namespace}-epoch-changes")
 
             yield writer, follower, lose_epoch_bucket
         finally:
@@ -216,11 +218,12 @@ async def test_a_broadcast_the_follower_never_received_is_caught_by_one_pass(nat
         await follower.tick()  # first sight: the mark is taken
         assert await _member_id(follower, "m1") == "ada"
 
-        # a heard write first, to show the pass is not simply dropping every time
+        # a heard write first, to show the pass does not apply records for what it heard
         await _save(writer, "m2", "grace")
         await _heard_everything(follower)
         assert await follower.tick() == 0
         assert follower.members.exists_in_cache_sync("m1")
+        assert await _member_id(follower, "m2") == "grace"
 
         # the follower's subscription is gone for exactly one write, and stays gone until the pass
         # has run: resubscribing sooner could still catch a publish the broker had not routed yet.
@@ -231,12 +234,13 @@ async def test_a_broadcast_the_follower_never_received_is_caught_by_one_pass(nat
         assert await follower.tick() == 1
 
         assert not follower.members.exists_in_cache_sync("m1")
+        assert follower.members.exists_in_cache_sync("m2"), "only the missed row is corrected"
         assert await _member_id(follower, "m1") == "edsger"
         await follower.listen()
         assert await follower.tick() == 0
 
 
-async def test_a_bucket_the_broker_lost_is_caught_by_one_pass(nats_container: str) -> None:
+async def test_a_bucket_the_broker_lost_leaves_the_follower_behind_and_serving(nats_container: str) -> None:
     async with _pods(nats_container) as (writer, follower, lose_epoch_bucket):
         await _save(writer, "m1", "ada")
         await follower.has_heard("m1")
@@ -252,12 +256,11 @@ async def test_a_bucket_the_broker_lost_is_caught_by_one_pass(nats_container: st
         await lose_epoch_bucket()
         await _save(writer, "m1", "edsger")
 
-        assert await follower.tick() == 1
+        assert await follower.tick() == 0
 
-        after = follower.registry.generation_marks.recorded(_TABLE)
-        assert after is not None
-        assert after.rpartition(":")[0] != before.rpartition(":")[0], "the new bucket minted a new incarnation"
-        assert await _member_id(follower, "m1") == "edsger"
+        assert follower.registry.behind_on(_TABLE)
+        assert follower.registry.generation_marks.recorded(_TABLE) == before
+        assert follower.members.exists_in_cache_sync("m1"), "behind is never a drop"
 
 
 async def test_a_transaction_is_one_advance_and_a_follower_that_heard_it_all_drops_nothing(
@@ -286,7 +289,7 @@ async def test_a_transaction_is_one_advance_and_a_follower_that_heard_it_all_dro
         assert follower.members.exists_in_cache_sync("kept")
 
 
-async def test_a_key_watcher_is_pushed_each_advance_and_drops_only_for_a_missed_broadcast(
+async def test_a_key_watcher_is_pushed_each_advance_and_applies_only_a_missed_broadcast(
     nats_container: str,
 ) -> None:
     async with _pods(nats_container) as (writer, follower, _):
@@ -303,7 +306,7 @@ async def test_a_key_watcher_is_pushed_each_advance_and_drops_only_for_a_missed_
         try:
             # the key's latest value is pushed first: this pod's first sight of the table
             await _until(lambda: marks.follows(_TABLE) and marks.recorded(_TABLE) is not None, "the first push")
-            assert emptied == ["ALL"]
+            assert emptied == ["ALL"], "a derived cache re-bases its own marks on the first sight"
             assert await _member_id(follower, "m1") == "ada"
 
             await _save(writer, "m2", "grace")
@@ -312,10 +315,15 @@ async def test_a_key_watcher_is_pushed_each_advance_and_drops_only_for_a_missed_
             await asyncio.sleep(0.5)
             assert emptied == ["ALL"], "a write whose broadcast arrived dropped the table"
             assert follower.members.exists_in_cache_sync("m1")
+            assert await _member_id(follower, "m2") == "grace"
 
             await follower.go_deaf()
             await _save(writer, "m1", "edsger")
-            await _until(lambda: len(emptied) == 2, "the watcher to drop the table for the missed broadcast")
+            await _until(
+                lambda: not follower.members.exists_in_cache_sync("m1"), "the watcher to apply the missed epoch"
+            )
+            assert emptied == ["ALL"], "a missed write emptied the derived cache"
+            assert follower.members.exists_in_cache_sync("m2")
             assert await _member_id(follower, "m1") == "edsger"
         finally:
             watcher.cancel()

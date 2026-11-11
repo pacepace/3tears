@@ -56,6 +56,13 @@ An intra-family API addition ships in a MINOR bump
      recorded: a name added and dropped between two releases needs no entry. 0.70.0 is the package's
      first release, so its section is `since = "v0.69.0"` (a release with no `packages/evals`, which needs
      no section of its own) and records no names.
+   - **`packages/evals/tests/test_judge_identity_pins.py`:** in the same PR, roll the released judge
+     table forward to the section's `since`: set `RELEASED_AT` to that tag (the previous release) and
+     copy `JUDGE_IDENTITIES` as that tag shipped them (`git show <tag>:packages/evals/tests/test_judge_identity_pins.py`)
+     into `RELEASED_JUDGE_IDENTITIES`. `test_the_released_pins_are_the_unreleased_sections_baseline`
+     fails while `RELEASED_AT` lags the section's `since`, and
+     `test_the_released_table_is_the_one_the_release_shipped` fails while the table differs from the
+     tag's.
 2. PR into `develop`.
 3. PR `develop` into `main`, with no version bump on that second PR.
 4. **The live Claude CLI batch runs in the release workflow.** `release.yml`'s `live-claude-cli` job
