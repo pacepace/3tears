@@ -368,6 +368,10 @@ class TestBuiltSchemaMatchesDeclarations:
         try:
             await _migrate(conn, fresh)
             await _migrate(conn, upgraded, target=34)
+            # the released v028 (before 0.95.0) also built these two; a schema it migrated holds them
+            await conn.execute(f'SET search_path TO "{upgraded}", public')
+            await conn.execute("CREATE INDEX IF NOT EXISTS ix_media_user_date ON media (user_id, date_created)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS ix_media_mime_type ON media (mime_type)")
             before = {name for _, name, _ in await _index_rows(conn, upgraded)}
             assert unread <= before, unread - before
             await _migrate(conn, upgraded)
