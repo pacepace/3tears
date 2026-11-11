@@ -86,6 +86,7 @@ from threetears.core.keyed.inline import InlineDuckDB, InlineTransaction, run_in
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
 from threetears.core.keyed.literal import literal_select
 from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_past_marks
+from threetears.core.keyed.options import with_options
 from threetears.core.keyed.point import read_by, read_row, read_value
 from threetears.core.keyed.page import KeyPage, Sort, copy_keyed, exists_keyed, keyset_cursor, keyset_page, keyset_rows
 from threetears.core.keyed.rows import (
@@ -228,5 +229,6 @@ __all__ = [
     "smallest",
     "union",
     "windowed",
+    "with_options",
     "xor_hash",
 ]

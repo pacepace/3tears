@@ -65,6 +65,42 @@ def test_the_source_check_refuses_any_other_call(tmp_path: Path, call: str) -> N
         assert_source_says(root, _ENTRY)
 
 
+def _module_with_columns(tmp_path: Path, constant: str, call_columns: str) -> Path:
+    call = (
+        f"read_row(conn, 'agents', by={{'id': self.key(agent_id), 'is_deleted': False}}, columns={call_columns},"
+        " records=True)"
+    )
+    (tmp_path / "m.py").write_text(
+        f"{constant}\n\nclass Reader:\n    async def one(self, conn, agent_id):\n        return await {call}\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+@pytest.mark.parametrize("constant", ["_COLUMNS = ('id', 'name')", "_COLUMNS: tuple[str, ...] = ('id', 'name')"])
+def test_the_source_check_reads_a_module_level_column_tuple(tmp_path: Path, constant: str) -> None:
+    """Flips if a call naming its columns by a module-level tuple of the recorded columns is not found."""
+    assert_source_says(_module_with_columns(tmp_path, constant, "_COLUMNS"), _ENTRY)
+
+
+@pytest.mark.parametrize(
+    ("constant", "call_columns"),
+    [
+        ("_COLUMNS = ('id',)", "_COLUMNS"),
+        ("_COLUMNS = ('name', 'id')", "_COLUMNS"),
+        ("_COLUMNS = tuple(c for c in ('id', 'name'))", "_COLUMNS"),
+        ("_COLUMNS = ('id', 'name')", "_OTHER"),
+        ("_NAME = 'name'", "('id', _NAME)"),
+    ],
+)
+def test_the_source_check_refuses_columns_it_cannot_read_as_recorded(
+    tmp_path: Path, constant: str, call_columns: str
+) -> None:
+    """Flips if columns named by a constant that differs, is not a literal tuple, or is not there pass the check."""
+    with pytest.raises(AssertionError, match="as the manifest records it"):
+        assert_source_says(_module_with_columns(tmp_path, constant, call_columns), _ENTRY)
+
+
 def _shape() -> _Table:
     def column(name: str, kind: str, category: str, *, nullable: bool = True) -> _Column:
         return _Column(name, kind, category, "", nullable, False, False)

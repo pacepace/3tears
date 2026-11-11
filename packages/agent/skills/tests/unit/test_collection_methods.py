@@ -274,6 +274,11 @@ class _RecordingPool:
         """Record a single-row read; the row is absent."""
         self.calls.append((sql, params))
 
+    async def fetch(self, sql: str, *params: Any) -> list[Any]:
+        """Record a read through a keyed helper; no row is there."""
+        self.calls.append((sql, params))
+        return []
+
 
 def _bare_skill_collection(
     pool: _RecordingPool,
@@ -448,5 +453,9 @@ class TestSkillSaveShape:
         coll, _ = _bare_skill_collection(pool)
         assert await coll.fetch_from_store((_new_uuid(), _new_uuid())) is None
         [(read_sql, _params)] = pool.calls
-        assert read_sql.startswith(f"SELECT {', '.join(written.columns)} FROM agent_skills")
+        read = re.match(r'SELECT (?P<columns>.+?) FROM "agent_skills" ', read_sql)
+        assert read is not None, read_sql
+        assert [column.strip().removeprefix("t.").strip('"') for column in read["columns"].split(",")] == list(
+            written.columns
+        )
         assert {"tool", "arguments"} <= set(written.columns)

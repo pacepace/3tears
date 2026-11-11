@@ -33,7 +33,7 @@ from uuid import UUID, uuid7
 
 from threetears.agent.acl import AclCache
 from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
-from threetears.core.keyed import read_row
+from threetears.core.keyed import read_row, with_options
 from threetears.core.namespaces import PLATFORM_RBAC_READ_NAMESPACE
 
 __all__ = [
@@ -747,11 +747,19 @@ _SELECT_LATEST_VERSION_ROW_SQL = (
     "ORDER BY version DESC LIMIT 1"
 )
 
-_SELECT_VERSION_BY_NUMBER_SQL = (
-    "SELECT version_id, workspace_id, relative_path, version, content, sha256, "
-    "action, label, actor_id, correlation_id, date_created "
-    "FROM workspace_file_versions "
-    "WHERE workspace_id = $1 AND relative_path = $2 AND version = $3"
+#: the columns every journal-row read selects
+_VERSION_ROW_COLUMNS = (
+    "version_id",
+    "workspace_id",
+    "relative_path",
+    "version",
+    "content",
+    "sha256",
+    "action",
+    "label",
+    "actor_id",
+    "correlation_id",
+    "date_created",
 )
 
 _SELECT_CHECKPOINT_ROW_SQL = (
@@ -828,27 +836,19 @@ async def resolve_ref(
     kwargs: dict[str, Any] = {} if inside_tx or namespace_name is None else {"namespace": namespace_name}
     result: dict[str, Any] | None
     row: Any
-    if isinstance(ref, int):
-        row = await conn.fetchrow(
-            _SELECT_VERSION_BY_NUMBER_SQL,
-            workspace_id,
-            relative_path,
-            ref,
-            **kwargs,
+    if isinstance(ref, int) or ref.isdigit():
+        row = await read_row(
+            with_options(conn, **kwargs),
+            "workspace_file_versions",
+            by={"workspace_id": workspace_id, "relative_path": relative_path, "version": int(ref)},
+            columns=_VERSION_ROW_COLUMNS,
+            records=True,
         )
     elif ref == "head":
         row = await conn.fetchrow(
             _SELECT_LATEST_VERSION_ROW_SQL,
             workspace_id,
             relative_path,
-            **kwargs,
-        )
-    elif ref.isdigit():
-        row = await conn.fetchrow(
-            _SELECT_VERSION_BY_NUMBER_SQL,
-            workspace_id,
-            relative_path,
-            int(ref),
             **kwargs,
         )
     else:

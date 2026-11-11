@@ -137,6 +137,12 @@ class _FakePool(FakeAsyncpgPool):
             selector = args[2]
         return self.script.get((relative_path, selector))
 
+    async def fetch(self, query: str, *args: Any, namespace: Any = None) -> list[dict[str, Any]]:
+        """the exact-version read is a keyed point read (``threetears.core.keyed.read_row``), sent through ``fetch``:
+        answered as :meth:`fetchrow` answers the same statement."""
+        row = await self.fetchrow(query, *args, namespace=namespace)
+        return [] if row is None else [row]
+
 
 class _FakeContext(FakeWorkspaceContext):
     pass

@@ -184,8 +184,8 @@ class TestFetchEmbeddings:
         out = await coll.fetch_embeddings([a, b], customer_scope=uuid7())
         assert out == {a: [1.0, 2.0]}
         assert coll.l3_pool.sql is not None
-        assert "ANY($1)" in coll.l3_pool.sql
-        assert f"FROM {table}" in coll.l3_pool.sql
+        assert 't."id" = ANY($1' in coll.l3_pool.sql
+        assert f'FROM "{table}"' in coll.l3_pool.sql
 
     async def test_empty_ids_issues_no_query(self) -> None:
         coll = _concepts_over([])

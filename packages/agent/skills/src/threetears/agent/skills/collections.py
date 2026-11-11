@@ -44,6 +44,7 @@ from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.backends.schema_sql import decode_jsonb, encode_jsonb
 from threetears.core.collections.base import BaseCollection
 from threetears.core.data.gin import gin_filter
+from threetears.core.keyed import read_row
 from threetears.core.serialization import (
     deserialize_from_json,
     serialize_to_json,
@@ -375,15 +376,7 @@ _AGENT_SKILL_INVOCATIONS_UPSERT_SQL = _build_upsert_sql(
 )
 
 
-_AGENT_SKILLS_FETCH_SQL = f"SELECT {_SKILL_SELECT_LIST} FROM agent_skills WHERE agent_id = $1 AND skill_id = $2"
-
-
 _AGENT_SKILLS_DELETE_SQL = "DELETE FROM agent_skills WHERE agent_id = $1 AND skill_id = $2"
-
-
-_AGENT_SKILL_INVOCATIONS_FETCH_SQL = (
-    f"SELECT {_INVOCATION_SELECT_LIST} FROM agent_skill_invocations WHERE agent_id = $1 AND invocation_id = $2"
-)
 
 
 _AGENT_SKILL_INVOCATIONS_DELETE_SQL = "DELETE FROM agent_skill_invocations WHERE agent_id = $1 AND invocation_id = $2"
@@ -436,10 +429,12 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         if self.l3_pool is None:
             return None
         agent_id, skill_id = self.normalize_pk(entity_id)
-        row = await self.l3_pool.fetchrow(
-            _AGENT_SKILLS_FETCH_SQL,
-            agent_id,
-            skill_id,
+        row = await read_row(
+            self.l3_pool,
+            "agent_skills",
+            by={"agent_id": agent_id, "skill_id": skill_id},
+            columns=_SKILL_INSERT_COLUMNS,
+            records=True,
         )
         if row is None:
             return None
@@ -558,11 +553,12 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         # addressable. L1 row cache serves per-(agent_id, skill_id)
         # lookups only; keeping the query on the Collection preserves
         # the single entry point.
-        row = await self.l3_pool.fetchrow(
-            f"SELECT {_SKILL_SELECT_LIST} FROM agent_skills WHERE agent_id = $1 AND user_id = $2 AND name = $3",
-            agent_id,
-            user_id,
-            name,
+        row = await read_row(
+            self.l3_pool,
+            "agent_skills",
+            by={"agent_id": agent_id, "user_id": user_id, "name": name},
+            columns=_SKILL_INSERT_COLUMNS,
+            records=True,
         )
         if row is None:
             return None
@@ -878,10 +874,12 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
         if self.l3_pool is None:
             return None
         agent_id, invocation_id = self.normalize_pk(entity_id)
-        row = await self.l3_pool.fetchrow(
-            _AGENT_SKILL_INVOCATIONS_FETCH_SQL,
-            agent_id,
-            invocation_id,
+        row = await read_row(
+            self.l3_pool,
+            "agent_skill_invocations",
+            by={"agent_id": agent_id, "invocation_id": invocation_id},
+            columns=_INVOCATION_INSERT_COLUMNS,
+            records=True,
         )
         if row is None:
             return None

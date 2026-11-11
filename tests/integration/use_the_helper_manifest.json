@@ -746,5 +746,206 @@
    }
   ],
   "table": "workspace_files"
+ },
+ {
+  "args": [
+   "agent_id",
+   "skill_id"
+  ],
+  "columns": [
+   "agent_id",
+   "skill_id",
+   "user_id",
+   "name",
+   "summary",
+   "body",
+   "tool",
+   "arguments",
+   "prompt_mode",
+   "tool_additions",
+   "tool_restrictions",
+   "trigger_keywords",
+   "tags",
+   "source",
+   "enabled",
+   "use_count",
+   "last_used_at",
+   "success_count",
+   "failure_count",
+   "last_failure_at",
+   "date_created",
+   "date_updated"
+  ],
+  "function": "AgentSkillCollection.fetch_from_store",
+  "helper": "read_row",
+  "line": 432,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'agent_skills', by={'agent_id': agent_id, 'skill_id': skill_id}, columns=_SKILL_INSERT_COLUMNS, records=True)",
+  "old_sql": "SELECT agent_id, skill_id, user_id, name, summary, body, tool, arguments, prompt_mode, tool_additions, tool_restrictions, trigger_keywords, tags, source, enabled, use_count, last_used_at, success_count, failure_count, last_failure_at, date_created, date_updated FROM agent_skills WHERE agent_id = $1 AND skill_id = $2",
+  "path": "packages/agent/skills/src/threetears/agent/skills/collections.py",
+  "pins": [
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "skill_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "table": "agent_skills"
+ },
+ {
+  "args": [
+   "agent_id",
+   "user_id",
+   "name"
+  ],
+  "columns": [
+   "agent_id",
+   "skill_id",
+   "user_id",
+   "name",
+   "summary",
+   "body",
+   "tool",
+   "arguments",
+   "prompt_mode",
+   "tool_additions",
+   "tool_restrictions",
+   "trigger_keywords",
+   "tags",
+   "source",
+   "enabled",
+   "use_count",
+   "last_used_at",
+   "success_count",
+   "failure_count",
+   "last_failure_at",
+   "date_created",
+   "date_updated"
+  ],
+  "function": "AgentSkillCollection.find_by_name_for_user",
+  "helper": "read_row",
+  "line": 556,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'agent_skills', by={'agent_id': agent_id, 'user_id': user_id, 'name': name}, columns=_SKILL_INSERT_COLUMNS, records=True)",
+  "old_sql": "SELECT agent_id, skill_id, user_id, name, summary, body, tool, arguments, prompt_mode, tool_additions, tool_restrictions, trigger_keywords, tags, source, enabled, use_count, last_used_at, success_count, failure_count, last_failure_at, date_created, date_updated FROM agent_skills WHERE agent_id = $1 AND user_id = $2 AND name = $3",
+  "path": "packages/agent/skills/src/threetears/agent/skills/collections.py",
+  "pins": [
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "user_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "column": "name",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   }
+  ],
+  "table": "agent_skills"
+ },
+ {
+  "args": [
+   "agent_id",
+   "invocation_id"
+  ],
+  "columns": [
+   "agent_id",
+   "invocation_id",
+   "skill_id",
+   "user_id",
+   "conversation_id",
+   "message_id",
+   "invocation_source",
+   "invoked_at",
+   "outcome",
+   "outcome_source",
+   "notes",
+   "outcome_notes"
+  ],
+  "function": "AgentSkillInvocationCollection.fetch_from_store",
+  "helper": "read_row",
+  "line": 877,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'agent_skill_invocations', by={'agent_id': agent_id, 'invocation_id': invocation_id}, columns=_INVOCATION_INSERT_COLUMNS, records=True)",
+  "old_sql": "SELECT agent_id, invocation_id, skill_id, user_id, conversation_id, message_id, invocation_source, invoked_at, outcome, outcome_source, notes, outcome_notes FROM agent_skill_invocations WHERE agent_id = $1 AND invocation_id = $2",
+  "path": "packages/agent/skills/src/threetears/agent/skills/collections.py",
+  "pins": [
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "invocation_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "table": "agent_skill_invocations"
+ },
+ {
+  "args": [
+   "workspace_id",
+   "relative_path",
+   "int(ref)"
+  ],
+  "columns": [
+   "version_id",
+   "workspace_id",
+   "relative_path",
+   "version",
+   "content",
+   "sha256",
+   "action",
+   "label",
+   "actor_id",
+   "correlation_id",
+   "date_created"
+  ],
+  "function": "resolve_ref",
+  "helper": "read_row",
+  "line": 840,
+  "method": "fetchrow",
+  "new_call": "read_row(with_options(conn, **kwargs), 'workspace_file_versions', by={'workspace_id': workspace_id, 'relative_path': relative_path, 'version': int(ref)}, columns=_VERSION_ROW_COLUMNS, records=True)",
+  "old_sql": "SELECT version_id, workspace_id, relative_path, version, content, sha256, action, label, actor_id, correlation_id, date_created FROM workspace_file_versions WHERE workspace_id = $1 AND relative_path = $2 AND version = $3",
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/tools/helpers.py",
+  "pins": [
+   {
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "relative_path",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "column": "version",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   }
+  ],
+  "table": "workspace_file_versions"
  }
 ]

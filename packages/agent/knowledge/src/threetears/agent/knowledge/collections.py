@@ -29,6 +29,7 @@ from uuid import UUID
 
 from threetears.agent.acl import ACCESS_TABLES, three_scope_visibility_clause
 from threetears.core.collections.scan_cache import ScanCacheKey
+from threetears.core.keyed import KeyBatch, Selected, read_keyed, with_options
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     DATETIMETZ_TYPE,
@@ -143,11 +144,8 @@ def _parse_vector_text(value: Any) -> list[float] | None:
     return result
 
 
-#: each table's vectors by primary key, one statement per table so each is judged against its own key
-_EMBEDDINGS_BY_ID_SQL: dict[str, str] = {
-    "playbook_entries": "SELECT id, embedding::text AS embedding FROM playbook_entries WHERE id = ANY($1)",
-    "concepts": "SELECT id, embedding::text AS embedding FROM concepts WHERE id = ANY($1)",
-}
+#: what the vector read selects: the id, and the vector as its bracketed text (``embedding::text``)
+_EMBEDDING_COLUMNS: tuple[str | Selected, ...] = ("id", Selected("t.embedding::text", "embedding"))
 
 
 async def _fetch_embeddings(
@@ -161,9 +159,9 @@ async def _fetch_embeddings(
 
     The SHARED implementation behind
     :meth:`PlaybookEntryCollection.fetch_embeddings` /
-    :meth:`ConceptCollection.fetch_embeddings`: a single
-    ``SELECT id, embedding::text FROM <table> WHERE id = ANY($1)`` over the
-    rbac-read proxy pool. The ``::text`` cast returns the bracketed textual vector
+    :meth:`ConceptCollection.fetch_embeddings`: ``id, embedding::text`` of
+    the ids, a keyed read by primary key (:func:`threetears.core.keyed.read_keyed`,
+    the customer scope on each statement) over the rbac-read proxy pool. The ``::text`` cast returns the bracketed textual vector
     parsed back to ``list[float]`` by :func:`_parse_vector_text`; a NULL embedding
     casts to NULL, parses to ``None``, and is filtered out (the caller falls back
     to stable-order for it). The id column arrives as a STRING over the NATS proxy
@@ -195,10 +193,11 @@ async def _fetch_embeddings(
     """
     result: dict[UUID, list[float]] = {}
     if l3_pool is not None and ids:
-        rows = await l3_pool.fetch(
-            _EMBEDDINGS_BY_ID_SQL[table_name],
-            ids,
-            customer_scope=customer_scope,
+        rows = await read_keyed(
+            with_options(l3_pool, customer_scope=customer_scope),
+            table_name,
+            keys=KeyBatch(("id",), [(row_id,) for row_id in ids], ("uuid",)),
+            columns=_EMBEDDING_COLUMNS,
         )
         for row in rows:
             data = dict(row)

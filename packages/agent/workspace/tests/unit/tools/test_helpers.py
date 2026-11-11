@@ -521,7 +521,7 @@ async def test_resolve_ref_integer_selects_by_exact_version() -> None:
     result = await resolve_ref(conn, workspace_id, "a.txt", 3)
     assert result == row
     sql, args = conn.calls[0]
-    assert "AND version = $3" in sql
+    assert 't."version" = $3' in sql
     assert args == (workspace_id, "a.txt", 3)
 
 
@@ -534,7 +534,7 @@ async def test_resolve_ref_digit_string_treated_as_int() -> None:
     result = await resolve_ref(conn, workspace_id, "a.txt", "7")
     assert result == row
     sql, args = conn.calls[0]
-    assert "AND version = $3" in sql
+    assert 't."version" = $3' in sql
     assert args == (workspace_id, "a.txt", 7)
 
 

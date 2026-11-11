@@ -188,6 +188,22 @@ class _FakeStore:
             raise NotImplementedError(f"_FakeStore does not recognize SQL: {q[:120]!r}")
         return "OK 0 1"
 
+    async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        """
+        answer a keyed helper's read (``threetears.core.keyed.read_row``) as :meth:`fetchrow` answers the statement it
+        replaced: the helper's ``t."col"`` / ``"table" AS t`` read as ``col`` / ``table``.
+
+        :param query: the helper's SQL text
+        :ptype query: str
+        :param args: bound parameters
+        :ptype args: Any
+        :return: the matching row, or no rows
+        :rtype: list[dict[str, Any]]
+        """
+        plain = re.sub(r'"(\w+)" AS t\b', r"\1", re.sub(r'\bt\."(\w+)"', r"\1", query))
+        row = await self.fetchrow(plain, *args)
+        return [] if row is None else [row]
+
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         """
         route SELECT statements to the right lookup.
@@ -400,6 +416,9 @@ class _FakeConnection(FakeAsyncpgConnection):
 
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         return await self.store.fetchrow(query, *args)
+
+    async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        return await self.store.fetch(query, *args)
 
 
 @dataclass

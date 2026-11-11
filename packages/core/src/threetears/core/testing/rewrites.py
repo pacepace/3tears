@@ -385,7 +385,34 @@ def _same_expression(written: ast.expr, recorded: str) -> bool:
     return ast.dump(written) == ast.dump(ast.parse(recorded.strip(), mode="eval").body)
 
 
-def _says(call: ast.Call, entry: Mapping[str, Any]) -> bool:
+def _module_columns(tree: ast.Module, name: str) -> list[Any] | None:
+    """the elements of the module-level tuple or list of literals ``name`` is assigned, or None when it is not one."""
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign):
+            targets, value = statement.targets, statement.value
+        elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+            targets, value = [statement.target], statement.value
+        else:
+            continue
+        if any(isinstance(target, ast.Name) and target.id == name for target in targets):
+            if isinstance(value, ast.Tuple | ast.List) and all(isinstance(e, ast.Constant) for e in value.elts):
+                return [element.value for element in value.elts if isinstance(element, ast.Constant)]
+            return None
+    return None
+
+
+def _written_columns(columns: ast.expr | None, tree: ast.Module) -> list[Any] | None:
+    """the columns a call names: a tuple or list of literals written in the call, or a module-level name assigned one."""
+    if isinstance(columns, ast.Tuple | ast.List):
+        if not all(isinstance(element, ast.Constant) for element in columns.elts):
+            return None
+        return [element.value for element in columns.elts if isinstance(element, ast.Constant)]
+    if isinstance(columns, ast.Name):
+        return _module_columns(tree, columns.id)
+    return None
+
+
+def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
     keywords = {keyword.arg: keyword.value for keyword in call.keywords}
     if len(call.args) != 2 or not (isinstance(call.args[1], ast.Constant) and call.args[1].value == entry["table"]):
         return False
@@ -411,10 +438,8 @@ def _says(call: ast.Call, entry: Mapping[str, Any]) -> bool:
     columns = keywords.get("columns")
     if entry["columns"] is None:
         return columns is None
-    return (
-        isinstance(columns, ast.Tuple | ast.List)
-        and [element.value for element in columns.elts if isinstance(element, ast.Constant)] == entry["columns"]
-    )
+    written: list[Any] | None = _written_columns(columns, tree)
+    return written is not None and written == list(entry["columns"])
 
 
 def assert_source_says(repo_root: Path, entry: Mapping[str, Any]) -> None:
@@ -436,7 +461,7 @@ def assert_source_says(repo_root: Path, entry: Mapping[str, Any]) -> None:
         for node in ast.walk(function)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == entry["helper"]
     ]
-    assert any(_says(call, entry) for call in calls), (
+    assert any(_says(call, entry, tree) for call in calls), (
         f"{entry['path']}::{entry['function']}: no {entry['helper']} call of {entry['table']} as the manifest records it"
         f" (by {[pin['column'] for pin in entry['pins']]}, args {entry['args']})"
     )
