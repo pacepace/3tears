@@ -25,7 +25,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Final, Literal
 
-from threetears.enforcement.no_whole_reads.helpers import STEP_CALLS, STEP_RELATIONS
+from threetears.enforcement.no_whole_reads.helpers import STEP_CALLS, STEP_RELATIONS, STEP_TARGETS
 
 __all__ = ["CLEAN", "HANDED", "Callee", "Kind", "RelationFlow", "step_relation_arguments"]
 
@@ -47,6 +47,8 @@ _RELATION_STEPS: Final = STEP_CALLS - {
     "read_step",
     "read_step_arrow",
     "count_step",
+    "any_step",
+    "materialize",
     "delete_matching",
     "first_difference",
 }
@@ -139,7 +141,7 @@ def step_relation_arguments(call: ast.Call) -> Iterator[tuple[ast.expr, Mode]]:
                 yield argument.value, "each"
             else:
                 yield argument, "rel"
-    for position, keyword in STEP_RELATIONS.get(name, ()):
+    for position, keyword in (*STEP_RELATIONS.get(name, ()), *STEP_TARGETS.get(name, ())):
         found = _argument(call, keyword, position)
         if found is not None:
             yield found, "rel"

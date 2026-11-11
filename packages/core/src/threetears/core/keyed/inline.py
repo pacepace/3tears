@@ -37,6 +37,9 @@ def _rows(result: Any) -> list[dict[str, Any]]:
 def _status(result: Any, query: str) -> str:
     verb = query.lstrip().split(None, 1)[0].upper()
     answered = result.fetchall() if result.description else []
+    if verb == "CREATE" and answered:
+        # ``CREATE TABLE ... AS`` answers its rows' count, as asyncpg spells it
+        return f"SELECT {int(answered[0][0])}"
     touched = int(answered[0][0]) if answered and verb in {"INSERT", "UPDATE", "DELETE"} else 0
     return f"INSERT 0 {touched}" if verb == "INSERT" else f"{verb} {touched}"
 

@@ -31,9 +31,10 @@ as keyed by construction, judged by the key it names):
   :func:`update_before`; a cache's trim to its cap by its key's order (SQLite's rowid): :func:`delete_oldest`;
 - **a relational step over a change relation** (the rows a change produced, the held rows it touches), each shape once:
   :func:`semi`, :func:`anti`, :func:`distinct`, :func:`grouped`, :func:`latest_per_key`, :func:`windowed`,
-  :func:`except_rows`, :func:`union`, :func:`scan`, run by :func:`read_step` / :func:`read_step_arrow` /
-  :func:`count_step`, a delete by its keys :func:`delete_matching`, the first row two hold otherwise
-  :func:`first_difference` (:mod:`threetears.core.keyed.steps`; :func:`change_relation` declares the relation);
+  :func:`except_rows`, :func:`union`, :func:`joined`, :func:`scan`, run by :func:`read_step` /
+  :func:`read_step_arrow` / :func:`count_step` / :func:`any_step`, a table of its rows :func:`materialize`, a delete
+  by its keys :func:`delete_matching`, the first row two hold otherwise :func:`first_difference`
+  (:mod:`threetears.core.keyed.steps`; :func:`change_relation` declares the relation);
 - **a cache derived from rows**, kept by key: :class:`threetears.epoch.RowFollower`;
 - **the whole reads a component may still make**, named and counted: :class:`WholeReads`.
 
@@ -105,6 +106,7 @@ from threetears.core.keyed.steps import (
     Match,
     Step,
     anti,
+    any_step,
     change_relation,
     count_step,
     delete_matching,
@@ -112,8 +114,10 @@ from threetears.core.keyed.steps import (
     except_rows,
     first_difference,
     grouped,
+    joined,
     largest,
     latest_per_key,
+    materialize,
     read_step,
     read_step_arrow,
     row_count,
@@ -212,6 +216,7 @@ __all__ = [
     "Match",
     "Step",
     "anti",
+    "any_step",
     "change_relation",
     "count_step",
     "delete_matching",
@@ -219,8 +224,10 @@ __all__ = [
     "except_rows",
     "first_difference",
     "grouped",
+    "joined",
     "largest",
     "latest_per_key",
+    "materialize",
     "read_step",
     "read_step_arrow",
     "row_count",

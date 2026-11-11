@@ -3146,3 +3146,61 @@ def test_a_public_forwarder_of_another_module_is_judged_at_each_call_where_the_r
     assert {"over_the_table", "evicts_the_table"} <= functions, found
     library = {function for function, _ in _symbols(_config(tmp_path, modules))}
     assert {"annotated_step", "runs_step", "Thinning.kept_runs_step", "Eviction.let_go"} <= library, library
+
+
+_NEW_STEPS = """
+    from threetears.core import keyed
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import InlineDuckDB, run_inline
+
+    RESULTS = TableSchema(name="results", primary_key=("state", "run_id"), columns=[])
+    _ROWS = keyed.change_relation("_rows")
+    _ROUTES = keyed.change_relation("_routes")
+    _STAGE = keyed.change_relation("__stage__results")
+
+
+    def over_the_change(conn):
+        db = InlineDuckDB(conn)
+        on = [keyed.Match("state")]
+        fresh = keyed.joined(_ROWS, _ROUTES, on=on, columns=["state", keyed.Selected("k.part", "part")], left=True)
+        run_inline(keyed.read_step_arrow(db, fresh, order=[keyed.Sort("part")], limit=1))
+        run_inline(keyed.materialize(db, _STAGE, keyed.anti(_ROWS, _ROUTES, on=on), temp=True))
+        found = run_inline(keyed.first_difference(db, _ROWS, _ROUTES, on=on, compare=[("v", "v")], order=["state"],
+                                                  where=[keyed.Fragment("t.v IS NULL")]))
+        return run_inline(keyed.any_step(db, keyed.semi(_ROWS, _ROUTES, on=on))), found
+
+
+    def joins_the_table(conn):
+        on = [keyed.Match("state")]
+        return run_inline(keyed.read_step(InlineDuckDB(conn), keyed.joined(_ROWS, "results", on=on, columns=["state"])))
+
+
+    def any_result(conn):
+        return run_inline(keyed.any_step(InlineDuckDB(conn), "results"))
+
+
+    def first_of_the_table(conn):
+        return run_inline(keyed.read_step(InlineDuckDB(conn), "results", limit=1))
+
+
+    def materializes_the_table(conn):
+        return run_inline(keyed.materialize(InlineDuckDB(conn), "_copy", "results"))
+
+
+    def overwrites_the_table(conn):
+        return run_inline(keyed.materialize(InlineDuckDB(conn), "results", _ROWS))
+"""
+
+
+def test_a_join_an_any_a_limited_read_a_table_made_and_a_bounded_difference_are_judged_by_their_steps(
+    tmp_path: Path,
+) -> None:
+    """Flips if ``joined``, ``any_step``, ``read_step(limit=)``, ``materialize`` or ``first_difference(where=)`` over
+    change relations into a stage is flagged; or if one reading a table whole (a join's other side, any row of it, its
+    first row, a table made of it) or ``materialize`` replacing a data table passes."""
+    found = _symbols(_config(tmp_path, {"steps.py": _NEW_STEPS}, transient_relations=r"^_copy$"))
+    functions = {function for function, _ in found}
+    assert "over_the_change" not in functions, found
+    for whole in ("joins_the_table", "any_result", "first_of_the_table", "materializes_the_table"):
+        assert whole in functions, (whole, found)
+    assert any(f == "overwrites_the_table" and s.startswith("whole-delete") for f, s in found), found

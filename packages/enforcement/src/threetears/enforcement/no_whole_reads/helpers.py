@@ -50,6 +50,7 @@ __all__ = [
     "START_KEYWORDS",
     "STEP_CALLS",
     "STEP_RELATIONS",
+    "STEP_TARGETS",
     "UNSEEN",
     "HelperStatement",
     "helper_statements",
@@ -109,6 +110,9 @@ STEP_CALLS: Final[frozenset[str]] = frozenset(
         "count_step",
         "delete_matching",
         "first_difference",
+        "joined",
+        "any_step",
+        "materialize",
     }
 )
 
@@ -127,7 +131,14 @@ STEP_RELATIONS: Final[Mapping[str, tuple[tuple[int | None, str], ...]]] = {
     "count_step": ((1, "step"),),
     "delete_matching": ((2, "keys"),),
     "first_difference": ((1, "rel"), (2, "other")),
+    "joined": ((0, "rel"), (1, "other")),
+    "any_step": ((1, "step"),),
+    "materialize": ((2, "step"),),
 }
+
+#: where a step names the table it writes whole (``materialize``'s, replaced by the step's rows): a change set's
+#: stage passes, a data table is the whole write it is
+STEP_TARGETS: Final[Mapping[str, tuple[tuple[int | None, str], ...]]] = {"materialize": ((1, "table"),)}
 
 #: builders of a visibility clause reviewed once where it is written: a keyed predicate wherever it is placed
 KEYED_FRAGMENT_BUILDERS: Final[frozenset[str]] = frozenset(
@@ -683,6 +694,12 @@ def _step(call: ast.Call) -> list[str]:
             statements += _step_relation(node, f"rels[{index}]")
     for position, keyword in STEP_RELATIONS.get(helper, ()):
         statements += _step_relation(_argument(call, keyword, position), keyword)
+    for position, keyword in STEP_TARGETS.get(helper, ()):
+        target = _argument(call, keyword, position)
+        if isinstance(target, ast.Call) and _name(target) == "change_relation":
+            target = _argument(target, "name", 0)
+        written, _ = _relation(target, keyword)
+        statements.append(f"DELETE FROM {written}")
     if helper == "delete_matching":
         table, _ = _relation(_argument(call, "table", 1), "table")
         pinned = [

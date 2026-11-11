@@ -10,10 +10,12 @@ parameters), so a load names the step rather than writing its SQL again:
 - a projection, its distinct rows, a grouped aggregate, the newest row of each key (or every row tied newest): :func:`scan`,
   :func:`distinct`, :func:`grouped` (:func:`largest`, :func:`smallest`, :func:`row_count`, :func:`xor_hash`),
   :func:`latest_per_key`; rows kept by a window's value (a tier's rank): :func:`windowed`;
-- set operations: :func:`except_rows`, :func:`union`;
-- run: :func:`read_step` (rows), :func:`read_step_arrow` (one Arrow table), :func:`count_step`; a delete of a table's
-  rows a change relation's keys name: :func:`delete_matching`; the first row two relations hold differently:
-  :func:`first_difference`.
+- set operations: :func:`except_rows`, :func:`union`; each row of one beside the rows of another it matches:
+  :func:`joined` (a ``JOIN``, or a ``LEFT JOIN``);
+- run: :func:`read_step` (rows), :func:`read_step_arrow` (one Arrow table), each up to a ``limit`` when asked,
+  :func:`count_step`, :func:`any_step` (whether it answers any row); a table of a step's rows: :func:`materialize`; a
+  delete of a table's rows a change relation's keys name: :func:`delete_matching`; the first row two relations hold
+  differently: :func:`first_difference`.
 
 A step reads a relation by its name (a change relation's, declared by :func:`change_relation`), a :class:`Derived`
 select, or another step, which it nests with its parameters renumbered, so steps compose: ``distinct(semi(held,
@@ -52,6 +54,7 @@ __all__ = [
     "Match",
     "Step",
     "anti",
+    "any_step",
     "change_relation",
     "count_step",
     "delete_matching",
@@ -59,8 +62,10 @@ __all__ = [
     "except_rows",
     "first_difference",
     "grouped",
+    "joined",
     "largest",
     "latest_per_key",
+    "materialize",
     "read_step",
     "read_step_arrow",
     "row_count",
@@ -271,6 +276,54 @@ def anti(
     :raises ValueError: when nothing is matched on
     """
     return _matched(rel, keys, on, present=False, columns=columns, where=where, also=also)
+
+
+def joined(
+    rel: Rel,
+    other: Rel,
+    *,
+    on: Sequence[Match],
+    columns: Sequence[str | Selected],
+    where: Sequence[Fragment] = (),
+    also: Sequence[Fragment] = (),
+    left: bool = False,
+) -> Step:
+    """each row of ``rel`` (``t``) beside each row of ``other`` (``k``) the pairs match: a ``JOIN``, a ``t`` row once
+    for every ``k`` row matching it; with ``left``, a ``LEFT JOIN``: a ``t`` row no ``k`` row matches kept once, every
+    ``k`` value NULL.
+
+    :param rel: the relation read
+    :ptype rel: str | Derived | Step
+    :param other: the relation joined to it
+    :ptype other: str | Derived | Step
+    :param on: the pairs matched
+    :ptype on: Sequence[Match]
+    :param columns: the columns kept: a ``str`` is a column of ``t``; a :class:`Selected` any TRUSTED expression of
+        ``t``'s and ``k``'s columns under its name (``Selected('k."place"', "place")``)
+    :ptype columns: Sequence[str | Selected]
+    :param where: conditions on ``t`` and ``k``, outside the match, each written from ``$1``
+    :ptype where: Sequence[Fragment]
+    :param also: conditions inside the match (``ON``), on ``t`` and ``k``, each written from ``$1``
+    :ptype also: Sequence[Fragment]
+    :param left: keep a ``t`` row no ``k`` row matches
+    :ptype left: bool
+    :return: the step
+    :rtype: Step
+    :raises ValueError: when nothing is matched on, or no column is kept
+    """
+    if not on and not also:
+        raise ValueError("a join matches on at least one pair or condition")
+    if not columns:
+        raise ValueError("a join names the columns it keeps")
+    statement = _Statement()
+    source = statement.source(rel, "t")
+    joined_to = statement.source(other, "k")
+    matched = [match.condition("t", "k") for match in on] + statement.fragments(also)
+    conditions = statement.fragments(where)
+    kind = "LEFT JOIN" if left else "JOIN"
+    return statement.step(
+        f"SELECT {_columns(columns)} FROM {source} {kind} {joined_to} ON {' AND '.join(matched)}{_where(conditions)}"
+    )
 
 
 def distinct(rel: Rel, columns: Sequence[str | Selected], *, where: Sequence[Fragment] = ()) -> Step:
@@ -487,7 +540,9 @@ def _as_step(rel: Rel) -> Step:
     return rel if isinstance(rel, Step) else scan(rel)
 
 
-async def read_step(conn: Any, step: Rel, *, order: Sequence[Sort] = ()) -> list[dict[str, Any]]:
+async def read_step(
+    conn: Any, step: Rel, *, order: Sequence[Sort] = (), limit: int | None = None
+) -> list[dict[str, Any]]:
     """the step's rows, as dicts.
 
     :param conn: anything with an asyncpg-shaped ``fetch`` (an :class:`~threetears.core.keyed.InlineDuckDB`)
@@ -496,15 +551,23 @@ async def read_step(conn: Any, step: Rel, *, order: Sequence[Sort] = ()) -> list
     :ptype step: str | Derived | Step
     :param order: the rows' order; none promised when empty
     :ptype order: Sequence[Sort]
+    :param limit: the most rows answered (the first in ``order``); every row when None
+    :ptype limit: int | None
     :return: the rows
     :rtype: list[dict[str, Any]]
+    :raises ValueError: for a limit that is no count of rows
     """
-    sql, params = _ordered(_as_step(step), order)
+    sql, params = _ordered(_as_step(step), order, limit)
     return [dict(row) for row in await conn.fetch(sql, *params)]
 
 
 async def read_step_arrow(
-    conn: Any, step: Rel, *, types: Mapping[str, Any] | None = None, order: Sequence[Sort] = ()
+    conn: Any,
+    step: Rel,
+    *,
+    types: Mapping[str, Any] | None = None,
+    order: Sequence[Sort] = (),
+    limit: int | None = None,
 ) -> Any:
     """the step's rows as one Arrow table typed by ``types`` (DuckDB's own Arrow answer through
     :meth:`~threetears.core.keyed.InlineDuckDB.fetch_arrow`; any other reader's rows made the table on a thread).
@@ -520,11 +583,14 @@ async def read_step_arrow(
     :ptype types: Mapping[str, pyarrow.DataType] | None
     :param order: the rows' order; none promised when empty
     :ptype order: Sequence[Sort]
+    :param limit: the most rows answered (the first in ``order``); every row when None
+    :ptype limit: int | None
     :return: the rows
     :rtype: pyarrow.Table
     :raises TypeError: without ``types`` on a reader that is no DuckDB (its rows carry no Arrow types)
+    :raises ValueError: for a limit that is no count of rows
     """
-    sql, params = _ordered(_as_step(step), order)
+    sql, params = _ordered(_as_step(step), order, limit)
     if types is None:
         if not isinstance(conn, (InlineDuckDB, ThreadedDuckDB)):
             raise TypeError("read_step_arrow needs types= off DuckDB: its rows carry no Arrow types")
@@ -532,15 +598,18 @@ async def read_step_arrow(
     return await l3_fetch_arrow(conn, sql, *params, types=types)
 
 
-def _ordered(step: Step, order: Sequence[Sort]) -> tuple[str, list[Any]]:
+def _ordered(step: Step, order: Sequence[Sort], limit: int | None = None) -> tuple[str, list[Any]]:
+    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 0):
+        raise ValueError(f"a step's limit is a count of rows, not {limit!r}")
+    bounded = "" if limit is None else f" LIMIT {limit}"
     if not order:
-        return step.sql, list(step.params)
+        return (f"SELECT o.* FROM ({step.sql}) AS o{bounded}" if bounded else step.sql), list(step.params)
     ordered = ", ".join(
         f"o.{quote_identifier(sort.column)} {'DESC' if sort.descending else 'ASC'}"
         + ((" NULLS FIRST" if sort.descending else " NULLS LAST") if sort.nullable else "")
         for sort in order
     )
-    return f"SELECT o.* FROM ({step.sql}) AS o ORDER BY {ordered}", list(step.params)
+    return f"SELECT o.* FROM ({step.sql}) AS o ORDER BY {ordered}{bounded}", list(step.params)
 
 
 async def count_step(conn: Any, step: Rel) -> int:
@@ -557,6 +626,47 @@ async def count_step(conn: Any, step: Rel) -> int:
     source = statement.source(_as_step(step), "c")
     rows = await conn.fetch(f"SELECT count(*) AS n FROM {source}", *statement.params)
     return int(rows[0]["n"])
+
+
+async def any_step(conn: Any, step: Rel) -> bool:
+    """whether the step answers any row: ``SELECT EXISTS``, its first row the end of the read.
+
+    :param conn: anything with an asyncpg-shaped ``fetch``
+    :ptype conn: Any
+    :param step: the step, or a relation
+    :ptype step: str | Derived | Step
+    :return: whether it answers a row
+    :rtype: bool
+    """
+    statement = _Statement()
+    source = statement.source(_as_step(step), "e")
+    rows = await conn.fetch(f"SELECT EXISTS (SELECT 1 FROM {source}) AS held", *statement.params)
+    return bool(rows[0]["held"])
+
+
+async def materialize(conn: Any, table: str, step: Rel, *, temp: bool = False, replace: bool = True) -> int:
+    """write the step's rows into ``table``, a table of their own (``CREATE [TEMP] TABLE ... AS``): a change's stage
+    of rows read again by later steps. With ``replace``, a table of that name is dropped first.
+
+    :param conn: anything with an asyncpg-shaped ``execute``
+    :ptype conn: Any
+    :param table: the table made, a TRUSTED identifier (a stage, a change relation's)
+    :ptype table: str
+    :param step: the rows, a step or a relation
+    :ptype step: str | Derived | Step
+    :param temp: make it a temporary table (the session's own)
+    :ptype temp: bool
+    :param replace: drop a table of the name first; when False one there already is an error
+    :ptype replace: bool
+    :return: how many rows it holds
+    :rtype: int
+    """
+    built = _as_step(step)
+    target = quoted_table(table)
+    if replace:
+        await conn.execute(f"DROP TABLE IF EXISTS {target}")
+    status = await conn.execute(f"CREATE {'TEMP ' if temp else ''}TABLE {target} AS {built.sql}", *built.params)
+    return parse_rowcount(status)
 
 
 async def delete_matching(
@@ -595,6 +705,7 @@ async def first_difference(
     on: Sequence[Match],
     compare: Sequence[tuple[str | Selected, str]],
     order: Sequence[str],
+    where: Sequence[Fragment] = (),
 ) -> dict[str, Any] | None:
     """the first row (in ``order``) of ``rel`` (``t``) whose matched row of ``other`` (``k``) holds a compared value
     otherwise (two NULLs alike), or None when every matched row agrees.
@@ -612,6 +723,8 @@ async def first_difference(
     :ptype compare: Sequence[tuple[str | Selected, str]]
     :param order: ``t``'s columns that order the rows, the first one differing answered
     :ptype order: Sequence[str]
+    :param where: conditions on ``t`` and ``k`` a row compared meets, beside the difference, each written from ``$1``
+    :ptype where: Sequence[Fragment]
     :return: the ``on`` and ``order`` columns of that row of ``t``, or None
     :rtype: dict[str, Any] | None
     :raises ValueError: when nothing is matched on, compared or ordered by
@@ -626,8 +739,10 @@ async def first_difference(
     selected = ", ".join(f"t.{quote_identifier(column)}" for column in named)
     joined = " AND ".join(match.condition("t", "k") for match in on)
     ordered = ", ".join(f"t.{quote_identifier(column)}" for column in order)
+    conditions = [*statement.fragments(where), f"({differs})"]
     rows = await conn.fetch(
-        f"SELECT {selected} FROM {left} JOIN {right} ON {joined} WHERE {differs} ORDER BY {ordered} LIMIT 1",
+        f"SELECT {selected} FROM {left} JOIN {right} ON {joined} WHERE {' AND '.join(conditions)} "
+        f"ORDER BY {ordered} LIMIT 1",
         *statement.params,
     )
     return dict(rows[0]) if rows else None

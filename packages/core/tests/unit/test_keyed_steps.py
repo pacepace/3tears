@@ -24,6 +24,7 @@ from threetears.core.keyed import (
     Selected,
     Sort,
     anti,
+    any_step,
     change_relation,
     count_step,
     delete_matching,
@@ -31,8 +32,10 @@ from threetears.core.keyed import (
     except_rows,
     first_difference,
     grouped,
+    joined,
     largest,
     latest_per_key,
+    materialize,
     read_step,
     read_step_arrow,
     row_count,
@@ -353,6 +356,125 @@ def test_the_first_differing_row_is_the_one_the_hand_written_join_finds(conn: du
         )
         is None
     )
+
+
+def test_a_joined_step_answers_the_join_and_the_left_join_it_replaces(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if joined answers other rows than the hand-written JOIN (a row once for each match, a NULL office matched
+    null-safe), or with ``left`` drops a row no key matches or fills its key's columns."""
+    on = [Match("state"), Match("office", null_safe=True)]
+    columns: list[str | Selected] = ["state", "office", "run_id", Selected('k."run_id"', "k_run")]
+    _same(
+        conn,
+        "SELECT t.state, t.office, t.run_id, k.run_id AS k_run FROM held AS t JOIN changed AS k "
+        "ON t.state = k.state AND t.office IS NOT DISTINCT FROM k.office WHERE t.state = $1",
+        lambda c: read_step(c, joined("held", _CHANGED, on=on, columns=columns, where=[_TENANT])),
+    )
+    _same(
+        conn,
+        "SELECT t.state, t.office, t.run_id, k.run_id AS k_run FROM held AS t LEFT JOIN changed AS k "
+        "ON t.state = k.state AND t.office IS NOT DISTINCT FROM k.office AND k.run_id < 100 WHERE t.state = $1",
+        lambda c: read_step(
+            c,
+            joined(
+                "held",
+                _CHANGED,
+                on=on,
+                columns=columns,
+                where=[_TENANT],
+                also=[Fragment("k.run_id < $1", (100,))],
+                left=True,
+            ),
+        ),
+    )
+
+
+def test_a_step_read_up_to_a_limit_answers_the_first_rows_in_its_order(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if read_step or read_step_arrow with ``limit`` answers other rows than the hand-written ``ORDER BY ...
+    LIMIT``, or takes a limit that is no count of rows."""
+    step = scan("held", ["state", "run_id"], where=[_TENANT])
+    _same(
+        conn,
+        "SELECT t.state, t.run_id FROM held AS t WHERE t.state = $1 ORDER BY t.run_id LIMIT 3",
+        lambda c: read_step(c, step, order=[Sort("run_id")], limit=3),
+    )
+    conn.execute(
+        "INSERT INTO held VALUES ('S0', 'o0', 2, NULL, 20), ('S0', NULL, 1, NULL, 10), ('S0', 'o1', 3, NULL, 3)"
+    )
+    table = run_inline(read_step_arrow(InlineDuckDB(conn), step, order=[Sort("run_id", descending=True)], limit=2))
+    assert table.to_pylist() == [{"state": "S0", "run_id": 3}, {"state": "S0", "run_id": 2}]
+    assert len(run_inline(read_step(InlineDuckDB(conn), step, limit=1))) == 1
+    for refused in (-1, True, 1.5):
+        with pytest.raises(ValueError, match="limit"):
+            run_inline(read_step(InlineDuckDB(conn), step, limit=refused))  # type: ignore[arg-type]
+
+
+def test_whether_a_step_answers_any_row_is_the_exists_it_replaces(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if any_step answers otherwise than the hand-written ``SELECT EXISTS`` over the same rows."""
+
+    async def held(c: Any) -> list[dict[str, Any]]:
+        return [{"held": await any_step(c, semi("held", _CHANGED, on=_KEY, where=[_TENANT]))}]
+
+    _same(
+        conn,
+        "SELECT EXISTS (SELECT 1 FROM held AS t WHERE EXISTS (SELECT 1 FROM changed AS k WHERE t.state = k.state AND "
+        "t.office IS NOT DISTINCT FROM k.office AND t.run_id = k.run_id) AND t.state = $1) AS held",
+        held,
+    )
+    assert run_inline(any_step(InlineDuckDB(conn), "changed")) is True
+    assert run_inline(any_step(InlineDuckDB(conn), scan("changed", where=[Fragment("FALSE")]))) is False
+
+
+def test_a_table_of_a_steps_rows_holds_what_the_hand_written_create_table_as_does(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if materialize makes a table of other rows than ``CREATE TABLE ... AS`` the step's statement, answers
+    another count, keeps a table it replaces, makes no temporary table when asked, or replaces one when told not to."""
+
+    async def made(c: Any) -> list[dict[str, Any]]:
+        step = semi("held", _CHANGED, on=_KEY, columns=["state", "run_id", "v"], where=[_TENANT])
+        return [{"Count": await materialize(c, "made", step)}]
+
+    conn.execute("CREATE TABLE made AS SELECT 1 AS stale")
+    _same(
+        conn,
+        "CREATE OR REPLACE TABLE made AS SELECT t.state, t.run_id, t.v FROM held AS t WHERE EXISTS (SELECT 1 FROM "
+        "changed AS k WHERE t.state = k.state AND t.office IS NOT DISTINCT FROM k.office AND t.run_id = k.run_id) "
+        "AND t.state = $1",
+        made,
+        state_sql="SELECT * FROM made",
+    )
+    db = InlineDuckDB(conn)
+    assert run_inline(materialize(db, "_named_keys", distinct(_CHANGED, ["state"]), temp=True)) == 2
+    temporary = conn.execute("SELECT temporary FROM duckdb_tables() WHERE table_name = '_named_keys'").fetchall()
+    assert temporary == [(True,)]
+    assert asyncio.run(materialize(ThreadedDuckDB(conn), "again", "changed")) == 6
+    with pytest.raises(duckdb.CatalogException):
+        run_inline(materialize(db, "again", "changed", replace=False))
+
+
+def test_the_first_differing_row_among_those_a_condition_names_is_the_hand_written_joins(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if first_difference's ``where`` is dropped (a differing row it rules out answered) or is bound to other
+    parameters than its own."""
+    conn.execute("CREATE TABLE raw AS SELECT range AS __row, 'x' || range AS a FROM range(50)")
+    conn.execute("CREATE TABLE seen AS SELECT __row, CASE WHEN __row IN (17, 40) THEN NULL ELSE a END AS a FROM raw")
+    found = run_inline(
+        first_difference(
+            InlineDuckDB(conn),
+            change_relation("raw"),
+            scan(change_relation("seen"), where=[Fragment("t.__row >= $1", (0,))]),
+            on=[Match("__row")],
+            compare=[("a", "a")],
+            order=["__row"],
+            where=[Fragment("t.__row > $1", (20,))],
+        )
+    )
+    expected = conn.execute(
+        "SELECT raw.__row FROM raw JOIN seen ON seen.__row = raw.__row WHERE raw.__row > 20 "
+        "AND (raw.a IS DISTINCT FROM seen.a) ORDER BY raw.__row LIMIT 1"
+    ).fetchall()
+    assert found == {"__row": expected[0][0]} == {"__row": 40}
 
 
 def test_steps_refuse_what_cannot_describe_them() -> None:
