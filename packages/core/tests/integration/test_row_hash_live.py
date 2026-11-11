@@ -179,3 +179,43 @@ async def test_the_rows_after_applying_the_changes_are_a_full_read_s_on_the_data
         columns=columns,
         ordered=False,
     )
+
+
+async def test_a_typed_key_held_as_text_reads_only_its_changed_row_on_the_database(conn: asyncpg.Connection) -> None:
+    """Flips if a key held as a follower's text (an integer id's digits, a zoned time) and read by a warehouse that
+    holds it typed (integer, timestamp without time zone) reads unchanged rows again, names held keys gone, or binds
+    the typed key as text (Postgres refuses integer = text)."""
+    await conn.execute(
+        "CREATE TABLE typed (state VARCHAR, cid INTEGER, stamp TIMESTAMP WITHOUT TIME ZONE, name VARCHAR, "
+        "PRIMARY KEY (state, cid, stamp))"
+    )
+    await conn.execute(
+        "INSERT INTO typed SELECT 'PA', 7000 + i, TIMESTAMP '2026-11-03 22:30:00' + make_interval(secs => i), "
+        "'n' || i FROM generate_series(0, 5) i"
+    )
+    hashed = (HashColumn("cid", HashKind.INTEGER), HashColumn("stamp", HashKind.TIMESTAMP), HashColumn("name"))
+    sql = f"SELECT state, cid, stamp, {row_hash_sql(hashed, await dialect_of(conn))} AS h FROM typed AS t"
+    held: dict[tuple[Any, ...], str | None] = {
+        (row["state"], str(row["cid"]), f"{row['stamp'].isoformat(sep=' ')}+00:00"): row["h"]
+        for row in await conn.fetch(sql)
+    }
+
+    async def changed() -> Any:
+        return await read_changed(
+            conn,
+            "typed",
+            key=["state", "cid", "stamp"],
+            columns=["state", "cid", "stamp", "name"],
+            held=held,
+            hash_columns=hashed,
+            by={"state": "PA"},
+            page=2,
+        )
+
+    unchanged = await changed()
+    assert (unchanged.rows, unchanged.gone_keys) == ([], [])
+    await conn.execute("UPDATE typed SET name = 'moved' WHERE cid = 7002")
+    await conn.execute("DELETE FROM typed WHERE cid = 7004")
+    moved = await changed()
+    assert [(row["cid"], row["name"]) for row in moved.rows] == [(7002, "moved")]
+    assert moved.gone_keys == [("PA", "7004", "2026-11-03 22:30:04+00:00")]

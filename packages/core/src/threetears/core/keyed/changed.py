@@ -14,6 +14,11 @@ the geographies moved past a mark) in two phases::
 
 ``gone_keys`` are the held keys phase 1 did not answer: rows that left the scope or the relation.
 
+A key column is typed by its :class:`HashKind` (the warehouse's type: from ``hash_columns`` when the hash covers it,
+or ``key_kinds``): phase 1 pages it and phase 2 binds it cast to that type, and a held key is matched to the key the
+scope answers by both values' canonical text (:func:`key_text`), so a key held in another form than the warehouse
+answers it (an integer id held as text, a time held with its zone) is neither read again nor reported gone.
+
 The hash is ONE SQL expression, :func:`row_hash_sql`: an MD5 over a canonical, typed text of the hashed columns,
 each column length-prefixed and a NULL marked apart from every value, so the same values give the same hash on
 PostgreSQL (and YugabyteDB), DuckDB and Redshift. A full read selects the same expression and stores it beside the
@@ -24,6 +29,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Final
 
@@ -42,6 +49,7 @@ __all__ = [
     "HashColumn",
     "HashKind",
     "dialect_of",
+    "key_text",
     "read_changed",
     "row_hash_selected",
     "row_hash_sql",
@@ -213,6 +221,79 @@ class ChangedRows:
     gone_keys: list[tuple[Any, ...]]
 
 
+#: the SQL type a key column of each kind is cast to where its value is bound as text (a page's cursor, a key array)
+_KEY_CASTS: Final[Mapping[HashKind, str]] = {
+    HashKind.TEXT: "text",
+    HashKind.INTEGER: "bigint",
+    HashKind.NUMERIC: "numeric",
+    HashKind.BOOLEAN: "boolean",
+    HashKind.DATE: "date",
+    HashKind.TIMESTAMP: "timestamp",
+}
+
+#: a boolean's texts, by the canonical one
+_BOOLEAN_TEXTS: Final[Mapping[str, str]] = {
+    **dict.fromkeys(("t", "true", "1", "y", "yes"), "t"),
+    **dict.fromkeys(("f", "false", "0", "n", "no"), "f"),
+}
+
+
+def _timestamp(value: Any) -> datetime:
+    """a timestamp key's value as a naive UTC time: a zoned one moved to UTC, text read as ISO (a date as its
+    midnight)."""
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value.strip())
+    elif isinstance(value, date) and not isinstance(value, datetime):
+        value = datetime(value.year, value.month, value.day)  # noqa: DTZ001 - a date's midnight, naive as the column
+    if not isinstance(value, datetime):
+        raise ValueError(f"a timestamp key value is a time or its text, got {value!r}")
+    return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo is not None else value
+
+
+def key_text(value: Any, kind: HashKind = HashKind.TEXT, scale: int | None = None) -> str | None:
+    """a key value's canonical text for ``kind``, whatever form it is held in: the text :func:`row_hash_sql` writes
+    for that kind (an integer's digits, a decimal at ``scale``, ``t``/``f``, ``YYYY-MM-DD``,
+    ``YYYY-MM-DD HH:MM:SS.ffffff`` in UTC), so a value held as text and the same value as the warehouse answers it
+    match. A zoned time is taken in UTC, a naive one as UTC already.
+
+    :param value: the value: of the kind's type, or its text
+    :ptype value: Any
+    :param kind: the key column's kind
+    :ptype kind: HashKind
+    :param scale: a NUMERIC's fractional digits; None takes the value's own
+    :ptype scale: int | None
+    :return: the text; None for a NULL
+    :rtype: str | None
+    :raises ValueError: when the value is no value of its kind
+    """
+    if value is None:
+        return None
+    match kind:
+        case HashKind.TEXT:
+            return str(value)
+        case HashKind.INTEGER:
+            if isinstance(value, float) or (isinstance(value, Decimal) and value != value.to_integral_value()):
+                raise ValueError(f"an integer key value is whole, got {value!r}")
+            return str(int(value.strip() if isinstance(value, str) else value))
+        case HashKind.NUMERIC:
+            number = Decimal(str(value).strip())
+            return format(number if scale is None else number.quantize(Decimal(1).scaleb(-scale)), "f")
+        case HashKind.BOOLEAN:
+            if isinstance(value, bool):
+                return "t" if value else "f"
+            text = _BOOLEAN_TEXTS.get(str(value).strip().lower())
+            if text is None:
+                raise ValueError(f"a boolean key value is true or false, got {value!r}")
+            return text
+        case HashKind.DATE:
+            if isinstance(value, datetime):
+                raise ValueError(f"a date key value is a date, got the time {value!r}")
+            return (value if isinstance(value, date) else date.fromisoformat(str(value).strip()[:10])).isoformat()
+        case HashKind.TIMESTAMP:
+            return _timestamp(value).strftime("%Y-%m-%d %H:%M:%S.%f")
+    raise ValueError(f"no canonical text for {kind!r}")  # pragma: no cover - every kind is matched
+
+
 def _hash_page(conn: Any) -> int:
     """phase 1's page on ``conn``: :data:`DEFAULT_HASH_PAGE`, or one row under the cap its transport states (a page
     asks one row more than it keeps)."""
@@ -222,8 +303,21 @@ def _hash_page(conn: Any) -> int:
     return DEFAULT_HASH_PAGE
 
 
-def _sorts(key: Sequence[str | Sort]) -> list[Sort]:
-    return [part if isinstance(part, Sort) else Sort(part) for part in key]
+def _key_kinds(
+    key: Sequence[str | Sort], hash_columns: Sequence[HashColumn], key_kinds: Sequence[HashColumn]
+) -> list[HashColumn]:
+    """each key column's kind, in key order: ``key_kinds``' for it, else the hash's, else text."""
+    named = {column.column: column for column in hash_columns} | {column.column: column for column in key_kinds}
+    columns = [part.column if isinstance(part, Sort) else part for part in key]
+    return [named.get(column, HashColumn(column)) for column in columns]
+
+
+def _sorts(key: Sequence[str | Sort], kinds: Sequence[HashColumn]) -> list[Sort]:
+    """the key's sorts, in key order: a column named bare cast to its kind's type; a Sort as given."""
+    return [
+        part if isinstance(part, Sort) else Sort(part, cast=_KEY_CASTS[kind.kind])
+        for part, kind in zip(key, kinds, strict=True)
+    ]
 
 
 async def read_changed(
@@ -239,6 +333,7 @@ async def read_changed(
     page: int | None = None,
     batch: int | None = None,
     row_cap: int | None = None,
+    key_kinds: Sequence[HashColumn] = (),
 ) -> ChangedRows:
     """the rows of ``relation`` inside the scope ``by`` / ``where`` names whose hash differs from ``held``, read in
     full by key, and the held keys the scope no longer holds.
@@ -249,13 +344,14 @@ async def read_changed(
     :ptype conn: Any
     :param relation: the relation, a TRUSTED name, or a derived relation
     :ptype relation: str | Derived
-    :param key: the relation's key, in its index's order: a column (its values compared as text) or a
-        :class:`~threetears.core.keyed.Sort` naming its SQL type (``Sort("id", cast="bigint")``)
+    :param key: the relation's key, in its index's order: a column, cast to its kind's SQL type (``key_kinds``,
+        ``hash_columns``; text when neither names it), or a :class:`~threetears.core.keyed.Sort` naming its SQL type
+        (``Sort("id", cast="bigint")``)
     :ptype key: Sequence[str | Sort]
     :param columns: the columns the full rows carry, as :func:`~threetears.core.keyed.read_keyed` takes them
     :ptype columns: Sequence[str | Selected]
-    :param held: each key the caller holds INSIDE this scope (a tuple in ``key``'s order, its values as the read
-        answers them) onto the hash stored with it, None for a row stored with none (always read again); a held key outside the scope would be reported gone
+    :param held: each key the caller holds INSIDE this scope (a tuple in ``key``'s order, each value of its kind or
+        its text: matched to the answered key by :func:`key_text`) onto the hash stored with it, None for a row stored with none (always read again); a held key outside the scope would be reported gone
     :ptype held: Mapping[tuple[Any, ...], str | None]
     :param hash_columns: the columns the hash covers, as the stored hashes were taken
     :ptype hash_columns: Sequence[HashColumn]
@@ -274,12 +370,16 @@ async def read_changed(
     :param row_cap: the most rows the transport answers a phase-2 statement without saying it cut; None: the
         transport's own ``rows_per_statement``, or none when it states none
     :ptype row_cap: int | None
-    :return: the changed rows and the gone keys
+    :param key_kinds: the kind of each key column the hash does not cover, or covers as another kind than the
+        warehouse holds the key in; a key column named in neither is text
+    :ptype key_kinds: Sequence[HashColumn]
+    :return: the changed rows (each key as the warehouse answers it) and the gone keys (as ``held`` names them)
     :rtype: ChangedRows
     :raises ValueError: when the key is empty, or as :func:`row_hash_sql`, :func:`~threetears.core.keyed.keyset_rows`
-        and :func:`~threetears.core.keyed.read_keyed` refuse
+        and :func:`~threetears.core.keyed.read_keyed` refuse, or a held key's value is no value of its kind
     """
-    order = _sorts(key)
+    kinds = _key_kinds(key, hash_columns, key_kinds)
+    order = _sorts(key, kinds)
     if not order:
         raise ValueError(f"a changed-rows read of {relation} names its key")
     dialect = await dialect_of(conn)
@@ -300,14 +400,22 @@ async def read_changed(
             page=_hash_page(conn) if page is None else page,
             where=where,
         )
-    seen: set[tuple[Any, ...]] = set()
+
+    def canonical(values: Sequence[Any]) -> tuple[str | None, ...]:
+        return tuple(key_text(value, kind.kind, kind.scale) for value, kind in zip(values, kinds, strict=True))
+
+    # held and answered keys meet in one form: each value's canonical text by its column's kind
+    held_by_text = {canonical(held_key): (held_key, held_hash) for held_key, held_hash in held.items()}
+    seen: set[tuple[str | None, ...]] = set()
     wanted: list[tuple[Any, ...]] = []
     for row in scope:
-        held_key = tuple(row[column] for column in key_columns)
-        seen.add(held_key)
-        if held.get(held_key) != row[ROW_HASH_COLUMN]:
-            wanted.append(held_key)
-    gone = [held_key for held_key in held if held_key not in seen]
+        answered = tuple(row[column] for column in key_columns)
+        text = canonical(answered)
+        seen.add(text)
+        holding = held_by_text.get(text)
+        if holding is None or holding[1] != row[ROW_HASH_COLUMN]:
+            wanted.append(answered)
+    gone = [held_key for text, (held_key, _) in held_by_text.items() if text not in seen]
     if not wanted:
         return ChangedRows(rows=[], gone_keys=gone)
     keys = KeyBatch(
