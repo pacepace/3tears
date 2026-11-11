@@ -167,6 +167,8 @@ def test_only_the_changed_and_new_rows_are_read_in_full_and_gone_keys_named(conn
     assert len(counted.statements) == 2
     now = _held(conn, "PA")
     assert all(row[ROW_HASH_COLUMN] == now[(row["state"], row["geo"])] for row in changed.rows)
+    # phase 2 carries no hash of its own: each full row is stamped with its key's hash as phase 1 answered it
+    assert "md5" not in counted.statements[1]
 
 
 def test_a_scope_nothing_changed_in_is_one_statement(conn: duckdb.DuckDBPyConnection) -> None:

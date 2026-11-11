@@ -560,6 +560,8 @@ async def read_changed(
 
     seen: set[tuple[str | None, ...]] = set()
     wanted: list[tuple[Any, ...]] = []
+    # each wanted key's hash as phase 1 answered it: phase 2 stamps it on the key's full row, never reading it again
+    answered_hashes: dict[tuple[str | None, ...], Any] = {}
     for row in scope:
         answered_key = tuple(row[column] for column in key_columns)
         text = canonical(answered_key)
@@ -567,6 +569,7 @@ async def read_changed(
         holding = held_by_text.get(text)
         if holding is None or holding[1] != row[ROW_HASH_COLUMN]:
             wanted.append(answered_key)
+            answered_hashes[text] = row[ROW_HASH_COLUMN]
     gone = [*vanished, *(held_key for text, (held_key, _) in held_by_text.items() if text not in seen)]
     if not wanted:
         return ChangedRows(rows=[], gone_keys=gone)
@@ -578,17 +581,26 @@ async def read_changed(
         casts=tuple(sort.cast or "text" for sort in order),
         as_list=dialect is Dialect.REDSHIFT,
     )
+    named = {column.alias if isinstance(column, Selected) else column for column in columns}
     rows = await read_keyed(
         conn,
         relation,
         keys=keys,
-        columns=[*columns, hashed],
+        # the key read beside the columns asked, to stamp each row with its phase-1 hash
+        columns=[*columns, *(column for column in key_columns if column not in named)],
         by=by,
         batch=batch,
         row_cap=getattr(conn, "rows_per_statement", None) if row_cap is None else row_cap,
         where=where,
     )
-    return ChangedRows(rows=rows, gone_keys=gone, changed_keys=wanted)
+    stamped = [
+        {
+            **{name: value for name, value in row.items() if name in named},
+            ROW_HASH_COLUMN: answered_hashes.get(canonical(tuple(row[column] for column in key_columns))),
+        }
+        for row in rows
+    ]
+    return ChangedRows(rows=stamped, gone_keys=gone, changed_keys=wanted)
 
 
 def _held_group_hash(hashes: Sequence[str | None] | None) -> _GroupHash | None:
