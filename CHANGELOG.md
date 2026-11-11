@@ -21,6 +21,9 @@ packages (bumped in lock-step).
 - `membership_would_cycle` walks up through the members index; a group delete reads its members a page at a time.
 - v003: `idx_namespaces_owner_agent_id`, `idx_namespaces_customer_type`, `idx_namespaces_owner_namespace`,
   `idx_namespaces_schema_name`, each serving the namespace lookup that read the table whole.
+- `NamespaceCollection.list_ids_under_name` reads the node and the byte range of names beneath it
+  (`name COLLATE "C"` from `node + "."` to `node + "/"`) through v003's new `idx_namespaces_name_c`
+  (`(name COLLATE "C")`), whatever the database's collation; new on the hub's schema too.
 
 ### agent/memory: every read names its key; `find_by_scope` reads one user
 

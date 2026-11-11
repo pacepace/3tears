@@ -56,7 +56,7 @@ async def acl_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
     try:
         await conn.execute(f'CREATE SCHEMA "{schema}"')
         await conn.execute(f'SET search_path TO "{schema}"')
-        assert await _runner().apply_for_platform_schema(_Store(conn)) == 5  # type: ignore[arg-type]
+        assert await _runner().apply_for_platform_schema(_Store(conn)) == 6  # type: ignore[arg-type]
     finally:
         await conn.close()
     pool: asyncpg.Pool = await asyncpg.create_pool(

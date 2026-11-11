@@ -23,7 +23,7 @@ from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.tools.platform_migrations import register as register_tools_platform
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.collections.scan_cache import ScanCache
-from threetears.core.testing.plans import PlanRecorder, explain_statement, plan_uses_index
+from threetears.core.testing.plans import PlanRecorder, explain_statement, explain_write, plan_uses_index
 
 pytestmark = pytest.mark.integration
 
@@ -146,24 +146,36 @@ async def test_assignments_group_scope(conn: asyncpg.Connection) -> None:
     plan = await explain_statement(conn, acl.ASSIGNMENTS_OF_GROUPS_SQL, [uuid.uuid4()])
     assert plan_uses_index(plan, "idx_role_assignments_group_scope"), plan.plan
     # a group's grant by its natural key, the grant a concurrent ensure won, a group's grants on one scope and
-    # their delete: each reads the group's rows through the same index
+    # their delete: each reads the group's rows through the same index, bound in the seeded row scope and scope type
+    # (a scope holding no rows reads as empty through the primary key's row_scope prefix, or a partial index's). On
+    # a namespace each may read the namespace grants' own unique index instead, led by the group too.
     group, role = uuid.uuid4(), uuid.uuid4()
     reads = {
-        "GRANT_OF_GROUP_SQL": (acl.GRANT_OF_GROUP_SQL, ("customer", group, role, "namespace", uuid.uuid4())),
+        "GRANT_OF_GROUP_SQL": (acl.GRANT_OF_GROUP_SQL, lambda scope, ns: ("platform", group, role, scope, ns)),
         "GRANT_WINNER_OF_GROUP_SQL": (
             acl.GRANT_WINNER_OF_GROUP_SQL,
-            (group, role, "namespace", uuid.uuid4(), "manual"),
+            lambda scope, ns: (group, role, scope, ns, "manual"),
         ),
-        "GRANTS_OF_GROUP_SCOPE_SQL": (acl.GRANTS_OF_GROUP_SCOPE_SQL, ("platform", group, "all", None, None)),
+        "GRANTS_OF_GROUP_SCOPE_SQL": (
+            acl.GRANTS_OF_GROUP_SCOPE_SQL,
+            lambda scope, ns: ("platform", group, scope, ns, None),
+        ),
         "DELETE_GRANTS_OF_GROUP_SCOPE_SQL": (
             acl.DELETE_GRANTS_OF_GROUP_SCOPE_SQL,
-            ("customer", group, "namespace", uuid.uuid4(), "manual"),
+            lambda scope, ns: ("platform", group, scope, ns, "manual"),
         ),
     }
     for name, (statement, params) in reads.items():
+        # a write is planned, never run
+        explain = explain_write if statement.lstrip().upper().startswith("DELETE") else explain_statement
         async with _rolled_back(conn):
-            plan = await explain_statement(conn, statement, *params)
+            plan = await explain(conn, statement, *params("type_customer", None))
         assert plan_uses_index(plan, "idx_role_assignments_group_scope"), (name, plan.plan)
+        async with _rolled_back(conn):
+            plan = await explain(conn, statement, *params("namespace", uuid.uuid4()))
+        assert plan_uses_index(plan, "idx_role_assignments_group_scope") or plan_uses_index(
+            plan, "uq_role_assignments_namespace_grant"
+        ), (f"{name} on a namespace", plan.plan)
 
 
 async def test_namespaces_name(conn: asyncpg.Connection) -> None:
@@ -353,17 +365,18 @@ async def test_namespaces_schema_name_non_workspace_refuses_a_duplicate(conn: as
 
 async def test_roles_customer_name_refuses_a_duplicate(conn: asyncpg.Connection) -> None:
     """Flips if one customer may hold two roles of one name: uq_roles_customer_name refuses the second."""
+    customer = uuid.uuid4()
     async with _rolled_back(conn):
         await conn.execute(
             "INSERT INTO roles (role_id, name, description, permissions, customer_id)"
             " VALUES (gen_random_uuid(), 'Field Manager', 'r', '[]'::jsonb, $1)",
-            uuid.uuid4(),
+            customer,
         )
         with pytest.raises(asyncpg.UniqueViolationError, match="uq_roles_customer_name"):
             await conn.execute(
                 "INSERT INTO roles (role_id, name, description, permissions, customer_id)"
                 " VALUES (gen_random_uuid(), 'Field Manager', 'r', '[]'::jsonb, $1)",
-                uuid.uuid4(),
+                customer,
             )
 
 

@@ -17,8 +17,8 @@ Each of these reads asked a column no index of this package covered, so it read 
   it: workspace rows share their agent's schema and are left out of it on purpose, and widening it would refuse
   them;
 - ``idx_namespaces_name_c`` (name COLLATE "C"): the names beneath a node, a subtree grant's namespaces,
-  :meth:`NamespaceCollection.list_ids_under_name`, read as the byte range ``[node + ".", node + "/")``. New on the
-  platform's schema too.
+  :meth:`NamespaceCollection.list_ids_under_name`, read as the byte range ``[node + ".", node + "/")``; ``ASC``, so
+  YugabyteDB range-shards it (a hashed first column cannot serve a range). New on the platform's schema too.
 
 Idempotent: every index checks first.
 """
@@ -57,7 +57,7 @@ _ACL_NAMESPACE_INDEXES_DDL: tuple[str, ...] = (
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACE_IDS_UNDER_NAME_SQL\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespaces_under_name\n"
     "-- reason: a subtree grant's namespaces, the byte range of names beneath its node\n"
-    'CREATE INDEX IF NOT EXISTS idx_namespaces_name_c ON namespaces ((name COLLATE "C"))',
+    'CREATE INDEX IF NOT EXISTS idx_namespaces_name_c ON namespaces ((name COLLATE "C") ASC)',
 )
 
 
