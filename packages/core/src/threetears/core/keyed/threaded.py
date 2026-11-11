@@ -16,11 +16,11 @@ on ``Sort(..., cast=None)``. The helpers that read by ``by``, a list of keys, a 
 from __future__ import annotations
 
 import asyncio
-import re
 from collections.abc import Mapping, Sequence
-from typing import Any, Final
+from typing import Any
 
 from threetears.core.cache.duckdb import _ARROW_BATCH_ROWS, fetch_arrow
+from threetears.interfaces.keyed.filters import sqlite_numbered
 
 try:
     import pyarrow as pa
@@ -30,9 +30,6 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; fetch_arrow ref
     _PYARROW = False
 
 __all__ = ["ThreadedDuckDB", "ThreadedSQLite"]
-
-#: a positional placeholder, as the helpers write it
-_PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\$(\d+)")
 
 
 def _fetch(conn: Any, query: str, params: Sequence[Any]) -> list[dict[str, Any]]:
@@ -159,7 +156,7 @@ class ThreadedDuckDB:
 
 
 def _sqlite_fetch(conn: Any, query: str, params: Sequence[Any]) -> list[dict[str, Any]]:
-    cursor = conn.execute(_PLACEHOLDER.sub(r"?\1", query), list(params))
+    cursor = conn.execute(sqlite_numbered(query), list(params))
     try:
         names = [column[0] for column in cursor.description or ()]
         return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
@@ -168,7 +165,7 @@ def _sqlite_fetch(conn: Any, query: str, params: Sequence[Any]) -> list[dict[str
 
 
 def _sqlite_execute(conn: Any, query: str, params: Sequence[Any]) -> str:
-    cursor = conn.execute(_PLACEHOLDER.sub(r"?\1", query), list(params))
+    cursor = conn.execute(sqlite_numbered(query), list(params))
     try:
         verb = query.lstrip().split(None, 1)[0].upper()
         touched = max(cursor.rowcount, 0)

@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
+from threetears.interfaces.keyed.filters import quote_identifier
+
 __all__ = [
     "FilterValue",
     "as_written",
@@ -22,23 +24,6 @@ __all__ = [
 #: a value a filter compares a column with, bound as a parameter: text, or an integer bound as one
 #: (a ``bigint`` column compared with text is refused by a strictly typed driver, asyncpg among them)
 type FilterValue = str | int
-
-
-def quote_identifier(identifier: str) -> str:
-    """an identifier quoted for SQL, so a name with spaces, capitals or a keyword survives.
-
-    Every L1 backend quotes every table and column name it interpolates through this one
-    function: SQLite and DuckDB quote alike, and a backend that quoted some statements and not
-    others would create a table it could then not read. A converted extract's column names
-    (``% of Exp. In``) are the case that needs it. Postgres, Yugabyte and Redshift accept the same
-    spelling.
-
-    :param identifier: a table or column name
-    :ptype identifier: str
-    :return: the quoted identifier, any double quote in it doubled
-    :rtype: str
-    """
-    return '"' + identifier.replace('"', '""') + '"'
 
 
 def unnest_key_join(

@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 from threetears.core import keyed
+from threetears.interfaces import keyed as built
 from threetears.core.keyed import (
     AnyOf,
     Derived,
@@ -384,3 +385,100 @@ async def test_a_helper_sends_the_statements_it_sent_before_the_move(name: str) 
 def test_every_recorded_case_is_still_run() -> None:
     """Flips if a case is dropped from the corpus: the golden names exactly the cases run."""
     assert sorted(_recorded()) == sorted(_CASES)
+
+
+def _sent(statements: list[tuple[str, Sequence[Any]]]) -> list[list[str]]:
+    return [[sql, repr(tuple(params))] for sql, params in statements]
+
+
+def _builders() -> dict[str, list[tuple[str, Sequence[Any]]]]:
+    """each builder of :mod:`threetears.interfaces.keyed` a caller runs on its own connection, given what the runner
+    of a recorded case was given: it writes the statements that runner sent."""
+    cursor = keyed.keyset_cursor(_ORDER, {"name": "n", "id": _ID})
+    visible = [keyed.exists_keyed("grants", on={"doc": "id"}, by={"who": "me", "role": AnyOf(["r"])})]
+    rows_page = {
+        "columns": ("name", "id"),
+        "by": {"tenant": "x"},
+        "order": _ORDER,
+        "page": 2,
+        "where": [Fragment("TRUE")],
+    }
+    return {
+        "read_by.eq": [built.read_by_statement("s.t", by={"a": "k", "b": 2}, columns=("a", "b"))],
+        "read_row.lock_nowait": [built.read_row_statement("t", by={"id": _ID}, lock=Lock.UPDATE_NOWAIT)],
+        "read_value": [built.read_row_statement("t", by={"id": 1, "flag": True}, columns=("v",))],
+        "read_keyed.as_list_batches": built.read_keyed_statements(
+            "documents",
+            keys=KeyBatch(("id",), [("a",), ("b",), ("c",)], as_list=True),
+            columns=("body",),
+            by={"scope_id": "s", "doc_type": "run"},
+            batch=2,
+        ),
+        "read_keyed.two_columns_bounded": built.read_keyed_statements(
+            "t",
+            keys=KeyBatch(("a", "b"), [("s", 1), ("s", 2), ("s", 3)], ("text", "bigint")),
+            columns=("a", "b"),
+            by={"tenant": AnyOf(["x"])},
+            where=[Fragment('t."v" > $1', (5,))],
+        ),
+        "read_keyed.one_column_native": built.read_keyed_statements(
+            "t", keys=KeyBatch(("id",), [(1,), (2,)], ("bigint",)), columns=("id",), by={"tenant": "x"}, natively=True
+        ),
+        "keyset_page.cursor_by_row": [
+            built.keyset_page_statement(
+                "t",
+                columns=("name", "id"),
+                by={"tenant": "x", "kind": AnyOf(["a", "b"])},
+                order=_ORDER,
+                limit=10,
+                cursor=cursor,
+                by_row=True,
+                where=[Fragment('t."due" <= $1', (_WHEN,))],
+                visible=visible,
+                lock=Lock.SHARE,
+            )
+        ],
+        "keyset_page.cursor_yugabyte": [
+            built.keyset_page_statement(
+                "t", columns=("name", "id"), by={"tenant": "x"}, order=_ORDER, limit=10, cursor=cursor
+            )
+        ],
+        "keyset_rows.pages": [
+            built.keyset_rows_statement("t", **rows_page),
+            built.keyset_rows_statement(
+                "t", **rows_page, past=built.next_past(_ORDER, {"name": "c", "id": _ID}), by_row=True
+            ),
+        ],
+        "update_keyed.keys_batches": built.update_keyed_statements(
+            "t",
+            values={"v": 1},
+            keys=KeyBatch(("a", "b"), [("x", 1), ("y", 2), ("z", 3)], ("text", "bigint")),
+            by={"tenant": "q"},
+            batch=2,
+        ),
+        "delete_keyed.where_returning": built.delete_keyed_statements(
+            "t", by={"key": "k"}, where=[Fragment('"expires_at" > $1', (_WHEN,))], returning=("payload",)
+        ),
+        "delete_keyed.empty_keys": built.delete_keyed_statements("t", keys=KeyBatch(("a",), [])),
+        "delete_before.by_most_pages": [
+            built.delete_before_statement("s.t", key=("a", "b"), column="at", before=_WHEN, page=1, by={"purpose": "p"})
+        ],
+        "update_before.pages": [
+            built.update_before_statement(
+                "t",
+                key=("id",),
+                column="at",
+                before=_WHEN,
+                set_to={"status": "stale"},
+                by={"status": "dispatching"},
+                page=5,
+            )
+        ],
+    }
+
+
+@pytest.mark.parametrize("name", sorted(_builders()))
+def test_a_builder_writes_what_its_runner_sent(name: str) -> None:
+    """Flips if a builder a package without core runs writes another statement, or other binds, than the runner it
+    stands for sent in the recorded case."""
+    assert _sent(_builders()[name]) == _recorded()[name]

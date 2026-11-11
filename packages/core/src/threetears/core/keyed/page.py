@@ -34,215 +34,27 @@ IO only: one statement a page, on the caller's connection.
 
 from __future__ import annotations
 
-import base64
-import binascii
-import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from datetime import date, datetime, time
 from typing import Any
 
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
-from threetears.core.keyed._filters import (
-    AnyOf,
-    Derived,
-    Fragment,
-    Lock,
-    Selected,
-    by_conditions,
-    quoted_table,
-    relation,
-    narrowing,
-    selected_column,
+from threetears.core.keyed._filters import Derived, Fragment, Lock, Selected
+from threetears.interfaces.keyed.page import (
+    KeyPage,
+    Sort,
+    check_page,
+    cursor_values,
+    exists_keyed,
+    keyset_cursor,
+    next_past,
+    page_statement,
+    seeks_by_row,
 )
-from threetears.core.pagination import CursorError
-from threetears.core.sql_fragments import quote_identifier
 
 __all__ = ["Sort", "KeyPage", "copy_keyed", "exists_keyed", "keyset_cursor", "keyset_page", "keyset_rows"]
-
-
-@dataclass(frozen=True)
-class Sort:
-    """one column of a listing's sort, written by the endpoint, never by its caller.
-
-    :param column: the column, a TRUSTED identifier of the paged table
-    :ptype column: str
-    :param cast: its SQL type, which the cursor's text is cast back to; None binds it uncast (SQLite, which has no
-        ``::`` casts and compares by the column's own affinity; a column whose type the caller does not know): a page
-        past a cursor binds its text, :func:`keyset_rows` the last row's own value, typed by the column
-    :ptype cast: str | None
-    :param descending: whether it sorts descending
-    :ptype descending: bool
-    :param nullable: whether it can be ``NULL``
-    :ptype nullable: bool
-    :param expression: a TRUSTED SQL expression of the paged row's columns written as ``t."col"`` (``lower(t."name")``)
-        the sort is by, read under the name ``column``: the page selects it ``AS column`` and its cursor carries its
-        value; an index on the same expression answers the page (``CREATE INDEX ... (lower(name), id)``). None sorts
-        by the column itself
-    :ptype expression: str | None
-    """
-
-    column: str
-    cast: str | None = "text"
-    descending: bool = False
-    nullable: bool = False
-    expression: str | None = None
-
-    @property
-    def sorted_by(self) -> str:
-        """what the statement orders and compares by: the expression, or the column of the paged row (``t.``)."""
-        return self.expression if self.expression is not None else f"t.{quote_identifier(self.column)}"
-
-
-@dataclass(frozen=True)
-class KeyPage:
-    """a listing's page.
-
-    :param rows: the page's rows, in the sort's order
-    :ptype rows: list[dict[str, Any]]
-    :param next_cursor: the cursor of the page after it; None on the last page
-    :ptype next_cursor: str | None
-    """
-
-    rows: list[dict[str, Any]]
-    next_cursor: str | None
-
-
-def _as_text(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, datetime | date | time):
-        return value.isoformat()
-    return str(value)
-
-
-def keyset_cursor(order: Sequence[Sort], row: Mapping[str, Any]) -> str:
-    """the cursor of a page that ends at ``row``: :func:`keyset_page` given it resumes right after ``row``.
-
-    The cursor every page answers (:attr:`KeyPage.next_cursor`), made from a row's sort values: a caller moving a
-    listing onto :func:`keyset_page` makes one from a place its own older cursor named, so those keep resuming.
-
-    :param order: the sort the cursor resumes, as :func:`keyset_page` is given it
-    :ptype order: Sequence[Sort]
-    :param row: the row the page ended at: each sort column's value under its name (``None`` for ``NULL``)
-    :ptype row: Mapping[str, Any]
-    :return: the cursor
-    :rtype: str
-    :raises KeyError: when ``row`` lacks a sort column
-    """
-    values = [None if row[sort.column] is None else _as_text(row[sort.column]) for sort in order]
-    raw = json.dumps([[sort.column for sort in order], values], separators=(",", ":"))
-    return base64.urlsafe_b64encode(raw.encode()).decode()
-
-
-def _decode(order: Sequence[Sort], cursor: str) -> list[str | None]:
-    try:
-        named, values = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
-    except (binascii.Error, ValueError, UnicodeError, TypeError) as exc:
-        raise CursorError(f"invalid cursor token: {cursor!r}") from exc
-    if named != [sort.column for sort in order] or not isinstance(values, list) or len(values) != len(order):
-        raise CursorError("the cursor names another sort than this listing's")
-    if not all(value is None or isinstance(value, str) for value in values):
-        raise CursorError("the cursor's values are not text")
-    return values
-
-
-def _seeks_by_row(order: Sequence[Sort]) -> bool:
-    """whether the rows past a place in ``order`` are one row comparison: every column one direction, none NULL."""
-    return len(order) > 1 and not any(sort.nullable for sort in order) and len({sort.descending for sort in order}) == 1
-
-
-def _past(
-    order: Sequence[Sort],
-    values: Sequence[Any],
-    first: int,
-    *,
-    by_row: bool = False,
-) -> tuple[str, list[Any]]:
-    """the condition naming the rows after the cursor, and its parameters numbered from ``first``.
-
-    ``by_row`` (PostgreSQL, a sort :func:`_seeks_by_row`): the row comparison alone, ``(c1, c2) > ($1, $2)``, which
-    PostgreSQL seeks its index by; the expansion makes it plan a bitmap scan and a sort of every row past the lead
-    (a 1,001-row page of a 6,000-row prefix: 2.3 ms against 0.28 ms). Otherwise the leading bound and the expansion,
-    which YugabyteDB seeks inside a hashed bucket by (a row comparison there reads the bucket from its start)."""
-    params: list[Any] = []
-    marks: list[str | None] = []
-    for sort, value in zip(order, values, strict=True):
-        if value is None:
-            marks.append(None)
-        else:
-            params.append(value)
-            place = f"${first + len(params) - 1}"
-            if sort.cast is None:
-                marks.append(place)
-            else:
-                marks.append(f"{place}::{'text' if sort.cast == 'text' else f'text::{sort.cast}'}")
-
-    def after(sort: Sort, mark: str | None) -> str:
-        column = sort.sorted_by
-        if mark is None:
-            # nulls last ascending: nothing follows within the column; nulls first descending: every value follows
-            return f"{column} IS NOT NULL" if sort.descending else "FALSE"
-        beyond = f"{column} {'<' if sort.descending else '>'} {mark}"
-        return f"({beyond} OR {column} IS NULL)" if sort.nullable and not sort.descending else beyond
-
-    def same(sort: Sort, mark: str | None) -> str:
-        column = sort.sorted_by
-        return f"{column} IS NULL" if mark is None else f"{column} = {mark}"
-
-    if by_row and _seeks_by_row(order) and all(mark is not None for mark in marks):
-        # the sort's columns alone: the columns ``by`` pins are bound by equality beside it (``kind = $1 AND (name,
-        # id) > ($2, $3)``), never inside it. Inside it (``(kind, name, id) > ($1, $2, $3)``) only an index led by the
-        # pinned columns can take it as its condition, and PostgreSQL may read another (a unique index of the next
-        # column) from its start, filtering: 2,041 rows read for 21. Beside it, every index answering the order
-        # takes the comparison as its condition, the pinned columns' index by its equality first
-        columns = ", ".join(sort.sorted_by for sort in order)
-        bound = ", ".join(str(mark) for mark in marks)
-        return f"({columns}) {'<' if order[0].descending else '>'} ({bound})", params
-    expanded = after(order[-1], marks[-1])
-    for sort, mark in zip(reversed(order[:-1]), reversed(marks[:-1]), strict=True):
-        expanded = f"{after(sort, mark)} OR ({same(sort, mark)} AND ({expanded}))"
-    head, head_mark = order[0], marks[0]
-    if head_mark is not None and not head.nullable:
-        bound = f"{head.sorted_by} {'<=' if head.descending else '>='} {head_mark}"
-        return f"{bound} AND ({expanded})", params
-    return f"({expanded})", params
-
-
-def _order_by(order: Sequence[Sort]) -> str:
-    parts = []
-    for sort in order:
-        direction = "DESC" if sort.descending else "ASC"
-        nulls = (" NULLS FIRST" if sort.descending else " NULLS LAST") if sort.nullable else ""
-        parts.append(f"{sort.sorted_by} {direction}{nulls}")
-    return ", ".join(parts)
-
-
-def exists_keyed(table: str, *, on: Mapping[str, str], by: Mapping[str, Any] | None = None) -> Fragment:
-    """a visibility clause: whether a row of ``table`` joined to the paged row by ``on`` (and ``by``) exists.
-
-    ``EXISTS (SELECT 1 FROM <table> AS v WHERE v.<col> = t.<outer col> AND ... AND <by>)``, a correlated probe: with
-    ``on`` and ``by`` covering a leading part of ``table``'s key, each probe is one keyed lookup.
-
-    :param table: the table probed, a TRUSTED identifier
-    :ptype table: str
-    :param on: its column -> the paged row's column it equals, TRUSTED identifiers
-    :ptype on: Mapping[str, str]
-    :param by: its columns pinned to a value (the caller, the tenant), each a value or an ``AnyOf``
-    :ptype by: Mapping[str, Any] | None
-    :return: the clause, its placeholders numbered from ``$1``
-    :rtype: Fragment
-    :raises ValueError: when ``on`` names nothing
-    """
-    if not on:
-        raise ValueError(f"a visibility probe of {table} names how it joins the paged row")
-    joined = [f"v.{quote_identifier(inner)} = t.{quote_identifier(outer)}" for inner, outer in on.items()]
-    pinned, params = by_conditions(by or {}, alias="v")
-    sql = f"EXISTS (SELECT 1 FROM {quoted_table(table)} AS v WHERE {' AND '.join([*joined, *pinned])})"
-    return Fragment(sql=sql, params=tuple(params))
 
 
 async def keyset_page(
@@ -291,22 +103,18 @@ async def keyset_page(
         or ``limit`` is under one
     :raises CursorError: when ``cursor`` is not one this sort issued
     """
-    _check(table, columns, order, limit)
-    past = None if cursor is None else _decode(order, cursor)
+    check_page(table, columns, order, limit)
+    past = None if cursor is None else cursor_values(order, cursor)
     by_row = past is not None and await _steps_by_row(conn, order)
-    sql, params = _statement(table, columns, by, order, limit + 1, past, by_row, visible, where, lock)
-    answered = [dict(row) for row in await conn.fetch(sql, *params)]
-    more = len(answered) > limit
-    if more:
-        del answered[limit:]
-    return KeyPage(rows=answered, next_cursor=keyset_cursor(order, answered[-1]) if more else None)
+    sql, params = page_statement(table, columns, by, order, limit + 1, past, by_row, visible, where, lock)
+    return KeyPage.cut(order, [dict(row) for row in await conn.fetch(sql, *params)], limit)
 
 
 async def _steps_by_row(conn: Any, order: Sequence[Sort]) -> bool:
-    """whether a page past a place in ``order`` steps by the row comparison: a sort :func:`_seeks_by_row`, on a
+    """whether a page past a place in ``order`` steps by the row comparison: a sort :func:`~threetears.interfaces.keyed.page.seeks_by_row`, on a
     database other than YugabyteDB (an in-process DuckDB or SQLite is never it; an asyncpg connection says so with
     no round trip, :func:`~threetears.core.backends.dialect.known_on_yugabyte`)."""
-    if not _seeks_by_row(order):
+    if not seeks_by_row(order):
         return False
     if isinstance(conn, ThreadedDuckDB | ThreadedSQLite | InlineDuckDB):
         return True
@@ -316,74 +124,6 @@ async def _steps_by_row(conn: Any, order: Sequence[Sort]) -> bool:
     if isinstance(named, Dialect):
         return named in {Dialect.POSTGRES, Dialect.DUCKDB}
     return not await known_on_yugabyte(conn)
-
-
-def _check(table: str | Derived, columns: Sequence[str | Selected], order: Sequence[Sort], limit: int) -> None:
-    if not order:
-        raise ValueError(f"a page of {table} names its sort")
-    if limit < 1:
-        raise ValueError(f"a page keeps at least one row, got {limit}")
-    missing = [sort.column for sort in order if sort.expression is None and sort.column not in columns]
-    if missing:
-        raise ValueError(f"a page of {table} reads its sort columns, missing {missing}")
-    shadowed = [sort.column for sort in order if sort.expression is not None and sort.column in columns]
-    if shadowed:
-        # the cursor would carry the column's value, not the expression's the page compares
-        raise ValueError(f"a sort expression is read under a name of its own, not a column read: {shadowed}")
-
-
-def _pinned(by: Mapping[str, Any], order: Sequence[Sort]) -> list[str]:
-    """each column ``by`` pins to one value (not a set, not NULL, not a sort column), as the page names it."""
-    sorted_columns = {sort.column for sort in order}
-    return [
-        f"t.{quote_identifier(column)}"
-        for column, value in by.items()
-        if not isinstance(value, AnyOf) and value is not None and column not in sorted_columns
-    ]
-
-
-def _statement(
-    table: str | Derived,
-    columns: Sequence[str | Selected],
-    by: Mapping[str, Any],
-    order: Sequence[Sort],
-    rows: int,
-    past: Sequence[Any] | None,
-    by_row: bool,
-    visible: Sequence[Fragment],
-    where: Sequence[Fragment],
-    lock: Lock | None,
-) -> tuple[str, list[Any]]:
-    """one page's statement: ``rows`` rows past ``past`` (the last row's sort values, as text where cast; the first
-    page when None), and its parameters."""
-    conditions, params = by_conditions(by, alias="t")
-    lead = _pinned(by, order)
-    for fragment in where:
-        conditions.append(narrowing(fragment, len(params)))
-        params += list(fragment.params)
-    if past is not None:
-        condition, past_params = _past(order, past, len(params) + 1, by_row=by_row)
-        conditions.append(condition)
-        params += past_params
-    for fragment in visible:
-        conditions.append(narrowing(fragment, len(params)))
-        params += list(fragment.params)
-    clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    selected = ", ".join(
-        [selected_column(column) for column in columns]
-        + [
-            f"{sort.expression} AS {quote_identifier(sort.column)}"
-            for sort in order
-            if sort.expression is not None and sort.column not in columns
-        ]
-    )
-    # the pinned columns, constant on every row, lead the ORDER BY too: the same order, read as one range of the
-    # index they lead
-    ordered = ", ".join([f"{column} ASC" for column in lead] + [_order_by(order)])
-    sql = f"SELECT {selected} FROM {relation(table, 't')}{clause} ORDER BY {ordered} LIMIT {rows}"
-    if lock is not None:
-        sql += lock.of("t")
-    return sql, params
 
 
 async def keyset_rows(
@@ -406,7 +146,7 @@ async def keyset_rows(
     last row, its sort values bound straight from that row (no cursor text between them; an uncast sort column,
     ``Sort(cast=None)``, binds the row's own value, so the database types it by the column). A listing of one page is
     one statement. Past a place, PostgreSQL steps by the row comparison, YugabyteDB by the leading bound and the
-    expansion (:func:`_past`), as :func:`keyset_page` does.
+    expansion (:func:`~threetears.interfaces.keyed.page.page_statement`), as :func:`keyset_page` does.
 
     :param conn: anything with an asyncpg-shaped ``fetch(query, *params)``
     :ptype conn: Any
@@ -430,12 +170,12 @@ async def keyset_rows(
     :rtype: list[dict[str, Any]]
     :raises ValueError: as :func:`keyset_page`
     """
-    _check(table, columns, order, page)
+    check_page(table, columns, order, page)
     rows: list[dict[str, Any]] = []
     past: list[Any] | None = None
     by_row: bool | None = None
     while True:
-        sql, params = _statement(table, columns, by, order, page + 1, past, bool(by_row), visible, where, None)
+        sql, params = page_statement(table, columns, by, order, page + 1, past, bool(by_row), visible, where, None)
         answered = await conn.fetch(sql, *params)
         rows.extend(dict(row) for row in answered)
         if len(answered) <= page:
@@ -443,15 +183,7 @@ async def keyset_rows(
         if by_row is None:
             by_row = await _steps_by_row(conn, order)
         last = rows[-1]
-        past = [_bound(sort, last[sort.column]) for sort in order]
-
-
-def _bound(sort: Sort, value: Any) -> Any:
-    """how :func:`keyset_rows` binds a sort column's value from the last row: its text, cast back by the sort; the
-    value as read when the sort names no cast (the database types it by the column); None for ``NULL``."""
-    if value is None or sort.cast is None:
-        return value
-    return _as_text(value)
+        past = next_past(order, last)
 
 
 async def copy_keyed(
@@ -491,8 +223,8 @@ async def copy_keyed(
     :raises ValueError: as :func:`keyset_page`
     """
     # no cursor is made from the rows, so a sort column need not be read (a time sorted by, read as its text)
-    _check(table, [*columns, *(sort.column for sort in order if sort.expression is None)], order, 1)
-    sql, params = _statement(table, columns, by, order, 1, None, False, (), where, None)
+    check_page(table, [*columns, *(sort.column for sort in order if sort.expression is None)], order, 1)
+    sql, params = page_statement(table, columns, by, order, 1, None, False, (), where, None)
     sql = sql.removesuffix(" LIMIT 1")
     chunks: list[bytes] = []
 

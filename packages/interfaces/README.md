@@ -16,6 +16,7 @@ One module per domain:
 |---|---|
 | `threetears.interfaces.access` | The identity and authorization vocabulary `3tears-iam` and `3tears-agent-acl` both name |
 | `threetears.interfaces.media` | Media capability Protocols, the value types that cross them, and the object-key builder |
+| `threetears.interfaces.keyed` | The keyed helpers' vocabulary and pure builders: each keyed read and write's SQL text and binds, and the connection Protocol they run on |
 
 ## access
 
@@ -53,6 +54,24 @@ ships without a coordinated release.
 ```python
 from threetears.interfaces.media import LOCATOR_KIND_DIRECT_FILE, MediaFacets
 ```
+
+## keyed
+
+```python
+from threetears.interfaces.keyed import KeyBatch, read_keyed_statements, read_row_statement
+```
+
+The half of 3tears' keyed helpers that needs no connection. The vocabulary
+(`AnyOf`, `Fragment`, `Selected`, `Lock`, `KeyBatch`, `Sort`, `Match`, and the
+value types the runners answer) and the builders that write each shape's
+statement: a point read (`read_row_statement`), a keyed batch
+(`read_keyed_statements`), a listing's page and a listing read to its end
+(`keyset_page_statement`, `keyset_rows_statement`), a keyed write
+(`update_keyed_statements`, `delete_keyed_statements`) and an expiry sweep
+(`delete_before_statement`). Each answers SQL text with `$n` placeholders and
+its binds. `threetears.core.keyed` runs them and re-exports every name. A
+package that may not depend on core runs a builder's statement on its own
+`KeyedConnection`, or on SQLite through `sqlite_numbered`.
 
 ## Install
 

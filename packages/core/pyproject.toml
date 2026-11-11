@@ -22,6 +22,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    # the keyed helpers' vocabulary and pure builders (threetears.interfaces.keyed), which core.keyed re-exports and runs
+    "3tears-interfaces>=0.95.0,<0.96.0",
     "3tears-observe>=0.95.0,<0.96.0",
     "3tears-nats>=0.95.0,<0.96.0",
     "sqlalchemy",
@@ -90,4 +92,5 @@ packages = ["src/threetears"]
 
 [tool.uv.sources]
 3tears-observe = { workspace = true }
+3tears-interfaces = { workspace = true }
 3tears-nats = { workspace = true }

@@ -22,12 +22,19 @@ part of the key, or an index declared for the caller's read.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any, Final, overload
 
-from threetears.core.keyed._filters import _SQL_TYPE, AnyOf, Derived, Fragment, by_conditions, relation, narrowing
+from threetears.core.keyed._filters import AnyOf, Derived, Fragment, by_conditions, relation, narrowing
 from threetears.core.sql_fragments import quote_identifier
+from threetears.interfaces.keyed.counts import (
+    NO_MARK_FLOOR,
+    SQL_DIALECT_ATTRIBUTE,
+    BoundedCount,
+    Dialect,
+    MarkedCount,
+    rows_affected,
+)
+from threetears.interfaces.keyed.filters import SQL_TYPE
 
 __all__ = [
     "SQL_DIALECT_ATTRIBUTE",
@@ -43,27 +50,6 @@ __all__ = [
     "rows_affected",
 ]
 
-#: the verbs whose status ends in the rows they touched (``INSERT`` carries an oid before it)
-_COUNTED_VERBS: Final[frozenset[str]] = frozenset(
-    {"INSERT", "UPDATE", "DELETE", "SELECT", "COPY", "MERGE", "MOVE", "FETCH"}
-)
-
-
-#: the attribute a reader names its database's dialect by (a datasource reader: its datasource's engine), a
-#: :class:`Dialect`; a reader naming none is asked (:func:`threetears.core.keyed.dialect_of`)
-SQL_DIALECT_ATTRIBUTE: Final = "sql_dialect"
-
-
-class Dialect(StrEnum):
-    """the database a statistics read is spelled for. PostgreSQL and YugabyteDB keep the same catalog."""
-
-    POSTGRES = "postgres"
-    YUGABYTE = "yugabyte"
-    DUCKDB = "duckdb"
-    #: a warehouse read through a datasource: no arrays, its own catalog (no estimate is read from it)
-    REDSHIFT = "redshift"
-
-
 #: the planner's row estimate of a table, by dialect: ``$1`` the table, ``$2`` its schema (the current one when null)
 _ESTIMATE_SQL: Final[Mapping[Dialect, str]] = {
     Dialect.POSTGRES: (
@@ -76,21 +62,6 @@ _ESTIMATE_SQL: Final[Mapping[Dialect, str]] = {
         "WHERE table_name = $1 AND schema_name = COALESCE($2, current_schema())"
     ),
 }
-
-
-def rows_affected(status: str) -> int:
-    """the rows a statement touched, read off its own status (asyncpg's ``execute`` answer).
-
-    :param status: ``UPDATE 3``, ``DELETE 0``, ``INSERT 0 5``, ...
-    :ptype status: str
-    :return: the rows
-    :rtype: int
-    :raises ValueError: when the status names no row count (``CREATE TABLE``)
-    """
-    words = status.split()
-    if len(words) < 2 or words[0].upper() not in _COUNTED_VERBS or not words[-1].isdigit():
-        raise ValueError(f"the status {status!r} names no row count")
-    return int(words[-1])
 
 
 async def estimated_rows(
@@ -121,20 +92,6 @@ async def estimated_rows(
     if estimate is None or int(estimate) < 0:
         return None
     return int(estimate)
-
-
-@dataclass(frozen=True)
-class BoundedCount:
-    """a count of at most a bound's rows.
-
-    :param count: the rows counted, never more than the bound
-    :ptype count: int
-    :param more: whether rows past the bound are held
-    :ptype more: bool
-    """
-
-    count: int
-    more: bool
 
 
 def _where(by: Mapping[str, Any]) -> tuple[str, list[Any]]:
@@ -310,7 +267,7 @@ async def _counts_paged(
         raise ValueError(f"{column} is counted by, so it is not also pinned")
     if batch < 1:
         raise ValueError(f"a keyed count answers at least one group a statement, got {batch}")
-    if cast is not None and not _SQL_TYPE.match(cast):
+    if cast is not None and not SQL_TYPE.match(cast):
         raise ValueError(f"counts_by: {cast!r} is not a SQL type name")
     quoted = quote_identifier(column)
     counted: dict[Any, int] = {}
@@ -339,33 +296,6 @@ async def _counts_paged(
     if rows and int(rows[0]["held"]):
         counted[None] = int(rows[0]["held"])
     return counted
-
-
-#: the stamp a side with no mark yet is held past: earlier than any stamp, so every stamped row is past it
-NO_MARK_FLOOR: Final = "0001-01-01 00:00:00"
-
-
-@dataclass(frozen=True)
-class MarkedCount:
-    """one group of a relation's rows past its marks (:func:`counts_by_relations` with ``since``).
-
-    :param value: the value of ``column`` (text when packed)
-    :ptype value: Any
-    :param group: the value of the relation's ``group`` column, as text; None for a NULL group or no group column
-    :ptype group: str | None
-    :param rows: the group's rows past the marks
-    :ptype rows: int
-    :param newest: each ``max_of`` column -> its newest value among those rows, as text (None when every one is NULL)
-    :ptype newest: dict[str, str | None]
-    :param fresh: whether a row of the group is past the ``fresh`` stamp's mark
-    :ptype fresh: bool
-    """
-
-    value: Any
-    group: str | None
-    rows: int
-    newest: dict[str, str | None]
-    fresh: bool
 
 
 @overload

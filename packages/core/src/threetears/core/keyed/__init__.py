@@ -43,6 +43,11 @@ proxy, a connection, DuckDB through :class:`ThreadedDuckDB`, or SQLite through :
 code on its own DuckDB connection, in its own transaction, through :class:`InlineDuckDB` and :func:`run_inline`. The
 SQL is one spelling for PostgreSQL, YugabyteDB and DuckDB; a database with no arrays (Redshift, SQLite) binds sets as a list
 (``AnyOf(..., as_list=True)``, ``KeyBatch(..., as_list=True)``). Each is IO only, awaited on the caller's connection; none touches a row in Python beyond its answer.
+
+The vocabulary (:class:`AnyOf`, :class:`Fragment`, :class:`Lock`, :class:`KeyBatch`, :class:`Sort`, :class:`Match`, the
+value types the helpers answer) and the pure builders writing each helper's statements live in the dependency-free
+:mod:`threetears.interfaces.keyed`; the names here are the same objects. What stays here runs: on a connection, with
+the transport's row cap, the epochs, the YugabyteDB check and the Arrow reply.
 """
 
 from __future__ import annotations

@@ -141,6 +141,7 @@ name = "3tears"
 version = "0.95.0"
 source = { editable = "packages/core" }
 dependencies = [
+    { name = "3tears-interfaces" },
     { name = "3tears-nats" },
     { name = "3tears-observe" },
     { name = "asyncpg" },
@@ -189,6 +190,7 @@ uuid-utils = [
 
 [package.metadata]
 requires-dist = [
+    { name = "3tears-interfaces", editable = "packages/interfaces" },
     { name = "3tears-nats", editable = "packages/nats" },
     { name = "3tears-nats", extras = ["client"], marker = "extra == 'nats'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },

@@ -11,7 +11,12 @@ import pytest
 
 @pytest.mark.parametrize(
     "module",
-    ["threetears.interfaces", "threetears.interfaces.access", "threetears.interfaces.media"],
+    [
+        "threetears.interfaces",
+        "threetears.interfaces.access",
+        "threetears.interfaces.media",
+        "threetears.interfaces.keyed",
+    ],
 )
 def test_importing_a_domain_loads_nothing_outside_the_stdlib(module: str) -> None:
     """Checked in a fresh interpreter, which nothing preloaded."""

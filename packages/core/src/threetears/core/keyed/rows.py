@@ -35,27 +35,32 @@ dicts (:func:`read_keyed`) or the Arrow table (:func:`read_keyed_arrow`, parsed 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
-from functools import cached_property
+from dataclasses import dataclass
 from operator import itemgetter
-from typing import Any, Final, Literal, overload
+from typing import Any, Literal, overload
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.protocol import L3AnswerCutError
 from threetears.core.keyed._filters import (
-    IN_SUBQUERY,
     Derived,
     Fragment,
     Lock,
     Selected,
-    batched_join_hint,
     binds_native_arrays,
     by_conditions,
     relation,
     narrowing,
-    selected_column,
 )
 from threetears.core.sql_fragments import quote_identifier
+from threetears.interfaces.keyed.rows import (
+    ANY_ROWS_CAP,
+    DEFAULT_KEY_BATCH,
+    DIRECT_KEY_BATCH,
+    KeyBatch,
+    KeyTooWide,
+    key_chunks,
+    keyed_read_statement,
+)
 
 __all__ = [
     "ANY_ROWS_CAP",
@@ -70,19 +75,6 @@ __all__ = [
     "read_keyed_arrow",
 ]
 
-#: the most rows one :func:`any_rows` look takes
-ANY_ROWS_CAP: Final = 1000
-
-#: keys a statement names when the caller does not say, through a transport that carries its parameters as JSON
-#: and bounds its replies (the L3 rail, a datasource): well under a statement's parameter and reply bounds
-DEFAULT_KEY_BATCH: Final = 1000
-
-#: keys a statement names when the caller does not say, on a connection that binds arrays natively (asyncpg's, to
-#: PostgreSQL or YugabyteDB): each key column is ONE array parameter, so the batch is bounded by the statement's work,
-#: not by its parameters, and a second statement costs more than the keys it splits off (2,000 keys: 0.5-0.65 ms
-#: more as two statements than as one)
-DIRECT_KEY_BATCH: Final = 10_000
-
 
 def key_batch_for(conn: Any) -> int:
     """the keys a statement names on ``conn`` when the caller does not say.
@@ -93,283 +85,6 @@ def key_batch_for(conn: Any) -> int:
     :rtype: int
     """
     return DIRECT_KEY_BATCH if binds_native_arrays(conn) else DEFAULT_KEY_BATCH
-
-
-#: a batch's key columns are each bound to their distinct values when those name at most this many times its keys
-_TIGHT_BOUND_FACTOR: Final = 2
-
-#: the key column types bound as text arrays, with no cast
-_TEXT_TYPES: Final = frozenset({"text", "varchar"})
-
-#: the most statement shapes whose text is kept rendered; past it the oldest is let go
-_RENDERED_SHAPES: Final = 4096
-
-#: an array statement's text by its shape (:attr:`_Statement._shape`, which columns bind natively, whether bounded):
-#: a shape read again (the same caller's next read) binds its batch's arrays to the text already rendered
-_RENDERED: dict[tuple[Any, ...], str] = {}
-
-
-def _remember(shape: tuple[Any, ...], sql: str) -> None:
-    """keep ``sql`` as ``shape``'s text, letting the oldest shape go past :data:`_RENDERED_SHAPES`."""
-    if len(_RENDERED) >= _RENDERED_SHAPES:
-        _RENDERED.pop(next(iter(_RENDERED)), None)
-    _RENDERED[shape] = sql
-
-
-class KeyTooWide(ValueError):
-    """one key alone holds as many rows as the transport answers a statement: it is a prefix to page through."""
-
-
-@dataclass(frozen=True)
-class KeyBatch:
-    """the keys a read names: a leading part of a key, one tuple a key.
-
-    :param columns: the key columns, TRUSTED identifiers, in key order
-    :ptype columns: tuple[str, ...]
-    :param values: one tuple a key, a value a column; each key is read once however often named
-    :ptype values: Sequence[Sequence[Any]]
-    :param casts: each column's SQL type its text is cast back to; ``text`` for every column when empty
-    :ptype casts: tuple[str, ...]
-    :param null_safe: a ``None`` in a key matches the rows holding none in that column (``IS NOT DISTINCT FROM``):
-        a scope column's NULL bucket
-    :ptype null_safe: bool
-    :param as_list: bind the keys as a list of placeholders (``(c1, c2) IN (($1, $2), ...)``), each value as it is,
-        for a database with no arrays (Redshift, SQLite); a statement's text then follows its batch's size
-    :ptype as_list: bool
-    """
-
-    columns: tuple[str, ...]
-    values: Sequence[Sequence[Any]]
-    casts: tuple[str, ...] = field(default=())
-    null_safe: bool = False
-    as_list: bool = False
-
-    def __post_init__(self) -> None:
-        if not self.columns:
-            raise ValueError("a key batch names at least one key column")
-        if self.as_list and self.null_safe:
-            raise ValueError("a key batch bound as a list matches by equality; a null-safe batch binds arrays")
-        if self.casts and len(self.casts) != len(self.columns):
-            raise ValueError(f"a key batch casts each of its {len(self.columns)} columns, got {len(self.casts)}")
-        for key in self.values:
-            if len(key) != len(self.columns):
-                raise ValueError(f"a key of {self.columns} has {len(self.columns)} values, got {tuple(key)!r}")
-
-    def cast(self, index: int) -> str:
-        """the SQL type column ``index``'s text is cast back to.
-
-        :param index: the column's place in :attr:`columns`
-        :ptype index: int
-        :return: the type
-        :rtype: str
-        """
-        return self.casts[index] if self.casts else "text"
-
-
-def _text(value: Any) -> str | None:
-    """a key value as the text its array binds: its ISO form for a date or time, ``str`` otherwise."""
-    if value is None:
-        return None
-    isoformat = getattr(value, "isoformat", None)
-    return str(isoformat()) if callable(isoformat) else str(value)
-
-
-@dataclass(frozen=True)
-class _Statement:
-    """the statement one keyed read sends a batch: built once for arrays, once a batch for a list of keys."""
-
-    table: str | Derived
-    selected: str
-    keys: KeyBatch
-    by: Mapping[str, Any]
-    lock: Lock | None = None
-    where: Sequence[Fragment] = ()
-
-    def _guards(self, before: int) -> tuple[list[str], list[Any]]:
-        """the ``where`` fragments, renumbered past the ``before`` parameters the statement already binds."""
-        conditions: list[str] = []
-        params: list[Any] = []
-        for fragment in self.where:
-            conditions.append(narrowing(fragment, before + len(params)))
-            params += list(fragment.params)
-        return conditions, params
-
-    def _locked(self, sql: str) -> str:
-        if self.lock is None:
-            return sql
-        # locked in the key's order, so two lockers of the same keys wait on each other rather than deadlock
-        ordered = ", ".join(f"t.{quote_identifier(column)}" for column in self.keys.columns)
-        return f"{sql} ORDER BY {ordered}{self.lock.of('t')}"
-
-    def render(self, chunk: Sequence[tuple[Any, ...]], natively: bool = False) -> tuple[str, tuple[Any, ...]]:
-        """the statement naming ``chunk``'s keys, and its parameters.
-
-        :param chunk: the keys
-        :ptype chunk: Sequence[tuple[Any, ...]]
-        :param natively: whether the connection binds typed arrays natively (:func:`binds_native_arrays`): a column
-            whose values are of its type (no str) is then bound as ``$n::<type>[]`` from the values themselves
-        :ptype natively: bool
-        :return: the statement, and its parameters
-        :rtype: tuple[str, tuple[Any, ...]]
-        """
-        width = len(self.keys.columns)
-        if self.keys.as_list:
-            head = f"SELECT {self.selected} FROM {relation(self.table, 't')}"
-            columns = [f"t.{quote_identifier(column)}" for column in self.keys.columns]
-            if width == 1:
-                named = f"{columns[0]} IN ({', '.join(f'${place + 1}' for place in range(len(chunk)))})"
-            else:
-                rows = ", ".join(
-                    "(" + ", ".join(f"${row * width + index + 1}" for index in range(width)) + ")"
-                    for row in range(len(chunk))
-                )
-                named = f"({', '.join(columns)}) IN ({rows})"
-            conditions, pinned = by_conditions(self.by, first=len(chunk) * width + 1, alias="t")
-            guards, guarded = self._guards(len(chunk) * width + len(pinned))
-            where = " AND ".join([named, *conditions, *guards])
-            return self._locked(f"{head} WHERE {where}"), (
-                *(value for key in chunk for value in key),
-                *pinned,
-                *guarded,
-            )
-        # each key column's values bound as one array: of the column's type where the connection binds it natively
-        # and the values are of it, else a text array cast as a whole to it. The column is compared with values of its
-        # own type, never wrapped or compared element by element through a cast, so the planner reads the key's index
-        # by them (an Index Cond), as a hand-written "col = ANY($1::uuid[])" would
-        held = [list(map(itemgetter(index), chunk)) for index in range(width)]
-        native = self._native(held, natively)
-        arrays = tuple(
-            values if native[index] else [_text(value) for value in values] for index, values in enumerate(held)
-        )
-        bounded: tuple[list[Any], ...] = ()
-        if width > 1 and not self.keys.null_safe:
-            bounded = self._tight_values(arrays, len(chunk))
-        guarded = [param for fragment in self.where for param in fragment.params]
-        # the statement's text follows only its shape (which columns bind natively, whether bounded): rendered once a
-        # shape, here or by an earlier read of the same shape, and each batch binds its own arrays to it
-        shape = (self._shape, native, bool(bounded))
-        sql = _RENDERED.get(shape)
-        if sql is None:
-            sql = self._array_text(native, bool(bounded))
-            _remember(shape, sql)
-        return sql, (*arrays, *self._by[1], *bounded, *guarded)
-
-    @cached_property
-    def _by(self) -> tuple[list[str], list[Any]]:
-        """``by``'s conditions and values in an array statement, its placeholders following the key columns'."""
-        return by_conditions(self.by, first=len(self.keys.columns) + 1, alias="t")
-
-    @cached_property
-    def _shape(self) -> tuple[Any, ...]:
-        """everything an array statement's text follows but the batch: its relation, columns, keys' columns and
-        types, ``by``'s conditions, lock and filters (each filter's text and how many parameters it binds)."""
-        return (
-            self.table,
-            self.selected,
-            self.keys.columns,
-            self.keys.casts,
-            self.keys.null_safe,
-            self.lock,
-            tuple(self._by[0]),
-            tuple((fragment.sql, len(fragment.params)) for fragment in self.where),
-        )
-
-    def _array_text(self, native: tuple[bool, ...], bounded: bool) -> str:
-        """the array statement's text: ``= ANY`` for one key column, else the keys joined as rows (null-safe, or by
-        ``IN (SELECT unnest ...)``, each key column bounded to its distinct values when ``bounded``)."""
-        width = len(self.keys.columns)
-        head = f"SELECT {self.selected} FROM {relation(self.table, 't')}"
-        typed = [self._typed_array(index + 1, index, native[index]) for index in range(width)]
-        conditions, pinned = self._by
-        columns = [f"t.{quote_identifier(column)}" for column in self.keys.columns]
-        if width == 1 and not self.keys.null_safe:
-            guards, _ = self._guards(width + len(pinned))
-            where = " AND ".join([f"{columns[0]} = ANY({typed[0]})", *conditions, *guards])
-            return self._locked(f"{head} WHERE {where}")
-        unnested = ", ".join(f"unnest({array}) AS k{index}" for index, array in enumerate(typed))
-        if self.keys.null_safe:
-            # a NULL bucket matches only by IS NOT DISTINCT FROM, which = ANY cannot say: joined to the keys
-            joined = " AND ".join(f"{column} IS NOT DISTINCT FROM k.k{index}" for index, column in enumerate(columns))
-            guards, _ = self._guards(width + len(pinned))
-            kept = [*conditions, *guards]
-            clause = f" WHERE {' AND '.join(kept)}" if kept else ""
-            return self._locked(f"{head} JOIN (SELECT {unnested}) AS k ON {joined}{clause}")
-        # the keys joined to the table as rows: a nested loop over the key's index, each key one lookup. Never a
-        # column = ANY its values beside it: those name the values' cross product (600 keys over 50 states, 200
-        # geographies and 30 ids name the whole table), and the planner reads it whole. YugabyteDB is told to batch
-        # the loop (batched_join_hint): one storage request for the batch, not one a key
-        named = f"({', '.join(columns)}) IN (SELECT {unnested})"
-        first = width + len(pinned) + 1
-        bounds = (
-            [
-                f"t.{quote_identifier(column)} = ANY({self._typed_array(first + index, index, native[index])})"
-                for index, column in enumerate(self.keys.columns)
-            ]
-            if bounded
-            else []
-        )
-        guards, _ = self._guards(width + len(pinned) + len(bounds))
-        where = " AND ".join([named, *conditions, *bounds, *guards])
-        return self._locked(f"{batched_join_hint(IN_SUBQUERY, 't')}{head} WHERE {where}")
-
-    def _tight_values(self, arrays: tuple[list[Any], ...], keys: int) -> tuple[list[Any], ...]:
-        """each key column's distinct values, bound beside the keys (``t."a" = ANY($n)``) when their cross product
-        names at most :data:`_TIGHT_BOUND_FACTOR` times the keys; none otherwise.
-
-        A batch of prefixes that share their lead (a page's 200 geographies of one state) names its rows by those
-        bounds exactly: PostgreSQL reads them as the index's own condition, where the keys alone, each naming many
-        rows, plan as a hash join over the whole table (300,000 rows read for 6,000). A batch of scattered keys
-        (600 keys over 50 states, 200 geographies and 30 ids) names the whole table by them, so it gets none and is
-        read by its keys, one lookup a key.
-        """
-        distinct = [list(dict.fromkeys(values)) for values in arrays]
-        product = 1
-        for values in distinct:
-            product *= len(values)
-        if product > _TIGHT_BOUND_FACTOR * keys:
-            return ()
-        return tuple(distinct)
-
-    def _native(self, held: Sequence[list[Any]], natively: bool) -> tuple[bool, ...]:
-        """which key columns bind their values as they are: on a connection binding typed arrays natively, each
-        column of a type other than text whose values hold no str (a caller's text form stays text, cast in SQL).
-        Judged by the values' distinct types, not value by value (2,000 keys: a few types)."""
-        if not natively:
-            return (False,) * len(self.keys.columns)
-        return tuple(
-            self.keys.cast(index).lower() not in _TEXT_TYPES
-            and not any(issubclass(kind, str) for kind in set(map(type, values)))
-            for index, values in enumerate(held)
-        )
-
-    def _typed_array(self, place: int, column: int, native: bool) -> str:
-        """placeholder ``place``'s array of key column ``column``: of the column's type, bound natively, or a text
-        array cast as a whole to it."""
-        cast = self.keys.cast(column)
-        if cast.lower() in _TEXT_TYPES:
-            return f"${place}::text[]"
-        return f"${place}::{cast}[]" if native else f"${place}::text[]::{cast}[]"
-
-
-def _statement(
-    table: str | Derived,
-    columns: Sequence[str | Selected],
-    keys: KeyBatch,
-    by: Mapping[str, Any],
-    lock: Lock | None = None,
-    where: Sequence[Fragment] = (),
-) -> _Statement:
-    if not columns:
-        raise ValueError(f"a keyed read of {table} names the columns it reads")
-    selected = ", ".join(selected_column(column) for column in columns)
-    return _Statement(table=table, selected=selected, keys=keys, by=by, lock=lock, where=tuple(where))
-
-
-def _batches(keys: KeyBatch, batch: int) -> list[list[tuple[Any, ...]]]:
-    if batch < 1:
-        raise ValueError(f"a keyed read names at least one key a statement, got {batch}")
-    unique = list(dict.fromkeys(map(tuple, keys.values)))
-    return [unique[start : start + batch] for start in range(0, len(unique), batch)]
 
 
 @dataclass
@@ -499,7 +214,7 @@ async def read_keyed(
     :raises ValueError: when no column is named, ``batch`` is under one, or a key does not match the columns
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
-    statement = _statement(table, columns, keys, by or {}, lock, where)
+    statement = keyed_read_statement(table, columns, keys, by or {}, lock, where)
     natively = binds_native_arrays(conn)
 
     async def fetch(chunk: Sequence[tuple[Any, ...]]) -> list[Any]:
@@ -508,7 +223,7 @@ async def read_keyed(
 
     rows: list[Any] = []
     fit = _Fit()
-    for chunk in _batches(keys, key_batch_for(conn) if batch is None else batch):
+    for chunk in key_chunks(keys, key_batch_for(conn) if batch is None else batch):
         for answered in await _read_split(fetch, len, chunk, row_cap, table, fit):
             if records:
                 rows.extend(answered)
@@ -550,7 +265,7 @@ async def read_keyed_arrow(
     :raises ValueError: as :func:`read_keyed`
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
-    statement = _statement(table, list(types), keys, by or {})
+    statement = keyed_read_statement(table, list(types), keys, by or {})
     natively = binds_native_arrays(conn)
 
     async def fetch(chunk: Sequence[tuple[Any, ...]]) -> Any:
@@ -559,7 +274,7 @@ async def read_keyed_arrow(
 
     tables: list[Any] = []
     fit = _Fit()
-    for chunk in _batches(keys, key_batch_for(conn) if batch is None else batch):
+    for chunk in key_chunks(keys, key_batch_for(conn) if batch is None else batch):
         tables += await _read_split(fetch, lambda answered: int(answered.num_rows), chunk, row_cap, table, fit)
     return tables
 
