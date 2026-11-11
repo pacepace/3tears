@@ -55,7 +55,12 @@ from threetears.evals.analysis.stats import (
 )
 from threetears.evals.kernel.analysis_measures import BarAdjudication, MeasureCollection
 from threetears.evals.kernel.campaign import CampaignWindow, EvalInsight, VariantIndexEntry
-from threetears.evals.kernel.declaration import ARM_PRESENTATION_FIELDS, ASPECT_PRESENTATION_FIELDS, RateDrop
+from threetears.evals.kernel.declaration import (
+    ARM_PRESENTATION_FIELDS,
+    ASPECT_PRESENTATION_FIELDS,
+    AXIS_PRESENTATION_FIELDS,
+    RateDrop,
+)
 from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.result_condition import ExclusionCause
@@ -2858,8 +2863,9 @@ class AnalysisContextBundle(EvalDocumentModel):
     # its interval was drawn by (`interval_basis`), and a rate whose adjusted p clears alpha while its bounded interval
     # reaches zero says so (`not_separated_reason`). A late floor names its aspect and reading
     # (`reading_scope.late_criteria[].aspect`, `.reading`).
-    # Unmoved by declared names: `short_name`, `goal_check_names` and `stratum_names` are written only when declared and are no part of
-    # the fingerprint, so a bundle naming nothing is this shape byte for byte and every fingerprint stays put.
+    # Unmoved by declared names: `short_name`, `goal_check_names`, `stratum_names` and `lever_names` are written only when declared and
+    # are no part of the fingerprint, and neither is a declared axis's `reader_name` (`AXIS_PRESENTATION_FIELDS`), so a
+    # bundle naming nothing is this shape byte for byte and every fingerprint stays put.
     # Unmoved by the run apparatus and the unanswered calls: each run summary's `apparatus` and each arm's
     # `scoreboard[].unanswered` are written only when the run recorded one or a usage row counted them, so a bundle over
     # runs that recorded neither is this shape byte for byte and its fingerprint stays put. A run recording either moves
@@ -2917,6 +2923,18 @@ class AnalysisContextBundle(EvalDocumentModel):
             "What a page prints for a stratum, by the stratum id a case declares, as the member runs' templates declare "
             "it (`EvalTemplate.stratum_names`). A stratum absent here is printed as its id. Presentation only: written "
             "only when a name is declared and no part of the bundle's fingerprint."
+        ),
+    )
+    lever_names: dict[str, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda names: not names,
+        description=(
+            "What every page calls each lever this bundle names, by its id: the name the aspect's declared axis stores "
+            "(`SweptAxis.reader_name`), else the one the host declares for it (`Sweepable.reader_name`, a kind field's "
+            "title, an open family's member name). The one source an arm name computed from levers, a setting, a "
+            "factor, the production check and a lever-effect row read. A lever absent here has no declaration at all "
+            "and is printed as its id read as words. Presentation only: written only when a lever is named and no part "
+            "of the bundle's fingerprint, so renaming a lever stales no analysis."
         ),
     )
     template_id: str | None = Field(default=None, description="Referenced eval_template (the Behavior), or None.")
@@ -3794,10 +3812,12 @@ class AnalysisContextBundle(EvalDocumentModel):
 
 
 #: The bundle fields :meth:`AnalysisContextBundle.fingerprint` leaves out: what built the bundle, when its results
-#: were written, and how a page prints its aspect and its checks (the presentation fields of the aspect and the
-#: template, which the bundle carries under their own names), not what it read.
+#: were written, and how a page prints its aspect, its checks and its levers (the presentation fields of the aspect and
+#: the template, which the bundle carries under their own names, and ``lever_names``), not what it read.
 _NOT_EVIDENCE: frozenset[str] = (
-    frozenset({"package_version", "first_result_at"}) | ASPECT_PRESENTATION_FIELDS | TEMPLATE_PRESENTATION_FIELDS
+    frozenset({"package_version", "first_result_at", "lever_names"})
+    | ASPECT_PRESENTATION_FIELDS
+    | TEMPLATE_PRESENTATION_FIELDS
 )
 
 #: The fields of each arm's census (``scoreboard[]``) :meth:`AnalysisContextBundle.fingerprint` leaves out: how the
@@ -3872,8 +3892,35 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
         # How a page prints the control (ARM_PRESENTATION_FIELDS) is no part of what the bundle read; a control naming
         # none carries no key to drop.
         unnamed = {key: value for key, value in control.items() if key not in ARM_PRESENTATION_FIELDS}
-        evidence["declared"] = {**declared, "control": unnamed}
+        evidence["declared"] = declared = {**declared, "control": unnamed}
+    if isinstance(declared, Mapping) and isinstance(design := declared.get("design"), Mapping):
+        # What a page calls a declared lever (AXIS_PRESENTATION_FIELDS) is no part of what the bundle read either.
+        evidence["declared"] = {**declared, "design": unnamed_axes(design)}
     return fingerprint_digest(evidence, like=like)
+
+
+def unnamed_axes(design: Mapping[str, Any]) -> dict[str, Any]:
+    """A stored design as a fingerprint reads it: each declared axis without how a page names its lever
+    (:data:`~threetears.evals.kernel.declaration.AXIS_PRESENTATION_FIELDS`), so naming or renaming a lever moves no
+    bundle's or campaign bundle's fingerprint. A design whose axes carry no name is returned as it is.
+
+    :param design: An aspect's design, as its stored dict.
+    :ptype design: Mapping[str, Any]
+    :return: The design, its axes unnamed.
+    :rtype: dict[str, Any]
+    """
+    axes = design.get("axes")
+    if not isinstance(axes, list):
+        return dict(design)
+    return {
+        **design,
+        "axes": [
+            {key: value for key, value in axis.items() if key not in AXIS_PRESENTATION_FIELDS}
+            if isinstance(axis, Mapping)
+            else axis
+            for axis in axes
+        ],
+    }
 
 
 class BundleInspection(EvalDocumentModel):
@@ -4195,5 +4242,6 @@ __all__ = [
     "WholeSwing",
     "FINGERPRINT_PREFIX",
     "evidence_digest",
+    "unnamed_axes",
     "fingerprint_digest",
 ]

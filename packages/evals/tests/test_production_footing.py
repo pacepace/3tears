@@ -82,7 +82,15 @@ class TestANewlyDeclaredLeverReachesTheDisclosure:
 
     def test_a_lever_added_to_the_toy_registry_appears_when_a_run_sets_it(self) -> None:
         registry = toyhost_profile().sweepables.extend(
-            (Sweepable(name="probe_depth", role="lever", read=_payload("depth"), reader_prose="probe depth"),)
+            (
+                Sweepable(
+                    name="probe_depth",
+                    role="lever",
+                    reader_name="probe depth",
+                    read=_payload("depth"),
+                    reader_prose="probe depth",
+                ),
+            )
         )
         run = make_eval_run(model_role_provenance=_INHERITED, host_payload={"probe": {"depth": 7}})
 
@@ -93,7 +101,15 @@ class TestANewlyDeclaredLeverReachesTheDisclosure:
 
     def test_the_same_lever_unset_is_the_subjects_own_setting(self) -> None:
         registry = SHARED_CORE.extend(
-            (Sweepable(name="probe_depth", role="lever", read=_payload("depth"), reader_prose="probe depth"),)
+            (
+                Sweepable(
+                    name="probe_depth",
+                    role="lever",
+                    reader_name="probe depth",
+                    read=_payload("depth"),
+                    reader_prose="probe depth",
+                ),
+            )
         )
 
         footing = registry.production_footing(make_eval_run(model_role_provenance=_INHERITED))
@@ -106,6 +122,7 @@ class TestANewlyDeclaredLeverReachesTheDisclosure:
                 Sweepable(
                     name="probe_depth",
                     role="lever",
+                    reader_name="probe depth",
                     read=_payload("depth"),
                     reader_prose="probe depth",
                     departs_production=lambda run, _r: _payload("depth")(run, _r) not in (None, 3),
@@ -175,7 +192,7 @@ class TestAnApparatusInputThatMovesTheCandidate:
 
 
 class _Overlays(BaseModel):
-    page_limit: int = Field(default=10, description="how many pages the candidate reads")
+    page_limit: int = Field(default=10, title="page limit", description="how many pages the candidate reads")
 
 
 class TestAKindsOverlaysAreReadAgainstTheirDefaults:
@@ -308,6 +325,7 @@ def _with_probe_depth() -> HostProfile:
     probe = Sweepable(
         name="probe_depth",
         role="lever",
+        reader_name="probe depth",
         read=lambda _run, _results: 7,
         reader_prose="probe depth",
         no_own_coordinate="the toy variant map predates it; every run carries one level of it",
@@ -354,7 +372,9 @@ class TestAPooledCostCarriesEachRunsFooting:
             for block in build_code_only_report(bundle, assembled_at="2026-10-10T00:00:00+00:00").blocks
             if isinstance(block, DisclosureBlock)
         ]
-        assert any("what production would spend" in text and "chunk_tokens" in text for text in disclosures)
+        # Each setting by the reader name the host declares for its lever, never by the lever's id.
+        assert any("what production would spend" in text and "chunk tokens" in text for text in disclosures)
+        assert not any("chunk_tokens" in text for text in disclosures)
 
 
 class TestALeverAddedToTheToyHostReachesThePooledCost:

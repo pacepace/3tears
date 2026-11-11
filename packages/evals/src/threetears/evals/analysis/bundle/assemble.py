@@ -80,7 +80,7 @@ from threetears.evals.kernel.campaign import EvalInsight, derive_window
 from threetears.evals.kernel.build_stamp import package_version
 from threetears.evals.kernel.judge_cases import JUDGE_KIND
 from threetears.evals.kernel.run_pages import VERBATIM_RESULT_FIELDS
-from threetears.evals.kernel.declaration import aware_instant, resolve_control_arm
+from threetears.evals.kernel.declaration import aware_instant, lever_names_of, resolve_control_arm
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
     MetricDescriptor,
@@ -166,6 +166,7 @@ from threetears.evals.kernel.host.measures import MeasureRegistry
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.campaign import EvalCampaign
+    from threetears.evals.kernel.declaration import AspectDesign
     from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
     from threetears.evals.kernel.result_reading import ResultView
     from threetears.evals.schema.models import EvalCaseStratum, EvalRun, EvalTemplate, JudgeEvidence
@@ -798,6 +799,7 @@ def assemble_context_bundle(
         profile=profile,
     )
     bundle.verdict_order = _verdict_order(bundle.bar_adjudications, view.aspect, declared)
+    bundle.lever_names = _lever_names(bundle, declared_design, profile=profile)
     # The decision surface, over the same grouping and the same population the bars were read over,
     # and before the catalog: its collections are measure collections like any other here, so the
     # catalog has to describe their names too. Laid out in the surface's one row order (the control as
@@ -975,6 +977,38 @@ def _check_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate])
                 ", ".join(f"{template_id}={name!r}" for template_id, name in sorted(by_template.items())),
             )
     return names
+
+
+def _lever_names(
+    bundle: AnalysisContextBundle, declared: AspectDesign | None, *, profile: HostProfile
+) -> dict[str, str]:
+    """What every page calls each lever the bundle names, by id (:attr:`AnalysisContextBundle.lever_names`).
+
+    The levers are those a page can name off the bundle: each arm's lever map, the coverage rows, the production
+    footings and the factors no comparison exercised. Each is named as the aspect's declared axis stores it, else as
+    the host declares it (:func:`~threetears.evals.kernel.declaration.lever_names_of`); a lever neither names is left
+    out, and a page reads its id as words.
+
+    :param bundle: The bundle, assembled but for its lever names.
+    :ptype bundle: AnalysisContextBundle
+    :param declared: The aspect's declared design, or None.
+    :ptype declared: AspectDesign | None
+    :param profile: The host it was assembled under.
+    :ptype profile: HostProfile
+    :return: Lever id to reader name, sorted by id.
+    :rtype: dict[str, str]
+    """
+    levers = {lever for entry in bundle.variant_index for lever in entry.levers}
+    levers |= {row.name for row in bundle.coverage}
+    levers |= {factor.factor for factor in bundle.unexercised_factors}
+    levers |= {
+        name
+        for pooled in bundle.arm_production_footings.values()
+        for footing in pooled.runs.values()
+        if footing is not None
+        for name in (*footing.moved, *footing.unchecked)
+    }
+    return lever_names_of(levers, [declared] if declared is not None else [], profile)
 
 
 def _stratum_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) -> dict[str, str]:

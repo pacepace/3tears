@@ -910,9 +910,14 @@ def _arm_names(
     """
     displays = arm_names(bundle.variant_index if index is None else index)
     control = _control_key(bundle)
-    names = {key: arm_name(display, control=key == control) for key, display in displays.items()}
+    names = {
+        key: arm_name(display, control=key == control, declared=bundle.lever_names) for key, display in displays.items()
+    }
     # A name spelled from the arm's levers is printed by the one display-name rule, so every surface reads it alike.
-    names = {key: replace(name, label=arm_display_name(name.label, name.levers)) for key, name in names.items()}
+    names = {
+        key: replace(name, label=arm_display_name(name.label, name.levers, bundle.lever_names))
+        for key, name in names.items()
+    }
     if labels:
         # A campaign's own labels, where its page is being built: the label is the name, the model stays beside it.
         names = {
@@ -1086,13 +1091,13 @@ def _short_names(
             parts = [
                 _trimmed(level.display, base[level.axis_id].display)
                 if cut
-                else f"{lever_reader_name(level.axis_id)} {elide_level(level.display)}"
+                else f"{lever_reader_name(level.axis_id, bundle.lever_names)} {elide_level(level.display)}"
                 for level, cut in zip(ordered, trimmed, strict=True)
             ]
             # Computed from the levers it differs on, so printed by the one display-name rule; a model trimmed of the
             # control's prefix is a model's name, which no lever's reader name opens.
             levers = [level.axis_id for level, cut in zip(ordered, trimmed, strict=True) if not cut]
-            shorts[key] = arm_display_name(" · ".join(parts), levers) or name.label
+            shorts[key] = arm_display_name(" · ".join(parts), levers, bundle.lever_names) or name.label
         if len(name.label) <= len(shorts[key]):
             shorts[key] = name.label
     taken = list(shorts.values())
@@ -3678,11 +3683,12 @@ def _not_tested_blocks(
     """
     said: list[str] = []
     for row in bundle.coverage:
+        lever = lever_reader_name(row.name, bundle.lever_names)
         if row.status == "unswept":
             # Said as what it means, never the word: one level ran, so nothing is known of changing it.
-            said.append(f"One {row.name} ran, so this page says nothing of changing the {row.name}.")
+            said.append(f"One {lever} ran, so this page says nothing of changing the {lever}.")
         elif row.status == "thin":
-            said.append(f"Each {row.name} ran too few repeats to read what changing the {row.name} does.")
+            said.append(f"Each {lever} ran too few repeats to read what changing the {lever} does.")
     said += [_unexercised_sentence(factor, bundle, arm) for factor in bundle.unexercised_factors]
     usable = {(trial.arm, trial.case_id) for trial in bundle.trials if trial.state != "lost"}
     case_name = _case_namer(bundle)
@@ -3721,7 +3727,7 @@ def _unexercised_sentence(factor: UnexercisedFactor, bundle: AnalysisContextBund
 
     Calls in one arm only say so: ``observed in one arm only``.
     """
-    name = humanize("dimension", factor.factor.rsplit(".", 1)[-1])
+    name = bundle.lever_names.get(factor.factor) or humanize("dimension", factor.factor.rsplit(".", 1)[-1])
     call = f"{factor.role.replace('_', ' ')} call"
     arms = len(bundle.scoreboard)
     if factor.results == 0 or not factor.arms:
@@ -4120,19 +4126,20 @@ def _design_disclosures(
             if cells:
                 say("comparisons", f"{lead}: {'; '.join(cells)}.")
     for row in bundle.coverage:
+        lever = lever_reader_name(row.name, bundle.lever_names)
         not_run = [level.display for level in row.declared_levels if level.state == "not_run"]
         undetermined = [level.display for level in row.declared_levels if level.state == "undetermined"]
         if not_run:
-            say("comparisons", f"Declared on axis {row.name} and never run: {_listed(not_run)}.")
+            say("comparisons", f"Declared on axis {lever} and never run: {_listed(not_run)}.")
         if undetermined:
             say(
                 "comparisons",
-                f"Declared on axis {row.name}, and whether any run sat at it cannot be established: "
+                f"Declared on axis {lever}, and whether any run sat at it cannot be established: "
                 f"{_listed(undetermined)}.",
             )
         if row.cannot_be_an_arm:
             why = row.cannot_be_an_arm.rstrip(".")
-            say("comparisons", f"Declared axis {row.name} reads unswept whatever the runs did: {why}.")
+            say("comparisons", f"Declared axis {lever} reads unswept whatever the runs did: {why}.")
     for merge in bundle.refused_merges:
         dimensions = f" on {_listed(merge.dimensions)}" if merge.dimensions else ""
         say(
@@ -4190,8 +4197,19 @@ def _production_footing_sentence(bundle: AnalysisContextBundle, arm: Callable[[s
     arms_held = sorted(bundle.arm_production_footings.items())
     for variant_key, pooled in arms_held:
         footings = list(pooled.runs.values())
-        moved = sorted({f"{name} to {level}" for f in footings if f is not None for name, level in f.moved.items()})
-        unchecked = tuple(sorted({name for f in footings if f is not None for name in f.unchecked}))
+        # Each setting by the name every page calls its lever (`lever_names`), never by its id.
+        settings = {
+            (lever_reader_name(lever, bundle.lever_names), level)
+            for f in footings
+            if f is not None
+            for lever, level in f.moved.items()
+        }
+        moved = sorted({f"{name} to {level}" for name, level in settings})
+        unchecked = tuple(
+            sorted(
+                {lever_reader_name(name, bundle.lever_names) for f in footings if f is not None for name in f.unchecked}
+            )
+        )
         unread = sum(1 for f in footings if f is None)
         if unchecked:
             unchecked_by.setdefault(unchecked, []).append(arm(variant_key))

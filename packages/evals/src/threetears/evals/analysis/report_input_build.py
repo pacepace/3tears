@@ -258,6 +258,7 @@ class _Builder:
                 "strata": strata,
                 "examples": shown,
                 "caveats": self.caveats(),
+                "lever_names": bundle.lever_names,
                 "prior_insights": [
                     PriorInsight(statement=insight.statement, confidence=insight.confidence)
                     for insight in bundle.aspects[0].prior_insights

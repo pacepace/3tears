@@ -136,11 +136,13 @@ class WriterOverlays(BaseModel):
     skill: str = Field(
         default_factory=_shipped_skill,
         pattern=r"^[0-9a-f]{64}$",
+        title="skill",
         description="the analyst skill both sessions start from, by its content digest (every file's path and text); "
         "none named runs the skill this build ships, recorded by its digest",
     )
     reasoning_effort: Annotated[EffortWord, Ordinal()] | None = Field(
         default=None,
+        title="reasoning effort",
         description="the reasoning effort every turn is sent at, as the host's model factory builds the arm's model; "
         "none sends the model's own default",
     )
@@ -148,11 +150,13 @@ class WriterOverlays(BaseModel):
         default=MOST_REVISIONS,
         ge=0,
         le=MOST_REVISIONS,
+        title="revisions",
         description="the revisions the analyst is given after a review that does not clear its report",
     )
     editor_model: str | None = Field(
         default=None,
         min_length=1,
+        title="editor model",
         description="the model the editor's review sessions run on, by the id the host's model factory takes; none "
         "runs them on the arm's candidate model, which stays the run's model either way",
     )

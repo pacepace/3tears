@@ -92,7 +92,7 @@ from threetears.evals.analysis.report.parts.words import (
 from threetears.evals.analysis.report_gates import GateCheck, gate_check
 from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, Judged, Measure, ReportInput, Stat
 from threetears.evals.analysis.report_margins import aspect_board, criterion_figures, criterion_places, on_aspect
-from threetears.evals.analysis.style import humanize
+from threetears.evals.analysis.style import humanize, lever_reader_name
 
 __all__ = ["every_table", "laid_out"]
 
@@ -610,7 +610,10 @@ def _configs(report_input: ReportInput, look: PageLook, forms: PageForms) -> lis
     factors = report_input.factors
     columns = [
         _column("arm"),
-        *(_column(f"factor:{factor.id}", factor.name or humanize("dimension", factor.id)) for factor in factors),
+        *(
+            _column(f"factor:{factor.id}", factor.name or lever_reader_name(factor.id, report_input.lever_names))
+            for factor in factors
+        ),
     ]
     rows = []
     for config in report_input.configs:

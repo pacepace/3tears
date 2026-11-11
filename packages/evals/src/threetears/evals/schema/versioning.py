@@ -237,7 +237,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final
 
-from threetears.evals.schema.campaign_upgrade import upgrade_campaign_v15
+from threetears.evals.schema.campaign_upgrade import upgrade_campaign_v15, upgrade_campaign_v16
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS
 
 #: The oldest core major this build reads: always :data:`CORE_SCHEMA_VERSION`, since the core ships no upgrader and a
@@ -620,7 +620,20 @@ DURABLE_BASELINE_VERSION: Final[int] = 15
 #:   too; a host whose ``RoutedDocumentStore`` routes by lifecycle or origin finds campaigns placed anew and runs
 #:   ``RoutedDocumentStore.relocate`` before starting; and during a rolling deploy the older pods refuse every
 #:   durable document the new ones write, templates included.
-DURABLE_SCHEMA_VERSION: int = 16
+#: - **v17** — a lever's reader name is stored: every axis a campaign's aspect declares carries ``reader_name``
+#:   (``SweptAxis.reader_name``), the words every page names the lever by. A create or update names each axis its
+#:   author named none for as the host declares the lever (``Sweepable.reader_name``, a kind field's ``title``, which
+#:   a host must now declare: its registry refuses a lever without one), and the quick path names it by the factor its
+#:   author wrote. The step (``upgrade_campaign_v16``) names each stored axis that has none from its id, once: the id read
+#:   as words, as pages printed it before (``extractor.prompt_style`` to ``extractor prompt style``), less the quick
+#:   path's ``callable.`` or ``callable-judged.`` prefix (``callable.prompt`` to ``prompt``) — the one place a lever's
+#:   name is derived. An axis that stores one keeps it. The name is presentation: in no variant key, measurement
+#:   context, digest or fingerprint (``AXIS_PRESENTATION_FIELDS``; a bundle's and a campaign bundle's fingerprints
+#:   leave it out of their declared axes), so the step moves no key, reading or analysis, and a later rename splits no
+#:   history. Every other durable type passes through unchanged but for its number. Costs, as v16's: a build before
+#:   this one refuses every durable document this one writes, so a fleet does not roll back past it once it has
+#:   written, and during a rolling deploy the older pods refuse every durable document the new ones write.
+DURABLE_SCHEMA_VERSION: int = 17
 """The durable major this build writes, and the newest a read of a durable document accepts."""
 
 #: The durable minor this build writes within :data:`DURABLE_SCHEMA_VERSION`, under the core's minor rules. Every
@@ -794,7 +807,8 @@ DURABLE_SCHEMA_VERSION: int = 16
 #:   reading, pool or drift. An older build (v16.8 and earlier) reading a copy keeps the field opaquely and writes it
 #:   back.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 9
+#: - **v17.0** — the lever's reader name (above): every other durable shape exactly as v16.9 stored it.
+DURABLE_SCHEMA_MINOR: int = 0
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 
@@ -806,6 +820,12 @@ DURABLE_UPGRADERS: tuple[CoreUpgrader, ...] = (
         doc_types=frozenset({"eval_campaign"}),
         reason="a campaign asks one question of one or more aspects; a v15 campaign reads as one aspect",
         upgrade=upgrade_campaign_v15,
+    ),
+    CoreUpgrader(
+        from_version=16,
+        doc_types=frozenset({"eval_campaign"}),
+        reason="every declared axis stores the reader name pages print for its lever; one storing none is named",
+        upgrade=upgrade_campaign_v16,
     ),
 )
 

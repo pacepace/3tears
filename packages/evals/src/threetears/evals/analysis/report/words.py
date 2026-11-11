@@ -585,7 +585,7 @@ def printed_arm_labels(bundle: CampaignBundle) -> dict[str, str]:
     for key in dict.fromkeys(keys):
         label = bundle.label_of(key)
         levers = arm_name(spelled[key]).levers if key in spelled and key not in given else ()
-        printed[key] = arm_display_name(label, levers)
+        printed[key] = arm_display_name(label, levers, bundle.lever_names)
     return printed
 
 
@@ -635,14 +635,17 @@ def text_levers(levels: Iterable[Mapping[str, object]]) -> frozenset[str]:
     )
 
 
-def _read_part(part: str, levels: Mapping[str, object], text: Collection[str]) -> tuple[str, bool] | None:
+def _read_part(
+    part: str, levels: Mapping[str, object], text: Collection[str], declared: Mapping[str, str] | None
+) -> tuple[str, bool] | None:
     """One part of a computed name as a reader reads it, and whether it was a cut: a cut level as its lever alone, an
-    empty text level as ``no <lever>``; None for a part no level of ``levels`` spells."""
+    empty text level as ``no <lever>``, each lever by its stored reader name (``declared``); None for a part no level of
+    ``levels`` spells."""
     for axis, display in levels.items():
         if not isinstance(display, str):
             continue
         shown = _whole(display)
-        reader = lever_reader_name(axis)
+        reader = lever_reader_name(axis, declared)
         spelled = {elide_level(shown), f"{reader} {elide_level(shown)}"}
         if part not in spelled and part[:1].lower() + part[1:] not in spelled:
             continue
@@ -653,7 +656,9 @@ def _read_part(part: str, levels: Mapping[str, object], text: Collection[str]) -
     return None
 
 
-def reader_arm_name(name: str, levels: Mapping[str, object], *, text: Collection[str]) -> str:
+def reader_arm_name(
+    name: str, levels: Mapping[str, object], *, text: Collection[str], declared: Mapping[str, str] | None = None
+) -> str:
     """What a page prints for an arm whose name code computed from its levels, at render time only.
 
     A level too long to print whole (past :data:`~threetears.evals.analysis.arms.LABEL_LEVEL_CHARS`, or cut by its
@@ -669,13 +674,15 @@ def reader_arm_name(name: str, levels: Mapping[str, object], *, text: Collection
     :ptype levels: Mapping[str, object]
     :param text: The campaign's text levers.
     :ptype text: Collection[str]
+    :param declared: Each lever's stored reader name, by id (:func:`~threetears.evals.analysis.style.lever_reader_name`).
+    :ptype declared: Mapping[str, str] | None
     :return: The name a reader is shown.
     :rtype: str
     """
     held = _TELL_APART.fullmatch(name)
     base, apart = (held["name"], held["apart"] or "") if held is not None else (name, "")
     parts = base.split(", ")
-    read = [_read_part(part, levels, text) for part in parts]
+    read = [_read_part(part, levels, text, declared) for part in parts]
     if all(one is None for one in read):
         return name
     cut = any(one is not None and one[1] for one in read)
@@ -738,7 +745,7 @@ def reader_arm_labels(bundle: CampaignBundle, tags: Mapping[str, str]) -> dict[s
     for key, name in printed.items():
         if key not in given and key in entries:
             levels = {level.axis_id: level.display for level in naming_levels(entries[key], distinguishing)}
-            names[key] = reader_arm_name(name, levels, text=text)
+            names[key] = reader_arm_name(name, levels, text=text, declared=bundle.lever_names)
     return told_apart(names, tags, {key for key in names if names[key] != printed[key]})
 
 

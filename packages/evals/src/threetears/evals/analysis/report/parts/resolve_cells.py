@@ -81,7 +81,7 @@ from threetears.evals.analysis.report.parts.words import (
     UNIT_WORDS,
 )
 from threetears.evals.analysis.report_input import Cell, ConfusionTable, Stat, Stratum, Task
-from threetears.evals.analysis.style import humanize
+from threetears.evals.analysis.style import lever_reader_name
 
 __all__ = ["RESOLVERS"]
 
@@ -553,7 +553,7 @@ def _axis_name(context: ChartContext, axis: str) -> str:
     if matrix is not None:
         factors += [matrix.rows, matrix.columns]
     factor = next((held for held in factors if held.id == axis), None)
-    return (factor.name if factor is not None else None) or humanize("dimension", axis)
+    return (factor.name if factor is not None else None) or lever_reader_name(axis, context.report_input.lever_names)
 
 
 def _confusion(context: ChartContext) -> Drawn:

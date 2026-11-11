@@ -73,6 +73,29 @@ async def _create(tool: MountedTool, fixture: OpsFixture, caller: Caller = CALLE
     return await tool.call(call, host=fixture.host, caller=caller)
 
 
+@pytest.mark.parametrize(
+    ("authored", "stored"), [(None, "chunk tokens"), ("Chunk size", "Chunk size")], ids=["host's", "author's"]
+)
+async def test_each_declared_axis_is_stored_named_by_its_author_else_its_host(
+    evals: MountedTool, authored: str | None, stored: str
+) -> None:
+    """A lever's reader name is stored on the campaign: the one an author gives, else the one its host declares."""
+    fixture = off_loop(ops_fixture)
+    (axis,) = _design(fixture)["axes"]
+    axis = {key: value for key, value in axis.items() if key != "reader_name"}
+    if authored is not None:
+        axis["reader_name"] = authored
+
+    outcome = await _create(evals, fixture, aspects=[_aspect(fixture, design=_design(fixture, axes=[axis]))])
+
+    assert not outcome.is_error, outcome.text
+    held = off_loop(
+        fixture.host.eval_host.storage.load_campaign, CampaignLine.model_validate(outcome.structured).id, TOYHOST_SCOPE
+    )
+    assert held is not None and held.aspects[0].design is not None
+    assert [(axis.axis_id, axis.reader_name) for axis in held.aspects[0].design.axes] == [(TOYHOST_AXIS, stored)]
+
+
 async def test_a_campaign_created_with_a_design_carries_it_stamped_by_the_caller(evals: MountedTool) -> None:
     fixture = off_loop(ops_fixture)
 

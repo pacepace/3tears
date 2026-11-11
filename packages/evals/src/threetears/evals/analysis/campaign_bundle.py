@@ -31,6 +31,7 @@ from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     fingerprint_digest,
     refuse_a_bundle_of_another_shape,
+    unnamed_axes,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaign_readings import (
@@ -404,6 +405,21 @@ class CampaignBundle(EvalDocumentModel):
             return frozenset({arm.variant_key, *resolve_control_arm(arm).variant_keys})
         return frozenset({arm.variant_key})
 
+    @property
+    def lever_names(self) -> dict[str, str]:
+        """What every page calls each lever, by id, as the aspects' bundles carry it
+        (:attr:`~threetears.evals.analysis.bundle.schema.AnalysisContextBundle.lever_names`): the first aspect's name
+        for a lever two aspects name apart.
+
+        :return: Lever id to reader name, sorted by id.
+        :rtype: dict[str, str]
+        """
+        names: dict[str, str] = {}
+        for bundle in self.aspects:
+            for lever, name in bundle.lever_names.items():
+                names.setdefault(lever, name)
+        return dict(sorted(names.items()))
+
     def label_of(self, variant_key: str) -> str:
         """What a reader calls the arm a variant key names: its arm's label, else the name its levels give it.
 
@@ -457,7 +473,8 @@ def _evidence_of(frame: Mapping[str, Any]) -> dict[str, Any]:
 
     The figures across aspects are read off the readings and the aspects' bundles the fingerprint already reads, so a
     bundle of this shape and one frozen at the shape before it fingerprint alike over the same evidence. A short name
-    is presentation, as an aspect bundle's own is (left out of its fingerprint), so naming an aspect or an arm leaves
+    is presentation, as an aspect bundle's own is (left out of its fingerprint), and so is what a page calls a declared
+    lever (:data:`~threetears.evals.kernel.declaration.AXIS_PRESENTATION_FIELDS`), so naming an aspect, an arm or a lever leaves
     every analysis and reporter case of the campaign reproducing. One naming none carries no key to drop. The campaign's
     own name stays here: version 3 of :meth:`CampaignBundle.fingerprint` leaves it out, and earlier versions read it.
     """
@@ -473,7 +490,12 @@ def _evidence_of(frame: Mapping[str, Any]) -> dict[str, Any]:
         return frame
     declaration = dict(declaration)
     if isinstance(declaration.get("aspects"), list):
-        declaration["aspects"] = _unpresented(declaration["aspects"], ASPECT_PRESENTATION_FIELDS)
+        declaration["aspects"] = [
+            {**aspect, "design": unnamed_axes(aspect["design"])}
+            if isinstance(aspect, Mapping) and isinstance(aspect.get("design"), Mapping)
+            else aspect
+            for aspect in _unpresented(declaration["aspects"], ASPECT_PRESENTATION_FIELDS)
+        ]
     if isinstance(declaration.get("arms"), list):
         declaration["arms"] = _unpresented(declaration["arms"], ARM_PRESENTATION_FIELDS)
     return {**frame, "declaration": declaration}

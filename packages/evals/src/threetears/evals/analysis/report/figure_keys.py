@@ -3655,7 +3655,9 @@ def page_arm_names(report_input: ReportInput) -> dict[str, str]:
     text = text_levers(arm.settings for arm in arms)
     printed = {arm.id: printed_arm_name(arm) for arm in arms}
     names = {
-        arm.id: printed[arm.id] if arm.short_name else reader_arm_name(printed[arm.id], arm.settings, text=text)
+        arm.id: printed[arm.id]
+        if arm.short_name
+        else reader_arm_name(printed[arm.id], arm.settings, text=text, declared=report_input.lever_names)
         for arm in arms
     }
     return told_apart(names, tags, {key for key in names if names[key] != printed[key]})

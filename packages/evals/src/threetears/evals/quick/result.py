@@ -185,8 +185,10 @@ def shown_arm_name(arm: str) -> str:
     pairs = coordinates(arm)
     if pairs is None:
         return arm
-    named = arm_name(", ".join(f"{factor}={level}" for factor, level in pairs.items()))
-    return arm_display_name(named.label, named.levers)
+    # Each factor's reader name is the factor as the eval's author wrote it, as the campaign stores it on its axis.
+    named = {factor: factor for factor in pairs}
+    shown = arm_name(", ".join(f"{factor}={level}" for factor, level in pairs.items()), declared=named)
+    return arm_display_name(shown.label, shown.levers, named)
 
 
 @dataclass(frozen=True)
@@ -1460,6 +1462,8 @@ def declare(
         axes.append(
             {
                 "axis_id": factor if factor in _UNPREFIXED else f"{prefix}.{factor}",
+                # What every page calls the lever: the factor as the eval's author wrote it, never the engine's key.
+                "reader_name": factor,
                 "values": [{"content": value, "display": value} for value in values],
                 "rationale": (
                     f"does any arm do better than {shown.get(control, control)}"

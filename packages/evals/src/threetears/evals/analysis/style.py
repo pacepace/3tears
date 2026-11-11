@@ -457,13 +457,16 @@ class ArmName:
         return f"{head} ({', '.join(marks)})" if marks else head
 
 
-def arm_name(display: str, *, control: bool = False) -> ArmName:
+def arm_name(display: str, *, control: bool = False, declared: Mapping[str, str] | None = None) -> ArmName:
     """Read an arm's display (``model=deepseek-v4.1-flash (production)``, ``candidate=v1``) as an :class:`ArmName`.
 
     :param display: The arm's name as :func:`~threetears.evals.analysis.arms.arm_names` spells it.
     :ptype display: str
     :param control: Whether it is the control.
     :ptype control: bool
+    :param declared: Each lever's stored reader name, by id (:func:`lever_reader_name`), which an arm named by several
+        levers is spelled with.
+    :ptype declared: Mapping[str, str] | None
     :return: The arm's given label and model, never as ``key=value``.
     :rtype: ArmName
     """
@@ -473,7 +476,7 @@ def arm_name(display: str, *, control: bool = False) -> ArmName:
         named: list[re.Match[str] | None] = [match for match in pairs if match and match["axis"] != "candidate_kind"]
         pairs = named if len(named) == 1 else pairs
     if len(pairs) > 1 and all(pairs):
-        label = ", ".join(f"{lever_reader_name(match['axis'])} {match['level']}" for match in pairs if match)
+        label = ", ".join(f"{lever_reader_name(match['axis'], declared)} {match['level']}" for match in pairs if match)
         return ArmName(label=label, control=control, levers=tuple(match["axis"] for match in pairs if match))
     level = pairs[0]["level"] if len(pairs) == 1 and pairs[0] else display
     if labelled := _LABELLED.match(level):
@@ -484,14 +487,16 @@ def arm_name(display: str, *, control: bool = False) -> ArmName:
 
 
 def lever_reader_name(lever: str, declared: Mapping[str, str] | None = None) -> str:
-    """The one name a reader is shown for a lever, everywhere a page names one: an arm name computed from it, and a
-    configuration's setting. The name declared for it where one is (``declared``: a report input's factor names, by
-    id, ``Reasoning budget``), else the package's reader name for its id (:func:`humanize`, ``max output tokens``,
-    never ``max_output_tokens``).
+    """The one name a reader is shown for a lever, everywhere a page names one: an arm name computed from it, a
+    configuration's setting, a factor of a grid, the production check and a lever-effect row. The name stored for it
+    (``declared``: the campaign's axis and the host's lever declaration, as a bundle's ``lever_names`` or a report
+    input's carry them, ``prompt``, ``Reasoning budget``). Its id read as words (:func:`humanize`, ``max output
+    tokens``) only where no declaration of it exists at all: a lever of an analysis frozen before levers were named,
+    or one its host no longer declares.
 
     :param lever: The lever, by id.
     :ptype lever: str
-    :param declared: Each lever's declared name, by id; None or empty where nothing declares one.
+    :param declared: Each lever's stored reader name, by id; None or empty where nothing declares one.
     :ptype declared: Mapping[str, str] | None
     :return: Its reader name.
     :rtype: str

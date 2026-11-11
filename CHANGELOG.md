@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: every lever carries a declared, stored reader name (durable v17)
+
+**Changed:** a host declares what a reader calls each lever, and every page names a lever by that name, never by its
+id. `Sweepable.reader_name` is required of every fixed lever, `Sweepable.member_reader_name` of every open family, and
+`title=` of every kind contract's overlay field; a registry or contract without one is refused where it is declared,
+naming the lever and how to declare it (`lever chunk_tokens has no reader_name — an arm's name, a setting or a factor
+would print its id; declare Sweepable(reader_name=...) with the words a reader calls it`). A campaign stores the name
+on each declared axis (`SweptAxis.reader_name`): the author's, else the host's, and the quick path's is the factor as
+its author wrote it (`prompt`, never `callable.prompt`). The production-check sentence, settings, factor columns,
+lever-effect rows, coverage lines and computed arm names read it through one source (`lever_reader_name` over the
+bundle's and the report input's `lever_names`), so a page rebuilt from the store names a lever as the page built in
+process did.
+
+**Durable v17 (a major):** the v16 step names each stored axis that has none from its id, once (the id read as words,
+less the quick path's `callable.` prefix). Every other durable type passes through unchanged. A build before this one
+refuses what this one writes, so a fleet does not roll back past it.
+
+**Not identity:** the name enters no variant key, measurement context, host declarations digest or fingerprint, so a
+rename splits no history and stales no analysis.
+
+**Hosts:** add `reader_name=` to every lever `Sweepable`, `member_reader_name=` to every open family, and `title=` to
+every overlay field, before upgrading (MIGRATIONS.toml).
+
 ### evals: a replay is deterministic, and a model shared between evals is named as the cause
 
 **Fixed:** replaying an eval twice could print different repeat numbers (rung 3e's c02 malformed reply on repeat 3,

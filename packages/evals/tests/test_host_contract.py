@@ -1016,7 +1016,11 @@ def test_registering_a_lever_is_what_admits_it_to_the_variant_key():
         host_sweepables=toyhost_profile().host_sweepables.extend(
             [
                 Sweepable(
-                    name="a_new_axis", role="lever", read=lambda _run, _results: None, reader_prose="a newly swept knob"
+                    name="a_new_axis",
+                    role="lever",
+                    reader_name="a new axis",
+                    read=lambda _run, _results: None,
+                    reader_prose="a newly swept knob",
                 )
             ]
         ),
@@ -1040,6 +1044,7 @@ def _with_an_open_family() -> HostProfile:
                 Sweepable(
                     name="overlay_bag",
                     role="lever",
+                    member_reader_name=str,
                     read=lambda _run, _results: {},
                     reader_prose="one lever per key the launch overlaid",
                     open_family="an operator may reach any key, so the member names are whatever a campaign asked for",
