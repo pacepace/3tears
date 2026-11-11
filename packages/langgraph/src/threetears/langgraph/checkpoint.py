@@ -192,15 +192,16 @@ _MAX_THREAD_ID_LENGTH = 255
 #: rows read per page when anonymizing a thread's checkpoints or pending writes.
 _DEFAULT_ANONYMIZE_BATCH = 200
 
-#: a thread's checkpoints in their key's order (namespace, then id), as anonymization pages them
-_CHECKPOINT_KEY_ORDER: Final = (Sort("checkpoint_ns", cast=None), Sort("checkpoint_id", cast=None))
+#: a thread's checkpoints in their key's order (namespace, then id), as anonymization pages them; each typed, since a
+#: page past a cursor binds the cursor's text cast back to its column's type
+_CHECKPOINT_KEY_ORDER: Final = (Sort("checkpoint_ns", cast="text"), Sort("checkpoint_id", cast="text"))
 
-#: a thread's pending writes in their key's order, as anonymization pages them
+#: a thread's pending writes in their key's order, as anonymization pages them (``idx`` an integer)
 _WRITE_KEY_ORDER: Final = (
-    Sort("checkpoint_ns", cast=None),
-    Sort("checkpoint_id", cast=None),
-    Sort("task_id", cast=None),
-    Sort("idx", cast=None),
+    Sort("checkpoint_ns", cast="text"),
+    Sort("checkpoint_id", cast="text"),
+    Sort("task_id", cast="text"),
+    Sort("idx", cast="integer"),
 )
 
 

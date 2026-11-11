@@ -211,7 +211,7 @@ async def test_an_anonymized_thread_s_pages_are_its_rows_in_key_order(db: Any, t
                 table,
                 columns=columns,
                 by={"thread_id": _THREAD},
-                order=[Sort(column, cast=None) for column in key],
+                order=[Sort(column, cast="integer" if column == "idx" else "text") for column in key],
                 limit=5,
                 cursor=cursor,
             )

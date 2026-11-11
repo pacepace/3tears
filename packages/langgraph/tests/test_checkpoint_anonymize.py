@@ -73,12 +73,14 @@ _DDL = (
 )
 
 _PLACEHOLDER = re.compile(r"\$(\d+)")
+#: a PostgreSQL cast (``$3::integer``), which SQLite does not spell: it compares by the column's own affinity
+_CAST = re.compile(r"::\w+")
 
 
 class SqliteQueryExecutor(AsyncQueryExecutor):
     """the saver's executor protocol over an in-memory SQLite database.
 
-    ``$n`` placeholders become SQLite's ``?n``; everything else is the saver's own SQL,
+    ``$n`` placeholders become SQLite's ``?n`` and ``::type`` casts drop; everything else is the saver's own SQL,
     run by a real engine, so a statement the saver gets wrong fails here as it would on
     a server. It names its dialect as PostgreSQL's (the keyed pages' row comparison past a
     cursor, which SQLite reads the same), so a page is never asked the server's version.
@@ -109,7 +111,7 @@ class SqliteQueryExecutor(AsyncQueryExecutor):
         :rtype: sqlite3.Cursor
         """
         self.statements.append(query)
-        return self.db.execute(_PLACEHOLDER.sub(r"?\1", query), args)
+        return self.db.execute(_CAST.sub("", _PLACEHOLDER.sub(r"?\1", query)), args)
 
     async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
         """
