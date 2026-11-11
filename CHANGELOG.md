@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: names leave the evidence (bundle shape 66; every stored analysis is regenerated once)
+
+**Changed:** names are presentation, never evidence (owner ruling, 2026-11-11). The bundle an analysis is frozen over,
+and every fingerprint and digest taken over it, carries ids and structured facts only, and a page applies every name
+when it is rendered. A derived arm's label is frozen with its levers spelled by their ids read as words (`chunk tokens
+1024tok, retriever top k 3`) and printed with their stored names (`Chunk size 1024tok, retrieval depth 3`), where it
+was frozen with the names. `AliasedFactors.sentence` and `FactorPairScan.completeness` are removed: a page words the
+lockstep-group sentence, the pair scan's completeness and each co-varying pair from the facts the bundle keeps, every
+factor by its reader name where they printed raw ids (`chunk_tokens and retriever_top_k co-vary` now reads `Chunk size
+and retrieval depth co-vary`). One rule names a lever across a campaign: the first of its declared axes to store a name,
+in aspect order, else the host's, so every aspect, a derived arm and every table name it alike; a campaign bundle whose
+aspects name one lever apart is refused. So renaming a lever moves no aspect bundle fingerprint, evidence digest or
+campaign bundle fingerprint, and a page built now prints the new name.
+
+**Regenerate once:** the bundle shape moves from 65 to 66, and no earlier shape is read as stored (64 was): every
+stored analysis is listed as needing regeneration, its report reads code-only, and every door says why (`holds an
+evidence bundle of shape 65, frozen before names left the evidence: ...`). Generate each again with
+`analysis_generate`; nothing is migrated. The regenerable version stays 13.
+
 ### evals: every lever carries a declared, stored reader name (durable v17)
 
 **Changed:** a host declares what a reader calls each lever, and every page names a lever by that name, never by its
@@ -23,9 +42,8 @@ process did.
 less the quick path's `callable.` prefix). Every other durable type passes through unchanged. A build before this one
 refuses what this one writes, so a fleet does not roll back past it.
 
-**Not identity:** the name enters no variant key, measurement context or host declarations digest, so a rename splits
-no history. An arm whose label is computed from its levers is spelled with the stored names, and that label is in the
-campaign bundle's fingerprint, so a rename re-labels such arms and marks their analyses for regeneration.
+**Not identity:** the name enters no variant key, measurement context, host declarations digest or fingerprint, so a
+rename splits no history and stales no analysis (names left the evidence, bundle shape 66, below).
 
 **Hosts:** add `reader_name=` to every lever `Sweepable`, `member_reader_name=` to every open family, and `title=` to
 every overlay field, before upgrading (MIGRATIONS.toml).

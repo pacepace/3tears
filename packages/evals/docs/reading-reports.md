@@ -799,14 +799,24 @@ campaign declares a volume.
 **A stored report reads as written.** A report is never edited: regenerating writes a new one, and the page shows the
 newest analysis that is not archived. Read later, a stored report degrades rather than refuses: a key that no longer
 resolves prints "—", a block that no longer draws prints its values, and the page carries one note to regenerate. A
-report whose evidence was assembled at an earlier shape this version reads as stored renders whole, its figures as they
-were written, and its first line says what that means for its figures: "This report was written on an earlier
-build. Its rate contrasts were read on the t interval; the current build draws them on a bounded interval, so a
-separation shown here may read today as one the evidence cannot tell apart. Regenerating would redraw them." The
-analysis listing's verdict carries the same line, and the report is not listed as needing regeneration. An earlier
-shape joins only when every field added since is optional and no stored figure changes meaning; nothing is migrated.
-A report written in any other shape this version no longer reads gets the code-only page and one line: written in a
-shape this version no longer reads; regenerate with `analysis_generate`.
+report whose evidence was assembled at an earlier shape this version reads as stored would render whole, its figures
+as they were written, its first line saying what that means for its figures; the analysis listing's verdict would
+carry the same line, and the report would not be listed as needing regeneration. An earlier shape joins only when
+every field added since is optional and no stored figure changes meaning; nothing is migrated. No shape joins today:
+names left the evidence at shape 66 (below), so a report written in any earlier shape gets the code-only page and one
+line, written in a shape this version no longer reads; regenerate with `analysis_generate`, naming why ("frozen before
+names left the evidence"). Each stored analysis is regenerated once.
+
+**Names are presentation, never evidence.** The bundle an analysis is frozen over, and every fingerprint and digest
+taken over it, carries ids and structured facts only; every name is applied when a page is rendered (owner ruling,
+2026-11-11). What a page calls a lever (`lever_names`, one rule across the campaign: the first declared axis to store
+a name, else the host's), an arm's or an aspect's short name, a goal check's or a stratum's name is no part of any
+fingerprint. A derived arm's label is frozen with its levers spelled by their ids read as words (`chunk tokens 1024tok,
+retriever top k 3`) and printed with their stored names (`Chunk size 1024tok, retrieval depth 3`); the sentences on
+factors that moved in lockstep, on how many factor pairs were examined and on each co-varying pair are worded at render
+from the facts the bundle holds, each factor by its name. So renaming a lever moves no fingerprint and stales no
+analysis; a page built now prints the new name, and a stored analysis's page prints the names frozen with it until it
+is regenerated.
 
 **The transcripts are kept.** Each session, the analyst's and each editor round's, is stored whole beside the report,
 so `report_read` with a report's id and `include_sessions` returns what the analyst read and did, for an audit.
@@ -830,7 +840,7 @@ recorded before the rounding has no prefix, and every comparison computes the fr
 (`fingerprint(like=recorded)`). Re-assembling a stored analysis's bundle (`inspect_analysis_bundle`) compares
 fingerprints, and when they differ `mismatch_cause` names why: `package_shape` (the bundle schema moved),
 `host_declarations` (the host added, removed or renamed a declaration), or `evidence` (the runs, results or insights
-did).
+did). Renaming a lever is none of these: a name is no part of a fingerprint.
 
 **Insights.** A claim the analyst marks durable becomes an insight later campaigns read in their overview. Two claims
 stating one thing mint it once, and a later analysis restating a claim retires the earlier insight, so regenerating
