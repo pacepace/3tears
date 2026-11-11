@@ -147,6 +147,17 @@ async def test_assignments_group_scope(conn: asyncpg.Connection) -> None:
         " SELECT 'platform', gen_random_uuid(), (SELECT role_id FROM roles), group_id, 'type_customer'"
         " FROM groups, generate_series(1, 10)"
     )
+    # and namespace grants of some groups on one namespace, so the scope types the reads bind both hold rows
+    granted = await conn.fetchval(
+        "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, date_created, date_updated)"
+        " VALUES ('platform', gen_random_uuid(), 'tool.granted', 'tool', now(), now()) RETURNING namespace_id"
+    )
+    await conn.execute(
+        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id)"
+        " SELECT 'platform', gen_random_uuid(), (SELECT role_id FROM roles), group_id, 'namespace', $1"
+        " FROM groups LIMIT 100",
+        granted,
+    )
     await conn.execute("ANALYZE role_assignments")
     plan = await explain_statement(conn, acl.ASSIGNMENTS_OF_GROUPS_SQL, [uuid.uuid4()])
     assert plan_uses_index(plan, "idx_role_assignments_group_scope"), plan.plan
@@ -154,7 +165,10 @@ async def test_assignments_group_scope(conn: asyncpg.Connection) -> None:
     # their delete: each reads the group's rows through the same index, bound in the seeded row scope and scope type
     # (a scope holding no rows reads as empty through the primary key's row_scope prefix, or a partial index's). On
     # a namespace each may read the namespace grants' own unique index instead, led by the group too.
-    group, role = uuid.uuid4(), uuid.uuid4()
+    # a group and the role it holds, as a grant names them (the role indexes of v004 would read an unheld role's
+    # nothing faster, which says nothing of the group's reads)
+    group = await conn.fetchval("SELECT group_id FROM groups ORDER BY group_id LIMIT 1 OFFSET 250")
+    role = await conn.fetchval("SELECT role_id FROM roles")
     reads = {
         "GRANT_OF_GROUP_SQL": (acl.GRANT_OF_GROUP_SQL, lambda scope, ns: ("platform", group, role, scope, ns)),
         "GRANT_WINNER_OF_GROUP_SQL": (
@@ -260,7 +274,10 @@ async def test_namespaces_customer_type(conn: asyncpg.Connection) -> None:
         (acl.OWNERLESS_PLATFORM_NAMESPACE_SQL, ("platform", "shared")),
     ):
         plan = await explain_statement(conn, statement, *params)
-        assert plan_uses_index(plan, "idx_namespaces_customer_type"), (statement, plan.plan)
+        # the platform's ownerless namespace of a type is keyed by the type's index too (idx_namespaces_type, v004):
+        # PostgreSQL reads it there when the type holds no rows, as "shared" does in this seed
+        by_type = statement is acl.OWNERLESS_PLATFORM_NAMESPACE_SQL and plan_uses_index(plan, "idx_namespaces_type")
+        assert plan_uses_index(plan, "idx_namespaces_customer_type") or by_type, (statement, plan.plan)
 
 
 async def test_namespaces_owner_namespace(conn: asyncpg.Connection) -> None:
