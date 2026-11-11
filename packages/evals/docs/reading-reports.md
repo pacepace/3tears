@@ -75,7 +75,8 @@ time, latency read under concurrency, request settings not confirmed, a judge no
 labels) is one plain line after the warnings, naming where it holds (`Judged scores on score are directional until
 people's labels calibrate the judge.`), and its detail is a row of **Design & provenance**, stated there once: which
 criterion was set and when, each aspect's own sentence for the test setup, verbatim, and which judge to calibrate
-and how many of its outputs to rate. No aspect's fold repeats it, and it never lowers a reading or a recommendation.
+and how many of its outputs to rate. No aspect's fold repeats it, and it never lowers a reading; code's decision
+does set aside an improvement under a judge not yet calibrated ([evidence tiers](#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)).
 An aspect's own page says the same line under its verdict, its detail in its methods (a judge's under Not tested).
 
 Where a page prints any cost figure, **Design & provenance** holds one more row, `cost as routed`: `Each cost figure
@@ -326,8 +327,8 @@ document's appendix lists its Checks after Method, each name defined by its expr
   its own interval, uncorrected, which can differ from the contrasts table's.` A rate floor reads the bounded
   interval at the nominal 95%: it holds its error rate on a few coarse cases, where a t interval does not
   ([why](measuring-soundly.md#a-floor-is-held-only-on-the-bounded-interval)). The Contrasts table draws a rate on
-  the same bounded interval, at its family's corrected level, so the floor's interval sits inside the contrast's. A campaign that asks a question and declares no floor gets one line, `No floor
-  was declared on routing.`; an exploratory comparison, which asks nothing and so declares no floor, gets none.
+  the same bounded interval, at its family's corrected level, so the floor's interval sits inside the contrast's. An
+  aspect that declares no floor gets no floor table and no line about it.
   **An unclear floor says what would show it holds**, computed, never a writer's guess: a `To show the floors hold`
   table gives each unclear floor's two counts with their cost, `If no difference` and `If as observed` (`121 cases,
   $3.1`; `none would` where the observed drop is at or past the margin; `re-run the lost trials` where the interval
@@ -358,13 +359,14 @@ document's appendix lists its Checks after Method, each name defined by its expr
   `report --trials all`) lays each one out under `T4 · double-charge · cheaper candidate · failed` (never the
   start of what the case asked), the first twelve open, and the row then leaves its result to the record. An
   aspect's own page (`build_code_only_report`, the quick path's `Result.report`) lays out every
-  record unless asked. A failed check is named as every header names it (`check: Queue track calls check`), and a judge's
-  fail by its dimensions (`judge: tone`), else `failed by the judge`. A record names the check and its expression;
-  whatever the trial detail, the Glossary pairs each check's name with its expression once. The passed trials are one closed `Passed trials` table
+  record unless asked. A failed goal check is named as every header names it (`Queue track calls check`), any other
+  check by the value that failed it (`check: Never topped up is true`), with `check:` in front unless every name
+  already says check, and a judge's fail by its dimensions (`judge: tone`), else `failed by the judge`. A record
+  names the check and its expression; whatever the trial detail, the Glossary pairs each check's name with its expression once. The passed trials are one closed `Passed trials` table
   (trial, case, arm, stored result), so each result id stays reachable with `result_get`; when every trial passed,
   the census line stands alone.
 - **Not tested**: what the campaign could not speak to, one line each. A lever that ran at one level
-  (`Lever model is unswept: one level ran.`) or that fewer than two results exercised
+  (`One model ran, so this page says nothing of changing the model.`) or that fewer than two results exercised
   (`research model: no research call was made on either arm.`), a case an arm has no usable trial of, a goal check
   not shown to beat doing nothing, the measures with no margin and how to declare one, each judge not yet calibrated,
   the readings no declared question asked about, and, folded, a cost not measured.
@@ -569,7 +571,7 @@ cannot hide a loss here.
 | Decision | Means | Do |
 |---|---|---|
 | held | the whole interval is on the good side of the margin, and the reading declares its range | nothing; the arm did not get worse by more than you tolerate |
-| breached | the whole interval is beyond the margin | it warns: the writer is refused if it recommends the arm, whatever it gained; the person decides |
+| breached | the whole interval is beyond the margin | it warns: a report that recommends the arm is flagged to its editor, whatever it gained; the person decides |
 | undecided | the interval straddles the line, no interval exists, or the reading declares no range; the row says why | do not read it as safe; the contrasts open with a line naming the arm, and the verdict line says it. To decide it, add cases, declare a margin, or declare the reading's range |
 
 The margin is the measure's `materiality_threshold`, and a judged dimension's is the one its campaign declares
@@ -602,10 +604,10 @@ dimensions it was not checked on (`boundary_unchecked`).
 A campaign's question says what it set out to learn, and each aspect's merit axes say what it asks about there. A
 reading on no merit axis of its aspect is **exploratory**: worth reporting as a lead for the next campaign, never as
 a confirmed answer. Where a question was asked, the bundle lists those readings (`reading_scope`), the code-only
-report names them under Not tested, and a finding resting only on them carries a `Scope` fact. Where none was,
-every finding is exploratory: the verdict line says so, every finding carries the `Scope` fact, and the analysis
-writer may adopt nothing. A campaign that declared no design at all is an exploratory campaign, and that sentence
-says so: its readings confirm nothing, and the design its comparisons read was inferred from the runs, not declared
+report names them under Not tested, and a report that recommends a candidate shown better only on them is flagged
+to its editor. Where none was, every reading is exploratory: the verdict line says so, and a report that recommends
+a candidate anyway is flagged to its editor. A campaign that declared no design at all is an exploratory campaign,
+and that sentence says so: its readings confirm nothing, and the design its comparisons read was inferred from the runs, not declared
 ([when to declare one](measuring-soundly.md#start-from-the-question)). A guardrail is never exploratory.
 
 **A criterion set after its readings is said, never demoted; data age is never said.** What pre-registration
@@ -998,9 +1000,7 @@ with its Wilson interval and a mean with its standard error, each over the cases
 `VariationAxis(..., stratum=True)` and each case generated takes that axis's value as its stratum. A case
 generated before the axis was nominated keeps the stratum it was written with, which is none.
 
-**Limits.** An analysis's writer reads the strata in its bundle, but a finding's evidence still cites a
-cell's pooled figure: a reference names a cell and a measure, and there is no reference to one stratum of
-a cell yet.
+The report's analyst cites a stratum's own figures by key, as it cites an aspect's or a cell's.
 
 **On the quick path**, each case carries its kind under the reserved key `stratum`. The key is taken out of the
 case before the runner, a grader or the judge is handed it, and stored as the test case's stratum. A report
@@ -1086,10 +1086,11 @@ judge phase records no prompt identity, and reads as config `None`, a judge of i
 ([judges and calibration](judges-and-calibration.md#step-4-run-the-judge)).
 
 **Where tiers appear.** The bundle lists each judge's tier per dimension with both criteria
-(`judge_evidence_tiers`); a finding stands on the weakest tier among its rows
-(`FindingResolution.evidence_tier`: `mechanical`, `calibrated`, `separation`, `undetermined`, `incidental`
-or `none`), which every report states beside the finding; a code-only report also states each judge's tier
-with the numbers behind it. Tiers are flagged, never a reason to drop a reading.
+(`judge_evidence_tiers`: `mechanical`, `calibrated`, `separation`, `undetermined`, `incidental` or `none`), and a
+code-only report states each judge's tier with the numbers behind it. Tiers are flagged, never a reason to drop a
+reading. One rule reads them: code's decision sets aside an improvement whose judge is not yet calibrated
+(`undetermined`, or `insufficient` evidence), so it is shown and shows no candidate better; a judge at `separation`
+or `incidental` still counts.
 
 **A tier read from a stored judge profile.** When a campaign's own evidence leaves a judge `undetermined` and a
 judge campaign recorded a profile of that very judge and criterion that decides a tier, the tier is the profile's.
