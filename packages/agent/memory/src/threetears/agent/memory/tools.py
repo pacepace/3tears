@@ -344,7 +344,8 @@ def _is_alias_taken(exc: BaseException) -> bool:
     A unique violation on any other constraint (the primary key, say) is not a taken alias: it
     is reported as the store failure it is. The NATS proxy rebuilds a class-23 refusal as the
     asyncpg error carrying ``constraint_name``; a broker that does not forward the violation
-    reports it as unavailability with the server's message, which names the index.
+    reports it as unavailability with the server's message, which names the index. YugabyteDB
+    raises the violation without ``constraint_name``; its message names the index the same way.
 
     :param exc: what the write raised
     :ptype exc: BaseException
@@ -354,7 +355,10 @@ def _is_alias_taken(exc: BaseException) -> bool:
     # asyncpg's UniqueViolationError, told by its SQLSTATE: this package does not depend on asyncpg
     # (its hard dependencies are pinned), and the proxy's rebuilt error carries the same code.
     if getattr(exc, "sqlstate", None) == _UNIQUE_VIOLATION:
-        return bool(getattr(exc, "constraint_name", None) == _ALIAS_INDEX)
+        constraint = getattr(exc, "constraint_name", None)
+        if constraint is not None:
+            return bool(constraint == _ALIAS_INDEX)
+        return f'"{_ALIAS_INDEX}"' in str(exc)
     return isinstance(exc, DataLayerUnavailableError) and _ALIAS_INDEX in str(exc)
 
 
