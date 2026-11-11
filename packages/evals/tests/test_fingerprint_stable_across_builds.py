@@ -54,13 +54,15 @@ from packages.evals.tests.report_shapes_support import s1_change
 from packages.evals.tests.report_support import toy_campaign_host
 from packages.evals.tests.test_package_matrix import REPO_ROOT
 
-#: What the bundle's fingerprint leaves out, as version 1 did.
-_NOT_EVIDENCE = ("package_version", "first_result_at")
+#: What the bundle's fingerprint leaves out, as version 1 did, and what no build of that version wrote: the lever
+#: names (``lever_names``), which a page reads and a build since writes only when a lever is named.
+_NOT_EVIDENCE = ("package_version", "first_result_at", "lever_names")
 
 
 def _v1_aspect(document: dict[str, Any]) -> str:
     """An aspect bundle's fingerprint as version 1 took it: every float in full, no prefix, over the document as a build
-    of that version wrote it, so with no census pricing (``scoreboard[].pricing``), which no such build read."""
+    of that version wrote it, so with no census pricing (``scoreboard[].pricing``) and no lever names, which no such
+    build read."""
     held = {key: value for key, value in document.items() if key not in _NOT_EVIDENCE}
     if "scoreboard" in held:
         held["scoreboard"] = [

@@ -569,24 +569,54 @@ def printed_arm_labels(bundle: CampaignBundle) -> dict[str, str]:
 
     "Computed" is read from data: an arm no arm of the campaign's declaration covers is labelled by code, from the
     levers its variant's ``axis=level`` name spells (:func:`~threetears.evals.analysis.style.arm_name`'s ``levers``,
-    as a code-only page reads them), so it prints by the rule; an arm a person named (any the declaration covers) keeps
-    its label as written. The labels themselves, which name the arms as ids, are unchanged.
+    as a code-only page reads them), so it prints by the rule, each lever by the name every page calls it
+    (``lever_names``) where its frozen label spells the lever by its id read as words; an arm a person named (any the
+    declaration covers) keeps its label as written. The labels themselves, which name the arms as ids and are frozen
+    and fingerprinted with the evidence, are unchanged: a name is applied here, at render time only.
 
     :param bundle: The campaign's evidence.
     :ptype bundle: CampaignBundle
     :return: Variant key -> the name a page prints.
     :rtype: dict[str, str]
     """
+    return {
+        key: arm_display_name(label, levers, bundle.lever_names)
+        for key, (label, levers) in _named_labels(bundle).items()
+    }
+
+
+def _named_labels(bundle: CampaignBundle) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Each arm's label by every variant key a label names, a label code spelled from several levers with each lever
+    named as every page names it (:func:`_named_spelling`), and the levers code spelled it from (none for a label a
+    person gave): what :func:`printed_arm_labels` prints by the display rule, and :func:`reader_arms` names an arm by."""
     given = {key for arm in bundle.declaration.arms for key in bundle.arm_keys(arm)}
     entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
     spelled = arm_names(list(entries.values()))
     keys = [*(key for arm in bundle.arms for key in bundle.arm_keys(arm)), *entries]
-    printed: dict[str, str] = {}
+    labels: dict[str, tuple[str, tuple[str, ...]]] = {}
     for key in dict.fromkeys(keys):
-        label = bundle.label_of(key)
         levers = arm_name(spelled[key]).levers if key in spelled and key not in given else ()
-        printed[key] = arm_display_name(label, levers, bundle.lever_names)
-    return printed
+        labels[key] = (_named_spelling(bundle.label_of(key), levers, bundle.lever_names), levers)
+    return labels
+
+
+def _named_spelling(label: str, levers: Sequence[str], declared: Mapping[str, str] | None) -> str:
+    """A label code spelled from several levers, each by its id read as words (``prompt style v2, effort low``, as
+    :func:`~threetears.evals.analysis.campaigns.campaign_arms` freezes it), with each lever named by its stored reader
+    name (``prompt v2, effort low``), the digest or number telling it from another arm kept. A label not spelled from
+    ``levers`` part for part, a person's or a single level's, is returned as it is."""
+    held = _TELL_APART.fullmatch(label)
+    base, apart = (held["name"], held["apart"] or "") if held is not None else (label, "")
+    parts = base.split(", ")
+    if not levers or len(parts) != len(levers):
+        return label
+    named = []
+    for part, lever in zip(parts, levers, strict=True):
+        plain = lever_reader_name(lever)
+        if not part.startswith(f"{plain} "):
+            return label
+        named.append(lever_reader_name(lever, declared) + part[len(plain) :])
+    return ", ".join(named) + apart
 
 
 # --- an arm's reader name: what a page prints for a computed name that holds a cut level or a placeholder ---------
@@ -773,8 +803,9 @@ def input_arm_tags(bundle: CampaignBundle) -> dict[str, str]:
 
 def reader_arms(bundle: CampaignBundle, tags: Mapping[str, str]) -> list[CampaignArm]:
     """The bundle's arms, each a person did not name carrying the name its page prints
-    (:func:`reader_arm_labels`) where that differs from its frozen label: for a title or a listing's few words, never
-    stored. The bundle's own arms, and everything they fingerprint, are not touched.
+    (:func:`reader_arm_labels`) where that differs from its frozen label, else its label with each lever named as
+    every page names it: for a title or a listing's few words, never stored. The bundle's own arms, and everything they
+    fingerprint, are not touched.
 
     :param bundle: The campaign's evidence.
     :ptype bundle: CampaignBundle
@@ -783,13 +814,18 @@ def reader_arms(bundle: CampaignBundle, tags: Mapping[str, str]) -> list[Campaig
     :return: The arms, in the bundle's order.
     :rtype: list[CampaignArm]
     """
-    printed, reader = printed_arm_labels(bundle), reader_arm_labels(bundle, tags)
-    return [
-        arm.model_copy(update={"label": reader[arm.variant_key]})
-        if reader.get(arm.variant_key, printed.get(arm.variant_key)) != printed.get(arm.variant_key)
-        else arm
-        for arm in bundle.arms
-    ]
+    printed, reader, named = printed_arm_labels(bundle), reader_arm_labels(bundle, tags), _named_labels(bundle)
+    arms = []
+    for arm in bundle.arms:
+        key = arm.variant_key
+        if reader.get(key, printed.get(key)) != printed.get(key):
+            arms.append(arm.model_copy(update={"label": reader[key]}))
+        elif (label := named[key][0] if key in named else arm.label) != arm.label:
+            # A label code spelled from levers, each lever by the name every page calls it.
+            arms.append(arm.model_copy(update={"label": label}))
+        else:
+            arms.append(arm)
+    return arms
 
 
 def counted(n: int, of: int, what: str) -> str:

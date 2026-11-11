@@ -97,7 +97,8 @@ pass it to every entrypoint. It holds:
   Sweepable(reader_name=...) with the words a reader calls it`), and a kind contract a field without a title. A
   campaign stores the name on each axis it declares (`SweptAxis.reader_name`): yours where you give one, else the
   lever's, filled when the campaign is created or updated, so a page rebuilt later names the lever as it was named
-  then. The name is no identity: renaming it moves no variant key, context or fingerprint. Your bars (`BarRegistry`, each a `Bar`, with any per-behavior
+  then. The name is no identity: renaming it moves no variant key, context or fingerprint, and stales no analysis
+  (an arm code labels from its levers is frozen by their ids and printed with their names). Your bars (`BarRegistry`, each a `Bar`, with any per-behavior
   `PassThreshold`) can be built in code or kept as data: `load_bar_registry(mapping)` reads
   `{"bars": [...], "pass_thresholds": [...]}`, each entry its type's fields. It refuses a field it does not
   know and a value of the wrong type rather than ignoring or coercing them, because a misspelt `rationale`

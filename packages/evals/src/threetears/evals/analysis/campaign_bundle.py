@@ -139,7 +139,7 @@ class CampaignBundle(EvalDocumentModel):
         """Refuse aspects that are not this campaign's, or not one each, and arms whose labels repeat.
 
         :raises ValueError: An aspect's bundle names another campaign, a label repeats, readings name other aspects,
-            or two arms share a label.
+            two arms share a label, or two aspects name one lever apart.
         """
         labels = [bundle.aspect for bundle in self.aspects]
         if repeated := sorted({label for label in labels if labels.count(label) > 1}):
@@ -151,6 +151,14 @@ class CampaignBundle(EvalDocumentModel):
         names = [arm.label for arm in self.arms]
         if twice := sorted({name for name in names if names.count(name) > 1}):
             raise ValueError(f"the campaign bundle names arm label(s) {twice} more than once")
+        levers: dict[str, set[str]] = {}
+        for bundle in self.aspects:
+            for lever, name in bundle.lever_names.items():
+                levers.setdefault(lever, set()).add(name)
+        if apart := sorted(lever for lever, held in levers.items() if len(held) > 1):
+            raise ValueError(
+                f"the campaign bundle's aspects name lever(s) {apart} apart; one campaign names a lever one way"
+            )
         return self
 
     # ------------------------------------------------------------------ identity and storage
@@ -408,17 +416,16 @@ class CampaignBundle(EvalDocumentModel):
     @property
     def lever_names(self) -> dict[str, str]:
         """What every page calls each lever, by id, as the aspects' bundles carry it
-        (:attr:`~threetears.evals.analysis.bundle.schema.AnalysisContextBundle.lever_names`): the first aspect's name
-        for a lever two aspects name apart.
+        (:attr:`~threetears.evals.analysis.bundle.schema.AnalysisContextBundle.lever_names`): every aspect names a
+        lever by the one rule across the campaign, so they never name one apart (:meth:`_one_campaign` refuses
+        aspects that do), and this is every lever any of them names.
 
         :return: Lever id to reader name, sorted by id.
         :rtype: dict[str, str]
         """
-        names: dict[str, str] = {}
-        for bundle in self.aspects:
-            for lever, name in bundle.lever_names.items():
-                names.setdefault(lever, name)
-        return dict(sorted(names.items()))
+        return dict(
+            sorted({lever: name for bundle in self.aspects for lever, name in bundle.lever_names.items()}.items())
+        )
 
     def label_of(self, variant_key: str) -> str:
         """What a reader calls the arm a variant key names: its arm's label, else the name its levels give it.

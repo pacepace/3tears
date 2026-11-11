@@ -672,20 +672,8 @@ def _factor_aliasing(
     for blocks, members in sorted(by_split.items(), key=lambda item: item[1][0]):
         if len(members) < 2:
             continue
-        n_runs = sum(len(block) for block in blocks)
-        across = f"all {n_runs} runs" if n_runs == len(run_ids) else f"the {n_runs} runs that recorded them"
-        groups.append(
-            AliasedFactors(
-                factors=members,
-                n_runs=n_runs,
-                n_levels=len(blocks),
-                sentence=(
-                    f"{_listed_names(members)} move together across {across}, splitting them into the same "
-                    f"{len(blocks)} groups; no comparison separates them, so a difference across them belongs to all "
-                    f"{len(members)} at once."
-                ),
-            )
-        )
+        # Facts only: the sentence naming the group is worded at render time, each factor by its reader name.
+        groups.append(AliasedFactors(factors=members, n_runs=sum(len(block) for block in blocks), n_levels=len(blocks)))
 
     def varies_within(name: str, other: str) -> bool:
         shared = by_factor[name].keys() & by_factor[other].keys()
@@ -715,21 +703,7 @@ def _factor_aliasing(
         _MAX_FACTOR_PAIR_PIVOTS,
         weight=lambda pivot: sum(1 for cell in pivot.cells if cell.status == "not_run"),
     )
-    outside = n_covarying - n_in_groups
-    if len(factors) < 2:
-        completeness = f"{len(factors)} factor varied, so no pair of factors could co-vary."
-    else:
-        completeness = (
-            f"{n_pairs} factor pair(s) examined over the {len(factors)} factors that varied; {n_covarying} co-vary"
-            + (f", {n_in_groups} of them inside a group that moves in lockstep" if n_in_groups else "")
-            + (
-                f"; the {outside} outside any group are shown in {len(ordered)} pivot(s), a group's members sharing one"
-                if outside
-                else ""
-            )
-            + (f", of which {omitted} with the fewest unrun combinations are left out" if omitted else "")
-            + "."
-        )
+    # Facts only: what was examined and what is shown is worded at render time (the pair scan's completeness).
     return groups, FactorPairScan(
         factors=factors,
         n_pairs_examined=n_pairs,
@@ -737,7 +711,6 @@ def _factor_aliasing(
         n_covarying_in_groups=n_in_groups,
         pivots=kept,
         pivots_omitted=omitted,
-        completeness=completeness,
     )
 
 
@@ -800,11 +773,6 @@ def _factor_pair_pivot(
             for column_level in columns
         ],
     )
-
-
-def _listed_names(names: list[str]) -> str:
-    """``a``, ``a and b``, ``a, b and c``."""
-    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
 
 
 __all__: list[str] = []
