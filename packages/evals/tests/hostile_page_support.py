@@ -312,7 +312,9 @@ def hostile_report() -> Report:
                 "first_input": HOSTILE,
                 "excerpt": HOSTILE,
                 "failed_checks": [{"name": HOSTILE, "expression": HOSTILE}],
-                "judge": [{"dim": HOSTILE, "criterion": HOSTILE, "score": None, "scale": "ordinal", "reason": HOSTILE}],
+                "judge": [
+                    {"name": HOSTILE, "criterion": HOSTILE, "score": None, "scale": "ordinal", "reason": HOSTILE}
+                ],
                 "error_words": HOSTILE,
                 "result_id": HOSTILE,
                 "open": True,
