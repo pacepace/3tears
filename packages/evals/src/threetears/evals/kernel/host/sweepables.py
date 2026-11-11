@@ -1099,13 +1099,23 @@ class SweepableRegistry(HostAttributed):
         :ptype name: str
         :return: Its declared reader name, or None.
         :rtype: str | None
+        :raises RegistrationError: The family claiming ``name`` names it with no words: its ``member_reader_name``
+            returned a blank, or no text at all, which would store the axis unnamed and print its id. Refused here,
+            where it is called, naming the family and the member, as a declaration without a name is refused where it
+            is written.
         """
         declared = self._by_name.get(name)
         if declared is not None and declared.open_family is None:
             return declared.reader_name
         family = self.family_owning(name)
         if family is not None and family.member_reader_name is not None:
-            return family.member_reader_name(name)
+            given: object = family.member_reader_name(name)
+            if not isinstance(given, str) or not given.strip():
+                raise RegistrationError(
+                    f"lever family {family.name}'s member_reader_name named its member {name} {given!r} — a page would "
+                    "print the member's id for it; return the words a reader calls each member"
+                )
+            return given
         return None
 
     def refuse_as_axis(self, name: str) -> str | None:

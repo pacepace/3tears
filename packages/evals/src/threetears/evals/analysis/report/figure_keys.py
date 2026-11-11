@@ -192,7 +192,7 @@ from threetears.evals.analysis.separation import (
     wrong_side_share,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.analysis.style import check_names, measure_name
+from threetears.evals.analysis.style import check_names, lever_reader_name, measure_name
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
 
 if TYPE_CHECKING:
@@ -1585,9 +1585,11 @@ def _setting(report_input: ReportInput, values: tuple[str, ...], path: str) -> F
     """One of an arm's settings as the input holds it: a number where it holds a number, else its text."""
     arm_id, name = values
     value = _arm(report_input, arm_id).settings[name]
+    # The lever by its stored reader name, as every page names it, never its id.
+    what = f"the arm's {lever_reader_name(name, report_input.lever_names)} setting"
     if isinstance(value, str) or value is None:
-        return _text(path, value, f"the arm's {name} setting")
-    return _number(path, value, f"the arm's {name} setting", "plain")
+        return _text(path, value, what)
+    return _number(path, value, what, "plain")
 
 
 _FAMILY_FIELDS = ("disclosure", "correction", "alpha", "family_size", "level")

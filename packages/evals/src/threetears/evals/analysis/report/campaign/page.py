@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.campaign_title import arms_line, title_arm_names
 from threetears.evals.analysis.depth_reading import PAIRING_METHOD
@@ -228,7 +229,7 @@ def build_campaign_report_in_aspect_forms(
     blocks: list[ReportBlock] = [
         *stored_shape_blocks(bundle.schema_version for bundle in bundles),
         *question_blocks(campaign, compares=kind != "measurement"),
-        *_arms_blocks(campaign, readings, arms),
+        *_arms_blocks(campaign, readings, arms, bundles),
         *(
             _lead_blocks(campaign, readings, reports, names=names, forms=forms, aspect_forms=aspect_forms)
             if lead is None
@@ -430,14 +431,23 @@ def _title(campaign: EvalCampaign) -> str:
 
 
 def _arms_blocks(
-    campaign: EvalCampaign, readings: CampaignReadings, arms: Sequence[CampaignArm] | None
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    arms: Sequence[CampaignArm] | None,
+    bundles: Sequence[AnalysisContextBundle],
 ) -> list[ReportBlock]:
     """The line under the heading (:func:`~threetears.evals.analysis.campaign_title.arms_line`): the arms, each by
     its name, and the aspects, each part the campaign's name does not already say; over ``arms`` where given (each as a
-    title names it), else over the arms the readings name, each by its label. Nothing where the name says it all."""
+    title names it, a computed label spelled with the levers' names the aspects' ``bundles`` store), else over the arms
+    the readings name, each by its label. Nothing where the name says it all."""
     aspects = [(aspect.label, aspect.short_name) for aspect in campaign.aspects]
     if arms is not None:
-        control, candidates = title_arm_names(arms, given={arm.label for arm in campaign.arms})
+        # The first aspect's name for a lever two aspects name apart, as the campaign bundle reads them.
+        declared: dict[str, str] = {}
+        for bundle in bundles:
+            for lever, name in bundle.lever_names.items():
+                declared.setdefault(lever, name)
+        control, candidates = title_arm_names(arms, given={arm.label for arm in campaign.arms}, declared=declared)
     else:
         control = [readings.control_label] if readings.control is not None else []
         candidates = [label for key, label in readings.arm_labels().items() if key != readings.control]

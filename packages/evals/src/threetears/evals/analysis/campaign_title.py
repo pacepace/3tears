@@ -19,7 +19,7 @@ resolved (a frozen campaign bundle's: the control first, then the derived candid
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 
 from threetears.evals.analysis.style import arm_display_name, arm_name
 from threetears.evals.kernel.campaign import EvalCampaign
@@ -70,6 +70,7 @@ def declared_title(
     aspects: Sequence[tuple[str, str | None]],
     *,
     given: Collection[str] | None = None,
+    declared: Mapping[str, str] | None = None,
 ) -> str:
     """The title over arms and aspects already resolved, as a frozen campaign bundle holds them.
 
@@ -88,10 +89,13 @@ def declared_title(
         and is printed as every page prints it (:func:`~threetears.evals.analysis.style.arm_display_name`). None
         reads every label as given.
     :ptype given: Collection[str] | None
+    :param declared: Each lever's stored reader name, by id (a frozen bundle's ``lever_names``), which an arm whose
+        label code computed from several levers is spelled with (:func:`title_arm_name`).
+    :ptype declared: Mapping[str, str] | None
     :return: The title.
     :rtype: str
     """
-    control, candidates = title_arm_names(arms, given)
+    control, candidates = title_arm_names(arms, given, declared)
     return _named_title(name, control=control, candidates=candidates, aspects=aspects)
 
 
@@ -166,22 +170,28 @@ def _once(name: str, arms: str, named: Sequence[str], measure: str) -> str:
     return f"{arms} · {measure} ({name})"
 
 
-def title_arm_names(arms: Sequence[CampaignArm], given: Collection[str] | None = None) -> tuple[list[str], list[str]]:
+def title_arm_names(
+    arms: Sequence[CampaignArm], given: Collection[str] | None = None, declared: Mapping[str, str] | None = None
+) -> tuple[list[str], list[str]]:
     """The arms as a title names them (:func:`title_arm_name`), the control apart from the candidates.
 
     :param arms: The arms, as a reader reads them.
     :ptype arms: Sequence[CampaignArm]
     :param given: The labels a person gave (:func:`declared_title`'s ``given``); None reads every label as given.
     :ptype given: Collection[str] | None
+    :param declared: Each lever's stored reader name, by id (:func:`title_arm_name`).
+    :ptype declared: Mapping[str, str] | None
     :return: The control's name (none where there is no control), and each candidate's, in order.
     :rtype: tuple[list[str], list[str]]
     """
-    control = [title_arm_name(arm, given) for arm in arms if arm.role == "control"]
-    candidates = [title_arm_name(arm, given) for arm in arms if arm.role != "control"]
+    control = [title_arm_name(arm, given, declared) for arm in arms if arm.role == "control"]
+    candidates = [title_arm_name(arm, given, declared) for arm in arms if arm.role != "control"]
     return control, candidates
 
 
-def title_arm_name(arm: CampaignArm, given: Collection[str] | None = None) -> str:
+def title_arm_name(
+    arm: CampaignArm, given: Collection[str] | None = None, declared: Mapping[str, str] | None = None
+) -> str:
     """An arm as a title names it, and as a listing's short verdict names it: its declared short name, its label as
     given, or its computed label as pages print it.
 
@@ -189,6 +199,10 @@ def title_arm_name(arm: CampaignArm, given: Collection[str] | None = None) -> st
     :ptype arm: CampaignArm
     :param given: The labels a person gave (:func:`declared_title`'s ``given``); None reads every label as given.
     :ptype given: Collection[str] | None
+    :param declared: Each lever's stored reader name, by id (a frozen bundle's ``lever_names``): a label code computed
+        from several levers is spelled with them (``prompt v2, effort low``), as every page spells it, never with
+        their ids read as words. None or empty reads every lever by its id.
+    :ptype declared: Mapping[str, str] | None
     :return: The name printed.
     :rtype: str
     """
@@ -197,7 +211,7 @@ def title_arm_name(arm: CampaignArm, given: Collection[str] | None = None) -> st
     if given is None or arm.label in given or not arm.levers:
         return arm.label
     # A label code spelled as ``axis=level`` is read as every page reads it (``careful``, never ``candidate=careful``).
-    return arm_display_name(arm_name(arm.label).label, arm.levers)
+    return arm_display_name(arm_name(arm.label, declared=declared).label, arm.levers, declared)
 
 
 def _title_arms(campaign: EvalCampaign, candidate_models: Sequence[str], *, variants: int, judges: bool) -> str:

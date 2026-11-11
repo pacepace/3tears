@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
 from concurrent.futures import Executor
 from contextlib import asynccontextmanager, contextmanager
@@ -663,7 +664,7 @@ class EvalJobManager:
         return True
 
     async def shutdown(self, timeout: float = SHUTDOWN_SETTLE_TIMEOUT_S) -> list[str]:
-        """Cancel all active jobs and wait up to ``timeout`` for each to settle.
+        """Cancel all active jobs and wait for them to settle, the whole shutdown bounded by ``timeout``.
 
         A cancelled job settles as it unwinds. One whose writes outlast ``timeout`` is given up on,
         logged by id and returned rather than folded into a success: runs and tasks apart, since a
@@ -673,29 +674,45 @@ class EvalJobManager:
         **Every job this process holds a lease on ends lost first** (:meth:`JobLeases.shut_down
         <threetears.evals.kernel.job_leases.JobLeases.shut_down>`), its cause the shutdown, its lease released: its
         record reads lost at once in every process, rather than ``running`` until the lease lapses. The jobs are
-        cancelled after, and the endings they write as they unwind are refused — the record has ended. So what a
-        shutdown records of a run it held is the loss alone: ``cancelled``, ``completed_at`` the store's time as
-        it shut down, ``cancellation_reason`` ``lost: process shut down``; nothing is broadcast for it and the
-        run-end hook is not called, since no ending of the run's own was recorded. A run whose loss could not be
-        written (logged) keeps its own ending as it unwinds, which is recorded and heard as any other.
+        cancelled once those losses are written, or once half of ``timeout`` has passed without the store taking
+        them, whichever is first, so a store that hangs keeps no job spending past that; the endings the jobs write
+        as they unwind are refused where the loss landed — the record has ended. So what a shutdown records of a
+        run it held is the loss alone: ``cancelled``, ``completed_at`` the store's time as it shut down,
+        ``cancellation_reason`` ``lost: process shut down``; nothing is broadcast for it and the run-end hook is not
+        called, since no ending of the run's own was recorded. A run whose loss could not be written (logged) keeps
+        its own ending as it unwinds, which is recorded and heard as any other. A lease expiry already under way is
+        let finish within the same bound, the jobs unwinding meanwhile, and nothing here waits past ``timeout``.
 
-        :param timeout: Seconds to wait for every cancelled job to finish.
+        :param timeout: Seconds the whole shutdown may take: the losses, the expiries under way, and every cancelled
+            job finishing.
         :ptype timeout: float
         :return: The ids of the jobs still unfinished when the wait ended; empty when all settled.
         :rtype: list[str]
         """
+        deadline = time.monotonic() + timeout
+        cancelled: set[asyncio.Task[None]] = set()
+
+        def cancel_every() -> None:
+            # Detached tasks are cancelled with the runs: each records its own ending as it unwinds
+            # (a generation writes a `cancelled` attempt), which is the settling this waits for. Each once: a
+            # second cancel would land inside the unwinding of the first, cutting its ending's write short.
+            for task in [*self._tasks.values(), *self._detached.values()]:
+                if not task.done() and task not in cancelled:
+                    cancelled.add(task)
+                    task.cancel()
+
         if self._leases is not None:
-            ended = await self._leases.shut_down()
+            try:
+                ended = await self._leases.shut_down(within=timeout, then=cancel_every)
+            finally:
+                cancel_every()  # however the leases' shutdown ended; a task it already cancelled is not cancelled again
             if ended:
                 log.info("eval.shutdown wrote %d held job(s) lost: %s", len(ended), ", ".join(ended))
-        # Detached tasks are cancelled with the runs: each records its own ending as it unwinds
-        # (a generation writes a `cancelled` attempt), which is the settling this waits for.
-        every = {**self._tasks, **self._detached}
-        for task in list(every.values()):
-            if not task.done():
-                task.cancel()
+        else:
+            cancel_every()
+        every = [*self._tasks.values(), *self._detached.values()]
         if every:
-            await asyncio.wait(list(every.values()), timeout=timeout)
+            await asyncio.wait(every, timeout=max(0.0, deadline - time.monotonic()))
         unsettled_runs = [job_id for job_id, task in self._tasks.items() if not task.done()]
         unsettled_tasks = [job_id for job_id, task in self._detached.items() if not task.done()]
         if unsettled_runs:

@@ -35,15 +35,20 @@ would print its id; declare Sweepable(reader_name=...) with the words a reader c
 on each declared axis (`SweptAxis.reader_name`): the author's, else the host's, and the quick path's is the factor as
 its author wrote it (`prompt`, never `callable.prompt`). The production-check sentence, settings, factor columns,
 lever-effect rows, coverage lines and computed arm names read it through one source (`lever_reader_name` over the
-bundle's and the report input's `lever_names`), so a page rebuilt from the store names a lever as the page built in
-process did.
+bundle's and the report input's `lever_names`), as do a campaign's title, its listing line and the "Adopt ..." of its
+recorded call, the line under a campaign page's heading, and a figure key's refusal naming an arm's setting. So a page
+rebuilt from the store names every lever a campaign's declared axis names as the page built in process did; a lever
+no declared axis names is named as the host reading the store declares it (its id read as words where that host
+declares none). A family's `member_reader_name` that names a member with no words is refused where it is asked,
+naming the family and the member. A campaign export records each lever's `reader_name` with its declaration.
 
 **Durable v17 (a major):** the v16 step names each stored axis that has none from its id, once (the id read as words,
 less the quick path's `callable.` prefix). Every other durable type passes through unchanged. A build before this one
 refuses what this one writes, so a fleet does not roll back past it.
 
 **Not identity:** the name enters no variant key, measurement context, host declarations digest or fingerprint, so a
-rename splits no history and stales no analysis (names left the evidence, bundle shape 66, below).
+rename splits no history and stales no analysis (names left the evidence, bundle shape 66, below). A report input's
+`lever_names` enters its `report_input_digest`, as its other presentation fields do.
 
 **Hosts:** add `reader_name=` to every lever `Sweepable`, `member_reader_name=` to every open family, and `title=` to
 every overlay field, before upgrading (MIGRATIONS.toml).
@@ -65,6 +70,18 @@ by repeat index and then the first call left, as before, so the claim holds for 
 prompt once. Every shipped recording replays the same under that fallback: replayed, rungs 0 to 4 ask each recorded
 prompt once per repeat, except rung 2's four judge-example prompts, graded outside any cell, whose two recorded calls
 each are identical; rung 5's judge recording holds one call per prompt. Nothing was re-recorded. A recording made in format 1 is still refused.
+
+**Fixed:** in a format-3 recording, a cell the recording names nowhere (its arm, case or eval renamed since recording)
+was served the first call left in recorded order, which turned on the order cells asked in and could take a call
+recorded for another cell. It now stands for the one recorded cell that asked the prompt at its repeat and shares its
+subject, arm or case, for the rest of the replay, so a renamed arm replays its own calls on every replay. Where several
+recorded cells fit it is refused as ambiguous, in any order; where the one that fits has asked as itself, it is refused
+too, so no cell is served a call recorded for a cell that asked as itself. A cell the recording names is served its own
+calls and nothing else: one asking a prompt more often than recorded is refused, where it was served another's.
+
+**Fixed:** recording numbered a cell's asks of a prompt as their answers landed, a replay as they were asked, so two
+concurrent asks of one prompt by one cell could replay swapped. Both number an ask when it is asked; a replay serves a
+cell's asks in number order, so the gap an ask whose call failed leaves is never seen.
 
 **Fixed:** a `Model` shared by two evals in one process (or one eval run twice) serves the second nothing, since a
 replay serves each recorded call once per model; the second eval's calls were refused as "the code asks it more often
@@ -88,16 +105,33 @@ enforcing run's cap stops at unpriced spend. The cap is read before each example
 run's is before each cell, so the call that crosses it lands whole; the line now says the eval went over, with what it
 landed against its cap. `Eval.max_cost_usd`'s docstring says the examples draw on it too.
 
-**Fixed:** a grading of the examples that fails (the template gone from the store, a judge the host cannot build, a
-judge completion that breaks the protocol) is contained and stated on the reading ("not graded, since the grading
-failed ..."), and the eval files its campaign and returns its result, where the arms' spent results were lost.
+**Fixed:** a grading of the examples that fails (the template gone from the store, a judge config the scope will not
+build or a host with no completion clients, a judge completion that breaks the protocol) is contained and stated on
+the reading ("not graded in full, since the grading failed ..."), and the eval files its campaign and returns its
+result, where the arms' spent results were lost. The example the grading failed on keeps the verdicts it was given, so
+one already graded wrong reads as a miss beside them, never as "not graded". Only those conditions are contained: any
+other error (an engine bug) reaches the caller.
 
-### evals: a shutdown lets an expiry already running finish
+### evals: a shutdown lets an expiry already running finish, within the shutdown's own timeout
 
 **Fixed:** a graceful shutdown cancelled a lease expiry partway through: its record, already let go, was skipped by the
 shutdown's pass, its job never stopped and its fault never written, so it later read lost by lapse with no cause. An
-expiry now runs in a task of its own, shielded from the renewal that found the lease lapsed, and `JobLeases.shut_down`
-waits for every one still running, within the expiry's own bound (two leases), so the record reads lost with its cause.
+expiry now runs in a task of its own, shielded from the renewal that found the lease lapsed, and a shutdown lets it
+finish within the shutdown's timeout: it writes why it stopped (a fault naming the failed renewal) and then the record
+lost with the shutdown's cause, so the record ends at once with both. An expiry still running when the timeout ends is
+cancelled, its job stopped and its cause logged; its record then reads lost once its lease lapses.
+
+**Fixed:** a shutdown waited for those writes before it cancelled a single job: the held jobs' losses with no bound at
+all, then the expiries for up to two leases and a renewal interval (140 s at the default 60 s lease), far past
+`EvalJobManager.shutdown`'s 5 s timeout. A degraded store at SIGTERM kept live runs making model calls until the pod
+was killed. `EvalJobManager.shutdown(timeout)` now bounds the whole shutdown by `timeout`: the held jobs' losses are
+written together, and the jobs are cancelled once they land or once half the timeout has passed, whichever is first;
+the expiries under way get what is left. `JobLeases.shut_down` takes `within=` (the bound) and `then=` (called when
+the losses are written or their half has passed: where the caller cancels its jobs).
+
+**Fixed:** an expiry's failure after the renewal awaiting it was cancelled went unretrieved; each expiry now retrieves
+and logs what it raised itself. An expiry left running past a shutdown made a new lease pool after the shutdown had
+closed the last one, which nothing closed; none makes a store call after the shutdown has ended.
 
 ### evals: an unnamed comparison is refused
 

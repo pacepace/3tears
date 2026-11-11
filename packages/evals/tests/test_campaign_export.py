@@ -497,6 +497,11 @@ def test_the_profile_declaration_carries_the_packages_digest_and_the_factory_nam
     assert toy.built_by is None and toy.host_declarations_digest != courier.host_declarations_digest
     assert courier.world is not None and toy.world is not None
     assert len(courier.measures) == len(courier_profile().measures.names) > 0
+    declared = {sweepable.name: sweepable.reader_name for sweepable in courier_profile().sweepables.declarations}
+    assert {sweepable.name: sweepable.reader_name for sweepable in courier.sweepables} == declared, (
+        "each lever's reader name is recorded as the host declared it"
+    )
+    assert any(name is not None for name in declared.values())
 
 
 @pytest.mark.parametrize("built_by", ["courier 0.92", "module:", ":callable", " :x"])

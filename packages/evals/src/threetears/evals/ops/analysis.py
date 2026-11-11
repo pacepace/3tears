@@ -76,6 +76,7 @@ from threetears.evals.kernel.declaration import (
     CampaignCall,
     Margin,
     OverriddenBar,
+    lever_names_of,
 )
 from threetears.evals.kernel.judge_cases import JUDGE_KIND
 from threetears.evals.kernel.campaign import (
@@ -108,7 +109,7 @@ from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.provider import describe_failure, traceback_is_safe
 from threetears.evals.kernel.refusals import job_refusal
-from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.host import EvalHost, HostProfile
 from threetears.evals.ops.analyst import snapshot_input
 from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, generation_key
@@ -754,13 +755,29 @@ def _named_arm(
     if found is None:
         return None
     arm, names = found
-    return f"{'Keep' if arm.role == 'control' else 'Adopt'} {title_arm_name(arm, names)}"
+    declared = frozen.lever_names if frozen is not None else None
+    return f"{'Keep' if arm.role == 'control' else 'Adopt'} {title_arm_name(arm, names, declared)}"
 
 
-def _decided(call: CampaignCall, campaign: EvalCampaign, frozen: CampaignBundle | None) -> str:
+def _decided(call: CampaignCall, campaign: EvalCampaign, frozen: CampaignBundle | None, profile: HostProfile) -> str:
     """A recorded call in a few words (:func:`_named_arm`); an arm no longer found reads as a candidate, by its label
-    as pages print a computed one (``careful``, never ``candidate=careful``)."""
-    return _named_arm(call.variant_key, call.arm, campaign, frozen) or f"Adopt {arm_name(call.arm).label}"
+    as pages print a computed one (``careful``, never ``candidate=careful``), its levers by their stored reader names:
+    the frozen bundle's, else the campaign's declared axes' and the host's (:func:`_lever_names`)."""
+    named = _named_arm(call.variant_key, call.arm, campaign, frozen)
+    return named or f"Adopt {arm_name(call.arm, declared=_lever_names(campaign, frozen, profile)).label}"
+
+
+def _lever_names(campaign: EvalCampaign, frozen: CampaignBundle | None, profile: HostProfile) -> dict[str, str]:
+    """What every page calls each lever of ``campaign``, by id: as its frozen bundle stores them where it has one; else
+    as its declared axes store them, and the host declares the levers its arms set
+    (:func:`~threetears.evals.kernel.declaration.lever_names_of`)."""
+    if frozen is not None:
+        return frozen.lever_names
+    return lever_names_of(
+        {lever for arm in campaign.arms for lever in arm.levers or {}},
+        [aspect.design for aspect in campaign.aspects if aspect.design is not None],
+        profile,
+    )
 
 
 #: The undecided reading as a listing line says it: the glossary's phrase
@@ -996,6 +1013,7 @@ def _line_title(host: EvalHost, campaign: EvalCampaign, frozen: CampaignBundle |
         _reader_arms(frozen),
         [(aspect.label, aspect.short_name) for aspect in campaign.aspects],
         given={arm.label for arm in frozen.declaration.arms},
+        declared=frozen.lever_names,
     )
 
 
@@ -1012,7 +1030,7 @@ def _listed(host: EvalHost, campaign: EvalCampaign, every: list[EvalCampaign] | 
     analysis = host.storage.load_reported_analysis(campaign.id, campaign.scope_id)
     read = _frozen(analysis) if analysis is not None else _Frozen(None, None)
     if campaign.call is not None:
-        line = line.model_copy(update={"verdict_short": _decided(campaign.call, campaign, read.bundle)})
+        line = line.model_copy(update={"verdict_short": _decided(campaign.call, campaign, read.bundle, host.profile)})
     if analysis is not None:
         line = _with_report(host, line, analysis, campaign, read)
     if campaign.exploratory and every is None:
@@ -1298,6 +1316,7 @@ def _analysis_title(host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampai
         _reader_arms(frozen),
         [(bundle.aspect, bundle.short_name) for bundle in frozen.aspects],
         given={arm.label for arm in frozen.declaration.arms},
+        declared=frozen.lever_names,
     )
 
 

@@ -624,6 +624,16 @@ class TestAnArmsSettings:
         if name == "r2":
             assert kinds == {"number", "text"}, "the control: r2's retry is a number, its reasoning text"
 
+    def test_a_setting_the_input_does_not_state_is_named_by_its_lever_s_reader_name_never_its_id(self) -> None:
+        data = reference_data("r2")
+        arm = next(arm for arm in data["arms"] if arm["settings"])
+        setting = next(iter(arm["settings"]))
+        arm["settings"][setting] = None
+        data["lever_names"] = {**data.get("lever_names", {}), setting: "Reasoning budget"}
+        report_input = ReportInput.model_validate(data)
+        with pytest.raises(UnstatedFigure, match="names the arm's Reasoning budget setting, which the input does not"):
+            resolve(f"settings.{arm['id']}.{setting}", report_input)
+
 
 def _depth(report_input: ReportInput, aspect: str, arm: str) -> tuple[int, int, float]:
     held = next(a for a in report_input.aspects if a.id == aspect).depth
