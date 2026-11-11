@@ -439,6 +439,10 @@ def _column(text: str) -> tuple[str, str] | None:
     collation = _COLLATE.fullmatch(stripped)
     if collation is not None:
         inner = _column(collation.group(1))
+        if inner is None and _row_expression(collation.group(1)):
+            # an expression of the row in that collation (``lower(name) COLLATE "C"``): keyed as the expression,
+            # collated, as the index item holding it is (schema._column_of)
+            return "", collated(expression_key(_unwrap(collation.group(1).strip())), collation.group(2))
         return None if inner is None else (inner[0], collated(inner[1], collation.group(2)))
     match = _COLUMN.match(stripped)
     if match is None:

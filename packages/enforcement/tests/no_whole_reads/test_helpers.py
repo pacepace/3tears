@@ -41,6 +41,9 @@ CREATE INDEX relations_by_customer ON relations (customer_id, name, id);
 -- purpose: src/app.py::reader
 -- plan_test: tests/test_app.py::test_relations_plan
 CREATE INDEX relations_by_lower_name ON relations (lower(name), id);
+-- purpose: src/app.py::reader
+-- plan_test: tests/test_app.py::test_relations_plan
+CREATE INDEX relations_by_folded_name ON relations ((lower(name) COLLATE "C") ASC, customer_id ASC);
 CREATE TABLE nodes (id UUID PRIMARY KEY, kind TEXT, metadata JSONB);
 -- purpose: src/app.py::reader
 -- plan_test: tests/test_app.py::test_nodes_plan
@@ -94,6 +97,17 @@ def _judged(code: str, schema: SchemaCatalog, name: str = "src/app.py::reader") 
         # a sort by an expression an index holds
         'keyset_page(c, "relations", columns=cols, by={}, '
         'order=[Sort("name_key", expression=\'lower(t."name")\'), Sort("id", "uuid")], limit=5)',
+        # ... in an explicit collation the index holds it in (the hub's name-search pages, v158), page after page;
+        # a collation written quoted or bare is the same collation
+        'keyset_page(c, "relations", columns=cols, by={}, '
+        'order=[Sort("name_folded", expression=\'lower(t."name") COLLATE "C"\'), Sort("customer_id", "uuid")], '
+        "limit=5, cursor=k)",
+        'keyset_page(c, "relations", columns=cols, by={}, '
+        'order=[Sort("name_folded", expression=\'lower(t."name") COLLATE C\'), Sort("customer_id", "uuid")], '
+        "limit=5, cursor=k)",
+        'keyset_rows(c, "relations", columns=cols, by={}, '
+        'order=[Sort("name_folded", expression=\'lower(t."name") COLLATE "C"\'), Sort("customer_id", "uuid")], '
+        "page=500)",
         # every row of a prefix, page after page
         'keyset_rows(c, "results", columns=cols, by={"state": s}, order=[Sort("geo"), Sort("id", "bigint")], page=500)',
         # a scope's changed rows by hash: its keys and hashes paged in the key's order, then those keys read
@@ -163,6 +177,12 @@ def test_a_keyed_count_is_a_keyed_count(schema: SchemaCatalog) -> None:
         ('read_keyed(c, "results", keys=KeyBatch(("geo",), ks), columns=cols)', "whole-select"),
         ('holds_any(c, "results", by={"kind": k}, order=["state", "geo", "id"])', "non-key-where"),
         ('count_at_most(c, "results", by={"kind": k}, at_most=3, order=["state", "geo", "id"])', "non-key-where"),
+        # a page past a collated expression no index holds in that collation (only lower(name) COLLATE "C" is)
+        (
+            'keyset_page(c, "relations", columns=cols, by={}, order=[Sort("name_folded", '
+            'expression=\'upper(t."name") COLLATE "C"\'), Sort("customer_id", "uuid")], limit=5, cursor=k)',
+            "non-key-where",
+        ),
         # a prefix delete on a column no index ranges
         ('delete_keyed(c, "unindexed", prefix={"name": p})', "non-key-where"),
         ('update_keyed(c, "unindexed", values={"run_id": r}, prefix={"name": p})', "non-key-where"),
