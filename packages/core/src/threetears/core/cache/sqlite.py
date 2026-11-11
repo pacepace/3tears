@@ -416,8 +416,8 @@ class SQLiteBackend:
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._serialize_pk_values(table, pk_cols, self._pk_values(entity_id, pk_cols))
         select_clause = build_select_clause(self._schema_info.get(table), table, columns)
-        where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
-        sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {where_clause}"
+        pk_where = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+        sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {pk_where}"
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(sql, pk_vals)
@@ -466,8 +466,8 @@ class SQLiteBackend:
             )
         else:
             per_key = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
-            disjunct = " OR ".join([f"({per_key})" for _ in entity_ids])
-            sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {disjunct}"
+            pk_disjunct = " OR ".join([f"({per_key})" for _ in entity_ids])
+            sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {pk_disjunct}"
             flat: list[Any] = []
             for eid in entity_ids:
                 flat.extend(self._serialize_pk_values(table, pk_cols, self._pk_values(eid, pk_cols)))
@@ -498,8 +498,8 @@ class SQLiteBackend:
         """
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._serialize_pk_values(table, pk_cols, self._pk_values(entity_id, pk_cols))
-        where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
-        sql = f"DELETE FROM {quote_identifier(table)} WHERE {where_clause}"
+        pk_where = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+        sql = f"DELETE FROM {quote_identifier(table)} WHERE {pk_where}"
         self._in_write_transaction(lambda conn: conn.execute(sql, pk_vals))
 
     def delete_many_by_id(
@@ -531,8 +531,8 @@ class SQLiteBackend:
         values = [
             self._serialize_pk_values(table, pk_cols, self._pk_values(entity_id, pk_cols)) for entity_id in entity_ids
         ]
-        where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
-        sql = f"DELETE FROM {quote_identifier(table)} WHERE {where_clause}"
+        pk_where = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+        sql = f"DELETE FROM {quote_identifier(table)} WHERE {pk_where}"
         self._in_write_transaction(lambda conn: conn.executemany(sql, values))
 
     def _in_write_transaction(self, write: Callable[[Any], object]) -> None:

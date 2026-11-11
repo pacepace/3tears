@@ -85,7 +85,7 @@ from threetears.core.collections.l2_order import (
 )
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
-from threetears.core.ddl.write_marks import WRITE_MARKS_TABLE
+from threetears.core.ddl.write_marks import WRITE_MARKS_TABLE, delete_marks_sql
 from threetears.core.entities.base import BaseEntity, derive_addressing_id
 from threetears.core.exceptions import (
     L2LostError,
@@ -194,9 +194,10 @@ _ABSENT_MARKER_METADATA: Final = MetaData()
 Table(
     _ABSENT_MARKER_TABLE,
     _ABSENT_MARKER_METADATA,
+    # keyed by the collection's table first, so a table's markers (the drop on a generation move, the cap) are read
+    # by their key's prefix, never by a scan of every table's
+    Column("table_name", String, primary_key=True),
     Column("key", String, primary_key=True),
-    # the collection's table, so the per-table count and the drop on a generation move are one query
-    Column("table_name", String, nullable=False, index=True),
     Column("generation", Text, nullable=False),
     # monotonic seconds: this row is never shared across processes, so the local clock is the
     # only one that ever reads it. The cover for writers that predate the write marks, until the
@@ -204,6 +205,12 @@ Table(
     Column("deadline", Float, nullable=False),
 )
 
+
+#: the most markers past its cap one write removes from a table (a lowered cap's excess goes over several writes)
+_ABSENT_MARKER_TRIM: Final = 1_000
+
+#: the key a recorded absence is read by: its table, then its own key
+_ABSENT_MARKER_PK: Final = ("table_name", "key")
 
 #: the default count of recorded absences one table may hold in a pod's L1
 #: (:attr:`BaseCollection.negative_cache_max_entries`).
@@ -2023,9 +2030,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         schema = registry.write_marks_schema
         if not covered or schema is None or self.l3_pool is None:
             return
-        marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
         try:
-            await self.l3_pool.execute(f"DELETE FROM {marks} WHERE id = ANY($1::bigint[])", covered)  # noqa: S608 - the registry's schema, quoted
+            await self.l3_pool.execute(delete_marks_sql(schema), covered)
         # prawduct:allow prawduct/broad-except -- the advance landed; a mark left only costs the reconciler one more advance
         except Exception as exc:
             contain(
@@ -2360,13 +2366,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._l1 is None:
             return False
         self._drop_markers_of_moved_generations(generation)
-        key = (self._absent_marker_key(entity_id),)
-        row = self._l1.select_by_id(_ABSENT_MARKER_TABLE, key, ("key",))
+        key = (self.table_name, self._absent_marker_key(entity_id))
+        row = self._l1.select_by_id(_ABSENT_MARKER_TABLE, key, _ABSENT_MARKER_PK)
         if row is None:
             return False
         if row["generation"] == generation and time.monotonic() < float(row["deadline"]):
             return True
-        self._l1.delete_by_id(_ABSENT_MARKER_TABLE, key, ("key",))
+        self._l1.delete_by_id(_ABSENT_MARKER_TABLE, key, _ABSENT_MARKER_PK)
         return False
 
     def _drop_markers_of_moved_generations(self, generation: str) -> None:
@@ -2387,7 +2393,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE table_name = ? AND generation != ?",
             (self.table_name, generation),
         )
-        self._l1.delete_many_by_id(_ABSENT_MARKER_TABLE, [(row["key"],) for row in dead], ("key",))
+        self._l1.delete_many_by_id(
+            _ABSENT_MARKER_TABLE, [(self.table_name, row["key"]) for row in dead], _ABSENT_MARKER_PK
+        )
         self._marker_generation = generation
 
     def _write_l1_marker(self, entity_id: Any, generation: str) -> None:
@@ -2411,7 +2419,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 "generation": generation,
                 "deadline": time.monotonic() + self.negative_cache_max_age.total_seconds(),
             },
-            "key",
+            _ABSENT_MARKER_PK,
         )
         self._hold_markers_to_the_cap()
 
@@ -2419,7 +2427,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         """drop this table's oldest recorded absences past :attr:`negative_cache_max_entries`.
 
         Oldest by when the marker was first recorded (the row's insertion order), so a flood of
-        distinct keys keeps the newest and never grows the table past the cap.
+        distinct keys keeps the newest and never grows the table past the cap. Nothing is counted: the markers past
+        the newest ``cap`` are read by the table's key prefix, newest first, and go; a write adds one at a time, so
+        a pass at the cap finds one.
 
         :return: None
         :rtype: None
@@ -2427,17 +2437,15 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._l1 is None:
             return
         cap = type(self).negative_cache_max_entries
-        counted = self._l1.execute_query(
-            f"SELECT COUNT(*) AS n FROM {_ABSENT_MARKER_TABLE} WHERE table_name = ?", (self.table_name,)
-        )
-        excess = int(counted[0]["n"]) - cap if counted else 0
-        if excess <= 0:
-            return
-        oldest = self._l1.execute_query(
-            f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE table_name = ? ORDER BY rowid LIMIT {excess:d}",
+        past = self._l1.execute_query(
+            f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE table_name = ? "
+            f"ORDER BY rowid DESC LIMIT {_ABSENT_MARKER_TRIM:d} OFFSET {cap:d}",
             (self.table_name,),
         )
-        self._l1.delete_many_by_id(_ABSENT_MARKER_TABLE, [(row["key"],) for row in oldest], ("key",))
+        if past:
+            self._l1.delete_many_by_id(
+                _ABSENT_MARKER_TABLE, [(self.table_name, row["key"]) for row in past], _ABSENT_MARKER_PK
+            )
 
     def _clear_l1_marker(self, entity_id: Any) -> None:
         """drop this pod's L1 absent-marker for ``entity_id``, if it holds one.
@@ -2449,7 +2457,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None or not self._negative_cache_active:
             return
-        self._l1.delete_by_id(_ABSENT_MARKER_TABLE, (self._absent_marker_key(entity_id),), ("key",))
+        self._l1.delete_by_id(
+            _ABSENT_MARKER_TABLE, (self.table_name, self._absent_marker_key(entity_id)), _ABSENT_MARKER_PK
+        )
 
     def scan_ticket(self) -> ScanReadTicket:
         """take the ticket a scan caches its rows under; take it before the scan's first await.

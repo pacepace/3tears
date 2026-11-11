@@ -125,7 +125,10 @@ def build_create_index_sql(table_name: str, index: IndexDef) -> str:
     unique_prefix = "UNIQUE " if index.unique else ""
     for col in index.include:
         _validate_identifier(col, "included column name")
-    cols_str = ", ".join(index.columns)
+    for col in index.asc:
+        if col not in index.columns:
+            raise ValueError(f"index {index.name!r}: asc column {col!r} is not one of its columns")
+    cols_str = ", ".join(f"{col} ASC" if col in index.asc else col for col in index.columns)
     include = f" INCLUDE ({', '.join(index.include)})" if index.include else ""
     sql = f"CREATE {unique_prefix}INDEX IF NOT EXISTS {index.name} ON {table_name} ({cols_str}){include}"
     return sql

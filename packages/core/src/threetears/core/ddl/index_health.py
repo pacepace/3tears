@@ -13,13 +13,17 @@ re-declared by hand. A unique index whose table now holds duplicate keys under i
 anything is dropped, naming the duplicate keys: building it would fail, and dropping it first would lose even the
 definition. An index still unusable after its build raises.
 
+An installer that declares its own indexes (the change-note ring) passes their statements as ``definitions``: an
+unusable index of one of those names is built again from the installer's declared statement, not from whatever
+definition a failed build left under that name.
+
 The duplicate check reads the table under the index's predicate, grouped by its key: a schema repair's own read,
 run only for an index found unusable.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -165,6 +169,7 @@ async def rebuild_unusable_indexes(
     *,
     names: Sequence[str] | None = None,
     policy: DdlLockPolicy | None = None,
+    definitions: Mapping[str, str] | None = None,
 ) -> list[UnusableIndex]:
     """build every unusable index of ``schemas`` again from its own definition; say which were rebuilt.
 
@@ -185,6 +190,10 @@ async def rebuild_unusable_indexes(
     :ptype names: Sequence[str] | None
     :param policy: how long to wait for the DDL lock; the default waits until it is free
     :ptype policy: DdlLockPolicy | None
+    :param definitions: the declared statement per index name (an installer's own): an unusable index of one of these
+        names is built from it rather than from the definition the catalog holds under that name, which a failed build
+        of something else may have left; a declared statement that is not UNIQUE needs no duplicate check
+    :ptype definitions: Mapping[str, str] | None
     :return: the indexes built again
     :rtype: list[UnusableIndex]
     :raises IndexDuplicateKeysError: when a unique index's table holds duplicate keys; nothing was dropped
@@ -198,8 +207,14 @@ async def rebuild_unusable_indexes(
         found = await unusable_indexes(conn, schemas, names=names)
         if not found:
             return []
+        declared = definitions or {}
         for index in found:
-            if index.unique:
+            unique = (
+                declared[index.name].lstrip().upper().startswith("CREATE UNIQUE ")
+                if index.name in declared
+                else index.unique
+            )
+            if unique:
                 duplicates = await _duplicate_keys(conn, index)
                 if duplicates:
                     raise IndexDuplicateKeysError(index, duplicates)
@@ -209,7 +224,7 @@ async def rebuild_unusable_indexes(
         )
         for index in found:
             await conn.execute(f"DROP INDEX IF EXISTS {quote_identifier(index.schema)}.{quote_identifier(index.name)}")
-            await conn.execute(index.definition)
+            await conn.execute(declared.get(index.name, index.definition))
         still = {(i.schema, i.name) for i in await unusable_indexes(conn, schemas, names=names)} & {
             (i.schema, i.name) for i in found
         }

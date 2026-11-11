@@ -164,6 +164,23 @@ inside a value. Postgres, an older hub, and a read whose filter pins the lead ke
 .l3_on_yugabyte` (a pool by `version()`; the rail's proxy by its broker's `hub_capabilities`, `dialect:yugabyte`), and
 `schema_backed.sql_cast` / `TableSchema.hashed_lead_array`.
 
+### core: the whole-table copies are removed (BREAKING)
+
+Each read its table whole on every refresh (and fingerprinted it whole to prove the copy); a copy now follows its
+table's changes by key. Removed, with what replaces each:
+
+- `threetears.core.collections.complete_copy.CompleteCopy`, `BufferedCopies`, `WholeTableL1`, `CopyProof`,
+  `CopyGeneration`: follow the table with `threetears.core.collections.copy_follower.CopyFollower` (a true no-data
+  cold start loads it once; every later change is applied by key from its change notes).
+- `complete_copy.copy_table`: read the rows a change names with `read_l3_rows` / `l3_row_pages` / `read_l3_arrow`
+  (still in `complete_copy`), narrowed by the key prefix (`where`, `where_any`), or follow the table with
+  `CopyFollower`.
+- `complete_copy.l3_fingerprint`: none. A copy is trusted by its epochs and change notes; no verification scan.
+- `DuckDBBackend.replace_all`: in tests, `threetears.core.testing.duckdb_fill.fill_table(backend, table, rows, primary_key)`;
+  a load writes by key (`upsert_many`, or `CopyFollower`). Reports' tests switch to `fill_table` this release.
+- `DuckDBBackend.stored_keys`: read the keys a change names by key (`threetears.core.keyed.read_keyed`); a whole
+  key listing has no replacement.
+
 ### core: `ScopedSnapshot` and `SharedSnapshot` are removed
 
 **Removed (core):** `threetears.core.collections.scoped_snapshot` (`ScopedSnapshot`, its `SnapshotTable`,

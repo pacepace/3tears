@@ -22,8 +22,8 @@ so a reader can tell which write left each row.
 committed version and whose ``writing`` names a write begun and not committed. A writer commits
 ``begin`` before its first data write and ``commit`` in the transaction of its last, so a reader
 that finds no write in progress and the same version before and after reading every data table
-(:meth:`ScopeEpochs.settled`, the ``settled`` of
-:class:`~threetears.core.collections.complete_copy.BufferedCopies`) read one state of all of them.
+(:meth:`ScopeEpochs.settled`, the ``settled`` a
+:class:`~threetears.core.collections.copy_follower.CopyFollower` takes) read one state of all of them.
 A write that never commits leaves ``writing`` set: readers keep the state they have until the next
 write commits, rather than reading rows a partial write left. The next write takes a number above
 it, so no number a partial write may have stamped rows with is used twice.
@@ -288,6 +288,8 @@ class ScopeEpochs:
         self._page_size = page_size
         self._writer = writer
         self._table = quote_identifier(collection.table_name)
+        #: the table's key (:func:`scope_epochs_schema`): a scope's row, and the record's, are read by it
+        self._key_column = quote_identifier("scope")
         self._idle_ms = None if idle_timeout is None else max(1, int(idle_timeout.total_seconds() * 1000))
         # the snapshot last read, the rows it was built from (by scope), and the version a read of the changes reads past
         self._held: EpochSnapshot | None = None
@@ -343,7 +345,7 @@ class ScopeEpochs:
         """
         _WHOLE_READS.count(why, table=self._collection.table_name)
         l3 = self._collection.required_l3_pool
-        record = await l3.fetch(f"SELECT epoch FROM {self._table} WHERE scope = $1", WHOLE)  # noqa: S608 - the owner's table name
+        record = await l3.fetch(f"SELECT epoch FROM {self._table} WHERE {self._key_column} = $1", WHOLE)  # noqa: S608 - the owner's table name
         rows = await read_l3_rows(l3, self._collection.table_name, _COLUMNS, ("scope",), page_size=self._page_size)
         self._rows = {str(row["scope"]): row for row in rows}
         self._since = int(record[0]["epoch"]) if record else 0
@@ -500,7 +502,7 @@ class ScopeEpochs:
         try:
             async with self._collection.required_l3_pool.acquire() as conn, CallerTransaction(conn):
                 row = await conn.fetchrow(
-                    f"SELECT writing FROM {self._table} WHERE scope = $1 FOR UPDATE NOWAIT",  # noqa: S608 - the owner's table name
+                    f"SELECT writing FROM {self._table} WHERE {self._key_column} = $1 FOR UPDATE NOWAIT",  # noqa: S608 - the owner's table name
                     WHOLE,
                 )
                 if row is not None and row["writing"] is not None and int(row["writing"]) == version:
@@ -542,7 +544,7 @@ class ScopeEpochs:
             # the record's lock, taken without waiting: a data transaction left open by a stale writer
             # holds it, and waiting on it would stall this write for as long as that one hangs
             await conn.fetchrow(
-                f"SELECT writing FROM {self._table} WHERE scope = $1 FOR UPDATE NOWAIT",  # noqa: S608 - the owner's table name
+                f"SELECT writing FROM {self._table} WHERE {self._key_column} = $1 FOR UPDATE NOWAIT",  # noqa: S608 - the owner's table name
                 WHOLE,
             )
         except asyncpg.exceptions.LockNotAvailableError as exc:
@@ -594,7 +596,7 @@ class ScopeEpochs:
         # the row's share lock, held to the end of the data transaction: it conflicts with begin's
         # FOR UPDATE NOWAIT and commit's UPDATE, not with this write's other data transactions
         fenced = await conn.fetchrow(
-            f"SELECT writing FROM {self._table} WHERE scope = $2 AND writing = $1 FOR SHARE",  # noqa: S608 - the owner's table name
+            f"SELECT writing FROM {self._table} WHERE {self._key_column} = $2 AND writing = $1 FOR SHARE",  # noqa: S608 - the owner's table name
             version,
             WHOLE,
         )
@@ -653,7 +655,7 @@ class ScopeEpochs:
         # the fence: clears the marker only while this write is still the one in progress
         fenced = await conn.fetchrow(
             f"UPDATE {self._table} SET previous_epoch = epoch, epoch = $1, writing = NULL, "  # noqa: S608 - the owner's table name
-            "date_updated = now() WHERE scope = $2 AND writing = $1 RETURNING epoch",
+            f"date_updated = now() WHERE {self._key_column} = $2 AND writing = $1 RETURNING epoch",
             version,
             WHOLE,
         )

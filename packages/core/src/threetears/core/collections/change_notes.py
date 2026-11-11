@@ -131,6 +131,9 @@ from threetears.core.ddl.change_notes import (
     note_function_name,
     note_table,
     note_trigger_sql,
+    ring_read_sql,
+    ring_switch_sql,
+    ring_update_sql,
     trigger_function_body,
     trigger_function_sql,
 )
@@ -188,8 +191,9 @@ async def _install_change_notes(
     conn: Any, schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE, policy: DdlLockPolicy | None = None
 ) -> None:
     """create the ring where missing (:func:`~threetears.core.ddl.change_notes.change_notes_ddl`), every index of it
-    usable: one a failed build left unusable is dropped and built again
-    (:func:`~threetears.core.ddl.index_health.rebuild_unusable_indexes`, by the ring's own index names).
+    usable: one a failed build left unusable is dropped and built again from the ring's own statement
+    (:func:`~threetears.core.ddl.index_health.rebuild_unusable_indexes`, by the ring's own index names and
+    definitions).
 
     An index build that fails part way leaves its index behind not valid, which the planner never reads and
     ``CREATE INDEX IF NOT EXISTS`` takes as present. On YugabyteDB 2026.1 an online build racing other DDL on the
@@ -216,11 +220,14 @@ async def _install_change_notes(
     """
     statements = change_notes_ddl(schema, fence=fence)
     # each index's name, as its own statement creates it (CREATE INDEX IF NOT EXISTS "<name>" ON ...)
-    names = [statement.split()[5].strip('"') for statement in statements if statement.startswith("CREATE INDEX ")]
+    declared = {
+        statement.split()[5].strip('"'): statement for statement in statements if statement.startswith("CREATE INDEX ")
+    }
     async with database_ddl_lock(ConnectionSession(conn), policy):
         for statement in statements:
             await conn.execute(statement)
-        await rebuild_unusable_indexes(conn, [schema], names=names, policy=policy)
+        # built again from the ring's own statement: a failed build may have left another definition under its name
+        await rebuild_unusable_indexes(conn, [schema], names=list(declared), policy=policy, definitions=declared)
 
 
 def _status_count(status: str) -> int:
@@ -735,7 +742,6 @@ class ChangeNoteKeeper:
         self._pool = pool
         self._schema = notes_schema
         self._owner = quote_identifier(notes_schema)
-        self._ring = f"{self._owner}.{quote_identifier(RING_TABLE)}"
         self._log = log
         self._fence = fence
         self._scrub_batch = scrub_batch
@@ -976,10 +982,7 @@ class ChangeNoteKeeper:
         :rtype: NoteRingState
         :raises GenerationUnavailableError: when the ring is not installed
         """
-        rows = await self._pool.fetch(
-            "SELECT current_ring, switch_no, switched_at, switched_seq, floor, fence_seq, emptied, log_incarnation, "  # noqa: S608 - trusted identifiers
-            f"fence_seconds, wait_seconds, now() AS now FROM {self._ring} WHERE id = 1"
-        )
+        rows = await self._pool.fetch(ring_read_sql(self._schema))
         if not rows:
             raise GenerationUnavailableError(f"the change-note ring of {self._schema!r} is not installed")
         row = rows[0]
@@ -1020,7 +1023,7 @@ class ChangeNoteKeeper:
         names = sorted(fields)
         assignments = ", ".join(f"{name} = ${index}" for index, name in enumerate(names, start=2))
         await self._pool.execute(
-            f"UPDATE {self._ring} SET {assignments} WHERE id = 1 AND switch_no = $1",  # noqa: S608 - fixed column names
+            ring_update_sql(self._schema, assignments),
             ring.switch_no,
             *(fields[name] for name in names),
         )
@@ -1289,10 +1292,7 @@ class ChangeNoteKeeper:
         """
         fence = self._fence.total_seconds()
         status = await self._pool.execute(
-            f"UPDATE {self._ring} SET current_ring = $2, switch_no = switch_no + 1, switched_at = now(), "  # noqa: S608 - trusted identifiers
-            "switched_seq = $3, floor = fence_seq, fence_seq = NULL, emptied = FALSE, previous_switched_at = switched_at, "
-            "fence_seconds = $4, wait_seconds = greatest($4, fence_seconds) "
-            "WHERE id = 1 AND switch_no = $1 AND emptied",
+            ring_switch_sql(self._schema),
             ring.switch_no,
             ring.oldest,
             _token(state.incarnation, state.last_seq),

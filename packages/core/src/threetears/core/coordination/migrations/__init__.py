@@ -21,6 +21,8 @@ version history:
   write's generation advance cannot be lost (:mod:`threetears.core.collections.write_marks`).
 - v004 -- index ``collection_write_marks`` by ``(table_name, id)``, so the broker's read of a commit's
   marks reads that table's, not the whole queue.
+- v005 -- each coordination table's expiry index range-sharded (``expires_at ASC``), built beside the hashed one
+  before it is dropped, so a YugabyteDB sweep seeks it rather than reading every tablet.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from threetears.core.coordination.migrations.v003_create_collection_write_marks 
     create_collection_write_marks,
 )
 from threetears.core.coordination.migrations.v004_index_write_marks_by_table import index_write_marks_by_table
+from threetears.core.coordination.migrations.v005_range_expiry_indexes import range_expiry_indexes
 from threetears.core.coordination.tables import CoordinationRevocationsCollection
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -59,6 +62,7 @@ def register(runner: MigrationRunner, *, scope: MigrationScope = MigrationScope.
     pkg.version(2)(add_l2_order_columns)
     pkg.version(3)(create_collection_write_marks)
     pkg.version(4)(index_write_marks_by_table)
+    pkg.version(5)(range_expiry_indexes)
     # the revocation list caches absences: its writes are marked from the run that creates it
     pkg.mark_write_generation(CoordinationRevocationsCollection.schema)
     runner.register(pkg)
@@ -70,5 +74,6 @@ __all__ = [
     "add_l2_order_columns",
     "create_collection_write_marks",
     "create_coordination_tables",
+    "range_expiry_indexes",
     "register",
 ]

@@ -66,6 +66,8 @@ from threetears.core.ddl.write_marks import (
     MARK_FUNCTION,
     WRITE_MARK_TRIGGER,
     WRITE_MARKS_TABLE,
+    delete_marks_sql,
+    marks_page_sql,
     write_mark_trigger_sql,
     write_marks_ddl,
 )
@@ -478,7 +480,6 @@ class WriteMarkReconciler:
             raise ValueError("a reconcile pass reads at least one page of at least one mark")
         self._pool = pool
         self._source = generation_source
-        self._marks = f"{quote_identifier(marks_schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
         self._marks_schema = marks_schema
         self._notes_schema = notes_schema or marks_schema
         self._tables_schema = tables_schema or marks_schema
@@ -542,21 +543,25 @@ class WriteMarkReconciler:
         failed: set[str] = set()
         behind = True
         started = time.monotonic()
+        after = 0
         for _ in range(self._max_pages):
-            page = await self._pool.fetch(
-                f"SELECT id, table_name, date_created FROM {self._marks} WHERE NOT (table_name = ANY($2::text[])) LIMIT $1",
-                self._page_size,
-                sorted(failed),
-            )
+            # a keyset page of the queue after the last mark read: a table that failed this pass is passed over, its
+            # marks left for the next pass
+            page = await self._pool.fetch(marks_page_sql(self._marks_schema), self._page_size, after)
             if page:
+                after = max(int(row["id"]) for row in page)
+                wanted = [row for row in page if row["table_name"] not in failed]
+            else:
+                wanted = []
+            if wanted:
                 # every mark read here committed before the read, so an advance after the read covers it;
                 # only the marks of a table advanced for THIS page are deleted
-                done, page_failed = await self._advance(page)
+                done, page_failed = await self._advance(wanted)
                 advanced |= done
                 failed |= page_failed
-                ids = [int(row["id"]) for row in page if row["table_name"] in done]
+                ids = [int(row["id"]) for row in wanted if row["table_name"] in done]
                 if ids:
-                    await self._pool.execute(f"DELETE FROM {self._marks} WHERE id = ANY($1::bigint[])", ids)
+                    await self._pool.execute(delete_marks_sql(self._marks_schema), ids)
                     applied += len(ids)
             if len(page) < self._page_size:
                 behind = False

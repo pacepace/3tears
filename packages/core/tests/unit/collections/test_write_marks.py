@@ -94,11 +94,13 @@ class _Queue:
             return []
         if "count(*)" in query:
             return [{"n": len(self.marks), "age": 3.0 if self.marks else None}]
-        limit, failed = int(args[0]), set(args[1])
+        # the drain's keyset page: the marks after the id ``$2``, in id order, ``$1`` at most
+        assert "WHERE id > $2 ORDER BY id LIMIT $1" in query, query
+        limit, after = int(args[0]), int(args[1])
         page = [
             {"id": key, "table_name": value, "date_created": datetime.now(UTC)}
             for key, value in sorted(self.marks.items())
-            if value not in failed
+            if key > after
         ][:limit]
         if self.on_read is not None:
             self.on_read()

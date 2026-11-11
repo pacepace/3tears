@@ -148,6 +148,9 @@ class IndexDef(BaseModel):
     :param include: columns the index carries without ordering by them (``INCLUDE (...)``), so a read of
         them is answered from the index alone
     :ptype include: list[str]
+    :param asc: the covered columns declared ascending in so many words (``expires_at ASC``): the same index on
+        Postgres, range-sharded rather than hashed on YugabyteDB, so a range or ordered read of them seeks it
+    :ptype asc: list[str]
     :param purpose: ``<path>::<qualified function>`` of the keyed read that uses the index; the no-whole-reads rule
         refuses an index with none (never part of the DDL)
     :ptype purpose: str
@@ -161,6 +164,7 @@ class IndexDef(BaseModel):
     columns: list[str]
     unique: bool = False
     include: list[str] = Field(default_factory=list)
+    asc: list[str] = Field(default_factory=list)
     purpose: str = ""
     plan_test: str = ""
     reason: str = ""

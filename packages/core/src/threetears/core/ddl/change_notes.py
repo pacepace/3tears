@@ -62,6 +62,10 @@ __all__ = [
     "note_table",
     "note_trigger_sql",
     "legacy_truncate_trigger_drop_sql",
+    "ring_read_sql",
+    "ring_slot_sql",
+    "ring_switch_sql",
+    "ring_update_sql",
     "trigger_function_body",
     "trigger_function_sql",
 ]
@@ -89,6 +93,33 @@ RING_TABLE: Final = "threetears_change_note_ring"
 #: the keeper's marks: the change log's position, by the database's clock, every so often. A restore that
 #: cannot take the whole coverage takes the notes after a mark, and the mark's position is then its floor
 MARKS_TABLE: Final = "threetears_change_note_marks"
+
+#: the keeper's marks table, ``{schema}`` its schema (quoted): written out whole, so it declares its key where it is read
+_MARKS_TABLE_DDL: Final = (
+    'CREATE TABLE IF NOT EXISTS {schema}."threetears_change_note_marks" ('
+    "id UUID PRIMARY KEY DEFAULT gen_random_uuid(), log_incarnation TEXT NOT NULL, seq BIGINT NOT NULL, "
+    "at TIMESTAMPTZ NOT NULL)"
+)
+
+#: the ring's one-row table, ``{schema}`` its schema (quoted): written out whole, so it declares its key where it is read
+_RING_TABLE_DDL: Final = (
+    'CREATE TABLE IF NOT EXISTS {schema}."threetears_change_note_ring" ('
+    "id SMALLINT PRIMARY KEY CHECK (id = 1), "
+    "current_ring SMALLINT NOT NULL, "
+    "switch_no BIGINT NOT NULL, "
+    "switched_at TIMESTAMPTZ NOT NULL, "
+    # when the previous table became current: the coverage's notes start there (NULL before a first switch)
+    "previous_switched_at TIMESTAMPTZ, "
+    "switched_seq TEXT, "
+    "floor TEXT, "
+    "fence_seq TEXT, "
+    "emptied BOOLEAN NOT NULL, "
+    "log_incarnation TEXT, "
+    # the fence the writers were told: a cached slot is used at most slot_max_age(fence) after its read
+    "fence_seconds DOUBLE PRECISION NOT NULL, "
+    # the least time from the last switch to the next: covers the fence told before it as well
+    "wait_seconds DOUBLE PRECISION NOT NULL)"
+)
 
 #: the function every table's trigger writes a note through; it reads the ring once per statement
 _RING_FUNCTION: Final = "threetears_change_note_put"
@@ -219,6 +250,67 @@ def note_table(index: int) -> str:
     return f"{_NOTE_TABLE_PREFIX}{index}"
 
 
+def ring_read_sql(schema: str) -> str:
+    """the statement reading the ring's one row (its key, ``id = 1``), and the database's clock.
+
+    :param schema: the schema holding the ring, a TRUSTED identifier
+    :ptype schema: str
+    :return: the ``SELECT``
+    :rtype: str
+    """
+    ring = f"{quote_identifier(schema)}.{quote_identifier(RING_TABLE)}"
+    return (
+        "SELECT current_ring, switch_no, switched_at, switched_seq, floor, fence_seq, emptied, log_incarnation, "  # noqa: S608 - trusted identifiers
+        f"fence_seconds, wait_seconds, now() AS now FROM {ring} WHERE id = 1"
+    )
+
+
+def ring_slot_sql(schema: str) -> str:
+    """the statement a writing process reads its cached slot with: the ring row's current table and fence, and the
+    database's clock in epoch seconds.
+
+    :param schema: the schema holding the ring, a TRUSTED identifier
+    :ptype schema: str
+    :return: the ``SELECT``
+    :rtype: str
+    """
+    ring = f"{quote_identifier(schema)}.{quote_identifier(RING_TABLE)}"
+    return f"SELECT current_ring, fence_seconds, extract(epoch FROM now())::float8 AS now FROM {ring} WHERE id = 1"  # noqa: S608 - trusted identifiers
+
+
+def ring_update_sql(schema: str, assignments: str) -> str:
+    """the statement writing ``assignments`` to the ring row, only while it is at the switch ``$1``.
+
+    :param schema: the schema holding the ring, a TRUSTED identifier
+    :ptype schema: str
+    :param assignments: ``column = $n, ...`` over the ring's own columns, numbered from ``$2``
+    :ptype assignments: str
+    :return: the ``UPDATE``
+    :rtype: str
+    """
+    ring = f"{quote_identifier(schema)}.{quote_identifier(RING_TABLE)}"
+    return f"UPDATE {ring} SET {assignments} WHERE id = 1 AND switch_no = $1"  # noqa: S608 - fixed column names
+
+
+def ring_switch_sql(schema: str) -> str:
+    """the statement switching the ring to the emptied table ``$2``, only while it is at the switch ``$1`` and that
+    table's emptying finished: the fence's position becomes the floor, ``$3`` the switch's log position and ``$4``
+    the fence told the writers.
+
+    :param schema: the schema holding the ring, a TRUSTED identifier
+    :ptype schema: str
+    :return: the ``UPDATE``
+    :rtype: str
+    """
+    ring = f"{quote_identifier(schema)}.{quote_identifier(RING_TABLE)}"
+    return (
+        f"UPDATE {ring} SET current_ring = $2, switch_no = switch_no + 1, switched_at = now(), "  # noqa: S608 - trusted identifiers
+        "switched_seq = $3, floor = fence_seq, fence_seq = NULL, emptied = FALSE, previous_switched_at = switched_at, "
+        "fence_seconds = $4, wait_seconds = greatest($4, fence_seconds) "
+        "WHERE id = 1 AND switch_no = $1 AND emptied"
+    )
+
+
 def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> tuple[str, ...]:
     """the statements that create the ring in ``schema``: its note tables, its ring row and its functions.
 
@@ -285,33 +377,14 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
             f"ON {owner}.{quote_identifier(note_table(index))} (table_name) WHERE ring_read",
         )
     )
-    marks = (
-        f"CREATE TABLE IF NOT EXISTS {owner}.{quote_identifier(MARKS_TABLE)} ("
-        "id UUID PRIMARY KEY DEFAULT gen_random_uuid(), log_incarnation TEXT NOT NULL, seq BIGINT NOT NULL, "
-        "at TIMESTAMPTZ NOT NULL)"
-    )
+    marks = _MARKS_TABLE_DDL.format(schema=owner)
     return (
         *tables,
         *indexes,
         *by_table,
         *sparse,
         marks,
-        f"CREATE TABLE IF NOT EXISTS {ring} ("
-        "id SMALLINT PRIMARY KEY CHECK (id = 1), "
-        "current_ring SMALLINT NOT NULL, "
-        "switch_no BIGINT NOT NULL, "
-        "switched_at TIMESTAMPTZ NOT NULL, "
-        # when the previous table became current: the coverage's notes start there (NULL before a first switch)
-        "previous_switched_at TIMESTAMPTZ, "
-        "switched_seq TEXT, "
-        "floor TEXT, "
-        "fence_seq TEXT, "
-        "emptied BOOLEAN NOT NULL, "
-        "log_incarnation TEXT, "
-        # the fence the writers were told: a cached slot is used at most slot_max_age(fence) after its read
-        "fence_seconds DOUBLE PRECISION NOT NULL, "
-        # the least time from the last switch to the next: covers the fence told before it as well
-        "wait_seconds DOUBLE PRECISION NOT NULL)",
+        _RING_TABLE_DDL.format(schema=owner),
         f"INSERT INTO {ring} (id, current_ring, switch_no, switched_at, emptied, fence_seconds, wait_seconds) "
         f"VALUES (1, 0, 0, now(), TRUE, {float(fence.total_seconds())!r}, {float(fence.total_seconds())!r}) "
         "ON CONFLICT (id) DO NOTHING",

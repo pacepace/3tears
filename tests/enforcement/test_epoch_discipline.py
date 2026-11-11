@@ -48,7 +48,7 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             f"{_CORE}/collections/registry.py::CollectionRegistry.drop_table",
             # the L3 backend's truncate; its callers announce or are listed
             f"{_CORE}/backends/sql.py::SqlL3Backend.truncate",
-            # the DuckDB L1 backend: its replace_all and partition swaps are the primitives callers reach
+            # the DuckDB L1 backend: its partition swaps and staged changes are the primitives callers reach
             f"{_CORE}/cache/duckdb.py::DuckDBBackend",
         }
     ),
