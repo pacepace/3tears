@@ -2862,8 +2862,6 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
             ),
         ),
         indexes=(
-            SchemaIndex("ix_media_user_date", "user_id", "date_created"),
-            SchemaIndex("ix_media_mime_type", "mime_type"),
             SchemaIndex(
                 "ix_media_memory_id",
                 "memory_id",
@@ -2880,7 +2878,7 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
                     "::MemoryChunkCollection.hybrid_search_within_memory"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_memory_id",
-                reason="media carries seven indexes: the file a memory wraps, joined to that memory's chunks",
+                reason="media carries two indexes: the file a memory wraps, joined to that memory's chunks",
             ),
             SchemaIndex(
                 "uq_media_cloud_connection_file",
@@ -2891,17 +2889,7 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
                 plan_test=(
                     "packages/agent/memory/tests/integration/test_index_plans.py::test_media_cloud_connection_file"
                 ),
-                reason="media carries seven indexes: one media row per provider file of a cloud connection",
-            ),
-            # v0.8.1: parity-gate enrichments relocated from upstream
-            # alembic. tenancy-scope btree composite.
-            SchemaIndex("idx_media_agent_user", "agent_id", "user_id"),
-            # v0.8.1: partial btree over rows still awaiting extraction;
-            # selective enough to keep the queue-scan cheap.
-            SchemaIndex(
-                "ix_media_extraction_pending",
-                "extraction_status",
-                where="extraction_status = 'pending'",
+                reason="media carries two indexes: one media row per provider file of a cloud connection",
             ),
         ),
         # v0.8.1: global uniqueness on ``media_id`` (stronger than the
@@ -3030,9 +3018,8 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
                     "::MediaContentCollection.search_by_ids"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_content_media_type",
-                reason="media_content carries four indexes: the contents of the files a search names by file id",
+                reason="media_content carries three indexes: the contents of the files a search names by file id",
             ),
-            SchemaIndex("ix_media_content_user", "user_id"),
             # v0.8.1: parity-gate enrichments relocated from upstream
             # alembic. tenancy-scope btree composite.
             SchemaIndex(
@@ -3048,7 +3035,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
                     "::MediaContentCollection.search_by_fts"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_content_agent_user",
-                reason="media_content carries four indexes: one user's file contents, every search of them",
+                reason="media_content carries three indexes: one user's file contents, every search of them",
             ),
             # no GIN over ``search_vector``: v027 dropped it. the keyword
             # predicate goes through ``gin_filter`` (ybgin refuses a
@@ -3612,7 +3599,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                     "::MemoryChunkCollection.find_by_conversation_id"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memory_chunks_memory",
-                reason="memory_chunks carries eight indexes: one memory's chunks by their index, and their count",
+                reason="memory_chunks carries four indexes: one memory's chunks by their index, and their count",
             ),
             # v015: cursor paging within one memory (``find_by_memory_id``
             # orders by chunk_id).
@@ -3628,24 +3615,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                 plan_test=(
                     "packages/agent/memory/tests/integration/test_index_plans.py::test_chunks_memory_id_chunk_id"
                 ),
-                reason="memory_chunks carries eight indexes: one memory's chunks paged in chunk order",
-            ),
-            # v015: transcript chunks by the last message they cover.
-            SchemaIndex(
-                "idx_chunks_message_id_end",
-                "message_id_end",
-                where="message_id_end IS NOT NULL",
-            ),
-            SchemaIndex("ix_memory_chunks_user", "user_id"),
-            # v0.8.1: parity-gate enrichments relocated from upstream
-            # alembic. partial composite covering the agent-scoped
-            # conversation-replay lookup that follows
-            # ``message_id_start`` chains.
-            SchemaIndex(
-                "idx_chunks_message_id_start",
-                "agent_id",
-                "message_id_start",
-                where="message_id_start IS NOT NULL",
+                reason="memory_chunks carries four indexes: one memory's chunks paged in chunk order",
             ),
             # v0.8.1: tenancy-scope btree composite.
             SchemaIndex(
@@ -3659,7 +3629,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                     "::MemoryChunkCollection.search_by_semantic"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memory_chunks_agent_user",
-                reason="memory_chunks carries eight indexes: one user's chunks, every search of them",
+                reason="memory_chunks carries four indexes: one user's chunks, every search of them",
             ),
             # no GIN over ``search_vector``: v027 dropped it. the keyword
             # predicate goes through ``gin_filter`` (ybgin refuses a
@@ -4337,9 +4307,8 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         if self.l3_pool is None:
             return []
 
-        # cache-bypass: JOIN scan across memory_chunks + memories
-        # filtered by memories.conversation_id. backed by the
-        # idx_chunks_message_id_start partial index for the ORDER BY.
+        # cache-bypass: the conversation's memories by idx_mem_conversation,
+        # their chunks by the chunk's (agent_id, memory_id) key.
         # auth triple enforced on the joined memories row.
         params: list[Any] = [agent_id, conversation_id, user_id, customer_id]
         cursor_clause = ""

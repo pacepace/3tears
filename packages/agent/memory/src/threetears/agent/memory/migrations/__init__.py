@@ -108,6 +108,9 @@ version history:
 - v034 adds ``idx_conv_mem_refs_conversation_agent_date`` (the refs one agent
   surfaced in a conversation, newest first) and drops the conversation-wide
   ``idx_conv_mem_refs_conversation_date_created`` it replaces.
+- v035 drops the eight indexes no read uses (media's user/date, mime type,
+  agent/user and extraction-pending; media_content's user; memory_chunks' user
+  and message-id start/end).
 
 the three embedding columns (v001 ``memories``, v006 ``media_content``,
 v007 ``memory_chunks``) are created at the width :func:`register` is given
@@ -222,6 +225,7 @@ from threetears.agent.memory.migrations.v031_declared_not_null_columns import (
 from threetears.agent.memory.migrations.v032_memory_refs_agent_id import memory_refs_agent_id
 from threetears.agent.memory.migrations.v033_drop_legacy_index_names import drop_legacy_index_names
 from threetears.agent.memory.migrations.v034_memory_refs_agent_index import add_memory_refs_agent_index
+from threetears.agent.memory.migrations.v035_drop_unread_indexes import drop_unread_indexes
 from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, check_embedding_dim
 from threetears.core.data.migrations import (
     MigrationFunc,
@@ -345,6 +349,7 @@ def register(runner: MigrationRunner, *, embedding_dim: int = DEFAULT_EMBEDDING_
     pkg.version(32)(memory_refs_agent_id)
     pkg.version(33)(drop_legacy_index_names)
     pkg.version(34)(add_memory_refs_agent_index)
+    pkg.version(35)(drop_unread_indexes)
     runner.register(pkg)
     return pkg
 

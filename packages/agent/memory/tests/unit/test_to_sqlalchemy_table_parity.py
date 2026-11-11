@@ -241,21 +241,12 @@ def _reference_media_table(metadata: sa.MetaData) -> sa.Table:
             ["memories.agent_id", "memories.memory_id"],
             ondelete="CASCADE",
         ),
-        SAIndex("ix_media_user_date", "user_id", "date_created"),
-        SAIndex("ix_media_mime_type", "mime_type"),
         SAIndex("ix_media_memory_id", "memory_id"),
         SAIndex(
             "uq_media_cloud_connection_file",
             "cloud_connection_id",
             "cloud_file_id",
             unique=True,
-        ),
-        # v0.8.1 enrichments mirror prod alembic.
-        SAIndex("idx_media_agent_user", "agent_id", "user_id"),
-        SAIndex(
-            "ix_media_extraction_pending",
-            "extraction_status",
-            postgresql_where=sa_text("extraction_status = 'pending'"),
         ),
         SAUniqueConstraint("media_id", name="uq_media_media_id"),
     )
@@ -316,7 +307,6 @@ def _reference_media_content_table(metadata: sa.MetaData) -> sa.Table:
             ondelete="CASCADE",
         ),
         SAIndex("ix_media_content_media_type", "media_id", "content_type"),
-        SAIndex("ix_media_content_user", "user_id"),
         # v0.8.1 enrichments mirror prod alembic.
         SAIndex(
             "idx_media_content_agent_user",
@@ -384,19 +374,6 @@ def _reference_memory_chunks_table(metadata: sa.MetaData) -> sa.Table:
             "memory_id",
             "chunk_id",
             postgresql_where=sa_text("memory_id IS NOT NULL"),
-        ),
-        SAIndex(
-            "idx_chunks_message_id_end",
-            "message_id_end",
-            postgresql_where=sa_text("message_id_end IS NOT NULL"),
-        ),
-        SAIndex("ix_memory_chunks_user", "user_id"),
-        # v0.8.1 enrichments mirror prod alembic.
-        SAIndex(
-            "idx_chunks_message_id_start",
-            "agent_id",
-            "message_id_start",
-            postgresql_where=sa_text("message_id_start IS NOT NULL"),
         ),
         SAIndex(
             "idx_memory_chunks_agent_user",
