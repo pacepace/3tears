@@ -357,6 +357,61 @@ def test_duckdb_loads_a_parquet_file(tmp_path: Path) -> None:
         backend.reset()
 
 
+def test_duckdb_loads_a_parquet_file_with_computed_columns(tmp_path: Path) -> None:
+    """a column the caller computes is read by its expression over the file's columns, in the same one INSERT.
+
+    The expression replaces the file's own column of that name, fills a column the file lacks, and may be a
+    constant; the count is the INSERT's own (the file is not read a second time to count it).
+    """
+    duckdb = pytest.importorskip("duckdb")
+    from sqlalchemy import BigInteger
+
+    from threetears.core.cache.duckdb import DuckDBBackend
+
+    metadata = MetaData()
+    Table(
+        "results",
+        metadata,
+        Column("row_key", BigInteger, primary_key=True),
+        Column("state", String(2)),
+        Column("votes", Integer),
+        Column("party", String(10)),
+        Column("scope", String(2)),
+        Column("kind", String(2)),
+    )
+    backend = DuckDBBackend()
+    backend.initialize(metadata)
+    duckdb.sql(
+        "COPY (SELECT * FROM (VALUES ('TX', 10, 'Dem'), ('GA', 7, 'Lib')) AS t(state, votes, party)) TO "
+        f"'{tmp_path / 'r.parquet'}' (FORMAT parquet)"
+    )
+    try:
+        loaded = backend.load_parquet(
+            "results",
+            tmp_path / "r.parquet",
+            row_number_column="row_key",
+            computed={
+                "party": "CASE WHEN party IN ('Dem', 'GOP') THEN party ELSE 'Other' END",
+                "scope": "state",
+                "kind": "'R'",
+            },
+        )
+        assert loaded == 2
+        rows = backend.execute_query("SELECT row_key, state, votes, party, scope, kind FROM results ORDER BY row_key")
+        assert rows == [
+            {"row_key": 0, "state": "TX", "votes": 10, "party": "Dem", "scope": "TX", "kind": "R"},
+            {"row_key": 1, "state": "GA", "votes": 7, "party": "Other", "scope": "GA", "kind": "R"},
+        ]
+        with pytest.raises(ValueError, match="does not declare"):
+            backend.load_parquet("results", tmp_path / "r.parquet", row_number_column="row_key", computed={"x": "1"})
+        with pytest.raises(ValueError, match="row number"):
+            backend.load_parquet(
+                "results", tmp_path / "r.parquet", row_number_column="row_key", computed={"row_key": "1"}
+            )
+    finally:
+        backend.reset()
+
+
 class TestBulkWriteEdges:
     """the corners a bulk write must still treat as ``upsert`` would row by row."""
 

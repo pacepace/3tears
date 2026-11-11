@@ -1077,14 +1077,22 @@ class DuckDBBackend:
             rows = self._db.execute(f"SELECT {columns} FROM {quote_identifier(table)}").fetchall()
         return [tuple(row) for row in rows]
 
-    def load_parquet(self, table: str, path: str | Path, *, row_number_column: str | None = None) -> int:
+    def load_parquet(
+        self,
+        table: str,
+        path: str | Path,
+        *,
+        row_number_column: str | None = None,
+        computed: Mapping[str, str] | None = None,
+    ) -> int:
         """load a Parquet file into a table this backend created, in one statement.
 
         DuckDB reads Parquet natively, so this is the fast path for an analytic
         table filled from a file: the file's columns that the table declares are
         loaded and the rest are ignored; table columns the file lacks stay null. A file
         repeating a key is refused by DuckDB (one statement cannot write a key twice),
-        unlike ``upsert_many``, which keeps a batch's last row per key.
+        unlike ``upsert_many``, which keeps a batch's last row per key. The count
+        returned is the INSERT's own: the file is read once.
 
         :param table: the destination table
         :ptype table: str
@@ -1093,31 +1101,47 @@ class DuckDBBackend:
         :param row_number_column: a table column to fill with each row's position
             (from 0), as a key for files that carry none
         :ptype row_number_column: str | None
+        :param computed: table columns read by the caller's own SQL expression over the
+            file's columns instead of as the file holds them (a column the file lacks, a
+            constant, a value rewritten as it is read), each written by the same one INSERT
+        :ptype computed: Mapping[str, str] | None
         :return: how many rows the file held
         :rtype: int
-        :raises ValueError: when the table is not one this backend created, or is key-less
+        :raises ValueError: when the table is not one this backend created, or is key-less,
+            or ``computed`` names a column the table does not declare or the row number column
         """
         schema = self._schema_info.get(table)
         if schema is None:
             raise ValueError(f"unknown table {table!r}: load_parquet fills tables this backend created")
         if table in self._keyless:
             raise ValueError(f"key-less table {table!r}: load_parquet replaces rows by the table's own key")
+        computed = dict(computed or {})
+        undeclared = sorted(set(computed) - set(schema))
+        if undeclared:
+            raise ValueError(f"table {table!r} does not declare computed column(s) {undeclared}")
+        if row_number_column is not None and row_number_column in computed:
+            raise ValueError(f"{row_number_column!r} is the row number column: load_parquet fills it")
         with self._db_lock:
             in_file = {
                 row[0]: str(row[1]).upper()
                 for row in self._db.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]).fetchall()
             }
-            columns = [c for c in schema if c in in_file and c != row_number_column]
-            selects = [_parquet_select(c, in_file[c], schema[c]) for c in columns]
+            columns = [c for c in schema if (c in in_file or c in computed) and c != row_number_column]
+            selects = [
+                f"{computed[c]} AS {quote_identifier(c)}"
+                if c in computed
+                else _parquet_select(c, in_file[c], schema[c])
+                for c in columns
+            ]
             if row_number_column is not None:
                 columns.insert(0, row_number_column)
                 selects.insert(0, "row_number() OVER () - 1")
-            self._db.execute(
+            inserted = self._db.execute(
                 f"INSERT OR REPLACE INTO {quote_identifier(table)} ({', '.join(quote_identifier(c) for c in columns)}) "
                 f"SELECT {', '.join(selects)} FROM read_parquet(?)",
                 [str(path)],
-            )
-            (count,) = self._db.execute("SELECT count(*) FROM read_parquet(?)", [str(path)]).fetchone()
+            ).fetchone()
+            count = 0 if inserted is None else inserted[0]
         self.request_checkpoint()
         log.info(
             "loaded a Parquet file into an L1 table",
