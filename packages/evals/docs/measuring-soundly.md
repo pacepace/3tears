@@ -26,7 +26,8 @@ Two more terms, and a rule:
 - **Shape:** what the engine derives from what ran (`bundle.design.shape`). `one_factor_at_a_time` means each
   arm moves at most one lever off the control. `multi_factor` means some arm moves more than one.
   `undesignated` means no control resolved, so nothing is known to be controlled.
-- Only goal-state checks and judged dimensions decide a pass for pass^k; guardrails take no part.
+- pass^k holds a trial to the pass rate's checks: every goal-state check, the label, each check the host declares
+  and every capability judged dimension. Guardrails take no part.
 
 ## Choose which levers to sweep
 
@@ -258,7 +259,7 @@ rooms = await Eval(ROOMS, arms, ['(state.light == "on") == (state.daylight == "d
 )
 read = await run_blocking(  # a store read
     rooms.host.blocking_executor, frontier, rooms.host.storage, "lights",
-    list_runs=partial(list_runs, rooms.host), bar=0.8,
+    list_runs=partial(list_runs, rooms.host), bar=0.8, profile=rooms.host.profile,
 )
 for point in read["subjects"][0]["points"]:
     print(point["production_replicating_cost"], point["pass_hat_k"], round(point["pass_hat_k_ci_low"], 2),
@@ -278,7 +279,8 @@ Before you rely on it, check two things:
 - **pass^k needs something to pass.** A goal check, a label, a check the host declares or a judge each is one: a
   classifier scored only by a field grader has a pass^k, the share of its cases labelled right on every repeat. An
   arm graded by none of them has no pass^k: `pass_hat_k` is `None`, `n_pass_no_criterion` counts its attempts, and
-  no bar is decided on it. Read such an arm from the contrasts.
+  no bar is decided on it. Read such an arm from the contrasts. A host's checks count only where the host's
+  profile is read: the action and the command read it, and a direct `frontier` call takes it as `profile=`.
 
 The same frontier is the `scope_frontier` action and the `frontier` command
 ([Serving](serving.md#frontier)); `scope_frontier` in `threetears.evals.ops` returns it as a
@@ -384,8 +386,9 @@ lens tools (`runs_compare`, comparison sets) state when two runs' spans did not 
 
 ## Metrics that mislead
 
-**Keep the pass^k conjunction small and reliable.** A trial passes only when every goal-state check passes
-and every judged capability dimension reaches the pass threshold (`compute_pass_hat_k`): 3 of 5 unless the
+**Keep the pass^k conjunction small and reliable.** A trial passes only when every goal-state check passes, its
+label matches, every check the host declares holds and every judged capability dimension reaches the pass threshold
+(`compute_pass_hat_k`): 3 of 5 unless the
 host declares another for the behavior (`PassThreshold`, registered with its `BarRegistry`), and every pass^k
 records the threshold it was computed at (`rubric_threshold`). So pass^k collapses to its weakest member, and
 judge noise counts as candidate unreliability. Conjoin checks a competent candidate clears and dimensions

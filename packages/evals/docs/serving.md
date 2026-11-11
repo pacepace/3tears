@@ -114,7 +114,7 @@ python -m threetears.evals run    --host myapp.evals:build_host --scope dev --te
                                   [--n-variations N] [--variation-model MODEL] [--apparatus-settings JSON]
                                   [--measure-latency]
 python -m threetears.evals ls     --host myapp.evals:build_host --scope dev
-python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev [--format markdown|html|json] [--out DIR]
+python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev [--format markdown|html|json] [--trials table|all] [--out DIR]
 python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope dev
 python -m threetears.evals spend  --host myapp.evals:build_host --scope dev [--purpose P] [--launch-group ID] [--template ID]
 python -m threetears.evals frontier --host myapp.evals:build_host --scope dev [--bar B] [--subject S] [--json]
@@ -554,11 +554,12 @@ To install the extra from a pre-release or an unreleased checkout, use the repos
 A result carries its text and, as structured content, the result model's JSON whole. The structured content is the
 result and the text block its rendering for a client that reads only text; a client that shows structured content in
 place of the text still sees everything. `report_read`'s report is in both: the text block is the body, and the
-structured content carries it as `body` beside `campaign_id`, `basis`, `analysis_id` and `format`. A refused call is
-an MCP error result (`isError`) carrying the teaching text, with the refusal as structured content:
+structured content carries it as `body` beside the report's other fields (`campaign_id`, `basis`, `analysis_id`,
+`format` and the rest). A refused call is an MCP error result (`isError`) carrying the teaching text, with how it
+ended and the refusal as structured content, plus `recovery` where the call has a corrected form:
 
 ```json
-{"refusal": {"kind": "not_found", "status": 404}}
+{"ending": "refused", "refusal": {"kind": "not_found", "status": 404}}
 ```
 
 ### Serving several tenants
@@ -614,10 +615,10 @@ mount_fastmcp(
 - **A resolver that refuses answers the call as a refusal.** A caller or host resolver that raises an
   `EvalServiceError` (your own subclass among them, say a 503 for a host still booting, with a remedy telling the
   agent when to come back) is answered exactly as an action's refusal is: the `refused:` text with its `remedy:`
-  line, and `{"refusal": {"kind": ..., "status": ...}}` with the error flag. No action runs. A host resolver's
-  refusal still enters the `around` hook, because the caller is known: the hook runs to its yield and is handed the
-  refusal as its outcome, so your audit log records "no host could serve this call" from the same hook as every
-  other call. Its `ToolCall` has `host` and `context` both `None`, and `call.refused` is the very `EvalServiceError`
+  line, and `{"ending": ..., "refusal": {"kind": ..., "status": ...}}` with the error flag. No action runs. A host
+  resolver's refusal still enters the `around` hook, because the caller is known: the hook runs to its yield and is
+  handed the refusal as its outcome, so your audit log records "no host could serve this call" from the same hook as
+  every other call. Its `ToolCall` has `host` and `context` both `None`, and `call.refused` is the very `EvalServiceError`
   the resolver raised, so both `around` and `annotate` can read your subclass's own attributes. The outcome carries
   only the kind and status, which two cases of one error class share; `call.refused` tells them apart with no
   context variable set before the raise:
@@ -813,13 +814,14 @@ writes (above), from which the command freezes the campaign into one case file (
 nothing to the host's store:
 
 ```
-python -m threetears.evals.harness mint --documents documents.json --profile profile.json --manifest manifest.json \
-    --campaign CAMPAIGN --name NAME --group GROUP [--stratum STRATUM] [--withhold NOTE ...] [--skill DIR] \
+python -m threetears.evals.harness mint --documents documents.json [--profile profile.json] [--manifest manifest.json] \
+    --campaign CAMPAIGN --name NAME [--group GROUP] [--stratum STRATUM] [--withhold NOTE ...] [--skill DIR] \
     [--as-of INSTANT] [--scope SCOPE] --host module:callable [--created-by WHO] --out NAME.json.gz
 ```
 
 It runs in the host's own environment: the freeze calls the profile's readers, which only the host's code holds.
-`--host` names the profile's factory, and it is the only module the mint imports. The mint never imports the
+`--host` names the profile's factory, and it is the only module the mint imports. Without `--profile` the
+declarations digest is not checked, and `--group` defaults to the case's name. The mint never imports the
 `built_by` an export names: a host's chat agent can call `campaign_export` and choose it, and the mint runs in the
 operator's environment, so the operator names the code. The mint runs where the `--host` module imports; if the host's
 package is not installed in that environment, put its source on `PYTHONPATH` for the command. The three files and the export are checked before the profile's factory is imported, so an export is dry-checked anywhere:

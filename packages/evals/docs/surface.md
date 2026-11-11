@@ -4,7 +4,7 @@
 where each is imported from. What a name does is in the [reference](reference.md#public-api), which lists the
 same names; what each tier promises is in [stability tiers](adopting-a-host.md#stability-tiers).
 
-495 names are declared: the `host-contract` and `stable` tiers. A root exports more, as `provisional` names, most of
+497 names are declared: the `host-contract` and `stable` tiers. A root exports more, as `provisional` names, most of
 them the types a declared signature reaches; they import, and nothing about them is promised.
 
 A declared name goes provisional once nothing outside the package imports it, unless one of these holds:

@@ -533,10 +533,10 @@ margin and so can never read equivalent. A guardrail is decided apart, as `held`
 rendered from. See [reading a comparison](reading-reports.md#reading-a-comparison).
 
 #### Miss
-A result the runner got wrong: a wrong label, a grader on the wrong side of 0 (0 or less where higher is better,
-above 0 where lower is better, as `leaked` is; never for a measure with no direction), a failed goal check, a failed
-pass/fail judgement, or a result the runner failed outright (it raised, say). An excluded result is never a
-miss. `summary.misses()` lists them, each with its reason; [rung 1](ladder.md#rung-1-your-own-function) says how
+A trial the pass rule failed: the runner failed outright (it raised, say), or a goal check failed, the label was
+wrong, a check the host declares fell on its wrong side (on the quick path, a grader annotated `bool`), or a judged
+capability dimension scored under the bar. A grader that is no check is never a miss, whatever it returns, and an
+excluded result never is. `summary.misses()` lists them, each with its reason; [rung 1](ladder.md#rung-1-your-own-function) says how
 to read them.
 
 #### Analysis bundle

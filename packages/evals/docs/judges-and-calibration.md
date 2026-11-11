@@ -383,7 +383,8 @@ the same name merges two judges' evidence into one.
 
 **"Needs N more"** is the rest of the floor when there are too few results. When the bounds straddle the bar, it
 says about how many more results would carry them clear if agreement held at its estimate. Tiers are flagged and
-never hide a reading; a finding stands on the weakest tier among its rows.
+never hide a reading; a finding stands on the weakest tier among its rows. An improvement under an `undetermined`
+or `insufficient` judge is still shown, but code's decision read sets it aside: it makes no option better.
 
 ## Step 7b: combine the ratings with the judge's scores
 

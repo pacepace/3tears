@@ -130,7 +130,7 @@ fails the run in CI on a regression or a guardrail not shown held. Its docstring
 as `k=v` pairs, read against another control with `result.against()`.
 
 What the recorded run said: accuracy did not separate v2 from v1, nothing else did, and the guardrail is undecided for v2, so it exits 4, its last line saying why in the report's words
-(`exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
+(`exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. ... The gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
 screen quotes the question and leads on its measure, the classifier's accuracy, with the guardrail's warning beside
 it, and reads v2 against v1 in one row
 
@@ -164,7 +164,7 @@ its editor) writes the campaign's report over its frozen evidence:
 ANTHROPIC_API_KEY=... uv run python -m threetears.evals.harness examples/3-invoices/extract.py --write-report claude-sonnet-5-5
 ```
 
-It is live on every run, at most `--budget-usd` a report ($3 unless you name less), and writes
+It is live on every run, at most `--budget-usd` a report ($3 unless you name another amount), and writes
 `.evals/reports/invoices/analysis.html`, its turns under `3-invoices/recordings/report/`. The report is stored as the
 campaign's analysis, so `report` and `report_read` serve it. Each run is a new campaign, so no recording is ever
 replayed here; rung 5 is the writer offline.
@@ -207,7 +207,7 @@ promotion is read. `tests/fixtures/writer_cases/export_writer_cases.py` wrote th
 once, since a rung run again is new evidence with a new snapshot id.
 
 It replays its recordings with no key: 14 reports, the judge's scores and its preference between the two arms' pages.
-The read is `Undecided`: the judge gave lead-first's pages a share of 52%, its two reading orders agreeing on 6 of 7
+The read is `Undecided`: the judge gave lead-first's pages a share of 61%, its two reading orders agreeing on 6 of 7
 cases, and 7 held-out cases cannot tell that from an even split. [`recordings/README.md`](5-writer/recordings/README.md) says when each recording was made and what it cost, and
 holds the one command that records them again (both `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY`, under the $39 cap).
 [The ladder](../docs/ladder.md#rung-5-evaluate-the-evaluator) walks it.

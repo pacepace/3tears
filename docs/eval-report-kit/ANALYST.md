@@ -6,7 +6,7 @@ Every campaign report is written this way. [GENERATOR.md](GENERATOR.md) holds th
 
 ## 1. The decision
 
-A campaign report is written by an **expert analyst**: an agent on the host's analyst model (Opus in every run so far) with tools, a skill and a feedback loop. It reads the whole campaign, works out what it means, and writes the report as one story.
+A campaign report is written by an **expert analyst**: an agent on the host's analyst model (Opus or Sonnet so far) with tools, a skill and a feedback loop. It reads the whole campaign, works out what it means, and writes the report as one story.
 
 - When the evidence supports a call, the story ends in a decision or a priced tradeoff.
 - When it doesn't, the report explains what is tangled and what would untangle it.

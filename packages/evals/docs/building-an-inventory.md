@@ -66,7 +66,8 @@ looking at the judge's verdict**: the engine's floor for a `calibrated` tier is 
 is a realistic plan for a good judge. Read κ with its lower bound, not raw agreement; the engine reports this as an
 evidence tier. Until a judge is `calibrated`, its numbers are directional. An uncalibrated judge is not dropped from
 pass^k or any other reading: the reading is flagged with the tier it stands on, and the report says so under Not
-tested. Freeze the judge's wording first, because rewording a criterion orphans its labels: a label is keyed on the
+tested. Until it has calibration evidence, though, an improvement it alone judges makes no option better in code's
+decision. Freeze the judge's wording first, because rewording a criterion orphans its labels: a label is keyed on the
 criterion's wording, so a reworded dimension is a new criterion that no earlier label claims. Label guardrails first.
 
 ## 6. Publish the gaps (10 min)

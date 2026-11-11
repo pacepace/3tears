@@ -858,9 +858,9 @@ types the engine stores, and says three things about each:
   documents: analyses, insights, judge profiles).
 - **lifecycle**: `kept` (the evidence core: read from the core baseline on, and deleted by a core baseline reset),
   `durable` (what people author: templates, rubric dims, judge configs and their tombstones, case sets, test cases,
-  calibration ratings and campaigns; never wiped by a core baseline, read forever from durable v15, changed only
-  additively or through an upgrader) or `regenerable` (refused after a format change, and made again: an analysis, insight or
-  judge profile is regenerated, a cassette re-captured).
+  calibration ratings and campaigns, and the analyst's capability gaps; never wiped by a core baseline, read forever
+  from durable v15, changed only additively or through an upgrader) or `regenerable` (refused after a format change,
+  and made again: an analysis, insight or judge profile is regenerated, a cassette re-captured).
 - **suppresses**: for a tombstone, the type it suppresses (`rubric_dim_tombstone` holds a `rubric_dim`'s
   slot, `judge_config_tombstone` a `judge_config`'s).
 
@@ -877,7 +877,8 @@ a host action's job (its result). `CORE_DOC_TYPES` lists them. The core is basel
 and deleted with `reset_core` (below).
 
 **What people author is durable, and no core baseline ever touches it.** Templates, rubric dims, judge configs
-(with their tombstones), case sets, test cases, calibration ratings and campaigns (`DURABLE_DOC_TYPES`) have a version space
+(with their tombstones), case sets, test cases, calibration ratings and campaigns, and the analyst's capability gaps
+(`DURABLE_DOC_TYPES`), have a version space
 of their own, forked from core v15 at `.26` (`DURABLE_SCHEMA_VERSION`, `DURABLE_SCHEMA_MINOR`). Its baseline,
 `DURABLE_BASELINE_VERSION`, is 15 forever, and a durable shape changes only additively (a minor) or with an
 upgrader (`DURABLE_UPGRADERS`); a durable major never resets. No durable document needs a core one to be read: a
@@ -983,7 +984,7 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.7), durable documents (v16.3), regenerable documents
+**Each version space moves on its own.** Core documents (v15.11), durable documents (v16.9), regenerable documents
 (v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`), the cell model
 (`CELL_MODEL_VERSION`) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The code-only page has none: it is rendered from the bundle, which is the versioned machine
 form. Report documents and their sessions carry a version of their own, as cassettes do: a change to the report document's shape moves that version alone, the shared regenerable version stays where it is, and a report from before it reads as the code-only page with a line to regenerate it.
@@ -1114,7 +1115,7 @@ once the newer build is back. During a rolling deploy, once a pod of the newer b
 records, an older pod that restarts refuses to start (`RouteChanged`): finish rolling forward rather than restarting
 older pods. A release that adds a fact value needs your route to map it: a
 lifecycle route must map `durable` (from `.26`), or it is refused when built. Giving `durable` a store other than
-the one `kept` types were written to moves the nine durable types, so the first start raises `RouteChanged` for
+the one `kept` types were written to moves the ten durable types, so the first start raises `RouteChanged` for
 them until you relocate (or run `RoutedDocumentStore.reset_core`, which relocates).
 
 **Ask whether the stores hold anything before you relocate.** A host's start that adopts tables, rather than
@@ -1171,7 +1172,7 @@ release, on:
   below a root. Such a name is promised nothing: it may change or move in any release, and the
   [reference](reference.md#public-api) does not list it.
 
-The first two tiers are the declared surface, 491 names, mapped by rung in [the surface](surface.md). A declared
+The first two tiers are the declared surface, about 500 names, mapped by rung in [the surface](surface.md). A declared
 name stays declared while something outside the package imports it, a shipped page teaches it or a declared
 signature reaches it, or while it is a port you implement, a version constant or a one-minor shim, or a stable name
 only a known host's tests import, until that host accepts that it may move (the rules, in full:

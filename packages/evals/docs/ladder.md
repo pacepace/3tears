@@ -317,7 +317,7 @@ ANTHROPIC_API_KEY=... uv run python -m threetears.evals.harness examples/3-invoi
 | What | The harness door |
 |---|---|
 | Key | `ANTHROPIC_API_KEY`: the writer's every turn is live |
-| Cost | at most `--budget-usd` a report, $3 unless you name less |
+| Cost | at most `--budget-usd` a report, $3 unless you name another amount |
 | Page | `.evals/reports/invoices/analysis.html`, beside code's `report.html` |
 | Served | the campaign's analysis from then on: `report` and `report_read` show this page |
 | Turns | recorded under `examples/3-invoices/recordings/report/` |
@@ -461,7 +461,7 @@ writer_eval = WriterEval(
     turns=45,  # each report's turn cap, the analyst's and the editor's together
     max_cost_usd=39.0,  # the whole eval's, judge and pairwise pass included
     pairwise_share=0.05,  # of max_cost_usd, for the pairwise pass: $1.95; each arm gets half the rest, $18.52
-    held_out_fraction=0.35,  # 7 held-out cases of 11: the 0.3 default leaves 4, under the 5 a rate needs
+    held_out_fraction=0.35,  # the default, stated: 7 held-out cases of 11, past the 5 a rate needs
     name="writer",
 )
 ```
@@ -479,7 +479,7 @@ writer_eval = WriterEval(
   the package ships today would go stale with its next edit. The rung measures the copy that was recorded.
 - **The judge is another family** than the writers, as in rung 2, and the eval refuses one of the writers' own.
 
-What the recording printed (made 2026-11-03, its judge's calls again 2026-11-08 and 2026-11-10), replayed from `packages/evals/` with no key: the arms, the first
+What the recording printed (made 2026-11-03, its judge's calls again 2026-11-10), replayed from `packages/evals/` with no key: the arms, the first
 readings and the judged ones, the judge's preference between the two arms' pages, the promotion read, and where the
 turns came from (each path printed whole):
 

@@ -110,7 +110,9 @@ so a declared rule may stop it early
 Code assigns every judged reading an [evidence tier](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)
 from its judge's measured agreement with people and with itself. A comparison between arms can stand on a
 lower tier, since bias mostly cancels across arms; an absolute claim needs agreement with people, since
-self-consistency measures precision, not accuracy.
+self-consistency measures precision, not accuracy. The one floor: an improvement whose judge has no calibration
+evidence at all (`undetermined` or `insufficient`) is shown and set aside, so it makes no option better; a judge
+measured and found short (`separation`, `incidental`) still counts.
 
 **Bars start where the incumbent performs ("never ship worse than what runs today") and only tighten.**
 A proposed bar is never adopted
