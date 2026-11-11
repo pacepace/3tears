@@ -56,6 +56,11 @@ size (a hub that has since dropped the cap is read again at the asked size).
 duplicates kept (a key staged again, or already held, is written again); `key=` may be empty. PostgreSQL, DuckDB,
 SQLite and `InlineDuckDB`.
 
+### enforcement: no_whole_reads judges a helper's order picked from a module mapping
+A keyset helper whose `order=` is one entry of a module mapping of literal sort lists (`order=DATASOURCE_ORDERS[field]`,
+or a local bound once to that pick) is judged once per entry against its index, and each entry's index is credited to
+the calling function's purpose, where it was `unknown-predicate keyset_page(order)`. One unindexed entry flags the call.
+
 ### enforcement: no_whole_reads judges a prefix write on a table its caller names
 `delete_keyed(prefix=)` and now `update_keyed(prefix=)` on a table the caller names (a fence's, `clear_signals(conn,
 table)`) are judged against the module's template (`TableSchema(name=<parameter>)`), as a generic `FROM {table}` read

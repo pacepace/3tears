@@ -1809,6 +1809,50 @@ def test_a_read_in_a_shared_constant_and_a_helper_s_constant_order_are_judged_an
     assert not any("index-purpose-unused" in finding for finding in findings), findings
 
 
+_ORDERS_BY_FIELD = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import Sort, keyset_page
+
+    DATASOURCES = TableSchema(
+        name="datasources",
+        primary_key="id",
+        columns=[],
+        indexes=(
+            Index("by_name", "name", purpose=("src/listing.py::page_of", "src/listing.py::page_by")),
+            Index("by_created", "created_at", purpose=("src/listing.py::page_of", "src/listing.py::page_by")),
+        ),
+    )
+    DATASOURCE_ORDERS = {
+        "name": [Sort("name"), Sort("id")],
+        "created": (Sort("created_at", descending=True), Sort("id", descending=True)),
+    }
+
+    async def page_of(pool, field, cols):
+        order = DATASOURCE_ORDERS[field]
+        return await keyset_page(pool, "datasources", columns=cols, by={}, order=order, limit=50)
+
+    async def page_by(pool, field, cols):
+        return await keyset_page(pool, "datasources", columns=cols, by={}, order=DATASOURCE_ORDERS[field], limit=50)
+"""
+
+
+def test_a_helper_s_order_picked_from_a_module_mapping_is_judged_entry_by_entry(tmp_path: Path) -> None:
+    """Flips if a keyset page whose order is one entry of a module mapping of literal sort lists
+    (``order=DATASOURCE_ORDERS[field]``, directly or through a local) is unread, if any entry escapes judgement
+    against its index, or if the indexes those entries page through are not credited to the calling functions."""
+    found = _symbols(_config(tmp_path, {"listing.py": _ORDERS_BY_FIELD}))
+    assert not any(function in {"page_of", "page_by"} for function, _ in found), found
+    findings = no_whole_reads_findings(_config(tmp_path, {"listing.py": _ORDERS_BY_FIELD}))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
+    unindexed = _ORDERS_BY_FIELD.replace(
+        '"name": [Sort("name"), Sort("id")],',
+        '"name": [Sort("name"), Sort("id")],\n        "kind": [Sort("kind"), Sort("id")],',
+    )
+    found = _symbols(_config(tmp_path, {"listing.py": unindexed}))
+    flagged = {function for function, symbol in found if "datasources" in symbol}
+    assert flagged == {"page_of", "page_by"}, found
+
+
 _PRODUCED = """
     class Stages:
         def __init__(self, db):

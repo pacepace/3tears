@@ -1624,7 +1624,7 @@ class _ModuleWalk(ast.NodeVisitor):
         statement: HelperStatement
         resolved = self._resolved_call(node)
         hits: dict[str, str] = {}
-        for call in self._parameter_calls(resolved):
+        for call in (each for picked in self._mapping_calls(resolved) for each in self._parameter_calls(picked)):
             for statement in helper_statements(call):
                 if statement.sql is UNSEEN or statement.sql is None:
                     hits.setdefault(f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(node))
@@ -1634,6 +1634,68 @@ class _ModuleWalk(ast.NodeVisitor):
                         hits.setdefault(f"{finding.kind} {finding.table}", statement.sql)
         for symbol, statement_text in hits.items():
             self._hit(node, symbol, statement_text)
+
+    def _mapping_calls(self, call: ast.Call) -> list[ast.Call]:
+        """the call once per combination of the entries its arguments pick from module mappings of literal sequences
+        (``order=DATASOURCE_ORDERS[field]`` with ``DATASOURCE_ORDERS = {"name": [Sort("name"), Sort("id")], ...}``),
+        picked in the argument itself or through a local bound to the pick once (``order = DATASOURCE_ORDERS[field]``):
+        any entry may be the one sent, so each is judged; the call itself when no argument picks, or the combinations
+        pass :data:`_MAX_PARAMETER_COMBINATIONS`.
+
+        :param call: the helper call, its known strings already literals
+        :ptype call: ast.Call
+        :return: the calls to judge
+        :rtype: list[ast.Call]
+        """
+        function = self._function_node
+        picks: dict[str, ast.expr] = {}
+        if function is not None:
+            assigned: dict[str, list[ast.expr]] = {}
+            for node in ast.walk(function):
+                if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    for target in targets:
+                        for name in (n for n in ast.walk(target) if isinstance(n, ast.Name)):
+                            value = node.value if isinstance(target, ast.Name) and node.value is not None else None
+                            assigned.setdefault(name.id, []).append(value if value is not None else target)
+            picks = {name: values[0] for name, values in assigned.items() if len(values) == 1}
+
+        def entries(value: ast.expr) -> list[ast.expr] | None:
+            if isinstance(value, ast.Name) and value.id in picks:
+                value = picks[value.id]
+            if not (isinstance(value, ast.Subscript) and isinstance(value.value, ast.Name)):
+                return None
+            mapping = self._module_values.get(value.value.id)
+            if not isinstance(mapping, ast.Dict) or not mapping.values:
+                return None
+            picked = [
+                self._module_values.get(entry.id, entry) if isinstance(entry, ast.Name) else entry
+                for entry in mapping.values
+            ]
+            if not all(isinstance(entry, (ast.Tuple, ast.List)) for entry in picked):
+                return None
+            return picked
+
+        arguments = [*call.args, *(keyword.value for keyword in call.keywords)]
+        choices = {index: found for index, value in enumerate(arguments) if (found := entries(value)) is not None}
+        combinations = list(itertools.product(*choices.values()))
+        if not choices or len(combinations) > _MAX_PARAMETER_COMBINATIONS:
+            return [call]
+        calls = []
+        for combination in combinations:
+            given = dict(zip(choices, combination, strict=True))
+            values = [given.get(index, value) for index, value in enumerate(arguments)]
+            calls.append(
+                ast.Call(
+                    func=call.func,
+                    args=values[: len(call.args)],
+                    keywords=[
+                        ast.keyword(arg=keyword.arg, value=value)
+                        for keyword, value in zip(call.keywords, values[len(call.args) :], strict=True)
+                    ],
+                )
+            )
+        return calls
 
     def _parameter_calls(self, call: ast.Call) -> list[ast.Call]:
         """the call once per combination of the strings its arguments are passed: an argument that is a parameter of
