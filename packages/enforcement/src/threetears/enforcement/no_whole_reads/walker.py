@@ -58,6 +58,7 @@ from threetears.enforcement.no_whole_reads.flow import (
 from threetears.enforcement.no_whole_reads.helpers import (
     COPY_CALLS,
     KEYED_FRAGMENT_BUILDERS,
+    BUILDER_CALLS,
     KEYED_HELPER_CALLS,
     STEP_CALLS,
     STEP_RELATIONS,
@@ -143,13 +144,18 @@ Passed = str | Declared | None
 #: the calls that quote a relation's name, read through to the name they quote
 _QUOTING_CALLS: Final = frozenset({"quoted_table", "quote_identifier"})
 
-#: where 3tears' keyed helpers live: a helper there may declare its own parameter a change relation
-_KEYED_PACKAGE: Final = "threetears/core/keyed/"
+#: where 3tears' keyed helpers live: the runners in core, the pure builders in the dependency-free interfaces package; a
+#: helper there may declare its own parameter a change relation
+_KEYED_PACKAGES: Final = ("threetears/core/keyed/", "threetears/interfaces/keyed/")
 
-#: the modules holding a keyed helper in :data:`KEYED_HELPER_CALLS`: ``threetears/core/keyed`` and the one the
+#: the modules 3tears' keyed helpers are imported from: core's (the runners, every builder re-exported) and the
+#: interfaces package's (the builders, for a package that may not depend on core)
+_KEYED_MODULES: Final = ("threetears.core.keyed", "threetears.interfaces.keyed")
+
+#: the modules holding a keyed helper in :data:`KEYED_HELPER_CALLS`: :data:`_KEYED_PACKAGES` and the one the
 #: caller's grants filter (``visible_rows``, :mod:`threetears.agent.acl.visible_customers`); a statement over a
 #: helper's relation parameter there is judged at the helper's call sites (:func:`_helper_relations`)
-_KEYED_HELPER_MODULES: Final = (_KEYED_PACKAGE, "threetears/agent/acl/visible_customers.py")
+_KEYED_HELPER_MODULES: Final = (*_KEYED_PACKAGES, "threetears/agent/acl/visible_customers.py")
 
 #: what an expression reads as when it names a relation no statement is judged by where it is written (a declared
 #: transient producer's return, :data:`TRANSIENT_PRODUCED`; a keyed helper's relation parameter,
@@ -2536,7 +2542,9 @@ class _ModuleWalk(ast.NodeVisitor):
             given = next((k.value for k in node.keywords if k.arg == keyword), None)
             if given is not None:
                 return holds(given)
-        return len(node.args) > 1 and holds(node.args[1])
+        # a builder takes no connection: its relation is its first argument
+        place = 0 if name in BUILDER_CALLS else 1
+        return len(node.args) > place and holds(node.args[place])
 
     def _bound_step(self, name: str) -> ast.Call | None:
         """the step (or change relation, or derived select) the enclosing function binds ``name`` to once, if it does.
@@ -2633,9 +2641,9 @@ class _ModuleWalk(ast.NodeVisitor):
         """
         func = node.func
         if isinstance(func, ast.Name):
-            return self.imports.get(func.id, "").startswith("threetears.core.keyed")
+            return self.imports.get(func.id, "").startswith(_KEYED_MODULES)
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-            return self.imports.get(func.value.id, "").startswith("threetears.core.keyed")
+            return self.imports.get(func.value.id, "").startswith(_KEYED_MODULES)
         return False
 
     def _judge_change_relation(self, node: ast.Call) -> None:
@@ -3162,7 +3170,11 @@ class _ModuleWalk(ast.NodeVisitor):
         if not (isinstance(node, ast.Call) and _final(node) == "change_relation" and len(node.args) == 1):
             return False
         function = self._function_node
-        if function is None or function.name not in KEYED_HELPER_CALLS or _KEYED_PACKAGE not in str(self.path):
+        if (
+            function is None
+            or function.name not in KEYED_HELPER_CALLS
+            or not any(package in str(self.path) for package in _KEYED_PACKAGES)
+        ):
             return False
         arguments = function.args
         named = {argument.arg for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]}

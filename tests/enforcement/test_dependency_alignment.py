@@ -282,6 +282,9 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "packages/core",
         (
+            # owner ruling 2026-11-11: the keyed helpers' vocabulary and pure builders live in the interfaces
+            # package, which core re-exports and runs
+            "3tears-interfaces",
             "3tears-observe",
             "3tears-nats",
             "sqlalchemy",

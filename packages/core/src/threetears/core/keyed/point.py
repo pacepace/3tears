@@ -22,42 +22,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal, overload
 
-from threetears.core.keyed._filters import Lock, Selected, by_conditions, relation, selected_column
+from threetears.core.keyed._filters import Fragment, Lock, Selected
+from threetears.interfaces.keyed.point import read_by_statement, read_row_statement
 
 __all__ = [
     "read_by",
     "read_row",
     "read_value",
 ]
-
-
-def _sql(
-    table: str, by: Mapping[str, Any], columns: Sequence[str | Selected] | None, limit: bool, lock: Lock | None = None
-) -> tuple[str, list[Any]]:
-    """the statement and its parameters.
-
-    :param table: the table, a TRUSTED identifier (``schema.table`` quoted a segment at a time)
-    :ptype table: str
-    :param by: the pinned columns
-    :ptype by: Mapping[str, Any]
-    :param columns: the columns read; every column (``t.*``) when None
-    :ptype columns: Sequence[str | Selected] | None
-    :param limit: whether one row is asked for (``LIMIT 1``)
-    :ptype limit: bool
-    :param lock: the row lock taken on the rows read, in the caller's transaction; none when None
-    :ptype lock: Lock | None
-    :return: the statement, and its parameters
-    :rtype: tuple[str, list[Any]]
-    :raises ValueError: when nothing is pinned, or ``columns`` is empty
-    """
-    if not by:
-        raise ValueError(f"a point read of {table} pins at least one column; with none it reads the table whole")
-    if columns is not None and not columns:
-        raise ValueError(f"a point read of {table} names the columns it reads, or None for every column")
-    selected = "t.*" if columns is None else ", ".join(selected_column(column) for column in columns)
-    conditions, params = by_conditions(by, alias="t")
-    tail = (" LIMIT 1" if limit else "") + ("" if lock is None else lock.of("t"))
-    return f"SELECT {selected} FROM {relation(table, 't')} WHERE {' AND '.join(conditions)}{tail}", params
 
 
 @overload
@@ -69,6 +41,7 @@ async def read_by(
     columns: Sequence[str | Selected] | None = ...,
     records: Literal[False] = ...,
     lock: Lock | None = ...,
+    where: Sequence[Fragment] = ...,
 ) -> list[dict[str, Any]]: ...
 
 
@@ -81,6 +54,7 @@ async def read_by(
     columns: Sequence[str | Selected] | None = ...,
     records: Literal[True],
     lock: Lock | None = ...,
+    where: Sequence[Fragment] = ...,
 ) -> list[Any]: ...
 
 
@@ -92,6 +66,7 @@ async def read_by(
     columns: Sequence[str | Selected] | None = None,
     records: bool = False,
     lock: Lock | None = None,
+    where: Sequence[Fragment] = (),
 ) -> list[dict[str, Any]] | list[Any]:
     """every row of ``table`` the pinned columns name: what ``fetch`` of the hand-written statement answered.
 
@@ -111,11 +86,13 @@ async def read_by(
     :param lock: the row lock taken on the rows read (``FOR UPDATE OF t NOWAIT``, say), in the caller's transaction;
         none when None
     :ptype lock: Lock | None
+    :param where: guards beside the pins, each a fragment written as ``t."col"`` from ``$1``; none when empty
+    :ptype where: Sequence[Fragment]
     :return: the rows, in no promised order
     :rtype: list[dict[str, Any]] | list[Any]
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
-    sql, params = _sql(table, by, columns, limit=False, lock=lock)
+    sql, params = read_by_statement(table, by=by, columns=columns, lock=lock, where=where)
     rows = list(await conn.fetch(sql, *params))
     return rows if records else [dict(row) for row in rows]
 
@@ -129,6 +106,7 @@ async def read_row(
     columns: Sequence[str | Selected] | None = ...,
     records: Literal[False] = ...,
     lock: Lock | None = ...,
+    where: Sequence[Fragment] = ...,
 ) -> dict[str, Any] | None: ...
 
 
@@ -141,6 +119,7 @@ async def read_row(
     columns: Sequence[str | Selected] | None = ...,
     records: Literal[True],
     lock: Lock | None = ...,
+    where: Sequence[Fragment] = ...,
 ) -> Any: ...
 
 
@@ -152,6 +131,7 @@ async def read_row(
     columns: Sequence[str | Selected] | None = None,
     records: bool = False,
     lock: Lock | None = None,
+    where: Sequence[Fragment] = (),
 ) -> dict[str, Any] | Any | None:
     """the first row of ``table`` the pinned columns name, or None: what ``fetchrow`` of the hand-written statement
     answered (one row asked for, ``LIMIT 1``; which one, where the key names several, is the database's, as it was).
@@ -169,11 +149,13 @@ async def read_row(
     :param lock: the row lock taken on the rows read (``FOR UPDATE OF t NOWAIT``, say), in the caller's transaction;
         none when None
     :ptype lock: Lock | None
+    :param where: guards beside the pins, each a fragment written as ``t."col"`` from ``$1``; none when empty
+    :ptype where: Sequence[Fragment]
     :return: the row, or None when the key names none
     :rtype: dict[str, Any] | Any | None
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
-    sql, params = _sql(table, by, columns, limit=True, lock=lock)
+    sql, params = read_row_statement(table, by=by, columns=columns, lock=lock, where=where)
     rows = list(await conn.fetch(sql, *params))
     if not rows:
         return None
@@ -196,6 +178,6 @@ async def read_value(conn: Any, table: str, *, by: Mapping[str, Any], column: st
     :rtype: Any
     :raises ValueError: when nothing is pinned
     """
-    sql, params = _sql(table, by, (column,), limit=True)
+    sql, params = read_row_statement(table, by=by, columns=(column,))
     rows = list(await conn.fetch(sql, *params))
     return rows[0][column] if rows else None

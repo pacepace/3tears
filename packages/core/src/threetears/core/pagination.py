@@ -37,13 +37,11 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
+from threetears.interfaces.keyed.page import CursorError
+
 __all__ = ["CursorError", "Keyset", "Page", "decode_cursor", "encode_cursor"]
 
 T = TypeVar("T")
-
-
-class CursorError(ValueError):
-    """A cursor token could not be decoded (malformed, tampered, or wrong arity)."""
 
 
 def encode_cursor(key: Sequence[Any]) -> str:

@@ -53,7 +53,7 @@ from threetears.core.keyed import (
     rows_affected,
     update_before,
 )
-from threetears.core.keyed import rows as rows_module
+from threetears.interfaces.keyed import rows as rows_module
 from threetears.core.keyset import read_keyset_pages
 from threetears.core.pagination import CursorError
 
@@ -306,7 +306,7 @@ class TestReadKeyed:
             renders.append(text)
             kept[shape] = text
 
-        monkeypatch.setattr("threetears.core.keyed.rows._remember", remembered)
+        monkeypatch.setattr("threetears.interfaces.keyed.rows._remember", remembered)
         native = _Recording(db)
         native.binds_native_arrays = True  # type: ignore[attr-defined]
         for values in ([(1,), (2,)], [(11,), (12,), (13,)]):

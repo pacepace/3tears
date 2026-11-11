@@ -15,7 +15,6 @@ from decimal import Decimal
 from typing import Any
 
 from threetears.core.keyed._filters import (
-    _PLACEHOLDER,
     AnyOf,
     Derived,
     Fragment,
@@ -25,6 +24,7 @@ from threetears.core.keyed._filters import (
     selected_column,
 )
 from threetears.core.keyed._filters import relation as _relation_sql
+from threetears.interfaces.keyed.filters import PLACEHOLDER
 
 __all__ = ["literal_select"]
 
@@ -97,6 +97,6 @@ def literal_select(
         conditions.append(narrowing(fragment, len(values)))
         values.extend(fragment.params)
     text = " AND ".join(conditions)
-    written = _PLACEHOLDER.sub(lambda match: _sql_literal(values[int(match.group(1)) - 1]), text)
+    written = PLACEHOLDER.sub(lambda match: _sql_literal(values[int(match.group(1)) - 1]), text)
     selected = ", ".join(selected_column(column, alias) for column in columns)
     return f"SELECT {selected} FROM {_relation_sql(relation, alias)} WHERE {written}"  # noqa: S608 - TRUSTED names; literals

@@ -2586,11 +2586,27 @@ _STEPS = """
 """
 
 
-def test_a_step_over_a_change_relation_passes_and_one_over_a_table_is_the_whole_read_it_is(tmp_path: Path) -> None:
+@pytest.mark.parametrize("home", ["threetears.core.keyed", "threetears.interfaces.keyed"])
+def test_a_step_over_a_change_relation_passes_and_one_over_a_table_is_the_whole_read_it_is(
+    tmp_path: Path, home: str
+) -> None:
     """Flips if a relational step over a registered or declared change relation is flagged, a delete by a change
     relation's keys is judged other than as the keyed delete it is, a step over a data table (whole, or as a semi's
-    read side) passes, a change relation declared over a data table passes, or a set's ``union`` is judged as a step."""
-    found = _symbols(_config(tmp_path, {"steps.py": _STEPS}))
+    read side) passes, a change relation declared over a data table passes, or a set's ``union`` is judged as a step;
+    the steps imported from core's keyed package or the interfaces package's alike."""
+    found = _symbols(
+        _config(
+            tmp_path,
+            {
+                "steps.py": _STEPS.replace("threetears.core.keyed", home).replace(
+                    "from threetears.core import keyed",
+                    "from threetears.core import keyed"
+                    if home.startswith("threetears.core")
+                    else "from threetears.interfaces import keyed",
+                )
+            },
+        )
+    )
     functions = {function for function, _ in found}
     assert not functions & {"over_the_change", "drop_changed", "a_set"}, found
     assert {"over_a_table", "semi_of_a_table"} <= functions, found
@@ -2742,7 +2758,10 @@ _HELPER_BODY_CALLERS = """
 """
 
 
-def test_a_keyed_helper_s_relation_parameter_is_judged_at_its_call_sites_not_in_its_body(tmp_path: Path) -> None:
+@pytest.mark.parametrize("package", ["threetears/core/keyed", "threetears/interfaces/keyed"])
+def test_a_keyed_helper_s_relation_parameter_is_judged_at_its_call_sites_not_in_its_body(
+    tmp_path: Path, package: str
+) -> None:
     """Flips if a keyed helper's statement over its own relation parameter is flagged in its body (straight, through
     a local binding, a bare name in relation position, a private renderer or a field every in-module caller fills
     from a helper's parameter, a nested helper call on it), if literal-table SQL in a helper body passes, if a private
@@ -2751,7 +2770,7 @@ def test_a_keyed_helper_s_relation_parameter_is_judged_at_its_call_sites_not_in_
     found = _symbols(
         _config(
             tmp_path,
-            {"threetears/core/keyed/rows.py": _HELPER_BODIES, "app.py": _HELPER_BODY_CALLERS},
+            {f"{package}/rows.py": _HELPER_BODIES, "app.py": _HELPER_BODY_CALLERS},
         )
     )
     functions = {function for function, _ in found}

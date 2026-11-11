@@ -16,33 +16,19 @@ IO only: one statement a page on the caller's connection, awaited in turn.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from threetears.core.keyed._filters import IN_SUBQUERY, batched_join_hint, by_conditions, quoted_table
+from threetears.core.keyed._filters import by_conditions, quoted_table
 from threetears.core.keyed.counts import rows_affected
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
 from threetears.core.sql_fragments import quote_identifier
+from threetears.interfaces.keyed.sweeps import SweptRows, delete_before_statement, update_before_statement
 
 if TYPE_CHECKING:
     # the annotation only: the collections package imports these helpers
     from threetears.core.collections.base import BaseCollection
 
 __all__ = ["SweptRows", "delete_before", "delete_oldest", "update_before"]
-
-
-@dataclass(frozen=True)
-class SweptRows:
-    """what a paged sweep deleted (or a paged update touched).
-
-    :param deleted: the rows deleted, or updated
-    :ptype deleted: int
-    :param statements: the DELETEs sent, one a page
-    :ptype statements: int
-    """
-
-    deleted: int
-    statements: int
 
 
 async def delete_before(
@@ -92,50 +78,28 @@ async def delete_before(
         raise ValueError(f"a sweep of {table} names its key")
     if page < 1 or (most_pages is not None and most_pages < 1):
         raise ValueError(f"a sweep of {table} deletes at least one row in at least one page")
-    conditions, params = by_conditions(by or {})
-    conditions.append(f"{quote_identifier(column)} < ${len(params) + 1}")
-    params.append(before)
-    return await _paged(collection, conn, _Paged(table, key, column, conditions, page), params, most_pages)
-
-
-@dataclass(frozen=True)
-class _Paged:
-    """one paged write: the rows of ``table`` matching ``conditions``, ``page`` of them a statement in ``column``'s
-    order, deleted, or set to ``assignments`` when there are any."""
-
-    table: str
-    key: Sequence[str]
-    column: str
-    conditions: Sequence[str]
-    page: int
-    assignments: Sequence[str] = ()
+    sql, params = delete_before_statement(table, key=key, column=column, before=before, page=page, by=by)
+    return await _paged(collection, conn, table, key, page, sql, params, most_pages)
 
 
 async def _paged(
-    collection: BaseCollection[Any] | None, conn: Any, write: _Paged, params: Sequence[Any], most_pages: int | None
+    collection: BaseCollection[Any] | None,
+    conn: Any,
+    table: str,
+    key: Sequence[str],
+    page: int,
+    sql: str,
+    params: Sequence[Any],
+    most_pages: int | None,
 ) -> SweptRows:
-    """run a paged write until a page touches fewer rows than it asked for, each page inside the collection's
-    ``bypassing_write`` so the keys it returned are settled in every cache."""
-    named = ", ".join(quote_identifier(part) for part in write.key)
-    written = ", ".join(f"t.{quote_identifier(part)}" for part in write.key)
-    table = quoted_table(write.table)
-    # the page's keys joined back to the table by its key, batched on YugabyteDB (batched_join_hint): one storage
-    # request a page, not one a row
-    hint = batched_join_hint(IN_SUBQUERY, "t")
-    rows_of = (
-        f"({written}) IN (SELECT {named} FROM {table} WHERE {' AND '.join(write.conditions)} "
-        f"ORDER BY {quote_identifier(write.column)} LIMIT {write.page}) RETURNING {written}"
-    )
-    if write.assignments:
-        sql = f"{hint}UPDATE {table} AS t SET {', '.join(write.assignments)} WHERE {rows_of}"
-    else:
-        sql = f"{hint}DELETE FROM {table} AS t WHERE {rows_of}"
+    """run a paged write (``sql``, the same every page) until a page touches fewer rows than it asked for, each page
+    inside the collection's ``bypassing_write`` so the keys it returned are settled in every cache."""
     if conn is not None:
         reader = conn
     elif collection is not None:
         reader = collection.required_l3_pool
     else:
-        raise TypeError(f"a paged write of {write.table} names its collection, or (with collection=None) its conn")
+        raise TypeError(f"a paged write of {table} names its collection, or (with collection=None) its conn")
     touched = statements = 0
     while most_pages is None or statements < most_pages:
         if collection is None:
@@ -143,10 +107,10 @@ async def _paged(
         else:
             async with collection.bypassing_write(conn=conn) as settled:
                 rows = await reader.fetch(sql, *params)
-                settled.touches(*(_entity_id(row, write.key) for row in rows))
+                settled.touches(*(_entity_id(row, key) for row in rows))
         statements += 1
         touched += len(rows)
-        if len(rows) < write.page:
+        if len(rows) < page:
             break
     return SweptRows(deleted=touched, statements=statements)
 
@@ -221,27 +185,12 @@ async def update_before(
         the pages it reads
     :raises TypeError: when neither a collection nor a connection is given
     """
-    pinned = dict(by or {})
     if not key or not set_to:
         raise ValueError(f"a paged update of {table} names its key and what it sets")
     if page < 1 or (most_pages is not None and most_pages < 1):
         raise ValueError(f"a paged update of {table} touches at least one row in at least one page")
-    if not set(set_to) & (set(pinned) | {column}):
-        raise ValueError(
-            f"a paged update of {table} must move its rows out of the pages it reads: set a column of by, or {column}"
-        )
-    assignments = []
-    params: list[Any] = []
-    for name, value in set_to.items():
-        params.append(value)
-        assignments.append(f"{quote_identifier(name)} = ${len(params)}")
-    conditions, values = by_conditions(pinned, first=len(params) + 1)
-    params += values
-    conditions.append(f"{quote_identifier(column)} < ${len(params) + 1}")
-    params.append(before)
-    return await _paged(
-        collection, conn, _Paged(table, key, column, conditions, page, tuple(assignments)), params, most_pages
-    )
+    sql, params = update_before_statement(table, key=key, column=column, before=before, set_to=set_to, page=page, by=by)
+    return await _paged(collection, conn, table, key, page, sql, params, most_pages)
 
 
 async def delete_oldest(

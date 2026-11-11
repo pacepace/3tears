@@ -37,6 +37,13 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Protocol
 
+from threetears.interfaces.keyed import (
+    Fragment,
+    KeyedConnection,
+    delete_before_statement,
+    delete_keyed_statements,
+    read_row_statement,
+)
 from threetears.observe import get_logger
 
 from threetears.iam.stores.base import TicketIssue, hash_ticket, new_ticket_secret
@@ -79,22 +86,18 @@ EXPIRES_INDEX_DDL: Final[str] = "CREATE INDEX IF NOT EXISTS {index} ON {table} (
 #: an accident from becoming an injection.
 _SAFE_TABLE_CHARS: Final[frozenset[str]] = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_.")
 
+#: The expired rows :meth:`PostgresTicketStore.purge_expired` deletes a statement, through the ``expires_at`` index.
+_PURGE_PAGE: Final[int] = 1000
 
-class PoolLike(Protocol):
+
+class PoolLike(KeyedConnection, Protocol):
     """The minimal pool surface these stores need.
 
-    Matches the top-level ``fetchrow``/``execute`` methods :class:`asyncpg.Pool` exposes (the
-    pool acquires and releases internally). Typed as a Protocol so this package takes no
-    runtime dependency on asyncpg, and so a test can pass a double.
+    The top-level ``fetch``/``execute`` methods :class:`asyncpg.Pool` exposes (the pool acquires
+    and releases internally), as every keyed statement is run
+    (:class:`threetears.interfaces.keyed.KeyedConnection`). Typed as a Protocol so this package
+    takes no runtime dependency on asyncpg, and so a test can pass a double.
     """
-
-    async def fetchrow(self, query: str, *args: object) -> Any:
-        """Run ``query`` and return the first row, or ``None``."""
-        ...
-
-    async def execute(self, query: str, *args: object) -> Any:
-        """Run ``query``, discarding any result."""
-        ...
 
 
 def _validate_table(table: str) -> str:
@@ -102,6 +105,33 @@ def _validate_table(table: str) -> str:
     if not table or not set(table.lower()) <= _SAFE_TABLE_CHARS:
         raise ValueError(f"unsafe table name {table!r}; expected letters, digits, underscore or dot")
     return table
+
+
+def _relation(table: str) -> str:
+    """The table as the keyed statements name it, quoted: the name PostgreSQL folds the unquoted spelling the DDL and
+    the inserts write to, so both name one table."""
+    return table.lower()
+
+
+async def _claimed(pool: PoolLike, statement: tuple[str, list[Any]]) -> Mapping[str, Any] | None:
+    """The payload of the row a keyed statement answers (a claim's ``DELETE ... RETURNING``, a point read), or
+    ``None``."""
+    sql, params = statement
+    rows = await pool.fetch(sql, *params)
+    return _decode(rows[0]["payload"]) if rows else None
+
+
+async def _purged(pool: PoolLike, statement: tuple[str, list[Any]]) -> None:
+    """Run a purge's page (a keyed builder's ``DELETE ... RETURNING`` of at most :data:`_PURGE_PAGE` expired rows,
+    the same every page) until a page deletes fewer than it asked for."""
+    sql, params = statement
+    while len(await pool.fetch(sql, *params)) == _PURGE_PAGE:
+        pass
+
+
+def _unexpired() -> Fragment:
+    """The claim's guard: the row is not past its expiry now."""
+    return Fragment('"expires_at" > $1', (datetime.now(UTC),))
 
 
 def _decode(raw: Any) -> Mapping[str, Any] | None:
@@ -160,24 +190,23 @@ class PostgresTicketStore:
         swept. ``None`` covers unknown, expired and already-redeemed alike -- a caller must
         not distinguish them, or it becomes an oracle.
         """
-        pk = "hashed"  # the table's primary key: the claim reads one row by it
-        row = await self._pool.fetchrow(
-            f"DELETE FROM {self._table} WHERE {pk} = $1 AND expires_at > $2 RETURNING payload",  # noqa: S608
-            hash_ticket(secret),
-            datetime.now(UTC),
+        [statement] = delete_keyed_statements(
+            _relation(self._table), by={"hashed": hash_ticket(secret)}, where=[_unexpired()], returning=("payload",)
         )
-        return None if row is None else _decode(row["payload"])
+        return await _claimed(self._pool, statement)
 
     async def purge_expired(self) -> None:
         """Delete rows past their expiry.
 
         Bounds the table's size and nothing else -- :meth:`redeem` already refuses an expired
         row. Safe to call on a schedule, or on a rare write; correctness never depends on it
-        having run.
+        having run. A page of expired rows a statement, through :data:`EXPIRES_INDEX_DDL`'s index.
         """
-        await self._pool.execute(
-            f"DELETE FROM {self._table} WHERE expires_at <= $1",  # noqa: S608
-            datetime.now(UTC),
+        await _purged(
+            self._pool,
+            delete_before_statement(
+                _relation(self._table), key=("hashed",), column="expires_at", before=datetime.now(UTC), page=_PURGE_PAGE
+            ),
         )
 
 
@@ -207,31 +236,30 @@ class PostgresStateStore:
 
     async def take(self, key: str) -> Mapping[str, Any] | None:
         """Atomically remove and return the value under ``key``, or ``None``."""
-        pk = "key"  # the table's primary key: the claim reads one row by it
-        row = await self._pool.fetchrow(
-            f"DELETE FROM {self._table} WHERE {pk} = $1 AND expires_at > $2 RETURNING payload",  # noqa: S608
-            key,
-            datetime.now(UTC),
+        [statement] = delete_keyed_statements(
+            _relation(self._table), by={"key": key}, where=[_unexpired()], returning=("payload",)
         )
-        return None if row is None else _decode(row["payload"])
+        return await _claimed(self._pool, statement)
 
     async def get(self, key: str) -> Mapping[str, Any] | None:
         """Return the value under ``key`` WITHOUT consuming it, or ``None``.
 
         Only correct where a separate mechanism enforces single use -- see the Protocol.
         """
-        pk = "key"  # the table's primary key: one row by it
-        row = await self._pool.fetchrow(
-            f"SELECT payload FROM {self._table} WHERE {pk} = $1 AND expires_at > $2",  # noqa: S608
-            key,
-            datetime.now(UTC),
+        statement = read_row_statement(
+            _relation(self._table),
+            by={"key": key},
+            columns=("payload",),
+            where=[Fragment('t."expires_at" > $1', (datetime.now(UTC),))],
         )
-        return None if row is None else _decode(row["payload"])
+        return await _claimed(self._pool, statement)
 
     async def purge_expired(self) -> None:
         """Delete rows past their expiry. Hygiene only -- see
         :meth:`PostgresTicketStore.purge_expired`."""
-        await self._pool.execute(
-            f"DELETE FROM {self._table} WHERE expires_at <= $1",  # noqa: S608
-            datetime.now(UTC),
+        await _purged(
+            self._pool,
+            delete_before_statement(
+                _relation(self._table), key=("key",), column="expires_at", before=datetime.now(UTC), page=_PURGE_PAGE
+            ),
         )
