@@ -76,7 +76,9 @@ class HashKind(StrEnum):
     TEXT = "text"
     #: an integer's decimal digits
     INTEGER = "integer"
-    #: a decimal at a fixed scale (``HashColumn.scale``): ``1.50`` at scale 2, whatever the column's own
+    #: a decimal at a fixed scale (``HashColumn.scale``): ``1.50`` at scale 2, whatever the column's own. Over a
+    #: double precision column the text is per engine: Redshift and PostgreSQL cast a double to DECIMAL(38, scale)
+    #: differently past 15 significant digits, so such a hash is compared only with one the same engine computed
     NUMERIC = "numeric"
     #: ``t`` or ``f``
     BOOLEAN = "boolean"
@@ -91,7 +93,10 @@ class HashColumn:
     """one column a row's hash covers.
 
     A floating-point column is hashed as :attr:`HashKind.NUMERIC` at the scale its values carry; a float's own text
-    differs between databases.
+    differs between databases. Its hash is still per engine: Redshift and PostgreSQL cast a double to
+    DECIMAL(38, scale) differently past 15 significant digits (live parity 2026-11-10: every text, integer, timestamp
+    and boolean column equal on both, 0 of 130 double column-samples), so a double's hash is compared only with a hash
+    the same engine computed, never across engines.
 
     :param column: the column, a TRUSTED identifier
     :ptype column: str
