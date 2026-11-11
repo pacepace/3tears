@@ -65,7 +65,13 @@ from threetears.evals.kernel.errors import ConflictError, NotFoundError, Validat
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import DECLARED_NAME_CHARS, declared_name, utc_now_iso
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN, FIND_TEMPLATE, SCHEMA_REMEDY
-from threetears.evals.kernel.declaration import NO_TEMPLATE_REMEDY, DesignRefused, refuse_an_undeclarable_design
+from threetears.evals.kernel.declaration import (
+    NO_TEMPLATE_REMEDY,
+    DesignRefused,
+    lever_names_of,
+    name_declared_axes,
+    refuse_an_undeclarable_design,
+)
 from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_variant_identity
 
 if TYPE_CHECKING:
@@ -421,7 +427,8 @@ def create_campaign(
             ),
         )
     _refuse_collisions(sources, own)
-    aspects = [*adopted, *own]
+    # Every write stores each declared axis named: an adopted aspect stored before its host named a lever is named here.
+    aspects = _named_axes([*adopted, *own], profile)
     declared = any(aspect.design is not None for aspect in aspects)
     _refuse_an_unsaid_kind(declared=declared, exploratory=exploratory)
     if not declared and (authored.question or authored.arms or authored.floors or authored.margins):
@@ -1279,6 +1286,7 @@ def update_campaign(
     except ValidationError as e:
         raise ValidationFailedError(f"invalid campaign update: {e}", remedy=SCHEMA_REMEDY) from e
     if writes:
+        updated = updated.model_copy(update={"aspects": _named_axes(updated.aspects, profile)})
         for aspect in updated.aspects:
             _gate_aspect(storage, updated, aspect, profile=profile)
 
@@ -1358,6 +1366,17 @@ def _named(aspects: Sequence[Aspect], short_names: object) -> list[Aspect]:
         raise ValidationFailedError(f"invalid campaign update: {e}", remedy=SCHEMA_REMEDY) from e
     return [
         aspect.model_copy(update={"short_name": short_names[aspect.label]}) if aspect.label in short_names else aspect
+        for aspect in aspects
+    ]
+
+
+def _named_axes(aspects: Sequence[Aspect], profile: HostProfile) -> list[Aspect]:
+    """``aspects`` with each declared axis its author named none for named as the host names the lever
+    (:func:`name_declared_axes`): what every authoring write stores."""
+    return [
+        aspect.model_copy(update={"design": name_declared_axes(aspect.design, profile)})
+        if aspect.design is not None
+        else aspect
         for aspect in aspects
     ]
 
@@ -1832,12 +1851,19 @@ def campaign_arms(storage: CampaignStore, campaign: EvalCampaign, *, profile: Ho
                 derived[addressed.key] = addressed
     if not derived:
         return named
-    names = arm_names([_index_entry(arm) for arm in [*map(_addressed, named), *derived.values()]])
+    entries = [_index_entry(arm) for arm in [*map(_addressed, named), *derived.values()]]
+    names = arm_names(entries)
+    levers = lever_names_of(
+        {lever for entry in entries for lever in entry.levers},
+        [aspect.design for aspect in campaign.aspects if aspect.design is not None],
+        profile,
+    )
     taken = {arm.label for arm in named}
     arms = list(named)
     for key, addressed in derived.items():
-        # The page's word for the arm (`careful`, not `candidate=careful`), so the first screen and every fold read it.
-        word = arm_name(names[key]).label
+        # The page's word for the arm (`careful`, not `candidate=careful`), so the first screen and every fold read it;
+        # an arm spelled by several levers names each by its stored reader name (`prompt v2, effort low`).
+        word = arm_name(names[key], declared=levers).label
         label, suffix = word, 2
         while label in taken:
             label, suffix = f"{word} ({suffix})", suffix + 1

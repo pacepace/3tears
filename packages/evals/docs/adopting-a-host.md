@@ -89,7 +89,15 @@ pass it to every entrypoint. It holds:
   refuses a measure without one, and one whose `reader_name` matches another measure's (yours or the engine's,
   ignoring case), so the mistake surfaces at startup, not on a chart. It refuses a measure with a better end
   (`higher_is_better`) or declared a `diagnostic` and no `data_type` too, since no bundle would carry it. The key stays what the store files the
-  number under and what a reader cites. Your bars (`BarRegistry`, each a `Bar`, with any per-behavior
+  number under and what a reader cites. Every lever you declare carries a reader name the same way, the words every page names it by
+  (`prompt style`, never `extractor.prompt_style`): `Sweepable(reader_name=...)` on each fixed lever,
+  `member_reader_name=` (a function from a member's lever name to its words) on each open family, and `title=` on
+  each overlay field of a kind contract (a map field's entries are named by its title and the entry's key). The
+  registry refuses a lever without one, naming it (`lever chunk_tokens has no reader_name — ...; declare
+  Sweepable(reader_name=...) with the words a reader calls it`), and a kind contract a field without a title. A
+  campaign stores the name on each axis it declares (`SweptAxis.reader_name`): yours where you give one, else the
+  lever's, filled when the campaign is created or updated, so a page rebuilt later names the lever as it was named
+  then. The name is no identity: renaming it moves no variant key, context or fingerprint. Your bars (`BarRegistry`, each a `Bar`, with any per-behavior
   `PassThreshold`) can be built in code or kept as data: `load_bar_registry(mapping)` reads
   `{"bars": [...], "pass_thresholds": [...]}`, each entry its type's fields. It refuses a field it does not
   know and a value of the wrong type rather than ignoring or coercing them, because a misspelt `rationale`
@@ -1265,7 +1273,9 @@ What a kind adds to the engine's own fields is two Pydantic models you name once
 `kinds`, in a `KindContract`:
 
 - Its **overlays** are the knobs a launch may turn: validated by field before any run exists, frozen onto
-  the run, and read back as levers whose levels enter the variant key.
+  the run, and read back as levers whose levels enter the variant key. Each field declares a `description`
+  (what the knob is) and a `title` (what a page calls it, `Field("standard", title="prompt style",
+  description=...)`); a field missing either is refused when the contract is built.
 - Its **spec** is what a template of that kind declares (`kind_spec`), such as a label set or a table
   setup: refused by field at authoring, then validated again and frozen onto each run.
 

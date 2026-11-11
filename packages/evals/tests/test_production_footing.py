@@ -372,7 +372,9 @@ class TestAPooledCostCarriesEachRunsFooting:
             for block in build_code_only_report(bundle, assembled_at="2026-10-10T00:00:00+00:00").blocks
             if isinstance(block, DisclosureBlock)
         ]
-        assert any("what production would spend" in text and "chunk_tokens" in text for text in disclosures)
+        # Each setting by the reader name the host declares for its lever, never by the lever's id.
+        assert any("what production would spend" in text and "chunk tokens" in text for text in disclosures)
+        assert not any("chunk_tokens" in text for text in disclosures)
 
 
 class TestALeverAddedToTheToyHostReachesThePooledCost:

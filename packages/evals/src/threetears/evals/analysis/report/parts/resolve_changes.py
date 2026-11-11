@@ -129,7 +129,7 @@ from threetears.evals.analysis.report.figure_keys import arm_settings, correctio
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.analysis.report_rows import lever_arms, query_aspect
-from threetears.evals.analysis.style import humanize
+from threetears.evals.analysis.style import lever_reader_name
 
 __all__ = ["RESOLVERS", "higher_is_better"]
 
@@ -1153,6 +1153,7 @@ def lever_label(context: ChartContext, row: EffectRow | InteractionRow) -> tuple
     :rtype: tuple[str, str, str]
     """
     arms = lever_arms(row, context.report_input)
+    names = context.report_input.lever_names
 
     def moved(start: str, end: str, *, short: bool) -> str:
         value = setting_value(context, row.setting, end)
@@ -1163,7 +1164,7 @@ def lever_label(context: ChartContext, row: EffectRow | InteractionRow) -> tuple
         start, end = arms
         label = moved(start, end, short=False)
         short = LEVER_MOVE_TEMPLATE.format(start=_arm_tag(context, start), value=_arm_tag(context, end))
-        return label, short, LEVER_EFFECT_GROUP.format(setting=humanize("dimension", row.setting))
+        return label, short, LEVER_EFFECT_GROUP.format(setting=lever_reader_name(row.setting, names))
     first_from, first_to, second_from, second_to = (arms + ["", "", "", ""])[:4]
     label = LEVER_CROSS_TEMPLATE.format(
         second=moved(second_from, second_to, short=False), first=moved(first_from, first_to, short=False)
@@ -1172,7 +1173,7 @@ def lever_label(context: ChartContext, row: EffectRow | InteractionRow) -> tuple
         second=moved(second_from, second_to, short=True), first=moved(first_from, first_to, short=True)
     )
     group = LEVER_CROSS_GROUP.format(
-        setting=humanize("dimension", row.setting), across=humanize("dimension", row.across)
+        setting=lever_reader_name(row.setting, names), across=lever_reader_name(row.across, names)
     )
     return label, short, group
 

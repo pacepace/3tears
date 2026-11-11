@@ -95,6 +95,8 @@ CHECK_NAMES = {CHECKS[0]: "Cart filled", CHECKS[1]: "Replied twice"}
 ARMS = ("production", "candidate")
 #: The short names the fixture's arms declare when it declares any names.
 ARM_SHORT_NAMES = {ARMS[0]: "Prod", ARMS[1]: "Cand"}
+#: What the fixture's one declared lever is called when the fixture declares names.
+LEVER_NAME = "Serving model"
 CASES = 6
 STAMP = "2026-10-01T00:00:00+00:00"
 
@@ -185,7 +187,13 @@ def _fixture(*, named: bool) -> dict[str, Any]:
         )
         if named:
             (aspect,) = one.aspects
-            one = one.model_copy(update={"aspects": [aspect.model_copy(update={"short_name": SHORT_NAMES[label]})]})
+            assert aspect.design is not None
+            # A lever's stored reader name, as a campaign declares it: presentation, like every name here.
+            design = aspect.design.model_copy(
+                update={"axes": [axis.model_copy(update={"reader_name": LEVER_NAME}) for axis in aspect.design.axes]}
+            )
+            aspect = aspect.model_copy(update={"short_name": SHORT_NAMES[label], "design": design})
+            one = one.model_copy(update={"aspects": [aspect]})
         held.append(one)
         bundles[label] = assemble_context_bundle(
             one, storage=ToyhostStorage(runs, results, templates=[template]), profile=toyhost_profile()
@@ -254,12 +262,16 @@ def identities(*, named: bool) -> dict[str, str]:
 #: without them, so a document this build writes carries the minor 3; every other byte of it is as before.
 _MINOR_AT_00107A5B7 = 2
 
+#: The durable major ``00107a5b7`` stamped on what it wrote: v16, before a lever's reader name was stored (v17).
+_MAJOR_AT_00107A5B7 = 16
+
 
 def _as_00107a5b7_stamped(document: dict[str, Any]) -> dict[str, Any]:
-    """``document`` with the durable minor ``00107a5b7`` stamped in place of this build's: what it wrote, byte for byte,
-    where nothing but the minor moved."""
-    assert document["schema_minor"] == DURABLE_SCHEMA_MINOR
-    return {**document, "schema_minor": _MINOR_AT_00107A5B7}
+    """``document`` with the durable version ``00107a5b7`` stamped in place of this build's (v16 and its minor, where
+    this build writes v17, whose step names a declared axis and touches nothing else): what it wrote, byte for byte,
+    where nothing but the version moved."""
+    assert (document["schema_version"], document["schema_minor"]) == (DURABLE_SCHEMA_VERSION, DURABLE_SCHEMA_MINOR)
+    return {**document, "schema_version": _MAJOR_AT_00107A5B7, "schema_minor": _MINOR_AT_00107A5B7}
 
 
 def documents() -> dict[str, str]:
@@ -269,10 +281,14 @@ def documents() -> dict[str, str]:
     return {
         "template": _sha(_as_00107a5b7_stamped(built["template"].to_dict())),
         "campaign": _sha(_as_00107a5b7_stamped(built["campaign"].to_dict())),
-        # Less the build that assembled it, which is no part of the bundle's shape.
+        # Less the build that assembled it, which is no part of the bundle's shape, and the names its host declares
+        # for its levers (`lever_names`): every host lever is named since durable v17, so a bundle names its levers
+        # wherever its host does, and no fingerprint or identity reads them (the pins above hold that).
         **{
             f"{label} bundle": hashlib.sha256(
-                identity_json({k: v for k, v in bundle.to_dict().items() if k != "package_version"}).encode()
+                identity_json(
+                    {k: v for k, v in bundle.to_dict().items() if k not in ("package_version", "lever_names")}
+                ).encode()
             ).hexdigest()
             for label, bundle in built["bundles"].items()
         },
@@ -319,11 +335,11 @@ PINNED: dict[str, str] = {
     "campaign fingerprint v3": "v3:9708743c9b0a267dee330b57cf812934d63e3cb80d49fd3e6ebdda8f7c4c91a8",
     "campaign document fingerprint v3": "v3:9708743c9b0a267dee330b57cf812934d63e3cb80d49fd3e6ebdda8f7c4c91a8",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
-    # The one entry that moves with the durable minor: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
+    # The one entry that moves with the durable version: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
     # arm names 16.4, stratum names 16.5, plan reporter cases 16.6, the analyst's gap notes 16.7, a design's measure
-    # order 16.8, a carried case's source 16.9. It is no part of what a run, cell, pool, pairing, analysis or reporter
-    # case keys on.
-    "durable version": "16.9",
+    # order 16.8, a carried case's source 16.9, a lever's stored reader name 17.0. It is no part of what a run, cell,
+    # pool, pairing, analysis or reporter case keys on.
+    "durable version": "17.0",
     "measured_template_digest": "16e80e0cbd36ae4d39ca180c5f08bcb9d165afaab0e7e014ff42464f11e4f3df",
     "readings": "29f0e8ce68005f27cfc8ff7c76ef3623a174125af4a46b8e587bb7af7d88ebc9",
     "run-0-candidate case_set_fingerprint": "89df90840e5dc430494c9d36ab9ae0dff05c199d54ddf7027f3f339c44bcfe56",
@@ -388,6 +404,10 @@ class TestEveryIdentityIsAsBeforeNamesExisted:
         frame = built["campaign_bundle"].to_dict()
         assert [arm["short_name"] for arm in frame["arms"]] == [ARM_SHORT_NAMES[arm] for arm in ARMS]
         assert [arm["short_name"] for arm in frame["declaration"]["arms"]] == [ARM_SHORT_NAMES[arm] for arm in ARMS]
+        for label, bundle in built["bundles"].items():
+            # The stored lever name is carried on the declared axis and in the names every page reads, by the lever.
+            assert [axis["reader_name"] for axis in bundle.to_dict()["declared"]["design"]["axes"]] == [LEVER_NAME]
+            assert bundle.lever_names["model"] == LEVER_NAME
 
 
 # --- a reason a bundle stores is never reworded -------------------------------------------------------------------

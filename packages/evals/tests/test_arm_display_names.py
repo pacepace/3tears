@@ -386,7 +386,7 @@ def test_a_name_capitalised_in_prose_rendering_instead_fails_the_surfaces_check(
     """The mutation: the input's name left as the levers spell it (the rule not called where the name is made) and
     the page's prose capitalising it as it renders. The prose then prints the capitalised name while the tables and
     the chart print the other, so the check above fails: the name is made in one place, never in prose rendering."""
-    monkeypatch.setattr("threetears.evals.analysis.report.words.arm_display_name", lambda name, levers: name)
+    monkeypatch.setattr("threetears.evals.analysis.report.words.arm_display_name", lambda name, *_: name)
     monkeypatch.setattr("threetears.evals.analysis.report.doc_page.build.render", _capitalised_as_rendered)
     unmade = analyst_input(_bundle())
     assert {arm.id: arm.name for arm in unmade.arms}[_candidate(1)] == _COMPUTED[1]

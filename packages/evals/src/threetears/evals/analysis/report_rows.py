@@ -109,7 +109,7 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Task,
 )
-from threetears.evals.analysis.style import humanize
+from threetears.evals.analysis.style import lever_reader_name
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.chart_query import ChartQuery
 
@@ -471,7 +471,9 @@ def config_grid(report_input: ReportInput) -> ReportInput:
         else:
             factors.append(
                 Factor(
-                    id=name, name=humanize("dimension", name), levels=[Level(id=value, name=value) for value in values]
+                    id=name,
+                    name=lever_reader_name(name, report_input.lever_names),
+                    levels=[Level(id=value, name=value) for value in values],
                 )
             )
             ids[name] = {value: value for value in values}

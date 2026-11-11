@@ -838,6 +838,16 @@ class ReportInput(_Part):
     prior_insights: list[PriorInsight] = Field(default_factory=list)
     tasks: list[Task] = Field(default_factory=list, description="The named tasks, in order.")
     factors: list[Factor] = Field(default_factory=list, description="A factorial grid's factors, in order.")
+    # Left out of the document when empty, so an input naming no lever digests as it did.
+    lever_names: dict[str, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda names: not names,
+        description=(
+            "What a reader calls each lever an arm's settings key, by its id: the name the campaign stores for it, "
+            "else the one its host declares. The one source every name of a lever reads (an arm's name computed from "
+            "its levers, a setting, a factor, a lever-effect row); a lever absent here is printed as its id in words."
+        ),
+    )
     configs: list[Config] = Field(default_factory=list, description="Each arm's level of each factor.")
     target_matrix: TargetMatrix | None = Field(default=None, description="A classifier's target matrix.")
     cells: dict[str, Cell] = Field(default_factory=dict, description="Each target-matrix cell, by id.")

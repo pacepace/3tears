@@ -69,7 +69,8 @@ def test_the_code_only_report_names_the_unrun_level() -> None:
 
     texts = _report_texts(bundle)
 
-    assert f"Declared on axis {TOYHOST_AXIS} and never run: {level.display}." in texts
+    # The axis by the reader name its host declares for the lever (`chunk tokens`), never by its id.
+    assert f"Declared on axis chunk tokens and never run: {level.display}." in texts
 
 
 def test_every_declared_level_run_reports_none_missing() -> None:

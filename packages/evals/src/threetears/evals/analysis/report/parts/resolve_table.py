@@ -116,7 +116,7 @@ from threetears.evals.analysis.report.parts.words import (
     TABLE_HEADERS,
     TABLE_ORDER,
 )
-from threetears.evals.analysis.style import humanize
+from threetears.evals.analysis.style import humanize, lever_reader_name
 
 __all__ = ["RESOLVERS"]
 
@@ -583,12 +583,13 @@ def _levers(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
         if isinstance(item, EffectRow):
             start, end = lever_arms(item, context.report_input)
             moved = PRICE_STEP_TEMPLATE.format(first=_arm(context, start).text, second=_arm(context, end).text)
-            what = humanize("dimension", item.setting)
+            what = lever_reader_name(item.setting, context.report_input.lever_names)
         else:
             # The second move's effect less the first's, each move named as the chart names it, so two interactions
             # between the same two contexts read apart by their moves.
             moved, _short, _group = lever_label(context, item)
-            what = f"{humanize('dimension', item.setting)} × {humanize('dimension', item.across)}"
+            names = context.report_input.lever_names
+            what = f"{lever_reader_name(item.setting, names)} × {lever_reader_name(item.across, names)}"
         yield {
             "setting": _words(what),
             "move": _words(moved),

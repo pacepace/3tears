@@ -23,7 +23,9 @@ def named_arms(bundle: AnalysisContextBundle, labels: Mapping[str, str]) -> dict
     :return: Each arm's name, by variant key.
     :rtype: dict[str, ArmName]
     """
-    names = {key: arm_name(display) for key, display in arm_names(bundle.variant_index).items()}
+    names = {
+        key: arm_name(display, declared=bundle.lever_names) for key, display in arm_names(bundle.variant_index).items()
+    }
     return {key: replace(name, label=labels[key], given=True) if key in labels else name for key, name in names.items()}
 
 

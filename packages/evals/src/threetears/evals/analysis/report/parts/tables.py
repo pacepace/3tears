@@ -456,9 +456,9 @@ def _aspect_pass_rate(report_input: ReportInput, arm: str, aspect: Aspect, forms
 
 def _setting_name(report_input: ReportInput, setting: str) -> str:
     """A setting as a reader is shown it (:func:`~threetears.evals.analysis.style.lever_reader_name`, the one source
-    a computed arm name reads too): the name the input declares for it (the factor its id keys, ``Reasoning budget``),
-    else the package's reader name for the id (``max output tokens``, never ``max_output_tokens``)."""
-    declared = {factor.id: factor.name for factor in report_input.factors if factor.name}
+    a computed arm name reads too): the name the input stores for its lever (``lever_names``) or for the factor its id
+    keys (``Reasoning budget``), else its id read as words where nothing declares it."""
+    declared = report_input.lever_names | {factor.id: factor.name for factor in report_input.factors if factor.name}
     return lever_reader_name(setting, declared)
 
 
