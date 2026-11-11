@@ -1088,6 +1088,23 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
             page = EntityPage(entities, answered.next_cursor)
         return page
 
+    async def count_by_group(self, group_id: UUID) -> int:
+        """how many memberships ``group_id`` holds (its direct members, users and groups alike), counted through
+        ``idx_group_members_group_id``.
+
+        :param group_id: the group
+        :ptype group_id: UUID
+        :return: the count, zero when none or without an L3 pool
+        :rtype: int
+        """
+        result = 0
+        if self.l3_pool is not None:
+            counted = await counts_by(
+                self.l3_pool, "group_members", column="group_id", values=AnyOf([group_id], cast="uuid")
+            )
+            result = sum(counted.values())
+        return result
+
     async def find_by_group_and_id(
         self,
         group_id: UUID,

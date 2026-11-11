@@ -551,7 +551,7 @@ async def _seed_assignments(conn: asyncpg.Connection) -> list[uuid.UUID]:
 
 
 async def test_members_of_groups(conn: asyncpg.Connection) -> None:
-    """Flips if every member of a set of groups stops reading idx_group_members_group_id."""
+    """Flips if every member of a set of groups, or a group's member count, stops reading idx_group_members_group_id."""
     await _seed(conn, "groups", 500, row_scope="'platform'", customer_id="NULL", name="'g' || g")
     groups = [row["group_id"] for row in await conn.fetch("SELECT group_id FROM groups")]
     await conn.execute(
@@ -568,6 +568,11 @@ async def test_members_of_groups(conn: asyncpg.Connection) -> None:
     # by the same condition. Either way the read finds exactly the groups' rows by group
     keyed = plan_uses_index(plan, "idx_group_members_group_id") or plan_uses_index(plan, "group_members_pkey")
     assert keyed and plan.rows_scanned == len(found) == 20, json.dumps(plan.plan)[:2500]
+    # a group's member count reads the same index (or, on YugabyteDB, the primary key) by the group alone
+    assert await members.count_by_group(groups[0]) == 10
+    counted = recorder.plans[-1]
+    keyed = plan_uses_index(counted, "idx_group_members_group_id") or plan_uses_index(counted, "group_members_pkey")
+    assert keyed and counted.rows_scanned == 10, json.dumps(counted.plan)[:2500]
 
 
 async def test_assignments_scope_namespace(conn: asyncpg.Connection) -> None:

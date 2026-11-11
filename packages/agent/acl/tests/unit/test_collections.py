@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid7
 
+import duckdb
 import pytest
 from threetears.agent.acl import (
     GroupCollection,
@@ -30,6 +31,7 @@ from threetears.agent.acl import (
 from threetears.agent.acl.collections import MEMBERS_NAMING_SQL
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.scan_cache import ScanCache
+from threetears.core.keyed import ThreadedDuckDB
 
 from .collection_support import make_collection
 
@@ -997,6 +999,40 @@ class TestGroupMemberPageByGroup:
         sql = pool.fetch.await_args.args[0]
         assert sql.endswith('WHERE t."group_id" = $1 ORDER BY t."group_id" ASC, t."id" ASC LIMIT 11'), sql
         assert pool.fetch.await_args.args[1:] == (group_id,)
+
+
+class TestGroupMemberCountByGroup:
+    """``count_by_group``: how many memberships one group holds, counted by the database by the group."""
+
+    @pytest.mark.asyncio
+    async def test_counts_the_groups_memberships_and_no_others(self) -> None:
+        group, other = uuid7(), uuid7()
+        db = duckdb.connect()
+        db.execute("CREATE TABLE group_members (id UUID PRIMARY KEY, group_id UUID, member_type TEXT, member_id UUID)")
+        for owner, count in ((group, 3), (other, 2)):
+            for _ in range(count):
+                db.execute("INSERT INTO group_members VALUES (?, ?, 'user', ?)", [uuid7(), owner, uuid7()])
+        coll = make_collection(GroupMemberCollection, l3_pool=ThreadedDuckDB(db))
+        assert await coll.count_by_group(group) == 3
+        assert await coll.count_by_group(other) == 2
+        assert await coll.count_by_group(uuid7()) == 0
+
+    @pytest.mark.asyncio
+    async def test_one_statement_by_the_group(self) -> None:
+        group = uuid7()
+        pool = AsyncMock()
+        pool.fetch.return_value = []
+        coll = make_collection(GroupMemberCollection, l3_pool=pool)
+        assert await coll.count_by_group(group) == 0
+        pool.fetch.assert_awaited_once()
+        sql, *params = pool.fetch.await_args.args
+        assert 'FROM "group_members"' in sql and '"group_id" = ANY($1::uuid[])' in sql, sql
+        assert params == [[group]]
+
+    @pytest.mark.asyncio
+    async def test_no_pool_counts_nothing(self) -> None:
+        coll = make_collection(GroupMemberCollection, l3_pool=None)
+        assert await coll.count_by_group(uuid7()) == 0
 
 
 class TestGroupMemberLoadForGroups:

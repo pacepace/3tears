@@ -6,7 +6,7 @@ delete, a namespace's teardown, a tool provider's nodes) each go through an inde
 platform's own schema names it, so a deployment that already has one creates nothing:
 
 - ``idx_group_members_group_id`` (group_id): every member of a set of groups,
-  :meth:`GroupMemberCollection.members_of_groups`;
+  :meth:`GroupMemberCollection.members_of_groups`, and a group's member count, ``count_by_group``;
 - ``idx_role_assignments_scope_namespace`` (scope_namespace_id), partial on a namespace scope: a namespace's
   namespace-scope grants, :meth:`RoleAssignmentCollection.list_scoped_to_namespace`;
 - ``idx_role_assignments_scope_type_customer`` (scope_customer_id, scope_namespace_type), partial on the
@@ -37,7 +37,7 @@ log = get_logger(__name__)
 
 #: Every statement, in order. Each is safe to run twice.
 _ACL_KEYED_METHOD_INDEXES_DDL: tuple[str, ...] = (
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::GroupMemberCollection.members_of_groups\n"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::GroupMemberCollection.members_of_groups; packages/agent/acl/src/threetears/agent/acl/collections.py::GroupMemberCollection.count_by_group\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_members_of_groups\n"
     "-- reason: a group's members are read by group across the walk down from granting groups; the primary key\n"
     "-- leads with the group too, but the group is the table's partition, so a read of a group's every member\n"
