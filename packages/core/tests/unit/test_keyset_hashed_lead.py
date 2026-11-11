@@ -38,7 +38,7 @@ class _Rail:
         order = [column.strip('"') for column in sql.rsplit("ORDER BY ", 1)[1].split(" LIMIT")[0].split(", ")]
         rows = list(self.rows)
         used = 0
-        if 'WHERE ("state" = $1)' in sql:
+        if 'WHERE "state" = $1' in sql or 'WHERE ("state" = $1)' in sql:
             rows, used = [row for row in rows if row["state"] == params[0]], 1
         elif '"state" = ANY($1::text[])' in sql:
             rows, used = [row for row in rows if row["state"] in params[0]], 1
