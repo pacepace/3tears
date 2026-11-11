@@ -3067,3 +3067,82 @@ def test_a_step_read_into_arrow_with_duckdbs_own_types_is_judged_by_its_step(tmp
     functions = {function for function, _ in found}
     assert "changed_rows" not in functions, found
     assert "every_result" in functions, found
+
+
+#: the settle rules' steps, as ``aibots_reports.pod.settle_rules`` / ``run_thinning`` / ``retention`` write them:
+#: public functions, a method and a constructor of other modules, each building a step over the relation handed it
+_PUBLIC_RULES = """
+    from threetears.core import keyed
+
+    _GONE = keyed.change_relation("_gone")
+
+
+    def annotated_step(table, relation, *, figures=False):
+        return keyed.scan(relation, ["state", "run_id"], where=[keyed.Fragment("t.instant IS NOT NULL")])
+
+
+    def runs_step(table, rows):
+        return keyed.grouped(rows, by=["state", "run_id"], aggregates=[keyed.largest("instant")])
+
+
+    class Thinning:
+        def kept_runs_step(self, relation):
+            return keyed.windowed(relation, partition=["state"], order=[keyed.Sort("instant")], keep="rank <= 3")
+
+
+    class Eviction:
+        def __init__(self, table, target):
+            self.table = table
+            self.target = target
+
+        def let_go(self, state):
+            return keyed.semi(self.target, _GONE, on=[keyed.Match("state")])
+"""
+
+_PUBLIC_CALLERS = """
+    from threetears.core import keyed
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import InlineDuckDB, run_inline
+
+    from pkg.rules import Eviction, Thinning, annotated_step, runs_step
+
+    RESULTS = TableSchema(name="results", primary_key=("state", "run_id"), columns=[])
+    _THINNING = Thinning()
+
+
+    def settled(conn, rows):
+        changed = keyed.change_relation("_settle_1")
+        conn.register(changed, rows)
+        db = InlineDuckDB(conn)
+        run_inline(keyed.read_step_arrow(db, keyed.distinct(annotated_step(None, changed), ["state"])))
+        run_inline(keyed.read_step_arrow(db, runs_step(None, changed)))
+        run_inline(keyed.read_step_arrow(db, _THINNING.kept_runs_step(changed)))
+        return Eviction(None, changed).let_go("S")
+
+
+    def over_the_table(conn):
+        return run_inline(keyed.read_step_arrow(InlineDuckDB(conn), runs_step(None, "results")))
+
+
+    def evicts_the_table():
+        return Eviction(None, "results")
+"""
+
+
+def test_a_public_forwarder_of_another_module_is_judged_at_each_call_where_the_repo_says_only_it_calls_them(
+    tmp_path: Path,
+) -> None:
+    """Flips if, with ``public_forwarders``, a public function, method or constructor of one module building a step
+    over the relation handed it (``annotated_step``, ``runs_step``, ``Thinning.kept_runs_step``, ``Eviction(target)``
+    whose ``let_go`` reads ``self.target``) is flagged in its body, or its callers handing it a change relation are;
+    or if a caller handing one a data table passes; or if without it (a library's public functions, called from
+    repos the walk never reads) a step over a public function's parameter is not judged in its body."""
+    modules = {"pkg/rules.py": _PUBLIC_RULES, "pkg/settle.py": _PUBLIC_CALLERS}
+    found = _symbols(_config(tmp_path, modules, public_forwarders=True))
+    functions = {function for function, _ in found}
+    assert not functions & {"annotated_step", "runs_step", "Thinning.kept_runs_step", "Eviction.let_go", "settled"}, (
+        found
+    )
+    assert {"over_the_table", "evicts_the_table"} <= functions, found
+    library = {function for function, _ in _symbols(_config(tmp_path, modules))}
+    assert {"annotated_step", "runs_step", "Thinning.kept_runs_step", "Eviction.let_go"} <= library, library

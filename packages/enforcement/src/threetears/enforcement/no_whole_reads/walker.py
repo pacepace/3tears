@@ -47,7 +47,13 @@ from pathlib import Path
 from typing import Final
 
 from threetears.enforcement.common import dotted, iter_python_files, parse_python_path, relative_posix_path
-from threetears.enforcement.no_whole_reads.flow import CLEAN, HANDED, RelationFlow, step_relation_arguments
+from threetears.enforcement.no_whole_reads.flow import (
+    CLEAN,
+    HANDED,
+    RelationFlow,
+    RepoForwarders,
+    step_relation_arguments,
+)
 from threetears.enforcement.no_whole_reads.helpers import (
     KEYED_FRAGMENT_BUILDERS,
     KEYED_HELPER_CALLS,
@@ -949,6 +955,7 @@ class _ModuleWalk(ast.NodeVisitor):
         tuples: dict[str, list[Passed]] | None = None,
         relation_producers: frozenset[str] = frozenset(),
         match_builders: Mapping[str, MatchBuilder] | None = None,
+        forwarders: RepoForwarders | None = None,
     ) -> None:
         """prepare a walk of one module.
 
@@ -994,6 +1001,9 @@ class _ModuleWalk(ast.NodeVisitor):
         :ptype relation_producers: frozenset[str]
         :param match_builders: the repo's functions returning a step's ``Match`` list (:func:`_match_builders`)
         :ptype match_builders: Mapping[str, MatchBuilder] | None
+        :param forwarders: the repo's public forwarders, followed across modules; None follows only each module's
+            private ones
+        :ptype forwarders: RepoForwarders | None
         :return: nothing
         :rtype: None
         """
@@ -1121,6 +1131,9 @@ class _ModuleWalk(ast.NodeVisitor):
             producer=lambda function, owner: (
                 (owner.name if owner is not None else "", function.name) in self._producers
             ),
+            path=path,
+            imports=self.imports,
+            repo=forwarders,
         )
         self._envs[0].update(imported or {})
         self._envs[0].update(_module_strings(tree))
@@ -4151,6 +4164,7 @@ def scan_whole_reads(
     producers: frozenset[str] = frozenset(),
     view_producers: Mapping[str, tuple[tuple[str, ...], ...]] | None = None,
     relation_producers: frozenset[str] = frozenset(),
+    public_forwarders: bool = False,
 ) -> WholeReadScan:
     """walk every module under ``src_roots`` and record every whole read, write and call.
 
@@ -4188,6 +4202,9 @@ def scan_whole_reads(
     :param relation_producers: the functions and class attributes whose run-time relation is judged by the keys
         its declaration names (:func:`produced_relation`)
     :ptype relation_producers: frozenset[str]
+    :param public_forwarders: whether a public function, method or constructor that hands a parameter to a step is
+        judged at each of its calls in the repo, as a private one is in its module (:class:`RepoForwarders`)
+    :ptype public_forwarders: bool
     :return: the walk
     :rtype: WholeReadScan
     """
@@ -4217,13 +4234,17 @@ def scan_whole_reads(
         [(relative, parse_python_path(path)) for relative, path in modules], strings, tuples
     )
     match_builders = _match_builders([(relative, parse_python_path(path)) for relative, path in modules], strings)
+    walked: list[tuple[str, Path]] = []
     for relative, path in modules:
         excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
         used.update(excluded)
         if excluded or any(part in schema_change_dirs for part in relative.split("/")[:-1]):
             continue
+        walked.append((relative, path))
+
+    def walk_of(relative: str, path: Path, forwarders: RepoForwarders | None) -> _ModuleWalk:
         tree = parse_python_path(path)
-        walk = _ModuleWalk(
+        return _ModuleWalk(
             relative,
             tree,
             path.read_text(encoding="utf-8"),
@@ -4242,7 +4263,23 @@ def scan_whole_reads(
             tuples=_imported_tuples(tree, relative, tuples),
             relation_producers=relation_producers,
             match_builders=match_builders,
+            forwarders=forwarders,
         )
+
+    forwarders: RepoForwarders | None = None
+    if public_forwarders:
+        # each module's flow settles into the repo's shared state; once a pass over every module adds nothing, a
+        # forwarder's every caller is judged by what the forwarder hands a step
+        forwarders = RepoForwarders.collect([(relative, parse_python_path(path)) for relative, path in walked])
+        for _ in range(_PARAMETER_DEPTH):
+            before = forwarders.size()
+            for relative, path in walked:
+                walk_of(relative, path, forwarders)
+            if forwarders.size() == before:
+                break
+    for relative, path in walked:
+        tree = parse_python_path(path)
+        walk = walk_of(relative, path, forwarders)
         walk.visit(tree)
         stubs.update(walk.stubs)
         scan.hits.extend(walk.hits)

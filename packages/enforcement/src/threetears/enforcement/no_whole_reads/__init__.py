@@ -168,6 +168,13 @@ class NoWholeReadsConfig:
     :ivar helper_modules: repo-relative prefixes of the repo's own reviewed modules that write a data table's SQL
         for the rest of it (``use-the-helper``: :mod:`~threetears.enforcement.no_whole_reads.use_the_helper`), beside
         3tears' own helpers
+    :ivar public_forwarders: whether a public function, method or constructor of the repo that hands a parameter on
+        to a keyed step (or returns a step over it: ``settle_rules.annotated_step(table, relation)``) is judged at
+        each of its calls in the repo, by the argument the call hands it, as a private one always is in its own
+        module. Only for a repo whose public functions its own walked code alone calls (an application): a library's
+        are called from repos this walk never reads, so there a step over a public function's parameter stays judged
+        in its body. A definition referenced other than by a call the walk matches (handed on as a value, its module
+        imported whole, a method name another definition shares) is never one
     :ivar dependency_schema: whether 3tears' own declarations (its change log, notes and collections, which a
         consumer reads) key reads too; its indexes are never the repo's to give a purpose
     """
@@ -191,6 +198,7 @@ class NoWholeReadsConfig:
     foreign_relations: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
     helper_modules: tuple[str, ...] = ()
     relation_producers: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
+    public_forwarders: bool = False
 
 
 @dataclass(frozen=True)
@@ -379,6 +387,7 @@ def _hits(config: NoWholeReadsConfig) -> tuple[list[WholeReadHit], WholeReadScan
         producers=config.transient_producers,
         view_producers={producer: _keys_of(declared) for producer, declared in config.view_producers.items()},
         relation_producers=frozenset(config.relation_producers),
+        public_forwarders=config.public_forwarders,
     )
     return scan.hits, scan
 

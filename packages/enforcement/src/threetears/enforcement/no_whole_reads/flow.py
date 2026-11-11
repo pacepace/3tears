@@ -164,6 +164,161 @@ def _private(function: Function, owner: ast.ClassDef | None) -> bool:
     return function.name.startswith("_") and not function.name.startswith("__")
 
 
+def _annotations(tree: ast.Module) -> set[int]:
+    """the ids of every node inside an annotation (a parameter's, a return's, an annotated assignment's)."""
+    inside: set[int] = set()
+    for node in ast.walk(tree):
+        annotations: list[ast.expr | None] = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            arguments = node.args
+            every = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs, arguments.vararg, arguments.kwarg]
+            annotations += [argument.annotation for argument in every if argument is not None]
+            annotations.append(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            annotations.append(node.annotation)
+        for annotation in annotations:
+            if annotation is not None:
+                inside.update(id(part) for part in ast.walk(annotation))
+    return inside
+
+
+def _origin_module(origin: str) -> str:
+    """the module file an imported name's origin (``pkg.mod.name``) is defined in, as a path suffix."""
+    return origin.rsplit(".", 1)[0].replace(".", "/") + ".py"
+
+
+@dataclass
+class RepoForwarders:
+    """the repo's public forwarders, followed across its modules: for a repo whose public functions only its own walked
+    code calls (an application; a library's are called from repos this walk never reads). Each module's
+    :class:`RelationFlow` reads and writes the shared state below, keyed by the definition's node, until it settles.
+
+    :ivar eligible: ``(path, qualified name)`` of each public definition every reference to which in the repo is a
+        call the walk matches (a module function or a constructor by its imported name, a method by a name no other
+        definition of the repo shares), with at least one such call
+    :ivar functions: a module function's or a class's name onto each eligible one, with its module's path
+    :ivar methods: a method's name onto the eligible one
+    :ivar forwarded: per forwarder, each parameter it hands a step and how
+    :ivar returned: per relation-returning forwarder, each parameter only its returns hand on
+    :ivar returning: the forwarders every return of which is a relation
+    :ivar wanted: the forwarders a call of which stands where a relation is named
+    """
+
+    eligible: frozenset[tuple[str, str]] = frozenset()
+    functions: dict[str, list[tuple[str, Callee]]] = field(default_factory=dict)
+    methods: dict[str, Callee] = field(default_factory=dict)
+    forwarded: dict[int, dict[str, set[Mode]]] = field(default_factory=dict)
+    returned: dict[int, dict[str, set[Mode]]] = field(default_factory=dict)
+    returning: set[int] = field(default_factory=set)
+    wanted: set[int] = field(default_factory=set)
+
+    def size(self) -> tuple[int, int, int, int]:
+        """how much the shared state holds, to tell when following it has settled.
+
+        :return: counts of the forwarded and returned parameters, the returning and the wanted forwarders
+        :rtype: tuple[int, int, int, int]
+        """
+
+        def count(found: dict[int, dict[str, set[Mode]]]) -> int:
+            return sum(len(modes) for handed in found.values() for modes in handed.values())
+
+        return count(self.forwarded), count(self.returned), len(self.returning), len(self.wanted)
+
+    def external(self, call: ast.Call, imports: dict[str, str]) -> Callee | None:
+        """the eligible definition of another module a call reaches: a name imported from it, or a method's name.
+
+        :param call: the call
+        :ptype call: ast.Call
+        :param imports: the calling module's imported names, onto ``<module>.<name>``
+        :ptype imports: dict[str, str]
+        :return: the definition, or None
+        :rtype: Callee | None
+        """
+        func = call.func
+        if isinstance(func, ast.Name) and func.id in imports:
+            origin = imports[func.id]
+            module, name = _origin_module(origin), origin.rsplit(".", 1)[-1]
+            found = [callee for path, callee in self.functions.get(name, []) if path.endswith(module)]
+            return found[0] if len(found) == 1 else None
+        if isinstance(func, ast.Attribute):
+            return self.methods.get(func.attr)
+        return None
+
+    @classmethod
+    def collect(cls, modules: list[tuple[str, ast.Module]]) -> RepoForwarders:
+        """which public definitions of the repo may be forwarders (:attr:`eligible`).
+
+        :param modules: each walked module's path and parse
+        :ptype modules: list[tuple[str, ast.Module]]
+        :return: the repo's forwarders, nothing yet followed
+        :rtype: RepoForwarders
+        """
+        imports: dict[str, dict[str, str]] = {}
+        relative: set[str] = set()
+        loose: dict[str, set[str]] = {}
+        loose_attributes: set[str] = set()
+        named: dict[str, int] = {}
+        for path, tree in modules:
+            mine: dict[str, str] = {}
+            for statement in ast.walk(tree):
+                if isinstance(statement, ast.ImportFrom) and statement.module and not statement.level:
+                    mine.update({a.asname or a.name: f"{statement.module}.{a.name}" for a in statement.names})
+                elif isinstance(statement, ast.ImportFrom):
+                    relative.update(a.asname or a.name for a in statement.names)
+                elif isinstance(statement, ast.Import):
+                    mine.update({a.asname or a.name: a.name for a in statement.names})
+            imports[path] = mine
+            called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+            annotated = _annotations(tree)
+            names: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name) and id(node) not in called and id(node) not in annotated:
+                    names.add(node.id)
+                elif isinstance(node, ast.Attribute) and id(node) not in called:
+                    loose_attributes.add(node.attr)
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    named[node.name] = named.get(node.name, 0) + 1
+            loose[path] = names
+        as_modules = {_origin_module(origin + ".x") for mine in imports.values() for origin in mine.values()}
+        eligible: set[tuple[str, str]] = set()
+        functions: dict[str, list[tuple[str, Callee]]] = {}
+        methods: dict[str, Callee] = {}
+        for path, tree in modules:
+            imported_whole = any(path.endswith(module) for module in as_modules)
+
+            def referenced(name: str, path: str = path) -> bool:
+                if name in loose[path] or name in relative:
+                    return True
+                return any(
+                    alias in loose[other]
+                    for other, mine in imports.items()
+                    for alias, origin in mine.items()
+                    if origin.rsplit(".", 1)[-1] == name and path.endswith(_origin_module(origin))
+                )
+
+            for statement in tree.body:
+                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if statement.name.startswith("_") or imported_whole or referenced(statement.name):
+                        continue
+                    eligible.add((path, statement.name))
+                    functions.setdefault(statement.name, []).append((path, Callee(statement, None, 0)))
+                elif isinstance(statement, ast.ClassDef):
+                    for member in statement.body:
+                        if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            continue
+                        if member.name == "__init__":
+                            if statement.name.startswith("_") or imported_whole or referenced(statement.name):
+                                continue
+                            eligible.add((path, f"{statement.name}.__init__"))
+                            functions.setdefault(statement.name, []).append((path, Callee(member, statement, 1)))
+                        elif not member.name.startswith("__") and not _private(member, statement):
+                            if named.get(member.name, 0) > 1 or member.name in loose_attributes:
+                                continue
+                            eligible.add((path, f"{statement.name}.{member.name}"))
+                            methods[member.name] = Callee(member, statement, 0 if _static(member) else 1)
+        return cls(eligible=frozenset(eligible), functions=functions, methods=methods)
+
+
 class RelationFlow:
     """what each expression a step names in one module is (:data:`Kind`), and the module's forwarders.
 
@@ -187,7 +342,13 @@ class RelationFlow:
         produces: Callable[[ast.expr, Function | None, ast.ClassDef | None], bool],
         produced: Callable[[ast.ClassDef], frozenset[str]],
         producer: Callable[[Function, ast.ClassDef | None], bool],
+        path: str = "",
+        imports: dict[str, str] | None = None,
+        repo: RepoForwarders | None = None,
     ) -> None:
+        self._path = path
+        self._imports = imports or {}
+        self._repo = repo
         self._keyed_step = keyed_step
         self._produces = produces
         self._produced = produced
@@ -208,18 +369,19 @@ class RelationFlow:
         self._candidates: set[int] = set()
         self._bindings: dict[int, dict[str, list[_Binding]]] = {}
         self._fields: dict[int, dict[str, list[_Binding]]] = {}
-        #: per forwarder, each parameter it hands a step and how
-        self.forwarded: dict[int, dict[str, set[Mode]]] = {}
+        #: per forwarder, each parameter it hands a step and how (the repo's, shared, where it follows them across
+        #: modules)
+        self.forwarded: dict[int, dict[str, set[Mode]]] = repo.forwarded if repo is not None else {}
         #: the forwarders every return of which is a relation (clean or handed)
-        self._returning: set[int] = set()
+        self._returning: set[int] = repo.returning if repo is not None else set()
         #: per relation-returning forwarder, each parameter only its returns hand on, and how: judged where a call of
         #: it stands as a relation, by the argument that call hands it
-        self._returned: dict[int, dict[str, set[Mode]]] = {}
+        self._returned: dict[int, dict[str, set[Mode]]] = repo.returned if repo is not None else {}
         #: the relation-returning forwarder whose returns the walk reads: its own parameters read there are recorded
         #: as returned, every other one as forwarded
         self._returning_now: int | None = None
         #: the forwarders a call of which stands where a relation is named: only these may return relations
-        self._wanted: set[int] = set()
+        self._wanted: set[int] = repo.wanted if repo is not None else set()
         self._recording = True
         #: a parameter of a forwarder reads as handed without being recorded (whether a function returns relations)
         self._dry = False
@@ -245,8 +407,14 @@ class RelationFlow:
                 loose_names.add(node.id)
             elif isinstance(node, ast.Attribute) and id(node) not in called:
                 loose_attributes.add(node.attr)
+        eligible = self._repo.eligible if self._repo is not None else frozenset()
+        external: set[int] = set()
         for function, owner in self._definitions:
-            if not _private(function, owner) or producer(function, owner):
+            if producer(function, owner):
+                continue
+            qualified = function.name if owner is None else f"{owner.name}.{function.name}"
+            public = not _private(function, owner)
+            if public and (self._path, qualified) not in eligible:
                 continue
             if owner is None:
                 if function.name in loose_names:
@@ -258,12 +426,17 @@ class RelationFlow:
                 if names[function.name] > 1 or function.name in loose_attributes:
                     continue
                 self._methods[function.name] = (function, owner)
-            self._candidates.add(id(function))
+            if public:
+                external.add(id(function))
+            else:
+                self._candidates.add(id(function))
         sited: set[int] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and (matched := self._match(node)) is not None:
                 sited.add(id(matched.function))
         self._candidates &= sited
+        # a public one of the repo's: its calls are in any module, each judged by that module's walk
+        self._candidates |= external
 
     def callee(self, call: ast.Call) -> Callee | None:
         """the forwarder a call reaches, if it is one's call.
@@ -274,7 +447,11 @@ class RelationFlow:
         :rtype: Callee | None
         """
         found = self._match(call)
-        return found if found is not None and id(found.function) in self._candidates else None
+        if found is not None and id(found.function) in self._candidates:
+            return found
+        if self._repo is not None:
+            return self._repo.external(call, self._imports)
+        return None
 
     def _match(self, call: ast.Call) -> Callee | None:
         """the private definition a call names, by its name: a module function, a constructor, a method of a name no
