@@ -120,8 +120,11 @@ jobs:
         if: "!cancelled() && steps.scope.outputs.needed == 'true' && steps.pool.outputs.outcome != 'unreachable'"
         run: ./scripts/ci-unit-tests.sh --loop-timing -v
 
+      # the envelope and JUnit report, for reading a run after the fact: never the verdict, so an
+      # artifact-service outage does not fail the check (run 43094188951 lost ten minutes and the job to one)
       - uses: actions/upload-artifact@v7
         if: always() && steps.scope.outputs.needed == 'true'
+        continue-on-error: true
         with:
           name: testament-unit
           path: ${{ runner.temp }}/testament

@@ -4790,7 +4790,9 @@ async def test_a_catch_up_beside_a_write_whose_read_never_answers_lets_the_claim
     every replica's catch-up out all night. A holder that makes no progress for the stall bound lets the claim go and
     its catch-up ends; the pointer watch applying another replica's publishes meanwhile is not its progress."""
     l3 = _wedged_l3()
-    snapshot, pointers, store, _ = _snapshot(l3=l3, rebuild_stall=timedelta(seconds=0.5))
+    # a 2 s stall bound, not 0.5 s: the publishes below must outnumber five within it, and a loaded runner took
+    # ~0.1 s a publish, so 0.5 s fit only five (#1146's pool run, 2026-11-11)
+    snapshot, pointers, store, _ = _snapshot(l3=l3, rebuild_stall=timedelta(seconds=2))
     await _started(snapshot, pointers)
     writer, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
     await writer.start()
