@@ -126,9 +126,9 @@ def test_each_pair_of_rounds_gives_two_cases_the_swapped_one_mirrored(dry: Calib
         assert cases[index].expected + cases[index + 1].expected == 6
         assert cases[index + 1].output == pair_evidence(first.b.evidence, first.a.evidence).artifact.strip()
         assert cases[index].criterion == criterion
-    # Kairo's third round scored 12 against its second's 14: the earlier page is the one preferred.
+    # The stored Kairo record's third round scored 14 against its second's 13: the later page, by one, is preferred.
     kairo = next(p for p in ordered if p.a.run == "prototype5/kairo" and (p.a.round, p.b.round) == (2, 3))
-    assert (kairo.a.total, kairo.b.total, kairo.expected) == (14, 12, 1)
+    assert (kairo.a.total, kairo.b.total, kairo.expected) == (13, 14, 4)
     assert [preferred(delta) for delta in (-5, -2, -1, 0, 1, 2, 5)] == [1, 1, 2, 3, 4, 5, 5]
     frozen = dry.frozen[PAIR_SET]
     assert len(frozen.cases) == len(cases) and {case.dim for case in frozen.cases} == {criterion.name}

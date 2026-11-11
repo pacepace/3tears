@@ -31,7 +31,8 @@ without the goldens growing to megabytes. Each campaign's goldens are one file, 
 **The build is not compared.** Which version of 3tears-evals read a page is the build's identity, not the page's
 content, and a release bump would otherwise move every bundle and every code-only page. A bundle carries it as
 ``package_version``, which its fingerprint already leaves out (a build is not evidence), and a code-only
-page prints it in one place, its methods table's Evidence row (``3tears-evals <version>,``). The oracle puts
+page prints it in one place, its methods table's Evidence row (``3tears-evals <version>,``; on an HTML page the
+package's hyphenated name held whole, ``3tears-evals</span> <version>,``). The oracle puts
 :data:`GOLDEN_VERSION` in both places before it compares or writes, so the goldens hold that version whatever build
 reads them. Nothing else the fingerprint leaves out is the build's: ``first_result_at`` is when the results were
 written, and the presentation and pricing fields are what the page prints, so all of them stay compared.
@@ -276,13 +277,22 @@ def bundle_without_build(aspect: AnalysisContextBundle) -> str:
 def body_without_build(body: str) -> str:
     """``body`` with the version the running build printed in its methods table put as :data:`GOLDEN_VERSION`.
 
-    Only the one token a code-only page prints the build in (``3tears-evals <version>,``) is replaced; a page that
-    prints no such token (the JSON, a stored document's page) comes back as it was.
+    Only the one token a code-only page prints the build in (``3tears-evals <version>,``, its name held whole on an
+    HTML page: :func:`printed_build`) is replaced; a page that prints no such token (the JSON, a stored document's
+    page) comes back as it was.
     """
     version = build_stamp.package_version()
     if version is None or version == GOLDEN_VERSION:
         return body
-    return body.replace(f"3tears-evals {version},", f"3tears-evals {GOLDEN_VERSION},")
+    for running, golden in zip(printed_build(version), printed_build(GOLDEN_VERSION), strict=True):
+        body = body.replace(running, golden)
+    return body
+
+
+def printed_build(version: str) -> tuple[str, str]:
+    """The token a code-only page prints the build ``version`` in: as a Markdown page prints it, and as an HTML page
+    does, whose prose cell holds the package's hyphenated name whole in a span."""
+    return f"3tears-evals {version},", f"3tears-evals</span> {version},"
 
 
 def refuse_unattended_regeneration() -> None:
@@ -545,7 +555,7 @@ def test_a_version_bump_moves_no_golden(bumped_build: str, pinned_clock: None) -
     bodies = [check_body(goldens, "toyhost", form, static, trials) for form, static in FORMS for trials in TRIALS]
 
     assert {aspect.package_version for aspect in aspects} == {bumped_build}, "the bump did not reach the bundle"
-    printed = sum(f"3tears-evals {bumped_build}," in body for body in bodies)
+    printed = sum(any(token in body for token in printed_build(bumped_build)) for body in bodies)
     assert printed == 6, f"the bump reached {printed} of the six markdown and html bodies"
     goldens.assert_unchanged()
 

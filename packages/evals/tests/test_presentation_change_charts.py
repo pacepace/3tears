@@ -98,22 +98,50 @@ def _page(name: str) -> DocPage:
     )
 
 
-def _changes(name: str) -> Iterator[tuple[str, str, ChartBlock, list[str]]]:
-    """Each change chart on a page: the kind the document asks for, its source, the block drawn and its notes."""
-    page = _page(name)
-    for claim, asked in zip(page.claims, _record(name)["doc"]["claims"], strict=True):
+def _asked(page: DocPage, doc: dict[str, Any]) -> Iterator[tuple[dict[str, Any], ChartBlock, list[str]]]:
+    """Each change chart on a page: the evidence block the document asks for, the block drawn and its notes."""
+    for claim, asked in zip(page.claims, doc["claims"], strict=True):
         for evidence, block in zip(claim.evidence, asked["evidence"], strict=True):
             source = block["query"]["source"]
             if source not in _CHANGE_SOURCES.get(block["block"], set()) or evidence.chart is None:
                 continue
             drawn = evidence.chart.chart
-            assert isinstance(drawn, ChartBlock), (name, block["block"], source)
-            yield block["block"], source, drawn, evidence.chart.notes
+            assert isinstance(drawn, ChartBlock), (block["block"], source)
+            yield block, drawn, evidence.chart.notes
 
 
-def _one(name: str, source: str, index: int = 0) -> tuple[ChartBlock, list[str]]:
+def _changes(name: str) -> Iterator[tuple[str, str, ChartBlock, list[str]]]:
+    """Each change chart on a page: the kind the document asks for, its source, the block drawn and its notes."""
+    for block, drawn, notes in _asked(_page(name), _record(name)["doc"]):
+        yield block["block"], block["query"]["source"], drawn, notes
+
+
+def _one(name: str, source: str) -> tuple[ChartBlock, list[str]]:
     found = [(drawn, notes) for _, kind, drawn, notes in _changes(name) if kind == source]
-    return found[index]
+    return found[0]
+
+
+def _drawing(name: str, source: str, measure: str) -> tuple[ChartBlock, list[str]]:
+    """The one change chart on a page drawn from ``source`` over ``measure``: found by what it draws, never by its
+    place on the page, which is the writer's to choose."""
+    (found,) = [
+        (drawn, notes)
+        for block, drawn, notes in _asked(_page(name), _record(name)["doc"])
+        if block["query"]["source"] == source and measure in block["query"]["measures"]
+    ]
+    return found
+
+
+def _margin_forest(name: str) -> ForestChart:
+    """The one forest on a page that shades its aspect's margin."""
+    (found,) = [
+        drawn.data
+        for _, _, drawn, _ in _changes(name)
+        if isinstance(drawn.data, ForestChart)
+        and drawn.data.reference is not None
+        and drawn.data.reference.kind == "margin"
+    ]
+    return found
 
 
 def _drawn_texts(block: ChartBlock) -> list[str]:
@@ -135,6 +163,16 @@ def test_every_change_chart_names_its_zero(name: str) -> None:
         assert any(text.startswith("no change ") for text in _drawn_texts(drawn)), (asked, source)
 
 
+def _kairo_passes() -> tuple[ChartBlock, list[str]]:
+    """Kairo's contrasts forest over the pass rate, beside the other measures it reads."""
+    return _drawing("prototype5/kairo", "contrasts", "passed")
+
+
+def _kairo_cost() -> tuple[ChartBlock, list[str]]:
+    """Kairo's contrasts forest over production cost per 1,000 replies."""
+    return _drawing("prototype5/kairo", "contrasts", "production_replicating_cost")
+
+
 def test_a_forest_shows_the_controls_level_where_its_rows_share_one() -> None:
     """Kairo's cost forest read zero as "P · September" alone: the control's level per 1,000 replies is in its zero
     label now; its pass-rate forest reads two measures, so each measure's head carries the control's level there."""
@@ -143,12 +181,16 @@ def test_a_forest_shows_the_controls_level_where_its_rows_share_one() -> None:
     rate = (
         PageForms.of(_input("prototype5/kairo")).level(TRIAL_PASS_NAME, board.passed / board.usable, kind="trial").text
     )
-    (passes, _), (cost, cost_notes) = _one("prototype5/kairo", "contrasts"), _one("prototype5/kairo", "contrasts", 1)
+    (passes, _), (cost, cost_notes) = _kairo_passes(), _kairo_cost()
     assert isinstance(passes.data, ForestChart) and isinstance(cost.data, ForestChart)
     assert passes.data.zero_label == "no change vs P · September"
     heads = list(dict.fromkeys(row.group for row in passes.data.rows))
-    # Each measure's level at its one precision on the page (number policy, rule 1).
-    assert heads == [f"Pass rate · September {rate}", "Persona holds character · September 91%"], heads
+    # Each measure's level at its one precision on the page (number policy, rule 1), in the order the forest asks them.
+    assert heads == [
+        f"Pass rate · September {rate}",
+        "Persona holds character · September 91%",
+        "Persona booth stays offstage · September 93%",
+    ], heads
     assert rate == "85%"
     assert cost.data.zero_label == "no change vs P · September ($1.89, mean of 294 cases)"
     assert "Production cost, per 1,000 replies, in dollars." in cost_notes
@@ -180,7 +222,7 @@ def test_each_place_carries_the_level_its_change_is_from() -> None:
 def test_a_change_chart_marks_which_way_is_better() -> None:
     """No change chart said which way was better: pass rate is better right, cost better left, on the chart's data
     and under its drawn axis."""
-    (passes, _), (cost, _) = _one("prototype5/kairo", "contrasts"), _one("prototype5/kairo", "contrasts", 1)
+    (passes, _), (cost, _) = _kairo_passes(), _kairo_cost()
     assert passes.data.better == ("worse", "better")  # type: ignore[union-attr]
     assert cost.data.better == ("better", "worse")  # type: ignore[union-attr]
     assert {"← worse", "better →"} <= set(_drawn_texts(passes))
@@ -240,19 +282,22 @@ def test_a_factor_label_is_never_cut_so_two_rows_read_alike() -> None:
 
 
 def test_the_margin_band_is_named_and_the_family_level_said() -> None:
-    """Kairo's forest shaded its margin band with no word for it, and printed 99.69% with no word for why: its head
-    says the guarantee the family's intervals hold at together, "95% intervals (adjusted for 16 comparisons)"."""
-    drawn, _ = _one("prototype5/kairo", "contrasts")
-    assert isinstance(drawn.data, ForestChart) and drawn.data.reference is not None
+    """Kairo's forest shaded its margin band with no word for it, and printed 99.69% with no word for why: the forest
+    that shades the margin names its band, and the contrasts forest's head says the guarantee the family's intervals
+    hold at together, "95% intervals (adjusted for 16 comparisons)"."""
+    margin = _margin_forest("prototype5/kairo")
+    assert margin.reference is not None
     # The margin is declared, so it reads as declared (number policy, rule 4), never ``-15.0``.
-    assert drawn.data.reference.label == "margin -15 pts; shaded: no worse than the margin"
+    assert margin.reference.label == "margin -15 pts; shaded: no worse than the margin"
+    drawn, _ = _kairo_passes()
+    assert isinstance(drawn.data, ForestChart)
     assert drawn.data.level == "95% (adjusted for 16 comparisons)"
     assert "95% intervals (adjusted for 16 comparisons)" in _drawn_texts(drawn)
 
 
 def _levels_read(held: ReportInput) -> tuple[set[str], set[str]]:
     """Kairo's page built on ``held``: the level each contrasts forest's head prints, and each Full results contrast
-    row's."""
+    row's. A forest of readings is read at its own, uncorrected level, so only a contrasts forest is read here."""
     record = _record("prototype5/kairo")
     page = build(
         ReportDoc.model_validate(record["doc"]),
@@ -262,13 +307,9 @@ def _levels_read(held: ReportInput) -> tuple[set[str], set[str]]:
         draft=record["ending"] == "stored_with_findings",
     )
     heads = {
-        evidence.chart.chart.data.level
-        for claim in page.claims
-        for evidence in claim.evidence
-        if evidence.chart is not None
-        and isinstance(evidence.chart.chart, ChartBlock)
-        and isinstance(evidence.chart.chart.data, ForestChart)
-        and evidence.chart.chart.data.level
+        drawn.data.level
+        for block, drawn, _ in _asked(page, record["doc"])
+        if block["query"]["source"] == "contrasts" and isinstance(drawn.data, ForestChart) and drawn.data.level
     }
     (contrasts,) = [
         table

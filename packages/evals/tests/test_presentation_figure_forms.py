@@ -331,18 +331,23 @@ def test_the_cost_chart_s_tips_and_values_table_print_a_cost_alike_and_its_axes_
 def test_a_change_chart_names_its_zero_as_the_control(kairo_document: str) -> None:
     """H4: "Change against September (P)" never said that zero is September. Every change chart against the control
     names its zero line with the control as its rows name arms, on the drawn page and on the static one: no change
-    against it, with its level where every row shares one (the cost forest's), the pass-rate forest's two measures
-    each carrying theirs in its group's head."""
+    against it, with its level where every row shares one (the cost forest's), a forest of several measures each
+    carrying theirs in its group's head. Each chart is found by what it draws, not by its place on the page."""
     changes = [
         json.loads(html.unescape(data))
         for kind, data in _CHART.findall(kairo_document)
         if kind in ("forest", "diverging_bars")
     ]
     assert changes, "the Kairo document draws a change chart"
-    assert [chart.get("zero_label") for chart in changes] == [
-        "no change vs P · September",
-        "no change vs P · September ($1.89, mean of 294 cases)",
-    ], [c.get("zero_label") for c in changes]
+    labels = [chart.get("zero_label") for chart in changes]
+    assert all(label is not None and label.startswith("no change vs P · September") for label in labels), labels
+    (cost,) = [chart for chart in changes if chart.get("fmt", "").startswith("+usd")]
+    assert cost["zero_label"] == "no change vs P · September ($1.89, mean of 294 cases)", cost["zero_label"]
+    grouped = [chart for chart in changes if any(row.get("group") for row in chart["rows"])]
+    assert grouped, "the Kairo document draws a forest of several measures"
+    for chart in grouped:
+        assert chart["zero_label"] == "no change vs P · September", chart["zero_label"]
+        assert all(row["group"].split(" · ")[1].startswith("September ") for row in chart["rows"]), chart["rows"]
     assert "zero_label" in KIT_JS and "zeroLabel" in KIT_JS
 
 
