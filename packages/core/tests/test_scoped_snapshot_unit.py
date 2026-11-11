@@ -4790,7 +4790,9 @@ async def test_a_catch_up_beside_a_write_whose_read_never_answers_lets_the_claim
     every replica's catch-up out all night. A holder that makes no progress for the stall bound lets the claim go and
     its catch-up ends; the pointer watch applying another replica's publishes meanwhile is not its progress."""
     l3 = _wedged_l3()
-    snapshot, pointers, store, _ = _snapshot(l3=l3, rebuild_stall=timedelta(seconds=0.5))
+    # a 2 s stall bound, not 0.5 s: the publishes below must outnumber five within it, and a loaded runner took
+    # ~0.1 s a publish, so 0.5 s fit only five (#1146's pool run, 2026-11-11)
+    snapshot, pointers, store, _ = _snapshot(l3=l3, rebuild_stall=timedelta(seconds=2))
     await _started(snapshot, pointers)
     writer, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
     await writer.start()
@@ -6008,7 +6010,9 @@ async def test_a_catch_up_whose_reads_keep_answering_but_land_nothing_lets_the_c
     its reads answered counted as progress and renewed nothing but the claim. A catch-up is watched by what it
     lands, so one that reads on and lands nothing lets the claim go within the bound."""
     l3 = _EndlessL3()
-    writer, replica, pointers, _, _ = await _diffed_pair(l3, rebuild_stall=timedelta(seconds=0.5))
+    # a 2 s stall bound, not 0.5 s: more than twenty pages must be read within it, and on a loaded pool runner 0.5 s
+    # fit twenty or fewer (5 of 44 pool runs to 2026-11-11, testament `tests fails_most`)
+    writer, replica, pointers, _, _ = await _diffed_pair(l3, rebuild_stall=timedelta(seconds=2))
     l3.write(2, "results", {"county": "c1", "state": "TX", "votes": 10})
     l3.epochs["TX"] = 2
     l3.endless = True

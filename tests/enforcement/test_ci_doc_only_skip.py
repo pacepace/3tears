@@ -14,9 +14,9 @@ it is the reason the workflow classifies with shell ``case`` rather than
 differ exactly here.
 
 The classifier lives in ``scripts/ci-scope.sh``, the one file both the
-``check`` job and every ``unit`` shard run as their ``scope`` step: a shard
-that ran a different rule could skip a suite ``check`` believes ran. This test
-pins that both jobs' ``scope`` steps run that script, then runs the script
+``check`` job, every ``unit`` shard and the ``unit-pool`` job run as their
+``scope`` step: a unit job that ran a different rule could skip a suite
+``check`` believes ran. This test pins that those jobs' ``scope`` steps run that script, then runs the script
 itself rather than restating its logic -- a copy of the rule here could agree
 with itself forever while the script drifted. The git-diff line is swapped for
 a fixture file, which is the only substitution made.
@@ -36,7 +36,7 @@ _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _SCOPE_SCRIPT = "scripts/ci-scope.sh"
 
 #: the jobs whose suite the doc-only skip governs; each must classify with the shared script.
-_SCOPED_JOBS = ("check", "unit")
+_SCOPED_JOBS = ("check", "unit", "unit-pool")
 
 #: changesets and whether the suite MUST run for them. The mixed entries are
 #: the point of the file; the pure-docs ones stop the skip from becoming a
@@ -77,7 +77,7 @@ def _scope_step(job: str) -> dict[str, object]:
 
 @pytest.mark.parametrize("job", _SCOPED_JOBS)
 def test_every_scoped_job_classifies_with_the_shared_script(job: str) -> None:
-    """``check`` and every unit shard run the one classifier, fed the event and the PR base.
+    """``check``, every unit shard and the pool job run the one classifier, fed the event and the PR base.
 
     :param job: the job name in ci.yml
     :ptype job: str
