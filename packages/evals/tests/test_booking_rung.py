@@ -1,4 +1,4 @@
-"""Rung 4, ``examples/4-booking/``: an agent books on a calendar world, graded by the day it leaves; then served.
+"""Rung 4, ``examples/4-booking/``: an agent graded by the calendar day it leaves (4a), then served (4b).
 
 The agent runs here as a reader runs it, from a copy of its directory with no key set, so its model can only replay
 ``recordings/agent.jsonl``. Nothing here assumes what the model did: each cell is read back from the store and held
@@ -251,8 +251,14 @@ def test_the_recording_holds_no_key_material() -> None:
     assert secret_markers(RECORDING) == []
 
 
-def test_the_agent_and_its_host_stay_within_100_lines() -> None:
-    assert non_blank_lines(AGENT) + non_blank_lines(SERVE) <= 100
+def test_the_agent_stays_within_80_lines() -> None:
+    """Rung 4a: the world, its tools, the agent's loop and the eval."""
+    assert non_blank_lines(AGENT) <= 80
+
+
+def test_its_host_stays_within_20_lines() -> None:
+    """Rung 4b: the host over the agent's store, served on the command line and over MCP."""
+    assert non_blank_lines(SERVE) <= 20
 
 
 def test_the_rung_reaches_the_engine_only_through_public_roots() -> None:
