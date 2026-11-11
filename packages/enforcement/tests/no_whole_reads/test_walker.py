@@ -10,7 +10,7 @@ import pytest
 
 import re
 
-from threetears.enforcement.no_whole_reads import NoWholeReadsConfig, no_whole_reads_findings
+from threetears.enforcement.no_whole_reads import NoWholeReadsConfig, no_whole_reads_findings, use_the_helper_findings
 from threetears.enforcement.no_whole_reads.schema import collect_schema, index_findings
 
 #: the ledger's name, beside each repo's gate
@@ -3204,3 +3204,53 @@ def test_a_join_an_any_a_limited_read_a_table_made_and_a_bounded_difference_are_
     for whole in ("joins_the_table", "any_result", "first_of_the_table", "materializes_the_table"):
         assert whole in functions, (whole, found)
     assert any(f == "overwrites_the_table" and s.startswith("whole-delete") for f, s in found), found
+
+
+#: one statement assembled across a class's methods, as ``aibots_reports.tableau.evaluate._PanelQuery`` and
+#: ``aibots_reports.comparison._StateQuery`` write it: ``run`` defines ``stage0`` and embeds ``_fixed``'s ``fixed``
+#: CTE, which reads ``stage0``; ``sql`` embeds ``_race`` (defining ``o_<race>``) and ``model_cte`` (reading it)
+_ASSEMBLED_CTES = """
+    STATE = "join_state_code"
+
+
+    class _PanelQuery:
+        def _fixed(self, where):
+            kept = "SELECT * FROM stage0" + (f" WHERE {where}" if where else "")
+            return f"fixed AS ({kept})"
+
+        def run(self, snapshot, states, where, inlined):
+            stage0 = f"SELECT * FROM {snapshot.relation(self.table)} WHERE {STATE} IN ({states})"
+            base = "SELECT * FROM fixed" + (f" WHERE {where}" if where else "")
+            sql = f"WITH stage0 AS {inlined}({stage0}), {self._fixed(where)}, base AS ({base}) SELECT * FROM base"
+            return snapshot.backend.execute_query(sql)
+
+
+    class _StateQuery:
+        def _race(self, snapshot, race, states):
+            return f"o_{race} AS (SELECT {STATE}, office_key FROM {snapshot.relation('races')} WHERE {STATE} IN ({states}))"
+
+        def model_cte(self, race):
+            return f"l_{race} AS (SELECT office_key FROM o_{race})"
+
+        def sql(self, snapshot, race, states):
+            ctes = [self._race(snapshot, race, states), self.model_cte(race)]
+            return snapshot.backend.execute_query(f"WITH {', '.join(ctes)} SELECT * FROM l_{race}")
+
+
+    def reads_stage0_alone(snapshot, suffix):
+        return snapshot.backend.execute_query(f"SELECT * FROM stage0{suffix}")
+"""
+
+
+def test_a_name_a_cte_of_the_statement_its_code_assembles_is_that_cte(tmp_path: Path) -> None:
+    """Flips if a fragment reading a CTE that the statement it is assembled into defines -- in a method its own
+    calls or is called by (``_fixed`` reading ``run``'s ``stage0``; ``run`` reading ``_fixed``'s ``fixed``; a
+    templated ``o_{race}`` another method writes) -- is judged as a table, by either rule; or if a function no call
+    joins to the definition reads it and passes."""
+    config = _config(tmp_path, {"assembled.py": _ASSEMBLED_CTES}, local_relations={"*": ("join_state_code",)})
+    found = _symbols(config)
+    functions = {function for function, _ in found}
+    assert not functions & {"_PanelQuery._fixed", "_PanelQuery.run", "_StateQuery.model_cte", "_StateQuery.sql"}, found
+    assert ("reads_stage0_alone", "unknown-predicate stage0") in found, found
+    helped = use_the_helper_findings(config)
+    assert not [line for line in helped if "_PanelQuery" in line or "_StateQuery" in line], helped

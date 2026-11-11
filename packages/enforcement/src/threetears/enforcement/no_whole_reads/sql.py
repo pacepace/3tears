@@ -1550,8 +1550,8 @@ _LIMIT_ONE_ROW: Final[re.Pattern[str]] = re.compile(r"\bLIMIT\s+1\b", re.IGNOREC
 
 def data_relations(sql: str, reader: Reader | None = None) -> list[str]:
     """the relations a statement reads or writes, as written: every name after ``FROM``, ``JOIN``, ``UPDATE`` or
-    ``INTO`` that is not a CTE of the statement, a catalog, a function (``unnest($1)``), a subquery or a transient
-    relation the reader names.
+    ``INTO`` that is not a CTE of the statement (or of the statement its code assembles, the reader's ``ctes``), a
+    catalog, a function (``unnest($1)``), a subquery or a transient relation the reader names.
 
     :param sql: the statement, each interpolation as ``{}``
     :ptype sql: str
@@ -1568,6 +1568,9 @@ def data_relations(sql: str, reader: Reader | None = None) -> list[str]:
         name, call = match.group(1), match.group(2)
         bare = name.strip('"')
         if call is not None or bare.lower() in ctes or _CATALOG.match(name) is not None or reader.transient(bare):
+            continue
+        if bare.removesuffix("{}").lower() in reader.ctes and reader.schema.table(bare) is None:
+            # a CTE of the statement the code assembles (a fragment its caller's ``WITH`` defines): judged there
             continue
         if bare not in found:
             found.append(bare)

@@ -1055,6 +1055,8 @@ class _ModuleWalk(ast.NodeVisitor):
         self._loops: list[set[str]] = []
         #: per enclosing function, the CTE names its statements define
         self._ctes: list[frozenset[str]] = []
+        #: per definition, the CTE names the statements it takes part in define (:func:`_statement_ctes`)
+        self._statement_ctes: dict[int, frozenset[str]] = {}
         self._function_nodes: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
         #: per enclosing function, the terms a ``source_change_read`` mark names: stamps, ids, a whole static unit
         self._source: list[tuple[frozenset[str], frozenset[str], bool]] = []
@@ -1139,6 +1141,7 @@ class _ModuleWalk(ast.NodeVisitor):
         self._envs[0].update(_module_strings(tree))
         self._bind(tree.body, self._envs[0])
         self._constants_of(tree.body, "")
+        self._statement_ctes = _statement_ctes(tree, self._envs[0])
 
     def _constants_of(self, body: list[ast.stmt], scope: str) -> None:
         """record the module's and its classes' names bound to a string (an index's purpose may name one).
@@ -1519,6 +1522,11 @@ class _ModuleWalk(ast.NodeVisitor):
             local=_run_locally(self._parents.get(node)),
             transient=self._transient_table,
             ctes=(self._ctes[-1] if self._ctes else frozenset())
+            | (
+                self._statement_ctes.get(id(self._function_nodes[0]), frozenset())
+                if self._function_nodes
+                else frozenset()
+            )
             | frozenset(
                 f"__cte_{name}" for name in (self._cte_parameters(self._function_node) if self._function_node else ())
             ),
@@ -3148,6 +3156,81 @@ _CTE_DEFINED: Final[re.Pattern[str]] = re.compile(
     r"(?:\bWITH(?:\s+RECURSIVE)?|,)\s*([A-Za-z_]\w*)\s*(?:\([^()]*\)\s*)?AS\s*(?:NOT\s+)?(?:MATERIALIZED\s+)?\(",
     re.IGNORECASE,
 )
+
+#: a CTE one of a module's strings defines, as a statement assembled from several of its strings writes it: after
+#: ``WITH``, a comma or the string's start, its name perhaps templated (``o_{race} AS (``), its materialization
+#: perhaps interpolated (``stage0 AS {inlined}(``)
+_CTE_PART_DEFINED: Final[re.Pattern[str]] = re.compile(
+    r"(?:\bWITH(?:\s+RECURSIVE)?|,|^)\s*([A-Za-z_](?:\w|\{\})*)\s*(?:\([^()]*\)\s*)?AS\s*(?:\{\}\s*)?"
+    r"(?:NOT\s+)?(?:MATERIALIZED\s+)?\(",
+    re.IGNORECASE,
+)
+
+
+def _defined_ctes(node: ast.AST, env: dict[str, str]) -> set[str]:
+    """the CTE names a definition's strings define (:data:`_CTE_PART_DEFINED`), lower-cased, its constants resolved
+    (``f"WITH {_NEEDLE_READ} AS MATERIALIZED ("``), a templated one's interpolations dropped (``o_{race}`` as ``o_``)."""
+    names: set[str] = set()
+    for inner in ast.walk(node):
+        text = (
+            inner.value
+            if isinstance(inner, ast.Constant) and isinstance(inner.value, str)
+            else _string_text(inner, env)
+            if isinstance(inner, ast.JoinedStr)
+            else None
+        )
+        for match in _CTE_PART_DEFINED.finditer(text or ""):
+            name = match.group(1).lower()
+            names.add(name.replace("{}", "") if "{}" in name else name)
+    return names
+
+
+def _statement_ctes(tree: ast.Module, env: dict[str, str]) -> dict[int, frozenset[str]]:
+    """for each of a module's functions and methods, the CTE names the statements it takes part in define: its own,
+    and those of every definition it is joined to by a call in the module (a bare call of a module function, a
+    method called on ``self`` or ``cls`` in its class), either way. One statement is assembled across them
+    (``WITH stage0 AS (...), {self._fixed()}, base AS (SELECT * FROM fixed)``, ``_fixed`` reading ``stage0``), so
+    each reads the others' CTEs by name; a definition no call joins to one defining a CTE reads it as a table.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param env: the module's names bound to strings
+    :ptype env: dict[str, str]
+    :return: each definition's node id onto the names
+    :rtype: dict[int, frozenset[str]]
+    """
+    definitions = _definitions(tree)
+    parent = {id(function): id(function) for function, _ in definitions}
+
+    def root(node: int) -> int:
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    functions = {function.name: function for function, owner in definitions if owner is None}
+    methods = {(owner.name, function.name): function for function, owner in definitions if owner is not None}
+    for function, owner in definitions:
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Call):
+                continue
+            callee: ast.FunctionDef | ast.AsyncFunctionDef | None = None
+            if isinstance(node.func, ast.Name):
+                callee = functions.get(node.func.id)
+            elif (
+                owner is not None
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in {"self", "cls"}
+            ):
+                callee = methods.get((owner.name, node.func.attr))
+            if callee is not None:
+                parent[root(id(callee))] = root(id(function))
+    own = {id(function): _defined_ctes(function, env) for function, _ in definitions}
+    joined: dict[int, set[str]] = {}
+    for function, _ in definitions:
+        joined.setdefault(root(id(function)), set()).update(own[id(function)])
+    return {id(function): frozenset(joined[root(id(function))]) for function, _ in definitions}
 
 
 #: a temporary view a statement creates, and its body
