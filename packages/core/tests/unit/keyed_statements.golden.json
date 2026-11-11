@@ -78,13 +78,13 @@
  ],
  "keyset_page.nullable_desc_null_cursor": [
   [
-   "SELECT t.\"due_at\", t.\"id\" FROM \"t\" AS t WHERE (t.\"due_at\" IS NOT NULL OR (t.\"due_at\" IS NULL AND (t.\"id\" > $1::text::bigint))) ORDER BY t.\"due_at\" DESC NULLS FIRST, t.\"id\" ASC LIMIT 4",
+   "SELECT * FROM ((SELECT t.\"due_at\", t.\"id\" FROM \"t\" AS t WHERE t.\"due_at\" IS NULL AND (t.\"id\" >= $1::text::bigint AND (t.\"id\" > $1::text::bigint)) ORDER BY t.\"due_at\" DESC NULLS FIRST, t.\"id\" ASC LIMIT 4) UNION ALL (SELECT t.\"due_at\", t.\"id\" FROM \"t\" AS t WHERE t.\"due_at\" IS NOT NULL ORDER BY t.\"due_at\" DESC NULLS FIRST, t.\"id\" ASC LIMIT 4)) AS u ORDER BY u.\"due_at\" DESC NULLS FIRST, u.\"id\" ASC LIMIT 4",
    "('7',)"
   ]
  ],
  "keyset_page.nullable_desc_value_cursor": [
   [
-   "SELECT t.\"due_at\", t.\"id\" FROM \"t\" AS t WHERE t.\"a\" IS NULL AND (t.\"due_at\" < $1::text::timestamptz OR (t.\"due_at\" = $1::text::timestamptz AND (t.\"id\" > $2::text::bigint))) ORDER BY t.\"due_at\" DESC NULLS FIRST, t.\"id\" ASC LIMIT 4",
+   "SELECT t.\"due_at\", t.\"id\" FROM \"t\" AS t WHERE t.\"a\" IS NULL AND t.\"due_at\" <= $1::text::timestamptz AND (t.\"due_at\" < $1::text::timestamptz OR (t.\"due_at\" = $1::text::timestamptz AND (t.\"id\" >= $2::text::bigint AND (t.\"id\" > $2::text::bigint)))) ORDER BY t.\"due_at\" DESC NULLS FIRST, t.\"id\" ASC LIMIT 4",
    "('2026-11-11T12:30:00+00:00', '7')"
   ]
  ],
@@ -100,7 +100,7 @@
    "(1,)"
   ],
   [
-   "SELECT t.\"due_at\", t.\"id\" FROM \"t\" AS t WHERE t.\"k\" = $1 AND (t.\"due_at\" IS NOT NULL OR (t.\"due_at\" IS NULL AND (t.\"id\" > $2::text::bigint))) ORDER BY t.\"k\" ASC, t.\"due_at\" DESC NULLS FIRST, t.\"id\" ASC LIMIT 2",
+   "SELECT * FROM ((SELECT t.\"due_at\", t.\"id\" FROM \"t\" AS t WHERE t.\"k\" = $1 AND t.\"due_at\" IS NULL AND (t.\"id\" >= $2::text::bigint AND (t.\"id\" > $2::text::bigint)) ORDER BY t.\"k\" ASC, t.\"due_at\" DESC NULLS FIRST, t.\"id\" ASC LIMIT 2) UNION ALL (SELECT t.\"due_at\", t.\"id\" FROM \"t\" AS t WHERE t.\"k\" = $1 AND t.\"due_at\" IS NOT NULL ORDER BY t.\"k\" ASC, t.\"due_at\" DESC NULLS FIRST, t.\"id\" ASC LIMIT 2)) AS u ORDER BY u.\"due_at\" DESC NULLS FIRST, u.\"id\" ASC LIMIT 2",
    "(1, '2')"
   ]
  ],

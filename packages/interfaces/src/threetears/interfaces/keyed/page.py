@@ -23,7 +23,7 @@ import base64
 import binascii
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from typing import Any
 
@@ -187,6 +187,62 @@ def seeks_by_row(order: Sequence[Sort]) -> bool:
     return len(order) > 1 and not any(sort.nullable for sort in order) and len({sort.descending for sort in order}) == 1
 
 
+def _marks(order: Sequence[Sort], values: Sequence[Any], first: int) -> tuple[list[str | None], list[Any]]:
+    """each sort value's placeholder (cast back by its sort; None for ``NULL``), numbered from ``first``, and the
+    parameters they bind."""
+    params: list[Any] = []
+    marks: list[str | None] = []
+    for sort, value in zip(order, values, strict=True):
+        if value is None:
+            marks.append(None)
+        else:
+            params.append(value)
+            place = f"${first + len(params) - 1}"
+            if sort.cast is None:
+                marks.append(place)
+            else:
+                marks.append(f"{place}::{'text' if sort.cast == 'text' else f'text::{sort.cast}'}")
+    return marks, params
+
+
+def _after(sort: Sort, mark: str | None) -> str:
+    column = sort.sorted_by
+    if mark is None:
+        # nulls last ascending: nothing follows within the column; nulls first descending: every value follows
+        return f"{column} IS NOT NULL" if sort.descending else "FALSE"
+    beyond = f"{column} {'<' if sort.descending else '>'} {mark}"
+    return f"({beyond} OR {column} IS NULL)" if sort.nullable and not sort.descending else beyond
+
+
+def _same(sort: Sort, mark: str | None) -> str:
+    column = sort.sorted_by
+    return f"{column} IS NULL" if mark is None else f"{column} = {mark}"
+
+
+def _past_marks(order: Sequence[Sort], marks: Sequence[str | None], *, by_row: bool) -> str:
+    """the condition naming the rows after the place ``marks`` hold in ``order``; ``FALSE`` for no sort (nothing
+    follows a tie of every column before it)."""
+    if not order:
+        return "FALSE"
+    if by_row and seeks_by_row(order) and all(mark is not None for mark in marks):
+        # the sort's columns alone: the columns ``by`` pins are bound by equality beside it (``kind = $1 AND (name,
+        # id) > ($2, $3)``), never inside it. Inside it (``(kind, name, id) > ($1, $2, $3)``) only an index led by the
+        # pinned columns can take it as its condition, and PostgreSQL may read another (a unique index of the next
+        # column) from its start, filtering: 2,041 rows read for 21. Beside it, every index answering the order
+        # takes the comparison as its condition, the pinned columns' index by its equality first
+        columns = ", ".join(sort.sorted_by for sort in order)
+        bound = ", ".join(str(mark) for mark in marks)
+        return f"({columns}) {'<' if order[0].descending else '>'} ({bound})"
+    expanded = _after(order[-1], marks[-1])
+    for sort, mark in zip(reversed(order[:-1]), reversed(marks[:-1]), strict=True):
+        expanded = f"{_after(sort, mark)} OR ({_same(sort, mark)} AND ({expanded}))"
+    head, head_mark = order[0], marks[0]
+    if head_mark is not None and not head.nullable:
+        bound = f"{head.sorted_by} {'<=' if head.descending else '>='} {head_mark}"
+        return f"{bound} AND ({expanded})"
+    return f"({expanded})"
+
+
 def _past(
     order: Sequence[Sort],
     values: Sequence[Any],
@@ -200,48 +256,45 @@ def _past(
     PostgreSQL seeks its index by; the expansion makes it plan a bitmap scan and a sort of every row past the lead
     (a 1,001-row page of a 6,000-row prefix: 2.3 ms against 0.28 ms). Otherwise the leading bound and the expansion,
     which YugabyteDB seeks inside a hashed bucket by (a row comparison there reads the bucket from its start)."""
-    params: list[Any] = []
-    marks: list[str | None] = []
-    for sort, value in zip(order, values, strict=True):
-        if value is None:
-            marks.append(None)
-        else:
-            params.append(value)
-            place = f"${first + len(params) - 1}"
-            if sort.cast is None:
-                marks.append(place)
-            else:
-                marks.append(f"{place}::{'text' if sort.cast == 'text' else f'text::{sort.cast}'}")
+    marks, params = _marks(order, values, first)
+    return _past_marks(order, marks, by_row=by_row), params
 
-    def after(sort: Sort, mark: str | None) -> str:
-        column = sort.sorted_by
-        if mark is None:
-            # nulls last ascending: nothing follows within the column; nulls first descending: every value follows
-            return f"{column} IS NOT NULL" if sort.descending else "FALSE"
-        beyond = f"{column} {'<' if sort.descending else '>'} {mark}"
-        return f"({beyond} OR {column} IS NULL)" if sort.nullable and not sort.descending else beyond
 
-    def same(sort: Sort, mark: str | None) -> str:
-        column = sort.sorted_by
-        return f"{column} IS NULL" if mark is None else f"{column} = {mark}"
+def _nullable_lead_legs(
+    order: Sequence[Sort], values: Sequence[Any], first: int, *, by_row: bool
+) -> tuple[list[tuple[str, Sequence[Sort]]], list[Any]]:
+    """the rows after the cursor of a sort led by a NULLable column, as one or two bounded legs, each a range of
+    the same ``(lead, rest...)`` index, with the order each leg reads in (the whole sort); and the parameters,
+    numbered from ``first``, both legs share.
 
-    if by_row and seeks_by_row(order) and all(mark is not None for mark in marks):
-        # the sort's columns alone: the columns ``by`` pins are bound by equality beside it (``kind = $1 AND (name,
-        # id) > ($2, $3)``), never inside it. Inside it (``(kind, name, id) > ($1, $2, $3)``) only an index led by the
-        # pinned columns can take it as its condition, and PostgreSQL may read another (a unique index of the next
-        # column) from its start, filtering: 2,041 rows read for 21. Beside it, every index answering the order
-        # takes the comparison as its condition, the pinned columns' index by its equality first
-        columns = ", ".join(sort.sorted_by for sort in order)
-        bound = ", ".join(str(mark) for mark in marks)
-        return f"({columns}) {'<' if order[0].descending else '>'} ({bound})", params
-    expanded = after(order[-1], marks[-1])
-    for sort, mark in zip(reversed(order[:-1]), reversed(marks[:-1]), strict=True):
-        expanded = f"{after(sort, mark)} OR ({same(sort, mark)} AND ({expanded}))"
-    head, head_mark = order[0], marks[0]
-    if head_mark is not None and not head.nullable:
-        bound = f"{head.sorted_by} {'<=' if head.descending else '>='} {head_mark}"
-        return f"{bound} AND ({expanded})", params
-    return f"({expanded})", params
+    The one-condition form (``lead > $v OR lead IS NULL OR (lead = $v AND ...)``) gives the lead no bound an index
+    can start from: a resumed page reads the index from its start (1,872 rows scanned for a page of 21). Split at
+    the NULLs instead:
+
+    - ascending (NULLs last), a value mark: ``lead >= $v AND (lead > $v OR (lead = $v AND rest-past))``, then every
+      NULL lead (``lead IS NULL``, by the rest);
+    - ascending, a NULL mark: only the NULLs past it, ``lead IS NULL AND rest-past``;
+    - descending (NULLs first), a value mark: ``lead <= $v AND (lead < $v OR (lead = $v AND rest-past))``;
+    - descending, a NULL mark: the NULLs past it (``lead IS NULL AND rest-past``), then every value
+      (``lead IS NOT NULL``).
+    """
+    marks, params = _marks(order, values, first)
+    head, mark = order[0], marks[0]
+    rest, rest_marks = order[1:], marks[1:]
+    column = head.sorted_by
+    rest_past = _past_marks(rest, rest_marks, by_row=by_row)
+    # every leg orders by the whole sort, the lead too (constant on a NULL leg): the order the (lead, rest) index
+    # holds, so the NULLs are read as its range too, never through another index of the rest filtered for NULLs
+    if mark is None:
+        nulls = f"{column} IS NULL AND ({rest_past})"
+        if not head.descending:
+            return [(nulls, order)], params
+        return [(nulls, order), (f"{column} IS NOT NULL", order)], params
+    within = f"({column} {'<' if head.descending else '>'} {mark} OR ({column} = {mark} AND ({rest_past})))"
+    values_leg = f"{column} {'<=' if head.descending else '>='} {mark} AND {within}"
+    if head.descending:
+        return [(values_leg, order)], params
+    return [(values_leg, order), (f"{column} IS NULL", order)], params
 
 
 def _order_by(order: Sequence[Sort]) -> str:
@@ -359,14 +412,21 @@ def page_statement(
     for fragment in where:
         conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
-    if past is not None:
+    # the rows past the cursor: one condition; or, for a sort led by a NULLable column (and no row lock, which a
+    # UNION cannot take), one or two legs bounded where an index can start (_nullable_lead_legs)
+    legs: list[tuple[str | None, Sequence[Sort]]] = [(None, order)]
+    if past is not None and order[0].nullable and lock is None:
+        split, past_params = _nullable_lead_legs(order, past, len(params) + 1, by_row=by_row)
+        legs = [(condition, leg_order) for condition, leg_order in split]
+        params += past_params
+    elif past is not None:
         condition, past_params = _past(order, past, len(params) + 1, by_row=by_row)
         conditions.append(condition)
         params += past_params
+    after: list[str] = []
     for fragment in visible:
-        conditions.append(narrowing(fragment, len(params)))
+        after.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
-    clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     selected = ", ".join(
         [selected_column(column) for column in columns]
         + [
@@ -375,10 +435,23 @@ def page_statement(
             if sort.expression is not None and sort.column not in columns
         ]
     )
-    # the pinned columns, constant on every row, lead the ORDER BY too: the same order, read as one range of the
-    # index they lead
-    ordered = ", ".join([f"{column} ASC" for column in lead] + [_order_by(order)])
-    sql = f"SELECT {selected} FROM {relation(table, 't')}{clause} ORDER BY {ordered} LIMIT {rows}"
+
+    def leg(condition: str | None, leg_order: Sequence[Sort]) -> str:
+        every = [*conditions, *([condition] if condition is not None else []), *after]
+        clause = f" WHERE {' AND '.join(every)}" if every else ""
+        # the pinned columns, constant on every row, lead the ORDER BY too: the same order, read as one range of
+        # the index they lead
+        ordered = ", ".join([f"{column} ASC" for column in lead] + ([_order_by(leg_order)] if leg_order else []))
+        by_clause = f" ORDER BY {ordered}" if ordered else ""
+        return f"SELECT {selected} FROM {relation(table, 't')}{clause}{by_clause} LIMIT {rows}"
+
+    if len(legs) == 1:
+        sql = leg(*legs[0])
+    else:
+        # each leg a range of the index in its own order; the page is the first rows of both, in the sort's order
+        union = " UNION ALL ".join(f"({leg(condition, leg_order)})" for condition, leg_order in legs)
+        outer = _order_by([replace(sort, expression=f"u.{quote_identifier(sort.column)}") for sort in order])
+        sql = f"SELECT * FROM ({union}) AS u ORDER BY {outer} LIMIT {rows}"
     if lock is not None:
         sql += lock.of("t")
     return sql, params
