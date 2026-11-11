@@ -1730,11 +1730,12 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         vec_salience_idx = len(vec_params)
 
         def _nearest(older_than: datetime | None = None) -> Any:
-            # ``older_than`` narrows the scan to the history: see the history pool below. One statement for both
-            # pools: the recent pool's bound is none (NULL, so infinity; date_created is NOT NULL), and the history
-            # pool's range is written out, where ix_memories_user_date serves it
-            args = [*vec_params, older_than]
-            history_clause = f" AND date_created < COALESCE(${len(args)}::timestamptz, 'infinity'::timestamptz)"
+            # ``older_than`` narrows the scan to the history: see the history pool below.
+            args = list(vec_params)
+            history_clause = ""
+            if older_than is not None:
+                args.append(older_than)
+                history_clause = f" AND date_created < ${len(args)}"
             allowed = filter_clause(self.read_filter, "memories.tags", args)
             return self.l3_pool.fetch(  # type: ignore[union-attr]
                 f"""
