@@ -39,6 +39,7 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
 from threetears.epoch.client import DurableEpoch, EpochClient, PoolLike
 from threetears.epoch.generation import (
     EPOCH_CHANGES_BUCKET,
+    EPOCH_CHANGES_FILL_WARN_RATIO,
     EpochChangeRetention,
     EpochGenerationReader,
     EpochGenerationSource,
@@ -76,6 +77,7 @@ __all__ = [
     "DurableEpoch",
     "EpochClient",
     "EPOCH_CHANGES_BUCKET",
+    "EPOCH_CHANGES_FILL_WARN_RATIO",
     "EpochChangeRetention",
     "EpochGenerationReader",
     "EpochGenerationSource",

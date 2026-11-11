@@ -60,6 +60,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "EPOCH_CHANGES_BUCKET",
+    "EPOCH_CHANGES_FILL_WARN_RATIO",
     "EpochChangeRetention",
     "EpochGenerationReader",
     "EpochGenerationSource",
@@ -73,8 +74,11 @@ log = get_logger(__name__)
 #: whose epoch it cannot read is behind.
 EPOCH_CHANGES_BUCKET: Final = "epoch-changes"
 
-#: the fill above which the log's fill gauge is said at WARNING: it refuses appends when full
-_FILL_WARN_RATIO: Final = 0.8
+#: the fraction of its byte bound the change log may hold before it is warned on. Past its bound it refuses
+#: every append, failing the write that made it, so the warning comes while a quarter of the bound is left
+#: to raise it or find what fills it. Alert on ``threetears_epoch_changes_fill_ratio`` above this.
+EPOCH_CHANGES_FILL_WARN_RATIO: Final = 0.75
+_FILL_WARN_RATIO: Final = EPOCH_CHANGES_FILL_WARN_RATIO
 
 #: the key restore fills a sequence the L3 log holds nothing for, so every restored record keeps its number
 _RESTORE_FILLER_KEY: Final = "_restored-gap"

@@ -8,6 +8,30 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+### core, epoch: an L2-first collection commits its writes in NATS, and L3 is saved from there
+
+**Added (core):** `BaseCollection.l2_first`. A collection that declares `L2_FIRST` (or
+`L2First(wait_for_l3=False, refetchable_from=...)`) commits a save or delete as one epoch record carrying the row
+(`ChangedRow.value`), the revision of its key the writer read (`ChangedRow.l2_revision`) and `l3_pending`; the row
+is applied to L2 after, at that revision. By default the caller then waits for L3: an L3 refusal is the caller's
+error, and the write is withdrawn by one more epoch carrying the prior value. A collection that does not wait returns
+after the L2 apply. Pods never read L3 for it: a miss is an absence while L2 holds the table complete, and
+`L2LostError` while it does not. Without an L2 client the same collection writes straight to L3. Declared, not yet
+the default: the default changes once every writing principal holds the epoch grants and a worker runs.
+
+**Added (core):** `threetears.core.collections.l2_first`: `L3Saver` (walks each table's epochs after its saved
+position, applies to L2 any committed row its writer died before applying, then makes L3 match L2; idempotent; an L3
+refusal of a write that did not wait is an ERROR counted on `threetears_l2_first_l3_refused_total`), `L2Refiller`
+(after NATS loses the change log, puts every table's newest records back in one `restore_epochs` at their old
+sequences, then the rows, so pods catch up through the normal epoch path), `run_l2_first_worker`,
+`l2_first_status`, the L3 epoch log (`EpochLogStore`, `SqlEpochLogStore`), `CollectionRegistry.set_epoch_log` and
+`registered_tables`, `SchemaBackedCollection.l3_pages`, and `tables_written_l2_first`. The write-mark reconciler
+deletes a mark on an L2-first table without a whole-table advance, and the trigger install skips such tables.
+
+**Added (epoch):** `EPOCH_CHANGES_FILL_WARN_RATIO` (0.75), at which `observe_change_log_fill` warns.
+
+Operations: [docs/l2-first-operations.md](docs/l2-first-operations.md).
+
 ### core, nats: an L2 failure a collection falls through on is counted by reason, and a full bucket says so
 
 **Added (nats):** `KvFullError` (a bucket's `max_bytes`, or the account's storage limit: JetStream 10077 "maximum
