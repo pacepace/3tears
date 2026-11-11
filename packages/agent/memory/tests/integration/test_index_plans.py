@@ -79,6 +79,8 @@ class _World:
         self.memory = uuid.UUID(int=0)
         self.chunk = uuid.UUID(int=0)
         self.conversation = uuid.UUID(int=0)
+        #: the one conversation holding 3,000 surfaced refs, where reading one agent's newest needs their index
+        self.busy_conversation = uuid.UUID(int=0)
 
     def _collection(self, kind: type[Any], captured: _Captured) -> Any:
         registry = CollectionRegistry()
@@ -220,6 +222,16 @@ async def world(pg_url: str) -> AsyncIterator[_World]:
         " generate_series(1, 60) n",
         agents,
     )
+    # and one busy conversation: 3,000 refs, 1,000 by each agent (with 60 a conversation, reading them all by the
+    # pk and sorting is the cheaper plan, so only a busy one shows whether the agent's newest read their index)
+    busy = uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO conversation_memory_refs (conversation_id, item_id, item_type, short_desc, date_created,"
+        " date_updated, agent_id) SELECT $1, gen_random_uuid(), 'memory', 'a ref', now() - n * interval '1 second',"
+        " now(), ($2::uuid[])[1 + n % 3] FROM generate_series(1, 3000) n",
+        busy,
+        agents,
+    )
     tables = (
         "memories",
         "media",
@@ -239,6 +251,7 @@ async def world(pg_url: str) -> AsyncIterator[_World]:
         world.user,
     )
     world.memory, world.conversation, world.chunk = mine["memory_id"], mine["conversation_id"], mine["chunk_id"]
+    world.busy_conversation = busy
     try:
         yield world
     finally:
@@ -510,11 +523,10 @@ async def test_memory_consolidations_source(world: _World) -> None:
 
 
 async def test_conv_mem_refs_conversation_agent_date(world: _World) -> None:
-    """Flips if the newest refs one agent surfaced in a conversation stop reading
+    """Flips if the newest refs one agent surfaced in a busy conversation stop reading
     idx_conv_mem_refs_conversation_agent_date."""
-    conversation = await world.conn.fetchval("SELECT conversation_id FROM conversation_memory_refs LIMIT 1")
     captured = _Captured()
-    await world.refs(captured).find_by_conversation(conversation, world.agent)
+    await world.refs(captured).find_by_conversation(world.busy_conversation, world.agent)
     plan = await _only_plan(world, captured)
     assert plan_uses_index(plan, "idx_conv_mem_refs_conversation_agent_date"), _shape(plan)
 

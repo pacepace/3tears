@@ -1753,19 +1753,27 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             args.append(older_than)
             history_idx = len(args)
             allowed = filter_clause(self.read_filter, "memories.tags", args)
+            # the user's memories older than the window are read by ix_memories_agent_user_date inside a subquery
+            # the planner keeps whole (OFFSET 0), the customer checked after: with the customer beside them,
+            # YugabyteDB read the owner's every memory by idx_memories_agent_customer_user. a subquery, not a
+            # MATERIALIZED CTE, so the rows stream to the distance sort instead of being held with their embeddings.
             return self.l3_pool.fetch(  # type: ignore[union-attr]
                 f"""
                 SELECT memory_id, content, summary, type_memory, date_created,
                        embedding::text AS embedding,
                        1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
-                FROM memories
-                WHERE {_OWNER_SCOPE}
+                FROM (
+                    SELECT * FROM memories
+                    WHERE agent_id = $2 AND user_id = $4 AND date_created < ${history_idx}
+                    OFFSET 0
+                ) memories
+                WHERE customer_id = $3
                   AND embedding IS NOT NULL{vec_date_clause}
                   AND (superseded_by IS NULL OR NOT EXISTS (
                         SELECT 1 FROM memories g
                         WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
                   AND {_NOT_RETRACTED}
-                  AND salience >= ${vec_salience_idx} AND date_created < ${history_idx}{allowed}
+                  AND salience >= ${vec_salience_idx}{allowed}
                 ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
                 LIMIT {limit_param}
                 """,
@@ -3328,20 +3336,27 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
             return []
         # cache-bypass: batch IN(...) join spanning media_content ->
         # media. see :meth:`hybrid_search` for the detailed rationale. the
-        # user is bound on the file: bound on the content, YugabyteDB read
-        # every content row of the user instead of the ids' two keys.
+        # ids' rows are read by their keys alone (media_content_pkey and
+        # ix_media_content_media_type) behind a MATERIALIZED fence, then the
+        # user is checked on both the content and its file: with the user
+        # beside the ids, YugabyteDB read every content row of the user. both
+        # are bound because no constraint makes a content row's user its file's.
         args: list[Any] = [agent_id, content_ids, user_id]
         allowed = _media_parent_clause(self.read_filter, "mc", args)
         rows = await self.l3_pool.fetch(
             f"""
+            WITH named AS MATERIALIZED (
+                SELECT * FROM media_content
+                WHERE agent_id = $1
+                  AND (content_id = ANY($2::uuid[]) OR media_id = ANY($2::uuid[]))
+            )
             SELECT mc.content_id, mc.content, mc.content_type, mc.media_id,
                    med.media_category, med.metadata_json, med.date_created
-            FROM media_content mc
+            FROM named mc
             JOIN media med
               ON mc.agent_id = med.agent_id
              AND mc.media_id = med.media_id
-            WHERE mc.agent_id = $1
-              AND (mc.content_id = ANY($2::uuid[]) OR mc.media_id = ANY($2::uuid[]))
+            WHERE mc.user_id = $3
               AND med.user_id = $3{allowed}
             ORDER BY mc.media_id, mc.date_created DESC
             """,
@@ -4302,7 +4317,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         chunks have ``message_id_start`` NULL and are excluded from
         this query (the cross-memory scope is narrative-order, which
         document chunks don't participate in). Auth triple enforced
-        on the joined memories row.
+        on each chunk row.
 
         Cursor paging semantics match :meth:`find_by_memory_id`.
 
@@ -4330,9 +4345,12 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         if self.l3_pool is None:
             return []
 
-        # cache-bypass: the conversation's memories by idx_mem_conversation,
-        # their chunks by the chunk's (agent_id, memory_id) key.
-        # auth triple enforced on the joined memories row.
+        # cache-bypass: the conversation's memories by idx_mem_conversation
+        # behind a MATERIALIZED fence, then their chunks by
+        # ix_memory_chunks_memory, the owner checked on each chunk. one form
+        # both planners take: with the owner on the chunk in a plain join
+        # YugabyteDB read every chunk of the user; with it on the memory,
+        # PostgreSQL read every memory of the owner.
         params: list[Any] = [agent_id, conversation_id, user_id, customer_id]
         cursor_clause = ""
         if chunk_id_after is not None:
@@ -4351,17 +4369,20 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
 
         rows = await self.l3_pool.fetch(
             f"""
+            WITH conversation AS MATERIALIZED (
+                SELECT m.memory_id FROM memories m
+                WHERE m.agent_id = $1
+                  AND m.conversation_id = $2
+            )
             SELECT mc.chunk_id, mc.memory_id, mc.chunk_index, mc.content, mc.summary,
                    mc.heading_context, mc.page_number,
                    mc.message_id_start, mc.message_id_end,
                    mc.date_created
-            FROM memory_chunks mc
-            JOIN memories m
-              ON m.agent_id = mc.agent_id
-             AND m.memory_id = mc.memory_id
-            WHERE mc.agent_id = $1
-              AND m.conversation_id = $2
-              AND mc.user_id = $3
+            FROM conversation
+            JOIN memory_chunks mc
+              ON mc.agent_id = $1
+             AND mc.memory_id = conversation.memory_id
+            WHERE mc.user_id = $3
               AND mc.customer_id = $4
               AND mc.message_id_start IS NOT NULL
               {cursor_clause}{allowed}
