@@ -420,8 +420,8 @@ def page_statement(
         legs = [(condition, leg_order) for condition, leg_order in split]
         params += past_params
     elif past is not None:
-        condition, past_params = _past(order, past, len(params) + 1, by_row=by_row)
-        conditions.append(condition)
+        past_condition, past_params = _past(order, past, len(params) + 1, by_row=by_row)
+        conditions.append(past_condition)
         params += past_params
     after: list[str] = []
     for fragment in visible:
