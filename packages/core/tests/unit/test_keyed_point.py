@@ -14,7 +14,7 @@ from typing import Any
 import duckdb
 import pytest
 
-from threetears.core.keyed import AnyOf, ThreadedDuckDB, read_by, read_row, read_value
+from threetears.core.keyed import AnyOf, Lock, ThreadedDuckDB, read_by, read_row, read_value
 
 
 @pytest.fixture
@@ -96,3 +96,39 @@ async def test_a_read_pinning_nothing_is_refused(db: duckdb.DuckDBPyConnection) 
         await read_by(ThreadedDuckDB(db), "t", by={})
     with pytest.raises(ValueError, match="names the columns"):
         await read_row(ThreadedDuckDB(db), "t", by={"a": "k1"}, columns=())
+
+
+class _Sent:
+    """keeps every statement sent; no row is there."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        self.calls.append((query, params))
+        return []
+
+
+@pytest.mark.parametrize(
+    ("lock", "clause"),
+    [
+        (Lock.UPDATE_NOWAIT, " LIMIT 1 FOR UPDATE OF t NOWAIT"),
+        (Lock.SHARE, " LIMIT 1 FOR SHARE OF t"),
+        (Lock.UPDATE_SKIP_LOCKED, " LIMIT 1 FOR UPDATE OF t SKIP LOCKED"),
+    ],
+)
+async def test_a_locked_point_read_locks_its_row_as_asked(lock: Lock, clause: str) -> None:
+    """Flips if a point read's lock is dropped, or its wait (NOWAIT, SKIP LOCKED) is lost or misplaced."""
+    conn = _Sent()
+    await read_row(conn, "epochs", by={"scope": "*"}, columns=("writing",), lock=lock)
+    [(sql, params)] = conn.calls
+    assert sql == f'SELECT t."writing" FROM "epochs" AS t WHERE t."scope" = $1{clause}'
+    assert params == ("*",)
+
+
+async def test_an_unlocked_point_read_takes_no_lock() -> None:
+    """Flips if a read asking no lock takes one."""
+    conn = _Sent()
+    await read_by(conn, "epochs", by={"scope": "*"}, columns=("writing",))
+    [(sql, _params)] = conn.calls
+    assert "FOR " not in sql

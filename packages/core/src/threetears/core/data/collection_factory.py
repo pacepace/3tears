@@ -18,6 +18,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import require_pgvector
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.keyed.point import read_row
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.observe import get_logger
 
@@ -115,20 +116,6 @@ def _stored_row(data: dict[str, Any], wall_clock_columns: frozenset[str]) -> dic
         )
         for key, value in data.items()
     }
-
-
-def _build_fetch_sql(table_name: str, pk_column: str) -> str:
-    """build SELECT SQL for fetching single entity by primary key.
-
-    :param table_name: name of database table
-    :ptype table_name: str
-    :param pk_column: primary key column name
-    :ptype pk_column: str
-    :return: parameterized SELECT SQL string
-    :rtype: str
-    """
-    result = f"SELECT * FROM {table_name} WHERE {pk_column} = $1"
-    return result
 
 
 def _build_upsert_sql(
@@ -279,7 +266,6 @@ def create_dynamic_collection(
     vector_columns = frozenset(col.name for col in table_def.columns if col.column_type == "vector")
     wall_clock_columns = frozenset(col.name for col in table_def.columns if col.column_type == "timestamp")
     instant_columns = frozenset(col.name for col in table_def.columns if col.column_type == "timestamptz")
-    fetch_sql = _build_fetch_sql(tbl_name, pk_column)
     upsert_sql = _build_upsert_sql(tbl_name, column_names, pk_column, vector_columns)
     delete_sql = _build_delete_sql(tbl_name, pk_column)
     sa_metadata = _build_sa_metadata(table_def)
@@ -330,10 +316,10 @@ def create_dynamic_collection(
             pool = self.l3_pool
             if pool is None:
                 return None
-            rows = await pool.fetch(fetch_sql, entity_id)
-            if not rows:
+            found = await read_row(pool, tbl_name, by={pk_column: entity_id})
+            if found is None:
                 return None
-            result = dict(rows[0])
+            result = found
             for vec_col in vector_columns:
                 if vec_col in result:
                     result[vec_col] = _decode_vector(result[vec_col])

@@ -40,6 +40,7 @@ from threetears.core.collections.schema_backed import (
     Index,
     TableSchema,
 )
+from threetears.core.keyed.point import read_row
 from threetears.core.keyed.writes import delete_keyed
 
 __all__ = [
@@ -208,6 +209,7 @@ class SourceTokenFence:
     def __init__(self, transaction: Transaction, *, table: str, signal: str) -> None:
         self._transaction = transaction
         self._table = f'"{table}"'
+        self._table_name = table
         #: the table's key (:func:`source_tokens_schema`): a fence's row is read by it
         self._key_column = _SIGNAL
         self._signal = signal
@@ -271,9 +273,8 @@ class SourceTokenFence:
         :return: the token, None when no token was accepted
         :rtype: SourceToken | None
         """
-        row = await conn.fetchrow(
-            f"SELECT {_RUN_ID}, {_AS_OF} FROM {self._table} WHERE {self._key_column} = $1",  # noqa: S608 - the owner's own table
-            self._signal,
+        row = await read_row(
+            conn, self._table_name, by={self._key_column: self._signal}, columns=(_RUN_ID, _AS_OF), records=True
         )
         return None if row is None else SourceToken(run_id=int(row[_RUN_ID]), as_of=_as_datetime(row[_AS_OF]))
 

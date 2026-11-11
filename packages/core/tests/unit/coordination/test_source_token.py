@@ -21,6 +21,10 @@ class _Conn:
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any]:
         return {"run_id": 9001, "as_of": self._as_of}
 
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        """the fence's read is a keyed point read (``threetears.core.keyed.read_row``), sent through ``fetch``."""
+        return [await self.fetchrow(sql, *args)]
+
 
 def _fence(as_of: Any) -> SourceTokenFence:
     @asynccontextmanager

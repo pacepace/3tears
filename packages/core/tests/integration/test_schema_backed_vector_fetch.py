@@ -14,7 +14,7 @@ hub knowledge get/update/delete 500 surfaced by the live smoke.
 
 this suite exercises the EXACT production path (declarative
 :class:`TableSchema` + the generic ``fetch_from_store`` ->
-``_build_fetch_sql``) against a real pgvector container, in the two
+:func:`threetears.core.keyed.read_row`) against a real pgvector container, in the two
 shapes that occur in production:
 
 1. the consumer DECLARES the vector column (the SDK / agent-memory

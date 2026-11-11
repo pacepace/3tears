@@ -36,6 +36,10 @@ class _Conn:
     async def fetchrow(self, sql: str, *params: Any) -> Any:
         raise self._error
 
+    async def fetch(self, sql: str, *params: Any) -> Any:
+        """begin's record lock is a keyed point read (``threetears.core.keyed.read_row``), sent through ``fetch``."""
+        raise self._error
+
 
 def _epochs() -> ScopeEpochs:
     return ScopeEpochs(SimpleNamespace(table_name="scope_epochs"))  # type: ignore[arg-type]

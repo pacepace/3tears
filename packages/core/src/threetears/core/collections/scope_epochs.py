@@ -95,7 +95,7 @@ from typing import Any, Final
 import asyncpg
 from threetears.observe import contain, get_logger
 
-from threetears.core.keyed import WholeReads
+from threetears.core.keyed import Lock, WholeReads, read_row, read_value
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, read_l3_rows
@@ -345,10 +345,10 @@ class ScopeEpochs:
         """
         _WHOLE_READS.count(why, table=self._collection.table_name)
         l3 = self._collection.required_l3_pool
-        record = await l3.fetch(f"SELECT epoch FROM {self._table} WHERE {self._key_column} = $1", WHOLE)  # noqa: S608 - the owner's table name
+        record = await read_value(l3, self.table_name, by={"scope": WHOLE}, column="epoch")
         rows = await read_l3_rows(l3, self._collection.table_name, _COLUMNS, ("scope",), page_size=self._page_size)
         self._rows = {str(row["scope"]): row for row in rows}
-        self._since = int(record[0]["epoch"]) if record else 0
+        self._since = int(record) if record is not None else 0
         built = _Building()
         for row in rows:
             built.apply(row)
@@ -501,9 +501,13 @@ class ScopeEpochs:
         abandoned = False
         try:
             async with self._collection.required_l3_pool.acquire() as conn, CallerTransaction(conn):
-                row = await conn.fetchrow(
-                    f"SELECT writing FROM {self._table} WHERE {self._key_column} = $1 FOR UPDATE NOWAIT",  # noqa: S608 - the owner's table name
-                    WHOLE,
+                row = await read_row(
+                    conn,
+                    self.table_name,
+                    by={"scope": WHOLE},
+                    columns=("writing",),
+                    records=True,
+                    lock=Lock.UPDATE_NOWAIT,
                 )
                 if row is not None and row["writing"] is not None and int(row["writing"]) == version:
                     log.warning(
@@ -543,9 +547,8 @@ class ScopeEpochs:
         try:
             # the record's lock, taken without waiting: a data transaction left open by a stale writer
             # holds it, and waiting on it would stall this write for as long as that one hangs
-            await conn.fetchrow(
-                f"SELECT writing FROM {self._table} WHERE {self._key_column} = $1 FOR UPDATE NOWAIT",  # noqa: S608 - the owner's table name
-                WHOLE,
+            await read_row(
+                conn, self.table_name, by={"scope": WHOLE}, columns=("writing",), records=True, lock=Lock.UPDATE_NOWAIT
             )
         except asyncpg.exceptions.LockNotAvailableError as exc:
             # the one type a refused NOWAIT arrives as, on a direct pool and through the L3 broker alike
@@ -595,10 +598,13 @@ class ScopeEpochs:
         await self._bound_idle(conn)
         # the row's share lock, held to the end of the data transaction: it conflicts with begin's
         # FOR UPDATE NOWAIT and commit's UPDATE, not with this write's other data transactions
-        fenced = await conn.fetchrow(
-            f"SELECT writing FROM {self._table} WHERE {self._key_column} = $2 AND writing = $1 FOR SHARE",  # noqa: S608 - the owner's table name
-            version,
-            WHOLE,
+        fenced = await read_row(
+            conn,
+            self.table_name,
+            by={"scope": WHOLE, "writing": version},
+            columns=("writing",),
+            records=True,
+            lock=Lock.SHARE,
         )
         if fenced is None:
             raise ValueError(

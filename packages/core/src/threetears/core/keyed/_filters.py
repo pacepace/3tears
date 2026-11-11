@@ -150,6 +150,8 @@ class Lock(StrEnum):
 
     UPDATE = "FOR UPDATE"
     UPDATE_SKIP_LOCKED = "FOR UPDATE SKIP LOCKED"
+    #: refused at once (``LockNotAvailableError``) when another transaction holds a row, never waited on
+    UPDATE_NOWAIT = "FOR UPDATE NOWAIT"
     NO_KEY_UPDATE = "FOR NO KEY UPDATE"
     SHARE = "FOR SHARE"
 
@@ -161,8 +163,10 @@ class Lock(StrEnum):
         :return: the clause, with its leading space
         :rtype: str
         """
-        skip = self.value.endswith(" SKIP LOCKED")
-        return f" {self.value.removesuffix(' SKIP LOCKED')} OF {alias}{' SKIP LOCKED' if skip else ''}"
+        for wait in (" SKIP LOCKED", " NOWAIT"):
+            if self.value.endswith(wait):
+                return f" {self.value.removesuffix(wait)} OF {alias}{wait}"
+        return f" {self.value} OF {alias}"
 
 
 @dataclass(frozen=True)
