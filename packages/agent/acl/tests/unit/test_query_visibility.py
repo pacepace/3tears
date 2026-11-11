@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
+
 from threetears.agent.acl import (
     MAX_GROUP_MEMBERSHIP_DEPTH,
     caller_visible_customer_clause,
@@ -22,6 +24,7 @@ from threetears.agent.acl import (
     customer_scope_visibility_clause,
     three_scope_visibility_clause,
 )
+from threetears.agent.acl.query_visibility import _caller_membership_predicate
 
 
 def test_returns_fragment_and_two_binds() -> None:
@@ -365,3 +368,37 @@ def test_the_clause_nests_one_hop_per_edge_up_to_the_cap() -> None:
     for level in range(2, MAX_GROUP_MEMBERSHIP_DEPTH + 1):
         assert f"gm{level}.group_id = gm{level - 1 if level > 2 else ''}.member_id" in fragment
     assert f"gm{MAX_GROUP_MEMBERSHIP_DEPTH + 1}" not in fragment
+
+
+def _generated_customers_query(param_offset: int, typed: bool) -> str:
+    """the visible-customer set as the membership generator builds it: what the written-out statements must be."""
+    of_type = f" AND ra.scope_namespace_type = ${param_offset + 1}" if typed else ""
+    return f"""SELECT
+        COALESCE(bool_or(ra.scope_type = 'all'), false) AS is_all,
+        COALESCE(
+            array_remove(
+                array_agg(DISTINCT
+                    CASE
+                        WHEN ra.scope_type = 'type_customer'{of_type} THEN ra.scope_customer_id
+                        WHEN ra.scope_type = 'namespace' THEN ns.customer_id
+                    END
+                ),
+                NULL
+            ),
+            ARRAY[]::uuid[]
+        ) AS customer_ids
+      FROM role_assignments ra
+      JOIN group_members gm ON gm.group_id = ra.group_id
+      LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id
+     WHERE {_caller_membership_predicate(param_offset)}"""
+
+
+@pytest.mark.parametrize("param_offset", [1, 3])
+@pytest.mark.parametrize("typed", [False, True])
+def test_the_written_out_customers_statements_are_the_generators(param_offset: int, typed: bool) -> None:
+    """Flips if CALLER_VISIBLE_CUSTOMERS_SQL or its typed form drifts from the membership generator (a nesting cap
+    changed, an arm edited in one place): each statement the query returns is the generator's, at every offset."""
+    sql, _ = caller_visible_customers_query(
+        user_id=uuid4(), param_offset=param_offset, scope_namespace_type="tool" if typed else None
+    )
+    assert sql == _generated_customers_query(param_offset, typed)

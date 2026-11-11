@@ -53,7 +53,8 @@ hazard, so the hub and the agent SDK import this ONE copy.
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Any, Final
 from uuid import UUID
 
 from threetears.observe import get_logger
@@ -257,6 +258,66 @@ def customer_scope_visibility_clause(
     return fragment, params
 
 
+#: a ``$N`` placeholder, its number captured
+_PLACEHOLDER_NUMBER: Final[re.Pattern[str]] = re.compile(r"\$(\d+)")
+
+#: the caller's visible-customer set (the RLS GUC's), written out: the caller ``$1``, its groups to the nesting cap
+CALLER_VISIBLE_CUSTOMERS_SQL: Final[str] = (
+    "SELECT\n"
+    "        COALESCE(bool_or(ra.scope_type = 'all'), false) AS is_all,\n"
+    "        COALESCE(\n"
+    "            array_remove(\n"
+    "                array_agg(DISTINCT\n"
+    "                    CASE\n"
+    "                        WHEN ra.scope_type = 'type_customer' THEN ra.scope_customer_id\n"
+    "                        WHEN ra.scope_type = 'namespace' THEN ns.customer_id\n"
+    "                    END\n"
+    "                ),\n"
+    "                NULL\n"
+    "            ),\n"
+    "            ARRAY[]::uuid[]\n"
+    "        ) AS customer_ids\n"
+    "      FROM role_assignments ra\n"
+    "      JOIN group_members gm ON gm.group_id = ra.group_id\n"
+    "      LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id\n"
+    "     WHERE ((gm.member_type = 'user' AND gm.member_id = $1)\n"
+    "             OR (gm.member_type = 'group' AND EXISTS (\n"
+    "                    SELECT 1\n"
+    "                      FROM group_members gm2\n"
+    "                     WHERE gm2.group_id = gm.member_id\n"
+    "                       AND ((gm2.member_type = 'user' AND gm2.member_id = $1))\n"
+    "                )))"
+)
+
+#: the same set for one namespace type (``$2``): a type_customer grant joins it only on that type
+CALLER_VISIBLE_CUSTOMERS_OF_TYPE_SQL: Final[str] = (
+    "SELECT\n"
+    "        COALESCE(bool_or(ra.scope_type = 'all'), false) AS is_all,\n"
+    "        COALESCE(\n"
+    "            array_remove(\n"
+    "                array_agg(DISTINCT\n"
+    "                    CASE\n"
+    "                        WHEN ra.scope_type = 'type_customer' AND ra.scope_namespace_type = $2 THEN ra.scope_customer_id\n"
+    "                        WHEN ra.scope_type = 'namespace' THEN ns.customer_id\n"
+    "                    END\n"
+    "                ),\n"
+    "                NULL\n"
+    "            ),\n"
+    "            ARRAY[]::uuid[]\n"
+    "        ) AS customer_ids\n"
+    "      FROM role_assignments ra\n"
+    "      JOIN group_members gm ON gm.group_id = ra.group_id\n"
+    "      LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id\n"
+    "     WHERE ((gm.member_type = 'user' AND gm.member_id = $1)\n"
+    "             OR (gm.member_type = 'group' AND EXISTS (\n"
+    "                    SELECT 1\n"
+    "                      FROM group_members gm2\n"
+    "                     WHERE gm2.group_id = gm.member_id\n"
+    "                       AND ((gm2.member_type = 'user' AND gm2.member_id = $1))\n"
+    "                )))"
+)
+
+
 def caller_visible_customers_query(
     *,
     user_id: UUID,
@@ -296,29 +357,15 @@ def caller_visible_customers_query(
         when one is given
     :rtype: tuple[str, list[Any]]
     """
+    # the statements are written out (CALLER_VISIBLE_CUSTOMERS_SQL / _OF_TYPE_SQL, each the membership predicate
+    # to the nesting cap); a caller binding the user at another position has their placeholders renumbered
     params: list[Any] = [user_id]
-    of_type = ""
+    sql = CALLER_VISIBLE_CUSTOMERS_SQL
     if scope_namespace_type is not None:
-        of_type = f" AND ra.scope_namespace_type = ${param_offset + 1}"
+        sql = CALLER_VISIBLE_CUSTOMERS_OF_TYPE_SQL
         params.append(scope_namespace_type)
-    sql = f"""SELECT
-        COALESCE(bool_or(ra.scope_type = 'all'), false) AS is_all,
-        COALESCE(
-            array_remove(
-                array_agg(DISTINCT
-                    CASE
-                        WHEN ra.scope_type = 'type_customer'{of_type} THEN ra.scope_customer_id
-                        WHEN ra.scope_type = 'namespace' THEN ns.customer_id
-                    END
-                ),
-                NULL
-            ),
-            ARRAY[]::uuid[]
-        ) AS customer_ids
-      FROM role_assignments ra
-      JOIN group_members gm ON gm.group_id = ra.group_id
-      LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id
-     WHERE {_caller_membership_predicate(param_offset)}"""
+    if param_offset != 1:
+        sql = _PLACEHOLDER_NUMBER.sub(lambda found: f"${int(found.group(1)) + param_offset - 1}", sql)
     return sql, params
 
 
