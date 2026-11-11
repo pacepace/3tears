@@ -653,16 +653,29 @@ def _update_before(call: ast.Call) -> list[str]:
     ]
 
 
-def _step_relation(node: ast.expr | None, argument: str) -> list[str]:
-    """the read a step makes of one relation it names: the relation whole; nothing for a step or derived select (each
-    judged where it is written)."""
+def _step_relation(node: ast.expr | None, argument: str, where: Sequence[str] = ()) -> list[str]:
+    """the read a step makes of one relation it names: the relation whole, or the rows its ``where=`` on ``t`` names;
+    nothing for a step or derived select (each judged where it is written). A name already quoted
+    (``Quoted(snapshot.relation(NAME))``, the walk writing it as the relation it names: ``copy.<name>``) is read as
+    that relation, never trusted for being quoted."""
     if isinstance(node, ast.Call) and _name(node) == "change_relation":
         node = _argument(node, "name", 0)
     if isinstance(node, ast.Call) and (_name(node) in STEP_CALLS or _name(node) == "Derived"):
         return []
+    if isinstance(node, ast.Call) and _name(node) == "Quoted":
+        named = _argument(node, "name", 0)
+        if isinstance(named, ast.Constant) and isinstance(named.value, str):
+            return [f"SELECT * FROM {named.value} AS t{_where(where)}"]
+        return [f"SELECT * FROM {_named(named, argument)} AS t{_where(where)}"]
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return [f"SELECT * FROM {'.'.join(_quoted(part) for part in node.value.split('.'))} AS t"]
-    return [f"SELECT * FROM {_named(node, argument)} AS t"]
+        return [f"SELECT * FROM {'.'.join(_quoted(part) for part in node.value.split('.'))} AS t{_where(where)}"]
+    return [f"SELECT * FROM {_named(node, argument)} AS t{_where(where)}"]
+
+
+#: the steps whose ``where=`` is on the relation they read first (``t``): its read is the rows those name
+_WHERE_ON_T: Final[frozenset[str]] = frozenset(
+    {"scan", "semi", "anti", "distinct", "grouped", "latest_per_key", "windowed"}
+)
 
 
 def _match_columns(node: ast.expr | None) -> list[str]:
@@ -692,8 +705,9 @@ def _step(call: ast.Call) -> list[str]:
             if isinstance(node, ast.Starred):
                 raise _Unseen("rels")
             statements += _step_relation(node, f"rels[{index}]")
+    narrowed = _filters(call, 1)[0] if helper in _WHERE_ON_T else []
     for position, keyword in STEP_RELATIONS.get(helper, ()):
-        statements += _step_relation(_argument(call, keyword, position), keyword)
+        statements += _step_relation(_argument(call, keyword, position), keyword, narrowed if position == 0 else ())
     for position, keyword in STEP_TARGETS.get(helper, ()):
         target = _argument(call, keyword, position)
         if isinstance(target, ast.Call) and _name(target) == "change_relation":

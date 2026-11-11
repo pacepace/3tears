@@ -30,9 +30,10 @@ marker never makes it keyed.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.protocol import parse_rowcount
@@ -52,6 +53,7 @@ from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
     "Match",
+    "Quoted",
     "Step",
     "anti",
     "any_step",
@@ -93,8 +95,32 @@ class Step:
     params: tuple[Any, ...] = ()
 
 
-#: what a step reads: a change relation's TRUSTED name, a derived select, or another step
-Rel = str | Derived | Step
+#: a relation name as SQL writes it: identifiers, each bare or double-quoted, joined by dots (``"report"."lsf_rows"``)
+_QUOTED_NAME: Final = re.compile(
+    r'(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)(?:\.(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*))*'
+)
+
+
+@dataclass(frozen=True)
+class Quoted:
+    """a relation's name already quoted as SQL names it (a copy's run-time relation, ``snapshot.relation(name)``:
+    ``"report"."lsf_rows"``): a step reads it as written, never quoting it again. Only a name: dotted identifiers,
+    each bare or double-quoted. The no-whole-reads rule judges a step over it as reading the relation it names.
+
+    :param name: the relation, TRUSTED, quoted
+    :ptype name: str
+    :raises ValueError: for anything but a quoted relation name
+    """
+
+    name: str
+
+    def __post_init__(self) -> None:
+        if not _QUOTED_NAME.fullmatch(self.name):
+            raise ValueError(f"a quoted relation is a name, dotted identifiers, not {self.name!r}")
+
+
+#: what a step reads: a change relation's TRUSTED name, one already quoted, a derived select, or another step
+Rel = str | Quoted | Derived | Step
 
 
 @dataclass(frozen=True)
@@ -157,6 +183,8 @@ class _Statement:
             return f"({text}) AS {alias}"
         if isinstance(rel, Derived):
             return f"({rel.sql}) AS {alias}"
+        if isinstance(rel, Quoted):
+            return f"{rel.name} AS {alias}"
         return f"{quoted_table(rel)} AS {alias}"
 
     def fragments(self, fragments: Sequence[Fragment]) -> list[str]:

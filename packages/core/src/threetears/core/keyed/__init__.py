@@ -104,6 +104,7 @@ from threetears.core.keyed.rows import (
 )
 from threetears.core.keyed.steps import (
     Match,
+    Quoted,
     Step,
     anti,
     any_step,
@@ -214,6 +215,7 @@ __all__ = [
     "update_from",
     "update_keyed",
     "Match",
+    "Quoted",
     "Step",
     "anti",
     "any_step",

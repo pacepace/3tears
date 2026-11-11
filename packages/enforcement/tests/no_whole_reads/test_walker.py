@@ -3254,3 +3254,54 @@ def test_a_name_a_cte_of_the_statement_its_code_assembles_is_that_cte(tmp_path: 
     assert ("reads_stage0_alone", "unknown-predicate stage0") in found, found
     helped = use_the_helper_findings(config)
     assert not [line for line in helped if "_PanelQuery" in line or "_StateQuery" in line], helped
+
+
+#: a reader's steps over a copy's run-time relation, already quoted (``Quoted(snapshot.relation(NAME))``)
+_QUOTED_READS = """
+    from threetears.core import keyed
+    from threetears.core.keyed import InlineDuckDB, run_inline
+
+    LONG_ROWS = "lsf_rows"
+
+
+    class _Work:
+        def put(self, rows):
+            return keyed.change_relation("_settle_1")
+
+
+    def one_state(snapshot, state):
+        rows = keyed.Quoted(snapshot.relation(LONG_ROWS))
+        step = keyed.scan(rows, where=[keyed.Fragment("t.join_state_code = $1", (state,))])
+        return run_inline(keyed.read_step(InlineDuckDB(snapshot.cursor), step))
+
+
+    def every_state(snapshot):
+        return run_inline(keyed.read_step(InlineDuckDB(snapshot.cursor), keyed.scan(keyed.Quoted(snapshot.relation(LONG_ROWS)))))
+
+
+    def every_office(snapshot, office):
+        where = [keyed.Fragment("t.office = $1", (office,))]
+        step = keyed.distinct(keyed.Quoted(snapshot.relation(LONG_ROWS)), ["office"], where=where)
+        return run_inline(keyed.read_step(InlineDuckDB(snapshot.cursor), step))
+
+
+    def staged(work: _Work, conn, rows):
+        return run_inline(keyed.read_step(InlineDuckDB(conn), keyed.scan(keyed.Quoted(work.put(rows)))))
+"""
+
+
+def test_a_relation_already_quoted_is_judged_as_the_relation_it_names(tmp_path: Path) -> None:
+    """Flips if a step over ``Quoted(...)`` is trusted for being quoted: a copy relation read whole, or narrowed by a
+    column no copy key leads with, passes; or if one read by the copy's key (a step's ``where=`` on ``t``), or a
+    quoted change set, is flagged."""
+    found = _symbols(
+        _config(
+            tmp_path,
+            {"quoted.py": _QUOTED_READS},
+            local_relations={"*": ("join_state_code",)},
+            transient_producers=frozenset({"_Work.put"}),
+        )
+    )
+    functions = {function for function, _ in found}
+    assert not functions & {"one_state", "staged"}, found
+    assert {"every_state", "every_office"} <= functions, found

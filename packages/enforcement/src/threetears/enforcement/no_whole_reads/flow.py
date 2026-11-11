@@ -619,6 +619,9 @@ class RelationFlow:
         name = _final(node)
         if name in {"change_relation", "Derived"}:
             return CLEAN
+        if name == "Quoted" and len(node.args) == 1:
+            # a name already quoted is what it names
+            return self._kind(node.args[0], scope, depth + 1)
         if name in _RELATION_STEPS and self._keyed_step(node):
             return CLEAN
         if self._produces(node, scope.function, scope.owner):

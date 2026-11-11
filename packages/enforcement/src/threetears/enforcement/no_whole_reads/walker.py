@@ -2056,12 +2056,17 @@ class _ModuleWalk(ast.NodeVisitor):
             if isinstance(declared, ast.Call) and _final(declared) == "change_relation":
                 return declared
             if isinstance(value, ast.Name) and (stepped := self._bound_step(value.id)) is not None:
-                return stepped
+                return literal(stepped) if _final(stepped) == "Quoted" else stepped
             # a module constant holding the argument's shape (``_NEWEST_FIRST = (Sort("date_started"), ...)``)
             if isinstance(value, ast.Name) and isinstance(
                 self._module_values.get(value.id), (ast.Tuple, ast.List, ast.Dict)
             ):
                 return self._module_values[value.id]
+            # a name already quoted (``Quoted(snapshot.relation(NAME))``): the relation it names, as a statement
+            # interpolating it reads (``copy.<name>``, a constant's text, a producer's change set), never trusted
+            if isinstance(value, ast.Call) and _final(value) == "Quoted" and len(value.args) == 1:
+                text = _placeholder(value.args[0], self._envs[-1], self._produced_by)
+                return ast.Call(func=value.func, args=[ast.Constant(text)], keywords=[])
             # a relation a declared producer yields at run time (``source.relation``, ``derived(part.relation)``):
             # the name its declaration is judged as; a mapping every value of which is one, that one relation
             produced = self._relation_produced(value)
@@ -2353,7 +2358,7 @@ class _ModuleWalk(ast.NodeVisitor):
         ]
         if len(bound) == 1 and isinstance(bound[0], ast.Call):
             callee = _final(bound[0])
-            if callee in STEP_CALLS or callee in {"change_relation", "Derived"}:
+            if callee in STEP_CALLS or callee in {"change_relation", "Derived", "Quoted"}:
                 return bound[0]
         return None
 

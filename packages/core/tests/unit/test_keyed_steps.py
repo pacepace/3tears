@@ -21,6 +21,7 @@ from threetears.core.keyed import (
     InlineDuckDB,
     ThreadedDuckDB,
     Match,
+    Quoted,
     Selected,
     Sort,
     anti,
@@ -475,6 +476,29 @@ def test_the_first_differing_row_among_those_a_condition_names_is_the_hand_writt
         "AND (raw.a IS DISTINCT FROM seen.a) ORDER BY raw.__row LIMIT 1"
     ).fetchall()
     assert found == {"__row": expected[0][0]} == {"__row": 40}
+
+
+def test_a_relation_already_quoted_is_read_as_written_never_quoted_again(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a step over a :class:`Quoted` name quotes it again (``\"\"report\"\"`` reads no relation), reads other
+    rows than the hand-written statement over it, or takes text that is no relation's name."""
+    conn.execute("CREATE SCHEMA report")
+    conn.execute("CREATE VIEW report.held AS SELECT * FROM main.held")
+    step = scan(Quoted('"report"."held"'), ["state", "run_id"], where=[_TENANT])
+    assert 'FROM "report"."held" AS t' in step.sql
+    _same(
+        conn,
+        'SELECT t.state, t.run_id FROM "report"."held" AS t WHERE t.state = $1',
+        lambda c: read_step(c, step),
+    )
+    _same(
+        conn,
+        "SELECT t.* FROM report.held AS t WHERE EXISTS (SELECT 1 FROM changed AS k WHERE t.state = k.state AND "
+        "t.office IS NOT DISTINCT FROM k.office AND t.run_id = k.run_id) AND t.state = $1",
+        lambda c: read_step(c, semi(Quoted("report.held"), _CHANGED, on=_KEY, where=[_TENANT])),
+    )
+    for refused in ("", "held; DROP TABLE held", '"report".held AS x', "(SELECT 1)"):
+        with pytest.raises(ValueError, match="quoted relation"):
+            Quoted(refused)
 
 
 def test_steps_refuse_what_cannot_describe_them() -> None:
