@@ -61,11 +61,18 @@ each package runs in one worker in its usual order, and packages run side by sid
 single-package run (`./scripts/test.sh core`) stays serial. Pass `-n 0` to run the whole suite
 serially, for a debugger or to rule out the parallel run.
 
-CI runs the same thing as five sessions, through `./scripts/ci-unit-tests.sh`: evals, core with
-datasources, the agent family, every other package, then `tests/`. A worker's memory only grows
-over its session, and one session over the whole suite grew four workers past the runner's 16 GB,
-so the job was killed with no summary. Each session starts fresh workers, and together they
-collect exactly the tests one session would.
+On GitHub's runners CI runs the same thing as parallel shards, through
+`./scripts/ci-unit-tests.sh --shard <name>`: `evals-1` to `evals-8`, `core` (with datasources),
+`tests`, and `rest` (the agent family and every other package). A worker's memory only grows over
+its session, and one session over the whole suite grew four workers past the runner's 16 GB, so
+the job was killed with no summary. Each session starts fresh workers, and together they collect
+exactly the tests one session would.
+
+An evals shard runs on one worker (evals is one xdist group), so its wall clock is the sum of its
+tests. pytest-split cuts evals into eight runs of about equal recorded duration, from
+`.test_durations` at the repo root. Refresh that file from the testament pool's history with
+`./scripts/update-test-durations.sh` when the `unit (evals-N)` jobs drift apart; stale entries
+only cost balance, never a test.
 
 Where `testament` is installed (outside CI), `test.sh` hands the run to its
 runners instead (testament 0.44.0 or later: an older client refuses the manifest's `[areas]` and

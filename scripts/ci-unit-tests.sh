@@ -6,11 +6,21 @@
 #
 # Without --shard every session below runs, one after another (local use). CI runs the shards as
 # parallel jobs instead, so the gate takes as long as its slowest shard rather than their sum:
-#   evals-1 evals-2 evals-3   packages/evals, split three ways by pytest-split (--splits 3 --group N)
-#   core                      packages/core and packages/datasources
-#   tests                     the repo-level tests/
-#   rest                      packages/agent, every remaining package, and the serial loop_timing run
-# Together the six run exactly what the no-selector run does: every test once.
+#   evals-1 .. evals-8   packages/evals, split eight ways by pytest-split (--splits 8 --group N)
+#   core                 packages/core and packages/datasources
+#   tests                the repo-level tests/
+#   rest                 packages/agent, every remaining package, and the serial loop_timing run
+# Together the eleven run exactly what the no-selector run does: every test once. pytest-split
+# hands each group a disjoint slice of the same collection, so the eight evals groups partition it.
+#
+# HOW EVALS SPLITS. The root conftest puts a package's tests in one xdist_group, so an evals shard
+# runs on ONE worker, serially: its wall clock is the sum of its tests. pytest-split cuts the
+# collection, in its own order, into eight runs of about equal recorded duration
+# (duration_based_chunks, from .test_durations; ./scripts/update-test-durations.sh refreshes it).
+# Contiguous runs, not least_duration's interleaving: a file keeps its tests together, so a costly
+# module fixture (test_writer_calibration_dry.py's takes about three minutes) is paid once, not once
+# a shard. Without durations it split by count, and alphabetical order put the slow writer and
+# reading files in one shard: 56 minutes against 22.
 #
 # WHY SESSIONS. An xdist worker lives for its whole session and its resident memory only grows:
 # glibc keeps what a test freed for reuse instead of returning it, so a worker's RSS is the peak of
@@ -33,7 +43,7 @@ cd "$REPO_ROOT"
 
 export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 
-SHARDS="evals-1 evals-2 evals-3 core tests rest"
+SHARDS="evals-1 evals-2 evals-3 evals-4 evals-5 evals-6 evals-7 evals-8 core tests rest"
 shard=""
 if [ "${1:-}" = "--shard" ]; then
     shard="${2:-}"
@@ -59,7 +69,9 @@ done
 # a session is "<directories>" or "<directories>|<extra pytest args>"; the evals shards add pytest-split's selector
 case "$shard" in
     "") SESSIONS=("${SOLO[@]}" "${remaining[*]}" tests) ;;
-    evals-[123]) SESSIONS=("packages/evals|--splits 3 --group ${shard#evals-}") ;;
+    evals-*)
+        SESSIONS=("packages/evals|--splits 8 --group ${shard#evals-} --splitting-algorithm duration_based_chunks --durations-path .test_durations")
+        ;;
     core) SESSIONS=("packages/core packages/datasources") ;;
     tests) SESSIONS=(tests) ;;
     rest) SESSIONS=(packages/agent "${remaining[*]}") ;;

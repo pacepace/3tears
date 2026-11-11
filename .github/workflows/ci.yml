@@ -20,7 +20,7 @@ on:
     branches: [develop]
 
 jobs:
-  # The unit + enforcement suite, as six shards running side by side: one session after another
+  # The unit + enforcement suite, as eleven shards running side by side: one session after another
   # took ~25 of `check`'s ~27 minutes, evals alone 12. The shards partition exactly what
   # `./scripts/ci-unit-tests.sh` runs with no selector (see its header), so every test still runs
   # once. `check` below waits for all of them and is the one status the branches require.
@@ -31,7 +31,7 @@ jobs:
       # every shard reports, so one failure does not hide another's
       fail-fast: false
       matrix:
-        shard: [evals-1, evals-2, evals-3, core, tests, rest]
+        shard: [evals-1, evals-2, evals-3, evals-4, evals-5, evals-6, evals-7, evals-8, core, tests, rest]
     steps:
       # fetch-depth 0: the scope step diffs against the PR base, and the API-growth gate in
       # tests/enforcement compares against the latest vX.Y.Z tag; a shallow clone has neither.

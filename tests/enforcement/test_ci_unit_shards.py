@@ -59,8 +59,23 @@ def _needs(job: dict[str, object]) -> list[str]:
 
 
 def test_the_shards_partition_the_suite() -> None:
-    """the six shards are the evals thirds, core, tests and rest -- what the no-selector run runs."""
-    assert _script_shards() == ["evals-1", "evals-2", "evals-3", "core", "tests", "rest"]
+    """the eleven shards are the eight evals groups, core, tests and rest -- what the no-selector run runs."""
+    evals = [f"evals-{group}" for group in range(1, 9)]
+    assert _script_shards() == [*evals, "core", "tests", "rest"]
+
+
+def test_the_evals_shards_are_every_group_of_the_split() -> None:
+    """pytest-split's groups partition packages/evals only when every group 1..N runs, N being ``--splits``.
+
+    a shard list one short of ``--splits`` leaves a group, a slice of the evals tests, that no job runs.
+    """
+    script = _SCRIPT.read_text()
+    splits = re.findall(r"--splits (\d+) --group \$\{shard#evals-\}", script)
+    assert len(splits) == 1, "scripts/ci-unit-tests.sh no longer splits evals as --splits N --group <shard>"
+    groups = [name.removeprefix("evals-") for name in _script_shards() if name.startswith("evals-")]
+    assert groups == [str(group) for group in range(1, int(splits[0]) + 1)]
+    assert "--durations-path .test_durations" in script
+    assert (_REPO_ROOT / ".test_durations").is_file(), "the evals split balances by .test_durations"
 
 
 @pytest.mark.parametrize("workflow", ["ci.yml", "release.yml"])
