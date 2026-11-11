@@ -161,9 +161,11 @@ class JudgeExamples:
 
     :ivar grades: Each example's grades, in the order the judge lists them.
     :ivar repeats: How many times each was to be graded: the eval's ``k``.
-    :ivar spend: What the judge's calls on them cost, under the ``judge`` role, apart from every arm's results.
-    :ivar stopped: What stopped the grading before every repeat of every example was asked (the eval's cost cap), or
-        ``None`` where none did.
+    :ivar spend: What the judge's calls on them cost, under the ``judge`` role, apart from every arm's results: calls
+        made outside any run, each written to the out-of-run ledger under purpose ``judge``.
+    :ivar stopped: Why the grading stopped before every repeat of every example was asked, as a clause that follows
+        "since" (the eval's cost cap, with what the eval landed against it; spend nobody priced; a grading that
+        failed, with its cause), or ``None`` where nothing did.
     """
 
     grades: tuple[ExampleGrade, ...]
@@ -195,33 +197,44 @@ class JudgeExamples:
         over = "" if self.repeats == 1 else f" on every one of {self.repeats} repeats"
         if unread := self.unread:
             errors = [error for grade in unread for error in grade.errors]
-            why = (
-                f"{self.stopped} stopped the grading"
-                if self.stopped is not None
-                else f"the judge's call failed: {errors[0]}"
-            )
+            why = self.stopped if self.stopped is not None else f"the judge's call failed: {errors[0]}"
             over += f"; {len(unread)} not graded in full, since {why}"
         return over
+
+    @property
+    def _none_graded(self) -> bool:
+        """Whether the grading stopped before the judge gave any example a verdict or an error."""
+        return self.stopped is not None and not any(grade.verdicts or grade.errors for grade in self.grades)
+
+    def _cost(self) -> str:
+        """What the calls cost, in parentheses after a leading space, or nothing where none was made."""
+        return f" ({self.spend.money_text()})" if self.spend.calls else ""
 
     def lines(self) -> list[str]:
         """The quiet print's lines: how many were graded as they must be and what that cost, then each miss.
 
         :return: ``judge: 3 of 4 examples graded as they must be on every one of 2 repeats ($0.0010 over 8 call(s))``,
-            then one indented ``missed:`` line per miss.
+            then one indented ``missed:`` line per miss; ``judge: 4 examples not graded, since ...`` where the grading
+            stopped before any was.
         :rtype: list[str]
         """
+        if self._none_graded:
+            return [f"judge: {len(self.grades)} examples not graded, since {self.stopped}{self._cost()}"]
         counted = f"{self.as_they_must} of {len(self.grades)} examples graded as they must be{self._over()}"
-        cost = f" ({self.spend.money_text()})" if self.spend.calls else ""
-        return [f"judge: {counted}{cost}", *(f"  missed: {grade.miss_text()}" for grade in self.misses)]
+        return [f"judge: {counted}{self._cost()}", *(f"  missed: {grade.miss_text()}" for grade in self.misses)]
 
     def sentence(self) -> str:
-        """What a page says: one sentence, then its misses.
+        """What a page says: one sentence with what the calls cost, as the print says it, then its misses.
 
-        :return: ``The judge graded 3 of 4 of its examples as they must be on every one of 2 repeats. Missed: ...``.
+        :return: ``The judge graded 3 of 4 of its examples as they must be on every one of 2 repeats ($0.0010 over 8
+            call(s)). Missed: ...``.
         :rtype: str
         """
+        if self._none_graded:
+            return f"The judge's {len(self.grades)} examples were not graded, since {self.stopped}{self._cost()}."
         said = (
-            f"The judge graded {self.as_they_must} of {len(self.grades)} of its examples as they must be{self._over()}."
+            f"The judge graded {self.as_they_must} of {len(self.grades)} of its examples as they must "
+            f"be{self._over()}{self._cost()}."
         )
         if self.misses:
             said += f" Missed: {'; '.join(grade.miss_text() for grade in self.misses)}."
@@ -353,17 +366,24 @@ class Judge:
         """
         return name if "." in name else f"{DIMENSION_CONTEXT}.{name}"
 
-    def authored_cases(self, *, intent: str) -> list[AuthoredJudgeCase]:
+    def authored_cases(
+        self, *, intent: str, evidence: Sequence[JudgeEvidence] | None = None
+    ) -> list[AuthoredJudgeCase]:
         """The :attr:`examples` as authored judge cases: each answer as the judge reads it, its verdict its label.
 
         :param intent: The scenario the judge reads beside each one: the run's template intent, so an example is asked
             exactly as the run's answers are.
         :ptype intent: str
+        :param evidence: What the judge reads of each example, in order, as a run's cell renders it (its case less the
+            keys a run withholds, a classifier's label left out); ``None`` renders each example's case as written.
+        :ptype evidence: Sequence[JudgeEvidence] | None
         :return: One case per example, in order.
         :rtype: list[AuthoredJudgeCase]
         :raises ValueError: An example names no dimension of the rubric, gives a verdict its dimension's scale cannot
-            hold, or has a case :attr:`case_material` cannot render.
+            hold, or has a case :attr:`case_material` cannot render; or ``evidence`` is not one per example.
         """
+        if evidence is not None and len(evidence) != len(self.examples):
+            raise ValueError(f"{len(evidence)} evidence for {len(self.examples)} example(s); one per example")
         dims = {dim.name: dim for dim in self._dims}
         authored: list[AuthoredJudgeCase] = []
         for index, example in enumerate(self.examples):
@@ -373,13 +393,13 @@ class Judge:
                     f"judge example {index} is graded on {example.dimension!r}, which is no dimension of the rubric "
                     f"({', '.join(sorted(dims))})"
                 )
-            evidence = judge_evidence(self, example.case, example.answer)
+            read = judge_evidence(self, example.case, example.answer) if evidence is None else evidence[index]
             try:
                 authored.append(
                     AuthoredJudgeCase(
                         criterion=criterion,
-                        output=evidence.artifact,
-                        case_material=evidence.case_material,
+                        output=read.artifact,
+                        case_material=read.case_material,
                         intent=intent,
                         expected=example.expected,
                         author=example.author,

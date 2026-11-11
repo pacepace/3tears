@@ -35,6 +35,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, TypeIs
 
+from threetears.evals.analysis.summary import EvalSummary
 from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.eval_scope import eval_running
 from threetears.evals.kernel.offload import run_blocking
@@ -204,8 +205,12 @@ class Eval:
     :ivar world: The world every arm's agent acts on, or ``None``.
     :ivar name: What titles the eval's campaign and report, and names its scope by default.
     :ivar k: Repeats per case, per arm.
-    :ivar max_cost_usd: The most the whole eval may spend, in US dollars, shared equally between its arms; ``None``
-        runs uncapped, which every summary states.
+    :ivar max_cost_usd: The most the whole eval may spend, in US dollars: each arm's run is capped at an equal share of
+        it, and a judge's examples, graded once the arms have run, draw on what the arms left of the whole. It is read
+        as a run's cap is, against the spend already landed before each cell and each example's call, so what is in
+        flight when it is reached finishes and the eval can end over it by that, which the result states; spend nobody
+        priced stops what has not started, since a cap cannot bound it. ``None`` runs uncapped, which every summary
+        states.
     :ivar measure_latency: Declare latency under test: the cases run one at a time, the arms one after another.
     :ivar question: The one sentence the eval answers, filed as its campaign's question; ``None`` asks none.
     :ivar margin: The question's margin in the measure's units, a non-inferiority question's; ``None`` declares none.
@@ -240,7 +245,8 @@ class Eval:
             file's stem, else the runner's name (a single arm's name, for a mapping of one). Several arms with neither
             are refused: a name built from the arms would move the runs every time an arm is added, renamed or dropped.
         :ptype name: str | None
-        :param max_cost_usd: The most the eval may spend, shared equally between its arms.
+        :param max_cost_usd: The most the eval may spend: each arm's run capped at an equal share, and a judge's examples
+            held to what the arms left (:attr:`max_cost_usd`).
         :ptype max_cost_usd: float | None
         :param measure_latency: Declare latency under test.
         :ptype measure_latency: bool
@@ -482,17 +488,18 @@ class Eval:
         )
         examples = None
         if judge is not None and judge.examples and summaries[0].template_id is not None:
-            # Graded once for the eval, after its arms, through the judge every arm's answers were graded by, and held
-            # to what the arms left of the eval's cap.
-            totals = [summary.total_cost_usd for summary in summaries]
+            # Graded once for the eval, after its arms, through the judge every arm's answers were graded by, each
+            # example judged as a cell's answer is (the classifier's label hidden alike), and held to what the arms
+            # left of the eval's cap. A grading that fails is said on the reading, so the arms' results still land.
             examples = await grade_judge_examples(
                 host,
                 judge,
                 summaries[0].template_id,
                 scope_id,
                 k=self.k,
+                expected=None if self.plan.classifier is None else partial(expected_label, name=self.plan.classifier),
                 max_cost_usd=self.max_cost_usd,
-                landed_usd=None if None in totals else math.fsum(total for total in totals if total is not None),
+                landed_usd=_landed_usd(summaries),
             )
         keyed = {
             arm if arm is not None else summary.candidate_model: summary
@@ -555,6 +562,23 @@ class Eval:
             )
         said += [f"outputs graded as logged in {given.path}" for given in self.arms.values() if isinstance(given, Log)]
         return said
+
+
+def _landed_usd(summaries: Sequence[EvalSummary]) -> float | None:
+    """What the arms' results landed, as a run's cost cap reads it: each result's cost summed, ``None`` where any
+    result's is unknown (it spent what nobody priced), which a cap cannot bound."""
+    landed: list[float] = []
+    for summary in summaries:
+        if summary.case_results is None:
+            if summary.total_cost_usd is None:
+                return None
+            landed.append(summary.total_cost_usd)
+            continue
+        for result in summary.case_results:
+            if result.cost_usd is None:
+                return None
+            landed.append(result.cost_usd)
+    return math.fsum(landed)
 
 
 def _case_names(cases: Sequence[Mapping[str, Any]]) -> list[str]:

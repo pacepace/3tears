@@ -31,6 +31,25 @@ refusal now names the eval whose run took the calls and says to build a `Model` 
 `Eval.run` marks its extent as one eval's run (`threetears.evals.kernel.eval_scope`, no root), which the replay reads.
 `Model`'s docstring states the rule.
 
+### evals: a judge's examples are ledgered, judged as the run's answers are, and never cost the eval its result
+
+**Fixed:** the paid judge calls that grade `Judge(examples=...)` are made after the arms, outside any run, and were
+written nowhere. Each is now written to the out-of-run spend ledger (`OutOfRunSpend`, purpose `judge`, stamped with
+the template) as it is made, and the page's sentence states what they cost, as the print does.
+
+**Fixed:** an example is judged exactly as a run's answer is: its case less `id`, `stratum` and `world`, and on a
+classifier eval without the label the case expects. The authored judge case seeded from it carries the same evidence.
+
+**Fixed:** with `max_cost_usd` set, an eval whose arms' spend went unpriced graded no example and said the cost cap
+stopped it. It now says the arms spent what nobody priced, which the cap cannot bound, and stops for that reason, as an
+enforcing run's cap stops at unpriced spend. The cap is read before each example's call against landed spend, as a
+run's is before each cell, so the call that crosses it lands whole; the line now says the eval went over, with what it
+landed against its cap. `Eval.max_cost_usd`'s docstring says the examples draw on it too.
+
+**Fixed:** a grading of the examples that fails (the template gone from the store, a judge the host cannot build, a
+judge completion that breaks the protocol) is contained and stated on the reading ("not graded, since the grading
+failed ..."), and the eval files its campaign and returns its result, where the arms' spent results were lost.
+
 ### evals: an unnamed comparison is refused
 
 **Changed:** a quick-path `Eval` with several arms and neither `name=` nor a cases file is refused when it is written

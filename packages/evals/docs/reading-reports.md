@@ -78,9 +78,10 @@ criterion was set and when, each aspect's own sentence for the test setup, verba
 and how many of its outputs to rate. No aspect's fold repeats it, and it never lowers a reading; code's decision
 does set aside an improvement under a judge not yet calibrated ([evidence tiers](#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)).
 An eval whose judge has examples (answers it must grade a known way, `Judge(examples=...)`) adds one sentence after
-that table: how many of them the judge graded as they must be on every repeat, then each miss, as the answer, what it
-was graded and what it must get (`The judge graded 3 of 4 of its examples as they must be on every one of 2 repeats.
-Missed: "Done: your year is refunded in full." graded pass on grounded, must fail (no refund after 30 days).`). It is
+that table: how many of them the judge graded as they must be on every repeat and what grading them cost, then each
+miss, as the answer, what it was graded and what it must get (`The judge graded 3 of 4 of its examples as they must
+be on every one of 2 repeats ($0.0010 over 8 call(s)). Missed: "Done: your year is refunded in full." graded pass on
+grounded, must fail (no refund after 30 days).`). It is
 read beside the calibration row and never changes it: a few written answers are not the run's, and reach no tier.
 A page read again from the store, rather than the one the eval's result writes, has no such sentence.
 An aspect's own page says the same line under its verdict, its detail in its methods (a judge's under Not tested).

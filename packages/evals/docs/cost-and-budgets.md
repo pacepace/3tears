@@ -148,6 +148,10 @@ says which. The cap is the per-run cap above, counting each result's reported sp
 judge's); an eval of several arms splits it equally across them. The candidate cannot be priced before it is called, so
 the cap is read between cases against the results already recorded. A run can overshoot by the cases running when
 the cap is reached; `measure_latency=True` runs one case at a time and has none. A runner that returns no `Answer` and calls no `Model` is invisible to it, and the summary says so.
+A judge's examples, graded once the arms have run, draw on what the arms left of the whole cap, read the same way
+before each example's call: the call that crosses it lands, so the eval can end over its cap by that call, and the
+examples' line says what the eval landed against it. Spend nobody priced, the arms' or the examples', stops the
+grading instead, since no cap can bound it, and the line says that.
 
 **The wall-clock budget.** Each run's job also runs under a time budget sized to its matrix (cases × k ×
 the cell timeout, plus a margin, clamped between a floor and an 8-hour cap). When it binds, the run ends
