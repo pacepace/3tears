@@ -220,6 +220,29 @@ async def test_namespaces_owner_agent_id(conn: asyncpg.Connection) -> None:
     assert plan_uses_index(plan, "idx_namespaces_owner_agent_id"), plan.plan
 
 
+async def test_namespaces_tool_flags(conn: asyncpg.Connection) -> None:
+    """Flips if the default tool surface's or the skills catalog's flagged tool namespaces stop reading
+    idx_namespaces_tool_flags: among 20,000 agents and workspaces, 300 tools, a third of them in the catalog."""
+    await conn.execute(
+        "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, owner_agent_id, customer_id,"
+        " date_created, date_updated)"
+        " SELECT 'customer', gen_random_uuid(), 'agent.f' || g, (ARRAY['agent', 'workspace'])[1 + g % 2],"
+        " gen_random_uuid(), ('00000000-0000-0000-0000-' || lpad((g % 500)::text, 12, '0'))::uuid, now(), now()"
+        " FROM generate_series(1, 20000) g"
+    )
+    await conn.execute(
+        "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, customer_id, skill_eligible,"
+        " date_created, date_updated)"
+        " SELECT (ARRAY['platform', 'customer'])[1 + g % 2], gen_random_uuid(), 'tool.f' || g, 'tool',"
+        " CASE WHEN g % 2 = 1 THEN ('00000000-0000-0000-0000-' || lpad((g % 500)::text, 12, '0'))::uuid END,"
+        " g % 3 = 0, now(), now() FROM generate_series(1, 300) g"
+    )
+    await conn.execute("ANALYZE namespaces")
+    for statement in (acl.TOOL_ELIGIBLE_NAMESPACES_SQL, acl.SKILL_ELIGIBLE_NAMESPACES_SQL):
+        plan = await explain_statement(conn, statement)
+        assert plan_uses_index(plan, "idx_namespaces_tool_flags"), (statement, plan.plan)
+
+
 async def test_namespaces_customer_type(conn: asyncpg.Connection) -> None:
     """Flips if a customer's namespaces of a type, or an ownerless one (a customer's or the platform's), stop
     reading idx_namespaces_customer_type."""

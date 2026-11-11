@@ -169,6 +169,18 @@ NAMESPACE_IDS_UNDER_NAME_SQL: Final[str] = (
 #: the character just past the separator: the exclusive end of the range of names beneath a node
 _PAST_SEPARATOR: Final[str] = chr(ord(NAMESPACE_NAME_SEPARATOR) + 1)
 
+#: the tool namespaces the default tool surface lists: ``idx_namespaces_tool_flags`` (namespace_type, flagged rows)
+TOOL_ELIGIBLE_NAMESPACES_SQL: Final[str] = (
+    "SELECT * FROM namespaces WHERE row_scope IN ('platform', 'customer') AND namespace_type = 'tool'"
+    " AND tool_eligible = TRUE"
+)
+
+#: the tool namespaces the skills catalog lists: ``idx_namespaces_tool_flags`` (namespace_type, flagged rows)
+SKILL_ELIGIBLE_NAMESPACES_SQL: Final[str] = (
+    "SELECT * FROM namespaces WHERE row_scope IN ('platform', 'customer') AND namespace_type = 'tool'"
+    " AND skill_eligible = TRUE"
+)
+
 #: an agent's own namespace of a type: ``idx_namespaces_owner_agent_id`` (owner_agent_id)
 NAMESPACE_OF_AGENT_SQL: Final[str] = (
     "SELECT * FROM namespaces WHERE row_scope = 'customer' AND owner_agent_id = $1 AND namespace_type = $2"
@@ -2723,9 +2735,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         :param cache: shared :class:`AclCache` instance
         :ptype cache: Any
         :param filter_column: boolean column name to filter against
-            (``"tool_eligible"`` or ``"skill_eligible"``); whitelisted
-            to those two values so the f-string interpolation is
-            safe against SQL injection regardless of caller input
+            (``"tool_eligible"`` or ``"skill_eligible"``); each has its
+            own written-out statement, any other name is refused
         :ptype filter_column: str
         :return: list of namespace entities matching the filter AND
             permitted by the unified ACL evaluator
@@ -2744,12 +2755,11 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         result: list[NamespaceEntity] = []
         if self.l3_pool is None:
             return result
-        rows = await self.l3_pool.fetch(
-            "SELECT * FROM namespaces "
-            "WHERE row_scope IN ('platform', 'customer') "
-            "AND namespace_type = 'tool' "
-            f"AND {filter_column} = TRUE",
-        )
+        # one written-out statement per flag column, so each is judged against the index that serves it
+        if filter_column == "tool_eligible":
+            rows = await self.l3_pool.fetch(TOOL_ELIGIBLE_NAMESPACES_SQL)
+        else:
+            rows = await self.l3_pool.fetch(SKILL_ELIGIBLE_NAMESPACES_SQL)
         candidates: list[NamespaceEntity] = [
             self.entity_class(
                 self._coerce_row(dict(row)),

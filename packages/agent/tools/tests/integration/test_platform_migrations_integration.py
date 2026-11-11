@@ -149,7 +149,11 @@ class TestPlatformMigrationAddsColumns:
             register(runner)
             store = _AsyncpgStore(conn)
             count = await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
-            assert count == 3, f"expected v001 + v002 + v003 to apply, applied {count}"
+            assert count == 4, f"expected v001 through v004 to apply, applied {count}"
+            assert await conn.fetchval(
+                "SELECT indexdef FROM pg_indexes WHERE schemaname = $1 AND indexname = 'idx_namespaces_tool_flags'",
+                schema,
+            ), "v004 builds idx_namespaces_tool_flags"
             cols = await conn.fetch(
                 "SELECT column_name, data_type, is_nullable, column_default "
                 "FROM information_schema.columns "
@@ -178,7 +182,7 @@ class TestPlatformMigrationAddsColumns:
             register(runner)
             store = _AsyncpgStore(conn)
             first = await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
-            assert first == 3
+            assert first == 4
             # second apply with a fresh runner: the bookkeeping table
             # remembers the prior apply so the runner does nothing.
             runner_two = MigrationRunner()
@@ -293,7 +297,7 @@ class TestPlatformMigrationAddsColumns:
             register(runner)
             store = _AsyncpgStore(conn)
             count = await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
-            assert count == 3
+            assert count == 4
             row = await conn.fetchrow(
                 "SELECT tool_eligible, skill_eligible, face_platform_tool, face_api, face_mcp, "
                 "face_rest, face_rest_declaration "

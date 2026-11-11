@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from threetears.core.testing.migrations import uncontended_ddl_lock_rows
 
+from threetears.agent.tools.platform_migrations.v004_tool_flags_index import add_tool_flags_index
 from threetears.agent.tools.platform_migrations import (
     PACKAGE_NAME,
     add_face_rest_columns,
@@ -134,20 +135,20 @@ class TestRegisterPlatformMigrations:
         pkg = register(runner)
         assert pkg.depends_on == ()
 
-    def test_register_attaches_v001_through_v003(self) -> None:
-        """v001 (eligibility) + v002 (face flags) + v003 (REST face)."""
+    def test_register_attaches_v001_through_v004(self) -> None:
+        """v001 (eligibility) + v002 (face flags) + v003 (REST face) + v004 (the flagged tools' index)."""
         runner = MigrationRunner()
         pkg = register(runner)
-        assert set(pkg.versions.keys()) == {1, 2, 3}
+        assert set(pkg.versions.keys()) == {1, 2, 3, 4}
 
     async def test_apply_in_isolation_runs_all_versions(self) -> None:
-        """apply_package walks v001, v002 then v003 against the fake store."""
+        """apply_package walks v001, v002, v003 then v004 against the fake store."""
         runner = MigrationRunner()
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_package(store, PACKAGE_NAME)
-        assert first_count == 3
-        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3]
+        assert first_count == 4
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4]
 
 
 class TestAddToolEligibilityColumnsMigration:
@@ -336,3 +337,21 @@ class TestDuplicateRegistrationGuard:
         pkg = register(runner)
         with pytest.raises(DuplicateVersionError):
             pkg.version(1)(add_tool_eligibility_columns)
+
+
+class TestAddToolFlagsIndexMigration:
+    """direct invocation of the v004 index callable."""
+
+    async def test_builds_one_partial_index_of_the_flagged_tools(self) -> None:
+        """one ``CREATE INDEX IF NOT EXISTS`` on ``namespace_type`` over the rows either flag holds, unqualified so
+        the search_path governs."""
+        store = _FakeDataStore()
+        await add_tool_flags_index(store)  # type: ignore[arg-type]
+        assert len(store.executed) == 1
+        joined = _joined_sql(store)
+        assert re.search(
+            r"CREATE INDEX IF NOT EXISTS idx_namespaces_tool_flags ON namespaces \(namespace_type\)"
+            r" WHERE tool_eligible OR skill_eligible",
+            joined,
+        )
+        assert "platform.namespaces" not in joined.lower()

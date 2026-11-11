@@ -30,6 +30,10 @@ version history:
   REST needs more than a boolean because its address is authored
   rather than derived, so the flag and the declaration land
   together. Idempotent via ``ADD COLUMN IF NOT EXISTS``.
+- v004 builds ``idx_namespaces_tool_flags`` (``namespace_type``, over the rows
+  either catalog flag holds): the default tool surface's and the skills
+  catalog's reads of the flagged tool namespaces. Idempotent via
+  ``IF NOT EXISTS``.
 """
 
 from __future__ import annotations
@@ -43,6 +47,7 @@ from threetears.agent.tools.platform_migrations.v002_add_tool_face_columns impor
 from threetears.agent.tools.platform_migrations.v003_add_face_rest_columns import (
     add_face_rest_columns,
 )
+from threetears.agent.tools.platform_migrations.v004_tool_flags_index import add_tool_flags_index
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -90,6 +95,7 @@ def register(
     pkg.version(1)(add_tool_eligibility_columns)
     pkg.version(2)(add_tool_face_columns)
     pkg.version(3)(add_face_rest_columns)
+    pkg.version(4)(add_tool_flags_index)
     runner.register(pkg)
     return pkg
 
