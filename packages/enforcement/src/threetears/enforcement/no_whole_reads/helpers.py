@@ -60,6 +60,9 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
     {
         "read_keyed",
         "read_keyed_arrow",
+        "read_by",
+        "read_row",
+        "read_value",
         "read_joined",
         "any_rows",
         "keyset_page",
@@ -302,6 +305,14 @@ def _read_keyed(call: ast.Call) -> list[str]:
     named = ", ".join(f"k{index}" for index in range(len(keys)))
     joined = " AND ".join(f"t.{column} = k.k{index}" for index, column in enumerate(keys))
     return [f"SELECT * FROM {table} AS t JOIN unnest({unnested}) AS k({named}) ON {joined}{_where(pinned)}", *own]
+
+
+def _read_by(call: ast.Call) -> list[str]:
+    """a point read (``read_by``, ``read_row``, ``read_value``): the rows its ``by`` pins, each ``= $n``; one pinning
+    nothing is the whole read it is."""
+    table, own = _relation(_argument(call, "table", 1), "table")
+    pinned, _ = _conditions(_by(_argument(call, "by", None)), alias="t")
+    return [f"SELECT * FROM {table} AS t{_where(pinned)}", *own]
 
 
 def _visible(call: ast.Call) -> list[str]:
@@ -664,6 +675,9 @@ _SYNTHESIZERS: Final = {
     **dict.fromkeys(STEP_CALLS, _step),
     "read_keyed": _read_keyed,
     "read_keyed_arrow": _read_keyed,
+    "read_by": _read_by,
+    "read_row": _read_by,
+    "read_value": _read_by,
     "read_joined": _read_joined,
     "any_rows": _any_rows,
     "keyset_page": _keyset_page,

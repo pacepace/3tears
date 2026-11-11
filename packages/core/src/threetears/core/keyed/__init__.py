@@ -5,7 +5,9 @@ its SQL again (the no-whole-reads rule, :mod:`threetears.enforcement.no_whole_re
 as keyed by construction, judged by the key it names):
 
 - **a keyed read** by a batch of keys or key prefixes, chunked: :func:`read_keyed`, :func:`read_keyed_arrow`
-  (:class:`KeyBatch`, ``by`` pins a tenant or scope; :class:`AnyOf` is a set filter);
+  (:class:`KeyBatch`, ``by`` pins a tenant or scope; :class:`AnyOf` is a set filter); one key's rows, its first
+  row or that row's column, bound as a hand-written ``WHERE a = $1`` binds it: :func:`read_by`, :func:`read_row`,
+  :func:`read_value`;
 - **a listing's page**: a bound prefix, a closed sort, an opaque cursor, a ``LIMIT``, visibility as a keyed
   ``EXISTS``, filters on a partial index's predicate or a range (``where=``), a row lock (:class:`Lock`):
   :func:`keyset_page` (:class:`Sort`, :func:`exists_keyed`, :class:`Fragment`); its joined rows by a keyed read of
@@ -81,6 +83,7 @@ from threetears.core.keyed.deletes import SweptRows, delete_before, delete_oldes
 from threetears.core.keyed.inline import InlineDuckDB, InlineTransaction, run_inline
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
 from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_past_marks
+from threetears.core.keyed.point import read_by, read_row, read_value
 from threetears.core.keyed.page import KeyPage, Sort, copy_keyed, exists_keyed, keyset_cursor, keyset_page, keyset_rows
 from threetears.core.keyed.rows import (
     ANY_ROWS_CAP,
@@ -187,10 +190,13 @@ __all__ = [
     "keyset_page",
     "keyset_rows",
     "read_after",
+    "read_by",
     "read_joined",
     "read_keyed",
     "read_keyed_arrow",
     "read_past_marks",
+    "read_row",
+    "read_value",
     "rows_affected",
     "run_inline",
     "update_before",
