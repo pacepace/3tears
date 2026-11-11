@@ -22,13 +22,13 @@ from __future__ import annotations
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
-__all__ = ["DROP_UNREAD_INDEXES_SQL", "drop_unread_indexes"]
+__all__ = ["drop_unread_indexes"]
 
 log = get_logger(__name__)
 
 
 #: one literal statement per index, so the end state reads off this module
-DROP_UNREAD_INDEXES_SQL: tuple[str, ...] = (
+_DROP_UNREAD_INDEXES_SQL: tuple[str, ...] = (
     "DROP INDEX IF EXISTS ix_media_user_date",
     "DROP INDEX IF EXISTS ix_media_mime_type",
     "DROP INDEX IF EXISTS idx_media_agent_user",
@@ -49,5 +49,5 @@ async def drop_unread_indexes(store: DataStore) -> None:
     :rtype: None
     """
     log.info("dropping the memory indexes no read uses (v035)")
-    for sql in DROP_UNREAD_INDEXES_SQL:
+    for sql in _DROP_UNREAD_INDEXES_SQL:
         await store.execute(sql)

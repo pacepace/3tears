@@ -23,13 +23,13 @@ from __future__ import annotations
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
-__all__ = ["AGENT_LED_INDEXES_SQL", "agent_led_indexes"]
+__all__ = ["agent_led_indexes"]
 
 log = get_logger(__name__)
 
 
 #: one literal statement each, the replacement before the drop, so the end state reads off this module
-AGENT_LED_INDEXES_SQL: tuple[str, ...] = (
+_AGENT_LED_INDEXES_SQL: tuple[str, ...] = (
     "-- purpose: "
     "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.count_by_user; "
     "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_similar_for_dedup; "
@@ -67,5 +67,5 @@ async def agent_led_indexes(store: DataStore) -> None:
     :rtype: None
     """
     log.info("agent-memory v036: the history pool's and a chunk's file's indexes lead with the agent")
-    for sql in AGENT_LED_INDEXES_SQL:
+    for sql in _AGENT_LED_INDEXES_SQL:
         await store.execute(sql)

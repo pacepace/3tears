@@ -34,7 +34,6 @@ from threetears.agent.memory.collections import MemoryChunkCollection
 from threetears.agent.memory.migrations import align_indexes_with_declarations
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.agent.memory.migrations.v033_drop_legacy_index_names import DROP_LEGACY_INDEXES_SQL
-from threetears.agent.memory.migrations.v035_drop_unread_indexes import DROP_UNREAD_INDEXES_SQL
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import VECTOR_TYPE, SchemaBackedCollection, TableSchema
@@ -363,7 +362,17 @@ class TestBuiltSchemaMatchesDeclarations:
         """a schema built through v034 holds the eight indexes no read uses; carried through v035 it ends with
         exactly the indexes a fresh build has, none of them among them."""
         url, fresh, upgraded = two_schemas
-        unread = {sql.rsplit(" ", 1)[1] for sql in DROP_UNREAD_INDEXES_SQL}
+        # the eight v035 drops, named here: the test reads the migration through its front door (the runner)
+        unread = {
+            "ix_media_user_date",
+            "ix_media_mime_type",
+            "idx_media_agent_user",
+            "ix_media_extraction_pending",
+            "ix_media_content_user",
+            "ix_memory_chunks_user",
+            "idx_chunks_message_id_start",
+            "idx_chunks_message_id_end",
+        }
         conn = await asyncpg.connect(url)
         try:
             await _migrate(conn, fresh)
