@@ -2291,7 +2291,12 @@ def _comparison_blocks(
     return blocks
 
 
-def contrast_rows(bundle: AnalysisContextBundle, *, forms: PageForms | None = None) -> list[dict[str, CellValue]]:
+def contrast_rows(
+    bundle: AnalysisContextBundle,
+    *,
+    forms: PageForms | None = None,
+    arm_labels: Mapping[str, str] | None = None,
+) -> list[dict[str, CellValue]]:
     """Every contrast the bundle tested against the control, one row each, in :func:`contrast_verdicts`' order.
 
     The page shows only the contrasts that can resolve; a program reads them all here. A contrast with a side under
@@ -2306,6 +2311,9 @@ def contrast_rows(bundle: AnalysisContextBundle, *, forms: PageForms | None = No
         (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_aspects`), so every row reads as the page does;
         None for an aspect that is its own campaign (its bundle's forms alone).
     :ptype forms: PageForms | None
+    :param arm_labels: The names the page prints the arms by, by variant key, which replace their variants' names, as
+        :func:`aspect_verdict` reads them; None names each arm by its variant.
+    :ptype arm_labels: Mapping[str, str] | None
     :return: One row per contrast, keyed ``question`` (in the words it was asked, or ``(campaign-wide)``), ``reading``,
         ``unit`` (the unit ``control_mean``, ``arm_mean`` and ``delta`` are in; a percent's delta is in points),
         ``contrast`` and ``control`` (each arm as the page names it), ``control_mean``, ``arm_mean``, ``delta`` and
@@ -2317,7 +2325,7 @@ def contrast_rows(bundle: AnalysisContextBundle, *, forms: PageForms | None = No
     # A program's rows read as the aspect's page does, its forms built once for every row.
     if forms is None:
         forms = PageForms.of_bundle(bundle)
-    verdicts = iter(contrast_verdicts(bundle, surface, forms=forms))
+    verdicts = iter(contrast_verdicts(bundle, surface, arm_labels=arm_labels, forms=forms))
     rulers = report_rulers(surface, bundle.measure_catalog)
     rows: list[dict[str, CellValue]] = []
     for family in bundle.multiple_comparisons.families:
@@ -2396,16 +2404,19 @@ def _on_ruler(value: float | None, ruler: MeasureRuler) -> float | None:
     return None if value is None else value * ruler.factor
 
 
-def report_cell_labels(bundle: AnalysisContextBundle) -> dict[str, str]:
+def report_cell_labels(bundle: AnalysisContextBundle, *, arm_labels: Mapping[str, str] | None = None) -> dict[str, str]:
     """Each cell's arm as the page names it, by cell reference: its label, with its test setup where it ran under two.
 
     :param bundle: The campaign's evidence.
     :ptype bundle: AnalysisContextBundle
+    :param arm_labels: The names the page prints the arms by, by variant key, which replace their variants' names, as
+        :func:`aspect_verdict` reads them; None names each arm by its variant.
+    :ptype arm_labels: Mapping[str, str] | None
     :return: ``cell_ref -> name`` for every cell on the bundle's surface.
     :rtype: dict[str, str]
     """
     surface = bundle_decision_surface(bundle)
-    name = _cell_namer(surface, _arm_names(bundle))
+    name = _cell_namer(surface, _arm_names(bundle, labels=arm_labels))
     return {
         cell_ref(cell.variant_key, cell.apparatus_class_id): name(cell.variant_key, cell.apparatus_class_id)
         for cell in surface.cells

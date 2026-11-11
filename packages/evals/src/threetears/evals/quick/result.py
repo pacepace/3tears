@@ -8,7 +8,9 @@ the control. Everything here is the engine's own path, composed:
   is the run's level of the host's arm lever (:data:`~threetears.evals.quick.one_call.ARM_LEVER`), every arm at one
   shared candidate model, so the report calls the arm ``candidate=<name>``. Named as ``k=v`` pairs
   (``"prompt=v2, effort=low"``), each pair is one factor of a factorial design: ``model`` is the run's candidate model
-  and every other factor is a lever the engine names ``callable.<factor>`` and keys into the variant.
+  and every other factor is a lever the engine names ``callable.<factor>`` and keys into the variant. Such an arm is
+  named by its factors, in the order the eval declares them, on every surface (:func:`shown_arm_name`:
+  ``Prompt v2, effort low``), never by the lever the engine keys it under.
 - **Every arm is started in one launch**, so they share one launch's schedule and capacity, and a
   refusal on the last arm leaves none run.
 - **The campaign declares its design** — one axis per factor, a controlled stimulus, a commissioned apparatus and the
@@ -99,6 +101,7 @@ from threetears.evals.analysis.report.build import (
 )
 from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.verdict import VerdictLine
+from threetears.evals.analysis.style import arm_display_name, arm_name
 from threetears.evals.analysis.report.words import campaign_arm_tags, judged_heading, stratum_names
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, predicted_label
 from threetears.evals.quick.judged import Judge
@@ -161,6 +164,28 @@ def coordinates(arm: str) -> dict[str, str] | None:
             raise ValueError(f"the arm {arm!r} names {factor.strip()!r} twice; each factor is at one level")
         pairs[factor.strip()] = level.strip()
     return pairs
+
+
+def shown_arm_name(arm: str) -> str:
+    """The one name every surface prints for an arm: the campaign's page, the verdict line, the quiet print's
+    scoreboard and misses, and a program's rows.
+
+    An arm named as ``k=v`` pairs is named by its factors, in the order the eval declares them, each as its reader
+    name and its level, by the one rule a name code computes from levers is printed by
+    (:func:`~threetears.evals.analysis.style.arm_display_name`): ``"prompt=v2, effort=low"`` is ``Prompt v2, effort
+    low``. Never by the lever the engine keys a factor under (``callable.prompt``), whose kind is no reader's word,
+    nor in the order the variant sorts its levers in. An arm named plainly is printed as named.
+
+    :param arm: The arm, by its key in the eval's runners.
+    :ptype arm: str
+    :return: Its name as a reader is shown it.
+    :rtype: str
+    """
+    pairs = coordinates(arm)
+    if pairs is None:
+        return arm
+    named = arm_name(", ".join(f"{factor}={level}" for factor, level in pairs.items()))
+    return arm_display_name(named.label, named.levers)
 
 
 @dataclass(frozen=True)
@@ -239,6 +264,8 @@ class Result:
     :ivar guardrail_readings: Every guardrail, decided for each arm against the control; empty when none is declared.
     :ivar arm_variants: Each arm's variant key, by name: what the bundle names the arm by.
     :ivar labelled_arms: Each arm's name, by the words the report names it by (``baseline``).
+    :ivar arm_labels: The name every surface prints each arm named as factors by (:func:`shown_arm_name`), by its
+        variant key; empty for arms named plainly, which every surface names by their variants.
     """
 
     name: str
@@ -262,6 +289,7 @@ class Result:
     guardrail_readings: GuardrailReadings = field(default_factory=GuardrailReadings, repr=False, compare=False)
     arm_variants: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
     labelled_arms: dict[str, str | None] = field(default_factory=dict, repr=False, compare=False)
+    arm_labels: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
     grader_readings: tuple[str, ...] = field(default=(), repr=False, compare=False)
     question: str | None = None
     margin: float | None = None
@@ -448,7 +476,9 @@ class Result:
             # One arm's verdict is how its cases came out, and how far its judge can be trusted is read with it.
             lines += self.calibration_lines()
         for arm, summary in self.arms.items():
-            label = "" if len(self.arms) == 1 else f"{arm}{' (control)' if arm == self.control else ''}: "
+            label = (
+                "" if len(self.arms) == 1 else f"{shown_arm_name(arm)}{' (control)' if arm == self.control else ''}: "
+            )
             lines.append(f"{label}{summary.results_text}")
             # an operator's reason for a cancel, a predicted label, a refused check's reason: each can run over lines
             lines += [f"  {one_line(line)}" for line in (summary.stopped_text,) if line is not None]
@@ -478,7 +508,7 @@ class Result:
         if misses:
             lines.append(f"top misses ({min(len(misses), QUIET_MISSES)} of {len(misses)} failed trials):")
             for arm, miss in misses[:QUIET_MISSES]:
-                who = "" if len(self.arms) == 1 else f"{arm}, "
+                who = "" if len(self.arms) == 1 else f"{shown_arm_name(arm)}, "
                 lines.append(f"  case {miss.case} ({who}repeat {miss.repeat}): {one_line('; '.join(self._why(miss)))}")
         lines += self.disclosures
         lines.append(f"stored in {self.store}, scope {self.scope_id!r}")
@@ -527,7 +557,8 @@ class Result:
                 check.name: "the guardrail the other arms are decided against"
                 for check in self.guardrail_readings.checks
             }
-        return {row["measure_id"]: f"guardrail {row['outcome']} against {self.control}" for row in self.guardrails(arm)}
+        control = shown_arm_name(self.control)
+        return {row["measure_id"]: f"guardrail {row['outcome']} against {control}" for row in self.guardrails(arm)}
 
     def _measure_texts(self, forms: PageForms, summary: EvalSummary, arm: str) -> list[str]:
         """Each measure's line, the classifier's ``match`` under its field's name and its matrix's count left out.
@@ -620,7 +651,12 @@ class Result:
 
     def _verdict(self) -> VerdictLine:
         """The eval's verdict line, as its aspect's page opens with it, led on its graders' order."""
-        return aspect_verdict(self.report.bundle, measure_order=self.grader_readings, forms=self._aspect_forms())
+        return aspect_verdict(
+            self.report.bundle,
+            measure_order=self.grader_readings,
+            arm_labels=self.arm_labels or None,
+            forms=self._aspect_forms(),
+        )
 
     def _page_rate(self, measure: str, rate: float | None) -> str | None:
         """A measure's rate as :attr:`page` prints an arm's level of it (one form per measure, number rule 1): at the
@@ -713,7 +749,7 @@ class Result:
             code branches on); empty when the report tested nothing.
         :rtype: list[dict[str, Any]]
         """
-        rows = contrast_rows(self.report.bundle, forms=self._aspect_forms())
+        rows = contrast_rows(self.report.bundle, forms=self._aspect_forms(), arm_labels=self.arm_labels or None)
         typed = [verdict for verdict in self.report.verdicts if verdict.kind == "contrast"]
         arms = self.contrast_arms if len(self.contrast_arms) == len(rows) else (None,) * len(rows)
         keys = self.contrast_measures if len(self.contrast_measures) == len(rows) else (None,) * len(rows)
@@ -938,7 +974,7 @@ class Result:
                 kind=self.kind,
                 control=control,
                 scope_id=self.scope_id,
-                name=name or f"{self.name}, against {control}",
+                name=name or f"{self.name}, against {shown_arm_name(control)}",
                 behavior=campaign.behavior,
                 repetitions=design.intended_repetitions if design is not None else None,
                 created_by=created_by,
@@ -1376,6 +1412,9 @@ def declare(
     """
     ordered = [control, *(arm for arm in arms if arm != control)]
     prefix = host.profile.kind_contract(kind).lever_prefix
+    # An arm named as factors is labelled by them on the campaign, every arm, so no page names one by its variant's
+    # levers (`callable.effort=high, callable.prompt=v1`, sorted, the engine's kind in each lever's name).
+    shown = {arm: shown_arm_name(arm) for arm in ordered if coordinates(arm) is not None}
     axes = []
     for factor in factors:
         values = list(dict.fromkeys(levels[arm][factor] for arm in ordered))
@@ -1384,9 +1423,9 @@ def declare(
                 "axis_id": factor if factor in _UNPREFIXED else f"{prefix}.{factor}",
                 "values": [{"content": value, "display": value} for value in values],
                 "rationale": (
-                    f"does any arm do better than {control}"
+                    f"does any arm do better than {shown.get(control, control)}"
                     if len(factors) == 1
-                    else f"does moving {factor} change what the arms score, against {control}"
+                    else f"does moving {factor} change what the arms score, against {shown.get(control, control)}"
                 ),
             }
         )
@@ -1412,8 +1451,17 @@ def declare(
         aspect["margin"] = round(100 * margin, 10)
     if arms[control].template_id is not None:
         aspect["template_id"] = arms[control].template_id
-    # The control arm is named as the eval names it, so every page reads `hasty (control) vs careful`.
-    control_arm = {"label": control, "role": "control", "from_run_ids": [arms[control].run_id]}
+    # The control arm is named as the eval names it, so every page reads `hasty (control) vs careful`; an arm named as
+    # factors by its factors, and every other such arm with it (`Prompt v1, effort low (control) vs Prompt v2, ...`).
+    declared_arms = [
+        {
+            "label": shown.get(arm, arm),
+            "role": "control" if arm == control else "candidate",
+            "from_run_ids": [arms[arm].run_id],
+        }
+        for arm in ordered
+        if arm == control or arm in shown
+    ]
     # The campaign's name is held to the cap every write of one is (a qualifier beside its title): an eval's name that
     # runs past it is cut at a word there, and kept whole in the campaign's description. The result keeps it whole.
     stored = _campaign_name(name)
@@ -1422,7 +1470,7 @@ def declare(
         "subject_id": name,
         "behavior": behavior,
         "aspects": [aspect],
-        "arms": [control_arm],
+        "arms": declared_arms,
     }
     if stored != name:
         defined["description"] = name
@@ -1449,10 +1497,13 @@ def declare(
     # Its arms tagged as the campaign's page tags them, in the order the eval gives them (the control first, as the
     # campaign and its report document list them), so an arm is one letter and one colour on all three pages.
     control_key = next((arm.variant_key for arm in campaign.arms if arm.role == "control"), None)
+    # An arm named as factors by the name the campaign labels it by, on this report as on the page.
+    arm_labels = {arm_variants[arm]: name for arm, name in shown.items() if arm in arm_variants}
     report = build_code_only_report_in_forms(
         bundle,
         assembled_at=fold.report.source.generated_at,
         campaign_name=campaign.name,
+        arm_labels=arm_labels or None,
         arm_tags=campaign_arm_tags([bundle], control_key, arms=list(arm_variants.values())),
         measure_order=list(dict.fromkeys(measure_order)),
         # In the campaign page's forms, so the report reads every figure as the page's fold of it does.
@@ -1460,7 +1511,7 @@ def declare(
     )
     arm_of_variant = {variant: arm for arm, variant in arm_variants.items()}
     surface = bundle_decision_surface(bundle)
-    labels = report_cell_labels(bundle)
+    labels = report_cell_labels(bundle, arm_labels=arm_labels or None)
     labelled_arms = {
         labels[cell_ref(cell.variant_key, cell.apparatus_class_id)]: arm_of_variant.get(cell.variant_key)
         for cell in surface.cells
@@ -1487,6 +1538,7 @@ def declare(
         guardrail_readings=bundle.guardrails,
         arm_variants=arm_variants,
         labelled_arms=labelled_arms,
+        arm_labels=arm_labels,
         grader_readings=tuple(measure_order),
         question=question,
         margin=margin,
@@ -1505,4 +1557,5 @@ __all__ = [
     "declare",
     "judged_rows",
     "refuse_an_unusable_margin",
+    "shown_arm_name",
 ]

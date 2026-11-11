@@ -209,9 +209,9 @@ effort is the one cell shown better than the control, a lead, and both high-effo
 fails the gate:
 
 ```text
-prompt=v2, effort=high: 90 result(s): 90 scored
+Prompt v2, effort high: 90 result(s): 90 scored
 ...
-exit 4: ... The gate failed on Production cost: Callable effort high, callable prompt v1 worse than Callable effort low, callable prompt v1 (lower is better); Production cost: Callable effort high, callable prompt v2 worse than Callable effort low, callable prompt v1 (lower is better).
+exit 4: ... The gate failed on Production cost: Prompt v1, effort high worse than Prompt v1, effort low (lower is better); Production cost: Prompt v2, effort high worse than Prompt v1, effort low (lower is better).
 ```
 
 Recorded on `deepseek/deepseek-v4-flash` at high effort: 180 calls, $0.0188 (`recordings/invoices-high.jsonl`).

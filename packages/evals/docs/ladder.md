@@ -405,19 +405,19 @@ What the door printed (it runs the eval; `python grid.py` also prints the readin
 arms and the last line, which says why it exits 4:
 
 ```text
-prompt=v1, effort=low (control): 90 result(s): 90 scored
+Prompt v1, effort low (control): 90 result(s): 90 scored
 ...
-prompt=v1, effort=high: 90 result(s): 90 scored
+Prompt v1, effort high: 90 result(s): 90 scored
 ...
-prompt=v2, effort=high: 90 result(s): 90 scored
+Prompt v2, effort high: 90 result(s): 90 scored
 ...
-exit 4: ... The gate failed on Production cost: Callable effort high, callable prompt v1 worse than Callable effort low, callable prompt v1 (lower is better); Production cost: Callable effort high, callable prompt v2 worse than Callable effort low, callable prompt v1 (lower is better).
+exit 4: ... The gate failed on Production cost: Prompt v1, effort high worse than Prompt v1, effort low (lower is better); Production cost: Prompt v2, effort high worse than Prompt v1, effort low (lower is better).
 ```
 
 and the report's row for v2 at high effort:
 
 ```text
-| grid | Callable effort high, callable prompt v2 | 30 | 73 of 90 trials | 90 of 90 trials | +19 pts | +1 to +30 | — | shown better, a lead |
+| grid | Prompt v2, effort high | 30 | 73 of 90 trials | 90 of 90 trials | +19 pts | +1 to +30 | — | shown better, a lead |
 ```
 
 **The lesson: a lever has a price, and the gate reads it.** v2 at high effort is the one cell whose pass rate is shown

@@ -15,6 +15,7 @@ graded (none excluded as a rig fault), and the exit code is the one the typed ga
 from __future__ import annotations
 
 import json
+import re
 import runpy
 from pathlib import Path
 from types import ModuleType
@@ -335,9 +336,55 @@ def test_3e_run_as_a_script_it_prints_the_grid_then_reads_it_against_the_high_ef
     copy = offline_copy("3-invoices", tmp_path, monkeypatch)
     runpy.run_path(str(copy / "grid.py"), run_name="__main__")
     out = capsys.readouterr().out.splitlines()
-    assert out[0].startswith("grid: ") and "prompt=v1, effort=low (control): 90 result(s): 90 scored" in out
-    assert [line for line in out if line.startswith("grid, against prompt=v1, effort=high: ")]
-    assert "prompt=v1, effort=high (control): 90 result(s): 90 scored" in out
+    assert out[0].startswith("grid: ") and "Prompt v1, effort low (control): 90 result(s): 90 scored" in out
+    assert [line for line in out if line.startswith("grid, against Prompt v1, effort high: ")]
+    assert "Prompt v1, effort high (control): 90 result(s): 90 scored" in out
+
+
+#: Each cell as every surface names it: by its factors, in the order the eval declares them, each as its reader name
+#: and its level, the name opening upper case as every name computed from levers does.
+_SHOWN = dict(
+    zip(_CELLS, ["Prompt v1, effort low", "Prompt v2, effort low", "Prompt v1, effort high", "Prompt v2, effort high"])
+)
+
+#: What an arm named as factors is never called on any surface: by the lever the engine keys a factor under, its
+#: kind as a word (``Callable effort high, callable prompt v1``), in the order its variant sorts levers in, or as
+#: the ``k=v`` pairs its author typed.
+_ENGINE_NAMES = re.compile(r"(?i)callable (?:prompt|effort)\b|\beffort \w+, prompt\b|\b(?:prompt|effort)=")
+
+
+async def test_3e_a_factor_arm_reads_by_its_declared_factors_on_the_lead_the_scoreboard_the_print_and_the_page(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    offline_copy("3-invoices", tmp_path, monkeypatch)
+    module = load(Path("grid.py"), "grid", monkeypatch)
+    result = await module.grid.run(store=":memory:")
+    printed = result.render().splitlines()
+    lead, control = printed[0], _SHOWN[_CELLS[0]]
+    # The lead names every candidate and the control as the scoreboard below it does.
+    assert all(_SHOWN[cell] in lead for cell in _CELLS)
+    scoreboard = [line.partition(": ")[0] for line in printed if line.endswith(("scored", "failed by the candidate"))]
+    assert scoreboard == [f"{control} (control)", *(_SHOWN[cell] for cell in _CELLS[1:])]
+    # The misses name the arm as the scoreboard does.
+    assert all(
+        any(f"({_SHOWN[cell]}, repeat " in line for cell in _CELLS) for line in printed if line.startswith("  case ")
+    )
+    # A program's rows, and the exit line, say the same names.
+    rows = result.contrasts("accuracy")
+    assert {(row["arm"], row["contrast"], row["control"]) for row in rows} == {
+        (cell, _SHOWN[cell], control) for cell in _CELLS[1:]
+    }
+    why = result.why_failed()
+    assert why is not None and f"{_SHOWN[_CELLS[2]]} worse than {control}" in why
+    # The campaign's page, as Markdown and as the browser reads it, names each arm so too.
+    page = [campaign_report_markdown(result.page), unlinked(campaign_report_html(result.page))]
+    assert all(_SHOWN[cell] in text for cell in _CELLS for text in page)
+    for surface in (lead, "\n".join(printed), why, *page):
+        assert _ENGINE_NAMES.search(surface) is None, _ENGINE_NAMES.search(surface)
+    # Read against another control, its name and its page's title name that control the same way.
+    again = await result.against(_CELLS[2])
+    assert again.name == f"grid, against {_SHOWN[_CELLS[2]]}"
+    assert again.render().splitlines()[1] == f"{control}: 90 result(s): 90 scored"
 
 
 @pytest.mark.parametrize("example", [COMPARE, MARGIN, GUARDRAIL], ids=lambda path: path.name)
