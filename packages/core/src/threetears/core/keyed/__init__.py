@@ -26,6 +26,11 @@ as keyed by construction, judged by the key it names):
   replace, upsert or the difference); a listing's every row, page after page: :func:`keyset_rows`;
 - **an expiry sweep or a stale-row reap** a page at a time through its index: :func:`delete_before`,
   :func:`update_before`; a cache's trim to its cap by its key's order (SQLite's rowid): :func:`delete_oldest`;
+- **a relational step over a change relation** (the rows a change produced, the held rows it touches), each shape once:
+  :func:`semi`, :func:`anti`, :func:`distinct`, :func:`grouped`, :func:`latest_per_key`, :func:`windowed`,
+  :func:`except_rows`, :func:`union`, :func:`scan`, run by :func:`read_step` / :func:`read_step_arrow` /
+  :func:`count_step`, a delete by its keys :func:`delete_matching`, the first row two hold otherwise
+  :func:`first_difference` (:mod:`threetears.core.keyed.steps`; :func:`change_relation` declares the relation);
 - **a cache derived from rows**, kept by key: :class:`threetears.epoch.RowFollower`;
 - **the whole reads a component may still make**, named and counted: :class:`WholeReads`.
 
@@ -86,6 +91,29 @@ from threetears.core.keyed.rows import (
     read_joined,
     read_keyed,
     read_keyed_arrow,
+)
+from threetears.core.keyed.steps import (
+    Match,
+    Step,
+    anti,
+    change_relation,
+    count_step,
+    delete_matching,
+    distinct,
+    except_rows,
+    first_difference,
+    grouped,
+    largest,
+    latest_per_key,
+    read_step,
+    read_step_arrow,
+    row_count,
+    scan,
+    semi,
+    smallest,
+    union,
+    windowed,
+    xor_hash,
 )
 from threetears.core.keyed.whole_reads import WholeReads
 from threetears.core.keyed.writes import (
@@ -164,4 +192,25 @@ __all__ = [
     "update_before",
     "update_from",
     "update_keyed",
+    "Match",
+    "Step",
+    "anti",
+    "change_relation",
+    "count_step",
+    "delete_matching",
+    "distinct",
+    "except_rows",
+    "first_difference",
+    "grouped",
+    "largest",
+    "latest_per_key",
+    "read_step",
+    "read_step_arrow",
+    "row_count",
+    "scan",
+    "semi",
+    "smallest",
+    "union",
+    "windowed",
+    "xor_hash",
 ]
