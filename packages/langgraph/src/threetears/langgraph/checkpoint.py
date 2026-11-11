@@ -58,11 +58,12 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
+from operator import itemgetter
 from typing import Any, Final, cast
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
-from threetears.core.keyed import read_row
+from threetears.core.keyed import Fragment, Sort, delete_keyed, keyset_page, keyset_rows, read_by, read_row
 from threetears.core.operator import operator_command
 from threetears.langgraph.anonymize import (
     METADATA_CHANNEL,
@@ -103,6 +104,9 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: a thread's checkpoints newest first: their key's last column, descending (checkpoint ids sort by time)
+_NEWEST_FIRST: Final = (Sort("checkpoint_id", cast=None, descending=True),)
 
 
 class CheckpointCacheError(RuntimeError):
@@ -1235,18 +1239,17 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             (self.serde.loads_typed((cp_type or "msgpack", md_blob)) if md_blob and md_blob != b"\x00" else {}),
         )
 
-        write_rows = await self._exec.fetch(
-            "SELECT task_id, channel, type, blob "
-            "FROM checkpoint_writes "
-            "WHERE thread_id = $1 AND checkpoint_ns = $2 "
-            "AND checkpoint_id = $3 "
-            "ORDER BY idx",
-            storage_thread_id,
-            checkpoint_ns,
-            cp_id,
+        # the checkpoint's writes by its key, in their idx order as the statement ordered them (ties between tasks in
+        # the order read)
+        write_rows = await read_by(
+            self._exec,
+            "checkpoint_writes",
+            by={"thread_id": storage_thread_id, "checkpoint_ns": checkpoint_ns, "checkpoint_id": cp_id},
+            columns=("task_id", "idx", "channel", "type", "blob"),
+            records=True,
         )
         pending_writes: list[tuple[str, str, Any]] = []
-        for wr in write_rows:
+        for wr in sorted(write_rows, key=itemgetter("idx")):
             pending_writes.append(
                 (
                     wr["task_id"],
@@ -1335,25 +1338,37 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         thread_id: str = config["configurable"]["thread_id"]
         checkpoint_ns: str = config["configurable"].get("checkpoint_ns", "")
 
-        query = (
-            "SELECT checkpoint_id, parent_checkpoint_id, type, "
-            "checkpoint, metadata_ "
-            "FROM checkpoints "
-            "WHERE thread_id = $1 AND checkpoint_ns = $2"
+        # the thread's checkpoints by its key, newest first: a page of ``limit``, or every one page by page
+        storage_thread_id = self.storage_thread_id(thread_id, customer=customer)
+        where = (
+            [Fragment('t."checkpoint_id" < $1', (before_id,))]
+            if before and (before_id := get_checkpoint_id(before))
+            else []
         )
-        params: list[Any] = [self.storage_thread_id(thread_id, customer=customer), checkpoint_ns]
-
-        if before and (before_id := get_checkpoint_id(before)):
-            query += f" AND checkpoint_id < ${len(params) + 1}"
-            params.append(before_id)
-
-        query += " ORDER BY checkpoint_id DESC"
-
-        if limit is not None:
-            query += f" LIMIT ${len(params) + 1}"
-            params.append(limit)
-
-        rows = await self._exec.fetch(query, *params)
+        columns = ("checkpoint_id", "parent_checkpoint_id", "type", "checkpoint", "metadata_")
+        rows: list[dict[str, Any]]
+        if limit is None:
+            rows = await keyset_rows(
+                self._exec,
+                "checkpoints",
+                columns=columns,
+                by={"thread_id": storage_thread_id, "checkpoint_ns": checkpoint_ns},
+                order=_NEWEST_FIRST,
+                where=where,
+            )
+        elif limit < 1:
+            rows = []
+        else:
+            page = await keyset_page(
+                self._exec,
+                "checkpoints",
+                columns=columns,
+                by={"thread_id": storage_thread_id, "checkpoint_ns": checkpoint_ns},
+                order=_NEWEST_FIRST,
+                limit=limit,
+                where=where,
+            )
+            rows = page.rows
 
         for row in rows:
             cp_id = row["checkpoint_id"]
@@ -1874,14 +1889,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         resolved = self._scope.customer_for_operation(customer, operation="adelete_thread")
         storage_thread_id = self.storage_thread_id(thread_id, customer=resolved)
 
-        await self._exec.execute(
-            "DELETE FROM checkpoint_writes WHERE thread_id = $1",
-            storage_thread_id,
-        )
-        await self._exec.execute(
-            "DELETE FROM checkpoints WHERE thread_id = $1",
-            storage_thread_id,
-        )
+        await delete_keyed(self._exec, "checkpoint_writes", by={"thread_id": storage_thread_id})
+        await delete_keyed(self._exec, "checkpoints", by={"thread_id": storage_thread_id})
 
         # L2 is exact-key, so the root-namespace entry needs its own delete and
         # every ``thread.checkpoint_ns`` entry needs a sweep. A cache that
@@ -1980,16 +1989,10 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 "and the pattern would match every thread in the table.",
             )
 
-        pattern = f"{prefix}%"
-
-        await self._exec.execute(
-            "DELETE FROM checkpoint_writes WHERE thread_id LIKE $1",
-            pattern,
-        )
-        await self._exec.execute(
-            "DELETE FROM checkpoints WHERE thread_id LIKE $1",
-            pattern,
-        )
+        # every thread id starting with the customer's prefix: a range of the key in code-point order, what
+        # ``LIKE '<prefix>%'`` named (the prefix holds no ``%`` or ``_``: a UUID and its separator)
+        await delete_keyed(self._exec, "checkpoint_writes", prefix={"thread_id": prefix})
+        await delete_keyed(self._exec, "checkpoints", prefix={"thread_id": prefix})
 
         failures: list[CheckpointCacheError] = []
         try:

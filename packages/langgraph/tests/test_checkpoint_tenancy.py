@@ -804,8 +804,8 @@ class TestPerCustomerPurge:
         await saver.adelete_customer_threads()
 
         statements = [call.args[0] for call in executor.execute.await_args_list]
-        assert "DELETE FROM checkpoint_writes" in statements[0]
-        assert "DELETE FROM checkpoints" in statements[1]
+        assert 'DELETE FROM "checkpoint_writes"' in statements[0]
+        assert 'DELETE FROM "checkpoints"' in statements[1]
 
     async def test_purge_matches_only_this_customers_prefix(self) -> None:
         """the pattern is the customer's own prefix and nothing wider.
@@ -822,8 +822,14 @@ class TestPerCustomerPurge:
 
         await saver.adelete_customer_threads()
 
-        patterns = [call.args[1] for call in executor.execute.await_args_list]
-        assert patterns == [f"{_CUSTOMER_A}/%", f"{_CUSTOMER_A}/%"]
+        # the customer's prefix as a range of the key in code-point order: from the prefix to the least text past
+        # every text starting with it (the separator's successor), what LIKE '<prefix>%' named
+        ranges = [call.args[1:] for call in executor.execute.await_args_list]
+        assert ranges == [(f"{_CUSTOMER_A}/", f"{_CUSTOMER_A}0"), (f"{_CUSTOMER_A}/", f"{_CUSTOMER_A}0")]
+        assert all(
+            '"thread_id" COLLATE "C" >= $1 AND "thread_id" COLLATE "C" < $2' in call.args[0]
+            for call in executor.execute.await_args_list
+        )
         assert "%" not in str(_CUSTOMER_A)
         assert "_" not in str(_CUSTOMER_A)
 
@@ -1558,8 +1564,8 @@ class TestDeletingUnderFromConfig:
 
         await saver.adelete_customer_threads(customer=_CUSTOMER_A)
 
-        patterns = [call.args[1] for call in executor.execute.await_args_list]
-        assert patterns == [f"{_CUSTOMER_A}/%", f"{_CUSTOMER_A}/%"]
+        ranges = [call.args[1:] for call in executor.execute.await_args_list]
+        assert ranges == [(f"{_CUSTOMER_A}/", f"{_CUSTOMER_A}0"), (f"{_CUSTOMER_A}/", f"{_CUSTOMER_A}0")]
 
 
 class TestTheDeleteArgumentCannotCrossScopes:
@@ -1619,8 +1625,8 @@ class TestTheDeleteArgumentCannotCrossScopes:
 
         await saver.adelete_customer_threads(customer=_CUSTOMER_A)
 
-        patterns = [call.args[1] for call in executor.execute.await_args_list]
-        assert patterns == [f"{_CUSTOMER_A}/%", f"{_CUSTOMER_A}/%"]
+        ranges = [call.args[1:] for call in executor.execute.await_args_list]
+        assert ranges == [(f"{_CUSTOMER_A}/", f"{_CUSTOMER_A}0"), (f"{_CUSTOMER_A}/", f"{_CUSTOMER_A}0")]
 
     async def test_a_scoped_purge_refuses_another_customer(self) -> None:
         """asking a saver built for A to erase B is the mistake worth catching.

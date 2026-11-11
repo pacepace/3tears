@@ -148,21 +148,34 @@ def _defaulted_lookup_lines(node: ast.AST) -> list[int]:
     return sorted(found)
 
 
-def _is_executor_call(node: ast.AST) -> bool:
-    """is this a call on the saver's executor?
+def _is_executor(node: ast.AST) -> bool:
+    """is this the saver's executor, ``self._exec``?
 
     :param node: any AST node
     :ptype node: ast.AST
-    :return: True when the node is ``self._exec.<something>(...)``
+    :return: True when the node is ``<name>._exec``
+    :rtype: bool
+    """
+    return isinstance(node, ast.Attribute) and node.attr == "_exec" and isinstance(node.value, ast.Name)
+
+
+def _is_executor_call(node: ast.AST) -> bool:
+    """is this a statement sent through the saver's executor?
+
+    Either a call on it, or a keyed helper handed it (``read_row(self._exec, "checkpoints", by={...})``): the
+    helper binds what its arguments name, so those are checked alike.
+
+    :param node: any AST node
+    :ptype node: ast.AST
+    :return: True when the node is ``self._exec.<something>(...)`` or a call taking ``self._exec`` as an argument
     :rtype: bool
     """
     if not isinstance(node, ast.Call):
         return False
     func = node.func
-    if not isinstance(func, ast.Attribute):
-        return False
-    inner = func.value
-    return isinstance(inner, ast.Attribute) and inner.attr == "_exec" and isinstance(inner.value, ast.Name)
+    if isinstance(func, ast.Attribute) and _is_executor(func.value):
+        return True
+    return any(_is_executor(argument) for argument in [*node.args, *(kw.value for kw in node.keywords)])
 
 
 def _is_scoping_call(node: ast.AST) -> bool:
@@ -266,6 +279,21 @@ class TestCheckpointSqlBindsTheScopedThreadId:
         )
 
         assert _offending_lines(ast.parse(source)) == []
+
+    def test_the_walker_flags_a_raw_id_a_keyed_helper_binds(self) -> None:
+        """a keyed helper handed the executor binds what its ``by`` names, so a raw id there is flagged too.
+
+        :return: nothing
+        :rtype: None
+        """
+        source = (
+            "async def bad(self, thread_id):\n"
+            "    await delete_keyed(self._exec, 'checkpoints', by={'thread_id': thread_id})\n"
+            "async def good(self, thread_id):\n"
+            "    await delete_keyed(self._exec, 'checkpoints', by={'thread_id': self.storage_thread_id(thread_id)})\n"
+        )
+
+        assert _offending_lines(ast.parse(source)) == [2]
 
     def test_the_walker_flags_a_raw_id_in_a_params_list(self) -> None:
         """``alist`` builds its bound parameters in a list, so the list is checked too.

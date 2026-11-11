@@ -648,8 +648,8 @@ class TestProtocolFlow:
         assert executor.execute.call_count == 2
         first_sql = executor.execute.call_args_list[0].args[0]
         second_sql = executor.execute.call_args_list[1].args[0]
-        assert "DELETE FROM checkpoint_writes" in first_sql
-        assert "DELETE FROM checkpoints" in second_sql
+        assert 'DELETE FROM "checkpoint_writes"' in first_sql
+        assert 'DELETE FROM "checkpoints"' in second_sql
 
     async def test_flush_callback_runs_after_aput(self):
         """flush_callback is invoked after aput() writes succeed."""
