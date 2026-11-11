@@ -82,9 +82,12 @@ enforcing run's cap stops at unpriced spend. The cap is read before each example
 run's is before each cell, so the call that crosses it lands whole; the line now says the eval went over, with what it
 landed against its cap. `Eval.max_cost_usd`'s docstring says the examples draw on it too.
 
-**Fixed:** a grading of the examples that fails (the template gone from the store, a judge the host cannot build, a
-judge completion that breaks the protocol) is contained and stated on the reading ("not graded, since the grading
-failed ..."), and the eval files its campaign and returns its result, where the arms' spent results were lost.
+**Fixed:** a grading of the examples that fails (the template gone from the store, a judge config the scope will not
+build or a host with no completion clients, a judge completion that breaks the protocol) is contained and stated on
+the reading ("not graded in full, since the grading failed ..."), and the eval files its campaign and returns its
+result, where the arms' spent results were lost. The example the grading failed on keeps the verdicts it was given, so
+one already graded wrong reads as a miss beside them, never as "not graded". Only those conditions are contained: any
+other error (an engine bug) reaches the caller.
 
 ### evals: a shutdown lets an expiry already running finish, within the shutdown's own timeout
 

@@ -133,13 +133,14 @@ from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.run.judge_repeat import BudgetedJudgeClient, planned_judge_call
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.run.runner import judge_dims, judge_requests
-from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.errors import NotFoundError, RefusedInput, ValidationFailedError
+from threetears.evals.kernel.remedies import FIND_TEMPLATE
 from threetears.evals.kernel.out_of_run import OutOfRunBudget
 from threetears.evals.kernel.runner_spend import cell_spend, spent
 from threetears.evals.kernel.usage_capture import blended_cost
 from threetears.evals.quick.answer import Answer, unwrap_answer
 from threetears.evals.quick.guardrails import Guardrail
-from threetears.evals.quick.judged import ExampleGrade, Judge, JudgeExamples, judge_evidence
+from threetears.evals.quick.judged import Example, ExampleGrade, Judge, JudgeExamples, judge_evidence
 from threetears.evals.quick.levers import CallableLevers, levers_model
 from threetears.evals.quick.logged import Log
 from threetears.evals.quick.measures import Measure
@@ -1435,9 +1436,12 @@ async def grade_judge_examples(
     figures. Spend nobody priced, the arms' or the examples', stops the grading too, as unpriced spend stops a capped
     run: a cap cannot bound what it cannot price. The reading says which stopped it.
 
-    **A grading that fails** (the template gone from the store, a judge the host cannot build, a judge completion that
-    breaks the protocol) is contained and said on the reading, the examples not yet graded named not graded with the
-    cause, so the arms' spent results still reach the eval's result.
+    **A grading that fails** (the template gone from the store, a judge config the scope will not build or a host with
+    no completion clients, a judge completion that breaks the protocol: each its own type) is contained and said on the
+    reading, so the arms' spent results still reach the eval's result. The example it failed on keeps the verdicts it
+    was given, so one already graded wrong reads as a miss with them; it and the examples not yet graded are named not
+    graded in full, with the cause, only where they hold no miss. Any other exception is the engine's fault, never a
+    grading's, and reaches the caller.
 
     :param host: The host the run ran in, whose store holds its template and takes the ledger rows.
     :ptype host: EvalHost
@@ -1471,12 +1475,11 @@ async def grade_judge_examples(
     priced: list[float] = []
     stopped: str | None = None
     grades: list[ExampleGrade] = []
+    grading: tuple[Example, str, str, list[str], list[str]] | None = None
     try:
         template = await run_blocking(host.blocking_executor, host.storage.load_template, template_id, scope_id)
         if template is None:
-            raise ValueError(
-                f"template {template_id!r} is not in scope {scope_id!r}, so the judge's examples have no rubric"
-            )
+            raise NotFoundError("template", template_id, remedy=FIND_TEMPLATE)
         run_judge = await run_blocking(
             host.blocking_executor,
             partial(
@@ -1518,6 +1521,8 @@ async def grade_judge_examples(
             )
             verdicts: list[str] = []
             errors: list[str] = []
+            # What this example has been given so far, so a grading that fails partway keeps it (and its misses).
+            grading = (example, dim, _verdict_word(scales[dim], written.expected_score), verdicts, errors)
             for _repeat in range(k):
                 if stopped is not None:
                     break
@@ -1561,12 +1566,17 @@ async def grade_judge_examples(
                 ExampleGrade(
                     example=example,
                     dimension=dim,
-                    expected=_verdict_word(scales[dim], written.expected_score),
+                    expected=grading[2],
                     verdicts=tuple(verdicts),
                     errors=tuple(errors),
                 )
             )
-    except (ValueError, ValidationFailedError, CompletionProtocolDefect) as failed:
+            grading = None
+    # The conditions a grading meets past the arms, each its own type: the template gone from the store
+    # (NotFoundError), a judge config the scope will not build (ValidationFailedError), a host with no completion
+    # clients (RefusedInput), a judge completion that breaks the protocol (CompletionProtocolDefect). Anything else is
+    # the engine's own fault, and reaches the caller.
+    except (NotFoundError, ValidationFailedError, RefusedInput, CompletionProtocolDefect) as failed:
         contain(
             failed,
             log=log,
@@ -1580,6 +1590,19 @@ async def grade_judge_examples(
         calls = len(rows)
         priced = [row.cost_usd for row in rows if row.cost_usd is not None]
         unpriced = calls - len(priced)
+        # The example the grading failed on keeps the verdicts it was given: one already graded wrong is a miss, and
+        # reads as one, its verdicts so far beside it; only one with no miss reads "not graded in full".
+        if grading is not None:
+            example, dim, expected_word, verdicts, errors = grading
+            grades.append(
+                ExampleGrade(
+                    example=example,
+                    dimension=dim,
+                    expected=expected_word,
+                    verdicts=tuple(verdicts),
+                    errors=tuple(errors),
+                )
+            )
         # The examples the grading never reached, each named not graded: its dimension and verdict as written.
         grades += [
             ExampleGrade(

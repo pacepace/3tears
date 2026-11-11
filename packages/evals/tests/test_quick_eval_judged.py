@@ -25,6 +25,7 @@ from threetears.evals.providers.failures import error_from_response
 from threetears.evals.schema import JudgedArtifact, RubricDim, StopReason
 from threetears.evals.testing import RecordedCompletions
 from threetears.evals.kernel.host import EvalHost, KindContract, TemplateChecks
+from threetears.evals.quick import one_call
 from threetears.evals.quick.one_call import (
     CALLABLE_KIND_CONTRACT,
     JUDGED_CALLABLE_KIND,
@@ -847,3 +848,77 @@ async def test_a_grading_that_fails_is_stated_on_the_result_and_the_arms_spent_r
     (block,) = [block for block in result.page.blocks if block.anchor == "judge-examples"]
     assert block.text.startswith("The judge's 2 examples were not graded, since the grading failed")
     assert result.summary.role_spend("judge").calls == 4 and result.campaign_id, "the arms' results and campaign land"
+
+
+@dataclass(frozen=True)
+class _TemperaturelessJudgeReply:
+    """A judge completion that left ``temperature`` out of the CompletionResult protocol: the host's defect."""
+
+    content: str
+    input_tokens: int | None = 100
+    output_tokens: int | None = 30
+    cost_usd: float | None = JUDGE_COST_USD
+    price_source: str | None = "scripted rate"
+    model: str = JUDGE_MODEL
+    served_model: str | None = None
+    reasoning_tokens: int | None = None
+    stop_reason: StopReason = "end_turn"
+
+
+# parity-with: threetears.evals.schema.CompletionClient
+class _FakeWrongThenBrokenJudge(_FakeJudgeClient):
+    """A judge that grades the hedge on arithmetic 5 (it must get 2) twice, then breaks the protocol on it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hedges = 0
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        reply = await super().generate(system=system, user=user, response_format=response_format)
+        if not user.endswith("\nProbably 4, but I am not sure."):
+            return reply
+        self.hedges += 1
+        if self.hedges > 2:
+            return _TemperaturelessJudgeReply(content=reply.content)
+        dim = re.search(r'single key "([^"]+)"', system)
+        assert dim is not None
+        return dataclasses.replace(reply, content=json.dumps({"reasoning": "sure", "criteria_scores": {dim[1]: 5}}))
+
+
+@pytest.mark.expect_contained(
+    TypeError, why="a CompletionProtocolDefect (a TypeError) met grading the examples is contained into the reading"
+)
+async def test_an_example_graded_wrong_before_the_grading_failed_reads_as_a_miss_with_its_verdicts() -> None:
+    """A grading failing on an example's third repeat re-added it with no verdicts, so two wrong grades read "not
+    graded": the miss was hidden. It keeps the verdicts it was given and reads as the miss it is."""
+    result = await Eval(CASES, answer, [_judge(_FakeWrongThenBrokenJudge(), examples=EXAMPLES)], k=3).run(
+        store=MEMORY, scope=SCOPE
+    )
+
+    read = result.judge_examples
+    assert read is not None and read.stopped is not None
+    assert read.stopped.startswith("the grading failed (CompletionProtocolDefect: ")
+    hedge, honest = read.grades
+    assert (hedge.verdicts, hedge.expected) == (("5", "5"), "2")
+    assert read.misses == (hedge,) and read.unread == (honest,), "the miss is a miss; only the unreached is unread"
+    first, missed = read.lines()
+    assert first.startswith(
+        "judge: 0 of 2 examples graded as they must be on every one of 3 repeats; 1 not graded in full, since the "
+        "grading failed (CompletionProtocolDefect"
+    )
+    assert (
+        missed
+        == '  missed: "Probably 4, but I am not sure." graded 5 on helpful, must 2 (a hedge on arithmetic does not resolve it)'
+    )
+
+
+async def test_a_grading_that_raises_what_no_grading_meets_reaches_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The grading's failures were caught as any ValueError, so an engine bug (a zip of unequal lengths, a call sent
+    unadmitted) read as "the grading failed" on the result. Only the conditions a grading meets are contained now."""
+
+    async def broken(**_kwargs: Any) -> Any:
+        raise ValueError("zip() argument 2 is shorter than argument 1")
+
+    monkeypatch.setattr(one_call, "judge_dims", broken)
+    with pytest.raises(ValueError, match="zip"):
+        await Eval(CASES, answer, [_judge(_FakeJudgeClient(), examples=EXAMPLES)], k=1).run(store=MEMORY, scope=SCOPE)
