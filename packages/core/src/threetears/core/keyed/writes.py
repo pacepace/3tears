@@ -38,6 +38,7 @@ from threetears.core.keyed._filters import (
 )
 from threetears.core.keyed.counts import rows_affected
 from threetears.core.keyed.rows import _TEXT_TYPES, DEFAULT_KEY_BATCH, KeyBatch, _text
+from threetears.core.keyed.steps import Step
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
@@ -318,7 +319,7 @@ async def update_from(
     table: str,
     *,
     key: Sequence[str],
-    source: Derived,
+    source: Derived | Step,
     columns: Sequence[str],
     by: Mapping[str, Any] | None = None,
     returning: Sequence[str] = (),
@@ -334,10 +335,12 @@ async def update_from(
     :param table: the table, a TRUSTED identifier
     :ptype table: str
     :param key: the columns the source joins on, the table's key (or a leading part of an index declared for the
-        write); TRUSTED identifiers, the same names in the source
+        write); TRUSTED identifiers, the same names in the source. ``["rowid"]`` on DuckDB joins on the row itself
+        (the source selects ``t.rowid AS rowid`` of the same table: a window computed over a state's rows)
     :ptype key: Sequence[str]
-    :param source: the derived select, with no parameters of its own
-    :ptype source: Derived
+    :param source: the derived select (no parameters of its own), or a relational step with its parameters
+        (:func:`~threetears.core.keyed.scan`, :func:`~threetears.core.keyed.windowed`)
+    :ptype source: Derived | Step
     :param columns: the columns set from the source's columns of the same name
     :ptype columns: Sequence[str]
     :param by: columns of the table pinned beside the join, as :func:`update_keyed` takes them
@@ -353,11 +356,13 @@ async def update_from(
     target = quoted_table(table)
     assignments = ", ".join(f"{quote_identifier(column)} = s.{quote_identifier(column)}" for column in columns)
     joined = [f"{target}.{quote_identifier(column)} = s.{quote_identifier(column)}" for column in key]
-    pinned, params = by_conditions(by or {}, alias=target)
+    stepped = list(source.params) if isinstance(source, Step) else []
+    pinned, params = by_conditions(by or {}, first=len(stepped) + 1, alias=target)
     clause = " AND ".join([*joined, *pinned])
     selected = ", ".join(f"{target}.{quote_identifier(column)}" for column in returning)
     tail = f" RETURNING {selected}" if returning else ""
     sql = f"UPDATE {target} SET {assignments} FROM ({source.sql}) AS s WHERE {clause}{tail}"
+    params = [*stepped, *params]
     return await _run(conn, sql, params, returning)
 
 
