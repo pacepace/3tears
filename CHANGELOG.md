@@ -56,6 +56,22 @@ size (a hub that has since dropped the cap is read again at the asked size).
 duplicates kept (a key staged again, or already held, is written again); `key=` may be empty. PostgreSQL, DuckDB,
 SQLite and `InlineDuckDB`.
 
+### core.keyed: changed rows by hash
+**Added:** `read_changed(conn, relation, *, key, columns, held, hash_columns, by=, where=)` -> `ChangedRows(rows,
+gone_keys)`: phase 1 reads the scope's keys and each row's hash only, paged by the key; phase 2 reads in full, by key
+(`read_keyed`), only the keys whose hash differs from `held` (a `None` held hash always) or that `held` lacks;
+`gone_keys` are the held keys the scope no longer holds. `row_hash_sql(columns, dialect)` / `row_hash_selected(...)`:
+one MD5 over a canonical typed text of `HashColumn`s (`TEXT`, `INTEGER`, `NUMERIC` at a scale, `BOOLEAN`, `DATE`,
+`TIMESTAMP`), each value length-prefixed and a NULL marked apart, identical on PostgreSQL/YugabyteDB, DuckDB and
+Redshift for the same values, so a full read stores it beside each row and it is never computed in Python.
+`dialect_of(conn)`: the caller never names the dialect (a reader's `sql_dialect`, DuckDB in process, else
+PostgreSQL/YugabyteDB as `known_on_yugabyte` learns it); `Dialect.REDSHIFT`. 124,000 wide rows (77 columns, 2.8 KB
+each) in scope with 3,000 changed: 6 statements, 5.0% of a full read's bytes.
+**Added (datasources):** `DatasourceReader(engine=DataSourceType...)` names its dialect; `DatasourceReader.read_scope`
+and `query_client.read_scope_pages`: a keyed helper's scope read through `read_all`'s pager (sized from the hub's
+announced reply cap, reading on past a cut reply), so `read_changed`'s phase 1 over a datasource never stops at a cut.
+`keyset_page` / `keyset_rows` columns take `Selected` expressions.
+
 ### enforcement: no_whole_reads credits the index a keyed read uses, not the first its bound columns lead
 Of several purposed indexes the bound columns key (`(kind, name, id)`, `(kind, status, id)` with `kind` pinned), the
 one credited is the longest bound prefix, then the one whose next column the read orders or ranges by, then the first

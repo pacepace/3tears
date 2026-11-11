@@ -30,6 +30,7 @@ from threetears.core.keyed._filters import _SQL_TYPE, AnyOf, Derived, Fragment, 
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
+    "SQL_DIALECT_ATTRIBUTE",
     "BoundedCount",
     "Dialect",
     "MarkedCount",
@@ -48,12 +49,19 @@ _COUNTED_VERBS: Final[frozenset[str]] = frozenset(
 )
 
 
+#: the attribute a reader names its database's dialect by (a datasource reader: its datasource's engine), a
+#: :class:`Dialect`; a reader naming none is asked (:func:`threetears.core.keyed.dialect_of`)
+SQL_DIALECT_ATTRIBUTE: Final = "sql_dialect"
+
+
 class Dialect(StrEnum):
     """the database a statistics read is spelled for. PostgreSQL and YugabyteDB keep the same catalog."""
 
     POSTGRES = "postgres"
     YUGABYTE = "yugabyte"
     DUCKDB = "duckdb"
+    #: a warehouse read through a datasource: no arrays, its own catalog (no estimate is read from it)
+    REDSHIFT = "redshift"
 
 
 #: the planner's row estimate of a table, by dialect: ``$1`` the table, ``$2`` its schema (the current one when null)
@@ -101,7 +109,10 @@ async def estimated_rows(
     :return: the estimate; None when the table is unknown or was never analysed
     :rtype: int | None
     """
-    sql = _ESTIMATE_SQL[Dialect.POSTGRES if dialect is Dialect.YUGABYTE else dialect]
+    spelled = Dialect.POSTGRES if dialect is Dialect.YUGABYTE else dialect
+    if spelled not in _ESTIMATE_SQL:
+        raise ValueError(f"no row estimate is read from {dialect}")
+    sql = _ESTIMATE_SQL[spelled]
     rows = await conn.fetch(sql, table, schema)
     if not rows:
         return None

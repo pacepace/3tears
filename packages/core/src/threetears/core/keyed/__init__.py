@@ -38,8 +38,28 @@ SQL is one spelling for PostgreSQL, YugabyteDB and DuckDB; a database with no ar
 
 from __future__ import annotations
 
-from threetears.core.keyed._filters import AnyOf, Derived, Fragment, Lock, Selected
+from threetears.core.keyed._filters import (
+    AnyOf,
+    Derived,
+    Fragment,
+    Lock,
+    Selected,
+    by_conditions,
+    renumbered,
+    selected_column,
+)
+from threetears.core.keyed.changed import (
+    ROW_HASH_COLUMN,
+    dialect_of,
+    ChangedRows,
+    HashColumn,
+    HashKind,
+    read_changed,
+    row_hash_selected,
+    row_hash_sql,
+)
 from threetears.core.keyed.counts import (
+    SQL_DIALECT_ATTRIBUTE,
     BoundedCount,
     Dialect,
     count_at_most,
@@ -80,6 +100,18 @@ from threetears.core.keyed.writes import (
 )
 
 __all__ = [
+    "by_conditions",
+    "renumbered",
+    "selected_column",
+    "SQL_DIALECT_ATTRIBUTE",
+    "dialect_of",
+    "row_hash_selected",
+    "row_hash_sql",
+    "read_changed",
+    "HashKind",
+    "HashColumn",
+    "ChangedRows",
+    "ROW_HASH_COLUMN",
     "ANY_ROWS_CAP",
     "DEFAULT_KEY_BATCH",
     "DIRECT_KEY_BATCH",

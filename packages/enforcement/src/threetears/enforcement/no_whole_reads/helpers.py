@@ -44,7 +44,6 @@ from typing import Final
 
 __all__ = [
     "KEYED_FRAGMENT_BUILDERS",
-    "KEYED_FRAGMENT_METHODS",
     "KEYED_HELPER_CALLS",
     "START_KEYWORDS",
     "UNSEEN",
@@ -63,6 +62,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "any_rows",
         "keyset_page",
         "keyset_rows",
+        "read_changed",
         "counts_by",
         "count_at_most",
         "holds_any",
@@ -88,7 +88,7 @@ KEYED_FRAGMENT_BUILDERS: Final[frozenset[str]] = frozenset(
 
 #: methods building a reviewed visibility fragment for a keyed read's ``visible=``
 #: (``threetears.agent.acl.VisibleCustomers.fragment``): the caller's customers bound as a set, a keyed predicate
-KEYED_FRAGMENT_METHODS: Final[frozenset[str]] = frozenset({"fragment"})
+_KEYED_FRAGMENT_METHODS: Final[frozenset[str]] = frozenset({"fragment"})
 
 #: keywords that say where a pager starts, not which rows it reads
 START_KEYWORDS: Final[frozenset[str]] = frozenset({"after", "since"})
@@ -277,7 +277,7 @@ def _visible(call: ast.Call) -> list[str]:
         if (
             isinstance(built, ast.Call)
             and isinstance(built.func, ast.Attribute)
-            and built.func.attr in KEYED_FRAGMENT_METHODS
+            and built.func.attr in _KEYED_FRAGMENT_METHODS
         ):
             continue
         if not (isinstance(built, ast.Call) and _name(built) == "exists_keyed"):
@@ -303,7 +303,7 @@ def _visible_columns(call: ast.Call) -> list[str]:
         if (
             isinstance(element, ast.Call)
             and isinstance(element.func, ast.Attribute)
-            and element.func.attr in KEYED_FRAGMENT_METHODS
+            and element.func.attr in _KEYED_FRAGMENT_METHODS
         ):
             written = _text(_argument(element, "column", 0), "visible")
             columns.append(written.split(".")[-1].strip('"'))
@@ -339,6 +339,33 @@ def _keyset_page(call: ast.Call) -> list[str]:
     page = [*pinned, *filtered, f"{order[0]} > ${place}"]
     ordered = ", ".join(order)
     return [f"SELECT * FROM {table} AS t{_where(page)} ORDER BY {ordered} LIMIT {_LIMIT}", *_visible(call), *own]
+
+
+def _read_changed(call: ast.Call) -> list[str]:
+    """phase 1, the scope's keys and hashes, is a keyset page in the key's order (``relation`` / ``key`` as
+    ``keyset_rows`` takes ``table`` / ``order``; a key column named by its string a sort of it); phase 2 reads by
+    those keys, keyed whenever phase 1 is."""
+    key = _argument(call, "key", None)
+    if isinstance(key, ast.Tuple | ast.List):
+        key = ast.List(
+            elts=[
+                ast.Call(func=ast.Name("Sort", ast.Load()), args=[element], keywords=[])
+                if isinstance(element, ast.Constant)
+                else element
+                for element in key.elts
+            ],
+            ctx=ast.Load(),
+        )
+    page = ast.Call(
+        func=call.func,
+        args=[call.args[0]] if call.args else [],
+        keywords=[
+            *(keyword for keyword in call.keywords if keyword.arg not in {"relation", "key"}),
+            ast.keyword(arg="table", value=_argument(call, "relation", 1) or ast.Name("_unseen", ast.Load())),
+            *([ast.keyword(arg="order", value=key)] if key is not None else []),
+        ],
+    )
+    return _keyset_page(page)
 
 
 def _read_joined(call: ast.Call) -> list[str]:
@@ -507,6 +534,7 @@ _SYNTHESIZERS: Final = {
     "any_rows": _any_rows,
     "keyset_page": _keyset_page,
     "keyset_rows": _keyset_page,
+    "read_changed": _read_changed,
     "counts_by": _counts_by,
     "count_at_most": _probe,
     "holds_any": _probe,
