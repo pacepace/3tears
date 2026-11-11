@@ -20,6 +20,22 @@ in aspect order, else the host's, so every aspect, a derived arm and every table
 aspects name one lever apart is refused. So renaming a lever moves no aspect bundle fingerprint, evidence digest or
 campaign bundle fingerprint, and a page built now prints the new name.
 
+The same holds for a measure and a level. A measure's `reader_name` and `reader_prose` stay in the bundle's measure
+catalog, outside every fingerprint (`MEASURE_PRESENTATION_FIELDS`); a trial's failed check holds its measure's key
+(`TrialCheck.name`) and each judged dimension its id (`TrialJudgement.dim`, `TrialRow.judged`, `__outcome__` where it
+held `outcome`); a campaign's readings hold each measure by its key alone (`MeasureReading.name` is removed) and each
+bar's decision (`BarStatus.decision`, from the bundle's verdict) where they held a reason naming the measure
+(`BarStatus.reason` is now a method a page words with the measure's name; `missed_reason` is gone). A level's
+`display`, the name a campaign's declaration gives it or the host's, stays where a page reads it and is outside every
+fingerprint wherever the bundle carries the level (`LEVEL_PRESENTATION_FIELDS`: the variant index, the coverage, the
+declared design and the campaign's declaration); a declared crossing's cell holds each level's content hash
+(`DeclaredCellCoverage.levels`, named on the page through `AnalysisContextBundle.level_name`); and the decision surface,
+the scoreboard and the time axis order their arms by the host's display, never a declared name. So renaming a measure or
+a level moves no fingerprint or digest and stales no analysis; a page built now prints the new name, and a stored
+analysis's page the names it was frozen with. Every page reads as it did. A judge's identity is untouched: a rubric
+criterion's wording keys its judge profile (`criterion_digest`) as before, and the trial keeps the criterion the judge
+was asked.
+
 **Regenerate once:** the bundle shape moves from 65 to 66, and no earlier shape is read as stored (64 was): every
 stored analysis is listed as needing regeneration, its report reads code-only, and every door says why (`holds an
 evidence bundle of shape 65, frozen before names left the evidence: ...`). Generate each again with
