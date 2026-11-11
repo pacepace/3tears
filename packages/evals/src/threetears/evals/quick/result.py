@@ -9,7 +9,7 @@ the control. Everything here is the engine's own path, composed:
   shared candidate model, so the report calls the arm ``candidate=<name>``. Named as ``k=v`` pairs
   (``"prompt=v2, effort=low"``), each pair is one factor of a factorial design: ``model`` is the run's candidate model
   and every other factor is a lever the engine names ``callable.<factor>`` and keys into the variant. Such an arm is
-  named by its factors, in the order the eval declares them, on every surface (:func:`shown_arm_name`:
+  named by its factors, in the order the eval declares them, on every surface (:func:`_shown_arm_name`:
   ``Prompt v2, effort low``), never by the lever the engine keys it under.
 - **Every arm is started in one launch**, so they share one launch's schedule and capacity, and a
   refusal on the last arm leaves none run.
@@ -167,7 +167,7 @@ def coordinates(arm: str) -> dict[str, str] | None:
     return pairs
 
 
-def shown_arm_name(arm: str) -> str:
+def _shown_arm_name(arm: str) -> str:
     """The one name every surface prints for an arm: the campaign's page, the verdict line, the quiet print's
     scoreboard and misses, and a program's rows.
 
@@ -270,7 +270,7 @@ class Result:
     :ivar guardrail_readings: Every guardrail, decided for each arm against the control; empty when none is declared.
     :ivar arm_variants: Each arm's variant key, by name: what the bundle names the arm by.
     :ivar labelled_arms: Each arm's name, by the words the report names it by (``baseline``).
-    :ivar arm_labels: The name every surface prints each arm named as factors by (:func:`shown_arm_name`), by its
+    :ivar arm_labels: The name every surface prints each arm named as factors by (:func:`_shown_arm_name`), by its
         variant key; empty for arms named plainly, which every surface names by their variants.
     """
 
@@ -486,7 +486,7 @@ class Result:
             lines += judged
         for arm, summary in self.arms.items():
             label = (
-                "" if len(self.arms) == 1 else f"{shown_arm_name(arm)}{' (control)' if arm == self.control else ''}: "
+                "" if len(self.arms) == 1 else f"{_shown_arm_name(arm)}{' (control)' if arm == self.control else ''}: "
             )
             lines.append(f"{label}{summary.results_text}")
             # an operator's reason for a cancel, a predicted label, a refused check's reason: each can run over lines
@@ -517,7 +517,7 @@ class Result:
         if misses:
             lines.append(f"top misses ({min(len(misses), QUIET_MISSES)} of {len(misses)} failed trials):")
             for arm, miss in misses[:QUIET_MISSES]:
-                who = "" if len(self.arms) == 1 else f"{shown_arm_name(arm)}, "
+                who = "" if len(self.arms) == 1 else f"{_shown_arm_name(arm)}, "
                 lines.append(f"  case {miss.case} ({who}repeat {miss.repeat}): {one_line('; '.join(self._why(miss)))}")
         lines += self.disclosures
         lines.append(f"stored in {self.store}, scope {self.scope_id!r}")
@@ -566,7 +566,7 @@ class Result:
                 check.name: "the guardrail the other arms are decided against"
                 for check in self.guardrail_readings.checks
             }
-        control = shown_arm_name(self.control)
+        control = _shown_arm_name(self.control)
         return {row["measure_id"]: f"guardrail {row['outcome']} against {control}" for row in self.guardrails(arm)}
 
     def _measure_texts(self, forms: PageForms, summary: EvalSummary, arm: str) -> list[str]:
@@ -983,7 +983,7 @@ class Result:
                 kind=self.kind,
                 control=control,
                 scope_id=self.scope_id,
-                name=name or f"{self.name}, against {shown_arm_name(control)}",
+                name=name or f"{self.name}, against {_shown_arm_name(control)}",
                 behavior=campaign.behavior,
                 repetitions=design.intended_repetitions if design is not None else None,
                 created_by=created_by,
@@ -1328,7 +1328,7 @@ def calibrate(
 
 
 #: The id the page's line on how the judge graded its examples carries.
-JUDGE_EXAMPLES_ANCHOR = "judge-examples"
+_JUDGE_EXAMPLES_ANCHOR = "judge-examples"
 
 
 def with_judge_examples(result: Result, examples: JudgeExamples | None) -> Result:
@@ -1349,7 +1349,7 @@ def with_judge_examples(result: Result, examples: JudgeExamples | None) -> Resul
     if examples is None:
         return result
     line = DisclosureBlock(
-        section="provenance", source="calibration", text=examples.sentence(), anchor=JUDGE_EXAMPLES_ANCHOR
+        section="provenance", source="calibration", text=examples.sentence(), anchor=_JUDGE_EXAMPLES_ANCHOR
     )
     return replace(
         result, judge_examples=examples, page=result.page.model_copy(update={"blocks": [*result.page.blocks, line]})
@@ -1455,7 +1455,7 @@ def declare(
     prefix = host.profile.kind_contract(kind).lever_prefix
     # An arm named as factors is labelled by them on the campaign, every arm, so no page names one by its variant's
     # levers (`callable.effort=high, callable.prompt=v1`, sorted, the engine's kind in each lever's name).
-    shown = {arm: shown_arm_name(arm) for arm in ordered if coordinates(arm) is not None}
+    shown = {arm: _shown_arm_name(arm) for arm in ordered if coordinates(arm) is not None}
     axes = []
     for factor in factors:
         values = list(dict.fromkeys(levels[arm][factor] for arm in ordered))
@@ -1590,7 +1590,6 @@ def declare(
 
 __all__ = [
     "CREATED_BY",
-    "JUDGE_EXAMPLES_ANCHOR",
     "LABEL_COLUMNS",
     "QUIET_MISSES",
     "TO_LABEL",
@@ -1601,6 +1600,5 @@ __all__ = [
     "declare",
     "judged_rows",
     "refuse_an_unusable_margin",
-    "shown_arm_name",
     "with_judge_examples",
 ]

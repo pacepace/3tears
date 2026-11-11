@@ -93,8 +93,6 @@ def _claim(claim: DocClaim) -> list[str]:
 def _lines(page: DocPage) -> Iterator[list[str]]:
     """Each part's lines, in the page's order; a blank line goes between parts."""
     yield [_masthead(page.masthead)]
-    if page.stored_shape:
-        yield [inert(f"_{page.stored_shape}_")]
     if page.draft:
         yield [inert(f"**{draft_line(page)}**")]
     if opened := open_findings_line(page):

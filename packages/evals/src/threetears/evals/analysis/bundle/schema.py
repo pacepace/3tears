@@ -10,7 +10,7 @@ imports none of them.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Final, Literal
@@ -2260,22 +2260,10 @@ NO_AXIS_EXPLORATORY = (
 ASPECT_BUNDLE_SHAPE = 59
 
 
-#: The earlier bundle shapes this build reads as stored, each with what the change since means for a page read from
-#: it, in a report reader's words (:func:`stored_shape_line`). A shape joins when every field the bumps since it added is
-#: optional and this build reads each figure it stored with the meaning it was stored with: a stored contrast names
-#: the interval it was drawn on (``FamilyComparison.basis``), so a page names it as it was drawn. A bump that changes
-#: what a stored figure means, or adds a field this build cannot do without, does not join, and a bundle of an earlier
-#: shape outside the set is refused. Reading as stored is no migration: every figure renders as it was written, never
-#: recomputed (``tests/fixtures/report_inputs/migrate_bundle_shape_66.py`` stays a fixture tool).
-#: None today: 64 was read as stored until the bump to 66, which no earlier shape can join
-#: (:data:`_NAMES_LEFT_THE_EVIDENCE`).
-_READ_AS_STORED: Final[Mapping[int, str]] = {}
-
 #: The first bundle shape whose evidence carries no name (owner ruling, 2026-11-11): every bundle of an earlier shape
 #: holds sentences worded with lever ids, its campaign's derived arms labelled with lever names, its trials' checks and
 #: its readings' measures named by their reader names, and its declared crossing's cells by their levels' names, that a
-#: page now words and names at render time, so none is read as stored, and a stored analysis frozen over one is
-#: regenerated once.
+#: page now words and names at render time, so none is read, and a stored analysis frozen over one is regenerated once.
 _NAMES_LEFT_THE_EVIDENCE: Final[int] = 66
 
 #: Why a bundle frozen before :data:`_NAMES_LEFT_THE_EVIDENCE` is refused, in a reader's words.
@@ -2285,40 +2273,15 @@ _FROZEN_WITH_NAMES = (
     "measure, lever, level and arm when a page is rendered, so it cannot read it"
 )
 
-#: The one line a page read from evidence of an earlier shape this build reads as stored says first, and the analysis
-#: listing's verdict says after the verdict: what the page is, then what that means for its figures, then, last and
-#: as information only, what regenerating would do. No shape number: a reader of the page has no use for one, and the
-#: JSON names each aspect's (``bundle_schema_version``).
-_STORED_SHAPE_LINE = "This report was written on an earlier build. {effects} Regenerating would redraw them."
-
-
-def stored_shape_line(shapes: Iterable[int]) -> str | None:
-    """The one line saying a page is read from evidence of an earlier shape this build reads as stored
-    (:data:`_READ_AS_STORED`); None when every bundle is this build's shape.
-
-    :param shapes: Each aspect bundle's ``schema_version``, as read.
-    :ptype shapes: Iterable[int]
-    :return: The line, saying what every change since the earliest shape means for the page; None for none earlier.
-    :rtype: str | None
-    """
-    current = AnalysisContextBundle.model_fields["schema_version"].default
-    earlier = sorted({shape for shape in shapes if shape != current})
-    if not earlier:
-        return None
-    effects = " ".join(_READ_AS_STORED[shape] for shape in sorted(_READ_AS_STORED) if shape >= earlier[0])
-    return _STORED_SHAPE_LINE.format(effects=effects)
-
 
 def refuse_a_bundle_of_another_shape(data: Mapping[str, Any], *, what: str, remedy: str) -> None:
-    """Refuse a stored bundle of any shape but this build's and the earlier ones it reads as stored, naming what holds
-    it and the remedy.
+    """Refuse a stored bundle of any shape but this build's, naming what holds it and the remedy.
 
     A stored read is strict, so a bundle of another shape would otherwise fail on the first field it lacks or the
     first it carries that this shape dropped, in pydantic's words, and fail every read that holds it — a listing of
     analyses among them. It is refused here, before it is read, in the reader's words, so a caller can refuse the one
-    document that holds it and read the rest. A bundle is never migrated across a shape change: one of a shape in
-    :data:`_READ_AS_STORED` is read as it was stored, its figures as they were written, any other is refused until what
-    holds it is regenerated, and the page read from a stored one says so first (:func:`stored_shape_line`).
+    document that holds it and read the rest. A bundle is never migrated or read as stored across a shape change: what
+    holds one of another shape is regenerated.
 
     :param data: The stored bundle, as a mapping.
     :ptype data: Mapping[str, Any]
@@ -2326,9 +2289,10 @@ def refuse_a_bundle_of_another_shape(data: Mapping[str, Any], *, what: str, reme
     :ptype what: str
     :param remedy: What to do instead: regenerate what holds it, or freeze it again.
     :ptype remedy: str
-    :raises RefusedInput: The bundle's ``schema_version`` is missing, or is neither this build's
-        (``AnalysisContextBundle.schema_version``'s default) nor one in :data:`_READ_AS_STORED`; one frozen before
-        :data:`_NAMES_LEFT_THE_EVIDENCE` is refused saying so.
+    :raises RefusedInput: The bundle's ``schema_version`` is missing, or is not this build's
+        (``AnalysisContextBundle.schema_version``'s default); one frozen before :data:`ASPECT_BUNDLE_SHAPE` is refused
+        saying it predates a bundle reading one aspect, one frozen before :data:`_NAMES_LEFT_THE_EVIDENCE` saying it
+        was frozen with names.
     """
     shape = data.get("schema_version")
     current = AnalysisContextBundle.model_fields["schema_version"].default
@@ -2340,11 +2304,10 @@ def refuse_a_bundle_of_another_shape(data: Mapping[str, Any], *, what: str, reme
         )
     if shape < _NAMES_LEFT_THE_EVIDENCE:
         raise RefusedInput(_FROZEN_WITH_NAMES.format(what=what, shape=shape, current=current), remedy=remedy)
-    if shape != current and shape not in _READ_AS_STORED:
-        stored = f" and, as stored, {', '.join(map(str, sorted(_READ_AS_STORED)))}" if _READ_AS_STORED else ""
+    if shape != current:
         raise RefusedInput(
-            f"{what} holds an evidence bundle of shape {shape}, and this build reads shape {current}{stored} only, so "
-            "it cannot read it: a bundle is regenerated across a shape change, never migrated",
+            f"{what} holds an evidence bundle of shape {shape}, and this build reads shape {current} only, so it "
+            "cannot read it: a bundle is regenerated across a shape change, never migrated",
             remedy=remedy,
         )
 
@@ -2608,7 +2571,7 @@ class TrialJudgement(EvalDocumentModel):
 #: its stratum and first input where it was given none. A bundle carries it on every trial and leaves it out of its
 #: fingerprint, so naming or renaming a test case stales no analysis and moves no reporter case: the case is held by its
 #: ``case_id`` (owner ruling, 2026-11-11: names are presentation, never evidence).
-TRIAL_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"case_label"})
+_TRIAL_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"case_label"})
 
 
 class TrialRow(EvalDocumentModel):
@@ -2621,7 +2584,7 @@ class TrialRow(EvalDocumentModel):
         description=(
             "The case as a reader names it: the name its author gave it (`double-charge`); else its stratum, then "
             "the first 80 characters of the first input its first trial's transcript recorded, else its id. "
-            "Presentation only (`TRIAL_PRESENTATION_FIELDS`): no part of the bundle's fingerprint, which holds the "
+            "Presentation only (`_TRIAL_PRESENTATION_FIELDS`): no part of the bundle's fingerprint, which holds the "
             "case by `case_id`, so renaming a case stales no analysis and a page built from a stored analysis prints "
             "the label it was frozen with."
         ),
@@ -2939,7 +2902,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # are no part of the fingerprint, and neither is a declared axis's `reader_name` (`AXIS_PRESENTATION_FIELDS`), a
     # catalogued measure's `reader_name` and `reader_prose` (`MEASURE_PRESENTATION_FIELDS`), any level's `display`
     # in the variant index, the coverage or the declared design (`LEVEL_PRESENTATION_FIELDS`), nor a trial's
-    # `case_label` (`TRIAL_PRESENTATION_FIELDS`): a bundle naming nothing is this shape byte for byte, and naming or
+    # `case_label` (`_TRIAL_PRESENTATION_FIELDS`): a bundle naming nothing is this shape byte for byte, and naming or
     # renaming a measure, a lever, a level or a test case moves no fingerprint.
     # Unmoved by the run apparatus and the unanswered calls: each run summary's `apparatus` and each arm's
     # `scoreboard[].unanswered` are written only when the run recorded one or a usage row counted them, so a bundle over
@@ -3895,7 +3858,7 @@ class AnalysisContextBundle(EvalDocumentModel):
         # A check this aspect names nowhere else is named among its checks, as every other is.
         return named[check] if check in named else check_names([*named, check], self.goal_check_names)[check]
 
-    def fingerprint(self, *, like: str | None = None) -> str:
+    def fingerprint(self) -> str:
         """Return the bundle's fingerprint — a stable A/B key: ``v2:`` and the sha256 of its identity JSON.
 
         Routes through :func:`fingerprint_digest`: sorted keys, tight separators, and every float rounded to
@@ -3916,15 +3879,10 @@ class AnalysisContextBundle(EvalDocumentModel):
         "identical" is quantified over, and because the A/B loop's premise is that nothing but the
         prompt moved.
 
-        :param like: A fingerprint stored earlier, to compute this one in that one's version so the two compare:
-            an unprefixed one was taken before floats were rounded, and is matched by the same unrounded digest.
-            None computes the current version.
-        :ptype like: str | None
-        :return: The fingerprint: ``v2:`` and a 64-character lowercase hex digest, or, ``like`` an unprefixed
-            one, the bare digest.
+        :return: The fingerprint: ``v2:`` and a 64-character lowercase hex digest.
         :rtype: str
         """
-        return evidence_digest(self.to_dict(), like=like)
+        return evidence_digest(self.to_dict())
 
 
 #: The bundle fields :meth:`AnalysisContextBundle.fingerprint` leaves out: what built the bundle, when its results
@@ -3942,51 +3900,40 @@ _NOT_EVIDENCE: frozenset[str] = (
 #: one assembled after fingerprint alike over the same runs, and so do two bundles whose runs were priced differently.
 _NOT_ARM_EVIDENCE: frozenset[str] = frozenset({"pricing"})
 
-#: What a fingerprint of the current version starts with. Version 1 had no prefix: the bare sha256 of the canonical
-#: JSON, floats at full precision. Version 2 rounds every float to twelve significant figures first, so one
-#: evidence fingerprints alike across Python builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary. A
-#: stored fingerprint names its version by this prefix, which is how a comparison computes the fresh one in the
-#: stored one's version (:func:`fingerprint_digest`).
+#: What a bundle's fingerprint starts with: version 2, which rounds every float to twelve significant figures first,
+#: so one evidence fingerprints alike across Python builds, except, rarely, a value that falls exactly on a
+#: 12th-figure rounding boundary. A fingerprint of another version (version 1 had no prefix) was taken over a bundle of
+#: an earlier shape, which no build reads, so it never matches: what holds it is regenerated.
 FINGERPRINT_PREFIX: Final[str] = "v2:"
 
 
-def fingerprint_digest(payload: Any, *, like: str | None = None) -> str:
-    """The fingerprint of a bundle's pre-image, in the current version or in a stored fingerprint's.
+def fingerprint_digest(payload: Any) -> str:
+    """The fingerprint of a bundle's pre-image: :data:`FINGERPRINT_PREFIX` and the sha256 of
+    :func:`~threetears.evals.schema.hashing.identity_json`, which rounds every float to twelve significant figures. The
+    one place a fingerprint's version is decided.
 
-    The one place a fingerprint's version is decided. Version 2, the current one, is :data:`FINGERPRINT_PREFIX`
-    and the sha256 of :func:`~threetears.evals.schema.hashing.identity_json`, which rounds every float to twelve
-    significant figures. Version 1 is the bare :func:`~threetears.evals.schema.hashing.canonical_digest`, every
-    float in full: computed only to compare with a fingerprint stored in it, so a case or analysis recorded
-    before the rounding still matches the same evidence on the same machine. Across two Python builds a version
-    1 fingerprint can still differ, which is the defect the version exists to retire.
-
-    :param payload: The pre-image: a bundle's document less what built it, or a campaign bundle's frame.
+    :param payload: The pre-image: a bundle's document less what built it.
     :ptype payload: Any
-    :param like: The stored fingerprint to compare with; None for the current version.
-    :ptype like: str | None
-    :return: The fingerprint in ``like``'s version, or the current one.
+    :return: The fingerprint.
     :rtype: str
     """
-    if like is not None and not like.startswith(FINGERPRINT_PREFIX):
-        return canonical_digest(payload)
     return FINGERPRINT_PREFIX + identity_digest(payload)
 
 
-def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> str:
+def evidence_digest(document: Mapping[str, Any]) -> str:
     """A bundle document's fingerprint: the digest of every field but what built it (``package_version``), how a page
     prints it (:data:`_NOT_EVIDENCE`, the declared control's
     :data:`~threetears.evals.kernel.declaration.ARM_PRESENTATION_FIELDS`, each catalogued measure's
     :data:`~threetears.evals.kernel.metrics.MEASURE_PRESENTATION_FIELDS`, each level's
     :data:`~threetears.evals.kernel.declaration.LEVEL_PRESENTATION_FIELDS` and each trial's
-    :data:`TRIAL_PRESENTATION_FIELDS`), and how each arm's cost was priced (:data:`_NOT_ARM_EVIDENCE`).
+    :data:`_TRIAL_PRESENTATION_FIELDS`), and how each arm's cost was priced (:data:`_NOT_ARM_EVIDENCE`).
 
     **Names are presentation, never evidence** (owner ruling, 2026-11-11). What a reader calls a measure, a lever, a
     level or a test case is carried where a page reads it and left out here, so naming or renaming one moves no
     fingerprint and stales no analysis; a page built from a stored analysis prints the names it was frozen with until it
     is regenerated. A level is identified by its ``content_hash``, a measure by its key, a test case by its id. A
-    version 1 (unprefixed) fingerprint is computed as it was taken, every measure's, level's and case's name in it; a
-    version 2 one taken before bundle shape 66 read them too, and is never compared, since no bundle of an earlier
-    shape is read.
+    fingerprint taken before bundle shape 66 read them, and is never compared, since no bundle of an earlier shape is
+    read.
 
     **Two bundles may share a fingerprint with different pricing** (owner ruling, 2026-10-28: "I recognize the
     implications, but it's ok"). The same runs priced by another source, or served by another provider, fingerprint
@@ -3998,9 +3945,6 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
 
     :param document: A bundle as its stored dict.
     :ptype document: Mapping[str, Any]
-    :param like: A stored fingerprint to compute this one in the version of (:func:`fingerprint_digest`); None for
-        the current version.
-    :ptype like: str | None
     :return: The fingerprint.
     :rtype: str
     """
@@ -4008,17 +3952,15 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
     if isinstance(scoreboard := evidence.get("scoreboard"), list):
         # How an arm's cost was priced (_NOT_ARM_EVIDENCE) is no part of what the bundle read.
         evidence["scoreboard"] = _unpresented(scoreboard, _NOT_ARM_EVIDENCE)
-    # A version 1 fingerprint read every measure's, level's and case's name: computed as it was taken.
-    unnamed = like is None or like.startswith(FINGERPRINT_PREFIX)
-    if unnamed and isinstance(trials := evidence.get("trials"), list):
-        # What a reader calls a test case (TRIAL_PRESENTATION_FIELDS) is no part of what the bundle read: its id is.
-        evidence["trials"] = _unpresented(trials, TRIAL_PRESENTATION_FIELDS)
-    if unnamed and isinstance(catalog := evidence.get("measure_catalog"), Mapping):
+    if isinstance(trials := evidence.get("trials"), list):
+        # What a reader calls a test case (_TRIAL_PRESENTATION_FIELDS) is no part of what the bundle read: its id is.
+        evidence["trials"] = _unpresented(trials, _TRIAL_PRESENTATION_FIELDS)
+    if isinstance(catalog := evidence.get("measure_catalog"), Mapping):
         # What a reader calls a measure (MEASURE_PRESENTATION_FIELDS) is no part of what the bundle read: its key is.
         evidence["measure_catalog"] = {
             name: _unpresented([descriptor], MEASURE_PRESENTATION_FIELDS)[0] for name, descriptor in catalog.items()
         }
-    if unnamed and isinstance(index := evidence.get("variant_index"), list):
+    if isinstance(index := evidence.get("variant_index"), list):
         # How a page shows each level (LEVEL_PRESENTATION_FIELDS), the host's display or the name the declaration gives
         # it, is no part of what the bundle read: its content hash is, and the variant key digests nothing else.
         evidence["variant_index"] = [
@@ -4034,7 +3976,7 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
             else entry
             for entry in index
         ]
-    if unnamed and isinstance(coverage := evidence.get("coverage"), list):
+    if isinstance(coverage := evidence.get("coverage"), list):
         # A declared level's coverage is read by its content hash; how the declaration renders it is presentation.
         evidence["coverage"] = [
             {**row, "declared_levels": _unpresented(row["declared_levels"], LEVEL_PRESENTATION_FIELDS)}
@@ -4051,8 +3993,8 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
     if isinstance(declared, Mapping) and isinstance(design := declared.get("design"), Mapping):
         # What a page calls a declared lever and each of its levels (AXIS_PRESENTATION_FIELDS,
         # LEVEL_PRESENTATION_FIELDS) is no part of what the bundle read either.
-        evidence["declared"] = {**declared, "design": unnamed_axes(design, levels=unnamed)}
-    return fingerprint_digest(evidence, like=like)
+        evidence["declared"] = {**declared, "design": unnamed_axes(design)}
+    return fingerprint_digest(evidence)
 
 
 def _unpresented(items: Sequence[Any], fields: frozenset[str]) -> list[Any]:
@@ -4081,7 +4023,7 @@ def _unnamed_levels(levels: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def unnamed_axes(design: Mapping[str, Any], *, levels: bool = True) -> dict[str, Any]:
+def unnamed_axes(design: Mapping[str, Any]) -> dict[str, Any]:
     """A stored design as a fingerprint reads it: each declared axis without how a page names its lever
     (:data:`~threetears.evals.kernel.declaration.AXIS_PRESENTATION_FIELDS`) and each of its levels without how a page
     shows it (:data:`~threetears.evals.kernel.declaration.LEVEL_PRESENTATION_FIELDS`), so naming or renaming a lever
@@ -4090,8 +4032,6 @@ def unnamed_axes(design: Mapping[str, Any], *, levels: bool = True) -> dict[str,
 
     :param design: An aspect's design, as its stored dict.
     :ptype design: Mapping[str, Any]
-    :param levels: Leave each level's display out too; False for a fingerprint of a version taken with them in it.
-    :ptype levels: bool
     :return: The design, its axes and their levels unnamed.
     :rtype: dict[str, Any]
     """
@@ -4104,7 +4044,7 @@ def unnamed_axes(design: Mapping[str, Any], *, levels: bool = True) -> dict[str,
             unnamed.append(axis)
             continue
         held = {key: value for key, value in axis.items() if key not in AXIS_PRESENTATION_FIELDS}
-        if levels and isinstance(values := held.get("values"), list):
+        if isinstance(values := held.get("values"), list):
             held["values"] = _unpresented(values, LEVEL_PRESENTATION_FIELDS)
         unnamed.append(held)
     return {**design, "axes": unnamed}
@@ -4182,8 +4122,8 @@ class BundleInspection(EvalDocumentModel):
     reproduces_generation: bool | None = Field(
         default=None,
         description=(
-            "Whether the re-assembled bundle IS the one the addressed analysis was generated over: its fingerprint, "
-            "computed in `recorded_fingerprint`'s version (an unprefixed one predates `v2:`), equals that one. Prior insights are read as of the instant the "
+            "Whether the re-assembled bundle IS the one the addressed analysis was generated over: its fingerprint "
+            "equals `recorded_fingerprint`. Prior insights are read as of the instant the "
             "analysis's bundle was assembled, so an insight minted afterwards — its own included — does not move this. "
             "False means the bundle below explains today's inputs and not that generation's; `mismatch_cause` says "
             "why. None when addressed by campaign. Stated rather than "
@@ -4249,11 +4189,7 @@ class BundleInspection(EvalDocumentModel):
         :rtype: BundleInspection
         """
         fingerprint = bundle.fingerprint()
-        reproduces = (
-            None
-            if recorded_fingerprint is None
-            else bundle.fingerprint(like=recorded_fingerprint) == recorded_fingerprint
-        )
+        reproduces = None if recorded_fingerprint is None else fingerprint == recorded_fingerprint
         cause: Literal["package_shape", "host_declarations", "evidence"] | None = None
         if reproduces is False:
             if recorded_schema_version != bundle.schema_version:
@@ -4373,7 +4309,6 @@ __all__ = [
     "exploratory_disclosure",
     "ASPECT_BUNDLE_SHAPE",
     "refuse_a_bundle_of_another_shape",
-    "stored_shape_line",
     "asks_a_question",
     "CriterionKind",
     "late_criteria",
@@ -4428,7 +4363,6 @@ __all__ = [
     "VerdictOrder",
     "WholeSwing",
     "FINGERPRINT_PREFIX",
-    "TRIAL_PRESENTATION_FIELDS",
     "evidence_digest",
     "unnamed_axes",
     "fingerprint_digest",

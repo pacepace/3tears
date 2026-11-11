@@ -68,6 +68,7 @@ from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, Analysis
 from threetears.evals.analysis.depth import Depth, Precision, precision
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.report.decision import (
+    FloorDecision,
     FloorOutcome,
     FloorState,
     FloorStatus,
@@ -108,6 +109,7 @@ __all__ = [
     "CampaignKind",
     "CampaignReadings",
     "FloorState",
+    "FloorDecision",
     "FloorStatus",
     "MeasureReading",
     "PairReading",

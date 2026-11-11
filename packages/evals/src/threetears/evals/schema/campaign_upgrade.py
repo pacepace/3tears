@@ -17,12 +17,12 @@ superseded question is dropped with its rule and a live one's id goes with it.
 from __future__ import annotations
 
 import copy
-import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
 from threetears.evals.schema.aspect_label import aspect_label_for
+from threetears.evals.schema.lever_words import lever_id_words
 from threetears.evals.schema.logs import get_logger
 
 
@@ -140,26 +140,17 @@ def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
 _QUICK_PATH_PREFIXES = ("callable.", "callable-judged.")
 
 
-def _migrated_lever_name(lever: str) -> str:
-    """The reader name the v16 step gives a stored axis that has none, from its id: the one place a lever's name is
-    derived rather than declared, run once, when a campaign is read up from v16.
-
-    The id read as words, as the pages printed it before levers were named (``max_output_tokens`` to ``max output
-    tokens``, ``extractor.prompt_style`` to ``extractor prompt style``), less the quick path's kind namespace, which no
-    author wrote (``callable.prompt`` to ``prompt``).
-
-    :param lever: The axis's id.
-    :ptype lever: str
-    :return: Its reader name.
-    :rtype: str
-    """
-    factor = next((lever.removeprefix(prefix) for prefix in _QUICK_PATH_PREFIXES if lever.startswith(prefix)), lever)
-    return re.sub(r"[_.]+", " ", " ".join(factor.split())).strip() or lever
+def _authored_factor(lever: str) -> str:
+    """A lever's id less the quick path's kind namespace, which no author wrote (``callable.prompt`` to ``prompt``);
+    any other id as it is."""
+    return next((lever.removeprefix(prefix) for prefix in _QUICK_PATH_PREFIXES if lever.startswith(prefix)), lever)
 
 
 def upgrade_campaign_v16(document: Mapping[str, Any]) -> dict[str, Any]:
     """A stored v16 ``eval_campaign`` with every declared axis named: each axis of each aspect's design that stores no
-    ``reader_name`` takes :func:`_migrated_lever_name` of its id; an axis that stores one keeps it.
+    ``reader_name`` takes its id, less the quick path's kind namespace (``callable.prompt`` to ``prompt``), read as words
+    by :func:`~threetears.evals.schema.lever_words.lever_id_words`, the one rule that reads a lever's id as words; an
+    axis that stores one keeps it.
 
     Pure, and total: an aspect with no design, a design with no axes and an axis that is not a mapping pass through as
     they are, and ``document`` is not modified. Nothing else moves: no key, digest, time or addressing field.
@@ -176,7 +167,7 @@ def upgrade_campaign_v16(document: Mapping[str, Any]) -> dict[str, Any]:
             continue
         for axis in design.get("axes") or []:
             if isinstance(axis, dict) and not axis.get("reader_name") and isinstance(axis.get("axis_id"), str):
-                axis["reader_name"] = _migrated_lever_name(axis["axis_id"])
+                axis["reader_name"] = lever_id_words(_authored_factor(axis["axis_id"]))
     return upgraded
 
 

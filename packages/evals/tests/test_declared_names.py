@@ -248,11 +248,8 @@ def identities(*, named: bool) -> dict[str, str]:
     # Every reading as 00107a5b7 read it; the figures across aspects came later, read off these readings and the
     # bundles pinned above, and the campaign fingerprint below leaves them out.
     found["readings"] = _sha(built["readings"].model_dump(mode="json", exclude={"aggregate"}))
-    # Version 2, as 00107a5b7 took it, still reproduces when asked in its own version; version 3, the current one,
-    # leaves the campaign's name out and is pinned beside it.
-    v2 = PINNED["campaign fingerprint"]
-    found["campaign fingerprint"] = campaign_bundle.fingerprint(like=v2)
-    found["campaign document fingerprint"] = CampaignBundle.from_dict(campaign_bundle.to_dict()).fingerprint(like=v2)
+    # Version 3, the one computed (no earlier version is: what was taken in one is regenerated), leaves the
+    # campaign's name out.
     found["campaign fingerprint v3"] = campaign_bundle.fingerprint()
     found["campaign document fingerprint v3"] = CampaignBundle.from_dict(campaign_bundle.to_dict()).fingerprint()
     return found
@@ -330,8 +327,6 @@ PINNED: dict[str, str] = {
         "be7db1240bcd8149ba17c91f78963c8632823d88d0f99674952fa7eb408d3141"
     ),
     "bundle schema_version": "65",
-    "campaign fingerprint": "v2:2b80af43835a82314c267998aa876931b91fd5260c500ce88a39b62d9289235d",
-    "campaign document fingerprint": "v2:2b80af43835a82314c267998aa876931b91fd5260c500ce88a39b62d9289235d",
     "campaign fingerprint v3": "v3:9708743c9b0a267dee330b57cf812934d63e3cb80d49fd3e6ebdda8f7c4c91a8",
     "campaign document fingerprint v3": "v3:9708743c9b0a267dee330b57cf812934d63e3cb80d49fd3e6ebdda8f7c4c91a8",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
@@ -455,9 +450,6 @@ class TestAStoredReasonIsNeverReworded:
             "the pinned fixture no longer carries the reason it guards"
         )
         campaign = built["campaign_bundle"]
-        assert campaign.fingerprint(like=PINNED["campaign fingerprint"]) == PINNED["campaign fingerprint"], (
-            STORED_REASON_MOVED
-        )
         assert campaign.fingerprint() == PINNED["campaign fingerprint v3"], STORED_REASON_MOVED
         for label, bundle in built["bundles"].items():
             assert bundle.fingerprint() == PINNED[f"{label} fingerprint"], STORED_REASON_MOVED

@@ -49,10 +49,12 @@ from threetears.evals.analysis.bundle.trials import read_trial
 from threetears.evals.analysis.campaign_readings import reading_name
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaigns import set_campaign_control
+from threetears.evals.analysis.report.decision import floor_subject
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
-from threetears.evals.analysis.report.words import printed_arm_labels
+from threetears.evals.analysis.report.words import input_arm_tags, printed_arm_labels, reader_arm_labels
 from threetears.evals.analysis.service import analysis_report, assemble_campaign_bundle, campaign_report
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalCampaign
+from threetears.evals.kernel.declaration import Floor, RateDrop
 from threetears.evals.kernel import MetricDescriptor
 from threetears.evals.kernel.host import EvalHost, HostProfile, MeasureRegistry, SweepableRegistry
 from threetears.evals.schema import IntervalScale, SweepableValue
@@ -101,9 +103,9 @@ def _host_renaming(profile: HostProfile, names: Mapping[str, str]) -> HostProfil
     )
 
 
-def _batches(host: EvalHost, *, again: bool = False) -> list[str]:
+def _batches(host: EvalHost, *, again: bool = False, passes: bool = False) -> list[str]:
     """One toy batch per :data:`_RUNS` entry, stored with its results; their run ids. ``again`` runs each once more,
-    under a run id of its own."""
+    under a run id of its own; ``passes`` has every result pass :data:`_FLOOR_MEASURE`."""
     batches = [
         toyhost_batch(
             chunk_tokens=chunk, retriever_top_k=depth, extraction_schema="v1", ocr_engine_version="tess-5.3.1"
@@ -117,16 +119,20 @@ def _batches(host: EvalHost, *, again: bool = False) -> list[str]:
         for result in toyhost_measurements(
             batch, profile=host.profile, cost_usd=0.02, total_ms=900.0, field_accuracy=0.8, layout_fidelity=3
         ):
+            if passes:
+                result = result.model_copy(update={"host_measures": {**result.host_measures, _FLOOR_MEASURE: True}})
             host.storage.save_eval_result(result)
     return [batch.id for batch in batches]
 
 
-def _armed_campaign(*, second_aspect_names: str | None = None) -> tuple[EvalHost, EvalCampaign]:
+def _armed_campaign(*, second_aspect_names: str | None = None, floored: bool = False) -> tuple[EvalHost, EvalCampaign]:
     """The toy host holding a campaign over :data:`_RUNS`, its control named from the first run, so its other two arms
     are derived and labelled by the two levers they differ on. With ``second_aspect_names``, a second aspect over runs
-    of its own declares ``chunk_tokens`` again and stores that name for it, where the first stores none."""
-    host = toyhost_host(profile=toyhost_profile())
-    runs = _batches(host)
+    of its own declares ``chunk_tokens`` again and stores that name for it, where the first stores none. ``floored``
+    has the host declare the pass/fail :data:`_FLOOR_MEASURE`, every result pass it, and the campaign hold a floor on
+    its pass rate."""
+    host = toyhost_host(profile=_with_floor_measure(toyhost_profile()) if floored else toyhost_profile())
+    runs = _batches(host, passes=floored)
     campaign = toyhost_campaign_of_one_aspect(
         id="5f0c2a71-9e4b-4d3a-8c1f-2b7e6d5a4c30",
         scope_id=TOYHOST_SCOPE,
@@ -139,6 +145,10 @@ def _armed_campaign(*, second_aspect_names: str | None = None) -> tuple[EvalHost
         design=toyhost_aspect_design(),
         created_by="test:fixture",
     )
+    if floored:
+        (aspect,) = campaign.aspects
+        floor = Floor(aspect=aspect.label, clause=RateDrop(max_points=10.0, reading=_FLOOR_MEASURE))
+        campaign = campaign.model_copy(update={"floors": [floor]})
     if second_aspect_names is not None:
         (first,) = campaign.aspects
         assert first.design is not None
@@ -243,6 +253,61 @@ def test_one_campaign_names_a_lever_one_way_whichever_aspect_declares_its_name()
     page = campaign_report_markdown(campaign_report(host, campaign.id, campaign.scope_id))
     assert "Chunk size 1024tok" in page
     assert "chunk tokens" not in page.lower(), "a surface named the lever by the host's name, not the campaign's"
+
+
+def test_a_derived_arm_is_printed_from_the_spelling_it_carries_and_one_that_disagrees_is_refused() -> None:
+    """A derived arm's printed name was rebuilt by parsing its frozen label, which had to agree with two other
+    derivations, and on any disagreement the page printed raw id words. The bundle carries how code spelled the arm
+    (each lever by id and its level) and a page prints from that alone; a spelling that does not spell its label is
+    refused."""
+    host, campaign = _armed_campaign()
+    bundle = assemble_campaign_bundle(_renamed(host, campaign), campaign.id, campaign.scope_id)
+    derived = _derived(bundle)
+
+    spelled = [bundle.arm_spellings[key] for key in derived]
+    assert [spelling.levers for spelling in spelled] == [["chunk_tokens", "retriever_top_k"]] * 2
+    assert [spelling.label() for spelling in spelled] == _FROZEN == [arm.label for arm in bundle.arms[1:]]
+    assert [printed_arm_labels(bundle)[key] for key in derived] == _RENAMED
+    # The page reads no label text: a lever's stored name holding the label's own separator prints as stored.
+    commas = bundle.model_copy(
+        update={
+            "aspects": [
+                a.model_copy(update={"lever_names": {**a.lever_names, "chunk_tokens": "size, chunk"}})
+                for a in bundle.aspects
+            ]
+        }
+    )
+    assert [printed_arm_labels(commas)[key] for key in derived] == [
+        "Size, chunk 1024tok, retrieval depth 3",
+        "Size, chunk 1024tok, retrieval depth 5",
+    ]
+    # And a level its host now shows too long to print whole reads as its lever alone, matched by its place in the
+    # spelling: the stored name holding ", " and the display no longer the level spelled skip no rewrite.
+    long = "1024 tokens, each chunk cut at the nearest paragraph break or heading"
+
+    def lengthened(aspect: AnalysisContextBundle) -> AnalysisContextBundle:
+        index = [
+            entry.model_copy(
+                update={
+                    "levers": {
+                        **entry.levers,
+                        "chunk_tokens": entry.levers["chunk_tokens"].model_copy(update={"display": long}),
+                    }
+                }
+            )
+            if entry.variant_key == derived[0]
+            else entry
+            for entry in aspect.variant_index
+        ]
+        return aspect.model_copy(update={"variant_index": index})
+
+    cut = commas.model_copy(update={"aspects": [lengthened(aspect) for aspect in commas.aspects]})
+    assert reader_arm_labels(cut, input_arm_tags(cut))[derived[0]] == "Size, chunk, retrieval depth 3"
+    wrong = spelled[0].model_copy(update={"levels": ["2048tok", "3"]})
+    with pytest.raises(ValueError, match="does not spell|an arm's spelling is what its label was spelled from"):
+        CampaignBundle.model_validate(
+            {**bundle.model_dump(exclude={"aspects"}), "arm_spellings": {derived[0]: wrong}, "aspects": bundle.aspects}
+        )
 
 
 def test_a_campaign_bundle_whose_aspects_name_one_lever_apart_is_refused() -> None:
@@ -403,6 +468,50 @@ def test_renaming_a_measure_moves_no_fingerprint_or_digest_and_the_page_prints_t
     page = campaign_report_markdown(campaign_report(renamed, campaign.id, campaign.scope_id))
     assert f"| {_NEW_MEASURE_NAME} |" in page
     assert f"| {_OLD_MEASURE_NAME} |" not in page
+
+
+#: A pass/fail measure a floor reads, the name its host declares for it, and the one it is renamed to.
+_FLOOR_MEASURE, _OLD_FLOOR_NAME, _NEW_FLOOR_NAME = "never_topped_up", "Never topped up", "Left the balance alone"
+
+
+def _with_floor_measure(profile: HostProfile) -> HostProfile:
+    """``profile`` with its host declaring the pass/fail :data:`_FLOOR_MEASURE` besides its own measures."""
+    registry = profile.measures
+    declared = [described for each in registry.names if (described := registry.get(each)) is not None]
+    check = MetricDescriptor(
+        name=_FLOOR_MEASURE,
+        data_type="boolean",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="end_to_end",
+        description="Whether the candidate never topped the customer up.",
+        reader_name=_OLD_FLOOR_NAME,
+        higher_is_better=True,
+    )
+    return replace(profile, measures=MeasureRegistry([*declared, check], families=registry.families))
+
+
+def test_renaming_a_pass_fail_measure_a_floor_reads_moves_no_fingerprint_and_its_reason_names_it_at_render() -> None:
+    """A floor's stored reason quoted the measure's reader name (``Never topped up cannot separate the arms``), so
+    renaming the measure moved the campaign fingerprint. The readings hold the floor's decision as facts now, the rate
+    by its key, and a page words it naming the measure as it is called when it is rendered."""
+    host, campaign = _armed_campaign(floored=True)
+    before = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+    renamed = replace(host, profile=_measure_renaming(host.profile, _FLOOR_MEASURE, _NEW_FLOOR_NAME))
+
+    after = assemble_campaign_bundle(renamed, campaign.id, campaign.scope_id)
+
+    statuses = [status for status in after.readings.floors if status.decision.measure == _FLOOR_MEASURE]
+    assert statuses and len(statuses) == len(after.readings.floors), "every candidate's floor decided on the measure"
+    assert {status.decision.case for status in statuses} == {"inseparable"}, "both arms pass every trial"
+    assert _identities(after) == _identities(before)
+    assert all("reason" not in floor for floor in after.readings.model_dump()["floors"])
+    (aspect,) = after.aspects
+    for status in statuses:
+        said = status.reason(floor_subject(status.decision, aspect), control=after.readings.control_label)
+        assert said.startswith(f"{_NEW_FLOOR_NAME} cannot separate the arms (both "), said
+    (old,) = before.aspects
+    assert statuses[0].reason(floor_subject(statuses[0].decision, old), control="c").startswith(_OLD_FLOOR_NAME)
 
 
 def test_a_trial_holds_its_failed_check_by_its_measure_key_whatever_the_measure_is_called() -> None:

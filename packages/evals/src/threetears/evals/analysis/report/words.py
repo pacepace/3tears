@@ -48,7 +48,7 @@ from threetears.evals.kernel.surface import DecisionSurface, GuardrailDecision
 from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID
 
 if TYPE_CHECKING:
-    from threetears.evals.analysis.campaign_bundle import CampaignBundle
+    from threetears.evals.analysis.campaign_bundle import ArmSpelling, CampaignBundle
 
 
 def _literal_values(annotation: Any) -> frozenset[str]:
@@ -585,12 +585,13 @@ def printed_arm_labels(bundle: CampaignBundle) -> dict[str, str]:
     rule (:func:`~threetears.evals.analysis.style.arm_display_name`) every surface reads, the doc page's ``Arm.name``,
     the campaign page's folds and readings, and the plan page alike.
 
-    "Computed" is read from data: an arm no arm of the campaign's declaration covers is labelled by code, from the
-    levers its variant's ``axis=level`` name spells (:func:`~threetears.evals.analysis.style.arm_name`'s ``levers``,
-    as a code-only page reads them), so it prints by the rule, each lever by the name every page calls it
-    (``lever_names``) where its frozen label spells the lever by its id read as words; an arm a person named (any the
-    declaration covers) keeps its label as written. The labels themselves, which name the arms as ids and are frozen
-    and fingerprinted with the evidence, are unchanged: a name is applied here, at render time only.
+    "Computed" is read from data: an arm no arm of the campaign's declaration covers is labelled by code. One code
+    spelled from several levers is printed from the spelling the bundle carries for it
+    (:class:`~threetears.evals.analysis.campaign_bundle.ArmSpelling`: each lever by id and its level), each lever by the
+    name every page calls it (``lever_names``), never by reading its frozen label's text back; the bundle refuses a
+    spelling that does not spell the label. Any other arm, a person's or one labelled by a single level, keeps its label
+    as written. The labels themselves, which name the arms as ids and are frozen and fingerprinted with the evidence,
+    are unchanged: a name is applied here, at render time only.
 
     :param bundle: The campaign's evidence.
     :ptype bundle: CampaignBundle
@@ -604,37 +605,28 @@ def printed_arm_labels(bundle: CampaignBundle) -> dict[str, str]:
 
 
 def _named_labels(bundle: CampaignBundle) -> dict[str, tuple[str, tuple[str, ...]]]:
-    """Each arm's label by every variant key a label names, a label code spelled from several levers with each lever
-    named as every page names it (:func:`_named_spelling`), and the levers code spelled it from (none for a label a
-    person gave): what :func:`printed_arm_labels` prints by the display rule, and :func:`reader_arms` names an arm by."""
+    """Each arm's label by every variant key a label names, a derived arm code spelled from several levers printed
+    from its spelling with each lever named as every page names it (:attr:`CampaignBundle.arm_spellings`), and the
+    levers code spelled it from (none for a label a person gave): what :func:`printed_arm_labels` prints by the display
+    rule, and :func:`reader_arms` names an arm by."""
     given = {key for arm in bundle.declaration.arms for key in bundle.arm_keys(arm)}
     entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
     spelled = arm_names(list(entries.values()))
+    spellings = {
+        key: spelling
+        for arm in bundle.arms
+        if (spelling := bundle.arm_spellings.get(arm.variant_key)) is not None
+        for key in bundle.arm_keys(arm)
+    }
     keys = [*(key for arm in bundle.arms for key in bundle.arm_keys(arm)), *entries]
     labels: dict[str, tuple[str, tuple[str, ...]]] = {}
     for key in dict.fromkeys(keys):
+        if (spelling := spellings.get(key)) is not None:
+            labels[key] = (spelling.label(bundle.lever_names), tuple(spelling.levers))
+            continue
         levers = arm_name(spelled[key]).levers if key in spelled and key not in given else ()
-        labels[key] = (_named_spelling(bundle.label_of(key), levers, bundle.lever_names), levers)
+        labels[key] = (bundle.label_of(key), levers)
     return labels
-
-
-def _named_spelling(label: str, levers: Sequence[str], declared: Mapping[str, str] | None) -> str:
-    """A label code spelled from several levers, each by its id read as words (``prompt style v2, effort low``, as
-    :func:`~threetears.evals.analysis.campaigns.campaign_arms` freezes it), with each lever named by its stored reader
-    name (``prompt v2, effort low``), the digest or number telling it from another arm kept. A label not spelled from
-    ``levers`` part for part, a person's or a single level's, is returned as it is."""
-    held = _TELL_APART.fullmatch(label)
-    base, apart = (held["name"], held["apart"] or "") if held is not None else (label, "")
-    parts = base.split(", ")
-    if not levers or len(parts) != len(levers):
-        return label
-    named = []
-    for part, lever in zip(parts, levers, strict=True):
-        plain = lever_reader_name(lever)
-        if not part.startswith(f"{plain} "):
-            return label
-        named.append(lever_reader_name(lever, declared) + part[len(plain) :])
-    return ", ".join(named) + apart
 
 
 # --- an arm's reader name: what a page prints for a computed name that holds a cut level or a placeholder ---------
@@ -704,6 +696,56 @@ def _read_part(
     return None
 
 
+def _spelled_reader_name(
+    name: str,
+    spelling: ArmSpelling,
+    levels: Mapping[str, object],
+    *,
+    text: Collection[str],
+    declared: Mapping[str, str] | None = None,
+) -> str:
+    """What a page prints for a derived arm code spelled from several levers, read from its spelling lever by lever,
+    never from its printed name's text: :func:`reader_arm_name`'s rule, each part matched by position. A level too long
+    to print whole is printed as its lever alone, and then the suffix that told the arm from another spelled alike goes
+    (:func:`told_apart` tells such arms apart by their tags); an empty level of a text lever reads ``no <lever>``.
+    Where no level reads otherwise, ``name`` is printed as it is.
+
+    :param name: The name the page would print (:func:`printed_arm_labels`).
+    :ptype name: str
+    :param spelling: How code spelled the arm (:attr:`~threetears.evals.analysis.campaign_bundle.CampaignBundle.
+        arm_spellings`).
+    :ptype spelling: ArmSpelling
+    :param levels: The arm's levels, whole, by lever id.
+    :ptype levels: Mapping[str, object]
+    :param text: The campaign's text levers.
+    :ptype text: Collection[str]
+    :param declared: Each lever's stored reader name, by id (:func:`~threetears.evals.analysis.style.lever_reader_name`).
+    :ptype declared: Mapping[str, str] | None
+    :return: The name a reader is shown.
+    :rtype: str
+    """
+    parts: list[str] = []
+    cut = moved = False
+    for lever, level in zip(spelling.levers, spelling.levels, strict=True):
+        reader = lever_reader_name(lever, declared)
+        display = levels.get(lever)
+        shown = _whole(display) if isinstance(display, str) else None
+        if shown is not None and _too_long(shown):
+            parts.append(reader)
+            cut = moved = True
+        elif shown is not None and shown in _PLACEHOLDERS and lever in text:
+            parts.append(EMPTY_LEVEL.format(lever=reader))
+            moved = True
+        else:
+            parts.append(f"{reader} {level}")
+    if not moved:
+        return name
+    words = ", ".join(parts)
+    # A computed name opens upper case, as every page prints it (``arm_display_name``).
+    words = words[:1].upper() + words[1:]
+    return words if cut else words + spelling.suffix
+
+
 def reader_arm_name(
     name: str, levels: Mapping[str, object], *, text: Collection[str], declared: Mapping[str, str] | None = None
 ) -> str:
@@ -729,7 +771,8 @@ def reader_arm_name(
     """
     held = _TELL_APART.fullmatch(name)
     base, apart = (held["name"], held["apart"] or "") if held is not None else (name, "")
-    parts = base.split(", ")
+    # The name read whole first: a single level may itself hold the separator (a prompt's text).
+    parts = [base] if _read_part(base, levels, text, declared) is not None else base.split(", ")
     read = [_read_part(part, levels, text, declared) for part in parts]
     if all(one is None for one in read):
         return name
@@ -789,11 +832,21 @@ def reader_arm_labels(bundle: CampaignBundle, tags: Mapping[str, str]) -> dict[s
     entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
     distinguishing = distinguishing_axes(list(entries.values()))
     text = text_levers({axis: level.display for axis, level in applicable_levers(entry)} for entry in entries.values())
+    spellings = {
+        key: spelling
+        for arm in bundle.arms
+        if (spelling := bundle.arm_spellings.get(arm.variant_key)) is not None
+        for key in bundle.arm_keys(arm)
+    }
     names = dict(printed)
     for key, name in printed.items():
         if key not in given and key in entries:
             levels = {level.axis_id: level.display for level in naming_levels(entries[key], distinguishing)}
-            names[key] = reader_arm_name(name, levels, text=text, declared=bundle.lever_names)
+            names[key] = (
+                _spelled_reader_name(name, spellings[key], levels, text=text, declared=bundle.lever_names)
+                if key in spellings
+                else reader_arm_name(name, levels, text=text, declared=bundle.lever_names)
+            )
     return told_apart(names, tags, {key for key in names if names[key] != printed[key]})
 
 

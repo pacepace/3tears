@@ -14,6 +14,7 @@ from threetears.evals.analysis import (
     campaign_report_html,
     campaign_report_markdown,
 )
+from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.model import DisclosureBlock
 from threetears.evals.kernel.declaration import CampaignCall, OverriddenBar
 
@@ -147,7 +148,12 @@ async def test_a_recorded_call_names_each_missed_bar_it_overrides_and_each_it_do
         for label, evidence in bundles.items()
     }
     first = first_screen_markdown(build_campaign_report(campaign, read, reports, call=call))
+    # A bar holds its decision (bundle shape 66); the page words it naming the measure as the aspect's page names it.
+    said = {
+        aspect: status.reason(measure_name_of(reports[aspect].bundle, status.measure))
+        for aspect, status in missed.items()
+    }
     called = first.index("Called: adopt alpha, by brooks on 18 Oct 2026.")
-    overrides = first.index(f"The call overrides a missed bar on tone: {missed['tone'].reason}.")
-    silent = first.index(f"The call does not name the missed bar on billing as overridden: {missed['billing'].reason}.")
+    overrides = first.index(f"The call overrides a missed bar on tone: {said['tone']}.")
+    silent = first.index(f"The call does not name the missed bar on billing as overridden: {said['billing']}.")
     assert called < overrides < silent

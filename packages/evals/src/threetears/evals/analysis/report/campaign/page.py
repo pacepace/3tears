@@ -39,7 +39,6 @@ from threetears.evals.analysis.report.campaign.answer_blocks import (
     NO_LONGER_READS,
     call_blocks,
     report_doc_blocks,
-    stored_shape_blocks,
     unread_analysis_blocks,
 )
 from threetears.evals.analysis.report.campaign.names import AspectNames
@@ -224,10 +223,8 @@ def build_campaign_report_in_aspect_forms(
     # Every figure the page states is decided once, by its measure, before any part is laid out.
     forms = PageForms.of_campaign(readings, reports)
     # The first screen is the decision: the question, what the page compares, the lead, then where the campaign's
-    # report is where it has one, then what warns, one line per arm, and each report-wide caveat once. Evidence of an
-    # earlier shape this build reads as stored says so before all of it.
+    # report is where it has one, then what warns, one line per arm, and each report-wide caveat once.
     blocks: list[ReportBlock] = [
-        *stored_shape_blocks(bundle.schema_version for bundle in bundles),
         *question_blocks(campaign, compares=kind != "measurement"),
         *_arms_blocks(campaign, readings, arms, bundles),
         *(

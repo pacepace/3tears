@@ -204,9 +204,9 @@ async def test_each_fold_names_its_bundle_by_the_fingerprint_checked_once(monkey
     hashed: list[str] = []
     fingerprint = AnalysisContextBundle.fingerprint
 
-    def counted(bundle: AnalysisContextBundle, *, like: str | None = None) -> str:
+    def counted(bundle: AnalysisContextBundle) -> str:
         hashed.append(bundle.aspect)
-        return fingerprint(bundle, like=like)
+        return fingerprint(bundle)
 
     monkeypatch.setattr(AnalysisContextBundle, "fingerprint", counted)
     page = off_loop(campaign_report, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE)

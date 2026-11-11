@@ -792,13 +792,26 @@ class EvalJobManager:
         :ptype epoch: int
         :return: ``job_id``.
         :rtype: str
-        :raises ConflictError: A live task already holds ``key``.
+        :raises ConflictError: A live task already holds ``key``, or the process is shutting down, which holds no
+            lease meanwhile (:meth:`JobLeases.hold <threetears.evals.kernel.job_leases.JobLeases.hold>`): no task is
+            started, and ``discard`` is the caller's to await, as for any refusal here.
         :raises ValueError: ``record`` is given to a manager with no leases.
         """
         if key is not None:
             self._refuse_held(key)
         if record is not None and self._leases is None:
             raise ValueError(f"task {job_id!r} names a leased record, but this manager holds no leases")
+        if record is not None and self._leases is not None:
+            # Held before the task exists, so a hold refused (a shutdown under way) leaves no task running unleased.
+            kind, scope_id = record
+            self._leases.hold(
+                kind,
+                job_id,
+                scope_id,
+                cancel=lambda _reason: self.cancel_task(job_id),
+                stop=lambda: self.cancel_task(job_id),
+                epoch=epoch,
+            )
         began: list[bool] = []
 
         async def begun() -> None:
@@ -813,16 +826,6 @@ class EvalJobManager:
         self._detached[job_id] = task
         if key is not None:
             self._task_keys[job_id] = key
-        if record is not None and self._leases is not None:
-            kind, scope_id = record
-            self._leases.hold(
-                kind,
-                job_id,
-                scope_id,
-                cancel=lambda _reason: self.cancel_task(job_id),
-                stop=lambda: self.cancel_task(job_id),
-                epoch=epoch,
-            )
         return job_id
 
     def _discard(self, job_id: str, discard: Callable[[], Awaitable[None]]) -> None:
@@ -997,6 +1000,9 @@ class EvalJobManager:
         :raises ValueError: ``members`` is empty.
         :raises asyncio.CancelledError: The caller was cancelled while the runs were being saved; they
             were settled ``cancelled`` and none started.
+        :raises ConflictError: The process began shutting down while the runs were being saved, and holds no lease
+            meanwhile (:meth:`JobLeases.hold <threetears.evals.kernel.job_leases.JobLeases.hold>`): they were settled
+            ``cancelled`` with that cause, and none started.
         """
         if not members:
             raise ValueError("a launch group needs at least one run")
@@ -1048,7 +1054,20 @@ class EvalJobManager:
                     task.add_done_callback(functools.partial(_tell_member_end, on_member_end, run.id))
                 self._tasks[run.id] = task
                 started.add(run.id)
-        except BaseException:
+        except BaseException as failed:
+            if isinstance(failed, ConflictError):
+                # A hold refused by a shutdown under way (JobLeases.hold): the loop awaits nothing, so it is refused
+                # before any member started. Every run left without a task is settled `cancelled` with that cause,
+                # rather than left `pending` for a slot nothing gives it.
+                unstarted = [run for run in runs if run.id not in started]
+                await _finish_even_if_cancelled(
+                    run_blocking(
+                        self._blocking_executor,
+                        self._settle_unstarted,
+                        unstarted,
+                        f"its launch was refused before it started: {failed.message}",
+                    )
+                )
             # A member left without a task is never told ended by its task, so whatever its siblings wait on from it
             # (an interleaved launch's turns) is told here, before the failure goes on.
             if on_member_end is not None:

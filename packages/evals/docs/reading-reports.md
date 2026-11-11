@@ -33,8 +33,7 @@ it; without it, every chart reads as its values table. Drill-down is `<details>`
 printed as the text it draws. `campaign.json` is the page's machine form: code's readings, the call, and each
 aspect's bundle by its fingerprint ([its shape](serving.md#the-campaign-json)); the arms a report document recommends
 are its `report_doc.doc.recommends`. Each aspect's evidence bundle is written whole beside it as `bundle-<aspect>.json`, with its `schema_version`;
-`AnalysisContextBundle.from_json(...).fingerprint(like=named)` over the file returns the fingerprint the page names
-(`like` computes it in the named one's version: see below). A host that
+`AnalysisContextBundle.from_json(...).fingerprint()` over the file returns the fingerprint the page names. A host that
 wants its own pictures reads the bundles. `report_read(format="json")` and the command line's `--format json` return
 `campaign.json`. [`examples/3-invoices/ci.py`](../examples/3-invoices/ci.py) writes one, offline.
 
@@ -798,14 +797,12 @@ campaign declares a volume.
 
 **A stored report reads as written.** A report is never edited: regenerating writes a new one, and the page shows the
 newest analysis that is not archived. Read later, a stored report degrades rather than refuses: a key that no longer
-resolves prints "—", a block that no longer draws prints its values, and the page carries one note to regenerate. A
-report whose evidence was assembled at an earlier shape this version reads as stored would render whole, its figures
-as they were written, its first line saying what that means for its figures; the analysis listing's verdict would
-carry the same line, and the report would not be listed as needing regeneration. An earlier shape joins only when
-every field added since is optional and no stored figure changes meaning; nothing is migrated. No shape joins today:
-names left the evidence at shape 66 (below), so a report written in any earlier shape gets the code-only page and one
+resolves prints "—", a block that no longer draws prints its values, and the page carries one note to regenerate. No
+earlier shape of evidence is read, as stored or otherwise, and nothing is migrated: names left the evidence at bundle
+shape 66 and campaign bundle shape 4 (below), so a report written in any earlier shape gets the code-only page and one
 line, written in a shape this version no longer reads; regenerate with `analysis_generate`, naming why ("frozen before
-names left the evidence"). Each stored analysis is regenerated once.
+names left the evidence", or, for a campaign bundle, "frozen before names left the readings"). Each stored analysis is
+regenerated once.
 
 **Names are presentation, never evidence.** The bundle an analysis is frozen over, and every fingerprint and digest
 taken over it, carries ids and structured facts only; every name is applied when a page is rendered (owner ruling,
@@ -839,8 +836,8 @@ reads as the code-only page, its first screen naming the retired writer and sayi
 Every stored analysis carries the bundles it was written over (`EvalAnalysis.bundle`). A bundle's fingerprint is `v2:` and the
 sha256 of its canonical JSON with every float rounded to twelve significant figures, so the same evidence
 fingerprints alike across builds and machines (except, rarely, a value exactly on a rounding boundary); a fingerprint
-recorded before the rounding has no prefix, and every comparison computes the fresh one in the recorded one's version
-(`fingerprint(like=recorded)`). Re-assembling a stored analysis's bundle (`inspect_analysis_bundle`) compares
+recorded before the rounding, with no prefix, was taken over a shape no build reads, so it never matches.
+Re-assembling a stored analysis's bundle (`inspect_analysis_bundle`) compares
 fingerprints, and when they differ `mismatch_cause` names why: `package_shape` (the bundle schema moved),
 `host_declarations` (the host added, removed or renamed a declaration), or `evidence` (the runs, results or insights
 did). Renaming a lever, a measure or a level is none of these: a name is no part of a fingerprint.

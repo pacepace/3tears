@@ -19,7 +19,7 @@ from threetears.evals.analysis import (
     campaign_readings,
     campaign_report_markdown,
 )
-from threetears.evals.analysis.campaign_readings import AggregateFigure
+from threetears.evals.analysis.campaign_readings import AggregateFigure, reading_name
 from threetears.evals.analysis.bundle.schema import FamilyComparison
 from threetears.evals.analysis.stats import difference_interval
 from threetears.evals.analysis.lenses.frontier import FrontierCostDecision, FrontierCostTie, FrontierVerdict
@@ -955,7 +955,8 @@ def test_every_line_the_scorecard_writes_keeps_the_style_rules(name: str) -> Non
     shape = SHAPES[name]()
     labels = [arm.label for arm in shape.arms]
     # An arm's label and a measure's declared name head a column as names, never as a header's words.
-    measures = {reading.name for reading in shape.readings.measures}
+    # The readings hold each measure by its key (bundle shape 66); a page names it at render (reading_name).
+    measures = {reading_name(shape.bundles[reading.aspect], reading.measure) for reading in shape.readings.measures}
     names = [*labels, *(f"▸ {label}" for label in labels), *measures]
     assert lint_page(_scorecard(shape.page()), names=names) == []
 

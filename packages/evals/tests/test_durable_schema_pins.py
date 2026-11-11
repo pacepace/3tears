@@ -346,7 +346,7 @@ def test_a_frozen_v16_campaign_reads_with_every_axis_named() -> None:
     ],
 )
 def test_the_v16_step_names_an_unnamed_axis_from_its_id_and_keeps_a_named_one(axis_id: str, named: str) -> None:
-    """The one place a lever's name is derived: the id read as words, less the quick path's kind namespace."""
+    """The step names an axis by the one rule that reads a lever's id as words, less the quick path's kind namespace."""
     document = json.loads((FIXTURES / "v16" / "eval_campaign.json").read_text(encoding="utf-8"))
     axis = document["aspects"][0]["design"]["axes"][0]
     axis["axis_id"] = axis_id

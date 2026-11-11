@@ -4881,6 +4881,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.ArmSpelling": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.aspect_view": {
       "kind": "function",
       "signature": "",
@@ -5533,6 +5538,11 @@
     },
     "threetears.evals.analysis.FloorContrastReading": {
       "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.FloorDecision": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -6252,6 +6262,16 @@
       "tier": "provisional"
     },
     "threetears.evals.analysis.PriceLine": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.PrintedCheck": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.PrintedJudgement": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"

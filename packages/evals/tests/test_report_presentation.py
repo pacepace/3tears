@@ -15,6 +15,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from threetears.evals import Answer, Eval, Result
 from threetears.evals.kernel.metrics import describe_goal_check_rate, goal_check_measure
@@ -26,7 +27,7 @@ from threetears.evals.analysis import (
     report_html,
     report_markdown,
 )
-from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TrialBlock
+from threetears.evals.analysis.report import DisclosureBlock, PrintedCheck, PrintedJudgement, TableBlock, TrialBlock
 from threetears.evals.analysis.report.md_parts import paragraphs
 from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement
 from threetears.evals.analysis.style import GLOSSARY
@@ -768,6 +769,30 @@ async def test_what_a_trial_quotes_leaves_the_document_s_structure_intact(g2_rul
     record = unquoted.split(f'<details id="{trials[first].trial_id}"', 1)[1].split("</details>", 1)[0]
     assert "Stored result:" in record
     assert _outline(markdown) == _outline(report_markdown(build_code_only_report(coded.bundle, assembled_at="x")))
+
+
+async def test_a_trials_record_prints_its_checks_and_dimensions_in_a_type_of_its_own(
+    g2_ruled: tuple[Result, Report],
+) -> None:
+    """A bundle's trial holds a check by its measure's key and a judged dimension by its id; a page's record held the
+    name it prints in the same field of the same type, so a key where a name belonged read as a silent non-match. The
+    page's record has its own types now, and a bundle's entry handed to it is refused."""
+    _, coded = g2_ruled
+    expression = "answer == 'queued'"
+    trials = list(coded.bundle.trials)
+    first = next(index for index, trial in enumerate(trials) if trial.state == "failed")
+    held_check = TrialCheck(name=goal_check_measure(expression), expression=expression)
+    held_judgement = TrialJudgement(dim="__outcome__", score=0, scale="pass_fail", reason="It never queued.")
+    trials[first] = trials[first].model_copy(update={"failed_checks": [held_check], "judge": [held_judgement]})
+    named = coded.bundle.model_copy(update={"trials": trials, "goal_check_names": {expression: "Queued check"}})
+    report = build_code_only_report(named, assembled_at="2026-10-14T00:00Z", trials="all")
+
+    (record,) = [b for b in report.blocks if isinstance(b, TrialBlock) and b.trial_id == trials[first].trial_id]
+    assert record.failed_checks == [PrintedCheck(name="Queued check", expression=expression)]
+    assert record.judge == [PrintedJudgement(name="outcome", score=0, scale="pass_fail", reason="It never queued.")]
+    for field, held in (("failed_checks", held_check), ("judge", held_judgement)):
+        with pytest.raises(ValidationError, match="valid dictionary or instance of Printed"):
+            TrialBlock.model_validate({**dict(record), field: [held]})
 
 
 # =============================================================================

@@ -68,6 +68,7 @@ from threetears.evals.analysis.bundle.schema import (
 )
 from threetears.evals.analysis.campaign_bundle import KIND_MEANS, CampaignBundle
 from threetears.evals.analysis.campaign_readings import AspectReading, PairReading, reading_name
+from threetears.evals.analysis.report.decision import floor_subject
 from threetears.evals.analysis.depth import REPEATS_FLOOR
 from threetears.evals.analysis.depth import Precision as BundlePrecision
 from threetears.evals.analysis.depth_reading import AspectDepth, aspect_depth
@@ -510,7 +511,11 @@ class _Builder:
                 worst_drop=status.worst_drop,
                 margin=status.margin,
                 short_by=status.short_by,
-                reason=status.reason,
+                # Worded here, the rate named as the floor read it off its aspect: the readings hold it by its key.
+                reason=status.reason(
+                    floor_subject(status.decision, self.of_aspect(status.aspect)),
+                    control=self.bundle.readings.control_label,
+                ),
             )
             for status in self.bundle.readings.floors
         ]

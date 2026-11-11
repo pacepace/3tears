@@ -30,9 +30,8 @@ from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     evidence_digest,
     refuse_a_bundle_of_another_shape,
-    stored_shape_line,
 )
-from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.campaign_bundle import CAMPAIGN_BUNDLE_SHAPE, CampaignBundle
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, build_code_only_report
 from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS, retired_generation
 from threetears.evals.analysis.report.serialize_md import report_markdown
@@ -166,7 +165,7 @@ def _frozen_again_at(store: InMemoryDocumentStore, analysis: EvalAnalysis, shape
         held.append({**entry, "bundle": moved, "bundle_fingerprint": evidence_digest(moved)})
     frame = raw["campaign_bundle"]
     named = [
-        {**entry, "fingerprint": evidence_digest(each["bundle"], like=entry["fingerprint"])}
+        {**entry, "fingerprint": evidence_digest(each["bundle"])}
         for entry, each in zip(frame["aspects"], held, strict=True)
     ]
     store.upsert({**raw, "aspects": held, "campaign_bundle": {**frame, "aspects": named}})
@@ -189,12 +188,28 @@ async def _written(store: InMemoryDocumentStore) -> tuple[OpsFixture, EvalAnalys
 def test_no_earlier_shape_is_read_as_stored_and_one_frozen_before_names_left_the_evidence_says_so(shape: int):
     # A deliberate change (owner ruling, 2026-11-11): 64 was read as stored; every shape before 66 is now refused.
     assert CURRENT_SHAPE == 66
-    assert stored_shape_line([CURRENT_SHAPE]) is None
     refuse_a_bundle_of_another_shape({"schema_version": CURRENT_SHAPE}, what="this analysis", remedy="regenerate")
     with pytest.raises(RefusedInput) as refused:
         refuse_a_bundle_of_another_shape({"schema_version": shape}, what="this analysis", remedy="regenerate")
     assert f"shape {shape}, {WHY}" in refused.value.fault and f"(shape {CURRENT_SHAPE})" in refused.value.fault
     assert refused.value.remedy == "regenerate"
+
+
+@pytest.mark.parametrize("shape", [2, 3])
+def test_a_campaign_bundle_frozen_before_names_left_the_readings_is_refused_saying_so(shape: int) -> None:
+    """Its floors' reasons quoted measures' reader names and its derived arms carried no spelling: shape 2 was read as
+    3, and 3 as itself, until the readings dropped every name (campaign bundle shape 4). Both are refused now, whole or
+    as a frame, naming why, and what holds one is regenerated."""
+    assert CAMPAIGN_BUNDLE_SHAPE == 4
+    current = campaign_bundle(empty_bundle(campaign_id="c"))
+    assert CampaignBundle.from_dict(current.to_dict()) == current
+    for read in (
+        lambda: CampaignBundle.from_dict({**current.to_dict(), "schema_version": shape}),
+        lambda: CampaignBundle.from_frame({**current.frame(), "schema_version": shape}, current.aspects),
+    ):
+        with pytest.raises(RefusedInput, match="frozen before names left the readings") as refused:
+            read()
+        assert f"shape {shape}" in refused.value.fault and f"({CAMPAIGN_BUNDLE_SHAPE})" in refused.value.fault
 
 
 def test_the_kairo_bundle_at_shape_65_is_refused_as_frozen_before_names_left_the_evidence():

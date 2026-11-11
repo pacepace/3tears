@@ -90,6 +90,8 @@ from threetears.evals.analysis.report.model import (
     DisclosureSource,
     OutcomeBar,
     OutcomeSegment,
+    PrintedCheck,
+    PrintedJudgement,
     Report,
     ReportBlock,
     ReportSource,
@@ -3606,17 +3608,25 @@ def _trial_blocks(
                 # The trial's own record keeps the check's measure key; the page prints the check's name beside the
                 # expression: a goal check's as the aspect names it, any other's as the catalog does.
                 failed_checks=[
-                    check.model_copy(
-                        update={
-                            "name": checks[check.expression]
-                            if check.expression in checks
-                            else bundle.catalog_name(check.name)
-                        }
+                    PrintedCheck(
+                        name=checks[check.expression]
+                        if check.expression in checks
+                        else bundle.catalog_name(check.name),
+                        expression=check.expression,
                     )
                     for check in trial.failed_checks
                 ],
                 # And each judged dimension by its id; the page prints a reserved axis by its word.
-                judge=[entry.model_copy(update={"dim": trial_dimension(entry.dim)}) for entry in trial.judge],
+                judge=[
+                    PrintedJudgement(
+                        name=trial_dimension(entry.dim),
+                        criterion=entry.criterion,
+                        score=entry.score,
+                        scale=entry.scale,
+                        reason=entry.reason,
+                    )
+                    for entry in trial.judge
+                ],
                 error_words=trial.error_words,
                 result_id=trial.result_id,
                 open=position < _OPEN_TRIALS,
@@ -3738,7 +3748,8 @@ def _unexercised_sentence(factor: UnexercisedFactor, bundle: AnalysisContextBund
 
     Calls in one arm only say so: ``observed in one arm only``.
     """
-    name = bundle.lever_names.get(factor.factor) or humanize("dimension", factor.factor.rsplit(".", 1)[-1])
+    # The one rule a lever is named by: its stored name, else its id read as words (``lever_id_words``).
+    name = lever_reader_name(factor.factor, bundle.lever_names)
     call = f"{factor.role.replace('_', ' ')} call"
     arms = len(bundle.scoreboard)
     if factor.results == 0 or not factor.arms:
