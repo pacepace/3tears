@@ -40,6 +40,7 @@ from operator import itemgetter
 from typing import Any, Final
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
+from threetears.core.backends.protocol import L3AnswerCutError
 from threetears.core.keyed._filters import (
     IN_SUBQUERY,
     Derived,
@@ -320,26 +321,52 @@ def _batches(keys: KeyBatch, batch: int) -> list[list[tuple[Any, ...]]]:
     return [unique[start : start + batch] for start in range(0, len(unique), batch)]
 
 
+@dataclass
+class _Fit:
+    """the most keys a statement of one read has been seen to answer whole: after a cut, every later batch of the
+    read is cut to it before it is sent, so one too-wide answer costs one statement, not one a batch."""
+
+    keys: int | None = None
+
+
 async def _read_split(
     fetch: Callable[[Sequence[tuple[Any, ...]]], Awaitable[Any]],
     size: Callable[[Any], int],
     keys: Sequence[tuple[Any, ...]],
     row_cap: int | None,
     table: str | Derived,
+    fit: _Fit | None = None,
 ) -> list[Any]:
-    """one batch's answers: the batch read whole, or in halves while an answer reaches ``row_cap``."""
-    answered = await fetch(keys)
-    if row_cap is None or size(answered) < row_cap:
-        return [answered]
+    """one batch's answers: the batch read whole, or in halves while an answer reaches ``row_cap`` or the transport
+    cuts it (:class:`~threetears.core.backends.protocol.L3AnswerCutError`: its row cap, or a reply's bytes, as the
+    hub's datasource replies are cut): each half is another statement, never the cut answer taken as every row."""
+    fit = fit if fit is not None else _Fit()
+    if fit.keys is not None and len(keys) > fit.keys:
+        return [
+            *await _read_split(fetch, size, keys[: fit.keys], row_cap, table, fit),
+            *await _read_split(fetch, size, keys[fit.keys :], row_cap, table, fit),
+        ]
+    try:
+        answered = await fetch(keys)
+    except L3AnswerCutError:
+        if len(keys) == 1:
+            raise
+        cut = True
+    else:
+        if row_cap is None or size(answered) < row_cap:
+            return [answered]
+        cut = False
     if len(keys) == 1:
         raise KeyTooWide(
             f"{table}: the key {keys[0]!r} alone reaches the transport's {row_cap} rows a statement; page it "
             "(threetears.core.keyed.keyset_page)"
         )
     half = len(keys) // 2
+    if cut:
+        fit.keys = half if fit.keys is None else min(fit.keys, half)
     return [
-        *await _read_split(fetch, size, keys[:half], row_cap, table),
-        *await _read_split(fetch, size, keys[half:], row_cap, table),
+        *await _read_split(fetch, size, keys[:half], row_cap, table, fit),
+        *await _read_split(fetch, size, keys[half:], row_cap, table, fit),
     ]
 
 
@@ -392,8 +419,9 @@ async def read_keyed(
         return list(await conn.fetch(sql, *params))
 
     rows: list[dict[str, Any]] = []
+    fit = _Fit()
     for chunk in _batches(keys, key_batch_for(conn) if batch is None else batch):
-        for answered in await _read_split(fetch, len, chunk, row_cap, table):
+        for answered in await _read_split(fetch, len, chunk, row_cap, table, fit):
             # mapped, not a generator: a row a call less, at a page's 6,000 rows a millisecond
             rows.extend(map(dict, answered))
     return rows
@@ -439,8 +467,9 @@ async def read_keyed_arrow(
         return await l3_fetch_arrow(conn, sql, *params, types=types)
 
     tables: list[Any] = []
+    fit = _Fit()
     for chunk in _batches(keys, key_batch_for(conn) if batch is None else batch):
-        tables += await _read_split(fetch, lambda answered: int(answered.num_rows), chunk, row_cap, table)
+        tables += await _read_split(fetch, lambda answered: int(answered.num_rows), chunk, row_cap, table, fit)
     return tables
 
 

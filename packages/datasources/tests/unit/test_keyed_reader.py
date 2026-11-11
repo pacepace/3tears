@@ -244,3 +244,40 @@ async def test_a_changed_rows_read_reads_on_past_replies_the_hub_cut_by_bytes() 
     assert sorted(row["geo"] for row in changed.rows) == list(range(7, 5000, 100))
     assert all(row["name"] == "moved" for row in changed.rows)
     assert sorted(changed.gone_keys) == [("PA", 11), ("PA", 4999)]
+
+
+async def test_a_backfill_of_wide_rows_reads_on_past_replies_the_hub_cut_by_bytes() -> None:
+    """Flips if phase 2 (read_keyed by the moved keys) raises on a batch the hub cut by its reply's bytes, takes the
+    cut reply as every row, or pays a cut on every batch after the first (the fit it found is kept for the read)."""
+    db = duckdb.connect()
+    db.execute("CREATE TABLE geos (state VARCHAR, geo BIGINT, shape VARCHAR, PRIMARY KEY (state, geo))")
+    db.execute("INSERT INTO geos SELECT 'TX', i, repeat(chr(CAST(65 + (i % 26) AS INTEGER)), 2000) || i FROM range(400) r(i)")
+    hashed = [HashColumn("shape")]
+    hub = _ByteCappedHub(db, cap=64_000)
+    reader = _DuckReader(hub, "stand-in")  # type: ignore[arg-type]
+    changed = await read_changed(
+        reader,
+        "geos",
+        key=["state", Sort("geo", cast="bigint")],
+        columns=["state", "geo", "shape"],
+        held=dict.fromkeys((("TX", geo) for geo in range(400)), None),  # held with no hash: every key wanted
+        hash_columns=hashed,
+        by={"state": "TX"},
+    )
+    expected = db.execute(
+        f"SELECT state, geo, shape, {row_hash_sql(hashed, Dialect.DUCKDB)} FROM geos AS t ORDER BY geo"
+    ).fetchall()
+    assert sorted((row["state"], row["geo"], row["shape"], row[ROW_HASH_COLUMN]) for row in changed.rows) == expected
+    assert changed.gone_keys == []
+    keyed = [query for query in hub.asked if " LIMIT " not in query]
+    assert hub.cuts > 0
+    # 400 keys of ~2 KB rows under a 64 KB reply: about 25 keys a reply; the first batch halves to that fit (4 cut
+    # statements), every later batch is sent at it (16 whole ones), never halved from 400 again
+    assert len(keyed) <= 16 + 4 + 2, len(keyed)
+
+
+async def test_one_key_wider_than_a_reply_is_refused_not_split() -> None:
+    """Flips if a cut answer for one key is retried, swallowed, or taken as that key's rows."""
+    reader = DatasourceReader(_Client([{"a": 1}], truncated=True), "redshift")  # type: ignore[arg-type]
+    with pytest.raises(DatasourceAnswerCut):
+        await read_keyed(reader, "t", keys=KeyBatch(("a",), [(1,)], as_list=True), columns=["a"])

@@ -40,6 +40,8 @@ reports run it with their no-whole-reads configs.
 
 ### datasources: a reply the hub cut by its bytes never ends a read
 
+**Fixed:** `read_keyed` / `read_keyed_arrow` (and so `read_changed`'s phase 2) read a key batch the transport cut (`L3AnswerCutError`: the rail's row cap, or a datasource reply cut at the hub's bytes) again in halves, and send the rest of the read's batches at the size that fit; one key wider than a reply is still refused. `DatasourceAnswerCut` is now an `L3AnswerCutError`. A backfill of wide rows (every key wanted) raised at the first cut batch.
+
 **Added:** `read_all`, `read_parts`, `read_partitions`, `export_select`, `export_part` and `export_partitions` take a `Selected` column beside the plain ones (a row's hash: `row_hash_selected(..., alias=None)`), so a full or cold read stores each row's hash as it loads; every fingerprint covers the columns read as written (the hash is computed from them), and a read of expressions alone is refused.
 
 **Fixed (P0, missing data):** with the hub's byte cap on, a page sized past it came back cut (`truncated`, short of

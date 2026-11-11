@@ -4,7 +4,8 @@
 that with one :meth:`~threetears.datasources.query_client.DatasourceQueryClient.query` on a named datasource. A
 warehouse has no arrays (Redshift): its callers bind sets as lists (``AnyOf(..., as_list=True)``,
 ``KeyBatch(..., as_list=True)``). An answer the hub cut at its row cap is refused (:class:`DatasourceAnswerCut`),
-never taken as every row: a keyed helper sizes its batches under the cap, so a cut answer is a batch too large.
+never taken as every row: a keyed read (:func:`~threetears.core.keyed.read_keyed`) reads a cut batch again in halves,
+the cut sized from then on for the rest of its batches.
 
 A warehouse's change reads and grouped counts go through the same helpers::
 
@@ -25,6 +26,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from threetears.core.backends.protocol import L3AnswerCutError
 from threetears.core.keyed import Dialect, Fragment, Selected, by_conditions
 from threetears.datasources.entities import DataSourceType
 from threetears.datasources.query_client import DatasourceQueryClient, read_scope_pages
@@ -46,8 +48,10 @@ _ENGINE_DIALECTS: Mapping[DataSourceType, Dialect] = {
 _MAX_SCOPE_PAGES = 10_000
 
 
-class DatasourceAnswerCut(RuntimeError):
-    """the hub cut a keyed read's answer at its row cap: the batch named more rows than one answer holds."""
+class DatasourceAnswerCut(L3AnswerCutError):
+    """the hub cut a keyed read's answer (at its row cap, or at its reply's bytes) and said so: the batch named more
+    than one answer holds. An :class:`~threetears.core.backends.protocol.L3AnswerCutError`, so a keyed read
+    (:func:`~threetears.core.keyed.read_keyed`) reads the batch again in halves rather than raising."""
 
 
 def _wire(value: Any) -> Any:
@@ -120,15 +124,16 @@ class DatasourceReader:
         :ptype params: Any
         :return: the rows, ``decode``'s columns decoded
         :rtype: list[dict[str, Any]]
-        :raises DatasourceAnswerCut: when the hub cut the answer at its row cap
+        :raises DatasourceAnswerCut: when the hub cut the answer (its row cap, or its reply's bytes)
         """
         result = await self._client.query(
             self._datasource, query, [_wire(param) for param in params], user_identity_token=self._token
         )
         if result.truncated:
             raise DatasourceAnswerCut(
-                f"{self._datasource}: the answer was cut at the hub's row cap after {result.row_count} rows; "
-                "read fewer keys a statement"
+                f"{self._datasource}: the hub cut the answer after {result.row_count} rows (its row cap or its "
+                f"reply's bytes, {result.max_reply_bytes}); read fewer keys a statement",
+                rows=result.row_count,
             )
         rows = [dict(row) for row in result.rows]
         for row in rows:
