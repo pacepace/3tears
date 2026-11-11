@@ -69,6 +69,9 @@ ACL_TABLES_DDL: tuple[str, ...] = (
     )
     """,
     # only workspace rows may share a schema
+    "-- purpose: constraint\n"
+    "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespaces_schema_name_non_workspace_refuses_a_duplicate\n"
+    "-- reason: two namespaces other than workspaces never own one schema: dropping it would take both\n"
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_namespaces_schema_name_non_workspace ON namespaces (schema_name) "
     "WHERE namespace_type <> 'workspace' AND schema_name IS NOT NULL",
     """
@@ -89,7 +92,8 @@ ACL_TABLES_DDL: tuple[str, ...] = (
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::GROUP_BY_PLATFORM_NAME_SQL\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_groups_by_name\n"
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_groups_platform_name ON groups (name) WHERE customer_id IS NULL",
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::GROUP_BY_CUSTOMER_NAME_SQL\n"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::GROUP_BY_CUSTOMER_NAME_SQL;"
+    " packages/agent/acl/src/threetears/agent/acl/collections.py::GroupCollection.page_by_customer\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_groups_by_name\n"
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_groups_customer_name ON groups (customer_id, name) "
     "WHERE customer_id IS NOT NULL",
@@ -122,6 +126,8 @@ ACL_TABLES_DDL: tuple[str, ...] = (
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::ROLE_BY_PLATFORM_NAME_SQL\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_roles_platform_name\n"
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_roles_platform_name ON roles (name) WHERE customer_id IS NULL",
+    "-- purpose: constraint\n"
+    "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_roles_customer_name_refuses_a_duplicate\n"
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_roles_customer_name ON roles (customer_id, name) "
     "WHERE customer_id IS NOT NULL",
     """
@@ -147,8 +153,12 @@ ACL_TABLES_DDL: tuple[str, ...] = (
             REFERENCES namespaces (namespace_id) ON DELETE CASCADE
     )
     """,
+    "-- purpose: constraint\n"
+    "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespace_grant_refuses_a_duplicate\n"
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_role_assignments_namespace_grant "
     "ON role_assignments (group_id, role_id, scope_namespace_id, managed_by) WHERE scope_type = 'namespace'",
+    "-- purpose: constraint\n"
+    "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_all_grant_refuses_a_duplicate\n"
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_role_assignments_all_grant "
     "ON role_assignments (group_id, role_id, managed_by) WHERE scope_type = 'all'",
 )

@@ -295,7 +295,7 @@ class MemoryAuthorizerDependencies:
         group membership binding
     :ivar role_collection: three-tier ``RoleCollection`` used to look
         up the platform ``MemoryOwner`` role id via
-        :meth:`list_builtin`
+        :meth:`find_platform_by_name`
     :ivar role_assignment_collection: three-tier
         ``RoleAssignmentCollection`` used by
         :func:`ensure_memory_owner_assignment` via
@@ -558,18 +558,10 @@ async def ensure_memory_owner_assignment(
     :rtype: None
     """
     owner_role_id: UUID | None = None
-    # the built-in role by its name (RoleCollection.find_platform_by_name, a keyed read); a role
-    # collection that predates it is still asked for its built-in list
-    find_by_name = getattr(deps.role_collection, "find_platform_by_name", None)
-    if find_by_name is not None:
-        role = await find_by_name(MEMORY_OWNER_ROLE_NAME)
-        if role is not None and bool(getattr(role, "is_builtin", False)):
-            owner_role_id = role.id
-    else:
-        for role in await deps.role_collection.list_builtin():
-            if role.name == MEMORY_OWNER_ROLE_NAME:
-                owner_role_id = role.id
-                break
+    # the built-in role by its name (RoleCollection.find_platform_by_name, a keyed read)
+    role = await deps.role_collection.find_platform_by_name(MEMORY_OWNER_ROLE_NAME)
+    if role is not None and bool(getattr(role, "is_builtin", False)):
+        owner_role_id = role.id
     if owner_role_id is None:
         log.warning(
             "memory owner assignment ensure skipped: role %s not present in builtin role catalog",

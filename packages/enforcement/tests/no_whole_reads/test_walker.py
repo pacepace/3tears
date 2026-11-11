@@ -2761,6 +2761,59 @@ def test_a_keyed_helper_s_relation_parameter_is_judged_at_its_call_sites_not_in_
     assert {"any_rows", "_shared", "by_note", "from_chunk_by_note", "from_the_table"} <= functions, found
 
 
+_VISIBLE_ROWS_BODY = """
+    from threetears.core.keyed import Fragment, keyset_rows
+
+    async def visible_rows(conn, table, *, columns, user_id, namespace_type, customer_column, order, where=(), page=500):
+        clauses = [Fragment("TRUE", ())]
+        return await keyset_rows(conn, table, columns=columns, by={}, order=order, page=page, visible=clauses, where=where)
+
+    async def grants_whole(conn):
+        return await conn.fetch("SELECT * FROM role_assignments")
+"""
+
+_VISIBLE_ROWS_CALLERS = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import Sort
+    from threetears.agent.acl import visible_rows
+
+    EVAL_SETS = TableSchema(
+        name="eval_sets",
+        primary_key="id",
+        columns=[],
+        indexes=(Index("eval_sets_by_date", "date_created", "id", purpose="src/app.py::by_date"),),
+    )
+
+    async def by_date(conn, user_id):
+        return await visible_rows(
+            conn, "eval_sets", columns=["id", "date_created"], user_id=user_id, namespace_type="knowledge",
+            customer_column="customer_id", order=[Sort("date_created"), Sort("id")],
+        )
+
+    async def by_name(conn, user_id):
+        return await visible_rows(
+            conn, "eval_sets", columns=["id", "name"], user_id=user_id, namespace_type="knowledge",
+            customer_column="customer_id", order=[Sort("name"), Sort("id")],
+        )
+"""
+
+
+def test_visible_rows_is_judged_at_its_call_sites_by_the_order_each_pages_in(tmp_path: Path) -> None:
+    """Flips if acl's visible_rows' keyset read over its own table parameter is flagged in its body, if a call site
+    paging in an order no index serves passes, if one paging through its purposed index is flagged, or if
+    literal-table SQL in visible_rows' module passes."""
+    found = _symbols(
+        _config(
+            tmp_path,
+            {"threetears/agent/acl/visible_customers.py": _VISIBLE_ROWS_BODY, "app.py": _VISIBLE_ROWS_CALLERS},
+        )
+    )
+    functions = {function for function, _ in found}
+    assert "visible_rows" not in functions, found
+    assert "by_date" not in functions, found
+    assert {"by_name", "grants_whole"} <= functions, found
+
+
 _STAGE_TEMPLATE = """
     from threetears.core.collections.schema_backed import TableSchema
     from threetears.core.keyed import apply_stage

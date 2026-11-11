@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
+
 from threetears.agent.acl import (
     MAX_GROUP_MEMBERSHIP_DEPTH,
     caller_visible_customer_clause,
@@ -22,6 +24,12 @@ from threetears.agent.acl import (
     customer_scope_visibility_clause,
     three_scope_visibility_clause,
 )
+from threetears.agent.acl.query_visibility import (
+    CALLER_VISIBLE_CUSTOMERS_OF_TYPE_SQL,
+    CALLER_VISIBLE_CUSTOMERS_SQL,
+    _to_depth,
+)
+from threetears.agent.acl.types import MAX_CONFIGURABLE_GROUP_NESTING_LEVELS, MIN_CONFIGURABLE_GROUP_NESTING_LEVELS
 
 
 def test_returns_fragment_and_two_binds() -> None:
@@ -288,7 +296,7 @@ def test_visible_customers_query_mirrors_the_three_scope_arms() -> None:
     # an over-restriction. pins each arm so an edit to one generator without the other fails loud.
     sql, _ = caller_visible_customers_query(user_id=uuid4())
     assert "FROM role_assignments ra" in sql
-    assert "JOIN group_members gm ON gm.group_id = ra.group_id" in sql
+    assert "WHERE ra.group_id = reached.group_id" in sql
     assert "LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id" in sql
     assert "gm.member_type = 'user'" in sql
     # scope=all -> the is_all flag (becomes the GUC '*' wildcard)
@@ -365,3 +373,84 @@ def test_the_clause_nests_one_hop_per_edge_up_to_the_cap() -> None:
     for level in range(2, MAX_GROUP_MEMBERSHIP_DEPTH + 1):
         assert f"gm{level}.group_id = gm{level - 1 if level > 2 else ''}.member_id" in fragment
     assert f"gm{MAX_GROUP_MEMBERSHIP_DEPTH + 1}" not in fragment
+
+
+def _reached_arm(edges: int, param_offset: int) -> str:
+    """one arm of the ``reached`` CTE: the groups ``edges`` group edges up from the caller's own memberships, each hop
+    keyed on the member side (the caller's rows by ``(member_type, member_id)``, then each group's rows naming it)."""
+    aliases = ["gm" if level == 1 else f"gm{level}" for level in range(edges + 1, 0, -1)]
+    lines = ["    SELECT gm.group_id", f"      FROM group_members {aliases[0]}"]
+    for below, alias in zip(aliases, aliases[1:]):
+        lines.append(
+            f"      JOIN group_members {alias} ON {below}.group_id = {alias}.member_id AND {alias}.member_type = 'group'"
+        )
+    lines.append(f"     WHERE {aliases[0]}.member_type = 'user' AND {aliases[0]}.member_id = ${param_offset}")
+    return "\n".join(lines)
+
+
+def _generated_customers_query(depth: int, param_offset: int, typed: bool) -> str:
+    """the visible-customer set walked ``depth`` groups deep, as the reference generator builds it: what the
+    statement the query returns must be."""
+    of_type = f" AND ra.scope_namespace_type = ${param_offset + 1}" if typed else ""
+    arms = "\n     UNION\n".join(_reached_arm(edges, param_offset) for edges in range(depth))
+    return f"""WITH reached AS MATERIALIZED (
+{arms}
+)
+SELECT
+        COALESCE(bool_or(ra.scope_type = 'all'), false) AS is_all,
+        COALESCE(
+            array_remove(
+                array_agg(DISTINCT
+                    CASE
+                        WHEN ra.scope_type = 'type_customer'{of_type} THEN ra.scope_customer_id
+                        WHEN ra.scope_type = 'namespace' THEN ns.customer_id
+                    END
+                ),
+                NULL
+            ),
+            ARRAY[]::uuid[]
+        ) AS customer_ids
+      FROM reached
+      CROSS JOIN LATERAL (
+        SELECT ra.scope_type, ra.scope_customer_id, ra.scope_namespace_type, ra.scope_namespace_id
+          FROM role_assignments ra
+         WHERE ra.group_id = reached.group_id
+        OFFSET 0
+      ) ra
+      LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id"""
+
+
+#: every chain a deployment may configure, in groups (levels less the person)
+_CONFIGURABLE_DEPTHS = range(MIN_CONFIGURABLE_GROUP_NESTING_LEVELS - 1, MAX_CONFIGURABLE_GROUP_NESTING_LEVELS)
+
+
+@pytest.mark.parametrize("depth", _CONFIGURABLE_DEPTHS)
+@pytest.mark.parametrize("param_offset", [1, 3])
+@pytest.mark.parametrize("typed", [False, True])
+def test_the_written_out_customers_statements_are_the_generators(depth: int, param_offset: int, typed: bool) -> None:
+    """Flips if CALLER_VISIBLE_CUSTOMERS_SQL or its typed form, cut to any nesting a deployment may configure, drifts
+    from the reference generator (an arm edited in one place, a hop missing, the statement not written out to the
+    deepest nesting): each statement is the generator's, at every depth and offset."""
+    sql = CALLER_VISIBLE_CUSTOMERS_OF_TYPE_SQL if typed else CALLER_VISIBLE_CUSTOMERS_SQL
+    cut = _to_depth(sql, depth)
+    if param_offset != 1:
+        cut = cut.replace("$2", f"${param_offset + 1}").replace("$1", f"${param_offset}")
+    assert cut == _generated_customers_query(depth, param_offset, typed)
+
+
+@pytest.mark.parametrize("param_offset", [1, 3])
+@pytest.mark.parametrize("typed", [False, True])
+def test_the_customers_query_walks_the_configured_nesting(param_offset: int, typed: bool) -> None:
+    """Flips if the query returns a statement walking any other depth than this deployment's nesting
+    (MAX_GROUP_MEMBERSHIP_DEPTH groups), at any offset."""
+    sql, _ = caller_visible_customers_query(
+        user_id=uuid4(), param_offset=param_offset, scope_namespace_type="tool" if typed else None
+    )
+    assert sql == _generated_customers_query(MAX_GROUP_MEMBERSHIP_DEPTH, param_offset, typed)
+
+
+@pytest.mark.parametrize("depth", [0, MAX_CONFIGURABLE_GROUP_NESTING_LEVELS])
+def test_a_nesting_past_the_written_statement_refuses(depth: int) -> None:
+    """Flips if a depth the statement is not written out for is cut silently to another walk."""
+    with pytest.raises(ValueError, match="group nesting"):
+        _to_depth(CALLER_VISIBLE_CUSTOMERS_SQL, depth)

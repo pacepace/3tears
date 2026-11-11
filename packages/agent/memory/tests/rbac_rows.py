@@ -15,6 +15,8 @@ that is not run.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID, uuid4
@@ -248,13 +250,22 @@ class _RoleRows:
         """
         self._rows = rows
 
-    async def list_builtin(self) -> list[Role]:
-        """return every builtin role.
+    async def find_platform_by_name(self, name: str) -> SimpleNamespace | None:
+        """the platform role named ``name``, as :meth:`RoleCollection.find_platform_by_name` answers it.
 
-        :return: builtin roles
-        :rtype: list[Role]
+        :param name: the role's name
+        :ptype name: str
+        :return: the role, carrying ``id``, ``name`` and ``is_builtin``; None when none is named so
+        :rtype: SimpleNamespace | None
         """
-        return [r for r in self._rows.roles if r.is_built_in]
+        return next(
+            (
+                SimpleNamespace(id=role.id, name=role.name, is_builtin=role.is_built_in)
+                for role in self._rows.roles
+                if role.name == name
+            ),
+            None,
+        )
 
 
 class _GroupRows:

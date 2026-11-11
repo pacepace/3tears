@@ -53,7 +53,8 @@ hazard, so the hub and the agent SDK import this ONE copy.
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Any, Final
 from uuid import UUID
 
 from threetears.observe import get_logger
@@ -257,6 +258,137 @@ def customer_scope_visibility_clause(
     return fragment, params
 
 
+#: a ``$N`` placeholder, its number captured
+_PLACEHOLDER_NUMBER: Final[re.Pattern[str]] = re.compile(r"\$(\d+)")
+
+#: what separates one UNION arm of the ``reached`` CTE from the next: one arm per group in the caller's chain
+_REACHED_UNION: Final[str] = "\n     UNION\n"
+
+#: what closes the ``reached`` CTE (no arm holds it)
+_REACHED_CLOSE: Final[str] = "\n)\n"
+
+#: the caller's visible-customer set (the RLS GUC's), written out to the deepest nesting a deployment may configure:
+#: the groups the caller ``$1`` reaches, read by key (the caller's memberships through idx_group_members_reverse,
+#: then each group edge up from those groups through the same index), MATERIALIZED; then each reached group's grants
+#: through idx_role_assignments_group_scope, one keyed read per group (the ``OFFSET 0`` fence keeps the planner from
+#: hashing a scan of every grant against the few groups). :func:`caller_visible_customers_query` keeps the first
+#: :data:`MAX_GROUP_MEMBERSHIP_DEPTH` arms (one per group in the chain, the caller's own group first).
+CALLER_VISIBLE_CUSTOMERS_SQL: Final[str] = (
+    "WITH reached AS MATERIALIZED (\n"
+    "    SELECT gm.group_id\n"
+    "      FROM group_members gm\n"
+    "     WHERE gm.member_type = 'user' AND gm.member_id = $1\n"
+    "     UNION\n"
+    "    SELECT gm.group_id\n"
+    "      FROM group_members gm2\n"
+    "      JOIN group_members gm ON gm2.group_id = gm.member_id AND gm.member_type = 'group'\n"
+    "     WHERE gm2.member_type = 'user' AND gm2.member_id = $1\n"
+    "     UNION\n"
+    "    SELECT gm.group_id\n"
+    "      FROM group_members gm3\n"
+    "      JOIN group_members gm2 ON gm3.group_id = gm2.member_id AND gm2.member_type = 'group'\n"
+    "      JOIN group_members gm ON gm2.group_id = gm.member_id AND gm.member_type = 'group'\n"
+    "     WHERE gm3.member_type = 'user' AND gm3.member_id = $1\n"
+    "     UNION\n"
+    "    SELECT gm.group_id\n"
+    "      FROM group_members gm4\n"
+    "      JOIN group_members gm3 ON gm4.group_id = gm3.member_id AND gm3.member_type = 'group'\n"
+    "      JOIN group_members gm2 ON gm3.group_id = gm2.member_id AND gm2.member_type = 'group'\n"
+    "      JOIN group_members gm ON gm2.group_id = gm.member_id AND gm.member_type = 'group'\n"
+    "     WHERE gm4.member_type = 'user' AND gm4.member_id = $1\n"
+    ")\n"
+    "SELECT\n"
+    "        COALESCE(bool_or(ra.scope_type = 'all'), false) AS is_all,\n"
+    "        COALESCE(\n"
+    "            array_remove(\n"
+    "                array_agg(DISTINCT\n"
+    "                    CASE\n"
+    "                        WHEN ra.scope_type = 'type_customer' THEN ra.scope_customer_id\n"
+    "                        WHEN ra.scope_type = 'namespace' THEN ns.customer_id\n"
+    "                    END\n"
+    "                ),\n"
+    "                NULL\n"
+    "            ),\n"
+    "            ARRAY[]::uuid[]\n"
+    "        ) AS customer_ids\n"
+    "      FROM reached\n"
+    "      CROSS JOIN LATERAL (\n"
+    "        SELECT ra.scope_type, ra.scope_customer_id, ra.scope_namespace_type, ra.scope_namespace_id\n"
+    "          FROM role_assignments ra\n"
+    "         WHERE ra.group_id = reached.group_id\n"
+    "        OFFSET 0\n"
+    "      ) ra\n"
+    "      LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id"
+)
+
+#: the same set for one namespace type (``$2``): a type_customer grant joins it only on that type
+CALLER_VISIBLE_CUSTOMERS_OF_TYPE_SQL: Final[str] = (
+    "WITH reached AS MATERIALIZED (\n"
+    "    SELECT gm.group_id\n"
+    "      FROM group_members gm\n"
+    "     WHERE gm.member_type = 'user' AND gm.member_id = $1\n"
+    "     UNION\n"
+    "    SELECT gm.group_id\n"
+    "      FROM group_members gm2\n"
+    "      JOIN group_members gm ON gm2.group_id = gm.member_id AND gm.member_type = 'group'\n"
+    "     WHERE gm2.member_type = 'user' AND gm2.member_id = $1\n"
+    "     UNION\n"
+    "    SELECT gm.group_id\n"
+    "      FROM group_members gm3\n"
+    "      JOIN group_members gm2 ON gm3.group_id = gm2.member_id AND gm2.member_type = 'group'\n"
+    "      JOIN group_members gm ON gm2.group_id = gm.member_id AND gm.member_type = 'group'\n"
+    "     WHERE gm3.member_type = 'user' AND gm3.member_id = $1\n"
+    "     UNION\n"
+    "    SELECT gm.group_id\n"
+    "      FROM group_members gm4\n"
+    "      JOIN group_members gm3 ON gm4.group_id = gm3.member_id AND gm3.member_type = 'group'\n"
+    "      JOIN group_members gm2 ON gm3.group_id = gm2.member_id AND gm2.member_type = 'group'\n"
+    "      JOIN group_members gm ON gm2.group_id = gm.member_id AND gm.member_type = 'group'\n"
+    "     WHERE gm4.member_type = 'user' AND gm4.member_id = $1\n"
+    ")\n"
+    "SELECT\n"
+    "        COALESCE(bool_or(ra.scope_type = 'all'), false) AS is_all,\n"
+    "        COALESCE(\n"
+    "            array_remove(\n"
+    "                array_agg(DISTINCT\n"
+    "                    CASE\n"
+    "                        WHEN ra.scope_type = 'type_customer' AND ra.scope_namespace_type = $2 THEN ra.scope_customer_id\n"
+    "                        WHEN ra.scope_type = 'namespace' THEN ns.customer_id\n"
+    "                    END\n"
+    "                ),\n"
+    "                NULL\n"
+    "            ),\n"
+    "            ARRAY[]::uuid[]\n"
+    "        ) AS customer_ids\n"
+    "      FROM reached\n"
+    "      CROSS JOIN LATERAL (\n"
+    "        SELECT ra.scope_type, ra.scope_customer_id, ra.scope_namespace_type, ra.scope_namespace_id\n"
+    "          FROM role_assignments ra\n"
+    "         WHERE ra.group_id = reached.group_id\n"
+    "        OFFSET 0\n"
+    "      ) ra\n"
+    "      LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id"
+)
+
+
+def _to_depth(sql: str, depth: int) -> str:
+    """``sql`` with the first ``depth`` arms of its ``reached`` CTE: the groups a chain of ``depth`` groups reaches.
+
+    :param sql: :data:`CALLER_VISIBLE_CUSTOMERS_SQL` or :data:`CALLER_VISIBLE_CUSTOMERS_OF_TYPE_SQL`
+    :ptype sql: str
+    :param depth: groups in the longest chain from the caller to a granting group, 1 up to the arms written
+    :ptype depth: int
+    :return: the statement walking that deep
+    :rtype: str
+    :raises ValueError: when ``depth`` is below 1 or past the arms written out
+    """
+    close = sql.index(_REACHED_CLOSE)
+    arms = sql[:close].split(_REACHED_UNION)
+    if not 1 <= depth <= len(arms):
+        raise ValueError(f"group nesting of {depth} groups: the statement is written out for 1 to {len(arms)}")
+    return _REACHED_UNION.join(arms[:depth]) + sql[close:]
+
+
 def caller_visible_customers_query(
     *,
     user_id: UUID,
@@ -296,29 +428,17 @@ def caller_visible_customers_query(
         when one is given
     :rtype: tuple[str, list[Any]]
     """
+    # the statements are written out (CALLER_VISIBLE_CUSTOMERS_SQL / _OF_TYPE_SQL) to the deepest configurable
+    # nesting and cut to this deployment's; a caller binding the user at another position has their placeholders
+    # renumbered
     params: list[Any] = [user_id]
-    of_type = ""
+    sql = CALLER_VISIBLE_CUSTOMERS_SQL
     if scope_namespace_type is not None:
-        of_type = f" AND ra.scope_namespace_type = ${param_offset + 1}"
+        sql = CALLER_VISIBLE_CUSTOMERS_OF_TYPE_SQL
         params.append(scope_namespace_type)
-    sql = f"""SELECT
-        COALESCE(bool_or(ra.scope_type = 'all'), false) AS is_all,
-        COALESCE(
-            array_remove(
-                array_agg(DISTINCT
-                    CASE
-                        WHEN ra.scope_type = 'type_customer'{of_type} THEN ra.scope_customer_id
-                        WHEN ra.scope_type = 'namespace' THEN ns.customer_id
-                    END
-                ),
-                NULL
-            ),
-            ARRAY[]::uuid[]
-        ) AS customer_ids
-      FROM role_assignments ra
-      JOIN group_members gm ON gm.group_id = ra.group_id
-      LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id
-     WHERE {_caller_membership_predicate(param_offset)}"""
+    sql = _to_depth(sql, MAX_GROUP_MEMBERSHIP_DEPTH)
+    if param_offset != 1:
+        sql = _PLACEHOLDER_NUMBER.sub(lambda found: f"${int(found.group(1)) + param_offset - 1}", sql)
     return sql, params
 
 

@@ -19,6 +19,7 @@ _LOWER = "src/hub/namespaces.py::by_lower_kind"
 _BY_NAME = "src/hub/providers.py::ProviderCollection.get_by_name"
 _PAGED = "src/hub/grants.py::page_by_state"
 _NEWEST = "src/hub/results.py::newest_in_state"
+_UNDER = "src/hub/paths.py::under"
 
 #: the tables these statements read, each with the key its declaration gives it
 _DDL = f"""
@@ -57,6 +58,11 @@ CREATE INDEX namespaces_lower_kind ON namespaces ((lower(kind)));
 CREATE TABLE providers (id UUID PRIMARY KEY, name TEXT);
 -- purpose: {_BY_NAME}
 CREATE UNIQUE INDEX providers_by_name ON providers (name);
+CREATE TABLE paths (id UUID PRIMARY KEY, name TEXT, owner UUID);
+-- purpose: {_UNDER}
+CREATE INDEX paths_name_c ON paths ((name COLLATE "C"));
+-- purpose: {_UNDER}
+CREATE INDEX paths_owner_name ON paths (owner, name);
 """
 
 
@@ -463,3 +469,43 @@ def test_a_sqlite_rowid_is_a_key_and_a_bound_probe_passes(
 ) -> None:
     """Flips if a rowid-ordered cap trim is called a whole read, or a non-key order under a LIMIT passes."""
     assert _kinds(sql, schema) == expected
+
+
+@pytest.mark.parametrize("order", ["ASC", "DESC", "ASC NULLS LAST"])
+def test_a_collated_index_item_with_an_order_is_still_that_collation_s_column(tmp_path: Path, order: str) -> None:
+    """Flips if an ordered collated index item (``(name COLLATE "C") ASC``, how YugabyteDB is asked for a range
+    index) is not read as the column in that collation, so the byte range beneath a node it serves is flagged."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "v001.sql").write_text(
+        "CREATE TABLE paths (id UUID PRIMARY KEY, name TEXT);\n"
+        f"-- purpose: {_UNDER}\n"
+        f'CREATE INDEX paths_name_c ON paths ((name COLLATE "C") {order});\n',
+        encoding="utf-8",
+    )
+    catalog = collect_schema(tmp_path, (tmp_path / "src",))
+    either = 'SELECT id FROM paths WHERE id = $1 OR (name COLLATE "C" >= $2 AND name COLLATE "C" < $3)'
+    assert _kinds(either, catalog, _UNDER) == []
+    assert ("paths", "paths_name_c", _UNDER) in catalog.used
+
+
+def test_a_range_bounded_both_sides_on_a_purposed_index_is_its_key(schema: SchemaCatalog) -> None:
+    """Flips if a range bounded on both sides by bound values, on the next column of an index whose purpose names the
+    read (after its bound prefix), is not keyed and credited to that index, or if a one-sided range, one bounded by a
+    literal, or one in another collation than the index's is."""
+    collated = 'SELECT id FROM paths WHERE name COLLATE "C" >= $1 AND name COLLATE "C" < $2'
+    assert _kinds(collated, schema, _UNDER) == []
+    assert ("paths", "paths_name_c", _UNDER) in schema.used
+    assert _kinds(collated, schema) == [("non-key-where", "paths")], "only the read the purpose names"
+    assert _kinds("SELECT id FROM paths WHERE owner = $1 AND name >= $2 AND name < $3", schema, _UNDER) == []
+    assert _kinds("SELECT id FROM paths WHERE owner = $1 AND name BETWEEN $2 AND $3", schema, _UNDER) == []
+    either = 'SELECT id FROM paths WHERE id = $1 OR (name COLLATE "C" >= $2 AND name COLLATE "C" < $3)'
+    assert _kinds(either, schema, _UNDER) == []
+    for unkeyed in (
+        'SELECT id FROM paths WHERE name COLLATE "C" >= $1',
+        """SELECT id FROM paths WHERE name COLLATE "C" >= '' AND name COLLATE "C" < $1""",
+        "SELECT id FROM paths WHERE name >= $1 AND name < $2",
+        'SELECT id FROM paths WHERE name COLLATE "POSIX" >= $1 AND name COLLATE "POSIX" < $2',
+    ):
+        before = set(schema.used)
+        assert _kinds(unkeyed, schema, _UNDER) == [("non-key-where", "paths")], unkeyed
+        assert not {(t, i) for t, i, _ in schema.used - before} & {("paths", "paths_name_c")}, unkeyed

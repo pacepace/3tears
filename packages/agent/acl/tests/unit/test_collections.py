@@ -27,6 +27,7 @@ from threetears.agent.acl import (
     ScopeType,
 )
 
+from threetears.agent.acl.collections import MEMBERS_NAMING_SQL
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.scan_cache import ScanCache
 
@@ -141,38 +142,43 @@ def _assignment_row(
 # ---------------------------------------------------------------------------
 
 
-class TestGroupCollectionListByCustomer:
-    """``GroupCollection.list_by_customer`` filter shape."""
+class TestGroupCollectionPages:
+    """a customer's groups and every group, a keyset page at a time."""
 
     @pytest.mark.asyncio
-    async def test_returns_entities_for_customer(self) -> None:
-        """rows fanned out as ``GroupEntity`` instances."""
+    async def test_a_customers_page_is_by_name_with_a_cursor(self) -> None:
+        """one more row than the page keeps means a next page; the cursor reads past the page's last name."""
         customer_id = uuid7()
-        rows = [
-            _group_row(customer_id=customer_id, name="Group A"),
-            _group_row(customer_id=customer_id, name="Group B"),
-        ]
+        rows = [_group_row(customer_id=customer_id, name=name) for name in ("A", "B", "C")]
         pool = AsyncMock()
         pool.fetch.return_value = rows
         coll = make_collection(GroupCollection, l3_pool=pool)
 
-        result = await coll.list_by_customer(customer_id)
+        page = await coll.page_by_customer(customer_id, limit=2)
 
-        assert len(result) == 2
-        assert {e.name for e in result} == {"Group A", "Group B"}
-        pool.fetch.assert_awaited_once()
+        assert [e.name for e in page.entities] == ["A", "B"]
+        assert page.next_cursor is not None
         sql = pool.fetch.await_args.args[0]
-        assert "row_scope = 'customer'" in sql
-        assert pool.fetch.await_args.args[1] == customer_id
+        assert 't."row_scope" = $1 AND t."customer_id" = $2' in sql
+        # keyset_page orders by the pinned columns too (equal on the page: the index's own order), then the name
+        assert sql.endswith('ORDER BY t."row_scope" ASC, t."customer_id" ASC, t."name" ASC LIMIT 3'), sql
+        assert pool.fetch.await_args.args[1:] == ("customer", customer_id)
+
+        pool.fetch.return_value = rows[2:]
+        last = await coll.page_by_customer(customer_id, limit=2, cursor=page.next_cursor)
+        assert [e.name for e in last.entities] == ["C"]
+        assert last.next_cursor is None
+        assert pool.fetch.await_args.args[-1] == "B"
 
     @pytest.mark.asyncio
-    async def test_empty_when_no_rows(self) -> None:
-        """empty fetch returns empty list (not None)."""
+    async def test_every_group_pages_by_id(self) -> None:
         pool = AsyncMock()
         pool.fetch.return_value = []
         coll = make_collection(GroupCollection, l3_pool=pool)
-        result = await coll.list_by_customer(uuid7())
-        assert result == []
+        page = await coll.page_all(limit=5)
+        assert page.entities == [] and page.next_cursor is None
+        sql = pool.fetch.await_args.args[0]
+        assert "WHERE" not in sql and 'ORDER BY t."group_id"' in sql and sql.endswith("LIMIT 6")
 
 
 class TestGroupCollectionGetMany:
@@ -341,21 +347,6 @@ class TestGroupMemberLoadForAgent:
         assert result[0].member_type == MemberType.AGENT
 
 
-class TestRoleListBuiltin:
-    """``RoleCollection.list_builtin`` filters on ``is_builtin=TRUE``."""
-
-    @pytest.mark.asyncio
-    async def test_filters_builtin(self) -> None:
-        rows = [_role_row(name="Reader"), _role_row(name="Writer")]
-        pool = AsyncMock()
-        pool.fetch.return_value = rows
-        coll = make_collection(RoleCollection, l3_pool=pool)
-        result = await coll.list_builtin()
-        assert len(result) == 2
-        sql = pool.fetch.await_args.args[0]
-        assert "is_builtin = TRUE" in sql
-
-
 class TestRoleGetMany:
     """``RoleCollection.get_many`` returns ACL :class:`Role` dataclass."""
 
@@ -510,6 +501,8 @@ class TestNamespaceListIdsUnderName:
         coll = make_collection(NamespaceCollection, l3_pool=pool)
         result = await coll.list_ids_under_name("tools.pentest")
         assert result == [node_id, child_id]
+        # keyed: the node by name and the byte range of names beneath it, never every namespace
+        assert pool.fetch.await_args.args[1:] == ("tools.pentest", "tools.pentest.", "tools.pentest/")
 
     @pytest.mark.asyncio
     async def test_an_empty_node_expands_to_nothing(self) -> None:
@@ -973,17 +966,35 @@ class TestNamespaceListIdsByCustomerAndType:
         assert result == ids
 
 
-class TestNamespaceListAllIds:
-    """``list_all_ids`` returns every namespace id."""
+class TestNamespacePageIds:
+    """``page_ids``: every namespace id, a keyset page at a time by id."""
 
     @pytest.mark.asyncio
-    async def test_returns_all(self) -> None:
-        ids = [uuid7(), uuid7(), uuid7()]
+    async def test_pages_by_id(self) -> None:
+        ids = sorted([uuid7(), uuid7(), uuid7()])
         pool = AsyncMock()
         pool.fetch.return_value = [{"namespace_id": i} for i in ids]
         coll = make_collection(NamespaceCollection, l3_pool=pool)
-        result = await coll.list_all_ids()
-        assert result == ids
+        page, following = await coll.page_ids(limit=2)
+        assert page == ids[:2]
+        assert following is not None
+        assert 'ORDER BY t."namespace_id"' in pool.fetch.await_args.args[0]
+
+
+class TestGroupMemberPageByGroup:
+    """``page_by_group``: one group's memberships by its key, a page at a time."""
+
+    @pytest.mark.asyncio
+    async def test_pages_the_groups_key_range(self) -> None:
+        group_id = uuid7()
+        pool = AsyncMock()
+        pool.fetch.return_value = []
+        coll = make_collection(GroupMemberCollection, l3_pool=pool)
+        page = await coll.page_by_group(group_id, limit=10)
+        assert page.entities == [] and page.next_cursor is None
+        sql = pool.fetch.await_args.args[0]
+        assert sql.endswith('WHERE t."group_id" = $1 ORDER BY t."group_id" ASC, t."id" ASC LIMIT 11'), sql
+        assert pool.fetch.await_args.args[1:] == (group_id,)
 
 
 class TestGroupMemberLoadForGroups:
@@ -1039,24 +1050,47 @@ class TestGroupMembershipCycleGuard:
         """adding A into B when B is already inside A closes the loop."""
         group_a = uuid7()
         group_b = uuid7()
-        pool = AsyncMock()
-        # children of B: A already holds B, so walking DOWN from B finds... B's
-        # children include nothing; walking from the CANDIDATE member (B) finds
-        # its children -- the fake answers one level: B's group-children = {A}? no:
-        # the edge that exists is (group_id=A, member=B) -> children of A is B.
-        # candidate insert: (group_id=B, member=A). walk starts at A; A's
-        # children = {B}; B == target group -> cycle.
-        pool.fetch.return_value = [{"member_id": group_b}]
+        # the edge that exists: B is a member of A. The candidate insert puts A inside B.
+        pool = _GroupEdges({(group_a, group_b)})
         coll = make_collection(GroupMemberCollection, l3_pool=pool)
         assert await coll.membership_would_cycle(group_id=group_b, member_group_id=group_a) is True
+        # walked up from B by the members' key: B's parents are {A}, the candidate
+        assert pool.asked == [[group_b]]
+
+    @pytest.mark.asyncio
+    async def test_a_deep_cycle_is_detected_and_an_unrelated_chain_is_not(self) -> None:
+        """C inside B inside A: adding A into C closes the loop three edges up; D into C does not."""
+        group_a, group_b, group_c, group_d = uuid7(), uuid7(), uuid7(), uuid7()
+        pool = _GroupEdges({(group_a, group_b), (group_b, group_c)})
+        coll = make_collection(GroupMemberCollection, l3_pool=pool)
+        assert await coll.membership_would_cycle(group_id=group_c, member_group_id=group_a) is True
+        assert await coll.membership_would_cycle(group_id=group_c, member_group_id=group_d) is False
 
     @pytest.mark.asyncio
     async def test_an_ordinary_edge_is_not_a_cycle(self) -> None:
-        """a child with no group-children accepts a parent cleanly."""
-        pool = AsyncMock()
-        pool.fetch.return_value = []
+        """a parent with no group-parents accepts a child cleanly."""
+        pool = _GroupEdges(set())
         coll = make_collection(GroupMemberCollection, l3_pool=pool)
         assert await coll.membership_would_cycle(group_id=uuid7(), member_group_id=uuid7()) is False
+
+
+class _GroupEdges:
+    """group-in-group edges ``(parent, child)``, answering only the keyed read of the memberships naming members."""
+
+    def __init__(self, edges: set[tuple[Any, Any]]) -> None:
+        self.edges = edges
+        self.asked: list[list[Any]] = []
+
+    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        assert sql == MEMBERS_NAMING_SQL, sql
+        member_type, member_ids = params
+        assert member_type == "group", params
+        self.asked.append(list(member_ids))
+        return [
+            {"group_id": parent, "member_type": "group", "member_id": child, "customer_id": None}
+            for parent, child in self.edges
+            if child in member_ids
+        ]
 
 
 class TestSchemasDeclareTheHubTablesDefaults:

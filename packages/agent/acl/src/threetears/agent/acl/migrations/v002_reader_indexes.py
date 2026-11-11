@@ -25,14 +25,20 @@ log = get_logger(__name__)
 
 #: Every statement, in order. Each is safe to run twice.
 _ACL_READER_INDEXES_DDL: tuple[str, ...] = (
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::MEMBERS_NAMING_SQL\n"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::MEMBERS_NAMING_SQL;"
+    " packages/agent/acl/src/threetears/agent/acl/query_visibility.py::CALLER_VISIBLE_CUSTOMERS_SQL; packages/agent/acl/src/threetears/agent/acl/query_visibility.py::CALLER_VISIBLE_CUSTOMERS_OF_TYPE_SQL\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_members_reverse\n"
     "CREATE INDEX IF NOT EXISTS idx_group_members_reverse ON group_members (member_type, member_id)",
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::ASSIGNMENTS_OF_GROUPS_SQL\n"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::ASSIGNMENTS_OF_GROUPS_SQL; packages/agent/acl/src/threetears/agent/acl/collections.py::GRANT_OF_GROUP_SQL;"
+    " packages/agent/acl/src/threetears/agent/acl/collections.py::GRANT_WINNER_OF_GROUP_SQL; packages/agent/acl/src/threetears/agent/acl/collections.py::GRANTS_OF_GROUP_SCOPE_SQL;"
+    " packages/agent/acl/src/threetears/agent/acl/collections.py::DELETE_GRANTS_OF_GROUP_SCOPE_SQL;"
+    " packages/agent/acl/src/threetears/agent/acl/query_visibility.py::CALLER_VISIBLE_CUSTOMERS_SQL; packages/agent/acl/src/threetears/agent/acl/query_visibility.py::CALLER_VISIBLE_CUSTOMERS_OF_TYPE_SQL\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_assignments_group_scope\n"
     "CREATE INDEX IF NOT EXISTS idx_role_assignments_group_scope ON role_assignments (group_id, scope_type)",
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACE_BY_NAME_SQL\n"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACE_BY_NAME_SQL;"
+    " packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACE_IDS_UNDER_NAME_SQL\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespaces_name\n"
+    "-- reason: a namespace by its name, every grant and tool lookup that names one\n"
     "CREATE INDEX IF NOT EXISTS idx_namespaces_name ON namespaces (name)",
 )
 

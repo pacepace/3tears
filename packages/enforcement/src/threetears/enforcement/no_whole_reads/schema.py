@@ -581,6 +581,20 @@ def _paren_body(text: str, opening: int) -> tuple[str, int]:
     return text[opening + 1 :], len(text)
 
 
+def collated(column: str, collation: str) -> str:
+    """a column as compared in an explicit collation, as the catalog and the judge both name it: ``name`` in
+    ``"C"`` -> ``name collate "c"``. An index on the column in one collation serves only comparisons in it.
+
+    :param column: the column, lower-cased
+    :ptype column: str
+    :param collation: the collation as written (quoted or bare)
+    :ptype collation: str
+    :return: the collated column's name
+    :rtype: str
+    """
+    return f'{column} collate "{collation.strip(chr(34)).lower()}"'
+
+
 def _listed(value: Any) -> list[Any]:
     """a table list's field as a list: a bare string is one item, nothing is none.
 
@@ -603,8 +617,16 @@ def _column_of(item: str) -> str:
     :rtype: str
     """
     stripped = item.strip()
+    # an item's order (``(name COLLATE "C") ASC``, ``"b" DESC NULLS LAST``) says nothing of the column it names
+    stripped = re.sub(
+        r"\s+(?:(?:ASC|DESC)(?:\s+NULLS\s+(?:FIRST|LAST))?|NULLS\s+(?:FIRST|LAST))$", "", stripped, flags=re.I
+    )
     while stripped.startswith("(") and stripped.endswith(")") and "," not in stripped:
         stripped = stripped[1:-1].strip()
+    collation = re.fullmatch(r"(.+?)\s+COLLATE\s+(\"[^\"]+\"|\w+)", stripped, re.IGNORECASE | re.DOTALL)
+    if collation is not None:
+        # ``(name COLLATE "C")``: the column in that collation, which serves only comparisons made in it
+        return collated(_column_of(collation.group(1)), collation.group(2))
     match = re.match(r"^\(?\s*(\"[^\"]+\"|[\w{}]+)\s*\)?(?:\s|$)", stripped)
     if match is None or stripped[len(match.group(1)) :].lstrip().startswith("("):
         # an expression index's item (``(replace(name, '.', '-'))``): keyed by the expression itself
