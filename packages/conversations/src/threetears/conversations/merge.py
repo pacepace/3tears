@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from threetears.core.collections import repoint_user_rows
+from threetears.core.collections import repoint_agent_user_rows, repoint_user_rows
 from threetears.observe import get_logger
 
 __all__ = ["repoint_user"]
@@ -34,6 +34,7 @@ async def repoint_user(
     *,
     from_user_id: UUID,
     to_user_id: UUID,
+    agent_id: UUID | None = None,
 ) -> list[tuple[Any, ...]]:
     """repoint every conversation owned by ``from_user_id`` to ``to_user_id``.
 
@@ -44,23 +45,40 @@ async def repoint_user(
     for post-commit cache invalidation. idempotent: a re-run finds no
     rows still owned by the source and is a no-op.
 
+    the caller names the agent whose schema ``conn`` is bound to as
+    ``agent_id``: the UPDATE then pins ``agent_id`` beside ``user_id``. the
+    schema holds only that agent's conversations, so the same rows move.
+    ``None`` moves by ``user_id`` alone, as before.
+
     :param conn: asyncpg transaction connection bound to the agent schema
     :ptype conn: Any
     :param from_user_id: source user whose conversations move
     :ptype from_user_id: UUID
     :param to_user_id: master user the conversations move to
     :ptype to_user_id: UUID
+    :param agent_id: the agent the schema holds; ``None`` repoints by user alone
+    :ptype agent_id: UUID | None
     :return: ``(agent_id, conversation_id)`` keys of the repointed rows
     :rtype: list[tuple[Any, ...]]
     """
-    moved = await repoint_user_rows(
-        conn,
-        table="conversations",
-        user_column="user_id",
-        pk_columns=["agent_id", "conversation_id"],
-        from_user_id=from_user_id,
-        to_user_id=to_user_id,
-    )
+    if agent_id is None:
+        moved = await repoint_user_rows(
+            conn,
+            table="conversations",
+            user_column="user_id",
+            pk_columns=["agent_id", "conversation_id"],
+            from_user_id=from_user_id,
+            to_user_id=to_user_id,
+        )
+    else:
+        moved = await repoint_agent_user_rows(
+            conn,
+            table="conversations",
+            agent_id=agent_id,
+            pk_columns=["agent_id", "conversation_id"],
+            from_user_id=from_user_id,
+            to_user_id=to_user_id,
+        )
     log.info(
         "repointed %d conversation(s) from user %s to %s",
         len(moved),

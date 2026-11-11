@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from threetears.core.collections.merge import repoint_user_rows
+from threetears.core.collections.merge import repoint_agent_user_rows, repoint_user_rows
 
 
 class _RecordingConn:
@@ -112,3 +112,51 @@ async def test_custom_user_column() -> None:
 
     assert 'SET "requested_by_user_id" = $1' in conn.sql
     assert 'WHERE "requested_by_user_id" = $2' in conn.sql
+
+
+@pytest.mark.asyncio
+async def test_an_agents_table_is_repointed_by_agent_and_user() -> None:
+    """Flips if the agent repoint stops pinning the agent beside the user (the (agent_id, user_id) index reads it)."""
+    agent_id = uuid4()
+    from_id = uuid4()
+    to_id = uuid4()
+    conv = uuid4()
+    conn = _RecordingConn([{"agent_id": agent_id, "conversation_id": conv}])
+
+    result = await repoint_agent_user_rows(
+        conn,
+        table="conversations",
+        agent_id=agent_id,
+        pk_columns=["agent_id", "conversation_id"],
+        from_user_id=from_id,
+        to_user_id=to_id,
+    )
+
+    assert 'UPDATE "conversations" SET "user_id" = $1, "date_updated" = $2' in conn.sql
+    assert 'WHERE "agent_id" = $3 AND "user_id" = $4' in conn.sql
+    assert 'RETURNING "agent_id", "conversation_id"' in conn.sql
+    assert conn.params[0] == to_id
+    assert conn.params[2:] == (agent_id, from_id)
+    assert result == [(agent_id, conv)]
+
+
+@pytest.mark.asyncio
+async def test_an_agents_table_without_a_touch_column_sets_only_the_owner() -> None:
+    """touch_column=None sets only user_id; the agent and the source user are the two pins."""
+    agent_id = uuid4()
+    from_id = uuid4()
+    conn = _RecordingConn([])
+
+    await repoint_agent_user_rows(
+        conn,
+        table="media",
+        agent_id=agent_id,
+        pk_columns=["agent_id", "media_id"],
+        from_user_id=from_id,
+        to_user_id=uuid4(),
+        touch_column=None,
+    )
+
+    assert "date_updated" not in conn.sql
+    assert 'WHERE "agent_id" = $2 AND "user_id" = $3' in conn.sql
+    assert conn.params[1:] == (agent_id, from_id)

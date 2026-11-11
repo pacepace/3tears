@@ -894,7 +894,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MemoriesCollection.find_for_user_in_agents; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
-                    "::MemoriesCollection.hybrid_search._nearest"
+                    "::MemoriesCollection.hybrid_search._nearest; "
+                    "packages/core/src/threetears/core/collections/merge.py::repoint_agent_user_rows"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memories_agent_user",
                 reason=(
@@ -2909,7 +2910,7 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
                     "::MemoryChunkCollection.hybrid_search_within_memory"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_memory_id",
-                reason="media carries two indexes: the file a memory wraps, joined to that memory's chunks",
+                reason="media carries three indexes: the file a memory wraps, joined to that memory's chunks",
             ),
             SchemaIndex(
                 "uq_media_cloud_connection_file",
@@ -2920,7 +2921,16 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
                 plan_test=(
                     "packages/agent/memory/tests/integration/test_index_plans.py::test_media_cloud_connection_file"
                 ),
-                reason="media carries two indexes: one media row per provider file of a cloud connection",
+                reason="media carries three indexes: one media row per provider file of a cloud connection",
+            ),
+            # v022: one user's files under the schema's agent, for a user merge's repoint of them
+            SchemaIndex(
+                "idx_media_agent_user",
+                "agent_id",
+                "user_id",
+                purpose="packages/core/src/threetears/core/collections/merge.py::repoint_agent_user_rows",
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_repoint_agent_user",
+                reason="media carries three indexes: one user's files under one agent, repointed by a user merge",
             ),
         ),
         # v0.8.1: global uniqueness on ``media_id`` (stronger than the
@@ -3063,7 +3073,8 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MediaContentCollection.search_by_semantic; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
-                    "::MediaContentCollection.search_by_fts"
+                    "::MediaContentCollection.search_by_fts; "
+                    "packages/core/src/threetears/core/collections/merge.py::repoint_agent_user_rows"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_content_agent_user",
                 reason="media_content carries three indexes: one user's file contents, every search of them",
@@ -3666,7 +3677,8 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MemoryChunkCollection.hybrid_search; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
-                    "::MemoryChunkCollection.search_by_semantic"
+                    "::MemoryChunkCollection.search_by_semantic; "
+                    "packages/core/src/threetears/core/collections/merge.py::repoint_agent_user_rows"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memory_chunks_agent_user",
                 reason="memory_chunks carries four indexes: one user's chunks, every search of them",

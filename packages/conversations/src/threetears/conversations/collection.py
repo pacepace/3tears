@@ -157,7 +157,14 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         ],
         cas_column="date_updated",
         indexes=(
-            SchemaIndex("idx_conv_user", "user_id", "date_created"),
+            # one user's conversations, newest first; a user merge's repoint of them under the schema's agent
+            SchemaIndex(
+                "idx_conv_user",
+                "user_id",
+                "date_created",
+                purpose="packages/core/src/threetears/core/collections/merge.py::repoint_agent_user_rows",
+                plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_user",
+            ),
             SchemaIndex(
                 "idx_conv_customer",
                 "customer_id",

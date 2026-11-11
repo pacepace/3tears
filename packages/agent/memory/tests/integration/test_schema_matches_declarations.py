@@ -359,14 +359,14 @@ class TestBuiltSchemaMatchesDeclarations:
     async def test_a_schema_holding_the_unread_indexes_ends_without_them(
         self, two_schemas: tuple[str, str, str]
     ) -> None:
-        """a schema built through v034 holds the eight indexes no read uses; carried through v035 it ends with
-        exactly the indexes a fresh build has, none of them among them."""
+        """a schema built through v034 holds the seven indexes no read uses; carried through v035 it ends with
+        exactly the indexes a fresh build has, none of them among them, and keeps idx_media_agent_user (a user
+        merge's repoint reads it)."""
         url, fresh, upgraded = two_schemas
-        # the eight v035 drops, named here: the test reads the migration through its front door (the runner)
+        # the seven v035 drops, named here: the test reads the migration through its front door (the runner)
         unread = {
             "ix_media_user_date",
             "ix_media_mime_type",
-            "idx_media_agent_user",
             "ix_media_extraction_pending",
             "ix_media_content_user",
             "ix_memory_chunks_user",
@@ -391,6 +391,7 @@ class TestBuiltSchemaMatchesDeclarations:
         assert upgraded_rows == fresh_rows
         names = {name for _, name, _ in upgraded_rows}
         assert not names & unread, names & unread
+        assert "idx_media_agent_user" in names
 
     async def test_memories_date_updated_is_not_null_on_both_sides(self, pg_schema: tuple[str, str]) -> None:
         url, schema = pg_schema

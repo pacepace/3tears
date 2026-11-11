@@ -97,6 +97,38 @@ async def test_child_tables_repoint_without_touch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_repoint_naming_its_agent_pins_it_in_every_statement() -> None:
+    """Flips if a statement of a repoint naming the schema's agent stops pinning agent_id beside the user: each
+    would read every row of its table rather than the (agent_id, user_id) index."""
+    captured: list[tuple[str, tuple[Any, ...]]] = []
+    agent_id = uuid4()
+    from_id = uuid4()
+
+    class _CapturingConn:
+        async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+            captured.append((sql, params))
+            if sql.startswith("SELECT m.agent_id, m.memory_id FROM memories m"):
+                # one colliding memory, so the DELETE runs too
+                return [{"agent_id": agent_id, "memory_id": uuid4()}]
+            return []
+
+    await repoint_user(_CapturingConn(), from_user_id=from_id, to_user_id=uuid4(), agent_id=agent_id)
+
+    lock = next(params for sql, params in captured if sql.startswith("SELECT m.agent_id"))
+    assert lock[2] == agent_id
+    (lock_sql,) = [sql for sql, _ in captured if sql.startswith("SELECT m.agent_id")]
+    assert "m.agent_id = $3 AND m.user_id = $1" in lock_sql
+    (delete_sql, delete_params) = next((sql, params) for sql, params in captured if sql.startswith("DELETE"))
+    assert "m.agent_id = $3 AND m.user_id = $1" in delete_sql
+    assert delete_params[2] == agent_id
+    updates = {sql.split()[1].strip('"'): (sql, params) for sql, params in captured if sql.startswith("UPDATE")}
+    assert set(updates) == {"memories", "media", "media_content", "memory_chunks"}
+    for table, (sql, params) in updates.items():
+        assert '"agent_id" = $' in sql and '"user_id" = $' in sql.split("WHERE", 1)[1], table
+        assert params[-2:] == (agent_id, from_id), table
+
+
+@pytest.mark.asyncio
 async def test_alias_delete_is_scoped_to_source_and_master() -> None:
     """the collision DELETE filters source rows that clash with master."""
     captured: dict[str, str] = {}

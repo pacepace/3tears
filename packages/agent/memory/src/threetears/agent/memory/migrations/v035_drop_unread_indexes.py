@@ -6,7 +6,8 @@ table for nothing. The declarations are gone from the collections; this drops th
 from a schema an earlier step built them in:
 
 - ``media``: ``ix_media_user_date`` (user_id, date_created), ``ix_media_mime_type``,
-  ``idx_media_agent_user`` (agent_id, user_id), ``ix_media_extraction_pending``.
+  ``ix_media_extraction_pending``. (``idx_media_agent_user`` stays: a user merge repoints
+  one user's files under the schema's agent through it.)
 - ``media_content``: ``ix_media_content_user`` (user_id).
 - ``memory_chunks``: ``ix_memory_chunks_user`` (user_id), ``idx_chunks_message_id_start``
   (agent_id, message_id_start), ``idx_chunks_message_id_end`` (message_id_end). A
@@ -31,7 +32,6 @@ log = get_logger(__name__)
 _DROP_UNREAD_INDEXES_SQL: tuple[str, ...] = (
     "DROP INDEX IF EXISTS ix_media_user_date",
     "DROP INDEX IF EXISTS ix_media_mime_type",
-    "DROP INDEX IF EXISTS idx_media_agent_user",
     "DROP INDEX IF EXISTS ix_media_extraction_pending",
     "DROP INDEX IF EXISTS ix_media_content_user",
     "DROP INDEX IF EXISTS ix_memory_chunks_user",

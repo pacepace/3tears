@@ -26,12 +26,13 @@ from threetears.agent.memory.collections import (
     MemoryConsolidationsCollection,
     MemoryRefsCollection,
 )
+from threetears.agent.memory.merge import repoint_user
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
-from threetears.core.testing.plans import StatementPlan, explain_statement, plan_uses_index
+from threetears.core.testing.plans import StatementPlan, explain_statement, explain_write, plan_uses_index
 
 from .conftest import AsyncpgStore
 
@@ -506,6 +507,28 @@ async def test_media_memory_id(world: _World) -> None:
     missed = [
         _shape(plan) for plan in await world.plans(captured) if not plan_uses_index(plan, "ix_media_agent_memory")
     ]
+    assert not missed, "\n\n".join(missed)
+
+
+async def test_repoint_agent_user(world: _World) -> None:
+    """Flips if a user merge's repoint naming the schema's agent stops reading each table's (agent_id, user_id)
+    index (each UPDATE would read every row of its table), or its alias-collision lock stops reading
+    ix_memories_user_alias."""
+    captured = _Captured()
+    await repoint_user(captured, from_user_id=world.user, to_user_id=uuid.uuid4(), agent_id=world.agent)
+    (lock_sql, lock_args), *updates = captured.asked
+    lock = await explain_statement(world.conn, lock_sql, *lock_args)
+    assert plan_uses_index(lock, "ix_memories_user_alias"), _shape(lock)
+    # the index each table's repoint reads, by the schema's agent and the user
+    reads = {
+        "memories": "ix_memories_agent_user_date",
+        "media": "idx_media_agent_user",
+        "media_content": "idx_media_content_agent_user",
+        "memory_chunks": "idx_memory_chunks_agent_user",
+    }
+    plans = {sql.split()[1].strip('"'): await explain_write(world.conn, sql, *args) for sql, args in updates}
+    assert set(plans) == set(reads), [sql for sql, _ in updates]
+    missed = [_shape(plan) for table, plan in plans.items() if not plan_uses_index(plan, reads[table])]
     assert not missed, "\n\n".join(missed)
 
 
