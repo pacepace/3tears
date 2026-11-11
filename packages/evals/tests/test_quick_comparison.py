@@ -75,7 +75,8 @@ async def _compare(
 ) -> Result:
     """Compare the runners (``hasty``, the control, then ``careful``), each case graded on its ``label`` field."""
     arms = {"hasty": hasty, "careful": careful} if runners is None else runners
-    ev = Eval(CASES, arms, ["label"], k=2, name=name)
+    # Named as the arms read, as a comparison's title in these tests; an eval never builds that name itself.
+    ev = Eval(CASES, arms, ["label"], k=2, name=name if name is not None else " vs ".join(arms))
     if host is not None:
         return await ev.run(host=host, scope=scope)
     return await ev.run(store=":memory:", scope=scope)
@@ -179,7 +180,9 @@ async def test_a_report_without_the_campaign_s_name_is_titled_by_its_id() -> Non
 
 
 async def test_the_arms_share_a_host_the_caller_hands_over() -> None:
-    host = as_host([Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"])], store=":memory:")
+    host = as_host(
+        [Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"], name="hasty vs careful")], store=":memory:"
+    )
     comparison = await _compare(host=host)
     assert comparison.host is host
     assert off_loop(host.storage.load_campaign, comparison.campaign_id, SCOPE) is not None
@@ -243,7 +246,9 @@ async def test_arms_whose_candidates_share_a_docstring_share_its_first_line_as_t
     ],
 )
 async def test_unusable_arms_are_refused_before_anything_runs(runners: dict[str, Any], refusal: str) -> None:
-    host = as_host([Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"])], store=":memory:")
+    host = as_host(
+        [Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"], name="hasty vs careful")], store=":memory:"
+    )
     with pytest.raises(ValueError, match=refusal):
         await _compare(runners, host=host)
     assert off_loop(host.storage.list_campaigns, SCOPE) == []

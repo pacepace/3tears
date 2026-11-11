@@ -250,7 +250,9 @@ class TestTheScoreRollupRowCarriesIt:
 
     async def _footing(self, arms: Mapping[str, Any]) -> tuple[dict[str, Any], EvalRun]:
         cases = [{"text": "a cat", "label": "animal"}, {"text": "an oak", "label": "plant"}]
-        comparison = await Eval(cases, arms, ["label"], k=1).run(store=":memory:", scope="footing")
+        comparison = await Eval(cases, arms, ["label"], k=1, name=" vs ".join(arms)).run(
+            store=":memory:", scope="footing"
+        )
         host = comparison.host
         run_id = next(iter(comparison.arms.values())).run_id
         summary = off_loop(

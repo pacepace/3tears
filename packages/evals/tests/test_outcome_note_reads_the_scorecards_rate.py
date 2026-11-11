@@ -82,7 +82,7 @@ def test_the_outcome_note_and_the_scorecard_print_one_arms_passes_alike() -> Non
 
 
 async def test_an_aspect_of_a_change_comparing_no_pass_rate_states_passes_at_the_code_pages_form() -> None:
-    result = await Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"], k=2).run(
+    result = await Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"], k=2, name="hasty vs careful").run(
         store=":memory:", scope="note-forms"
     )
     assert result.page.readings.kind == "change"

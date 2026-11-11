@@ -93,9 +93,9 @@ def classifier(prompt):  # an offline stand-in for a model call under each promp
         return "billing" if "charged" in text or "refund" in text else "bug"
     return classify
 
-comparison = await Eval(CASES, {"v1": classifier("v1"), "v2": classifier("v2")}, ["queue"], k=3).run(
-    store=":memory:", scope="triage"
-)
+comparison = await Eval(
+    CASES, {"v1": classifier("v1"), "v2": classifier("v2")}, ["queue"], k=3, name="triage"
+).run(store=":memory:", scope="triage")
 host = comparison.host
 # A store read, so it runs off the event loop, on the host's executor.
 inspected = await run_blocking(
@@ -254,9 +254,9 @@ arms = {  # named as k=v pairs: each pair a factor, the first arm the control
     "model=m, effort=high": ROOM(agent(0.002, set())),
     "model=m, effort=low": ROOM(agent(0.0005, {"off-dark-0", "off-dark-1"})),
 }
-rooms = await Eval(ROOMS, arms, ['(state.light == "on") == (state.daylight == "dark")'], k=3).run(
-    store=":memory:", scope="lights"
-)
+rooms = await Eval(
+    ROOMS, arms, ['(state.light == "on") == (state.daylight == "dark")'], k=3, name="lights"
+).run(store=":memory:", scope="lights")
 read = await run_blocking(  # a store read
     rooms.host.blocking_executor, frontier, rooms.host.storage, "lights",
     list_runs=partial(list_runs, rooms.host), bar=0.8, profile=rooms.host.profile,

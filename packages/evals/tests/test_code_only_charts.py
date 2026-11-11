@@ -64,7 +64,7 @@ async def right_free(case: Mapping[str, Any]) -> Answer:
 
 async def _compare(candidate: Any, control: Any) -> Result:
     """The two arms, the control first, graded on each case's ``label``."""
-    ev = Eval(CASES, {"control": control, "candidate": candidate}, ["label"], k=2)
+    ev = Eval(CASES, {"control": control, "candidate": candidate}, ["label"], k=2, name="control vs candidate")
     return await ev.run(store=":memory:", scope=SCOPE)
 
 

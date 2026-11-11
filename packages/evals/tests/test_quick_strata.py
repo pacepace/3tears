@@ -179,7 +179,9 @@ class TestRefusals:
 
 
 async def _compared(cases: Any, graders: list[Any]) -> Any:
-    return await Eval(cases, {"baseline": always_b, "candidate": misses_lookalikes}, graders, k=1).run(store=":memory:")
+    return await Eval(
+        cases, {"baseline": always_b, "candidate": misses_lookalikes}, graders, k=1, name="baseline vs candidate"
+    ).run(store=":memory:")
 
 
 class TestAComparisonReadsEachArmPerKind:

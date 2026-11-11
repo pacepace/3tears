@@ -61,12 +61,12 @@ def _answers(wrong_below: int) -> Any:
 async def _compare(arms: Mapping[str, int], *, scope: str = "typed") -> Result:
     """Compare the arms, each wrong on its first cases, the first named the control."""
     runners = {name: _answers(wrong) for name, wrong in arms.items()}
-    return await Eval(CASES, runners, [correct], k=1).run(store=":memory:", scope=scope)
+    return await Eval(CASES, runners, [correct], k=1, name=" vs ".join(runners)).run(store=":memory:", scope=scope)
 
 
 async def _guarded(cases: list[dict[str, Any]], arms: Mapping[str, Any], scope: str) -> Result:
     """Compare the arms graded by ``correct`` and the ``no_leak`` guardrail, held to a 0.1 margin."""
-    ev = Eval(cases, arms, [correct, grader(no_leak, guard=0.1)], k=1)
+    ev = Eval(cases, arms, [correct, grader(no_leak, guard=0.1)], k=1, name=" vs ".join(arms))
     return await ev.run(store=":memory:", scope=scope)
 
 
@@ -296,9 +296,9 @@ class TestANewcomerNeedsNoScope:
         one = await Eval(CASES[:4], _answers(0), [correct], k=1).run(store=":memory:")
         assert one.scope_id == one.summary.scope_id == "candidate" and one.summary.status == "completed"
         assert "scope 'candidate'" in one.render()
-        compared = await Eval(CASES[:4], {"current": _answers(0), "other": _answers(1)}, [correct], k=1).run(
-            store=":memory:"
-        )
+        compared = await Eval(
+            CASES[:4], {"current": _answers(0), "other": _answers(1)}, [correct], k=1, name="current vs other"
+        ).run(store=":memory:")
         assert compared.scope_id == "current vs other"
 
     async def test_a_host_or_a_store_of_your_own_takes_the_same_default_or_the_scope_named(self) -> None:

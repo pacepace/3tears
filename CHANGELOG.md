@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an unnamed comparison is refused
+
+**Changed:** a quick-path `Eval` with several arms and neither `name=` nor a cases file is refused when it is written
+(`name this eval (name="invoices"): its name is where its runs are kept, ...`). It was named by its arms joined with
+` vs ` (`model=a, prompt=v1 vs ...`), a title of raw keys that was also where its runs were kept, so adding, renaming
+or dropping an arm moved them and split the comparison's history. One arm, a runner named by its function, and an
+eval over a cases file are named as before.
+
+**Hosts:** pass `name=`. To keep reading a comparison already stored under its arms' name, pass that name: the arms
+joined by ` vs `, in order. Pre-release, no shim (MIGRATIONS.toml).
+
 ### evals examples: rung 3 is one idea a file
 
 **Changed:** `examples/3-invoices/extract.py` taught six ideas at once; it is now a file each, numbered as steps of

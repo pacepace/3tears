@@ -246,9 +246,9 @@ def _spending(heavy: bool) -> Any:
 
 
 async def test_a_spend_interval_stops_at_zero_and_a_delta_interval_on_it_does_not() -> None:
-    comparison = await Eval(_CASES, {"heavy": _spending(True), "light": _spending(False)}, ["expected"], k=2).run(
-        store=":memory:", scope=SCOPE
-    )
+    comparison = await Eval(
+        _CASES, {"heavy": _spending(True), "light": _spending(False)}, ["expected"], k=2, name="heavy vs light"
+    ).run(store=":memory:", scope=SCOPE)
     lows = [
         summary.ci_low
         for cell in comparison.report.bundle.cell_measures

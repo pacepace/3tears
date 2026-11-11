@@ -51,7 +51,9 @@ async def guess(case: Mapping[str, Any]) -> str:
 
 async def _classifier() -> Result:
     """Two arms over four cases twice: the control right every time, the candidate never saying ``animal``."""
-    return await Eval(CASES, {"control": right, "candidate": guess}, ["label"], k=2).run(store=":memory:", scope=SCOPE)
+    return await Eval(CASES, {"control": right, "candidate": guess}, ["label"], k=2, name="control vs candidate").run(
+        store=":memory:", scope=SCOPE
+    )
 
 
 def _table(report: Report, name: str) -> TableBlock | None:

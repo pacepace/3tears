@@ -69,14 +69,14 @@ async def _compare(
     graders: list[Any] | None = None, *, cheaper_misses: int = 1, host: Any = None, scope: str = "margins"
 ) -> Result:
     arms = {"current": _answers(0), "cheaper": _answers(cheaper_misses)}
-    ev = Eval(CASES, arms, [correct] if graders is None else graders, k=2)
+    ev = Eval(CASES, arms, [correct] if graders is None else graders, k=2, name=" vs ".join(arms))
     if host is not None:
         return await ev.run(host=host, scope=scope)
     return await ev.run(store=":memory:", scope=scope)
 
 
 async def _run(cases: list[dict[str, Any]], arms: Mapping[str, Any], graders: list[Any], scope: str, k: int) -> Result:
-    return await Eval(cases, arms, graders, k=k).run(store=":memory:", scope=scope)
+    return await Eval(cases, arms, graders, k=k, name=" vs ".join(arms)).run(store=":memory:", scope=scope)
 
 
 def _row(comparison: Result, measure: str) -> dict[str, Any]:
@@ -276,7 +276,12 @@ class TestARefusedMargin:
     @pytest.mark.parametrize("name", ["accuracy", "match", "precision", "cost_usd"])
     def test_on_a_core_measure_it_names_the_function_route(self, name: str) -> None:
         with pytest.raises(ValueError, match=r"engine core measure's name; grade it with a function"):
-            Eval(CASES, {"current": _answers(0), "cheaper": _answers(1)}, [grader(name, margin=0.05)])
+            Eval(
+                CASES,
+                {"current": _answers(0), "cheaper": _answers(1)},
+                [grader(name, margin=0.05)],
+                name="current vs cheaper",
+            )
 
     async def test_on_accuracy_wider_than_a_rate_the_launch_refuses_it(self) -> None:
         assert run_margin_refusal("accuracy", 1) is not None

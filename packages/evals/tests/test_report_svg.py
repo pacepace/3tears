@@ -272,7 +272,7 @@ def _cases(n: int) -> list[dict[str, str]]:
 
 
 async def test_a_campaign_with_enough_cases_draws_its_contrast_s_interval_in_the_row() -> None:
-    ev = Eval(_cases(MIN_CASES + 3), {"never": _never, "classify": _classify}, ["label"])
+    ev = Eval(_cases(MIN_CASES + 3), {"never": _never, "classify": _classify}, ["label"], name="never vs classify")
     comparison = await ev.run(store=":memory:")
     charts = [block for block in comparison.report.blocks if isinstance(block, ChartBlock)]
     assert [block.chart for block in charts] == ["outcome_bar"], "the outcome bar is the page's one chart"
@@ -345,7 +345,7 @@ def test_a_long_arm_label_is_whole_in_its_tooltip_and_its_table() -> None:
 
 
 async def test_an_arm_under_the_case_floor_is_not_charted_and_the_caveat_says_so_once() -> None:
-    ev = Eval(_cases(MIN_CASES - 1), {"never": _never, "classify": _classify}, ["label"])
+    ev = Eval(_cases(MIN_CASES - 1), {"never": _never, "classify": _classify}, ["label"], name="never vs classify")
     comparison = await ev.run(store=":memory:")
     charts = [block for block in comparison.report.blocks if isinstance(block, ChartBlock)]
     assert [block.chart for block in charts] == ["outcome_bar"]

@@ -285,8 +285,8 @@ for result in results:
     print(result.test_case_id, trace.call_ledger.calls, trace.end_state, failed or "ok")
 ```
 
-**A change, better or worse.** `Eval(CASES, {"old": ROOM(old_agent), "new": ROOM(new_agent)}, [checks...])`, the
-first key the control, runs both agents on the same seeded cases. Each goal check becomes a
+**A change, better or worse.** `Eval(CASES, {"old": ROOM(old_agent), "new": ROOM(new_agent)}, [checks...], name="lights")`,
+the first key the control, runs both agents on the same seeded cases. Each goal check becomes a
 reading in the contrasts table, named by what it tests (`Refund amount check`, or the name its template declares;
 its key is `goal_state:<check>`, and the Glossary gives its expression), with its interval and verdict, and an
 unproven check is named under Not tested.

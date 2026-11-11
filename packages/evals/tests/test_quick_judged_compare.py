@@ -143,7 +143,7 @@ def _judge(client: Any) -> Judge:
 
 
 async def _compare(arms: Mapping[str, Any], graders: list[Any]) -> Result:
-    return await Eval(CASES, arms, graders, k=1).run(store=":memory:", scope=SCOPE)
+    return await Eval(CASES, arms, graders, k=1, name=" vs ".join(arms)).run(store=":memory:", scope=SCOPE)
 
 
 async def _one(runner: Any, client: Any, host: Any = None) -> EvalSummary:

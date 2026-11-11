@@ -39,7 +39,9 @@ SCOPE = "one-form"
 
 
 async def test_one_change_prints_one_text_on_the_written_page_the_code_page_an_aspect_page_and_the_quick_line() -> None:
-    result = await Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"], k=2).run(store=":memory:", scope=SCOPE)
+    result = await Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"], k=2, name="hasty vs careful").run(
+        store=":memory:", scope=SCOPE
+    )
     (fold,) = result.page.aspects
     (row,) = [
         row
@@ -70,7 +72,7 @@ async def test_one_change_prints_one_text_on_the_written_page_the_code_page_an_a
 
 def _guarded() -> CampaignBundle:
     """A quick comparison graded by a guardrail too: every arm's check on ``no_leak`` against the control."""
-    ev = Eval(GUARDED_CASES, ARMS, [correct, grader(no_leak, guard=NO_LEAK)], k=1)
+    ev = Eval(GUARDED_CASES, ARMS, [correct, grader(no_leak, guard=NO_LEAK)], k=1, name=" vs ".join(ARMS))
     result = asyncio.run(ev.run(store=":memory:", scope=SCOPE))
     return assemble_campaign_bundle(result.host, result.campaign_id, SCOPE)
 

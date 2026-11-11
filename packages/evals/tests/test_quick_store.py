@@ -120,6 +120,7 @@ async def test_a_comparison_keeps_its_margins_with_a_store(tmp_path: Path) -> No
             {"current": always_right, "cheaper": always_right},
             [grader(correct, margin=0.1)],
             k=2,
+            name="current vs cheaper",
         ).run(store=store, scope="kept")
     (row,) = comparison.contrasts("correct")
     assert row["verdict"].startswith("cheaper and current equivalent") and "(margin ±10 pts)" in row["verdict"]
@@ -178,7 +179,7 @@ async def test_a_store_beside_a_host_is_refused() -> None:
         with pytest.raises(ValueError, match="brings its own storage"):
             await Eval(CASES[:2], always_right, [correct]).run(host=host, store=store, scope="kept")
         with pytest.raises(ValueError, match="brings its own storage"):
-            await Eval(CASES[:2], {"a": always_right, "b": misses_one}, [correct]).run(
+            await Eval(CASES[:2], {"a": always_right, "b": misses_one}, [correct], name="a vs b").run(
                 host=host, store=store, scope="kept"
             )
 
