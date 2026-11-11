@@ -217,6 +217,48 @@ async def test_a_renewal_that_never_returns_expires_its_own_record_at_the_lease_
         await leases.shut_down()
 
 
+class _RenewalRefusingSlowStore(InMemoryDocumentStore):
+    """A store that refuses every write moving one record's lease, and takes that record's other writes slowly."""
+
+    def __init__(self, record_id: str, delay_s: float) -> None:
+        super().__init__()
+        self.record_id = record_id
+        self.delay_s = delay_s
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Refuse a write of the record that moves its lease; take any other write of it after the delay."""
+        if document.get("id") == self.record_id and not create_only:
+            stored = self.get(self.record_id, str(document["scope_id"]))
+            if stored is not None and stored.get("lease") != document.get("lease"):
+                raise RuntimeError("the store refused the renewal")
+            time.sleep(self.delay_s)
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def test_the_last_record_held_is_still_stopped_when_its_expirys_writes_outlast_a_renewal_interval() -> None:
+    """An expiry lets go of its record before it writes why; when that was the last record held, the renewer finds
+    nothing held while those writes are still landing, and must not cancel the expiry before it stops the job."""
+    lease_s = 0.6
+    # each write of the expiry outlasts two renewal intervals, and stays inside the lease-long bound it is given
+    store = _RenewalRefusingSlowStore("run-last", delay_s=0.45)
+    storage = _storage(store)
+    leases = JobLeases(storage, lease_s=lease_s)
+    stopped: list[str] = []
+    try:
+        _hold(leases, storage, "run-last", stop=lambda: stopped.append("run-last"))
+
+        async with asyncio.timeout(10):
+            while not (stopped and _stored(storage, "run-last").faults):
+                await asyncio.sleep(0.05)
+
+        assert stopped == ["run-last"], "the job whose renewals failed for a whole lease was stopped, once"
+        assert leases.fenced("run-last") and not leases.holds("run-last")
+        faults = _stored(storage, "run-last").faults
+        assert any("could not renew it" in fault for fault in faults), f"a fault says why it stopped: {faults}"
+    finally:
+        await leases.shut_down()
+
+
 async def test_a_renewal_that_lands_late_says_how_late_and_why(caplog: pytest.LogCaptureFixture) -> None:
     store = _SlowRecordStore("run-slow", 0.8)  # its renewal's write lands well past one interval, inside the lease
     storage = _storage(store)
