@@ -90,10 +90,20 @@ def _plain_call(job: Callable[..., Any], args: tuple[Any, ...]) -> Any:
 def _below_the_server() -> None:
     """a worker's start: scheduled below the serving process, so it stays responsive.
 
+    A process already at the lowest priority cannot go lower: macOS refuses ``nice`` past it with ``EPERM`` (Linux
+    clamps). The worker then keeps the priority it has and says so once, at its start; raising there would fail the
+    initializer and with it every worker of the pool (``BrokenProcessPool``).
+
     :return: nothing
     :rtype: None
     """
-    os.nice(5)
+    try:
+        os.nice(5)
+    except OSError as error:
+        log.warning(
+            "process worker keeps its priority: it cannot be lowered further",
+            extra={"extra_data": {"niceness": os.getpriority(os.PRIO_PROCESS, 0), "error": str(error)}},
+        )
 
 
 class ProcessWorkers:

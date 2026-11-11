@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from collections.abc import AsyncIterator
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any
@@ -125,3 +127,46 @@ class TestTheWorkersLifetime:
     def test_a_pool_needs_a_worker(self) -> None:
         with pytest.raises(ValueError, match="needs a worker"):
             ProcessWorkers(workers=0, name="none")
+
+
+#: a process at the lowest priority there is starts a pool and runs a job on it; prints whether a worker ran it
+_AT_THE_LOWEST_PRIORITY = """
+import asyncio, os
+from threetears.core.process_workers import ProcessWorkers
+os.setpriority(os.PRIO_PROCESS, 0, 20)
+async def main():
+    workers = ProcessWorkers(workers=1, name="lowest-priority")
+    try:
+        print(await workers.run(os.getpid) != os.getpid())
+    finally:
+        await workers.close()
+asyncio.run(main())
+"""
+
+#: what macOS answers a process at the lowest priority asking to go lower (Linux clamps instead): installed in every
+#: process of the run, the spawned workers included, so the refusal is the same on every platform
+_NICE_REFUSED = """
+import os
+def _refused(increment):
+    raise PermissionError(1, "Operation not permitted")
+os.nice = _refused
+"""
+
+
+class TestAWorkerAtTheLowestPriority:
+    """a worker that cannot be scheduled any lower keeps its priority and runs its jobs, never breaking its pool."""
+
+    def test_a_pool_started_at_the_lowest_priority_runs_a_job(self, tmp_path: Any) -> None:
+        (tmp_path / "sitecustomize.py").write_text(_NICE_REFUSED, encoding="utf-8")
+        path = os.pathsep.join(filter(None, [str(tmp_path), os.environ.get("PYTHONPATH", "")]))
+        done = subprocess.run(
+            [sys.executable, "-c", _AT_THE_LOWEST_PRIORITY],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+            env={**os.environ, "PYTHONPATH": path},
+        )
+
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == "True", done.stdout
