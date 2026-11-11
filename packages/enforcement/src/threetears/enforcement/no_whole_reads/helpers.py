@@ -75,6 +75,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "holds_any",
         "read_after",
         "read_past_marks",
+        "literal_select",
         "delete_before",
         "delete_oldest",
         "delete_keyed",
@@ -314,6 +315,16 @@ def _read_by(call: ast.Call) -> list[str]:
     table, own = _relation(_argument(call, "table", 1), "table")
     pinned, _ = _conditions(_by(_argument(call, "by", None)), alias="t")
     return [f"SELECT * FROM {table} AS t{_where(pinned)}", *own]
+
+
+def _literal_select(call: ast.Call) -> list[str]:
+    """a keyed read written out with literals (``literal_select``, an export's ``SELECT``): the rows its ``by`` pins
+    (``=`` a value, ``IN`` a set) and its ``where`` narrows, as the bound read it writes out; one pinning nothing is
+    the whole read it is."""
+    table, own = _relation(_argument(call, "relation", 0), "relation")
+    pinned, place = _conditions(_by(_argument(call, "by", None)), alias="t")
+    filtered, _ = _filters(call, place)
+    return [f"SELECT * FROM {table} AS t{_where([*pinned, *filtered])}", *own]
 
 
 def _visible(call: ast.Call) -> list[str]:
@@ -708,6 +719,7 @@ _SYNTHESIZERS: Final = {
     "holds_any": _probe,
     "read_after": _read_after,
     "read_past_marks": _read_past_marks,
+    "literal_select": _literal_select,
     "delete_before": _delete_before,
     "delete_oldest": _delete_oldest,
     "delete_keyed": _keyed_write,
