@@ -29,6 +29,7 @@ from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.exceptions import ConcurrentModificationError
+from threetears.core.testing.keyed_statements import decode
 
 from threetears.agent.wake.collections import WakeScheduleCollection, WebhookSubscriptionCollection
 from threetears.agent.wake.tables import (
@@ -54,12 +55,13 @@ def _metadata() -> MetaData:
     return metadata
 
 
-# parity-with: asyncpg.Pool (fetchrow / execute -- the seam a by-pk read and a save drive)
+# parity-with: asyncpg.Pool (fetch / fetchrow / execute -- the seam a by-pk read and a save drive)
 class _Store:
     """an L3 that runs the collection's upsert and fenced UPDATE the way Postgres would.
 
-    An ``INSERT ... ON CONFLICT DO UPDATE`` replaces the row whatever it holds. An ``UPDATE`` sets
-    its ``SET`` columns only on a row matching every ``WHERE`` column, and answers the count.
+    An ``INSERT ... ON CONFLICT DO UPDATE`` replaces the row whatever it holds. The read by key and the fenced
+    ``UPDATE`` are the keyed helpers' statements, read back by the decoder: the ``UPDATE`` sets its ``SET``
+    columns only on a row matching every ``WHERE`` condition, and answers the count.
     """
 
     def __init__(self) -> None:
@@ -67,16 +69,30 @@ class _Store:
         # another writer's change, applied once, right after the next read answers
         self.after_next_read: dict[str, Any] | None = None
 
+    def _table(self, table: str) -> list[dict[str, Any]]:
+        return [row for (row_table, _, _), row in self.rows.items() if row_table == table]
+
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
+        """a hand-written read (the webhook tools' ``find_for_agent``), matched on every ``WHERE`` column."""
         table = "webhook_subscriptions" if "FROM webhook_subscriptions" in sql else "agent_wake_schedules"
         where = {col: args[int(pos) - 1] for col, pos in re.findall(r"(\w+) = \$(\d+)", sql.split("WHERE", 1)[1])}
         found: dict[str, Any] | None = None
-        for (row_table, _, _), row in self.rows.items():
-            if row_table == table and all(row.get(col) == value for col, value in where.items()):
+        for row in self._table(table):
+            if all(row.get(col) == value for col, value in where.items()):
                 found = row
         answer = None if found is None else dict(found)
         if found is not None and self.after_next_read is not None:
             found.update(self.after_next_read)
+            self.after_next_read = None
+        return answer
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        statement = decode(sql, args)
+        assert statement.kind == "select", f"unexpected statement: {sql}"
+        found = [row for row in self._table(statement.table) if statement.matches(row)]
+        answer = statement.select(found)
+        if found and self.after_next_read is not None:
+            found[-1].update(self.after_next_read)
             self.after_next_read = None
         return answer
 
@@ -88,19 +104,13 @@ class _Store:
             row = dict(zip(columns, args, strict=True))
             self.rows[(table, row["conversation_id"], row[_PK_COLUMN[table]])] = row
             return "INSERT 0 1"
-        update = re.match(r"UPDATE (\w+) SET (.*) WHERE (.*)", sql)
-        assert update is not None, f"unexpected statement: {sql}"
-        table, set_part, where_part = update.groups()
-        where = {col: args[int(pos) - 1] for col, pos in re.findall(r"(\w+) = \$(\d+)", where_part)}
-        row = self.rows.get((table, where["conversation_id"], where[_PK_COLUMN[table]]))
-        if row is None or any(row.get(col) != value for col, value in where.items()):
-            return "UPDATE 0"
-        for col, pos in re.findall(r"(\w+) = \$(\d+)", set_part):
-            row[col] = args[int(pos) - 1]
-        return "UPDATE 1"
+        statement = decode(sql, args)
+        assert statement.kind == "update", f"unexpected statement: {sql}"
+        assert {"conversation_id", _PK_COLUMN[statement.table], "date_updated"} <= set(statement.pinned), sql
+        return f"UPDATE {len(statement.update(self._table(statement.table)))}"
 
 
-# parity-with: asyncpg.Pool (fetchrow / execute -- the seam a by-pk read and a save drive)
+# parity-with: asyncpg.Pool (fetch / fetchrow / execute -- the seam a by-pk read and a save drive)
 class _NoCountStore(_Store):
     """runs the fenced UPDATE, then answers as the NATS proxy does for a broker reply with no row_count."""
 

@@ -17,6 +17,7 @@ requires docker; gated by ``pytest.mark.integration``.
 from __future__ import annotations
 
 import asyncio
+import json
 import tracemalloc
 import contextlib
 from collections.abc import AsyncIterator
@@ -553,6 +554,42 @@ class TestStreaming:
             assert bounded_peak < fetch_peak * 0.1, (
                 f"bounded read peak {bounded_peak} against a full read's {fetch_peak}"
             )
+        finally:
+            await driver.close()
+
+    @pytest.mark.asyncio
+    async def test_fetch_within_reads_pages_up_to_the_cut_and_returns_the_connection(
+        self,
+        seeded_schema: tuple[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """a byte-capped read over 10k rows keeps the rows whose JSON fits, in order, and the pool is whole after."""
+        db_url, schema = seeded_schema
+        config = _make_config_for_container(db_url, monkeypatch)
+        driver = AsyncpgDriver(config)
+
+        def encode(rows: list[dict[str, Any]]) -> bytes:
+            return json.dumps(rows, separators=(",", ":")).encode()
+
+        try:
+            await driver.execute(f'CREATE TABLE "{schema}"."within" (id integer, payload text)')
+            values = ", ".join(f"({i}, '{'x' * 200}')" for i in range(10000))
+            await driver.execute(f'INSERT INTO "{schema}"."within" (id, payload) VALUES {values}')
+            statement = f'SELECT id, payload FROM "{schema}"."within" WHERE id >= $1 ORDER BY id'
+            every = [{"id": i, "payload": "x" * 200} for i in range(10000)]
+            cap = len(encode(every[:300])) + 5
+            within = await driver.fetch_within(
+                statement, 0, max_bytes=cap, encode=encode, page_rows=100, timeout_seconds=30
+            )
+            assert within.truncated is True
+            # exactly the prefix whose array fits, in order
+            assert within.rows == every[:300]
+            assert json.loads(within.json_array()) == within.rows
+            # the cursor's transaction closed and the connection went back: the next read runs on the pool
+            whole = await driver.fetch_within(
+                f'SELECT id FROM "{schema}"."within" WHERE id < 5 ORDER BY id', max_bytes=10_000, encode=encode
+            )
+            assert (whole.rows, whole.truncated) == ([{"id": index} for index in range(5)], False)
         finally:
             await driver.close()
 

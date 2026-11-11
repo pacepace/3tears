@@ -38,6 +38,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from threetears.core.keyed._filters import binds_native_arrays
+
 __all__ = [
     "PlanRecorder",
     "WholeScanGuard",
@@ -79,8 +81,12 @@ class StatementPlan:
 
 
 def _read_a_loop(node: Mapping[str, Any]) -> int:
-    """the rows one relation scan read in one loop (both engines report a loop's average), 0 for any other node."""
-    if "Relation Name" not in node:
+    """the rows one relation scan read in one loop (both engines report a loop's average), 0 for any other node.
+
+    A write's ``ModifyTable`` node names the relation it writes, and answers its RETURNING rows, but reads nothing:
+    the scan under it found the rows.
+    """
+    if "Relation Name" not in node or node.get("Node Type") == "ModifyTable":
         return 0
     if any(name in node for name in _YB_SCANNED):
         return max(int(node.get(name, 0)) for name in _YB_SCANNED)
@@ -255,6 +261,16 @@ class PlanRecorder:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._conn, name)
+
+    @property
+    def binds_native_arrays(self) -> bool:
+        """whether the connection it records binds typed arrays natively: a keyed helper then sends it the statement
+        it would send the connection itself.
+
+        :return: whether it does
+        :rtype: bool
+        """
+        return binds_native_arrays(self._conn)
 
     async def _explain(self, sql: str, args: Sequence[Any]) -> None:
         if self._yugabyte is None:

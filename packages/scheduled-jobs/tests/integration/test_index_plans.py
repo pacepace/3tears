@@ -18,7 +18,7 @@ import pytest
 
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.testing.plans import explain_statement, explain_write, plan_uses_index
+from threetears.core.testing.plans import explain_statement, explain_write, on_yugabyte, plan_uses_index
 from threetears.scheduled_jobs.collections import JobFireCollection, ScheduledJobCollection
 
 from .conftest import apply_schema
@@ -91,13 +91,23 @@ def _stores(captured: _Captured) -> tuple[ScheduledJobCollection, JobFireCollect
 
 
 async def test_scheduled_jobs_next_fire(conn: asyncpg.Connection) -> None:
-    """Flips if the tick's due scan stops reading idx_scheduled_jobs_next_fire."""
+    """Flips if the tick's due scan stops reading idx_scheduled_jobs_next_fire_asc, or if on YugabyteDB a tick past
+    every active job stops reading only its page (a hashed ``next_fire_at`` reads and sorts every active one)."""
     captured = _Captured()
     jobs, _ = _stores(captured)
     await jobs.list_due_for_tick(_NOW, kinds=["k1"], limit=50)
     (sql, args), *_ = captured.asked
     plan = await explain_statement(conn, sql, *args)
-    assert plan_uses_index(plan, "idx_scheduled_jobs_next_fire"), plan.plan
+    assert plan_uses_index(plan, "idx_scheduled_jobs_next_fire_asc"), plan.plan
+    # a tick after every one of the 500 active jobs (all of kind k0) is due: the page of 50 reads about its own rows
+    late = _Captured()
+    jobs, _ = _stores(late)
+    await jobs.list_due_for_tick(datetime.now(UTC) + timedelta(days=30), kinds=["k0"], limit=50)
+    (sql, args), *_ = late.asked
+    page = await explain_statement(conn, sql, *args)
+    assert page.rows_returned == 50, page
+    if await on_yugabyte(conn):
+        assert page.rows_scanned <= 2 * (50 + 1), page
 
 
 async def test_job_fires_job_time(conn: asyncpg.Connection) -> None:

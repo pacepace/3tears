@@ -48,6 +48,7 @@ from urllib.parse import unquote
 from threetears.observe import get_logger
 
 from threetears.core.backends.protocol import LoadFile
+from threetears.core.keyed import Selected
 
 from threetears.datasources.export_read import (
     DEFAULT_PRESIGN_SECONDS,
@@ -69,6 +70,8 @@ from threetears.datasources.query_client import (
     DatasourceExportResult,
     DatasourceQueryClient,
     RelationFingerprintResult,
+    column_names,
+    plain_columns,
 )
 
 try:
@@ -187,7 +190,7 @@ async def export_partitions(
     datasource_name: str,
     *,
     relation: str,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     partition_by: str,
     destination: str,
     bucket: str,
@@ -204,8 +207,9 @@ async def export_partitions(
     :ptype datasource_name: str
     :param relation: the relation
     :ptype relation: str
-    :param columns: the columns to read; every fingerprint covers all of them
-    :ptype columns: Sequence[str]
+    :param columns: the columns to read; every fingerprint covers those read as written (a
+        :class:`~threetears.core.keyed.Selected` expression is computed from them)
+    :ptype columns: Sequence[str | Selected]
     :param partition_by: the column whose values are the parts; among ``columns``
     :ptype partition_by: str
     :param destination: a fresh relative path under the datasource's export prefix
@@ -226,13 +230,13 @@ async def export_partitions(
     :raises DatasourceQueryError: when the hub refuses a fingerprint or the export (an older hub
         refuses ``partition_by`` or ``group_by`` as ``MALFORMED_REQUEST``)
     """
-    if partition_by not in columns:
+    if partition_by not in column_names(columns):
         raise ValueError(f"the partition column {partition_by!r} must be one of the columns read")
     where_in = None if parts is None else {partition_by: list(parts)}
 
     async def grouped() -> dict[str | None, RelationFingerprintResult]:
         return await client.relation_fingerprint_groups(
-            datasource_name, relation=relation, key=columns, group_by=partition_by, where_in=where_in
+            datasource_name, relation=relation, key=plain_columns(columns), group_by=partition_by, where_in=where_in
         )
 
     before = await grouped()

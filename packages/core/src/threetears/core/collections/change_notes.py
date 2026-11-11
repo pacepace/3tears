@@ -187,7 +187,9 @@ _HASH_SPACE: Final = 65536
 _BAND_COUNT_BATCHES: Final = 64
 
 
-async def _install_change_notes(conn: Any, schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> None:
+async def _install_change_notes(
+    conn: Any, schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE, policy: DdlLockPolicy | None = None
+) -> None:
     """create the ring where missing (:func:`~threetears.core.ddl.change_notes.change_notes_ddl`), every index of it
     usable: one a failed build left unusable is dropped and built again
     (:func:`~threetears.core.ddl.index_health.rebuild_unusable_indexes`, by the ring's own index names).
@@ -198,23 +200,30 @@ async def _install_change_notes(conn: Any, schema: str, *, fence: timedelta = DE
     commit's noted keys read its whole note table. The rebuild is said at WARNING; an index still unusable after it
     raises, rather than leave the ring's reads scanning.
 
-    :param conn: a connection allowed DDL, outside a transaction (YugabyteDB builds an index on a populated table
-        online only there); the caller holds the database's DDL lock where other installs may run
+    Every statement runs under the database's DDL lock, taken here on ``conn``
+    (:func:`~threetears.core.ddl.ddl_lock.database_ddl_lock`; re-entrant, so a caller already holding it loses
+    nothing): two index builds in one YugabyteDB database leave both invalid.
+
+    :param conn: ONE connection allowed DDL, outside a transaction (YugabyteDB builds an index on a populated table
+        online only there), never a pool: the lock is held on its session
     :ptype conn: Any
     :param schema: the schema holding the ring, a TRUSTED identifier
     :ptype schema: str
     :param fence: the fence a new ring row tells the writers
     :ptype fence: timedelta
+    :param policy: how long to wait for the DDL lock; the default waits until it is free
+    :ptype policy: DdlLockPolicy | None
     :return: nothing
     :rtype: None
     :raises IndexStillUnusableError: when a ring index is still unusable after it was built again
     """
     statements = change_notes_ddl(schema, fence=fence)
-    for statement in statements:
-        await conn.execute(statement)
     # each index's name, as its own statement creates it (CREATE INDEX IF NOT EXISTS "<name>" ON ...)
     names = [statement.split()[5].strip('"') for statement in statements if statement.startswith("CREATE INDEX ")]
-    await rebuild_unusable_indexes(conn, [schema], names=names)
+    async with database_ddl_lock(ConnectionSession(conn), policy):
+        for statement in statements:
+            await conn.execute(statement)
+        await rebuild_unusable_indexes(conn, [schema], names=names, policy=policy)
 
 
 def _status_count(status: str) -> int:
@@ -782,8 +791,8 @@ class ChangeNoteKeeper:
         :return: nothing
         :rtype: None
         """
-        async with self._pool.acquire() as conn, database_ddl_lock(ConnectionSession(conn), policy):
-            await _install_change_notes(conn, self._schema, fence=self._fence)
+        async with self._pool.acquire() as conn:
+            await _install_change_notes(conn, self._schema, fence=self._fence, policy=policy)
 
     async def install_triggers(self, tables: Iterable[NotedTable], policy: DdlLockPolicy = _LOCK_POLICY) -> list[str]:
         """give every noted table of the keeper's own schema its note function and triggers; say which it gave.

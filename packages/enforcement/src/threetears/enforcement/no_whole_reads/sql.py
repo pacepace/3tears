@@ -70,8 +70,10 @@ __all__ = [
     "condition_shape",
     "KEYED_COUNT",
     "Reader",
+    "data_relations",
     "is_sql",
     "judge_sql",
+    "statement_shape",
 ]
 
 #: the kind a bare ``SELECT ... FROM <table>`` is given: judged where it runs
@@ -216,6 +218,8 @@ class Reader:
         set reads the ids the source's runs record named
     :ivar source_unit: whether the mark says ``unit="table"``: such a relation is a small static input read whole
         when the source's inputs record moved
+    :ivar local: whether the statement runs on a local backend (``execute_query`` / ``execute_arrow``: DuckDB, SQLite),
+        which hashes no index: no ``index-hashed-range`` is asked of what it reads
     :ivar view_keys: the keys every view the code the statement is written in builds declares, when that code is a
         declared view producer (``NoWholeReadsConfig.view_producers``): a ``CREATE VIEW`` there is judged by them
     :ivar ctes: the CTE names the code the statement is written in defines in its other statements (a fragment
@@ -231,6 +235,7 @@ class Reader:
     source_ids: frozenset[str] = frozenset()
     source_unit: bool = False
     view_keys: tuple[tuple[str, ...], ...] = ()
+    local: bool = False
 
 
 def _interpolation(match: re.Match[str]) -> str:
@@ -594,6 +599,9 @@ def _atoms(predicate: str) -> list[_Atom]:
             atoms.append(_Atom("range", rcol, bound=True))
         elif lrow and _bound_value(right):
             atoms.append(_Atom("range", lrow[0], bound=True))
+        elif _bound_value(right) and re.search(r"[A-Za-z_]\w*\s*\(", left) and not _bound_value(left):
+            # a page past a sort expression's value (``lower(name) > $1``): an index on that expression ranges it
+            atoms.append(_Atom("range", ("", expression_key(left)), bound=True))
     elif op == "BETWEEN":
         lcol = _column(left)
         if lcol and all(_bound_value(part) for part in re.split(r"\bAND\b", right, flags=re.IGNORECASE)):
@@ -957,6 +965,10 @@ def _key_hit(
             if serves and table is not None:
                 reader.schema.use(table, name, reader.names)
         return True
+    # every purposed index the bound columns key, the one the read uses credited: the longest bound prefix, then of
+    # those the index whose bound prefix is followed by the column the read orders or ranges by (of several
+    # ``(kind, <sort>, id)`` pages, each its own sort's), then the first declared
+    serving: list[tuple[tuple[int, bool], str, tuple[str, ...], int, bool]] = []
     for name, columns in purposed:
         prefix = 0
         while prefix < len(columns) and columns[prefix] in eq | contained:
@@ -969,9 +981,23 @@ def _key_hit(
             and (level.order is None or level.order[1] == columns[prefix])
         )
         if _covers(columns, eq | contained, tenants) or ranged_next:
-            if table is not None:
-                reader.schema.use(table, name, reader.names)
-            return True
+            following = columns[prefix] if prefix < len(columns) else None
+            ordered_next = following is not None and (
+                following in ranged or (level.order is not None and following == level.order[1])
+            )
+            serving.append(((prefix, ordered_next), name, columns, prefix, ranged_next))
+    if serving:
+        best = max(rank for rank, *_ in serving)
+        _, name, columns, prefix, ranged_next = next(entry for entry in serving if entry[0] == best)
+        if table is not None and ranged_next and prefix == 0 and not _local(reader, table):
+            # a range on the index's first column, nothing bound before it: a hashed first column cannot seek it
+            reader.schema.use_from_lead(table, name, reader.names)
+        elif table is not None:
+            reader.schema.use(table, name, reader.names)
+        elif reader.template is not None:
+            # a table its module builds from a template (``FROM {table}``): the template's index is used
+            reader.schema.use(reader.template.name, name, reader.names)
+        return True
     order = level.order
     if level.limited and order is not None and index in _owner(level, order[0]) and not filters:
         for key, name in [*((key, "") for key in primary), *((columns, name) for name, columns in purposed)]:
@@ -979,10 +1005,27 @@ def _key_hit(
             while prefix < len(key) and key[prefix] in eq:
                 prefix += 1
             if prefix < len(key) and key[prefix] == order[1] and not (eq - set(key[:prefix])) and ranged <= {order[1]}:
-                if name and table is not None:
+                if name and table is not None and prefix == 0 and not _local(reader, table):
+                    # an order from the index's first column, nothing bound before it: a hashed column has no order
+                    reader.schema.use_from_lead(table, name, reader.names)
+                elif name and table is not None:
                     reader.schema.use(table, name, reader.names)
                 return True
     return False
+
+
+def _local(reader: Reader, table: str) -> bool:
+    """whether a read of ``table`` is local, so no index of it is hashed: run on a local backend, or of a local copy's
+    relation, or of a change set being applied.
+
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :param table: the bare table
+    :ptype table: str
+    :return: whether it is
+    :rtype: bool
+    """
+    return reader.local or table.startswith(COPY_PREFIX) or reader.transient(table)
 
 
 def _order(masked: str, text: str) -> tuple[str, str] | None:
@@ -1419,7 +1462,9 @@ def _passed_through(body: str) -> set[str] | None:
     """the columns a view's body passes through unchanged: each select-list item that is a plain column, under its
     own name or another (``x``, ``t.x``, ``x AS x``, ``p.race AS office_key``: a read binding ``office_key`` on the
     view binds ``p.race`` beneath it); never one it computes (a ``CASE``, ``||``, a function); None when it passes
-    every column (``*``).
+    every column (``*``). An interpolation in the select list is columns the walk cannot see, a list of them
+    (``SELECT {before}l.join_state_code{after}``: the columns before the key and after it, each list joined by commas
+    with its own), so the literal text between interpolations is read as items of its own.
 
     :param body: the view's ``SELECT``, cleaned
     :ptype body: str
@@ -1432,7 +1477,7 @@ def _passed_through(body: str) -> set[str] | None:
     if start is None or opening is None:
         return set()
     passed: set[str] = set()
-    for item in _split(body[start.end() : opening.start()], re.compile(",")):
+    for item in _split(body[start.end() : opening.start()].replace("{}", ","), re.compile(",")):
         bare = re.sub(r"^DISTINCT\s+", "", item.strip(), flags=re.IGNORECASE)
         if bare == "*" or bare.endswith(".*"):
             return None
@@ -1454,7 +1499,10 @@ def _judge_view(text: str, reader: Reader) -> list[_SqlFinding]:
     :param reader: the judgement's context
     :ptype reader: Reader
     :return: ``undeclared-view`` for a view declared nowhere, ``view-key-not-passed`` for a key column its body does
-        not pass through
+        not pass through. A declared producer's keys win over a declaration its run-time name happens to match (a
+        name ``{}`` is every copy relation's default key): its views are the ones it declares, a keyless one too; a
+        view a producer builds passes when it passes any one of the producer's keys (each of its tables keyed its own
+        way), a declared view every one of its own
     :rtype: list[_SqlFinding]
     """
     match = _VIEW_NAME.match(text)
@@ -1463,7 +1511,11 @@ def _judge_view(text: str, reader: Reader) -> list[_SqlFinding]:
     name = match.group(1)
     if reader.transient(name.strip('"')):
         return []
-    declared = reader.schema.table(name) or reader.schema.table(f"{COPY_PREFIX}{name.strip('"')}")
+    declared = (
+        None
+        if reader.view_keys
+        else reader.schema.table(name) or reader.schema.table(f"{COPY_PREFIX}{name.strip('"')}")
+    )
     keys = (
         [*declared.primary_keys, *declared.unique_keys]
         if declared is not None
@@ -1472,5 +1524,124 @@ def _judge_view(text: str, reader: Reader) -> list[_SqlFinding]:
     if declared is None and not reader.view_keys:
         return [_SqlFinding("undeclared-view", name)]
     passed = _passed_through(text[match.end() :])
-    missing = sorted(column for key in keys for column in key if passed is not None and column not in passed)
+    if passed is None:
+        return []
+    if declared is None:
+        # a producer's views are of tables keyed each its own way: a view passing any one key it declares is keyed
+        short = [sorted(column for column in key if column not in passed) for key in keys]
+        missing = [] if any(not columns for columns in short) else min(short, key=len)
+    else:
+        missing = sorted(column for key in keys for column in key if column not in passed)
     return [_SqlFinding("view-key-not-passed", f"{name}.{missing[0]}")] if missing else []
+
+
+#: a relation a statement names: after ``FROM``, ``JOIN``, ``UPDATE`` or ``INTO``
+_NAMED_RELATION: Final[re.Pattern[str]] = re.compile(
+    rf"\b(?:FROM|JOIN|UPDATE|INTO)\s+(?:ONLY\s+|LATERAL\s+)?{_NAME}(\s*\()?", re.IGNORECASE
+)
+#: a statement's verb, after any ``WITH`` list
+_WRITE_VERB: Final[re.Pattern[str]] = re.compile(r"^\s*(UPDATE|DELETE|MERGE)\b", re.IGNORECASE)
+_INSERT_SELECT: Final[re.Pattern[str]] = re.compile(r"^\s*INSERT\b.*\bSELECT\b", re.IGNORECASE | re.DOTALL)
+_DATA_WRITE: Final[re.Pattern[str]] = re.compile(r"\)\s*(UPDATE|DELETE|INSERT)\b", re.IGNORECASE)
+_JOINED: Final[re.Pattern[str]] = re.compile(r"\bJOIN\b", re.IGNORECASE)
+_COUNTED: Final[re.Pattern[str]] = re.compile(r"\b(?:count|exists|bool_or|bool_and|sum)\s*\(", re.IGNORECASE)
+_LIMIT_ONE_ROW: Final[re.Pattern[str]] = re.compile(r"\bLIMIT\s+1\b", re.IGNORECASE)
+
+
+def data_relations(sql: str, reader: Reader | None = None) -> list[str]:
+    """the relations a statement reads or writes, as written: every name after ``FROM``, ``JOIN``, ``UPDATE`` or
+    ``INTO`` that is not a CTE of the statement, a catalog, a function (``unnest($1)``), a subquery or a transient
+    relation the reader names.
+
+    :param sql: the statement, each interpolation as ``{}``
+    :ptype sql: str
+    :param reader: what decides a relation is transient; None for none
+    :ptype reader: Reader | None
+    :return: the names, in text order, each once
+    :rtype: list[str]
+    """
+    reader = reader if reader is not None else Reader()
+    text = _clean(sql)
+    ctes = {match.group(1).strip('"').lower() for match in _CTE.finditer(text)}
+    found: list[str] = []
+    for match in _NAMED_RELATION.finditer(text):
+        name, call = match.group(1), match.group(2)
+        bare = name.strip('"')
+        if call is not None or bare.lower() in ctes or _CATALOG.match(name) is not None or reader.transient(bare):
+            continue
+        if bare not in found:
+            found.append(bare)
+    return found
+
+
+def change_relations(sql: str, reader: Reader) -> list[str]:
+    """the change relations a statement reads or writes, as written: every name after ``FROM``, ``JOIN``, ``UPDATE``
+    or ``INTO`` the reader says is transient (rows registered from memory, a stage, a declared change relation).
+
+    :param sql: the statement, each interpolation as ``{}``
+    :ptype sql: str
+    :param reader: what decides a relation is transient
+    :ptype reader: Reader
+    :return: the names, in text order, each once
+    :rtype: list[str]
+    """
+    text = _clean(sql)
+    ctes = {match.group(1).strip('"').lower() for match in _CTE.finditer(text)}
+    found: list[str] = []
+    for match in _NAMED_RELATION.finditer(text):
+        name, call = match.group(1), match.group(2)
+        bare = name.strip('"')
+        if call is None and bare.lower() not in ctes and reader.transient(bare) and bare not in found:
+            found.append(bare)
+    return found
+
+
+def statement_shape(sql: str) -> str | None:
+    """the shape of a statement written as text: ``write`` (an ``UPDATE``, a ``DELETE``, a ``MERGE``, an ``INSERT ...
+    SELECT``), ``join`` (a read joining relations), ``count`` (a count, an existence or a sum), ``list`` (a read of
+    many rows: ordered, limited past one row, or with no ``WHERE``) or ``point`` (a read of the rows a ``WHERE``
+    names); None for any other statement (a plain ``INSERT ... VALUES``, DDL, a view).
+
+    :param sql: the statement, each interpolation as ``{}``
+    :ptype sql: str
+    :return: the shape, or None
+    :rtype: str | None
+    """
+    text = _clean(sql)
+    masked = _mask(text)
+    head = text.lstrip()[:16].upper()
+    shape: str | None = None
+    if (
+        _WRITE_VERB.match(text)
+        or _INSERT_SELECT.match(text)
+        or (head.startswith("WITH") and _DATA_WRITE.search(masked))
+    ):
+        shape = "write"
+    elif not (head.startswith("SELECT") or head.startswith("WITH")):
+        shape = None
+    elif _JOINED.search(masked) or "," in _from_list(masked):
+        shape = "join"
+    elif _COUNTED.search(masked) or _AGGREGATE.search(masked):
+        shape = "count"
+    elif _ORDER_BY.search(masked) or (_LIMITED.search(masked) and not _LIMIT_ONE_ROW.search(masked)):
+        shape = "list"
+    elif _WHERE.search(masked) is None:
+        shape = "list"
+    else:
+        shape = "point"
+    return shape
+
+
+def _from_list(masked: str) -> str:
+    """the outer ``FROM`` list: from its ``FROM`` to its ``WHERE``, ``GROUP BY``, ``ORDER BY``, ``LIMIT``, or the end.
+
+    :param masked: the statement with deeper levels blanked
+    :ptype masked: str
+    :return: the list, empty when the statement has no outer ``FROM``
+    :rtype: str
+    """
+    opening = _FROM.search(masked)
+    if opening is None:
+        return ""
+    end = _FROM_END.search(masked, opening.end())
+    return masked[opening.end() : end.start() if end is not None else len(masked)]

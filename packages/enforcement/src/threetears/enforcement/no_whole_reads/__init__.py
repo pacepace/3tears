@@ -85,6 +85,7 @@ import threetears
 
 from threetears.enforcement.common import dotted
 from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, SchemaCatalog, collect_schema, index_findings
+from threetears.enforcement.no_whole_reads.use_the_helper import statement_counts, statement_findings
 from threetears.enforcement.no_whole_reads.walker import (
     DEFAULT_NARROWING_KEYWORDS,
     DEFAULT_PAGER_CALLS,
@@ -97,6 +98,8 @@ from threetears.enforcement.no_whole_reads.walker import (
 __all__ = [
     "NoWholeReadsConfig",
     "no_whole_reads_findings",
+    "use_the_helper_counts",
+    "use_the_helper_findings",
 ]
 
 #: the ledger's file name, beside the repo's gate test
@@ -155,6 +158,9 @@ class NoWholeReadsConfig:
         broker's synthesized ``knowledge_readiness``), onto the key that owner answers it by; one key or several
     :ivar extra_exec_calls: the repo's own calls that run their first argument as SQL (reports' ``Snapshot.ask``,
         the pod's ``work.arrow``): a bare ``SELECT ... FROM t`` handed to one is a whole read where it is run
+    :ivar helper_modules: repo-relative prefixes of the repo's own reviewed modules that write a data table's SQL
+        for the rest of it (``use-the-helper``: :mod:`~threetears.enforcement.no_whole_reads.use_the_helper`), beside
+        3tears' own helpers
     :ivar dependency_schema: whether 3tears' own declarations (its change log, notes and collections, which a
         consumer reads) key reads too; its indexes are never the repo's to give a purpose
     """
@@ -176,6 +182,7 @@ class NoWholeReadsConfig:
     extra_exec_calls: frozenset[str] = field(default_factory=frozenset)
     local_relations: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
     foreign_relations: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
+    helper_modules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -515,3 +522,45 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
         if not any(_inside(hit, exemption) for exemption in exemptions):
             findings.append(f"{hit.path}:{hit.line} in {hit.function}: {hit.symbol} -- {hit.statement} -- {_ADVICE}")
     return findings
+
+
+def use_the_helper_findings(config: NoWholeReadsConfig) -> list[str]:
+    """every SQL statement the repo writes as text against a data table outside the helpers, outside its
+    ``_use_the_helper_exemptions.txt`` (:mod:`~threetears.enforcement.no_whole_reads.use_the_helper`).
+
+    :param config: the repo's config (the same walk as :func:`no_whole_reads_findings`)
+    :ptype config: NoWholeReadsConfig
+    :return: the findings
+    :rtype: list[str]
+    """
+    _, scan = _hits(config)
+    return statement_findings(
+        scan.statements,
+        ledger_dir=config.ledger_dir,
+        helper_modules=config.helper_modules,
+        producers=_producers(config),
+    )
+
+
+def use_the_helper_counts(config: NoWholeReadsConfig) -> dict[str, int]:
+    """the repo's use-the-helper backlog by shape (``point``, ``list``, ``count``, ``join``, ``write``), with how many
+    name a table only at run time and the total.
+
+    :param config: the repo's config
+    :ptype config: NoWholeReadsConfig
+    :return: shape onto count
+    :rtype: dict[str, int]
+    """
+    _, scan = _hits(config)
+    return statement_counts(scan.statements, config.helper_modules, _producers(config))
+
+
+def _producers(config: NoWholeReadsConfig) -> frozenset[str]:
+    """the repo's declared view and transient producers: the functions whose run-time relation names are local.
+
+    :param config: the repo's config
+    :ptype config: NoWholeReadsConfig
+    :return: their names
+    :rtype: frozenset[str]
+    """
+    return frozenset(config.view_producers) | config.transient_producers

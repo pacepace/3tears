@@ -14,7 +14,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import cast, Any
 
 import pytest
 
@@ -47,7 +47,7 @@ async def pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
     created = await asyncpg.create_pool(db_container, min_size=2, max_size=8, server_settings={"search_path": schema})
     assert created is not None
     table = source_tokens_schema().to_sqlalchemy_table(MetaData())
-    await created.execute(str(CreateTable(table).compile(dialect=postgresql.dialect())))
+    await created.execute(str(CreateTable(table).compile(dialect=cast(Any, postgresql).dialect())))
     try:
         yield created
     finally:

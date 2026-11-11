@@ -58,6 +58,7 @@ from threetears.core.backends.protocol import (
 from threetears.core.ddl.change_notes import NOTE_REACH_SETTING, NOTE_WHOLE_SETTING, WHOLE_COPY_ROWS, note_reach_text
 from threetears.core.ddl.ddl_lock import database_ddl_lock
 from threetears.core.ddl.session import ConnectionSession
+from threetears.core.keyed._filters import binds_native_arrays
 from threetears.core.keyset import read_keyset_pages
 from threetears.core.sql_fragments import as_written
 
@@ -695,6 +696,15 @@ class SqlL3Backend:
         if bound is not None:
             return bound, False
         return self._pool, self._scope_aware
+
+    @property
+    def binds_native_arrays(self) -> bool:
+        """whether its pool binds typed arrays natively (asyncpg's own); the L3 rail's carries JSON and does not.
+
+        :return: whether it does
+        :rtype: bool
+        """
+        return binds_native_arrays(self._pool)
 
     async def fetch(
         self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any

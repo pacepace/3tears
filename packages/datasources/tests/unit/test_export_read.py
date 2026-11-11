@@ -22,6 +22,7 @@ import pyarrow.parquet as pq
 import pytest
 from pydantic import BaseModel
 
+from threetears.core.keyed import ROW_HASH_COLUMN, Dialect, HashColumn, row_hash_selected
 from threetears.datasources.export import ExportRefusedError
 from threetears.datasources.export_read import (
     ExportNotDeletedError,
@@ -262,6 +263,27 @@ class TestExportPart:
         )
 
     @pytest.mark.asyncio
+    async def test_a_part_read_with_its_row_hash_is_fingerprinted_over_its_plain_columns(self) -> None:
+        """Flips if export_part refuses a Selected column, or hands it to the fingerprint (the hub checks its key
+        columns as identifiers), or exports the plain columns without it."""
+        hashed = row_hash_selected([HashColumn("race")], Dialect.REDSHIFT, alias=None)
+        client = _Client([_print(3), _print(3)], exported=3)
+        await export_part(
+            client,  # type: ignore[arg-type]
+            _Store(_export([_ROWS])),
+            "warehouse",
+            relation="reporting_prod.results",
+            columns=["race", "votes", hashed],
+            where={"state": "VA"},
+            destination="enr/r1/VA",
+            bucket=_BUCKET,
+        )
+        prints = [kwargs for kind, kwargs in client.calls if kind == "fingerprint"]
+        assert [found["key"] for found in prints] == [["race", "votes"], ["race", "votes"]]
+        ((select, _),) = [answer for kind, answer in client.calls if kind == "export"]
+        assert select.startswith(f'SELECT race, votes, {hashed.expression} AS "{ROW_HASH_COLUMN}" FROM ')
+
+    @pytest.mark.asyncio
     async def test_a_part_that_moved_during_the_export_is_refused(self) -> None:
         client = _Client([_print(3, "a"), _print(3, "b")], exported=3)
         with pytest.raises(IncompleteExportError, match="changed while it was exported"):
@@ -286,6 +308,16 @@ class TestExportSelect:
             export_select("s.t", ["a, (SELECT 1)"])
         with pytest.raises(ExportRefusedError):
             export_select("s.t", ["a"], {"state": "VA\\"})
+
+    def test_a_selected_expression_is_exported_under_its_name(self) -> None:
+        """Flips if a Selected column (a row's hash) is refused, quoted as one identifier, or loses its name, or if
+        an export of expressions alone (nothing a fingerprint could cover) is taken."""
+        hashed = row_hash_selected([HashColumn("votes")], Dialect.REDSHIFT, alias=None)
+        assert export_select("s.t", ["a", hashed], {"state": "VA"}) == (
+            f"SELECT a, {hashed.expression} AS \"{ROW_HASH_COLUMN}\" FROM s.t WHERE state = 'VA'"
+        )
+        with pytest.raises(ValueError, match="as written"):
+            export_select("s.t", [hashed])
 
 
 # parity-exempt: NatsClient subset for the export client unit test; the client reaches NATS through the typed request form alone
