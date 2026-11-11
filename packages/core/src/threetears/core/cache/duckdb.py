@@ -1085,17 +1085,18 @@ class DuckDBBackend:
         :ptype computed: Mapping[str, str] | None
         :param replace: a row whose key the table holds replaces it (``INSERT OR REPLACE``); False writes a plain
             ``INSERT`` for a table being filled fresh (no key is looked up to replace: about a third cheaper),
-            refusing a key the table already holds
+            refusing a key the table already holds; a key-less table (``keyless``, no index to build) is filled
+            only so, its key held unique by the file (``row_number_column``) or by the caller
         :ptype replace: bool
         :return: how many rows the file held
         :rtype: int
-        :raises ValueError: when the table is not one this backend created, or is key-less,
+        :raises ValueError: when the table is not one this backend created, or is key-less and ``replace``,
             or ``computed`` names a column the table does not declare or the row number column
         """
         schema = self._schema_info.get(table)
         if schema is None:
             raise ValueError(f"unknown table {table!r}: load_parquet fills tables this backend created")
-        if table in self._keyless:
+        if table in self._keyless and replace:
             raise ValueError(f"key-less table {table!r}: load_parquet replaces rows by the table's own key")
         computed = dict(computed or {})
         undeclared = sorted(set(computed) - set(schema))
