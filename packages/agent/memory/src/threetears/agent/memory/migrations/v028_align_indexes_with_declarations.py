@@ -110,18 +110,14 @@ _CREATE_DECLARED_INDEXES_SQL: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS ix_memories_user_date ON memories (user_id, date_created)",
     "CREATE INDEX IF NOT EXISTS idx_mem_conversation ON memories (conversation_id)",
     "CREATE INDEX IF NOT EXISTS idx_memories_agent_customer_user ON memories (agent_id, customer_id, user_id)",
-    "CREATE INDEX IF NOT EXISTS ix_media_user_date ON media (user_id, date_created)",
-    "CREATE INDEX IF NOT EXISTS ix_media_mime_type ON media (mime_type)",
     "CREATE INDEX IF NOT EXISTS ix_media_memory_id ON media (memory_id)",
     ("CREATE UNIQUE INDEX IF NOT EXISTS uq_media_cloud_connection_file ON media (cloud_connection_id, cloud_file_id)"),
     "CREATE INDEX IF NOT EXISTS ix_media_content_media_type ON media_content (media_id, content_type)",
-    "CREATE INDEX IF NOT EXISTS ix_media_content_user ON media_content (user_id)",
     (
         "CREATE INDEX IF NOT EXISTS ix_media_content_embedding "
         "ON media_content USING hnsw (embedding public.vector_cosine_ops)"
     ),
     "CREATE INDEX IF NOT EXISTS ix_memory_chunks_memory ON memory_chunks (memory_id, chunk_index)",
-    "CREATE INDEX IF NOT EXISTS ix_memory_chunks_user ON memory_chunks (user_id)",
     (
         "CREATE INDEX IF NOT EXISTS ix_memory_chunks_embedding "
         "ON memory_chunks USING hnsw (embedding public.vector_cosine_ops)"
@@ -130,10 +126,9 @@ _CREATE_DECLARED_INDEXES_SQL: tuple[str, ...] = (
         "CREATE INDEX IF NOT EXISTS idx_chunks_memory_id_chunk_id "
         "ON memory_chunks (memory_id, chunk_id) WHERE memory_id IS NOT NULL"
     ),
-    (
-        "CREATE INDEX IF NOT EXISTS idx_chunks_message_id_end "
-        "ON memory_chunks (message_id_end) WHERE message_id_end IS NOT NULL"
-    ),
+    # ix_media_user_date, ix_media_mime_type, ix_media_content_user, ix_memory_chunks_user and
+    # idx_chunks_message_id_end are no longer declared: no read uses them and v035 drops them, so a replay of this step
+    # does not build them again
     # idx_conv_mem_refs_conversation_date_created is no longer declared: v034 replaced it with the agent's index, so
     # a replay of this step does not build it again (v002 built it, v014 named it, v034 drops it)
 )
