@@ -225,6 +225,29 @@ def reads_as_id(identifier: str) -> bool:
     return _ID_MARKS.search(identifier) is not None
 
 
+#: A lone letter hyphened to the rest, opening an id (``c-cost``, ``q-margin``): the prefix a writer labels its own
+#: parts by, which opens no word a reader writes.
+_LETTER_PREFIX = re.compile(r"[A-Za-z]-\w")
+
+
+def reads_as_a_tag(identifier: str) -> bool:
+    """Whether an id a writer chose (a claim's, an example's trial or case) is one no reader would take for a word: it
+    reads as an id (:func:`reads_as_id`), carries a digit (``T15``, ``c2``) or opens on a lone letter's prefix
+    (``c-cost``). A plain word (``lead``, ``cost``) reads as the word, so a check never refuses it and a page never
+    rewrites it.
+
+    :param identifier: The id.
+    :ptype identifier: str
+    :return: Whether it reads as a tag.
+    :rtype: bool
+    """
+    return (
+        reads_as_id(identifier)
+        or any(character.isdigit() for character in identifier)
+        or _LETTER_PREFIX.match(identifier) is not None
+    )
+
+
 #: A character that marks an arm's id as an id where the page prints the arm by another name: every id mark, and a
 #: hyphen or a digit. Prose joins words with a hyphen ("cost-per-reply"), so a hyphen alone marks nothing in an
 #: aspect's or a measure's id; an arm's id is the campaign's label for a run (``fanout-1``), and where the page prints

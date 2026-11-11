@@ -77,6 +77,7 @@ from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_doc_prose import (
     internal_ids,
     literal_faults,
+    reads_as_a_tag,
     reads_as_id,
     typed_ids,
     unit_faults,
@@ -402,10 +403,10 @@ def _id_verdicts(
     exact: dict[str, tuple[str, str]] = {}
     for example in report_input.examples:
         for kind, identifier in (("trial", example.trial), ("case", example.case)):
-            if identifier and identifier not in said and identifier not in shown and _reads_as_a_tag(identifier):
+            if identifier and identifier not in said and identifier not in shown and reads_as_a_tag(identifier):
                 exact.setdefault(identifier, (f"the {kind} id {identifier!r}", _EXAMPLE_REMEDY.format(kind=kind)))
     for claim in _claim_ids(doc):
-        if claim not in said and claim not in shown and _reads_as_a_tag(claim):
+        if claim not in said and claim not in shown and reads_as_a_tag(claim):
             exact.setdefault(claim, (f"the claim id {claim!r}, which the page never shows", _CLAIM_REMEDY))
     ids = said | exact
     hidden = shown - set(ids)
@@ -413,11 +414,6 @@ def _id_verdicts(
     yield from _typed(above, ids, hidden, set(exact), "above the appendix")
     if above_appendix_text:
         yield from _typed([(_PAGE, above_appendix_text)], ids, hidden, set(exact), "on the page above the appendix")
-
-
-def _reads_as_a_tag(identifier: str) -> bool:
-    """An id no reader would take for a word: one that reads as an id, or carries a digit (``T15``, ``c2``)."""
-    return reads_as_id(identifier) or any(character.isdigit() for character in identifier)
 
 
 def _typed(

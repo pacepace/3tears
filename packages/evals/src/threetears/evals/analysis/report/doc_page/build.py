@@ -116,6 +116,7 @@ from threetears.evals.analysis.report_decision import (
     late_subject,
 )
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_doc_prose import reads_as_a_tag
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.style import humanize, measure_name
 from threetears.evals.kernel.report_doc import DocCaveat, Evidence, ReportDoc, ReportFinding, is_analyst_caveat
@@ -554,11 +555,12 @@ def _key_words(path: str) -> str:
 
 
 def _claim_id(ids: Iterable[str]) -> re.Pattern[str] | None:
-    """The document's claim ids as an editor's finding quotes them, which the page names by their place: any id the
-    schema allows (``c2``, ``c-cost``), matched whole and in its own case, longest first so no id is read as a part of
-    a longer one. An id of digits alone reads as a number, not a name, so a finding's number is never taken for it
-    (``report_doc_checks``' rule for such an id); ``None`` when no id reads as a name."""
-    named = sorted((claim for claim in ids if not claim.isdecimal()), key=len, reverse=True)
+    """The document's claim ids as an editor's finding quotes them, which the page names by their place: each id that
+    reads as a tag (:func:`~threetears.evals.analysis.report_doc_prose.reads_as_a_tag`: ``c2``, ``c-cost``, as the
+    document's checks read it), matched whole and in its own case, longest first so no id is read as a part of a
+    longer one. A plain word (``lead``) reads as the word and an id of digits alone as a number, so neither is taken
+    for a claim; ``None`` when no id reads as a tag."""
+    named = sorted((claim for claim in ids if not claim.isdecimal() and reads_as_a_tag(claim)), key=len, reverse=True)
     if not named:
         return None
     return re.compile(rf"(?<!\w)(?P<id>{'|'.join(re.escape(claim) for claim in named)})(?!\w)")
@@ -567,7 +569,8 @@ def _claim_id(ids: Iterable[str]) -> re.Pattern[str] | None:
 def _finding_words(text: str, reader: _Reader, places: Mapping[str, int]) -> str:
     """An editor's finding as a page prints it: each figure key it quotes written out as the figure it names (its
     value, as every key on the page prints), each claim id as the claim's place (``claim 2``), so no finding prints
-    the engine's vocabulary. A key that does not resolve on this input is left as the editor wrote it."""
+    the engine's vocabulary. A key that does not resolve on this input is left as the editor wrote it. A claim id is
+    read only in the editor's own words, never in a figure's words a key was written out as (an aspect's ``(v2)``)."""
 
     def figure(match: re.Match[str]) -> str:
         key = match.group("key").rstrip(".")
@@ -579,18 +582,26 @@ def _finding_words(text: str, reader: _Reader, places: Mapping[str, int]) -> str
             # other dotted word (a version, a model id) is the editor's and stands.
             return _key_words(key) + tail if is_figure_key(key) else match.group(0)
 
-    def claim(match: re.Match[str]) -> str:
-        place = places[match.group("id")]
-        # ``Claim 2`` where it opens a sentence, ``claim 2`` inside one.
-        opens = (
-            not match.string[: match.start()].rstrip(" `") or match.string[: match.start()].rstrip(" `")[-1] in ".!?"
-        )
-        word = CLAIM_WORD.format(place=place)
-        return word if opens else word[:1].lower() + word[1:]
-
-    keyed = _FINDING_KEY.sub(figure, text)
     ids = _claim_id(places)
-    return keyed if ids is None else ids.sub(claim, keyed)
+    said: list[str] = []
+
+    def claims(prose: str) -> str:
+        """The editor's own words between two keys, each claim id in them as its claim's place."""
+
+        def claim(match: re.Match[str]) -> str:
+            # ``Claim 2`` where it opens a sentence, ``claim 2`` inside one.
+            before = ("".join(said) + prose[: match.start()]).rstrip(" `")
+            word = CLAIM_WORD.format(place=places[match.group("id")])
+            return word if not before or before[-1] in ".!?" else word[:1].lower() + word[1:]
+
+        return prose if ids is None else ids.sub(claim, prose)
+
+    end = 0
+    for match in _FINDING_KEY.finditer(text):
+        said += [claims(text[end : match.start()]), figure(match)]
+        end = match.end()
+    said.append(claims(text[end:]))
+    return "".join(said)
 
 
 def _findings(findings: Sequence[ReportFinding], places: Mapping[str, int], reader: _Reader) -> list[DocFinding]:

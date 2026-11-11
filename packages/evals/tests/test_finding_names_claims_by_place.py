@@ -1,12 +1,14 @@
 """An editor's finding names each claim by its place on a reader's page, whatever form the claim's id takes.
 
 The report document's schema lets a claim's id be any non-empty text (``c2``, ``c-cost``, ``lead``), and the editor
-quotes the id it was shown. A reader's page never prints one: each id a finding quotes reads as the claim's place
-(``claim 2``), held whole and in its own case, the longer of two ids that share a start read as itself. An id of digits
-alone reads as a number, so a finding's numbers are never taken for it.
+quotes the id it was shown. A reader's page never prints one that reads as a tag, as the document's checks read it
+(``reads_as_a_tag``): each such id a finding quotes reads as the claim's place (``claim 2``), held whole and in its own
+case, the longer of two ids that share a start read as itself. A plain word (``lead``) reads as the word and an id of
+digits alone as a number, so neither is rewritten; nor is an id inside the words a figure key was written out as.
 
-Mutations that turn this file red: claim ids matched by one fixed shape (``c`` and digits), so ``c-cost`` or ``lead``
-prints raw; ids tried shortest first, so ``lead-2`` reads as ``claim 1-2``; an id of digits alone rewriting a number.
+Mutations that turn this file red: claim ids matched by one fixed shape (``c`` and digits), so ``c-cost`` or
+``Q_margin`` prints raw; ids tried shortest first, so ``c3-b`` reads as ``claim 1-b``; a plain word or an id of digits
+alone rewritten; an id rewritten inside a figure's words (``character adherence (v2)``).
 """
 
 from __future__ import annotations
@@ -49,7 +51,7 @@ def _page(ids: list[str] | None, finding: str) -> tuple[DocPage, str]:
     "ids",
     [
         pytest.param(None, id="as-written"),
-        pytest.param(["lead", "lead-2"], id="a-word-and-a-longer-id-it-starts"),
+        pytest.param(["c3", "c3-b"], id="an-id-and-a-longer-id-it-starts"),
         pytest.param(["c3", "Q_margin"], id="numbered-and-snake"),
     ],
 )
@@ -69,6 +71,20 @@ def test_a_finding_names_each_claim_by_its_place_whatever_its_id(ids: list[str] 
 def test_kairo_s_own_ids_read_as_names_not_numbers() -> None:
     """The stored document's ids are words, not ``c`` and a number: the case a fixed shape missed."""
     assert not any(re.fullmatch(r"c\d+", claim["id"]) for claim in _doc(None)["claims"])
+
+
+def test_a_claim_id_that_is_a_plain_word_reads_as_the_word() -> None:
+    page, said = _page(["lead", "c-cost"], "The lead repeats c-cost; lead with the cost instead.")
+    places = {claim.id: claim.place for claim in page.claims}
+    assert said == f"The lead repeats claim {places['c-cost']}; lead with the cost instead.", said
+
+
+def test_a_claim_id_inside_a_figure_s_words_stands() -> None:
+    """``aspect.name`` reads ``character adherence (v2)`` on this input: a claim ``v2`` is named in the editor's own
+    words, never inside the aspect's name the key was written out as."""
+    page, said = _page(["v2"], "v2's block reads `aspect.name` as its aspect.")
+    place = next(claim.place for claim in page.claims if claim.id == "v2")
+    assert said == f"Claim {place}'s block reads character adherence (v2) as its aspect.", said
 
 
 def test_a_claim_id_of_digits_alone_leaves_a_finding_s_numbers_as_written() -> None:
