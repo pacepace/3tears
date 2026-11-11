@@ -162,9 +162,9 @@ async def conn(pg_schema: tuple[str, str]) -> AsyncIterator[asyncpg.Connection]:
         await connection.close()
 
 
-def _collections(captured: _Captured) -> SimpleNamespace:
+def _collections(pool: _Captured | asyncpg.Connection) -> SimpleNamespace:
     registry = CollectionRegistry()
-    registry.configure(l3_pool=captured)
+    registry.configure(l3_pool=pool)
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     return SimpleNamespace(
         schedules=WakeScheduleCollection(registry=registry, config=cfg),
@@ -197,11 +197,15 @@ async def test_wake_schedules_next_fire(conn: asyncpg.Connection) -> None:
     plan = await explain_statement(conn, sql, *args)
     assert plan_uses_index(plan, "idx_wake_schedules_next_fire_asc"), plan.plan
     # a tick after every one of the 500 active schedules is due: the page of 50 reads about its own rows
+    late_tick = datetime.now(UTC) + timedelta(days=30)
+    due = await _collections(conn).schedules.list_due_for_tick(late_tick, limit=50)
+    assert len(due) == 50, len(due)
     late = _Captured()
-    await _collections(late).schedules.list_due_for_tick(datetime.now(UTC) + timedelta(days=30), limit=50)
+    await _collections(late).schedules.list_due_for_tick(late_tick, limit=50)
     (sql, args), *_ = late.asked
     page = await explain_statement(conn, sql, *args)
-    assert page.rows_returned == 50, page
+    # the statement returns the page plus keyset_page's one lookahead row (whether another page follows)
+    assert page.rows_returned == 50 + 1, page
     if await on_yugabyte(conn):
         assert page.rows_scanned <= 2 * (50 + 1), page
 
