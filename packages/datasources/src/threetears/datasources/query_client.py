@@ -1665,7 +1665,7 @@ async def read_all(
     client: DatasourceQueryClient,
     datasource_name: str,
     *,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     relation: str,
     key: Sequence[str],
     where: Mapping[str, FilterValue] | None = None,
@@ -1761,8 +1761,10 @@ async def read_all(
     :ptype client: DatasourceQueryClient
     :param datasource_name: the datasource to read, as the hub names it
     :ptype datasource_name: str
-    :param columns: columns to select, TRUSTED identifiers, never caller input
-    :ptype columns: Sequence[str]
+    :param columns: columns to select, TRUSTED identifiers, never caller input; or
+        :class:`~threetears.core.keyed.Selected` expressions under their names (a row's hash beside the columns:
+        :func:`~threetears.core.keyed.row_hash_selected` with ``alias=None``)
+    :ptype columns: Sequence[str | Selected]
     :param relation: the table or view to read, TRUSTED, never caller input
     :ptype relation: str
     :param key: the ordering key. Must be unique for the read to be complete;
@@ -1913,7 +1915,7 @@ async def read_scope_pages(
     :rtype: list[dict[str, Any]]
     :raises IncompleteReadError: when paging cannot step past every row
     """
-    _check_read([column if isinstance(column, str) else column.alias for column in columns], key, page_size)
+    _check_read(columns, key, page_size)
     return await _pages(
         client,
         datasource_name,
@@ -2017,11 +2019,11 @@ async def read_counted(
     return read
 
 
-def _check_read(columns: Sequence[str], key: Sequence[str], page_size: int) -> None:
+def _check_read(columns: Sequence[str | Selected], key: Sequence[str], page_size: int) -> None:
     """refuse arguments that cannot describe a complete paged read.
 
-    :param columns: the columns selected
-    :ptype columns: Sequence[str]
+    :param columns: the columns selected, as written or as expressions under their names
+    :ptype columns: Sequence[str | Selected]
     :param key: the ordering key
     :ptype key: Sequence[str]
     :param page_size: rows per page
@@ -2124,10 +2126,44 @@ def _rows_a_reply_carries(rows: list[dict[str, Any]], max_reply_bytes: int) -> i
     return max(1, int(_CAP_FILL * max_reply_bytes / per_row))
 
 
-def _selected(columns: Sequence[str | Selected]) -> str:
+def select_list(columns: Sequence[str | Selected]) -> str:
     """the select list: each column as written (unquoted, as the relation and key are), each
-    :class:`~threetears.core.keyed.Selected` expression under its quoted name (a row's hash beside the columns)."""
+    :class:`~threetears.core.keyed.Selected` expression under its quoted name (a row's hash beside the columns).
+
+    :param columns: the columns as written, or expressions under their names
+    :ptype columns: Sequence[str | Selected]
+    :return: the select list, TRUSTED SQL
+    :rtype: str
+    """
     return ", ".join(column if isinstance(column, str) else selected_column(column) for column in columns)
+
+
+def column_names(columns: Sequence[str | Selected]) -> list[str]:
+    """the names a read's rows carry: each column as written, each :class:`~threetears.core.keyed.Selected` under
+    its alias.
+
+    :param columns: the columns as written, or expressions under their names
+    :ptype columns: Sequence[str | Selected]
+    :return: the names, in order
+    :rtype: list[str]
+    """
+    return [column if isinstance(column, str) else column.alias for column in columns]
+
+
+def plain_columns(columns: Sequence[str | Selected]) -> list[str]:
+    """the columns a fingerprint covers: those read as written. A :class:`~threetears.core.keyed.Selected`
+    expression (a row's hash) is computed from them, so the digest over them already moves when it would.
+
+    :param columns: the columns as written, or expressions under their names
+    :ptype columns: Sequence[str | Selected]
+    :return: the plain columns, in order
+    :rtype: list[str]
+    :raises ValueError: when every column is an expression: a fingerprint needs a column as written
+    """
+    plain = [column for column in columns if isinstance(column, str)]
+    if columns and not plain:
+        raise ValueError("a fingerprinted read names at least one column as written, not only expressions")
+    return plain
 
 
 async def _pages(
@@ -2152,7 +2188,7 @@ async def _pages(
     :rtype: list[dict[str, Any]]
     :raises IncompleteReadError: when paging cannot step past every row
     """
-    selected = _selected(columns)
+    selected = select_list(columns)
     ordering = ", ".join(key)
     # the user's assertion when a human is in the loop; the principal's own grants (nothing passed) otherwise
     asserted: dict[str, Any] = {} if user_identity_token is None else {"user_identity_token": user_identity_token}

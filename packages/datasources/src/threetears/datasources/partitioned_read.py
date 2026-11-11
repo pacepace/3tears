@@ -31,6 +31,7 @@ import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import Any, Final, TypeVar
 
+from threetears.core.keyed import Selected
 from threetears.observe import get_logger
 
 from threetears.datasources.query_client import (
@@ -41,7 +42,9 @@ from threetears.datasources.query_client import (
     IncompleteReadError,
     RelationFingerprintResult,
     keyset_condition,
+    plain_columns,
     read_all,
+    select_list,
 )
 
 __all__ = ["DEFAULT_PART_CONCURRENCY", "fingerprint_parts", "read_partitions", "read_parts"]
@@ -130,7 +133,7 @@ async def read_parts(
     client: DatasourceQueryClient,
     datasource_name: str,
     *,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     relation: str,
     key: Sequence[str],
     parts: Sequence[Mapping[str, str]],
@@ -272,7 +275,7 @@ async def _read_pages(
     client: DatasourceQueryClient,
     datasource_name: str,
     *,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     relation: str,
     key: Sequence[str],
     partition_by: str,
@@ -285,7 +288,7 @@ async def _read_pages(
     :return: the calls, in key order
     :rtype: list[Callable[[], Awaitable[list[dict[str, Any]]]]]
     """
-    selected = ", ".join(columns)
+    selected = select_list(columns)
     ordering = ", ".join(key)
 
     def one(index: int) -> Callable[[], Awaitable[list[dict[str, Any]]]]:
@@ -370,7 +373,7 @@ async def read_partitions(
     client: DatasourceQueryClient,
     datasource_name: str,
     *,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     relation: str,
     key: Sequence[str],
     partition_by: str,
@@ -463,7 +466,7 @@ async def read_partitions(
         return
     where_in = None if parts is None else {partition_by: list(parts)}
     before = await client.relation_fingerprint_groups(
-        datasource_name, relation=relation, key=columns, group_by=partition_by, where_in=where_in
+        datasource_name, relation=relation, key=plain_columns(columns), group_by=partition_by, where_in=where_in
     )
     if None in before:
         raise IncompleteReadError(f"{datasource_name}: {relation} holds rows whose {partition_by} is NULL")
@@ -528,7 +531,11 @@ async def read_partitions(
                 pages_read.append(rows)
         after = (
             await client.relation_fingerprint_groups(
-                datasource_name, relation=relation, key=columns, group_by=partition_by, where_in={partition_by: members}
+                datasource_name,
+                relation=relation,
+                key=plain_columns(columns),
+                group_by=partition_by,
+                where_in={partition_by: members},
             )
             if holding
             else {}
@@ -615,7 +622,7 @@ async def _read_named_partitions(
     client: DatasourceQueryClient,
     datasource_name: str,
     *,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     relation: str,
     key: Sequence[str],
     partition_by: str,

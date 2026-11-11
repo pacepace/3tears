@@ -54,6 +54,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from threetears.core.backends.protocol import LOAD_FILES_MAX_WAIT_SECONDS, LoadFile
+from threetears.core.keyed import Selected
 from threetears.observe import get_logger
 
 try:
@@ -69,6 +70,8 @@ from threetears.datasources.query_client import (
     DatasourceExportResult,
     DatasourceQueryClient,
     RelationFingerprintRequest,
+    plain_columns,
+    select_list,
 )
 
 __all__ = [
@@ -146,7 +149,7 @@ class PresigningExportStore(ExportStore, Protocol):
 
 def export_select(
     relation: str,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     where: Mapping[str, str] | None = None,
     where_in: Mapping[str, Sequence[str]] | None = None,
 ) -> str:
@@ -158,8 +161,9 @@ def export_select(
 
     :param relation: the relation, ``name`` or ``schema.name``
     :ptype relation: str
-    :param columns: the columns to export, in order
-    :ptype columns: Sequence[str]
+    :param columns: the columns to export, in order: plain identifiers, or
+        :class:`~threetears.core.keyed.Selected` expressions under their names (a row's hash, ``alias=None``)
+    :ptype columns: Sequence[str | Selected]
     :param where: column -> value; every row when None
     :ptype where: Mapping[str, str] | None
     :param where_in: column -> the values it may hold, each written in as a literal
@@ -169,12 +173,13 @@ def export_select(
     :raises ValueError: when a name is not a plain identifier
     :raises ExportRefusedError: when a value cannot be written as a literal
     """
-    checked = RelationFingerprintRequest(relation=relation, key_columns=list(columns), where=dict(where or {}))
+    checked = RelationFingerprintRequest(relation=relation, key_columns=plain_columns(columns), where=dict(where or {}))
     sets = {column: list(values) for column, values in (where_in or {}).items()}
     if sets:
         # the set filters' columns, checked by the same grammar as the key's
         RelationFingerprintRequest(relation=relation, key_columns=list(sets))
-    statement = f"SELECT {', '.join(checked.key_columns)} FROM {checked.relation}"  # noqa: S608 - identifiers checked
+    # the plain columns as the model checked them; a Selected expression is the caller's TRUSTED SQL
+    statement = f"SELECT {select_list(columns)} FROM {checked.relation}"  # noqa: S608 - identifiers checked
     # the values as given (text), the columns as the model checked them
     conditions = [f"{column} = {sql_string_literal(value)}" for column, value in dict(where or {}).items()]
     for column, values in sets.items():
@@ -397,7 +402,7 @@ async def export_part(
     datasource_name: str,
     *,
     relation: str,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     destination: str,
     bucket: str,
     where: Mapping[str, str] | None = None,
@@ -412,8 +417,9 @@ async def export_part(
     :ptype datasource_name: str
     :param relation: the relation
     :ptype relation: str
-    :param columns: the columns to read; the fingerprint covers all of them
-    :ptype columns: Sequence[str]
+    :param columns: the columns to read; the fingerprint covers every one read as written (a
+        :class:`~threetears.core.keyed.Selected` expression is computed from them)
+    :ptype columns: Sequence[str | Selected]
     :param destination: a fresh relative path under the datasource's export prefix
     :ptype destination: str
     :param bucket: the bucket the store reads
@@ -429,7 +435,9 @@ async def export_part(
     """
     select = export_select(relation, columns, where)
     filters = dict(where or {})
-    before = await client.relation_fingerprint(datasource_name, relation=relation, key=columns, where=filters)
+    before = await client.relation_fingerprint(
+        datasource_name, relation=relation, key=plain_columns(columns), where=filters
+    )
     result = await client.export(datasource_name, select, destination=destination)
     # from here every way out deletes the export, refused or read: no copy of warehouse rows
     # outlives the load (delete after load, Pace's ruling)
@@ -443,7 +451,9 @@ async def export_part(
                     f"the hub answered an export at {result.object_prefix!r}, not the destination {destination!r} "
                     "asked for"
                 )
-            after = await client.relation_fingerprint(datasource_name, relation=relation, key=columns, where=filters)
+            after = await client.relation_fingerprint(
+                datasource_name, relation=relation, key=plain_columns(columns), where=filters
+            )
             if after != before:
                 raise IncompleteExportError(
                     f"{relation} {filters or ''} changed while it was exported ({before.row_count} rows before, "
