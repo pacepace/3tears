@@ -9,7 +9,10 @@ agent-memory v031: the columns the collections declare NOT NULL are NOT NULL.
 - ``memories.date_updated``. v001 builds it NOT NULL, but a schema adopted from
   a consumer's own chain never ran v001 and can hold it nullable. A NULL takes
   the row's ``date_created`` (the row has not changed since, as far as anything
-  recorded), then the column is set NOT NULL.
+  recorded), then the column is set NOT NULL. The backfill is its own statement,
+  committed before the ``SET NOT NULL``: on YugabyteDB an ALTER in the same block
+  as the UPDATE does not see the UPDATE's rows and refuses the NULLs it wrote over.
+  A schema where an earlier attempt stopped there converges on the next run.
 
 Replay guard: a column already NOT NULL is skipped, so a second run changes
 nothing.
@@ -77,11 +80,15 @@ $$
 """
 
 
+_MEMORIES_DATE_UPDATED_NULLABLE_SQL = f"SELECT {_is_nullable_sql('memories', 'date_updated')} AS nullable"
+
+#: the backfill, run (and committed) on its own before the ``SET NOT NULL``
+_MEMORIES_DATE_UPDATED_BACKFILL_SQL = "UPDATE memories SET date_updated = date_created WHERE date_updated IS NULL"
+
 _MEMORIES_DATE_UPDATED_NOT_NULL_SQL = f"""
 DO $$
 BEGIN
     IF {_is_nullable_sql("memories", "date_updated")} THEN
-        UPDATE memories SET date_updated = date_created WHERE date_updated IS NULL;
         ALTER TABLE memories ALTER COLUMN date_updated SET NOT NULL;
     END IF;
 END
@@ -100,4 +107,7 @@ async def declared_not_null_columns(store: DataStore) -> None:
     log.info("setting the declared NOT NULL columns NOT NULL (v031)")
     for table in CUSTOMER_ID_NOT_NULL_TABLES:
         await store.execute(_customer_id_not_null_sql(table))
-    await store.execute(_MEMORIES_DATE_UPDATED_NOT_NULL_SQL)
+    rows = await store.query(_MEMORIES_DATE_UPDATED_NULLABLE_SQL)
+    if rows and rows[0]["nullable"]:
+        await store.execute(_MEMORIES_DATE_UPDATED_BACKFILL_SQL)
+        await store.execute(_MEMORIES_DATE_UPDATED_NOT_NULL_SQL)

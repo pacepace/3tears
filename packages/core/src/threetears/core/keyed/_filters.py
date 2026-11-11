@@ -14,9 +14,26 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
+import asyncpg
+from asyncpg.pool import PoolConnectionProxy
+
 from threetears.core.sql_fragments import quote_identifier
 
-__all__ = ["AnyOf", "Derived", "Fragment", "Lock", "by_conditions", "quoted_table", "relation", "renumbered"]
+__all__ = [
+    "AnyOf",
+    "Derived",
+    "Fragment",
+    "Lock",
+    "Selected",
+    "batched_join_hint",
+    "binds_native_arrays",
+    "by_conditions",
+    "prefix_conditions",
+    "quoted_table",
+    "selected_column",
+    "relation",
+    "renumbered",
+]
 
 #: a positional placeholder in a fragment the caller wrote (``$1``), renumbered when the fragment joins a statement
 _PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\$(\d+)")
@@ -77,6 +94,42 @@ def relation(table: str | Derived, alias: str) -> str:
     if isinstance(table, Derived):
         return f"({table.sql}) AS {alias}"
     return f"{quoted_table(table)} AS {alias}"
+
+
+#: the name PostgreSQL (and so pg_hint_plan) gives the relation of an ``IN (SELECT ...)`` it joins as a semi-join
+IN_SUBQUERY: Final = "ANY_subquery"
+
+
+def batched_join_hint(outer: str, inner: str) -> str:
+    """the hint every keyed join carries, as the statement's first words: YugabyteDB joins ``outer`` (the keys) to
+    ``inner`` (the table) by a batched nested loop, one storage request for up to ``yb_bnl_batch_size`` keys, where
+    its planner would otherwise pick a plain nested loop (one request a key: 600 keys, 600 requests). PostgreSQL reads
+    it as a comment; its own planner already nests a loop over the key's index.
+
+    :param outer: the alias of the keys' relation (:data:`IN_SUBQUERY` for an ``IN (SELECT ...)``)
+    :ptype outer: str
+    :param inner: the alias of the table read by the keys
+    :ptype inner: str
+    :return: the hint and a space
+    :rtype: str
+    """
+    return f"/*+ YbBatchedNL({outer} {inner}) */ "
+
+
+def binds_native_arrays(conn: Any) -> bool:
+    """whether ``conn`` binds a typed array natively (``$1::bigint[]`` from a list of ints): asyncpg's own
+    connection, pool or pooled connection, or anything saying so (``binds_native_arrays = True``: a wrapper of one).
+    The L3 rail carries its parameters as JSON, so a keyed read through it binds text arrays cast to the column's
+    type (``$1::text[]::bigint[]``); identity, not truthiness, so a mock's auto-attribute never reads as yes.
+
+    :param conn: the connection a keyed helper reads through
+    :ptype conn: Any
+    :return: whether its arrays bind natively
+    :rtype: bool
+    """
+    if isinstance(conn, asyncpg.Connection | asyncpg.Pool | PoolConnectionProxy):
+        return True
+    return getattr(conn, "binds_native_arrays", None) is True
 
 
 def quoted_table(table: str) -> str:
@@ -202,3 +255,109 @@ def by_conditions(
             conditions.append(f"{prefix}{quote(column)} = ${place}")
             values.append(value)
     return conditions, values
+
+
+#: the highest code point; a prefix's successor steps past any trailing run of it
+_MAX_CHAR: Final = 0x10FFFF
+#: UTF-16 surrogates are no characters of a text value: a successor stepping into them steps past them
+_SURROGATES: Final = range(0xD800, 0xE000)
+
+
+def _successor(prefix: str) -> str | None:
+    """the least text above every text starting with ``prefix``, in code-point (``COLLATE "C"``) order; None when
+    there is none (``prefix`` is all U+10FFFF).
+
+    :param prefix: the prefix
+    :ptype prefix: str
+    :return: the successor, or None
+    :rtype: str | None
+    """
+    stem = prefix.rstrip(chr(_MAX_CHAR))
+    if not stem:
+        return None
+    following = ord(stem[-1]) + 1
+    if following in _SURROGATES:
+        following = _SURROGATES.stop
+    return stem[:-1] + chr(following)
+
+
+def prefix_conditions(
+    prefix: Mapping[str, str],
+    *,
+    first: int = 1,
+    alias: str | None = None,
+) -> tuple[list[str], list[Any]]:
+    """the conditions keeping only the rows whose text column starts with its prefix, as a range an index reads.
+
+    ``{"signal": "name/"}`` is ``"signal" COLLATE "C" >= $n AND "signal" COLLATE "C" < $n+1`` with ``"name/"`` and
+    ``"name0"`` bound: code-point order, where every text starting with the prefix sits in that range and no other
+    does. A linguistic collation does not keep that promise (``en_US`` reads ``name/zzz`` past ``name0``), so the
+    range is always the C collation's: it reads by an index on the column in C order (a ``COLLATE "C"`` column, or a
+    ``(col COLLATE "C")`` index), a range (ASC) one on YugabyteDB.
+
+    :param prefix: column -> the prefix its rows start with; columns are TRUSTED identifiers, prefixes text
+    :ptype prefix: Mapping[str, str]
+    :param first: the first placeholder's number
+    :ptype first: int
+    :param alias: the table's alias, prefixed to each column; none when None
+    :ptype alias: str | None
+    :return: the conditions, and the values in placeholder order
+    :rtype: tuple[list[str], list[Any]]
+    :raises ValueError: when a prefix is not text, or is empty (it would name every row)
+    """
+    conditions: list[str] = []
+    values: list[Any] = []
+    named = f"{alias}." if alias else ""
+    for column, start in prefix.items():
+        if not isinstance(start, str):
+            raise ValueError(f"a prefix of {column} is text, got {type(start).__name__}")
+        if not start:
+            raise ValueError(f"an empty prefix of {column} names every row; name the rows")
+        spelled = f'{named}{quote_identifier(column)} COLLATE "C"'
+        place = first + len(values)
+        conditions.append(f"{spelled} >= ${place}")
+        values.append(start)
+        above = _successor(start)
+        if above is not None:
+            conditions.append(f"{spelled} < ${place + 1}")
+            values.append(above)
+    return conditions, values
+
+
+@dataclass(frozen=True)
+class Selected:
+    """a column a read selects as a TRUSTED expression under its own name, as :class:`Fragment` is a trusted SET value.
+
+    ``Selected("CAST(copied_at AS VARCHAR)", "copied_at")`` reads the warehouse's own text of a timestamp where the
+    column would arrive as a typed value: ``CAST(copied_at AS VARCHAR) AS "copied_at"``. The expression names the
+    table's columns as written (``t.`` when it must), with no parameters of its own.
+
+    :param expression: the expression, TRUSTED SQL
+    :ptype expression: str
+    :param alias: the name the row carries it under, a TRUSTED identifier
+    :ptype alias: str
+    """
+
+    expression: str
+    alias: str
+
+    def __post_init__(self) -> None:
+        if not self.expression.strip():
+            raise ValueError(f"a selected column {self.alias!r} names its expression")
+        if _PLACEHOLDER.search(self.expression):
+            raise ValueError(f"a selected column takes no parameters, got {self.expression!r}")
+
+
+def selected_column(column: str | Selected, alias: str = "t") -> str:
+    """one select-list item: a column of ``alias`` (``t."col"``), or a :class:`Selected` expression under its name.
+
+    :param column: the column, or the expression
+    :ptype column: str | Selected
+    :param alias: the table's alias
+    :ptype alias: str
+    :return: the item
+    :rtype: str
+    """
+    if isinstance(column, Selected):
+        return f"{column.expression} AS {quote_identifier(column.alias)}"
+    return f"{alias}.{quote_identifier(column)}"

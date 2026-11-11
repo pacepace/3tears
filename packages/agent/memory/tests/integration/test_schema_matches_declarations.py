@@ -718,3 +718,32 @@ class TestAnAdoptedSchemaConverges:
             assert filled is True
         finally:
             await conn.close()
+
+    async def test_v031_converges_where_an_earlier_attempt_stopped(self, pg_schema: tuple[str, str]) -> None:
+        """an earlier v031 run that stopped at memories.date_updated (YugabyteDB refused the SET NOT NULL its own
+        block's backfill had not reached) left customer_id tightened and the version at 30; the next run finishes."""
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await _migrate(conn, schema, target=30)
+            await conn.execute("ALTER TABLE memories ALTER COLUMN date_updated DROP NOT NULL")
+            memory_id = await _insert_memory(conn, agent_id=uuid.uuid4(), user_id=uuid.uuid4())
+            await conn.execute("UPDATE memories SET date_updated = NULL WHERE memory_id = $1", memory_id)
+            # what the stopped attempt committed before it reached memories
+            for table in ("media", "media_content", "memory_chunks"):
+                await conn.execute(f"ALTER TABLE {table} ALTER COLUMN customer_id SET NOT NULL")
+
+            await _migrate(conn, schema)
+
+            nullable = await conn.fetchval(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_schema = $1 AND table_name = 'memories' AND column_name = 'date_updated'",
+                schema,
+            )
+            filled = await conn.fetchval(
+                "SELECT date_updated = date_created FROM memories WHERE memory_id = $1", memory_id
+            )
+        finally:
+            await conn.close()
+        assert nullable == "NO"
+        assert filled is True

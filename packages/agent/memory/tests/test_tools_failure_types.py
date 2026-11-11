@@ -56,11 +56,13 @@ def _row(**overrides: Any) -> dict[str, Any]:
     }
 
 
-def _unique_violation(constraint: str) -> Exception:
-    """the error a direct pool raises, and the NATS proxy rebuilds, for a duplicate key."""
-    return asyncpg.PostgresError.new(
-        {"C": "23505", "M": f'duplicate key value violates unique constraint "{constraint}"', "n": constraint}
-    )
+def _unique_violation(constraint: str, *, named: bool = True) -> Exception:
+    """the error a direct pool raises, and the NATS proxy rebuilds, for a duplicate key; YugabyteDB's carries no
+    ``constraint_name`` (``named=False``), only the message naming it."""
+    fields = {"C": "23505", "M": f'duplicate key value violates unique constraint "{constraint}"'}
+    if named:
+        fields["n"] = constraint
+    return asyncpg.PostgresError.new(fields)
 
 
 # parity-exempt: one stand-in answering the read and write calls every memory tool makes across the memories, media, chunk and edge collections; the SQL behind them is covered by the collection tests
@@ -547,11 +549,12 @@ class TestATakenAliasIsToldFromAnyOtherRefusal:
         "refusal",
         [
             _unique_violation("ix_memories_user_alias"),
+            _unique_violation("ix_memories_user_alias", named=False),
             DataLayerUnavailableError(
                 'L3 execute failed: QUERY_FAILED: duplicate key value violates unique constraint "ix_memories_user_alias"'
             ),
         ],
-        ids=["UniqueViolationError", "a broker that forwards no fields"],
+        ids=["UniqueViolationError", "YugabyteDB's, no constraint_name", "a broker that forwards no fields"],
     )
     async def test_the_alias_index_refusing_is_alias_taken(
         self,
@@ -578,6 +581,11 @@ class TestATakenAliasIsToldFromAnyOtherRefusal:
         monkeypatch.setattr(tools, "supersede", _raising(_unique_violation("ix_memories_user_alias")))
         assert "already used by another memory" in await _update(permissive_memory_authorizer, alias="home")
         monkeypatch.setattr(tools, "supersede", _raising(_unique_violation("memories_pkey")))
+        result = await _update(permissive_memory_authorizer, alias="home")
+        assert result.startswith("[TOOL ERROR] memory_update: store failed"), result
+        monkeypatch.setattr(tools, "supersede", _raising(_unique_violation("ix_memories_user_alias", named=False)))
+        assert "already used by another memory" in await _update(permissive_memory_authorizer, alias="home")
+        monkeypatch.setattr(tools, "supersede", _raising(_unique_violation("memories_pkey", named=False)))
         result = await _update(permissive_memory_authorizer, alias="home")
         assert result.startswith("[TOOL ERROR] memory_update: store failed"), result
 

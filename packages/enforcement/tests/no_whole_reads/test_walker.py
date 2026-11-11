@@ -1057,46 +1057,16 @@ def test_a_purpose_may_name_several_reads_each_of_which_uses_the_index(tmp_path:
     assert not any("index-purpose-unused -- src/grants.py::one" in finding for finding in findings), findings
 
 
-_TWO_SERVING = """
-    from threetears.core.collections.schema_backed import Index, TableSchema
-
-    NOTES = TableSchema(
-        name="notes",
-        primary_key="note_id",
-        columns=[],
-        indexes=(
-            Index("by_owner", "agent_id", "user_id", purpose="src/notes.py::nearest", plan_test="tests/test_plans.py::test_owner"),
-            Index("by_user_date", "user_id", "date_created", purpose="src/notes.py::nearest", plan_test="tests/test_plans.py::test_user_date"),
-            Index("by_kind", "kind", purpose="src/notes.py::nearest", plan_test="tests/test_plans.py::test_kind"),
-        ),
-    )
-
-    async def nearest(conn, agent_id, user_id, older_than):
-        return await conn.fetch(
-            "SELECT note_id FROM notes WHERE agent_id = $1 AND user_id = $2 AND date_created < $3 ORDER BY score LIMIT 5",
-            agent_id,
-            user_id,
-            older_than,
-        )
-"""
-
-
-def test_every_purposed_index_serving_a_read_is_credited_with_it(tmp_path: Path) -> None:
-    """Flips if, of two purposed indexes that both serve one read no key prefix keys (the owner pair; the user and a
-    date range), only the first declared is credited (the other reports its purpose unused), or if an index naming the
-    read whose leading column the read never binds is credited. (A read a key prefix keys already credits every
-    purposed index serving it.)"""
-    _plans(
-        tmp_path,
-        "def test_owner(plan):\n    assert plan_uses_index(plan, 'by_owner')\n"
-        "def test_user_date(plan):\n    assert plan_uses_index(plan, 'by_user_date')\n"
-        "def test_kind(plan):\n    assert plan_uses_index(plan, 'by_kind')\n",
-    )
-    findings = no_whole_reads_findings(_config(tmp_path, {"notes.py": _TWO_SERVING}))
-    unused = [finding for finding in findings if "index-purpose-unused" in finding]
-    assert not any("index by_owner" in finding for finding in unused), unused
-    assert not any("index by_user_date" in finding for finding in unused), unused
-    assert any("index by_kind" in finding for finding in unused), findings
+def test_a_purpose_may_be_a_tuple_of_the_reads_it_serves(tmp_path: Path) -> None:
+    """Flips if purpose=("<path>::<fn>", ...) is not read as the reads it names: both found and using the index
+    pass; neither using it is named, each one."""
+    _plans(tmp_path, "def test_both(plan):\n    assert plan_uses_index(plan, 'grants_by_agent')\n")
+    both = _TWO_READERS.replace("PURPOSE", '("src/grants.py::one", "src/grants.py::two")')
+    assert not [f for f in no_whole_reads_findings(_config(tmp_path, {"grants.py": both})) if ": index-" in f]
+    neither = _TWO_READERS.replace("PURPOSE", '("src/grants.py::neither", "src/grants.py::absent")')
+    findings = no_whole_reads_findings(_config(tmp_path, {"grants.py": neither}))
+    assert any("index-purpose-unused -- src/grants.py::neither" in finding for finding in findings), findings
+    assert any("index-purpose-unknown -- purpose 'src/grants.py::absent'" in finding for finding in findings), findings
 
 
 def test_a_second_declaration_of_an_index_carries_the_first_one_s_notes(tmp_path: Path) -> None:
@@ -1299,6 +1269,64 @@ def test_factories_templates_format_ddl_and_whole_records_are_judged_where_they_
     assert ("Epochs.stale", "non-key-where {}") in found, found
     assert ("consume", "whole-flag whole_table=") in found, found
     assert not {function for function, _ in found} & {"Epochs.one", "named", "kind_by_id", "record"}, found
+
+
+_FENCE_TEMPLATE = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import delete_keyed, update_keyed
+
+    def fence_schema(name: str = "fence"):
+        return TableSchema(
+            name=name,
+            primary_key="signal",
+            columns=[],
+            indexes=(
+                Index(
+                    f"{name}_by_signal_c",
+                    "signal",
+                    asc="signal",
+                    collate={"signal": "C"},
+                    purpose=("src/fence.py::clear_signals", "src/fence.py::restamp"),
+                    plan_test="tests/test_fence.py::test_plan",
+                ),
+            ),
+        )
+
+    async def clear_signals(conn, table, prefix):
+        return await delete_keyed(conn, table, prefix={"signal": prefix})
+
+    async def restamp(conn, table, prefix, run_id):
+        return await update_keyed(conn, table, values={"run_id": run_id}, prefix={"signal": prefix})
+
+    async def elsewhere(conn, table, prefix):
+        return await delete_keyed(conn, table, prefix={"owner": prefix})
+"""
+
+_NO_TEMPLATE = """
+    from threetears.core.keyed import delete_keyed
+
+    async def clear_signals(conn, table, prefix):
+        return await delete_keyed(conn, table, prefix={"signal": prefix})
+"""
+
+
+def test_a_prefix_write_on_a_table_its_caller_names_is_judged_by_its_module_s_template(tmp_path: Path) -> None:
+    """Flips if a prefix delete or update on a table the caller names passes unjudged: keyed through the template's
+    C-ordered index (named from the table) whose purpose names the writer, with that purpose found used; a whole
+    read on a column the template keys by nothing, and where the module declares no template to judge it by; and
+    flagged unused when the purpose names a writer that never reads through the index."""
+    findings = no_whole_reads_findings(_config(tmp_path, {"fence.py": _FENCE_TEMPLATE}))
+    found = _symbols(_config(tmp_path, {"fence.py": _FENCE_TEMPLATE}))
+    assert not {function for function, _ in found} & {"clear_signals", "restamp"}, found
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
+    assert any(function == "elsewhere" for function, _ in found), found
+    bare = _symbols(_config(tmp_path / "bare", {"fence.py": _NO_TEMPLATE}))
+    assert any(function == "clear_signals" for function, _ in bare), bare
+    unused = _FENCE_TEMPLATE.replace('prefix={"signal": prefix}, returning', "returning").replace(
+        'values={"run_id": run_id}, prefix={"signal": prefix}', 'values={"run_id": run_id}, by={"signal": prefix}'
+    )
+    stale = no_whole_reads_findings(_config(tmp_path / "stale", {"fence.py": unused}))
+    assert any("index-purpose-unused -- src/fence.py::restamp" in finding for finding in stale), stale
 
 
 _HELPER = """
@@ -1795,6 +1823,82 @@ def test_a_read_in_a_shared_constant_and_a_helper_s_constant_order_are_judged_an
     assert not any("index-purpose-unused" in finding for finding in findings), findings
 
 
+_ORDERS_BY_FIELD = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import Sort, keyset_page
+
+    DATASOURCES = TableSchema(
+        name="datasources",
+        primary_key="id",
+        columns=[],
+        indexes=(
+            Index("by_name", "name", purpose=("src/listing.py::page_of", "src/listing.py::page_by")),
+            Index("by_created", "created_at", purpose=("src/listing.py::page_of", "src/listing.py::page_by")),
+        ),
+    )
+    DATASOURCE_ORDERS = {
+        "name": [Sort("name"), Sort("id")],
+        "created": (Sort("created_at", descending=True), Sort("id", descending=True)),
+    }
+
+    async def page_of(pool, field, cols):
+        order = DATASOURCE_ORDERS[field]
+        return await keyset_page(pool, "datasources", columns=cols, by={}, order=order, limit=50)
+
+    async def page_by(pool, field, cols):
+        return await keyset_page(pool, "datasources", columns=cols, by={}, order=DATASOURCE_ORDERS[field], limit=50)
+"""
+
+
+def test_a_helper_s_order_picked_from_a_module_mapping_is_judged_entry_by_entry(tmp_path: Path) -> None:
+    """Flips if a keyset page whose order is one entry of a module mapping of literal sort lists
+    (``order=DATASOURCE_ORDERS[field]``, directly or through a local) is unread, if any entry escapes judgement
+    against its index, or if the indexes those entries page through are not credited to the calling functions."""
+    found = _symbols(_config(tmp_path, {"listing.py": _ORDERS_BY_FIELD}))
+    assert not any(function in {"page_of", "page_by"} for function, _ in found), found
+    findings = no_whole_reads_findings(_config(tmp_path, {"listing.py": _ORDERS_BY_FIELD}))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
+    unindexed = _ORDERS_BY_FIELD.replace(
+        '"name": [Sort("name"), Sort("id")],',
+        '"name": [Sort("name"), Sort("id")],\n        "kind": [Sort("kind"), Sort("id")],',
+    )
+    found = _symbols(_config(tmp_path, {"listing.py": unindexed}))
+    flagged = {function for function, symbol in found if "datasources" in symbol}
+    assert flagged == {"page_of", "page_by"}, found
+
+
+_ORDERS_AFTER_A_PIN = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import Sort, keyset_page
+
+    DATASOURCES = TableSchema(
+        name="datasources",
+        primary_key="id",
+        columns=[],
+        indexes=(
+            Index("page_by_name", "kind", "name", "id", purpose="src/listing.py::page_of"),
+            Index("page_by_status", "kind", "status", "id", purpose="src/listing.py::page_of"),
+        ),
+    )
+    DATASOURCE_ORDERS = {
+        "name": [Sort("name"), Sort("id")],
+        "status": [Sort("status"), Sort("id")],
+    }
+
+    async def page_of(pool, kind, field, cols):
+        return await keyset_page(pool, "datasources", columns=cols, by={"kind": kind}, order=DATASOURCE_ORDERS[field], limit=50)
+"""
+
+
+def test_each_mapped_order_after_a_pinned_prefix_credits_its_own_index(tmp_path: Path) -> None:
+    """Flips if the entries of a mapped order after a pinned ``by=`` column all credit the first index the pin leads
+    (``page_by_name``) rather than each the index of the pin followed by its own sort (``page_by_status``)."""
+    found = _symbols(_config(tmp_path, {"listing.py": _ORDERS_AFTER_A_PIN}))
+    assert not any(function == "page_of" for function, _ in found), found
+    findings = no_whole_reads_findings(_config(tmp_path, {"listing.py": _ORDERS_AFTER_A_PIN}))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
+
+
 _PRODUCED = """
     class Stages:
         def __init__(self, db):
@@ -1866,15 +1970,15 @@ _TABLE_PARAMETER = """
 
 
     async def _held(conn, table, geo):
-        return await holds_any(conn, table, by={"geo_id": geo})
+        return await holds_any(conn, table, order=("geo_id",), by={"geo_id": geo})
 
 
     async def _by_state(conn, table, state):
-        return await holds_any(conn, table, by={"state": state})
+        return await holds_any(conn, table, order=("state",), by={"state": state})
 
 
     async def _loose(conn, table, geo):
-        return await holds_any(conn, table, by={"geo_id": geo})
+        return await holds_any(conn, table, order=("geo_id",), by={"geo_id": geo})
 
 
     async def callers(conn, named):
@@ -1894,3 +1998,697 @@ def test_a_keyed_helpers_table_parameter_resolves_when_every_caller_names_a_decl
     assert not any(function == "_held" for function, _ in found), found
     assert ("_by_state", 'non-key-where "geos"') in found, found
     assert ("_loose", "unknown-predicate holds_any(table)") in found, found
+
+
+_RENAMED_VIEWS = """
+    def make(db):
+        db.execute("CREATE VIEW offices AS SELECT p.race AS office_key, p.state FROM lsf_rows AS p")
+        db.execute("CREATE VIEW cased AS SELECT CASE WHEN p.race IS NULL THEN '' ELSE p.race END AS office_key FROM lsf_rows AS p")
+        db.execute("CREATE VIEW joined AS SELECT p.race || p.state AS office_key FROM lsf_rows AS p")
+
+    def by_office(db, office):
+        return db.execute_query(f"SELECT * FROM offices WHERE office_key = {office}")
+"""
+
+
+def test_a_view_column_that_renames_a_plain_column_passes_its_key_through(tmp_path: Path) -> None:
+    """Flips if a key column a view's body renames from a plain column (``p.race AS office_key``) is not passed
+    through, or if one it computes (a CASE, a concatenation) is."""
+    relations = {"offices": ("office_key",), "cased": ("office_key",), "joined": ("office_key",)}
+    found = _symbols(_config(tmp_path, {"views.py": _RENAMED_VIEWS}, local_relations=relations))
+    assert ("make", "view-key-not-passed cased.office_key") in found, found
+    assert ("make", "view-key-not-passed joined.office_key") in found, found
+    assert not any("offices" in symbol for _, symbol in found), found
+    assert not any(function == "by_office" for function, _ in found), found
+
+
+_QUALIFIED_VIEWS = """
+    from threetears.core.collections.schema_backed import TableSchema
+
+    SETTINGS = TableSchema(name="report_settings", primary_key="join_state_code", columns=[])
+
+    def make(db):
+        db.execute("CREATE OR REPLACE VIEW report.report_settings AS SELECT name, value FROM copy_settings")
+
+    def by_name(db, name):
+        return db.execute_query(f"SELECT value FROM report.report_settings WHERE name = {name}")
+
+    def by_state(db, state):
+        return db.execute_query(f"SELECT value FROM report.report_settings WHERE join_state_code = {state}")
+
+    async def l3_by_state(conn, state):
+        return await conn.fetch("SELECT * FROM report_settings WHERE join_state_code = $1", state)
+"""
+
+
+def test_a_view_in_a_schema_of_its_own_is_judged_by_its_copy_declaration_before_an_l3_table(tmp_path: Path) -> None:
+    """Flips if a view named in a schema of its own (``report.<v>``) is judged by the L3 table sharing its bare name,
+    rather than by the copy relation declared for it, or if the L3 table loses its own key."""
+    found = _symbols(_config(tmp_path, {"views.py": _QUALIFIED_VIEWS}, local_relations={"report_settings": ("name",)}))
+    assert not any(function in ("make", "by_name", "l3_by_state") for function, _ in found), found
+    assert ("by_state", "non-key-where report.report_settings") in found, found
+
+
+_VIEW_PRODUCERS = """
+    def _view_sql(view):
+        return f"CREATE OR REPLACE VIEW {view} AS SELECT p.race AS office_key, p.state FROM lsf_rows AS p"
+
+    def _bad_view_sql(view):
+        return f"CREATE VIEW {view} AS SELECT upper(office_key) AS office_key FROM lsf_rows"
+
+    class Parts:
+        def copy_view(self, view):
+            return f"CREATE VIEW {view} AS SELECT office_key, votes FROM lsf_rows"
+
+    def _stray_view_sql(view):
+        return f"CREATE VIEW {view} AS SELECT office_key FROM lsf_rows"
+
+    def newest(db):
+        db.execute("CREATE OR REPLACE VIEW report.newest AS SELECT max(model) AS model FROM lsf_rows")
+"""
+
+
+def test_a_view_named_at_run_time_is_judged_by_the_keys_its_producer_declares(tmp_path: Path) -> None:
+    """Flips if a view a declared producer builds under a name it is handed is not judged by the producer's declared
+    keys (passed through, or computed), or if a producer nobody declares builds an undeclared view unseen."""
+    producers = {"_view_sql": ("office_key",), "_bad_view_sql": ("office_key",), "Parts.copy_view": ("office_key",)}
+    found = _symbols(
+        _config(tmp_path, {"views.py": _VIEW_PRODUCERS}, view_producers=producers, local_relations={"newest": ()})
+    )
+    # a copy relation declared with no key (one row) is declared all the same
+    assert not any(function in ("_view_sql", "Parts.copy_view", "newest") for function, _ in found), found
+    assert any(function == "_bad_view_sql" and "view-key-not-passed" in symbol for function, symbol in found), found
+    assert any(function == "_stray_view_sql" and "undeclared-view" in symbol for function, symbol in found), found
+
+
+_FORMAT_VIEWS = """
+    def _around_view_sql(view, columns):
+        before, after = _around(columns, "l.state")
+        return f"CREATE OR REPLACE VIEW {view} AS SELECT {before}l.state{after} FROM main.{view} AS l"
+
+    def _around_two_sql(view, columns):
+        before, middle, after = _around(columns, "state", "county")
+        return f"CREATE OR REPLACE VIEW {view} AS SELECT {before}state{middle}county{after} FROM main.{view}"
+
+    def _around_short_sql(view, columns):
+        before, after = _around(columns, "state")
+        return f"CREATE OR REPLACE VIEW {view} AS SELECT {before}state{after} FROM main.{view}"
+
+    def _union_view_sql(view, held, columns):
+        before, after = _around(columns, "t.state")
+        union = " UNION ALL ".join(f"SELECT {before}t.state{after} FROM main.{name} AS t" for name in held)
+        return f"CREATE OR REPLACE VIEW {view} AS {union}"
+
+    def _union_dropped_sql(view, held, columns):
+        union = " UNION ALL ".join(f"SELECT upper(t.state) AS state FROM main.{name} AS t" for name in held)
+        return f"CREATE OR REPLACE VIEW {view} AS {union}"
+
+    def _branch_view_sql(view, held, raced, columns):
+        if raced:
+            first, second, rest = _around(columns, "t.state", "t.race")
+            select = f"{first}t.state{second}t.race AS race{rest}"
+        else:
+            first, rest = _around(columns, "t.state")
+            select = f"{first}t.state{rest}"
+        union = " UNION ALL ".join(f"SELECT {select} FROM main.{name} AS t" for name in held)
+        return f"CREATE OR REPLACE VIEW {view} AS {union}"
+
+    def _branch_dropped_sql(view, held, raced, columns):
+        if raced:
+            select = "t.state, t.race AS race"
+        else:
+            select = "upper(t.state) AS state"
+        union = " UNION ALL ".join(f"SELECT {select} FROM main.{name} AS t" for name in held)
+        return f"CREATE OR REPLACE VIEW {view} AS {union}"
+
+    def _keyless_view_sql(view, table):
+        return f"CREATE OR REPLACE VIEW {view} AS SELECT * EXCLUDE (state) FROM main.{table}"
+
+    def _keyed_exclude_sql(view, table):
+        return f"CREATE OR REPLACE VIEW {view} AS SELECT * EXCLUDE (state) FROM main.{table}"
+"""
+
+
+def test_a_view_written_around_its_key_and_a_keyless_producers_view_are_judged_by_their_declarations(
+    tmp_path: Path,
+) -> None:
+    """Flips if a view whose select list is interpolations around its key written literally (``{before}l.state{after}``,
+    a body joined from one statement per table, a select list each branch of an if/else binds) is not read as passing
+    that key (any one of a producer's keys), if a key column no literal text names or a branch dropping the key stops
+    being a finding, or if a producer declared keyless loses to the default copy key its run-time name matches
+    (``SELECT * EXCLUDE (state)``) while a keyed producer's view excluding its key stays a finding."""
+    producers = {
+        "_around_view_sql": ("state",),
+        "_around_two_sql": ("state", "county"),
+        "_around_short_sql": ("state", "county"),
+        "_union_view_sql": ("state",),
+        "_union_dropped_sql": ("state",),
+        "_branch_view_sql": (("state", "race"), ("state",)),
+        "_branch_dropped_sql": (("state",),),
+        "_keyless_view_sql": (),
+        "_keyed_exclude_sql": ("state",),
+    }
+    found = _symbols(
+        _config(tmp_path, {"views.py": _FORMAT_VIEWS}, view_producers=producers, local_relations={"*": ("state",)})
+    )
+    passing = {"_around_view_sql", "_around_two_sql", "_union_view_sql", "_branch_view_sql", "_keyless_view_sql"}
+    assert not any(function in passing for function, _ in found), found
+    assert any(function == "_around_short_sql" and symbol.endswith(".county") for function, symbol in found), found
+    assert any(function == "_union_dropped_sql" and "view-key-not-passed" in symbol for function, symbol in found), (
+        found
+    )
+    assert any(function == "_keyed_exclude_sql" and "view-key-not-passed" in symbol for function, symbol in found), (
+        found
+    )
+    # a name each branch of an if/else binds is judged as each branch writes it: the branch dropping the key fails
+    assert any(function == "_branch_dropped_sql" and "view-key-not-passed" in symbol for function, symbol in found), (
+        found
+    )
+
+
+_DECLARED_TABLES = """
+    from dataclasses import dataclass
+
+    from threetears.core.collections.schema_backed import TableSchema
+
+    COUNTIES = "counties"
+    PRECINCTS = "precincts"
+    COUNTIES_SCHEMA = TableSchema(name=COUNTIES, primary_key=("state", "county"), columns=[])
+    PRECINCTS_SCHEMA = TableSchema(name=PRECINCTS, primary_key=("state", "precinct"), columns=[])
+    RUNS_SCHEMA = TableSchema(name="runs", primary_key="run_id", columns=[])
+
+
+    @dataclass(frozen=True)
+    class Declared:
+        name: str
+        per_run: bool = False
+
+
+    TABLES = (Declared(name=COUNTIES), Declared(name=PRECINCTS, per_run=True))
+    WITH_RUNS = (Declared(name=COUNTIES), Declared(name="runs"))
+    NAMES = (COUNTIES, PRECINCTS)
+"""
+
+_LOOPED = """
+    from threetears.core.keyed import holds_any
+
+    from pkg.tables import NAMES, TABLES, WITH_RUNS
+
+
+    class Store:
+        async def holds_state(self, table, state):
+            return await holds_any(self._conn, table, order=("state",), by={"state": state})
+
+        async def holds_run(self, table, state):
+            return await holds_any(self._conn, table, order=("state",), by={"state": state})
+
+
+    class Pull:
+        async def _held(self, table, state):
+            return await self._store.holds_state(table.name, state)
+
+        async def _write(self, table, state):
+            return await self._held(table, state)
+
+        async def run(self, state):
+            for table in TABLES:
+                await self._write(table, state)
+
+        async def by_name(self, state):
+            for name in NAMES:
+                await holds_any(self._conn, name, order=("state",), by={"state": state})
+
+        async def with_runs(self, state):
+            for table in WITH_RUNS:
+                await self._store.holds_run(table.name, state)
+"""
+
+
+def test_a_table_bound_by_a_loop_over_a_declared_tuple_resolves_through_its_callers(tmp_path: Path) -> None:
+    """Flips if a keyed helper's table, named by a loop over a module tuple of declared tables (``for t in TABLES``,
+    ``t.name``) and handed down through parameters (``run`` -> ``_write`` -> ``_held`` -> ``Store.holds_state``),
+    stays unknown, or if one element whose key the read does not bind (``runs``) passes."""
+    found = _symbols(_config(tmp_path, {"pkg/tables.py": _DECLARED_TABLES, "pkg/pull.py": _LOOPED}))
+    assert not any(function in ("Store.holds_state", "Pull._held", "Pull.by_name") for function, _ in found), found
+    assert any(function == "Store.holds_run" and "runs" in symbol for function, symbol in found), found
+
+
+_SPLICED_TABLES = """
+    from dataclasses import dataclass
+
+    from threetears.core.collections.schema_backed import TableSchema
+
+    COUNTIES_SCHEMA = TableSchema(name="counties", primary_key=("state", "county"), columns=[])
+    FEED_SCHEMA = TableSchema(name="feed", primary_key=("state", "race"), columns=[])
+
+
+    @dataclass(frozen=True)
+    class Declared:
+        name: str
+
+
+    FEEDS = (Declared(name="feed"),)
+    TABLES = (Declared(name="counties"), *FEEDS)
+    STATE = "state"
+"""
+
+_SPLICED = """
+    from typing import Protocol
+
+    from threetears.core.keyed import holds_any
+
+    from pkg.tables import TABLES
+
+    BY_NAME = {table.name: table for table in TABLES}
+
+
+    class Holding(Protocol):
+        async def holds_state(self, table: str, state: str) -> bool:
+            'whether the table holds the state.'
+            ...
+
+
+    class Store:
+        async def holds_state(self, table, state):
+            return await holds_any(self._conn, table, order=("state",), by={"state": state})
+
+
+    class Pull:
+        async def _held(self, table, state, *, pulled=None):
+            return await self._store.holds_state(table.name, state)
+
+        async def run(self, state, behind, fresh):
+            for table in () if behind else TABLES:
+                await self._held(table, state, **({"pulled": {}} if fresh else {}))
+
+        async def one(self, name, state):
+            await self._held(BY_NAME[name], state)
+"""
+
+
+def test_a_loop_s_tables_resolve_through_a_spliced_tuple_a_conditional_a_lookup_and_a_spread_call(
+    tmp_path: Path,
+) -> None:
+    """Flips if a keyed helper's table stays unknown when the tuple splices another (``*FEEDS``), the loop iterates a
+    conditional (``() if behind else TABLES``), a caller looks one up in a dict built over the tuple
+    (``BY_NAME[name]``) or spreads keywords (``**{...}``) beside the table it names, or the helper's protocol declares
+    the same method (a stub, not a second definition)."""
+    found = _symbols(_config(tmp_path, {"pkg/tables.py": _SPLICED_TABLES, "pkg/pull.py": _SPLICED}))
+    assert not any(function in ("Store.holds_state", "Pull._held") for function, _ in found), found
+
+
+_SAME_NAMED = """
+    from threetears.core import keyed
+
+    from pkg.tables import STATE, TABLES
+
+
+    class Store:
+        async def holds_any(self, table, state):
+            return await keyed.holds_any(self._conn, table, order=(STATE,), by={STATE: state})
+
+
+    class Pull:
+        async def _held(self, table, state):
+            return await self._store.holds_any(table.name, state)
+
+        async def run(self, state):
+            for table in TABLES:
+                await self._held(table, state)
+"""
+
+
+def test_a_repo_method_named_as_a_keyed_helper_is_the_repo_s_and_its_body_is_judged(tmp_path: Path) -> None:
+    """Flips if a call of the repo's own method named as a 3tears keyed helper (``self._store.holds_any``) is judged
+    as the helper's call, or if the helper's own call in its body (``keyed.holds_any``) counts as a call of the
+    method, so its table never resolves, or a key its ``by`` names by an imported constant stays unread."""
+    found = _symbols(_config(tmp_path, {"pkg/tables.py": _SPLICED_TABLES, "pkg/pull.py": _SAME_NAMED}))
+    assert not any(function in ("Store.holds_any", "Pull._held") for function, _ in found), found
+
+
+_PRUNED = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import delete_before, read_after
+
+    LINKS = TableSchema(
+        name="links",
+        primary_key="token_id",
+        columns=[],
+        indexes=(Index("links_by_expiry", "expires_at"ASC, purpose="src/links.py::prune"),),
+    )
+    RUNS = TableSchema(
+        name="runs",
+        primary_key=("job", "run_id"),
+        columns=[],
+        indexes=(Index("runs_by_job_start", "job", "started", purpose="src/links.py::after"),),
+    )
+
+    async def prune(conn, cutoff):
+        await delete_before("links", collection=None, conn=conn, key=["token_id"], column="expires_at", before=cutoff)
+
+    async def after(conn, job, started):
+        return await read_after(conn, "runs", columns=("job", "started"), id_column="started", after=started, limit=50, by={"job": job})
+"""
+
+_PRUNED_DDL = """
+    PRUNED = '''
+    -- purpose: src/links.py::prune
+    CREATE INDEX links_by_expiry ON links (expires_atASC);
+    '''
+
+    LINKS = "CREATE TABLE links (token_id TEXT PRIMARY KEY, expires_at TIMESTAMP)"
+"""
+
+
+@pytest.mark.parametrize(
+    ("declared", "declared_ddl"), [("", ""), (', asc="expires_at"', " ASC")], ids=["hashed", "ranged"]
+)
+def test_an_index_a_read_ranges_or_orders_from_its_first_column_is_declared_range_sharded(
+    tmp_path: Path, declared: str, declared_ddl: str
+) -> None:
+    """Flips if an index whose purposed read ranges or orders by its first column, nothing bound before it
+    (``delete_before`` on ``expires_at``), is accepted undeclared ``ASC`` (hashed on YugabyteDB, the read scans the
+    table), or refused once declared (``asc=``, or ``ASC`` in its ``CREATE INDEX``); or if one led by a bound column
+    (``runs_by_job_start``) is held to it."""
+    module = _PRUNED.replace('"expires_at"ASC', f'"expires_at"{declared}')
+    found = [f for f in no_whole_reads_findings(_config(tmp_path, {"links.py": module})) if "index-hashed-range" in f]
+    assert bool(found) == (not declared), found
+    assert not any("runs_by_job_start" in finding for finding in found), found
+    raw = _PRUNED.replace('indexes=(Index("links_by_expiry", "expires_at"ASC, purpose="src/links.py::prune"),),', "")
+    ddl = _PRUNED_DDL.replace("expires_atASC", f"expires_at{declared_ddl}")
+    found = [
+        f
+        for f in no_whole_reads_findings(_config(tmp_path, {"links.py": raw, "schema.py": ddl}))
+        if "index-hashed-range" in f
+    ]
+    assert bool(found) == (not declared_ddl), found
+
+
+_STEPS = """
+    from threetears.core import keyed
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import Match, change_relation, delete_matching, read_step, semi, union
+
+    RESULTS = TableSchema(name="results", primary_key=("state", "run_id"), columns=[])
+    _CHANGED = change_relation("changed_runs")
+
+
+    async def over_the_change(conn, held):
+        conn.register("held_rows", held)
+        step = semi("held_rows", _CHANGED, on=[Match("state"), Match("run_id")])
+        return await read_step(conn, keyed.distinct(step, ["state"]))
+
+
+    async def drop_changed(conn):
+        return await delete_matching(conn, "results", _CHANGED, on=[Match("state"), Match("run_id")])
+
+
+    async def over_a_table(conn):
+        return await read_step(conn, keyed.scan("results"))
+
+
+    async def semi_of_a_table(conn):
+        return await read_step(conn, semi("results", _CHANGED, on=[Match("state")]))
+
+
+    def laundered():
+        return change_relation("results")
+
+
+    def a_set(left, right):
+        return left.union(right)
+"""
+
+
+def test_a_step_over_a_change_relation_passes_and_one_over_a_table_is_the_whole_read_it_is(tmp_path: Path) -> None:
+    """Flips if a relational step over a registered or declared change relation is flagged, a delete by a change
+    relation's keys is judged other than as the keyed delete it is, a step over a data table (whole, or as a semi's
+    read side) passes, a change relation declared over a data table passes, or a set's ``union`` is judged as a step."""
+    found = _symbols(_config(tmp_path, {"steps.py": _STEPS}))
+    functions = {function for function, _ in found}
+    assert not functions & {"over_the_change", "drop_changed", "a_set"}, found
+    assert {"over_a_table", "semi_of_a_table"} <= functions, found
+    assert ("laundered", "change-relation-is-a-table results") in found, found
+
+
+_STAGE_HELPER = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import change_relation
+    from threetears.core.keyed._filters import quoted_table
+
+    RESULTS = TableSchema(name="results", primary_key=("state", "run_id"), columns=[])
+
+
+    async def apply_stage(conn, target, stage, *, key, columns):
+        staged = quoted_table(change_relation(stage))
+        return await conn.execute(f"INSERT INTO results (state, run_id) SELECT state, run_id FROM {staged}")
+"""
+
+_STAGE_CALLERS = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import apply_stage, change_relation
+    from threetears.core.keyed._filters import quoted_table
+
+    RESULTS = TableSchema(name="results", primary_key=("state", "run_id"), columns=[])
+    HELD = TableSchema(name="held", primary_key=("state", "run_id"), columns=[])
+
+
+    async def from_a_chunk(conn, chunk):
+        conn.register("chunk", chunk)
+        return await apply_stage(conn, "held", "chunk", key=["state", "run_id"], columns=["state", "run_id"])
+
+
+    async def from_a_table(conn):
+        return await apply_stage(conn, "held", "results", key=["state", "run_id"], columns=["state", "run_id"])
+
+
+    async def by_part_of_the_key(conn, chunk):
+        conn.register("chunk", chunk)
+        return await apply_stage(conn, "held", "chunk", key=["run_id"], columns=["state", "run_id"])
+
+
+    async def appended(conn, chunk):
+        conn.register("chunk", chunk)
+        return await apply_stage(conn, "held", "chunk", key=[], columns=["state", "run_id"], mode="append")
+
+
+    async def scoped(conn, chunk):
+        conn.register("chunk", chunk)
+        return await apply_stage(
+            conn, "held", "chunk", key=["state", "run_id"], columns=["state", "run_id"], mode="difference", by={"state": "S"}
+        )
+
+
+    async def not_a_helper(conn, rel):
+        staged = quoted_table(change_relation(rel))
+        return await conn.execute(f"INSERT INTO held (state, run_id) SELECT state, run_id FROM {staged}")
+"""
+
+
+def test_a_keyed_helper_s_stage_parameter_is_a_change_relation_judged_where_it_is_handed(tmp_path: Path) -> None:
+    """Flips if apply_stage's statements over its own stage parameter (declared ``change_relation(stage)``) are
+    flagged, if a caller handing it a data table as the stage passes, if one handing it a registered chunk is flagged,
+    or if ``change_relation`` of a parameter launders a function that is no 3tears keyed helper."""
+    found = _symbols(
+        _config(
+            tmp_path,
+            {"threetears/core/keyed/writes.py": _STAGE_HELPER, "app.py": _STAGE_CALLERS},
+        )
+    )
+    functions = {function for function, _ in found}
+    assert not functions & {"apply_stage", "from_a_chunk", "appended", "scoped"}, found
+    assert {"from_a_table", "not_a_helper", "by_part_of_the_key"} <= functions, found
+
+
+_HELPER_BODIES = """
+    from dataclasses import dataclass
+
+    from threetears.core.keyed._filters import quote_identifier, quoted_table, relation
+
+    async def read_keyed(conn, table, keys):
+        return await conn.fetch(f"SELECT * FROM {relation(table, 't')}", keys)
+
+    async def holds_any(conn, table, order):
+        target = quoted_table(table)
+        return await conn.fetch(f"SELECT 1 AS held FROM {target} LIMIT 1")
+
+    async def read_past_marks(conn, named, mark):
+        return await conn.fetch(f"SELECT * FROM {quote_identifier(named)} WHERE stamp > $1", mark)
+
+    async def any_rows(conn, table, limit):
+        return await conn.fetch(f"SELECT * FROM events WHERE note = $1 LIMIT {limit}", table)
+
+    def _render(table, where):
+        return f"SELECT * FROM {quoted_table(table)} WHERE {where}"
+
+    async def keyset_page(conn, table, where):
+        return await conn.fetch(_render(table, where))
+
+    def _shared(table):
+        return f"SELECT count(*) AS n FROM {quoted_table(table)}"
+
+    async def counts_by(conn, table):
+        return await conn.fetch(_shared(table))
+
+    async def not_a_helper(conn, table):
+        return await conn.fetch(_shared(table))
+
+    @dataclass
+    class _Statement:
+        table: str
+
+        def render(self):
+            return f"SELECT * FROM {relation(self.table, 't')}"
+
+    async def read_keyed_arrow(conn, table):
+        return await conn.fetch(_Statement(table=table).render())
+
+    async def read_joined(conn, table, keys):
+        return await read_keyed(conn, table, keys=keys)
+
+    async def counts_by_relations(conn, tables, column):
+        parts = [f"SELECT count(*) AS held FROM {relation(tables[label], 'r')} GROUP BY {column}" for label in tables]
+        return await conn.fetch(" UNION ALL ".join(parts))
+"""
+
+_HELPER_BODY_CALLERS = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import holds_any, scan, update_from
+
+    EVENTS = TableSchema(name="events", primary_key=("id",), columns=[])
+
+    async def by_id(conn, event_id):
+        return await holds_any(conn, "events", order=["id"], by={"id": event_id})
+
+    async def by_note(conn, note):
+        return await holds_any(conn, "events", order=["note"], by={"note": note})
+
+    async def from_chunk(conn, chunk):
+        conn.register("chunk", chunk)
+        return await update_from(conn, "events", key=["id"], source=scan("chunk"), columns=["v"])
+
+    async def from_chunk_by_note(conn, chunk):
+        conn.register("chunk", chunk)
+        return await update_from(conn, "events", key=["note"], source=scan("chunk"), columns=["v"])
+
+    async def from_the_table(conn):
+        return await update_from(conn, "events", key=["id"], source="events", columns=["v"])
+"""
+
+
+def test_a_keyed_helper_s_relation_parameter_is_judged_at_its_call_sites_not_in_its_body(tmp_path: Path) -> None:
+    """Flips if a keyed helper's statement over its own relation parameter is flagged in its body (straight, through
+    a local binding, a bare name in relation position, a private renderer or a field every in-module caller fills
+    from a helper's parameter, a nested helper call on it), if literal-table SQL in a helper body passes, if a private
+    renderer some other function reaches passes, or if a call site keying a helper by no key (``holds_any`` by a
+    non-key column, ``update_from`` joined on one or reading a data table as its source) passes."""
+    found = _symbols(
+        _config(
+            tmp_path,
+            {"threetears/core/keyed/rows.py": _HELPER_BODIES, "app.py": _HELPER_BODY_CALLERS},
+        )
+    )
+    functions = {function for function, _ in found}
+    covered = {"read_keyed", "holds_any", "read_past_marks", "_render", "keyset_page"}
+    covered |= {"_Statement.render", "read_keyed_arrow", "read_joined", "counts_by_relations", "by_id", "from_chunk"}
+    assert not functions & covered, found
+    assert {"any_rows", "_shared", "by_note", "from_chunk_by_note", "from_the_table"} <= functions, found
+
+
+_STAGE_TEMPLATE = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import apply_stage
+
+    def fence_schema(name: str = "fence"):
+        return TableSchema(name=name, primary_key=("signal", "seq"), columns=[])
+
+    async def settle(conn, table, chunk):
+        conn.register("chunk", chunk)
+        return await apply_stage(conn, table, "chunk", key=["signal", "seq"], columns=["signal", "seq"])
+
+    async def by_seq(conn, table, chunk):
+        conn.register("chunk", chunk)
+        return await apply_stage(conn, table, "chunk", key=["seq"], columns=["signal", "seq"])
+"""
+
+_STAGE_NO_TEMPLATE = """
+    from threetears.core.keyed import apply_stage
+
+    async def settle(conn, table, chunk):
+        conn.register("chunk", chunk)
+        return await apply_stage(conn, table, "chunk", key=["signal", "seq"], columns=["signal", "seq"])
+"""
+
+
+def test_a_stage_s_target_its_caller_names_is_judged_by_its_module_s_template(tmp_path: Path) -> None:
+    """Flips if apply_stage onto a table its caller names passes unjudged: keyed by the template's key where the
+    stage's key leads it, a whole delete where it does not, and where the module declares no template to judge it by."""
+    found = _symbols(_config(tmp_path, {"fence.py": _STAGE_TEMPLATE}))
+    functions = {function for function, _ in found}
+    assert "settle" not in functions and "by_seq" in functions, found
+    bare = _symbols(_config(tmp_path / "bare", {"fence.py": _STAGE_NO_TEMPLATE}))
+    assert any(function == "settle" for function, _ in bare), bare
+
+
+_ANY_KIND_LEAD = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import AnyOf, Sort, keyset_page
+
+    DATASOURCES = TableSchema(
+        name="datasources",
+        primary_key="id",
+        columns=[],
+        indexes=(
+            Index("page_by_name", "kind", "name", "id", purpose="src/listing.py::name_page"),
+            Index("page_by_date_created", "kind", "date_created", "id", purpose="src/listing.py::source_page"),
+        ),
+    )
+
+    async def source_page(pool, kinds, cols):
+        return await keyset_page(
+            pool, "datasources", columns=cols, by={"kind": AnyOf(kinds)},
+            order=[Sort("date_created"), Sort("id")], limit=50,
+        )
+
+    async def name_page(pool, kind, cols):
+        return await keyset_page(pool, "datasources", columns=cols, by={"kind": kind}, order=[Sort("name"), Sort("id")], limit=50)
+"""
+
+
+def test_a_page_whose_lead_is_a_set_credits_the_index_it_orders_by_after_it(tmp_path: Path) -> None:
+    """Flips if a keyset page pinning its index's lead to a set (``by={"kind": AnyOf(...)}``) and ordered by the
+    index's next columns is flagged, or leaves that index's purpose unused (credited to the pinned-lead index of
+    another order instead)."""
+    found = _symbols(_config(tmp_path, {"listing.py": _ANY_KIND_LEAD}))
+    assert not any(function in {"source_page", "name_page"} for function, _ in found), found
+    findings = no_whole_reads_findings(_config(tmp_path, {"listing.py": _ANY_KIND_LEAD}))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
+
+
+_COPIED = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import Sort, copy_keyed
+
+    CONNECTIONS = TableSchema(
+        name="connections",
+        primary_key="connection_id",
+        columns=[],
+        indexes=(Index("by_principal", "principal_kind", "principal_id", "admitted", purpose="src/fence.py::by_principal"),),
+    )
+    _ORDER = [Sort("admitted"), Sort("connection_id")]
+
+    async def by_principal(pool, kind, principal):
+        return await copy_keyed(pool, "connections", columns=["connection_id"], by={"principal_kind": kind, "principal_id": principal}, order=_ORDER)
+
+    async def every_one(pool):
+        return await copy_keyed(pool, "connections", columns=["connection_id"], by={}, order=_ORDER)
+"""
+
+
+def test_a_copy_of_a_prefix_is_judged_as_the_keyed_drain_it_is(tmp_path: Path) -> None:
+    """Flips if copy_keyed by a prefix its purposed index leads is flagged or leaves the index unused, or if a copy
+    with no prefix (every row) passes."""
+    found = _symbols(_config(tmp_path, {"fence.py": _COPIED}))
+    assert {function for function, _ in found} == {"every_one"}, found
+    findings = no_whole_reads_findings(_config(tmp_path, {"fence.py": _COPIED}))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings

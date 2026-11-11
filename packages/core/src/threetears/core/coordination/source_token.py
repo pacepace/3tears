@@ -37,8 +37,10 @@ from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
     STRING_TYPE,
     Column,
+    Index,
     TableSchema,
 )
+from threetears.core.keyed.writes import delete_keyed
 
 __all__ = [
     "SOURCE_TOKENS_TABLE",
@@ -46,6 +48,7 @@ __all__ = [
     "SourceToken",
     "SourceTokenFence",
     "Transaction",
+    "clear_signals",
     "source_tokens_schema",
 ]
 
@@ -87,7 +90,54 @@ def source_tokens_schema(name: str = SOURCE_TOKENS_TABLE) -> TableSchema:
         ],
         on_conflict="update",
         tenancy=TENANT_BY_SCHEMA,
+        indexes=(
+            # the signals a prefix names (a job's rows, ``refresh_ready/<job>``) in code-point order, a range on
+            # YugabyteDB: the key's own index is in the database's collation, which a prefix range cannot seek
+            Index(
+                f"{name}_by_signal_c",
+                _SIGNAL,
+                asc=_SIGNAL,
+                collate={_SIGNAL: "C"},
+                purpose="packages/core/src/threetears/core/coordination/source_token.py::clear_signals",
+                plan_test=(
+                    "packages/core/tests/integration/test_source_token_prefix_live.py::"
+                    "test_a_prefix_clear_reads_the_c_ordered_index_as_a_range"
+                ),
+            ),
+        ),
     )
+
+
+async def clear_signals(conn: Any, table: str, *, signal: str | None = None, prefix: str | None = None) -> list[str]:
+    """delete a fence's rows: the one ``signal`` names, and every one whose name starts with ``prefix``.
+
+    In the caller's transaction (a reset of a ready signal: its job-less row and each job's, ``refresh_ready/<job>``).
+    The prefix's rows are a code-point range read through the fence's ``COLLATE "C"`` index
+    (:func:`source_tokens_schema`), never the table: a name that only begins like it (``refresh_ready_other`` for
+    ``refresh_ready/``) is no row of it.
+
+    :param conn: the caller's connection, in its transaction (anything with an asyncpg-shaped ``fetch``)
+    :ptype conn: Any
+    :param table: the fence's table
+    :ptype table: str
+    :param signal: the one row deleted by its name; none when None
+    :ptype signal: str | None
+    :param prefix: the rows deleted whose name starts with it; none when None
+    :ptype prefix: str | None
+    :return: the names cleared, sorted
+    :rtype: list[str]
+    :raises ValueError: when neither is given, or ``prefix`` is empty (every row)
+    """
+    if signal is None and prefix is None:
+        raise ValueError("a fence clear names its signal, or the prefix its rows share")
+    cleared: list[str] = []
+    if signal is not None:
+        named = await delete_keyed(conn, table, by={"signal": signal}, returning=(_SIGNAL,))
+        cleared += [str(row[_SIGNAL]) for row in named.rows]
+    if prefix is not None:
+        started = await delete_keyed(conn, table, prefix={"signal": prefix}, returning=(_SIGNAL,))
+        cleared += [str(row[_SIGNAL]) for row in started.rows]
+    return sorted(cleared)
 
 
 @dataclass(frozen=True)

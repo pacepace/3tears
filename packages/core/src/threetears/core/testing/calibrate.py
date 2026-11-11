@@ -30,6 +30,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 __all__ = [
+    "best_seconds_interleaved",
     "budget_problem",
     "plain_copy_seconds",
     "plain_keyed_delete_seconds",
@@ -58,6 +59,34 @@ async def best_seconds(run: Callable[[], Awaitable[Any]], *, runs: int = _RUNS) 
         await run()
         best = min(best, time.perf_counter() - began)
     return best
+
+
+async def best_seconds_interleaved(
+    bare: Callable[[], Awaitable[Any]], path: Callable[[], Awaitable[Any]], *, runs: int = _RUNS
+) -> tuple[float, float]:
+    """the fastest of ``runs`` awaits of each side, the two run turn about: the bare, then the path, ``runs`` times.
+
+    A busy machine's noise then lands on both sides alike, so their ratio holds where two best-of-N runs taken one
+    after the other would each catch a different moment's load.
+
+    :param bare: makes the baseline's awaitable, once a run
+    :ptype bare: Callable[[], Awaitable[Any]]
+    :param path: makes the timed path's awaitable, once a run
+    :ptype path: Callable[[], Awaitable[Any]]
+    :param runs: how many runs of each
+    :ptype runs: int
+    :return: the bare's best seconds, and the path's
+    :rtype: tuple[float, float]
+    """
+    best_bare = best_path = float("inf")
+    for _ in range(runs):
+        began = time.perf_counter()
+        await bare()
+        best_bare = min(best_bare, time.perf_counter() - began)
+        began = time.perf_counter()
+        await path()
+        best_path = min(best_path, time.perf_counter() - began)
+    return best_bare, best_path
 
 
 def _plain_name() -> str:

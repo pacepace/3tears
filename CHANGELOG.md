@@ -8,6 +8,162 @@ packages (bumped in lock-step).
 
 ## v0.95.0 -- 2026-11-07
 
+- epoch: `RowFollower(key_reads=...)` hands a composite-key table's row read its WHOLE primary key (`tuple(message.ids)`, in the key's declared order), so a cache keyed by `(customer_id, id)` applies one row by its full key instead of re-reading its tenant; `reads` keep getting the key's first column, and a table takes one of the two.
+
+- core testing: `assert_same_results` compares rows holding arrays, decoded jsonb objects and nested ones: each value is normalised to a hashable form (a list as a tuple, a mapping as its items in key order, recursively) before the rows are counted, where it raised `unhashable type`.
+
+### core.keyed: pages step by the row comparison on PostgreSQL; changes past marks, inline DuckDB, scoped differences, sort expressions, bounded looks
+
+**Fixed (speed):** `keyset_page` past its cursor and `keyset_rows` past their first page step by `(c1, c2) > ($1, $2)` on PostgreSQL for a one-direction sort with no nullable column, which it seeks its index by; the leading bound and expansion made it plan a bitmap scan and a sort (a 1,001-row page: 2.3 ms against 0.28 ms; the 6,000-row drain went from 2.43x to 1.28x its hand-written loop). YugabyteDB keeps the bound and expansion. `backends.dialect.known_on_yugabyte` tells which with no round trip for an asyncpg connection (its startup `server_version`), once for any other reader. `keyset_rows` keeps the lookahead row (each statement `page + 1` rows, all kept). Columns `by=` pins to one value lead the page's `ORDER BY` and its row comparison (`(kind, name, id) > ($1, $2, $3)`), so PostgreSQL reads one range of the index they lead, not a unique index of the sort's columns filtered (43 rows read for 21).
+**Added:** `read_keyed(records=True)` answers the rows as the connection answers them (asyncpg `Record`s), with no dict copy of each (2,000 rows: 0.45 ms); default unchanged. An array statement's text is rendered once a shape (relation, columns, key columns and types, `by`'s conditions, lock, filters, which columns bind natively, whether bounded) and kept (at most 4,096 shapes), each batch binding its arrays to it; key columns' native binding is judged by their values' distinct types. 2,000 uuid keys, direct connection, records: 1.07x / 1.04x the hand-written `id = ANY($1::uuid[])` on PostgreSQL / YugabyteDB (500,000 rows, read by the key; budget 1.1x), where the dict path was 1.24x.
+**Fixed (speed):** `keyset_page` / `keyset_rows` on PostgreSQL bind the columns `by` pins by equality beside the row comparison of the sort's columns (`kind = $1 AND (name, id) > ($2, $3)`), never inside it (`(kind, name, id) > ($1, $2, $3)`): inside, only an index the pinned columns lead takes the comparison as its condition, and PostgreSQL may read another (a unique index of the next column) from its start, filtering (the hub's datasource page: 2,041 rows for 21). ORDER BY unchanged; YugabyteDB's expansion unchanged. The 200-row cursor page budget: 1.03x on PostgreSQL (was 1.88x), 0.57x on YugabyteDB.
+**Fixed (rule):** no_whole_reads judges `apply_stage` calls by the stage they hand (read whole, as it is read: a registered chunk or change relation passes, a data table is the whole read it is), and inside a 3tears keyed helper a parameter declared `change_relation(<parameter>)` (`apply_stage`'s stage) is a change set, so its `INSERT .. SELECT FROM {stage}` is not flagged; `change_relation` of a parameter in any other function is no change set.
+**Added:** `counts_by_relations(since=, group=, max_of=, fresh=)`: each relation's rows past its saved marks (stamps compared as timestamps, a missing mark the floor `NO_MARK_FLOOR`) grouped in ONE statement, as `MarkedCount` groups; `packed_as=` names the packed column. **Fixed:** a packed count kept a NULL group (a NULL in the `||` had nulled its text, dropping the group).
+**Added:** `copy_keyed(conn, table, columns=, by=, order=, where=, force_quote=)`: every row a prefix names, in its order, as PostgreSQL `COPY` CSV text (asyncpg `copy_from_query`), for a pass that parses the text in a worker; judged by no_whole_reads as `keyset_rows` is (a copy with no prefix is the whole read it is).
+**Added:** relational steps over change relations (`threetears.core.keyed.steps`, exported from `core.keyed`): one helper per shape a load computes by, rendered once for DuckDB and PostgreSQL and composable (a step reads a step, parameters renumbered): `semi` / `anti` (`Match` pairs, null-safe per column, `also=` conditions), `scan`, `distinct`, `grouped` (`largest` / `smallest` with cast and default, `row_count`, `xor_hash`), `latest_per_key` (`ties=True` keeps every row tied first), `windowed` (rows kept by a window's value), `except_rows`, `union(keep_all=)`; run by `read_step`, `read_step_arrow(types=)`, `count_step`; `delete_matching` (a table's rows a change relation's keys name), `first_difference`; `change_relation(name)` declares the relation. `update_from(source=)` takes a `Step` with its parameters, and `key=["rowid"]` on DuckDB. Each proven against the hand-written statement it replaces (`assert_same_results`, 14 cases).
+**Added:** `InlineDuckDB` / `run_inline`: the helpers' statements on the caller's own DuckDB connection, in its transaction, seeing its registered relations, with no event loop (`executemany`, `transaction()`). `InlineDuckDB.fetch_arrow` / `ThreadedDuckDB.fetch_arrow(query, *params, types=)`: DuckDB's own Arrow answer, columns in `types`' order and cast to them, so `read_keyed_arrow` runs inline (or on a thread) with no row a Python object.
+**Added:** `apply_stage(mode="difference", by=, where=)`: the scope holds exactly the stage afterwards (its held rows of keys the stage lacks are deleted); refused for other modes.
+**Added:** `Sort(expression=...)`: a page ordered by an expression (`lower(t."name")`) an expression index answers, selected under the sort's name. `any_rows(conn, table, columns, limit=, by=, where=)`: at most `limit` (1 to 1,000) rows in no order, for operator commands.
+
+### core: collated index columns; the fence's prefix clear
+**Added:** `IndexDef.collate` / `Index(..., collate={"signal": "C"})` (`signal COLLATE "C" ASC`); `IndexDef.purpose` takes a tuple of reads. `coordination.source_token.clear_signals(conn, table, signal=, prefix=)` and the fence's `<name>_by_signal_c` index it reads by (a consumer's table version picks it up).
+
+### enforcement: no_whole_reads judges keyset_rows, any_rows, prefix deletes, visible customers and sort expressions
+`keyset_rows` is judged as `keyset_page`; `any_rows` by its required `limit`; `delete_keyed(prefix=)` on a literal table as a page of its range; `visible=[customers.fragment('t."col"')]` narrows the page to `col = ANY(...)` (missing, a cross-customer listing is flagged); a sort expression is judged against an index on that expression; `purpose=("a::f", "b::g")` is read as several reads, each of which must use the index.
+
+### enforcement: use-the-helper, every data table read and written through 3tears' helpers
+
+**Added:** SQL written by hand over a change relation (rows a module registers, a stage, a declared `change_relation`, a transient producer's return) is a finding, `use-the-helper <shape> change:<name>`: its home is `core.keyed`'s steps. no_whole_reads judges each step call (imported from `threetears.core.keyed`) by the relations it names, each read whole, so a step over a change relation passes and one over a data table is the whole read it is; `delete_matching` is judged as the keyed delete by its `Match` columns; a step bound to a local name once, or a change relation bound to a module constant, is followed; `change_relation(<a declared table>)` is flagged where written (`change-relation-is-a-table`) and never makes the table a change set.
+
+**Added:** `threetears.enforcement.no_whole_reads.use_the_helper_findings(config)`, the `use-the-helper` rule: every
+SQL statement a module writes as text (`SELECT`, `WITH ... SELECT`, `UPDATE`, `DELETE`, `MERGE`, `INSERT ... SELECT`)
+against a data table (a declared one, or one named at run time) outside the helper modules (`threetears.core.keyed`,
+`core.keyset`, `epoch.row_follower`, the migration and DDL runners, plus a repo's reviewed
+`NoWholeReadsConfig.helper_modules`) is a finding, named with its shape (`point`, `list`, `count`, `join`, `write`).
+The one way out is `_use_the_helper_exemptions.txt` (`<path> :: <function> :: <statements> :: <reason>`, the count
+pinned). `use_the_helper_counts(config)` gives the backlog by shape. 3tears' own gate is
+`tests/enforcement/test_use_the_helper.py`, red until each statement goes through a helper; the hub, the SDK and
+reports run it with their no-whole-reads configs.
+
+### datasources: a reply the hub cut by its bytes never ends a read
+
+**Fixed:** `read_keyed` / `read_keyed_arrow` (and so `read_changed`'s phase 2) read a key batch the transport cut (`L3AnswerCutError`: the rail's row cap, or a datasource reply cut at the hub's bytes) again in halves, and send the rest of the read's batches at the size that fit; one key wider than a reply is still refused. `DatasourceAnswerCut` is now an `L3AnswerCutError`. A backfill of wide rows (every key wanted) raised at the first cut batch.
+
+**Added:** `read_all`, `read_parts`, `read_partitions`, `export_select`, `export_part` and `export_partitions` take a `Selected` column beside the plain ones (a row's hash: `row_hash_selected(..., alias=None)`), so a full or cold read stores each row's hash as it loads; every fingerprint covers the columns read as written (the hash is computed from them), and a read of expressions alone is refused.
+
+**Fixed (P0, missing data):** with the hub's byte cap on, a page sized past it came back cut (`truncated`, short of
+its sentinel), and `read_all`, `read_counted`, `read_parts` and `read_partitions` took it as the relation's end and
+returned a prefix as the whole. Every keyset pager now reads a cut reply as "more rows follow": it keeps the rows up
+to the reply's last whole key group and reads on from there (a reply of one key group is kept when one keyed count
+says the part holds no more of it, else the read raises `IncompleteReadError`); `read_partitions`' page starts and
+each of its pages read on the same way. `DatasourceQueryResult` carries `max_reply_bytes` from the reply.
+**Fixed (speed):** under a byte-capping hub a page is sized at the width the hub cuts by (pydantic's compact JSON, in
+UTF-8 bytes, as the broker's `reply_rows` measures), filling 95% of the cap (was 80%, at a different width); and a read
+on a client the hub has answered under its cap sizes its FIRST page from what one reply carried, not the asked-for
+size (a hub that has since dropped the cap is read again at the asked size).
+
+### core.keyed: apply_stage appends
+**Added:** `apply_stage(mode=StageMode.APPEND)`: `INSERT INTO target (cols) SELECT cols FROM stage`, nothing deleted,
+duplicates kept (a key staged again, or already held, is written again); `key=` may be empty. PostgreSQL, DuckDB,
+SQLite and `InlineDuckDB`.
+
+### core.keyed: a difference writes its stage as a set
+**Added:** `apply_stage(mode=difference, distinct=True)`: the stage's rows written once each however often staged
+(`SELECT DISTINCT`), as the set difference it replaces (`INSERT ... SELECT ... FROM stage EXCEPT SELECT ... FROM
+target`) writes them; the default is unchanged, and any other mode refuses it.
+
+### core.keyed: changed rows by hash
+**Added:** `read_changed(conn, relation, *, key, columns, held, hash_columns, by=, where=)` -> `ChangedRows(rows,
+gone_keys)`: phase 1 reads the scope's keys and each row's hash only, paged by the key; phase 2 reads in full, by key
+(`read_keyed`), only the keys whose hash differs from `held` (a `None` held hash always) or that `held` lacks;
+`gone_keys` are the held keys the scope no longer holds. `row_hash_sql(columns, dialect)` / `row_hash_selected(...)`:
+one MD5 over a canonical typed text of `HashColumn`s (`TEXT`, `INTEGER`, `NUMERIC` at a scale, `BOOLEAN`, `DATE`,
+`TIMESTAMP`), each value length-prefixed and a NULL marked apart, identical on PostgreSQL/YugabyteDB, DuckDB and
+Redshift for the same values, so a full read stores it beside each row and it is never computed in Python.
+`dialect_of(conn)`: the caller never names the dialect (a reader's `sql_dialect`, DuckDB in process, else
+PostgreSQL/YugabyteDB as `known_on_yugabyte` learns it); `Dialect.REDSHIFT`. 124,000 wide rows (77 columns, 2.8 KB
+each) in scope with 3,000 changed: 6 statements, 5.0% of a full read's bytes.
+**Added (datasources):** `DatasourceReader(engine=DataSourceType...)` names its dialect; `DatasourceReader.read_scope`
+and `query_client.read_scope_pages`: a keyed helper's scope read through `read_all`'s pager (sized from the hub's
+announced reply cap, reading on past a cut reply), so `read_changed`'s phase 1 over a datasource never stops at a cut.
+`keyset_page` / `keyset_rows` columns take `Selected` expressions.
+
+### enforcement: no_whole_reads credits the index a keyed read uses, not the first its bound columns lead
+Of several purposed indexes the bound columns key (`(kind, name, id)`, `(kind, status, id)` with `kind` pinned), the
+one credited is the longest bound prefix, then the one whose next column the read orders or ranges by, then the first
+declared, where the first declared was credited for every read and the others were `index-purpose-unused`.
+
+### enforcement: no_whole_reads judges a helper's order picked from a module mapping
+A keyset helper whose `order=` is one entry of a module mapping of literal sort lists (`order=DATASOURCE_ORDERS[field]`,
+or a local bound once to that pick) is judged once per entry against its index, and each entry's index is credited to
+the calling function's purpose, where it was `unknown-predicate keyset_page(order)`. One unindexed entry flags the call.
+
+### enforcement: no_whole_reads judges a prefix write on a table its caller names
+`delete_keyed(prefix=)` and now `update_keyed(prefix=)` on a table the caller names (a fence's, `clear_signals(conn,
+table)`) are judged against the module's template (`TableSchema(name=<parameter>)`), as a generic `FROM {table}` read
+is, where they passed unjudged; with no template they are judged against no key (a finding). An index a template names
+from its table (`f"{name}_by_signal_c"`) is the template's, and each of its purposes must name a read that uses it
+(`index-purpose-unused`), where it was skipped.
+
+### core.keyed: a direct connection reads its keys in one statement
+**Fixed (speed):** `read_keyed`, `read_keyed_arrow` and `read_joined` name `key_batch_for(conn)` keys a statement when
+the caller gives no `batch=`: `DIRECT_KEY_BATCH` (10,000) on a connection that binds arrays natively (asyncpg's, to
+PostgreSQL or YugabyteDB: each key column one array parameter), `DEFAULT_KEY_BATCH` (1,000) through the L3 rail or a
+datasource, whose JSON parameters and reply caps bound it. 2,000 keys were two statements, 0.5-0.65 ms more than one.
+
+### core: one equivalence harness for every conversion to a helper
+
+**Added:** `threetears.core.testing.same_results.assert_same_results(conn, *, table, row, old_sql, params, helper,
+columns=None, order_by=None, ordered=None, page_size=5)`: seeds the table for each case (empty, one row, many rows,
+NULLs, ties in the sort order, a tenant boundary, a page boundary and one past it; each in a transaction rolled back),
+runs the hand-written statement and the helper call on the same rows, and fails naming each case whose rows differ:
+compared as multisets, and in order when the old statement has an `ORDER BY` (by `order_by`'s columns, so ties may
+come either way). The row factory gets a `Seeded` (index, tenant, null, tie). Any asyncpg-shaped connection:
+PostgreSQL and YugabyteDB alike.
+
+### core, enforcement: an index that serves a range or an order from its first column is declared range-sharded
+
+**Added (core):** `IndexDef.asc` / `Index(..., asc="expires_at")`: the column rendered `ASC` in so many words.
+Postgres reads it as its default; YugabyteDB range-shards an index whose first column is declared `ASC` (or `DESC`)
+and hashes it otherwise, and a hashed first column seeks no range and answers no order, so a page past a bound with
+nothing bound before it (`read_after`, `delete_before` with an empty `by`, an ordered listing) read every row.
+**Added (enforcement):** `index-hashed-range`: a purposed index a keyed read ranges or orders through from its first
+column, nothing bound before it, whose first column is not declared `ASC`/`DESC` (`asc=`/`desc=`, `col ASC` in its
+`CREATE INDEX`, a table list's `asc`/`desc`). A read on a local backend (`execute_query`, `execute_arrow`), of a copy
+relation or of a change set is exempt: nothing there is hashed.
+
+### agent-acl: the visible-customer set of one namespace type
+
+**Added:** `caller_visible_customers_query(scope_namespace_type=...)`, keyword-only: its `type_customer` arm adds a
+grant's customer only when the grant is on that namespace type (binds the caller, then the type), the set a listing
+of one type pages by (`keyset_page(visible=...)`); it admits exactly the rows `caller_visible_customer_clause` admits
+for the type (an integration test per scope arm). Without it the statement is unchanged byte for byte (the RLS GUC's
+set).
+
+**Added:** `VisibleCustomers` / `visible_customers(pool, user_id=, namespace_type=)`: that set read once, by the
+caller's memberships, as a value a listing binds (`bound`: the customers, None for a platform-wide grant; `sees_none`;
+`fragment(column, platform_rows=)`: the `= ANY` fragment `keyset_page(visible=...)` takes). `visible_rows(conn, table,
+columns=, user_id=, namespace_type=, customer_column=, order=, user_column=, where=, page=VISIBLE_LIST_PAGE)`: a whole
+visible listing read by key a page a statement, on those customers; platform rows (no customer) seen by every caller,
+and with `user_column` another user's rows by none (`three_scope_visibility_clause`'s rule; without it,
+`customer_scope_visibility_clause`'s). The rule's one definition, beside the per-row clauses, for the listings that page
+from the caller's grants.
+
+### core: a whole read of a table whose key's lead YugabyteDB hashes reads each page from its bucket
+
+**Fixed:** on YugabyteDB a key's first column is hashed, and the keyset cursor's leading bound cannot seek a hashed
+column, so every page of a whole-table read past its cursor scanned and sorted the whole table (a 200,000-row table:
+200,000 rows scanned a page; a cold start of a 1,000,000-row copy read the table a thousand times, about 5.5 minutes).
+`keyset_pages`, `keyset_arrow_pages` and `read_keyset_pages` take `lead_array` (the lead's SQL array type), named by a
+reader whose declaration leaves the lead hashed; on YugabyteDB such a read walks the lead: its values from
+`SELECT DISTINCT` (answered from the bucket heads), then each value's rows with the rest of the key past the cursor (a
+seek inside the bucket), small values grouped `= ANY` a page at a time. Rows come in key order; `after=` resumes
+inside a value. Postgres, an older hub, and a read whose filter pins the lead keep the cursor's form.
+`CopyFollower`'s cold start, `SqlL3Backend.scan` of a whole table and a schema-backed collection's L3 pages name it;
+`read_l3_rows`, `l3_row_pages` and `read_l3_arrow` pass it through. **Added:** `threetears.core.backends.dialect
+.l3_on_yugabyte` (a pool by `version()`; the rail's proxy by its broker's `hub_capabilities`, `dialect:yugabyte`), and
+`schema_backed.sql_cast` / `TableSchema.hashed_lead_array`.
+
 ### agent/acl: listings page by key; the whole listings are removed (BREAKING)
 
 - Removed: `GroupCollection.list_by_customer` and `list_all`, `GroupMemberCollection.list_by_group`,
@@ -98,8 +254,23 @@ true cold start or schema change with the test proving it is reached only then. 
 A repo names the functions whose returned relation is a change set being applied
 (`NoWholeReadsConfig.transient_producers`, `Class.method` or a function: reports' `Stages._stage`, `_Work.put`), so
 a statement over one reads no data table. A keyed helper called with a parameter every call site fills with a literal
-or a module constant is judged as each of those tables; any other value stays `unknown-predicate`. An entry-only
-operator mark counts a method call as its caller only on a receiver known to be the marked class.
+or a module constant is judged as each of those tables; any other value stays `unknown-predicate`. So is one bound
+by a loop over a module tuple (`for name in NAMES`; `table.name` for `for table in TABLES` when the tuple holds
+declared objects with a constant `name`; a tuple splicing another, `*FEEDS`; a loop over `() if behind else
+TABLES`; a lookup in a dict built over one, `BY_NAME[name]`), and a parameter its callers hand on from their own
+parameters, followed up to six calls (a caller spreading `**kwargs` leaves only the parameters it does not name
+unknown; a protocol's stub is no second definition; a call on an imported module, `keyed.holds_any`, is never the
+repo's method of that name, and a call on an object's attribute, `self._store.holds_any`, is the repo's method, judged
+in its body). A `by` keyed by a constant (`{STATE_COLUMN: state}`) reads as that column. An entry-only operator mark counts a method call as its caller only on a receiver known to be the
+marked class. A view column that renames a plain column (`p.race AS office_key`) passes the key through; a computed
+one does not. A relation in a schema of its own (`report.<view>`) is judged by the copy relation declared for it
+before an L3 table sharing its bare name. A repo names the functions that build a view under a name they are handed
+(`NoWholeReadsConfig.view_producers`, onto the key every such view declares), and their `CREATE VIEW {}` is judged by
+those keys: a view passes when it passes any one of them, and the declaration wins over a copy key its run-time name
+happens to match (a producer declared keyless may build `SELECT * EXCLUDE (state)`). A select list of interpolations
+around literal key columns (`SELECT {before}l.state{after}`) reads the text between them as items of its own; a body
+joined from one statement per table (`" UNION ALL ".join(f"SELECT ..." for t in held)`) is that statement, a part of
+the view rather than a read; a name each branch of an `if`/`else` binds is judged as each branch writes it.
 
 **Added (core):** `threetears.core.testing.plans.WholeScanGuard` and `whole_scans`, the runtime half: a load-path
 test wraps its connection, and a statement whose plan scans a table past `threshold_rows` whole (a sequential scan,

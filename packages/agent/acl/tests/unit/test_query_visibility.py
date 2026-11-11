@@ -309,6 +309,19 @@ def test_visible_customers_query_is_fail_closed_on_no_grants() -> None:
     assert "array_remove(" in sql
 
 
+def test_visible_customers_query_of_one_type_differs_only_in_its_type_customer_arm() -> None:
+    """Flips if the typed set's SQL differs from the RLS GUC's anywhere but the type_customer arm's type, or binds
+    the type anywhere but right after the caller."""
+    user_id = uuid4()
+    untyped, untyped_params = caller_visible_customers_query(user_id=user_id, param_offset=3)
+    typed, typed_params = caller_visible_customers_query(user_id=user_id, param_offset=3, scope_namespace_type="tool")
+    arm = "WHEN ra.scope_type = 'type_customer' AND ra.scope_namespace_type = $4 THEN ra.scope_customer_id"
+    assert arm in typed
+    assert typed.replace(" AND ra.scope_namespace_type = $4", "", 1) == untyped
+    assert untyped_params == [user_id]
+    assert typed_params == [user_id, "tool"]
+
+
 def test_visible_customers_query_respects_param_offset() -> None:
     sql, params = caller_visible_customers_query(user_id=uuid4(), param_offset=3)
     assert "gm.member_id = $3" in sql
