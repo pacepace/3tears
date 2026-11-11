@@ -62,6 +62,7 @@ from threetears.enforcement.no_whole_reads.helpers import (
     KEYED_HELPER_CALLS,
     STEP_CALLS,
     STEP_RELATIONS,
+    STEP_TARGETS,
     START_KEYWORDS,
     HelperStatement,
     UNSEEN,
@@ -2335,12 +2336,13 @@ class _ModuleWalk(ast.NodeVisitor):
         for node in ast.walk(callee.function):
             if not isinstance(node, ast.Call):
                 continue
-            if _final(node) in STEP_CALLS and self._keyed_step(node):
+            if (_final(node) in STEP_CALLS or _final(node) in STEP_TARGETS) and self._keyed_step(node):
                 if any(
                     isinstance(relation, ast.Name) and relation.id == handed
                     for relation, _ in step_relation_arguments(node)
                 ):
-                    bound = bind(node)
+                    # a write's connection (``InlineDuckDB(self._db)``) is nothing its statements are judged by
+                    bound = bind(_target_write(node, parameters, receivers) if _final(node) in STEP_TARGETS else node)
                     if unbound or not isinstance(bound, ast.Call):
                         return None
                     steps.append(bound)
@@ -2693,9 +2695,18 @@ class _ModuleWalk(ast.NodeVisitor):
             mapping = self._module_values.get(value.value.id)
             if not isinstance(mapping, ast.Dict) or not mapping.values:
                 return None
+            values = list(mapping.values)
+            # a pick by a literal key (``CHANNEL_ORDERS[("date_created", False)]``) is that entry alone, when the
+            # mapping spells that key; a pick by a run-time key may be any entry
+            literal = _literal(value.slice)
+            if literal is not _NOT_LITERAL:
+                chosen = [
+                    v for k, v in zip(mapping.keys, values, strict=True) if k is not None and _literal(k) == literal
+                ]
+                if len(chosen) == 1:
+                    values = chosen
             picked = [
-                self._module_values.get(entry.id, entry) if isinstance(entry, ast.Name) else entry
-                for entry in mapping.values
+                self._module_values.get(entry.id, entry) if isinstance(entry, ast.Name) else entry for entry in values
             ]
             if not all(isinstance(entry, (ast.Tuple, ast.List)) for entry in picked):
                 return None
@@ -4364,6 +4375,69 @@ def _record_site(
         value = value if value is not None else defaults.get(argument.arg)
         values: list[Passed] = [None] if unknown or value is None else _site_values(value, known, caller, found)
         followed.setdefault((name or function.name, argument.arg), []).extend(values)
+
+
+#: a value a forwarder reads off its ``self`` (``self._keys[table]``), as its caller's judgement of the write names it
+_RUN_TIME_VALUE: Final[str] = "__forwarded__self_value"
+
+
+#: what :func:`_literal` answers for an expression that is no literal
+_NOT_LITERAL: Final = object()
+
+
+def _literal(node: ast.expr) -> object:
+    """the value a literal expression spells (a constant, or a tuple of them), or :data:`_NOT_LITERAL`.
+
+    :param node: the expression
+    :ptype node: ast.expr
+    :return: its value
+    :rtype: object
+    """
+    try:
+        return ast.literal_eval(node)
+    except ValueError, TypeError, SyntaxError, MemoryError, RecursionError:  # NOSILENT: not a literal: no pick
+        return _NOT_LITERAL
+
+
+def _target_write(call: ast.Call, parameters: set[str], receivers: set[str]) -> ast.Call:
+    """a write step's call (``materialize``, ``apply_stage``, ``update_from``) as its caller judges it when the
+    forwarder is handed its target: its connection (the first positional, or ``conn=``) ``None`` -- nothing its
+    statements are judged by, and a forwarder's ``self``'s; each relation it reads that the forwarder names itself (a
+    literal, a local step) a change set's, since that read is judged in the forwarder's body where it is written. A
+    relation the forwarder is handed too stays, for the call to bind. Any other argument read off the forwarder's
+    ``self`` (``key=self._keys[table]``) is a value named at run time, as the forwarder's own body judges it.
+
+    :param call: the call
+    :ptype call: ast.Call
+    :param parameters: the forwarder's parameters
+    :ptype parameters: set[str]
+    :param receivers: the forwarder's ``self`` / ``cls``
+    :ptype receivers: set[str]
+    :return: the call to bind at the caller
+    :rtype: ast.Call
+    """
+    reads = {(position, keyword) for position, keyword in STEP_RELATIONS.get(_final(call) or "", ())}
+
+    def own(node: ast.expr) -> bool:
+        return not (isinstance(node, ast.Name) and node.id in parameters)
+
+    def written(index: int | None, keyword: str | None, node: ast.expr) -> ast.expr:
+        if index == 0 or keyword == "conn":
+            return ast.Constant(None)
+        read = any((index is not None and index == p) or keyword == k for p, k in reads)
+        if read and own(node):
+            return ast.Constant(TRANSIENT_PRODUCED)
+        if any(isinstance(part, ast.Name) and part.id in receivers for part in ast.walk(node)):
+            return ast.Name(id=_RUN_TIME_VALUE, ctx=ast.Load())
+        return node
+
+    if any(isinstance(arg, ast.Starred) for arg in call.args):
+        return call
+    return ast.Call(
+        func=call.func,
+        args=[written(index, None, arg) for index, arg in enumerate(call.args)],
+        keywords=[ast.keyword(arg=k.arg, value=written(None, k.arg, k.value)) for k in call.keywords],
+    )
 
 
 #: the most forwarders a relation handed on is followed through to the steps reading it

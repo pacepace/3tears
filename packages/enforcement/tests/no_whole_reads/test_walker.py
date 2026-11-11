@@ -2006,6 +2006,72 @@ def test_a_helper_s_order_picked_from_a_module_mapping_is_judged_entry_by_entry(
     assert flagged == {"page_of", "page_by"}, found
 
 
+_ORDERS_PICKED_BY_A_CONSTANT = """
+    from typing import Final
+
+    from threetears.core.collections.schema_backed import Column, TableSchema
+    from threetears.core.keyed import Sort, keyset_page, keyset_rows
+
+    CHANNEL_CONFIGS = TableSchema(
+        name="channel_configs",
+        primary_key=("agent_id", "id"),
+        columns=[Column("id"), Column("agent_id", partition=True), Column("status"), Column("date_created")],
+    )
+    CHANNEL_ORDERS: Final[dict[tuple[str, bool], tuple[Sort, ...]]] = {
+        ("status", False): (Sort("status", "text"), Sort("id", "uuid")),
+        ("date_created", False): (Sort("date_created", "timestamptz"), Sort("id", "uuid")),
+    }
+
+
+    class Configs:
+        async def page(self, pool, agent_id, sort, cols):
+            order = CHANNEL_ORDERS[(sort, False)]
+            return await keyset_page(pool, "channel_configs", columns=cols, by={"agent_id": agent_id}, order=order, limit=50)
+
+        async def every(self, pool, agent_id, cols):
+            return await keyset_rows(
+                pool, "channel_configs", columns=cols, by={"agent_id": agent_id},
+                order=CHANNEL_ORDERS[("date_created", False)], page=100,
+            )
+
+        async def every_by_status(self, pool, agent_id, cols):
+            return await keyset_rows(
+                pool, "channel_configs", columns=cols, by={"agent_id": agent_id},
+                order=CHANNEL_ORDERS[("status", False)], page=100,
+            )
+"""
+
+#: the indexes, as hub v162 declares them: each sort's own index, its purpose naming only the reads that page it
+_ORDERS_PICKED_DDL = """
+    DDL_STATEMENTS: tuple[str, ...] = (
+        \"\"\"
+    -- purpose: src/channels.py::Configs.page
+    -- plan_test: tests/test_plans.py::test_status
+    CREATE INDEX IF NOT EXISTS page_by_agent_status ON channel_configs (agent_id, status ASC, id ASC)
+    \"\"\",
+        \"\"\"
+    -- purpose: src/channels.py::Configs.page; src/channels.py::Configs.every
+    -- plan_test: tests/test_plans.py::test_date_created
+    CREATE INDEX IF NOT EXISTS page_by_agent_date_created ON channel_configs (agent_id, date_created ASC, id ASC)
+    \"\"\",
+    )
+"""
+
+
+def test_an_order_picked_from_a_module_mapping_by_a_literal_key_is_judged_as_that_entry(tmp_path: Path) -> None:
+    """Flips if a keyset read whose order picks one entry of a module mapping by a literal key
+    (``CHANNEL_ORDERS[("date_created", False)]``, hub #26) is judged against every entry -- the ``status`` one its
+    index's purpose never names -- rather than the entry it picks, while a pick by a run-time key still judges each;
+    and if the picked entry is judged as anything but that entry (an entry whose index names another reader is still
+    a finding)."""
+    modules = {"channels.py": _ORDERS_PICKED_BY_A_CONSTANT, "v162.py": _ORDERS_PICKED_DDL}
+    findings = no_whole_reads_findings(_config(tmp_path, modules))
+    functions = {match.group(1) for match in (_HIT.match(finding) for finding in findings) if match is not None}
+    assert not functions & {"Configs.page", "Configs.every"}, findings
+    assert "Configs.every_by_status" in functions, findings
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
+
+
 _ORDERS_AFTER_A_PIN = """
     from threetears.core.collections.schema_backed import Index, TableSchema
     from threetears.core.keyed import Sort, keyset_page
@@ -3925,6 +3991,73 @@ def test_a_write_from_a_forwarder_s_step_or_by_a_run_time_key_is_judged(tmp_path
     assert not functions & {"Writer.compute", "Writer.compute_inline", "Writer.add_rows", "_computed_source"}, found
     assert "Writer.replace" in functions, found
     assert not any(symbol.startswith("unknown-predicate") for _, symbol in found), found
+
+
+_HANDED_TARGET = """
+    from threetears.core import keyed
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import InlineDuckDB, run_inline
+
+    GEOS = TableSchema(name="geos", primary_key="geo_id", columns=[])
+
+
+    class Stages:
+        def _add_rows(self, stage, key):
+            run_inline(keyed.apply_stage(InlineDuckDB(self._db), stage, "_page_rows", key=key, columns=["a"]))
+
+        def _set_from(self, table, key):
+            source = keyed.scan("_page_rows")
+            run_inline(keyed.update_from(InlineDuckDB(self._db), table, key=key, source=source, columns=["n"]))
+
+        def into_stage(self):
+            self._add_rows("__stage__geos", ["geo_id"])
+
+        def into_geos(self):
+            self._add_rows("geos", ["geo_id"])
+
+        def into_geos_by_name(self):
+            self._add_rows("geos", ["name"])
+
+        def set_geos(self):
+            self._set_from("geos", ["geo_id"])
+
+        def set_geos_by_name(self):
+            self._set_from("geos", ["name"])
+
+        def _replace(self, table):
+            run_inline(
+                keyed.apply_stage(InlineDuckDB(self._db), table, "_page_rows", key=self._keys[table], columns=["a"])
+            )
+
+        def replace_stage(self):
+            self._replace("__stage__geos")
+
+        def replace_geos(self):
+            self._replace("geos")
+"""
+
+
+def test_a_write_target_a_forwarder_is_handed_is_judged_at_its_call(tmp_path: Path) -> None:
+    """Flips if apply_stage / update_from onto a target named by the forwarder's parameter (``Stages._add_rows``'
+    ``stage``) stays an unknown "{}" in the forwarder rather than judged at each call with the target and key the call
+    passes (R9): onto a change set's stage it writes nothing whole, onto a data table by its key it is keyed, and onto
+    a data table by a column no key leads with, or by a key the forwarder reads off its ``self``, it is still a
+    finding, at the call, as the write it is."""
+    found = _symbols(
+        _config(
+            tmp_path,
+            {"stages.py": _HANDED_TARGET},
+            transient_relations=r"^(?:__stage__\w+|_page_rows)$",
+            public_forwarders=True,
+        )
+    )
+    functions = {function for function, _ in found}
+    assert not functions & {"Stages._add_rows", "Stages._set_from", "Stages.into_stage", "Stages.into_geos"}, found
+    assert not functions & {"Stages.set_geos", "Stages._replace", "Stages.replace_stage"}, found
+    assert {"Stages.into_geos_by_name", "Stages.set_geos_by_name", "Stages.replace_geos"} <= functions, found
+    assert not any("unknown" in symbol for _, symbol in found), found
+    # a target write is judged as the write it is, never as a whole read of the table it writes
+    assert not any(symbol.startswith("whole-select") for _, symbol in found), found
 
 
 _HANDED_DERIVED = """

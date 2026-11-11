@@ -186,9 +186,14 @@ STEP_RELATIONS: Final[Mapping[str, tuple[tuple[int | None, str], ...]]] = {
     "update_from": ((None, "source"),),
 }
 
-#: where a step names the table it writes whole (``materialize``'s, replaced by the step's rows): a change set's
-#: stage passes, a data table is the whole write it is
-STEP_TARGETS: Final[Mapping[str, tuple[tuple[int | None, str], ...]]] = {"materialize": ((1, "table"),)}
+#: where a step names the table it writes (``materialize``'s, replaced whole by the step's rows; ``apply_stage``'s and
+#: ``update_from``'s, written by the stage's key): a change set's stage passes, a data table is the write it is. A
+#: target a forwarder is handed (``Stages._add_rows``' ``stage``) is judged at each call with what the call passes (R9)
+STEP_TARGETS: Final[Mapping[str, tuple[tuple[int | None, str], ...]]] = {
+    "materialize": ((1, "table"),),
+    "apply_stage": ((1, "target"),),
+    "update_from": ((1, "table"),),
+}
 
 #: builders of a visibility clause reviewed once where it is written: a keyed predicate wherever it is placed
 KEYED_FRAGMENT_BUILDERS: Final[frozenset[str]] = frozenset(
