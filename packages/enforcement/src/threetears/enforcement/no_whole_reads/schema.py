@@ -273,6 +273,9 @@ class _DeclaredTable:
         partition=True)``, a collection's ``tenancy = tenant_column(...)``): a key prefix of only these is no key
     :ivar indexes: its indexes by name
     :ivar origins: ``<path>:<line>`` of each declaration
+    :ivar threetears: whether 3tears declares it: a ``TableSchema``, a collection class, a table list, a relation the
+        repo's config declares, or any declaration in 3tears' own sources (a dependency); never a SQLAlchemy ``Table``
+        or migration DDL of the repo alone
     """
 
     name: str
@@ -281,6 +284,7 @@ class _DeclaredTable:
     tenant_columns: set[str] = field(default_factory=set)
     indexes: dict[str, _DeclaredIndex] = field(default_factory=dict)
     origins: list[str] = field(default_factory=list)
+    threetears: bool = False
 
 
 @dataclass
@@ -304,6 +308,39 @@ class SchemaCatalog:
     hashed_leads: set[tuple[str, str, str]] = field(default_factory=set)
     dependency_indexes: set[tuple[str, str]] = field(default_factory=set)
     templates: dict[str, _DeclaredTable] = field(default_factory=dict)
+    #: whether only tables 3tears declares are data tables (``NoWholeReadsConfig.threetears_tables_only``)
+    threetears_only: bool = False
+    #: while True, every table a declaration touches is marked as 3tears' (:attr:`_DeclaredTable.threetears`)
+    marking: bool = False
+
+    def mark_threetears(self, table: str) -> None:
+        """mark a table as one 3tears declares, whatever else declares it.
+
+        :param table: the bare table
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        self.tables.setdefault(table, _DeclaredTable(table)).threetears = True
+
+    def outside(self, name: str, template: _DeclaredTable | None = None) -> bool:
+        """whether a relation is outside 3tears' declarations when only those are data tables: a table no 3tears
+        declaration names (a side database's SQLAlchemy table, the repo's own migration DDL), or one named at run time
+        that resolves to none (the module's template is no ``TableSchema``). Always False with the switch off.
+
+        :param name: the relation as written
+        :ptype name: str
+        :param template: the module's template, for a relation named at run time
+        :ptype template: _DeclaredTable | None
+        :return: whether it is no data table
+        :rtype: bool
+        """
+        if not self.threetears_only:
+            return False
+        declared = self.table(name)
+        if declared is not None and declared.threetears:
+            return False
+        return not ("{" in name and template is not None and template.threetears)
 
     def use(self, table: str, index: str, readers: frozenset[str]) -> None:
         """record that a keyed read written in ``readers`` used ``index`` of ``table``, for each of its purpose entries
@@ -372,6 +409,7 @@ class SchemaCatalog:
 
     def _entry(self, table: str, origin: str) -> _DeclaredTable:
         entry = self.tables.setdefault(table, _DeclaredTable(table))
+        entry.threetears = entry.threetears or self.marking
         if origin not in entry.origins:
             entry.origins.append(origin)
         return entry
@@ -525,6 +563,7 @@ class SchemaCatalog:
             merged.unique_keys.extend(key for key in entry.unique_keys if key not in merged.unique_keys)
             merged.indexes.update(entry.indexes)
             merged.origins.extend(entry.origins)
+            merged.threetears = merged.threetears or entry.threetears
         for site in self.sites:
             if site.table == old:
                 site.table = new
@@ -769,6 +808,7 @@ def _template_ddl(catalog: SchemaCatalog, kind: str, payload: Any, origin: str, 
     """
     relative = origin.rsplit(":", 1)[0]
     template = catalog.templates.setdefault(relative, _DeclaredTable(f"{{}}@{relative}"))
+    template.threetears = template.threetears or catalog.marking
     if kind == "table":
         key = tuple(column.lower() for column in payload[1])
         if key and key not in template.primary_keys:
@@ -1069,6 +1109,7 @@ def _declare_template(
     """
     origin = f"{relative}:{call.lineno}"
     template = catalog.templates.setdefault(relative, _DeclaredTable(f"{{}}@{relative}"))
+    template.threetears = True
     key = values.texts(_keyword(call, "primary_key"))
     if key:
         lowered = tuple(column.lower() for column in key)
@@ -1086,7 +1127,8 @@ def _declare_template(
 
 def _class_tenancy(catalog: SchemaCatalog, tree: ast.Module, values: _Values, relative: str) -> None:
     """record each collection's declared tenant column (``tenancy = tenant_column("source_customer_id")``) on the
-    table the class names (``table_name = ...``, or ``schema = TableSchema(name=...)``).
+    table the class names (``table_name = ...``, or ``schema = TableSchema(name=...)``), and mark a collection's table
+    (a class named ``...Collection``, or one declaring a tenant) as one 3tears declares.
 
     :param catalog: the catalog
     :ptype catalog: SchemaCatalog
@@ -1109,12 +1151,6 @@ def _class_tenancy(catalog: SchemaCatalog, tree: ast.Module, values: _Values, re
             and len(statement.targets) == 1
             and isinstance(statement.targets[0], ast.Name)
         }
-        tenancy = assigned.get("tenancy")
-        if not (
-            isinstance(tenancy, ast.Call) and (dotted(tenancy.func) or "").endswith("tenant_column") and tenancy.args
-        ):
-            continue
-        column = values.text(tenancy.args[0])
         schema = assigned.get("schema")
         if isinstance(schema, ast.Name):
             schema = values.names.get(schema.id)
@@ -1122,8 +1158,18 @@ def _class_tenancy(catalog: SchemaCatalog, tree: ast.Module, values: _Values, re
             values.text(_keyword(schema, "name")) if isinstance(schema, ast.Call) else None
         )
         table = bare_table(name) if name is not None else None
+        if table is not None and node.name.endswith("Collection"):
+            # a 3tears collection's table is declared through 3tears, whatever DDL creates it
+            catalog.mark_threetears(table)
+        tenancy = assigned.get("tenancy")
+        if not (
+            isinstance(tenancy, ast.Call) and (dotted(tenancy.func) or "").endswith("tenant_column") and tenancy.args
+        ):
+            continue
+        column = values.text(tenancy.args[0])
         if table is not None and column is not None:
             catalog.add_tenant(table, column, f"{relative}:{node.lineno}")
+            catalog.mark_threetears(table)
 
 
 def _info(call: ast.Call, values: _Values, key: str) -> str:
@@ -1263,12 +1309,16 @@ def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, lo
                 builder = enclosing.get(id(call))
                 for concrete in _template_names(tree, builder, name_node.id, values) if builder is not None else []:
                     built = bare_table(concrete)
+                    if built is not None:
+                        catalog.mark_threetears(built)
                     for template_key in template.primary_keys if built is not None else []:
                         catalog.add_key(built or "", template_key, origin)
                 claimed.update(id(element) for element in values.elements(_keyword(call, "indexes")))
                 continue
             table_text = values.text(name_node)
             table = bare_table(table_text) if table_text is not None else None
+            if table is not None:
+                catalog.mark_threetears(table)
             key = values.texts(_keyword(call, "primary_key"))
             if table is not None and key:
                 catalog.add_key(table, key, origin)
@@ -1438,6 +1488,7 @@ def _apply_yaml(catalog: SchemaCatalog, path: Path, relative: str, *, local: boo
             ):
                 table = bare_table(name)
                 if table is not None:
+                    catalog.mark_threetears(table)
                     key = node.get("primary_key")
                     keys = (key,) if isinstance(key, str) else tuple(str(k) for k in key or ())
                     if keys:
@@ -1545,10 +1596,13 @@ def collect_schema(
     # a dependency's tables first, then the repo's, each in path order: a later migration's drop or rename wins
     entries.sort(key=lambda entry: (entry[2], entry[0]))
     for relative, path, local in entries:
+        # every declaration in 3tears' own sources (a dependency) is 3tears': its migrations' tables too
+        catalog.marking = not local
         if path.suffix == ".sql":
             _apply_ddl(catalog, path.read_text(encoding="utf-8"), f"{relative}:1", local=local)
         else:
             _apply_python(catalog, parse_python_path(path), relative, local=local)
+    catalog.marking = False
     for path in table_lists if table_lists is not None else tuple(_table_lists(repo_root)):
         _apply_yaml(catalog, path, relative_posix_path(path, repo_root), local=True)
     _resolve_patterns(catalog)

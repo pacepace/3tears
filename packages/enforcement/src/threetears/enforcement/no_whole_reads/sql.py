@@ -777,6 +777,9 @@ def _relations(text: str, masked: str, ctes: set[str], bound_ctes: frozenset[str
                 kind = "other"
             elif reader.transient(bare):
                 kind = "source"
+            elif reader.schema.outside(bare, reader.template):
+                # a relation 3tears declares nothing of, when only those are data tables (a side database's)
+                kind = "other"
             else:
                 kind = "data"
         alias_match = re.match(r"\s*(?:AS\s+)?(\w+)", shown[after:], re.IGNORECASE)
@@ -1608,14 +1611,18 @@ def _judge_write(
     :rtype: list[_SqlFinding]
     """
     findings: list[_SqlFinding] = []
+
+    def outside(table: str) -> bool:
+        return reader.schema.outside(table.strip('"'), reader.template)
+
     truncate = _TRUNCATE.match(text)
-    if truncate is not None:
+    if truncate is not None and not outside(truncate.group(1)):
         findings.append(_SqlFinding("truncate", truncate.group(1)))
     maintenance = _MAINTENANCE.match(text)
-    if maintenance is not None and _CATALOG.match(maintenance.group(2)) is None:
+    if maintenance is not None and _CATALOG.match(maintenance.group(2)) is None and not outside(maintenance.group(2)):
         findings.append(_SqlFinding("whole-maintenance", maintenance.group(2)))
     copy_out = _COPY_OUT.match(text)
-    if copy_out is not None:
+    if copy_out is not None and not outside(copy_out.group(1)):
         findings.append(_SqlFinding("whole-copy-out", copy_out.group(1)))
     for pattern, kind in ((_DELETE, "whole-delete"), (_UPDATE, "whole-update")):
         for match in pattern.finditer(text):
@@ -1631,6 +1638,9 @@ def _judge_write(
                 ]
             clauses = _AFTER_WHERE.search(masked, relative)
             table = match.group(1)
+            if outside(table):
+                # no data table: only tables 3tears declares are (NoWholeReadsConfig.threetears_tables_only)
+                continue
             unseen = (
                 _suffixed(table)
                 and reader.schema.table(table) is None
@@ -1816,7 +1826,13 @@ def data_relations(sql: str, reader: Reader | None = None) -> list[str]:
     for match in _NAMED_RELATION.finditer(text):
         name, call = match.group(1), match.group(2)
         bare = name.strip('"')
-        if call is not None or bare.lower() in ctes or _CATALOG.match(name) is not None or reader.transient(bare):
+        if (
+            call is not None
+            or bare.lower() in ctes
+            or _CATALOG.match(name) is not None
+            or reader.transient(bare)
+            or reader.schema.outside(bare, reader.template)
+        ):
             continue
         if bare.removesuffix("{}").lower() in reader.ctes and reader.schema.table(bare) is None:
             # a CTE of the statement the code assembles (a fragment its caller's ``WITH`` defines): judged there

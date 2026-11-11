@@ -4006,3 +4006,83 @@ def test_a_table_its_caller_names_is_judged_by_the_module_s_published_ddl(tmp_pa
     functions = {function for function, _ in found}
     assert not functions & {"Tokens.get", "Tokens.purge"}, found
     assert "Tokens.scan" in functions, found
+
+
+# --- threetears_tables_only: the gate covers 3tears' data access only, a side database unchecked -------------------
+
+_SIDE_DATABASE = {
+    "side/models.py": """
+        import sqlalchemy as sa
+
+        metadata = sa.MetaData()
+        audit = sa.Table("side_audit", metadata, sa.Column("id", sa.Integer, primary_key=True), sa.Column("kind", sa.Text))
+    """,
+    "side/migrations/v001.py": """
+        DDL = "CREATE TABLE side_jobs (id BIGINT PRIMARY KEY, state TEXT)"
+    """,
+    "side/reads.py": """
+        async def every_audit(conn):
+            return await conn.fetch("SELECT id, kind FROM side_audit")
+
+        async def stuck_jobs(conn):
+            return await conn.fetch("SELECT id FROM side_jobs WHERE state = $1", "stuck")
+
+        async def clear_jobs(conn):
+            await conn.execute("DELETE FROM side_jobs")
+    """,
+    "data/schema.py": """
+        from threetears.core.collections import TableSchema
+
+        RESULTS = TableSchema(name="results", columns=(), primary_key=("state", "geo"))
+
+        def tenant_table(name):
+            return TableSchema(name=name, columns=(), primary_key=("customer_id", "id"))
+    """,
+    "data/reads.py": """
+        async def every_result(conn):
+            return await conn.fetch("SELECT state, geo FROM results")
+    """,
+    "data/schema_reads.py": """
+        from threetears.core.collections import TableSchema
+
+        def tenant_table(name):
+            return TableSchema(name=name, columns=(), primary_key=("customer_id", "id"))
+
+        async def every_row(conn, table):
+            return await conn.fetch(f"SELECT id FROM {table}")
+    """,
+    "side/generic.py": """
+        def side_table(name):
+            return f"CREATE TABLE {name} (id BIGINT PRIMARY KEY, body TEXT)"
+
+        async def every_side_row(conn, table):
+            return await conn.fetch(f"SELECT id FROM {table}")
+    """,
+}
+
+
+def test_with_only_3tears_tables_a_side_database_s_tables_are_no_data_tables(tmp_path: Path) -> None:
+    """Flips if, with ``threetears_tables_only``, a table only a SQLAlchemy ``Table`` or the repo's own migration DDL
+    declares (or a run-time table whose module template is DDL, not a ``TableSchema``) is still judged, or a table 3tears
+    declares (literal, or a run-time one its ``TableSchema`` template builds) stops being judged; and if the default
+    (off) stops judging the side database's reads. use-the-helper follows the same switch."""
+    side = {
+        ("every_audit", "whole-select side_audit"),
+        ("stuck_jobs", "non-key-where side_jobs"),
+        ("clear_jobs", "whole-delete side_jobs"),
+    }
+    ours = {("every_result", "whole-select results")}
+    default = _symbols(_config(tmp_path / "off", _SIDE_DATABASE))
+    assert side <= default and ours <= default
+    assert any(function == "every_side_row" for function, _ in default)
+    assert any(function == "every_row" for function, _ in default)
+    switched = _symbols(_config(tmp_path / "on", _SIDE_DATABASE, threetears_tables_only=True))
+    assert not side & switched and ours <= switched
+    assert not any(function == "every_side_row" for function, _ in switched)
+    assert any(function == "every_row" for function, _ in switched)
+    helper_off = " ".join(use_the_helper_findings(_config(tmp_path / "uoff", _SIDE_DATABASE)))
+    helper_on = " ".join(
+        use_the_helper_findings(_config(tmp_path / "uon", _SIDE_DATABASE, threetears_tables_only=True))
+    )
+    assert "every_audit" in helper_off and "every_audit" not in helper_on
+    assert "every_result" in helper_off and "every_result" in helper_on

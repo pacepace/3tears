@@ -177,6 +177,11 @@ class NoWholeReadsConfig:
         imported whole, a method name another definition shares) is never one
     :ivar dependency_schema: whether 3tears' own declarations (its change log, notes and collections, which a
         consumer reads) key reads too; its indexes are never the repo's to give a purpose
+    :ivar threetears_tables_only: whether only the tables 3tears declares are data tables (a ``TableSchema``, a
+        collection class, a table list, a relation this config declares, any declaration in 3tears' own sources):
+        a table only a SQLAlchemy ``Table`` or the repo's own migration DDL declares is no data table, and a relation
+        named at run time counts only when it resolves to a 3tears one. For a repo that keeps a side database of its
+        own, unchecked; off by default, every declared or written relation a data table
     """
 
     repo_root: Path
@@ -199,6 +204,7 @@ class NoWholeReadsConfig:
     helper_modules: tuple[str, ...] = ()
     relation_producers: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
     public_forwarders: bool = False
+    threetears_tables_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -354,6 +360,9 @@ def _schema_of(config: NoWholeReadsConfig) -> SchemaCatalog:
         excluded_prefixes=config.excluded_prefixes,
         table_lists=config.table_lists,
     )
+    # a relation this config declares is one the repo reads through 3tears (a local copy, another service's, a
+    # produced relation): a data table with the switch on too
+    catalog.marking = True
     for prefix, relations in ((COPY_PREFIX, config.local_relations), ("", config.foreign_relations)):
         for written, declared in relations.items():
             # ``local_relations["*"]``: the default key of every copy relation the repo declares no key for
@@ -363,6 +372,8 @@ def _schema_of(config: NoWholeReadsConfig) -> SchemaCatalog:
     for entry, declared in config.relation_producers.items():
         for key in _keys_of(declared):
             catalog.add_key(produced_relation(entry), key, "NoWholeReadsConfig.relation_producers")
+    catalog.marking = False
+    catalog.threetears_only = config.threetears_tables_only
     return catalog
 
 
