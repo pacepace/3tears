@@ -160,7 +160,6 @@ def _past(
     first: int,
     *,
     by_row: bool = False,
-    lead: Sequence[tuple[str, str]] = (),
 ) -> tuple[str, list[Any]]:
     """the condition naming the rows after the cursor, and its parameters numbered from ``first``.
 
@@ -194,12 +193,14 @@ def _past(
         return f"{column} IS NULL" if mark is None else f"{column} = {mark}"
 
     if by_row and _seeks_by_row(order) and all(mark is not None for mark in marks):
-        # the columns ``by`` pins lead the comparison (``lead``: each column and its own placeholder), so it is one
-        # range of the index they lead, never a range of an index of the sort's columns alone, filtered
-        ascending = not order[0].descending
-        columns = ", ".join([column for column, _ in lead if ascending] + [sort.sorted_by for sort in order])
-        bound = ", ".join([place for _, place in lead if ascending] + [str(mark) for mark in marks])
-        return f"({columns}) {'>' if ascending else '<'} ({bound})", params
+        # the sort's columns alone: the columns ``by`` pins are bound by equality beside it (``kind = $1 AND (name,
+        # id) > ($2, $3)``), never inside it. Inside it (``(kind, name, id) > ($1, $2, $3)``) only an index led by the
+        # pinned columns can take it as its condition, and PostgreSQL may read another (a unique index of the next
+        # column) from its start, filtering: 2,041 rows read for 21. Beside it, every index answering the order
+        # takes the comparison as its condition, the pinned columns' index by its equality first
+        columns = ", ".join(sort.sorted_by for sort in order)
+        bound = ", ".join(str(mark) for mark in marks)
+        return f"({columns}) {'<' if order[0].descending else '>'} ({bound})", params
     expanded = after(order[-1], marks[-1])
     for sort, mark in zip(reversed(order[:-1]), reversed(marks[:-1]), strict=True):
         expanded = f"{after(sort, mark)} OR ({same(sort, mark)} AND ({expanded}))"
@@ -330,20 +331,14 @@ def _check(table: str | Derived, columns: Sequence[str | Selected], order: Seque
         raise ValueError(f"a sort expression is read under a name of its own, not a column read: {shadowed}")
 
 
-def _pinned(by: Mapping[str, Any], order: Sequence[Sort]) -> list[tuple[str, str]]:
-    """each column ``by`` pins to one value (not a set, not NULL, not a sort column), as the page names it, and the
-    placeholder :func:`~threetears.core.keyed._filters.by_conditions` binds it at."""
-    pinned: list[tuple[str, str]] = []
-    place = 1
+def _pinned(by: Mapping[str, Any], order: Sequence[Sort]) -> list[str]:
+    """each column ``by`` pins to one value (not a set, not NULL, not a sort column), as the page names it."""
     sorted_columns = {sort.column for sort in order}
-    for column, value in by.items():
-        if isinstance(value, AnyOf):
-            place += len(list(value.values)) if value.as_list else 1
-        elif value is not None:
-            if column not in sorted_columns:
-                pinned.append((f"t.{quote_identifier(column)}", f"${place}"))
-            place += 1
-    return pinned
+    return [
+        f"t.{quote_identifier(column)}"
+        for column, value in by.items()
+        if not isinstance(value, AnyOf) and value is not None and column not in sorted_columns
+    ]
 
 
 def _statement(
@@ -366,7 +361,7 @@ def _statement(
         conditions.append(renumbered(fragment, len(params)))
         params += list(fragment.params)
     if past is not None:
-        condition, past_params = _past(order, past, len(params) + 1, by_row=by_row, lead=lead)
+        condition, past_params = _past(order, past, len(params) + 1, by_row=by_row)
         conditions.append(condition)
         params += past_params
     for fragment in visible:
@@ -383,7 +378,7 @@ def _statement(
     )
     # the pinned columns, constant on every row, lead the ORDER BY too: the same order, read as one range of the
     # index they lead
-    ordered = ", ".join([f"{column} ASC" for column, _ in lead] + [_order_by(order)])
+    ordered = ", ".join([f"{column} ASC" for column in lead] + [_order_by(order)])
     sql = f"SELECT {selected} FROM {relation(table, 't')}{clause} ORDER BY {ordered} LIMIT {rows}"
     if lock is not None:
         sql += lock.of("t")

@@ -76,6 +76,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "update_keyed",
         "counts_by_relations",
         "update_before",
+        "apply_stage",
     }
 )
 
@@ -614,6 +615,12 @@ def _step(call: ast.Call) -> list[str]:
     return statements
 
 
+def _apply_stage(call: ast.Call) -> list[str]:
+    """the stage read whole, as the helper reads it to write the target by its key: a stage that is a change relation
+    (registered, declared, a transient producer's) passes, and one that is a data table is the whole read it is."""
+    return _step_relation(_argument(call, "stage", 2), "stage")
+
+
 _SYNTHESIZERS: Final = {
     **dict.fromkeys(STEP_CALLS, _step),
     "read_keyed": _read_keyed,
@@ -635,6 +642,7 @@ _SYNTHESIZERS: Final = {
     "update_keyed": _keyed_write,
     "counts_by_relations": _counts_by_relations,
     "update_before": _update_before,
+    "apply_stage": _apply_stage,
 }
 
 

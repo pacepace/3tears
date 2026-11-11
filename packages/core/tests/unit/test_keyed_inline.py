@@ -244,3 +244,29 @@ def test_the_threaded_reader_answers_the_same_arrow(conn: duckdb.DuckDBPyConnect
     threaded = pa.concat_tables(asyncio.run(read_keyed_arrow(ThreadedDuckDB(conn), "t", keys=keys, types=types)))
     assert threaded.schema == inline.schema
     assert sorted(threaded.to_pylist(), key=str) == sorted(inline.to_pylist(), key=str)
+
+
+def test_records_answers_what_the_any_it_replaces_answers(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if read_keyed(records=True) answers other rows than the hand-written ``= ANY`` read it stands for, over
+    every seed: none, one, many, NULLs, ties, and the tenant boundary (a dropped tenant pin answers tenant 1's)."""
+    conn.execute("CREATE TABLE r (tenant INTEGER, id BIGINT, v INTEGER, PRIMARY KEY (tenant, id))")
+    ids = list(range(0, 40, 3))
+
+    def row(seed: Seeded) -> dict[str, object]:
+        return {"tenant": seed.tenant, "id": seed.index, "v": None if seed.null else seed.tie}
+
+    async def helper(c: Any) -> Any:
+        keys = KeyBatch(("id",), [(i,) for i in ids], ("bigint",))
+        return await read_keyed(c, "r", keys=keys, columns=["tenant", "id", "v"], by={"tenant": 0}, records=True)
+
+    run_inline(
+        assert_same_results(
+            InlineDuckDB(conn),
+            table="r",
+            row=row,
+            old_sql="SELECT tenant, id, v FROM r WHERE tenant = $1 AND id = ANY($2::bigint[])",
+            params=(0, ids),
+            helper=helper,
+            ordered=False,
+        )
+    )

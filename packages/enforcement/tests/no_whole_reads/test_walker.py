@@ -2417,6 +2417,58 @@ def test_a_step_over_a_change_relation_passes_and_one_over_a_table_is_the_whole_
     assert ("laundered", "change-relation-is-a-table results") in found, found
 
 
+_STAGE_HELPER = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import change_relation
+    from threetears.core.keyed._filters import quoted_table
+
+    RESULTS = TableSchema(name="results", primary_key=("state", "run_id"), columns=[])
+
+
+    async def apply_stage(conn, target, stage, *, key, columns):
+        staged = quoted_table(change_relation(stage))
+        return await conn.execute(f"INSERT INTO results (state, run_id) SELECT state, run_id FROM {staged}")
+"""
+
+_STAGE_CALLERS = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import apply_stage, change_relation
+    from threetears.core.keyed._filters import quoted_table
+
+    RESULTS = TableSchema(name="results", primary_key=("state", "run_id"), columns=[])
+    HELD = TableSchema(name="held", primary_key=("state", "run_id"), columns=[])
+
+
+    async def from_a_chunk(conn, chunk):
+        conn.register("chunk", chunk)
+        return await apply_stage(conn, "held", "chunk", key=["state", "run_id"], columns=["state", "run_id"])
+
+
+    async def from_a_table(conn):
+        return await apply_stage(conn, "held", "results", key=["state", "run_id"], columns=["state", "run_id"])
+
+
+    async def not_a_helper(conn, rel):
+        staged = quoted_table(change_relation(rel))
+        return await conn.execute(f"INSERT INTO held (state, run_id) SELECT state, run_id FROM {staged}")
+"""
+
+
+def test_a_keyed_helper_s_stage_parameter_is_a_change_relation_judged_where_it_is_handed(tmp_path: Path) -> None:
+    """Flips if apply_stage's statements over its own stage parameter (declared ``change_relation(stage)``) are
+    flagged, if a caller handing it a data table as the stage passes, if one handing it a registered chunk is flagged,
+    or if ``change_relation`` of a parameter launders a function that is no 3tears keyed helper."""
+    found = _symbols(
+        _config(
+            tmp_path,
+            {"threetears/core/keyed/writes.py": _STAGE_HELPER, "app.py": _STAGE_CALLERS},
+        )
+    )
+    functions = {function for function, _ in found}
+    assert not functions & {"apply_stage", "from_a_chunk"}, found
+    assert {"from_a_table", "not_a_helper"} <= functions, found
+
+
 _ANY_KIND_LEAD = """
     from threetears.core.collections.schema_backed import Index, TableSchema
     from threetears.core.keyed import AnyOf, Sort, keyset_page

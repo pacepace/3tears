@@ -53,6 +53,7 @@ from threetears.core.keyed import (
     rows_affected,
     update_before,
 )
+from threetears.core.keyed import rows as rows_module
 from threetears.core.keyset import read_keyset_pages
 from threetears.core.pagination import CursorError
 
@@ -108,6 +109,23 @@ class _Recording:
     async def execute(self, query: str, *params: Any) -> str:
         self.statements.append((query, params))
         return await self._inner.execute(query, *params)
+
+
+class _Row(dict[str, Any]):
+    """a row of its own type, as asyncpg's ``Record`` is: a keyed read that copies it answers another type."""
+
+
+class _Rows(_Recording):
+    """a reader answering rows of their own type (:class:`_Row`), keeping each row it answered."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+        super().__init__(conn)
+        self.answered: list[_Row] = []
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        rows = [_Row(row) for row in await super().fetch(query, *params)]
+        self.answered += rows
+        return list(rows)
 
 
 class _Unanswering:
@@ -258,6 +276,77 @@ class TestReadKeyed:
     def test_a_key_of_the_wrong_arity_is_refused(self) -> None:
         with pytest.raises(ValueError, match="has 2 values"):
             KeyBatch(("a", "b"), [("k1",)])
+
+    async def test_records_answers_the_connection_s_own_rows_uncopied(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if read_keyed(records=True) copies a row (into a dict or anything else), drops or repeats one across
+        its statements, or answers other rows than the default read; or if the default stops answering dicts."""
+        reader = _Rows(db)
+        keys = KeyBatch(("a", "b"), [(f"k{i % 10}", i) for i in range(25)], ("text", "bigint"))
+        records = await read_keyed(reader, "t", keys=keys, columns=["a", "b", "v"], batch=10, records=True)
+        assert len(reader.statements) == 3
+        assert [id(row) for row in records] == [id(row) for row in reader.answered]
+        assert all(type(row) is _Row for row in records)
+        dicts = await read_keyed(_Rows(db), "t", keys=keys, columns=["a", "b", "v"], batch=10)
+        assert all(type(row) is dict for row in dicts)
+        assert sorted(map(dict, records), key=str) == sorted(dicts, key=str)
+        assert len(dicts) == 25
+
+    async def test_a_shape_read_again_binds_its_keys_to_the_text_already_rendered(
+        self, db: duckdb.DuckDBPyConnection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flips if a read of a shape already read renders its text again, if two shapes share one text (keys bound
+        natively or as text, a batch bounded to its columns' values or not, by= a value or NULL), or if the texts
+        kept grow past their bound."""
+        kept: dict[tuple[Any, ...], str] = {}
+        monkeypatch.setattr(rows_module, "_RENDERED", kept)
+        renders: list[str] = []
+
+        def remembered(shape: tuple[Any, ...], text: str) -> None:
+            # each text rendered is remembered at once: a render a call
+            renders.append(text)
+            kept[shape] = text
+
+        monkeypatch.setattr("threetears.core.keyed.rows._remember", remembered)
+        native = _Recording(db)
+        native.binds_native_arrays = True  # type: ignore[attr-defined]
+        for values in ([(1,), (2,)], [(11,), (12,), (13,)]):
+            await read_keyed(native, "t", keys=KeyBatch(("b",), values, ("bigint",)), columns=["b"])
+        assert len(renders) == 1
+        assert native.statements[0][0] == native.statements[1][0]
+        assert native.statements[1][1] == ([11, 12, 13],)
+        # text keys on the same connection: another shape, cast in SQL
+        rows = await read_keyed(native, "t", keys=KeyBatch(("b",), [("1",), ("12",)], ("bigint",)), columns=["b"])
+        assert sorted(row["b"] for row in rows) == [1, 12]
+        assert native.statements[2][0] != native.statements[0][0] and len(renders) == 2
+        # a batch sharing its lead is bounded to its values; a scattered one is not: two texts, each right
+        reader = _Recording(db)
+        lead = await read_keyed(
+            reader, "t", keys=KeyBatch(("a", "b"), [("k1", 1), ("k1", 11)], ("text", "bigint")), columns=["b"]
+        )
+        scattered = [(f"k{i}", i) for i in range(10)]
+        spread = await read_keyed(reader, "t", keys=KeyBatch(("a", "b"), scattered, ("text", "bigint")), columns=["b"])
+        assert sorted(row["b"] for row in lead) == [1, 11] and sorted(row["b"] for row in spread) == list(range(10))
+        assert "= ANY(" in reader.statements[0][0] and "= ANY(" not in reader.statements[1][0]
+        # by= a value and by= NULL: two texts
+        await read_keyed(reader, "t", keys=KeyBatch(("b",), [(3,)], ("bigint",)), columns=["b"], by={"stamp": None})
+        pinned = await read_keyed(
+            reader,
+            "t",
+            keys=KeyBatch(("b",), [(4,)], ("bigint",)),
+            columns=["b"],
+            by={"stamp": _START + timedelta(seconds=2)},
+        )
+        assert '"stamp" IS NULL' in reader.statements[2][0] and '"stamp" = $2' in reader.statements[3][0]
+        assert [row["b"] for row in pinned] == [4]
+        # past the bound the oldest shape is let go
+        monkeypatch.undo()
+        bounded: dict[tuple[Any, ...], str] = {}
+        monkeypatch.setattr(rows_module, "_RENDERED", bounded)
+        monkeypatch.setattr(rows_module, "_RENDERED_SHAPES", 2)
+        for column in ("a", "b", "v"):
+            await read_keyed(reader, "t", keys=KeyBatch(("b",), [(5,)], ("bigint",)), columns=[column])
+        assert len(bounded) == 2
+        assert all('SELECT t."a"' not in text for text in bounded.values())
 
 
 class TestKeysetPage:

@@ -38,7 +38,7 @@ from threetears.core.keyed._filters import (
 )
 from threetears.core.keyed.counts import rows_affected
 from threetears.core.keyed.rows import _TEXT_TYPES, DEFAULT_KEY_BATCH, KeyBatch, _text
-from threetears.core.keyed.steps import Step
+from threetears.core.keyed.steps import Step, change_relation
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
@@ -462,7 +462,9 @@ async def apply_stage(
     if distinct and chosen is not StageMode.DIFFERENCE:
         raise ValueError(f"a stage's rows are de-duplicated (distinct=) by a difference's insert; {chosen} has none")
     table = quoted_table(target)
-    staged = quoted_table(stage)
+    # the stage is a change set (the rows being applied), read whole by each statement below; the rule judges what
+    # a caller hands as the stage where it calls, a data table there being the whole read it is
+    staged = quoted_table(change_relation(stage))
     cols = ", ".join(quote_identifier(column) for column in columns)
     on_key = " AND ".join(f"s.{quote_identifier(column)} = {table}.{quote_identifier(column)}" for column in key)
     if chosen is StageMode.UPSERT:
