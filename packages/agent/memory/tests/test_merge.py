@@ -45,10 +45,10 @@ async def test_deletes_alias_collisions_before_repoint() -> None:
             "FROM media WHERE": [],
             "FROM memory_chunks WHERE": [],
             "FROM memory_consolidations": [],
-            "UPDATE memories": [{"agent_id": agent, "memory_id": uuid4()}],
-            "UPDATE media ": [{"agent_id": agent, "media_id": uuid4()}],
-            "UPDATE media_content": [{"agent_id": agent, "content_id": uuid4()}],
-            "UPDATE memory_chunks": [{"agent_id": agent, "chunk_id": uuid4()}],
+            'UPDATE "memories"': [{"agent_id": agent, "memory_id": uuid4()}],
+            'UPDATE "media" ': [{"agent_id": agent, "media_id": uuid4()}],
+            'UPDATE "media_content"': [{"agent_id": agent, "content_id": uuid4()}],
+            'UPDATE "memory_chunks"': [{"agent_id": agent, "chunk_id": uuid4()}],
         }
     )
 
@@ -61,7 +61,7 @@ async def test_deletes_alias_collisions_before_repoint() -> None:
     delete_at = conn.order.index("DELETE FROM memories")
     assert all(not step.startswith("UPDATE") for step in conn.order[:delete_at])
     assert conn.order.index("DELETE FROM memories") < conn.order.index(
-        "UPDATE memories",
+        'UPDATE "memories"',
     )
     assert len(result.removed["memories"]) == 1
     assert len(result.repointed["memories"]) == 1
@@ -86,7 +86,8 @@ async def test_child_tables_repoint_without_touch() -> None:
         to_user_id=uuid4(),
     )
 
-    by_table = {sql.split()[1] if sql.startswith("UPDATE") else "DELETE": params for sql, params in captured}
+    # the keyed update's spelling (threetears.core.keyed.update_keyed): its table quoted
+    by_table = {sql.split()[1].strip('"') if sql.startswith("UPDATE") else "DELETE": params for sql, params in captured}
     # children: only $1 (where) + $2 (set) — no $3 touch parameter.
     assert len(by_table["media"]) == 2
     assert len(by_table["media_content"]) == 2
@@ -141,10 +142,10 @@ async def test_the_children_an_alias_collision_cascades_to_are_named() -> None:
             "FROM memory_consolidations": [
                 {"agent_id": agent, "consolidated_memory_id": gist_id, "source_memory_id": memory_id}
             ],
-            "UPDATE memories": [],
-            "UPDATE media ": [],
-            "UPDATE media_content": [],
-            "UPDATE memory_chunks": [],
+            'UPDATE "memories"': [],
+            'UPDATE "media" ': [],
+            'UPDATE "media_content"': [],
+            'UPDATE "memory_chunks"': [],
         }
     )
 
@@ -176,10 +177,10 @@ async def test_evict_names_every_touched_key_by_table_in_one_map() -> None:
             "FROM media WHERE": [{"agent_id": agent, "media_id": cascaded_media}],
             "FROM memory_chunks WHERE": [],
             "FROM memory_consolidations": [],
-            "UPDATE memories": [{"agent_id": agent, "memory_id": moved}],
-            "UPDATE media ": [{"agent_id": agent, "media_id": moved_media}],
-            "UPDATE media_content": [],
-            "UPDATE memory_chunks": [],
+            'UPDATE "memories"': [{"agent_id": agent, "memory_id": moved}],
+            'UPDATE "media" ': [{"agent_id": agent, "media_id": moved_media}],
+            'UPDATE "media_content"': [],
+            'UPDATE "memory_chunks"': [],
         }
     )
 
@@ -240,10 +241,10 @@ async def test_the_summary_log_counts_what_the_cascade_removed(caplog: pytest.Lo
                 {"agent_id": agent, "chunk_id": uuid4()},
             ],
             "FROM memory_consolidations": [],
-            "UPDATE memories": [],
-            "UPDATE media ": [],
-            "UPDATE media_content": [],
-            "UPDATE memory_chunks": [],
+            'UPDATE "memories"': [],
+            'UPDATE "media" ': [],
+            'UPDATE "media_content"': [],
+            'UPDATE "memory_chunks"': [],
         }
     )
 
