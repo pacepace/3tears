@@ -153,6 +153,13 @@ class _Statement:
         return texts
 
     def step(self, sql: str) -> Step:
+        """the statement ``sql`` as a step, with the parameters bound so far.
+
+        :param sql: the statement's text
+        :ptype sql: str
+        :return: the step
+        :rtype: Step
+        """
         return Step(sql, tuple(self.params))
 
 
