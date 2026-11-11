@@ -295,6 +295,9 @@ def documents() -> dict[str, str]:
 #: Every identity and digest of the fixture, as the tree at ``00107a5b7`` computed them (:func:`identities`), but for
 #: those the bundle shape reaches: the shape itself, and each aspect's and the campaign's fingerprint and evidence
 #: digest, re-pinned at shapes 65 and 66 (see :data:`PINNED_DOCUMENTS`). No run, cell, pool or pairing key moved.
+#: The campaign fingerprint was re-pinned at campaign bundle shape 4: this build's bundle, read as the build before it
+#: fingerprinted a shape-3 frame (at shape 2, without ``readings.aggregate`` or ``arm_spellings``), computes the old
+#: pin; shape 4 reads its frame as it is, so only the shape, the empty ``arm_spellings`` and the aggregate moved it.
 PINNED: dict[str, str] = {
     "CELL_MODEL_VERSION": "14",
     "IDENTITY_VERSION": "25",
@@ -327,8 +330,8 @@ PINNED: dict[str, str] = {
         "be7db1240bcd8149ba17c91f78963c8632823d88d0f99674952fa7eb408d3141"
     ),
     "bundle schema_version": "66",
-    "campaign fingerprint v3": "v3:4c78a439d821c64d413dcb02816b2fe3336684d083f4900cade44b4636461aac",
-    "campaign document fingerprint v3": "v3:4c78a439d821c64d413dcb02816b2fe3336684d083f4900cade44b4636461aac",
+    "campaign fingerprint v3": "v3:0b67eb9218f25e0a8845cd936c8f874338cc8a4956f78e4aeff7a6d855b85752",
+    "campaign document fingerprint v3": "v3:0b67eb9218f25e0a8845cd936c8f874338cc8a4956f78e4aeff7a6d855b85752",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
     # The one entry that moves with the durable version: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
     # arm names 16.4, stratum names 16.5, plan reporter cases 16.6, the analyst's gap notes 16.7, a design's measure
