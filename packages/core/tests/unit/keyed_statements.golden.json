@@ -1,0 +1,267 @@
+{
+ "any_rows": [
+  [
+   "SELECT t.\"a\" FROM \"t\" AS t WHERE t.\"a\" = $1 AND (t.\"b\" < $2) LIMIT 5",
+   "(1, 2)"
+  ]
+ ],
+ "copy_keyed": [
+  [
+   "SELECT t.\"a\", t.\"b\"::text AS \"b\" FROM \"t\" AS t WHERE t.\"k\" = $1 AND (t.\"v\" > $2) ORDER BY t.\"k\" ASC, t.\"name\" ASC, t.\"id\" ASC",
+   "(1, 1, {'format': 'csv', 'force_quote': ['a']})"
+  ]
+ ],
+ "delete_before.by_most_pages": [
+  [
+   "/*+ YbBatchedNL(ANY_subquery t) */ DELETE FROM \"s\".\"t\" AS t WHERE (t.\"a\", t.\"b\") IN (SELECT \"a\", \"b\" FROM \"s\".\"t\" WHERE \"purpose\" = $1 AND \"at\" < $2 ORDER BY \"at\" LIMIT 1) RETURNING t.\"a\", t.\"b\"",
+   "('p', datetime.datetime(2026, 11, 11, 12, 30, tzinfo=datetime.timezone.utc))"
+  ]
+ ],
+ "delete_before.pages": [
+  [
+   "/*+ YbBatchedNL(ANY_subquery t) */ DELETE FROM \"t\" AS t WHERE (t.\"hashed\") IN (SELECT \"hashed\" FROM \"t\" WHERE \"expires_at\" < $1 ORDER BY \"expires_at\" LIMIT 2) RETURNING t.\"hashed\"",
+   "(datetime.datetime(2026, 11, 11, 12, 30, tzinfo=datetime.timezone.utc),)"
+  ],
+  [
+   "/*+ YbBatchedNL(ANY_subquery t) */ DELETE FROM \"t\" AS t WHERE (t.\"hashed\") IN (SELECT \"hashed\" FROM \"t\" WHERE \"expires_at\" < $1 ORDER BY \"expires_at\" LIMIT 2) RETURNING t.\"hashed\"",
+   "(datetime.datetime(2026, 11, 11, 12, 30, tzinfo=datetime.timezone.utc),)"
+  ]
+ ],
+ "delete_keyed.by": [
+  [
+   "DELETE FROM \"t\" WHERE \"scope_id\" = $1 AND \"id\" = $2",
+   "('s', 'd')"
+  ]
+ ],
+ "delete_keyed.empty_keys": [],
+ "delete_keyed.null_safe_keys": [
+  [
+   "DELETE FROM \"t\" WHERE EXISTS (SELECT 1 FROM (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::uuid[]) AS k1) AS k WHERE \"a\" IS NOT DISTINCT FROM k.k0 AND \"b\" IS NOT DISTINCT FROM k.k1)",
+   "([None, 's'], ['1', '2'])"
+  ]
+ ],
+ "delete_keyed.single_key_text": [
+  [
+   "DELETE FROM \"t\" WHERE \"a\" = ANY($1::text[])",
+   "(['x'],)"
+  ]
+ ],
+ "delete_keyed.where_returning": [
+  [
+   "DELETE FROM \"t\" WHERE \"key\" = $1 AND (\"expires_at\" > $2) RETURNING \"payload\"",
+   "('k', datetime.datetime(2026, 11, 11, 12, 30, tzinfo=datetime.timezone.utc))"
+  ]
+ ],
+ "keyset_page.cursor_by_row": [
+  [
+   "SELECT t.\"name\", t.\"id\" FROM \"t\" AS t WHERE t.\"tenant\" = $1 AND t.\"kind\" = ANY($2::text[]) AND (t.\"due\" <= $3) AND (t.\"name\", t.\"id\") > ($4::text, $5::text::uuid) AND (EXISTS (SELECT 1 FROM \"grants\" AS v WHERE v.\"doc\" = t.\"id\" AND v.\"who\" = $6 AND v.\"role\" = ANY($7::text[]))) ORDER BY t.\"tenant\" ASC, t.\"name\" ASC, t.\"id\" ASC LIMIT 11 FOR SHARE OF t",
+   "('x', ['a', 'b'], datetime.datetime(2026, 11, 11, 12, 30, tzinfo=datetime.timezone.utc), 'n', '0190d2f4-6c2e-7e3a-8b1c-1234567890ab', 'me', ['r'])"
+  ]
+ ],
+ "keyset_page.cursor_yugabyte": [
+  [
+   "SELECT t.\"name\", t.\"id\" FROM \"t\" AS t WHERE t.\"tenant\" = $1 AND t.\"name\" >= $2::text AND (t.\"name\" > $2::text OR (t.\"name\" = $2::text AND (t.\"id\" > $3::text::uuid))) ORDER BY t.\"tenant\" ASC, t.\"name\" ASC, t.\"id\" ASC LIMIT 11",
+   "('x', 'n', '0190d2f4-6c2e-7e3a-8b1c-1234567890ab')"
+  ]
+ ],
+ "keyset_page.expression_more": [
+  [
+   "SELECT t.\"id\", lower(t.\"name\") AS \"lname\" FROM \"t\" AS t WHERE t.\"k\" = $1 ORDER BY t.\"k\" ASC, lower(t.\"name\") ASC, t.\"id\" ASC LIMIT 2",
+   "(1,)"
+  ]
+ ],
+ "keyset_page.first": [
+  [
+   "SELECT t.\"name\", t.\"id\" FROM \"t\" AS t WHERE t.\"tenant\" = $1 ORDER BY t.\"tenant\" ASC, t.\"name\" ASC, t.\"id\" ASC LIMIT 11",
+   "('x',)"
+  ]
+ ],
+ "keyset_page.nullable_desc_null_cursor": [
+  [
+   "SELECT t.\"due_at\", t.\"id\" FROM \"t\" AS t WHERE (t.\"due_at\" IS NOT NULL OR (t.\"due_at\" IS NULL AND (t.\"id\" > $1::text::bigint))) ORDER BY t.\"due_at\" DESC NULLS FIRST, t.\"id\" ASC LIMIT 4",
+   "('7',)"
+  ]
+ ],
+ "keyset_page.nullable_desc_value_cursor": [
+  [
+   "SELECT t.\"due_at\", t.\"id\" FROM \"t\" AS t WHERE t.\"a\" IS NULL AND (t.\"due_at\" < $1::text::timestamptz OR (t.\"due_at\" = $1::text::timestamptz AND (t.\"id\" > $2::text::bigint))) ORDER BY t.\"due_at\" DESC NULLS FIRST, t.\"id\" ASC LIMIT 4",
+   "('2026-11-11T12:30:00+00:00', '7')"
+  ]
+ ],
+ "keyset_page.uncast_after_more": [
+  [
+   "SELECT t.\"seq\", t.\"body\" FROM \"documents\" AS t WHERE t.\"scope_id\" = $1 AND t.\"seq\" >= $2 AND (t.\"seq\" > $2) ORDER BY t.\"scope_id\" ASC, t.\"seq\" ASC LIMIT 2",
+   "('s', '4')"
+  ]
+ ],
+ "keyset_rows.mixed_pages_yugabyte": [
+  [
+   "SELECT t.\"due_at\", t.\"id\" FROM \"t\" AS t WHERE t.\"k\" = $1 ORDER BY t.\"k\" ASC, t.\"due_at\" DESC NULLS FIRST, t.\"id\" ASC LIMIT 2",
+   "(1,)"
+  ],
+  [
+   "SELECT t.\"due_at\", t.\"id\" FROM \"t\" AS t WHERE t.\"k\" = $1 AND (t.\"due_at\" IS NOT NULL OR (t.\"due_at\" IS NULL AND (t.\"id\" > $2::text::bigint))) ORDER BY t.\"k\" ASC, t.\"due_at\" DESC NULLS FIRST, t.\"id\" ASC LIMIT 2",
+   "(1, '2')"
+  ]
+ ],
+ "keyset_rows.pages": [
+  [
+   "SELECT t.\"name\", t.\"id\" FROM \"t\" AS t WHERE t.\"tenant\" = $1 AND (TRUE) ORDER BY t.\"tenant\" ASC, t.\"name\" ASC, t.\"id\" ASC LIMIT 3",
+   "('x',)"
+  ],
+  [
+   "SELECT t.\"name\", t.\"id\" FROM \"t\" AS t WHERE t.\"tenant\" = $1 AND (TRUE) AND (t.\"name\", t.\"id\") > ($2::text, $3::text::uuid) ORDER BY t.\"tenant\" ASC, t.\"name\" ASC, t.\"id\" ASC LIMIT 3",
+   "('x', 'c', '0190d2f4-6c2e-7e3a-8b1c-1234567890ab')"
+  ]
+ ],
+ "keyset_rows.uncast_pages": [
+  [
+   "SELECT t.\"id\", t.\"seq\" FROM \"documents\" AS t WHERE t.\"scope_id\" = $1 AND t.\"doc_type\" = $2 ORDER BY t.\"scope_id\" ASC, t.\"doc_type\" ASC, t.\"seq\" ASC LIMIT 2",
+   "('s', 'r')"
+  ],
+  [
+   "SELECT t.\"id\", t.\"seq\" FROM \"documents\" AS t WHERE t.\"scope_id\" = $1 AND t.\"doc_type\" = $2 AND t.\"seq\" >= $3 AND (t.\"seq\" > $3) ORDER BY t.\"scope_id\" ASC, t.\"doc_type\" ASC, t.\"seq\" ASC LIMIT 2",
+   "('s', 'r', 2)"
+  ]
+ ],
+ "read_by.all_columns": [
+  [
+   "SELECT t.* FROM \"t\" AS t WHERE t.\"a\" IS NULL",
+   "()"
+  ]
+ ],
+ "read_by.anyof_selected_lock": [
+  [
+   "SELECT t.\"a\", CAST(b AS VARCHAR) AS \"b\" FROM \"t\" AS t WHERE t.\"a\" = ANY($1::uuid[]) AND t.\"z\" IN ($2, $3) AND t.\"w\" = ANY($4) FOR UPDATE OF t SKIP LOCKED",
+   "(['x', 'y'], 1, 2, [3])"
+  ]
+ ],
+ "read_by.derived": [
+  [
+   "SELECT t.\"a\" FROM (SELECT 1 AS a) AS t WHERE t.\"a\" = $1",
+   "(1,)"
+  ]
+ ],
+ "read_by.eq": [
+  [
+   "SELECT t.\"a\", t.\"b\" FROM \"s\".\"t\" AS t WHERE t.\"a\" = $1 AND t.\"b\" = $2",
+   "('k', 2)"
+  ]
+ ],
+ "read_joined": [
+  [
+   "SELECT t.\"id\", t.\"v\" FROM \"t\" AS t WHERE t.\"id\" = ANY($1::text[]::bigint[])",
+   "(['1', '2'],)"
+  ]
+ ],
+ "read_keyed.as_list_batches": [
+  [
+   "SELECT t.\"body\" FROM \"documents\" AS t WHERE t.\"id\" IN ($1, $2) AND t.\"scope_id\" = $3 AND t.\"doc_type\" = $4",
+   "('a', 'b', 's', 'run')"
+  ],
+  [
+   "SELECT t.\"body\" FROM \"documents\" AS t WHERE t.\"id\" IN ($1) AND t.\"scope_id\" = $2 AND t.\"doc_type\" = $3",
+   "('c', 's', 'run')"
+  ]
+ ],
+ "read_keyed.as_list_two_columns": [
+  [
+   "SELECT t.\"a\" FROM \"t\" AS t WHERE (t.\"a\", t.\"b\") IN (($1, $2), ($3, $4)) AND t.\"c\" = $5",
+   "('x', 1, 'y', 2, 1)"
+  ]
+ ],
+ "read_keyed.native_text_values": [
+  [
+   "SELECT t.\"id\" FROM \"t\" AS t WHERE t.\"id\" = ANY($1::text[]::bigint[])",
+   "(['1', '2'],)"
+  ]
+ ],
+ "read_keyed.null_safe_lock": [
+  [
+   "SELECT t.\"a\", t.\"b\" FROM \"t\" AS t JOIN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1) AS k ON t.\"a\" IS NOT DISTINCT FROM k.k0 AND t.\"b\" IS NOT DISTINCT FROM k.k1 WHERE (t.\"v\" = $3) ORDER BY t.\"a\", t.\"b\" FOR UPDATE OF t",
+   "([None, 's'], ['1', '2'], 'q')"
+  ]
+ ],
+ "read_keyed.one_column": [
+  [
+   "SELECT t.\"id\", t.\"v\" FROM \"t\" AS t WHERE t.\"id\" = ANY($1::text[]::bigint[])",
+   "(['1', '2'],)"
+  ]
+ ],
+ "read_keyed.one_column_native": [
+  [
+   "SELECT t.\"id\" FROM \"t\" AS t WHERE t.\"id\" = ANY($1::bigint[]) AND t.\"tenant\" = $2",
+   "([1, 2], 'x')"
+  ]
+ ],
+ "read_keyed.two_columns_bounded": [
+  [
+   "/*+ YbBatchedNL(ANY_subquery t) */ SELECT t.\"a\", t.\"b\" FROM \"t\" AS t WHERE (t.\"a\", t.\"b\") IN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1) AND t.\"tenant\" = ANY($3::text[]) AND t.\"a\" = ANY($4::text[]) AND t.\"b\" = ANY($5::text[]::bigint[]) AND (t.\"v\" > $6)",
+   "(['s', 's', 's'], ['1', '2', '3'], ['x'], ['s'], ['1', '2', '3'], 5)"
+  ]
+ ],
+ "read_keyed.two_columns_scattered": [
+  [
+   "/*+ YbBatchedNL(ANY_subquery t) */ SELECT t.\"a\" FROM \"t\" AS t WHERE (t.\"a\", t.\"b\") IN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::date[]) AS k1)",
+   "(['s', 'u', 'w'], ['1', '2', '3'])"
+  ]
+ ],
+ "read_row.lock_nowait": [
+  [
+   "SELECT t.* FROM \"t\" AS t WHERE t.\"id\" = $1 LIMIT 1 FOR UPDATE OF t NOWAIT",
+   "(UUID('0190d2f4-6c2e-7e3a-8b1c-1234567890ab'),)"
+  ]
+ ],
+ "read_row.records": [
+  [
+   "SELECT t.\"v\" FROM \"t\" AS t WHERE t.\"id\" = $1 LIMIT 1",
+   "(1,)"
+  ]
+ ],
+ "read_value": [
+  [
+   "SELECT t.\"v\" FROM \"t\" AS t WHERE t.\"id\" = $1 AND t.\"flag\" = $2 LIMIT 1",
+   "(1, True)"
+  ]
+ ],
+ "update_before.pages": [
+  [
+   "/*+ YbBatchedNL(ANY_subquery t) */ UPDATE \"t\" AS t SET \"status\" = $1 WHERE (t.\"id\") IN (SELECT \"id\" FROM \"t\" WHERE \"status\" = $2 AND \"at\" < $3 ORDER BY \"at\" LIMIT 5) RETURNING t.\"id\"",
+   "('stale', 'dispatching', datetime.datetime(2026, 11, 11, 12, 30, tzinfo=datetime.timezone.utc))"
+  ]
+ ],
+ "update_keyed.by_where_returning": [
+  [
+   "UPDATE \"s\".\"t\" SET \"status\" = $1, \"at\" = now() + $2, \"n\" = \"n\" + $3 WHERE \"id\" = $4 AND \"gone\" IS NULL AND (\"status\" = $5) RETURNING \"id\", \"status\"",
+   "('done', '1 day', 1, UUID('0190d2f4-6c2e-7e3a-8b1c-1234567890ab'), 'open')"
+  ]
+ ],
+ "update_keyed.keys_as_list": [
+  [
+   "UPDATE \"t\" SET \"v\" = $1 WHERE (\"a\", \"b\") IN (($2, $3), ($4, $5))",
+   "(1, 'x', 1, 'y', 2)"
+  ]
+ ],
+ "update_keyed.keys_batches": [
+  [
+   "UPDATE \"t\" SET \"v\" = $1 WHERE (\"a\", \"b\") IN (SELECT unnest($2::text[]), unnest($3::text[]::bigint[])) AND \"tenant\" = $4",
+   "(1, ['x', 'y'], ['1', '2'], 'q')"
+  ],
+  [
+   "UPDATE \"t\" SET \"v\" = $1 WHERE (\"a\", \"b\") IN (SELECT unnest($2::text[]), unnest($3::text[]::bigint[])) AND \"tenant\" = $4",
+   "(1, ['z'], ['3'], 'q')"
+  ]
+ ],
+ "update_keyed.keys_native": [
+  [
+   "UPDATE \"t\" SET \"v\" = $1 WHERE \"id\" = ANY($2::bigint[])",
+   "(1, [1, 2])"
+  ]
+ ],
+ "update_keyed.prefix": [
+  [
+   "UPDATE \"t\" SET \"v\" = $1 WHERE \"signal\" COLLATE \"C\" >= $2 AND \"signal\" COLLATE \"C\" < $3",
+   "(1, 'name/', 'name0')"
+  ]
+ ]
+}
