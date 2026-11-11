@@ -16,9 +16,12 @@ from typing import Any
 import asyncpg
 import pytest
 
-from threetears.agent.acl import caller_visible_customer_clause, caller_visible_customers_query
+from threetears.agent.acl import (
+    MAX_GROUP_MEMBERSHIP_DEPTH,
+    caller_visible_customer_clause,
+    caller_visible_customers_query,
+)
 from threetears.agent.acl.migrations import register as register_acl
-from threetears.agent.acl.query_visibility import _caller_membership_predicate
 from threetears.agent.tools.platform_migrations import register as register_tools_platform
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.testing.plans import explain_statement, plan_uses_index
@@ -103,7 +106,7 @@ async def _namespace(conn: asyncpg.Connection, customer: uuid.UUID) -> uuid.UUID
         customer,
         _TYPE,
         f"n{namespace.hex}",
-        f"s{namespace.hex[:16]}",
+        f"s{namespace.hex[-16:]}",
     )
     return namespace
 
@@ -187,6 +190,24 @@ async def test_the_typed_set_reads_the_callers_memberships_then_their_groups_gra
 _GROUPS = 26
 
 
+def _old_member_reaches_caller(alias: str, edges_left: int) -> str:
+    """the old statement's caller-reaches-this-group predicate, as it was generated before the keyed rewrite
+    (7c7936732): the membership row ``alias`` names the caller ($1), directly or through up to ``edges_left`` group
+    edges, one nested ``EXISTS`` an edge."""
+    direct = f"({alias}.member_type = 'user' AND {alias}.member_id = $1)"
+    if edges_left <= 0:
+        return f"({direct})"
+    child = f"gm{MAX_GROUP_MEMBERSHIP_DEPTH - edges_left + 1}"
+    nested = _old_member_reaches_caller(child, edges_left - 1)
+    return f"""({direct}
+             OR ({alias}.member_type = 'group' AND EXISTS (
+                    SELECT 1
+                      FROM group_members {child}
+                     WHERE {child}.group_id = {alias}.member_id
+                       AND {nested}
+                )))"""
+
+
 def _old_customers_query(typed: bool) -> str:
     """the visible-customer set as it was read before the keyed rewrite (7c7936732): every grant joined to its
     group's memberships, the caller matched on each, directly or through the nested hops, at this deployment's depth.
@@ -209,7 +230,7 @@ def _old_customers_query(typed: bool) -> str:
       FROM role_assignments ra
       JOIN group_members gm ON gm.group_id = ra.group_id
       LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id
-     WHERE {_caller_membership_predicate(1)}"""
+     WHERE {_old_member_reaches_caller("gm", MAX_GROUP_MEMBERSHIP_DEPTH - 1)}"""
 
 
 async def _granting_groups(conn: asyncpg.Connection) -> list[uuid.UUID]:

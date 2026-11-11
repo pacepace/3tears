@@ -191,13 +191,15 @@ async def test_magicmock_pool_is_not_treated_as_scope_aware() -> None:
 
 @pytest.mark.asyncio
 async def test_sql_durable_store_generates_expected_sql() -> None:
-    # fetch_one → SELECT … WHERE pk
-    pool = _RecordingPool(fetchrow_result={"id": "e1", "name": "Alice"})
+    # fetch_one → SELECT every column WHERE pk, one row asked for (keyed.read_row's statement, read by fetch)
+    pool = _RecordingPool(rows=[{"id": "e1", "name": "Alice"}])
     got = await SqlL3Backend(pool).fetch_one("widgets", {"id": "e1"})
     assert got == {"id": "e1", "name": "Alice"}
     sql, params = pool.calls[-1]
-    assert sql == 'SELECT * FROM "widgets" WHERE "id" = $1'
+    assert sql == 'SELECT t.* FROM "widgets" AS t WHERE t."id" = $1 LIMIT 1'
     assert params == ("e1",)
+    # no row under the key → None
+    assert await SqlL3Backend(_RecordingPool()).fetch_one("widgets", {"id": "e2"}) is None
 
     # upsert (on_conflict=update) → INSERT … ON CONFLICT … DO UPDATE SET mutable=EXCLUDED
     pool = _RecordingPool()

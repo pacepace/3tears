@@ -13,6 +13,7 @@ import logging
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 import sqlite3
+import uuid
 from collections.abc import Iterator
 from datetime import datetime, timedelta
 from typing import cast, Any
@@ -53,8 +54,8 @@ from threetears.core.keyed import (
     rows_affected,
     update_before,
 )
-from threetears.interfaces.keyed import rows as rows_module
 from threetears.core.keyset import read_keyset_pages
+from threetears.interfaces.keyed import read_keyed_statements
 from threetears.core.pagination import CursorError
 
 _START = datetime(2026, 1, 1)
@@ -292,32 +293,23 @@ class TestReadKeyed:
         assert len(dicts) == 25
 
     async def test_a_shape_read_again_binds_its_keys_to_the_text_already_rendered(
-        self, db: duckdb.DuckDBPyConnection, monkeypatch: pytest.MonkeyPatch
+        self, db: duckdb.DuckDBPyConnection
     ) -> None:
         """Flips if a read of a shape already read renders its text again, if two shapes share one text (keys bound
         natively or as text, a batch bounded to its columns' values or not, by= a value or NULL), or if the texts
-        kept grow past their bound."""
-        kept: dict[tuple[Any, ...], str] = {}
-        monkeypatch.setattr(rows_module, "_RENDERED", kept)
-        renders: list[str] = []
-
-        def remembered(shape: tuple[Any, ...], text: str) -> None:
-            # each text rendered is remembered at once: a render a call
-            renders.append(text)
-            kept[shape] = text
-
-        monkeypatch.setattr("threetears.interfaces.keyed.rows._remember", remembered)
+        kept grow past their bound. A text rendered once is the same string object each time it is sent again; a
+        text rendered anew is another object."""
         native = _Recording(db)
         native.binds_native_arrays = True  # type: ignore[attr-defined]
         for values in ([(1,), (2,)], [(11,), (12,), (13,)]):
             await read_keyed(native, "t", keys=KeyBatch(("b",), values, ("bigint",)), columns=["b"])
-        assert len(renders) == 1
-        assert native.statements[0][0] == native.statements[1][0]
+        # one render: the second read sent the very text the first rendered
+        assert native.statements[0][0] is native.statements[1][0]
         assert native.statements[1][1] == ([11, 12, 13],)
         # text keys on the same connection: another shape, cast in SQL
         rows = await read_keyed(native, "t", keys=KeyBatch(("b",), [("1",), ("12",)], ("bigint",)), columns=["b"])
         assert sorted(row["b"] for row in rows) == [1, 12]
-        assert native.statements[2][0] != native.statements[0][0] and len(renders) == 2
+        assert native.statements[2][0] != native.statements[0][0]
         # a batch sharing its lead is bounded to its values; a scattered one is not: two texts, each right
         reader = _Recording(db)
         lead = await read_keyed(
@@ -338,15 +330,29 @@ class TestReadKeyed:
         )
         assert '"stamp" IS NULL' in reader.statements[2][0] and '"stamp" = $2' in reader.statements[3][0]
         assert [row["b"] for row in pinned] == [4]
-        # past the bound the oldest shape is let go
-        monkeypatch.undo()
-        bounded: dict[tuple[Any, ...], str] = {}
-        monkeypatch.setattr(rows_module, "_RENDERED", bounded)
-        monkeypatch.setattr(rows_module, "_RENDERED_SHAPES", 2)
-        for column in ("a", "b", "v"):
-            await read_keyed(reader, "t", keys=KeyBatch(("b",), [(5,)], ("bigint",)), columns=[column])
-        assert len(bounded) == 2
-        assert all('SELECT t."a"' not in text for text in bounded.values())
+
+    def test_the_texts_kept_rendered_are_bounded_letting_the_oldest_go(self) -> None:
+        """Flips if the rendered texts kept grow past their bound (4,096 shapes), or the oldest is not the one let
+        go: a shape rendered 4,095 other shapes ago is still sent as the same text; 4,096 ago, rendered anew."""
+        relation = f"bounded_{uuid.uuid4().hex}"
+
+        def text(column: str) -> str:
+            ((sql, _),) = read_keyed_statements(
+                relation, keys=KeyBatch((column,), [(1,)], ("bigint",)), columns=["b"], natively=True
+            )
+            return sql
+
+        def others(count: int, tag: str) -> None:
+            for index in range(count):
+                text(f"{tag}{index}")
+
+        first = text("kept")
+        others(4095, "o")
+        assert text("kept") is first
+        let_go = text("gone")
+        others(4096, "p")
+        again = text("gone")
+        assert again == let_go and again is not let_go
 
 
 class TestKeysetPage:

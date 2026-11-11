@@ -687,6 +687,7 @@ dependencies = [
     { name = "3tears-observe" },
     { name = "asyncpg" },
     { name = "pydantic" },
+    { name = "pydantic-core" },
     { name = "pyyaml" },
 ]
 
@@ -724,6 +725,7 @@ requires-dist = [
     { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20,<2" },
     { name = "pyarrow", marker = "extra == 'export'", specifier = ">=17" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "pydantic-core" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pyyaml", specifier = ">=6.0" },

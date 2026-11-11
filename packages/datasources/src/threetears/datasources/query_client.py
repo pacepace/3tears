@@ -2085,8 +2085,7 @@ def _remembered_reply_rows(client: Any, read: tuple[str, str, str]) -> int | Non
     """
     try:
         return _REPLY_ROWS.get(client, {}).get(read)
-    except TypeError:
-        # a client that cannot be weakly referenced or hashed keeps no memory
+    except TypeError:  # NOSILENT: a client that cannot be weakly referenced or hashed keeps no memory; a hint only
         return None
 
 
@@ -2100,14 +2099,17 @@ def _remember_reply_rows(client: Any, read: tuple[str, str, str], rows: int | No
     :param rows: the rows, or None to forget
     :ptype rows: int | None
     """
+    # the client's hints replaced whole (copied, changed, stored), never filled in place: two reads racing keep one
+    # reader's hint, and a hint only sizes a first page
     try:
-        held = _REPLY_ROWS.setdefault(client, {})
-    except TypeError:
+        held = dict(_REPLY_ROWS.get(client, {}))
+    except TypeError:  # NOSILENT: a client that cannot be weakly referenced or hashed keeps no memory; a hint only
         return
     if rows is None:
         held.pop(read, None)
     else:
         held[read] = rows
+    _REPLY_ROWS[client] = held
 
 
 def _rows_a_reply_carries(rows: list[dict[str, Any]], max_reply_bytes: int) -> int:

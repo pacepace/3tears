@@ -25,13 +25,11 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Iterator
 from typing import Any
 
 import pytest
 
 from threetears.datasources.config import RedshiftConnectionConfig
-from threetears.datasources.drivers import redshift_driver as redshift_driver_module
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 
 pytestmark = [pytest.mark.integration, pytest.mark.live]
@@ -54,23 +52,13 @@ def _encode(rows: list[dict[str, Any]]) -> bytes:
 
 
 @pytest.fixture
-def pages(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[int]]:
-    """count the ``FETCH FORWARD`` pages a read sends, and the rows each asked for.
+def pages() -> list[int]:
+    """the rows each ``FETCH FORWARD`` page a read sends asked for, in order: the driver's ``on_page`` fills it.
 
-    :param monkeypatch: pytest's patcher
-    :ptype monkeypatch: pytest.MonkeyPatch
-    :return: the rows each page asked for, in order
-    :rtype: Iterator[list[int]]
+    :return: the list the driver is told each page into
+    :rtype: list[int]
     """
-    sent: list[int] = []
-    real = redshift_driver_module._page_within_sync  # noqa: SLF001
-
-    def _counted(cursor: Any, budget: Any, wanted: int) -> bool:
-        sent.append(wanted)
-        return real(cursor, budget, wanted)
-
-    monkeypatch.setattr(redshift_driver_module, "_page_within_sync", _counted)
-    yield sent
+    return []
 
 
 async def _pid(driver: RedshiftDriver) -> int:
@@ -87,7 +75,7 @@ async def _pid(driver: RedshiftDriver) -> int:
 async def test_a_cursor_with_bind_parameters_reads_pages_to_the_cut_and_keeps_its_connection(
     live_redshift_config: RedshiftConnectionConfig, pages: list[int]
 ) -> None:
-    driver = RedshiftDriver(live_redshift_config, datasource_name="live-fetch-within")
+    driver = RedshiftDriver(live_redshift_config, datasource_name="live-fetch-within", on_page=pages.append)
     try:
         before = await _pid(driver)
         whole = await driver.fetch(_SQL, 1, 2000)
@@ -113,7 +101,7 @@ async def test_a_cursor_with_bind_parameters_reads_pages_to_the_cut_and_keeps_it
 async def test_a_row_bound_read_stops_at_its_rows_with_bind_parameters(
     live_redshift_config: RedshiftConnectionConfig, pages: list[int]
 ) -> None:
-    driver = RedshiftDriver(live_redshift_config, datasource_name="live-fetch-within")
+    driver = RedshiftDriver(live_redshift_config, datasource_name="live-fetch-within", on_page=pages.append)
     try:
         before = await _pid(driver)
         got = await driver.fetch_within(

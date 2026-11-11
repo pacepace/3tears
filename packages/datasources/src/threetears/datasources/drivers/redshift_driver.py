@@ -1032,6 +1032,7 @@ class RedshiftDriver(Driver):
         datasource_name: str = "unknown",
         connect_guard: ConnectGuard | None = None,
         cancel_timeout_seconds: float = _CANCEL_TIMEOUT_SECONDS,
+        on_page: Callable[[int], None] | None = None,
     ) -> None:
         """capture config; build bridge + cache; register finalize. no I/O.
 
@@ -1047,10 +1048,14 @@ class RedshiftDriver(Driver):
             its server-side terminate before it reports them as failed and moves on; neither is
             abandoned, only the wait ends. the production default is the module's cancel bound
         :ptype cancel_timeout_seconds: float
+        :param on_page: told the rows each ``FETCH FORWARD`` page of a :meth:`fetch_within` read asks for, as it is
+            sent (an operator's or a test's count of the pages a read costs); ``None`` tells no one
+        :ptype on_page: Callable[[int], None] | None
         :return: nothing
         :rtype: None
         """
         self._config = config
+        self._on_page = on_page
         self._connect_guard = connect_guard
         self._cancel_timeout_seconds = cancel_timeout_seconds
         # bridge sized from config -- the enforcement test catches
@@ -2186,9 +2191,12 @@ class RedshiftDriver(Driver):
             )
             going = True
             while going:
+                wanted = budget.wanted(page_rows)
+                if self._on_page is not None:
+                    self._on_page(wanted)
                 page = asyncio.ensure_future(
                     self._bridge.to_thread_with_cancel(
-                        functools.partial(_page_within_sync, cursor, budget, budget.wanted(page_rows)),
+                        functools.partial(_page_within_sync, cursor, budget, wanted),
                         cancel_cb=_leave_running,
                     )
                 )

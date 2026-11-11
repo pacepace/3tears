@@ -34,12 +34,26 @@ from threetears.core.keyed import (
     row_hash_selected,
     row_hash_sql,
 )
-from threetears.core.keyed import changed as changed_module
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
-from packages.core.tests.unit.test_keyed_changed import _grouped_same_results
+from packages.core.tests.unit.test_keyed_changed import grouped_same_results
 
 pytestmark = pytest.mark.integration
+
+
+class _RowCapped:
+    """the test connection behind a transport that states its row cap (``rows_per_statement``), as a rail does."""
+
+    binds_native_arrays = True
+
+    def __init__(self, conn: asyncpg.Connection, dialect: Dialect, *, rows_per_statement: int) -> None:
+        self._conn = conn
+        self.sql_dialect = dialect
+        self.rows_per_statement = rows_per_statement
+
+    async def fetch(self, query: str, *params: Any) -> list[Any]:
+        return list(await self._conn.fetch(query, *params))
+
 
 _HASHED = (
     HashColumn("name"),
@@ -293,11 +307,11 @@ async def test_the_rows_after_applying_a_grouped_read_are_a_full_read_s_on_the_d
         "CREATE TABLE seeded_groups (tenant TEXT, grp BIGINT, id BIGINT, name TEXT, votes BIGINT, "
         "PRIMARY KEY (tenant, grp, id))"
     )
-    await assert_same_results(conn, **_grouped_same_results(await dialect_of(conn)))
+    await assert_same_results(conn, **grouped_same_results(await dialect_of(conn)))
 
 
 async def test_every_scope_s_group_hashes_in_one_statement_match_each_scope_s_own_phase_zero_on_the_database(
-    conn: asyncpg.Connection, monkeypatch: pytest.MonkeyPatch
+    conn: asyncpg.Connection,
 ) -> None:
     """Flips if group_hashes on this database (one statement, paged by scope then group across a NULL group) answers
     a scope's groups other than read_changed's own phase 0 for that scope: a state handed its slice would read an
@@ -318,9 +332,14 @@ async def test_every_scope_s_group_hashes_in_one_statement_match_each_scope_s_ow
     sliced = await group_hashes(
         conn, "scoped", scope="state", scopes=["PA", "OH", "WV", "XX"], group="county", hash_columns=hashed
     )
-    monkeypatch.setattr(changed_module, "_GROUP_PAGE", 2)
+    # a transport answering 3 rows a statement: 2 groups a page
     paged = await group_hashes(
-        conn, "scoped", scope="state", scopes=["PA", "OH", "WV", "XX"], group="county", hash_columns=hashed
+        _RowCapped(conn, dialect, rows_per_statement=3),
+        "scoped",
+        scope="state",
+        scopes=["PA", "OH", "WV", "XX"],
+        group="county",
+        hash_columns=hashed,
     )
     assert paged == sliced and sliced["XX"] == {}
     for state in ("PA", "OH", "WV"):

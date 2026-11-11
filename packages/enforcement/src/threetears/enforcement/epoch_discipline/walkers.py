@@ -77,6 +77,23 @@ _BACKEND_BULK_WRITES: Final[frozenset[str]] = frozenset(
 #: backend row writes, counted only on a receiver that names a backend or L3.
 _BACKEND_ROW_WRITES: Final[frozenset[str]] = frozenset({"upsert", "delete", "insert", "update"})
 
+#: 3tears' keyed write helpers (``threetears.core.keyed``), each a write of the table it is handed: the verb it is
+#: counted as, and the position of its table argument (or its ``table=``). A call is judged where it is written, as
+#: the SQL it sends would be; the helper's own body is a primitive. ``delete_before`` / ``update_before`` handed a
+#: collection run each page in its ``bypassing_write`` (announced): only ``collection=None`` is a bypass.
+_KEYED_WRITES: Final[dict[str, tuple[str, int, str]]] = {
+    "update_keyed": ("UPDATE", 1, "table"),
+    "delete_keyed": ("DELETE", 1, "table"),
+    "update_from": ("UPDATE", 1, "table"),
+    "apply_stage": ("INSERT", 1, "target"),
+    "delete_matching": ("DELETE", 1, "table"),
+    "delete_before": ("DELETE", 0, "table"),
+    "update_before": ("UPDATE", 0, "table"),
+}
+
+#: the keyed write helpers that run inside the collection's ``bypassing_write`` when handed one
+_KEYED_COLLECTION_WRITES: Final[frozenset[str]] = frozenset({"delete_before", "update_before"})
+
 #: a receiver segment naming L3 or a backend.
 _BACKEND_SEGMENT: Final[re.Pattern[str]] = re.compile(r"(?i)(backend|(^|_)l3($|_))")
 
@@ -797,6 +814,13 @@ class _ModuleWalk(ast.NodeVisitor):
         elif name in _COPY_CALLS:
             table = _text(node.args[0], self._envs[-1], self._attributes) if node.args else None
             self._hit(RULE_EPOCH_BYPASS, node, f"COPY {table or '?'}")
+        elif name in _KEYED_WRITES and not _handed_a_collection(node, name):
+            verb, position, keyword = _KEYED_WRITES[name]
+            argument = node.args[position] if len(node.args) > position else None
+            if argument is None:
+                argument = next((each.value for each in node.keywords if each.arg == keyword), None)
+            table = _text(argument, self._envs[-1], self._attributes) if argument is not None else None
+            self._hit(RULE_EPOCH_BYPASS, node, f"{verb} {table or '{}'}")
 
     def _sql_call(self, node: ast.Call, name: str) -> None:
         """SQL text a call runs: a raw write, a whole-table delete, a whole-table read.
@@ -848,6 +872,23 @@ class _ModuleWalk(ast.NodeVisitor):
         )
         if reads or _WHOLE_READ_HELPER.match(name):
             self._hit(RULE_WHOLE_REREAD, node, f"recovery read {name}")
+
+
+def _handed_a_collection(node: ast.Call, name: str) -> bool:
+    """whether a keyed paged write (``delete_before`` / ``update_before``) is handed a collection, whose
+    ``bypassing_write`` each page runs in: any ``collection=`` but a literal ``None``.
+
+    :param node: the call
+    :ptype node: ast.Call
+    :param name: its final callee name
+    :ptype name: str
+    :return: whether it runs through the collection
+    :rtype: bool
+    """
+    if name not in _KEYED_COLLECTION_WRITES:
+        return False
+    handed = next((each.value for each in node.keywords if each.arg == "collection"), None)
+    return handed is not None and not (isinstance(handed, ast.Constant) and handed.value is None)
 
 
 _SCANS: BuildOnce[tuple[Path, tuple[Path, ...], tuple[str, ...]], EpochScan] = BuildOnce()

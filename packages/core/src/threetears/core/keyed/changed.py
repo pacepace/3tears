@@ -568,7 +568,7 @@ def _held_group_hash(hashes: Sequence[str | None] | None) -> GroupHash | None:
         return None
     try:
         return _group_hash([hashed for hashed in hashes if hashed is not None])
-    except ValueError:
+    except ValueError:  # NOSILENT: a stored hash that is no row hash makes its group moved (None), as documented
         return None
 
 

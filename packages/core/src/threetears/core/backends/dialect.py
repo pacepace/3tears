@@ -63,7 +63,7 @@ async def known_on_yugabyte(l3: Any) -> bool:
         return _YUGABYTE_VERSION_MARK in str(l3.get_settings().server_version)
     try:
         return _ASKED[l3]
-    except KeyError:
+    except KeyError:  # NOSILENT: not asked yet: asked below, and the answer kept
         pass
     except TypeError:
         # a reader that cannot be held weakly is asked each time

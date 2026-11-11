@@ -976,7 +976,8 @@ class TestATemplateDeleteAnnouncesTheTablesItUnbinds:
         (own_sql, own_id), (read_sql, read_ids) = (call.args for call in pool.fetch.await_args_list)
         assert own_sql == template_read
         assert own_id == template_id
-        assert "FROM datasource_tables WHERE template_id = ANY($1)" in read_sql
+        # the cascade's keyed page of the children (delete_cascade._children: keyset_rows by the child's key)
+        assert 'FROM "datasource_tables" AS t WHERE t."template_id" = ANY($1)' in read_sql
         assert read_ids == [template_id]
         assert pool.fetch.await_count == 2
         tables.invalidate_cache_many.assert_awaited_once()

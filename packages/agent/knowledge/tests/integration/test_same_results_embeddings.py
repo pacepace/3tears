@@ -1,4 +1,4 @@
-"""integration: the vector read by id (``_fetch_embeddings``) reads what the statement it replaced read.
+"""integration: the vector read by id (each collection's ``fetch_embeddings``) reads what the statement it replaced read.
 
 ``SELECT id, embedding::text AS embedding FROM <table> WHERE id = ANY($1)`` became a keyed read by primary key
 (:func:`threetears.core.keyed.read_keyed`, the customer scope on each statement through
@@ -21,7 +21,9 @@ from sqlalchemy import MetaData
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 
-from threetears.agent.knowledge.collections import ConceptCollection, PlaybookEntryCollection, _fetch_embeddings
+from threetears.agent.knowledge.collections import ConceptCollection, PlaybookEntryCollection
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
 pytestmark = pytest.mark.integration
@@ -85,7 +87,7 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
 
 
 class _Proxy:
-    """the rbac-read proxy pool as ``_fetch_embeddings`` reads through it (a customer scope on each statement), over
+    """the rbac-read proxy pool as ``fetch_embeddings`` reads through it (a customer scope on each statement), over
     the test connection; keeps the rows the statement returned."""
 
     def __init__(self, conn: asyncpg.Connection) -> None:
@@ -101,20 +103,24 @@ class _Proxy:
 
 
 @pytest.mark.parametrize(
-    ("table", "row"),
-    [("playbook_entries", _entry), ("concepts", _concept)],
+    ("collection", "row"),
+    [(PlaybookEntryCollection, _entry), (ConceptCollection, _concept)],
     ids=["playbook_entries", "concepts"],
 )
 async def test_the_vector_read_reads_what_the_statement_it_replaced_read(
-    conn: asyncpg.Connection, table: str, row: Any
+    conn: asyncpg.Connection, collection: Any, row: Any
 ) -> None:
     """Flips if the keyed vector read returns other rows, ids or vector text than ``id = ANY($1)`` did, or drops the
     customer scope from its statement."""
     scope = uuid.uuid4()
+    table = collection.schema.name
 
     async def helper(c: asyncpg.Connection) -> list[dict[str, Any]]:
         proxy = _Proxy(c)
-        await _fetch_embeddings(proxy, table, list(_NAMED), customer_scope=scope)
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=proxy)
+        config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+        await collection(registry=registry, config=config).fetch_embeddings(list(_NAMED), customer_scope=scope)
         assert proxy.scopes and set(proxy.scopes) == {scope}
         return proxy.rows
 

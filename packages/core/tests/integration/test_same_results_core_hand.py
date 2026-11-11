@@ -7,7 +7,8 @@ one, many, NULLs, ties, a tenant boundary, a page boundary and one past it), the
 code, on the session's ``db_container`` (PostgreSQL), or YugabyteDB through ``THREETEARS_TEST_POSTGRES_URL``; a schema
 of its own.
 
-- ``delete_cascade._children``: ``SELECT <key> FROM <child> WHERE <column> = ANY($1)`` paged by the key under the
+- ``delete_cascade._children`` (read through :func:`~threetears.core.collections.delete_cascade.read_delete_cascade`,
+  the rows a shelf's ``SET NULL`` reaches): ``SELECT <key> FROM <child> WHERE <column> = ANY($1)`` paged by the key under the
   rail's cap, by hand -> :func:`~threetears.core.keyed.keyset_rows` with the set and the key bound untyped
   (``AnyOf(cast=None)``, ``Sort(cast=None)``), a bigint key and a uuid parent so an untyped bind is typed by its column.
 """
@@ -46,6 +47,38 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
         await connection.close()
 
 
+class _Books:
+    """the child collection a shelf's cascade reaches: keyed by its id, its messages carrying the shelf."""
+
+    primary_key_columns = ("id",)
+    invalidation_columns = ("shelf_id",)
+
+
+class _Registry:
+    def get_collection(self, table: str) -> Any:
+        return _Books() if table == "o27_books" else None
+
+
+class _Shelves:
+    """the parent collection: a shelf's books' shelf_id is SET NULL when it goes (one level, no recursion)."""
+
+    delete_cascades = (delete_cascade_module.DeleteCascade("o27_books", "shelf_id", "SET NULL"),)
+    primary_key_columns = ("id",)
+    registry = _Registry()
+
+    def __init__(self, l3_pool: Any) -> None:
+        self.l3_pool = l3_pool
+
+    def normalize_pk(self, key: Any) -> tuple[Any, ...]:
+        return (key,)
+
+
+async def _cascaded_books(c: Any) -> list[dict[str, Any]]:
+    """the books a delete of the shelves would reach, as the cascade reads them before the delete."""
+    reached = await delete_cascade_module.read_delete_cascade(_Shelves(c), _PARENTS)
+    return [dict(row) for cascaded in reached for row in cascaded.rows]
+
+
 def _book(seed: Seeded) -> dict[str, Any]:
     shelf = None if seed.null else uuid.UUID(int=1 + 2 * seed.tenant + seed.index % 2)
     return {"id": 1000 - seed.tie * 7 - seed.index, "shelf_id": shelf, "title": f"b{seed.index}"}
@@ -64,8 +97,6 @@ async def test_a_cascade_s_children_are_the_rows_the_any_named(
         row=_book,
         old_sql="SELECT id, shelf_id FROM o27_books WHERE shelf_id = ANY($1) ORDER BY id",
         params=[_PARENTS],
-        helper=lambda c: delete_cascade_module._children(  # noqa: SLF001 -- the converted read itself
-            c, "o27_books", "shelf_id", ("id", "shelf_id"), ("id",), _PARENTS
-        ),
+        helper=lambda c: _cascaded_books(c),
         page_size=5,
     )

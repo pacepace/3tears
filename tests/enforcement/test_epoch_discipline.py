@@ -56,6 +56,12 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
         {
             # a local cache table's trim to its cap (L1 only: it refuses any other connection); no L3 row, no epoch
             f"{_CORE}/keyed/deletes.py::delete_oldest",
+            # the keyed write helpers: the statements they send ARE the write their caller asked for, judged at each
+            # call site by the table it hands them (walkers._KEYED_WRITES)
+            f"{_CORE}/keyed/writes.py::apply_stage",
+            f"{_CORE}/keyed/steps.py::delete_matching",
+            # a keyed read through COPY ... TO (the driver's copy_from_query reads; it writes no row)
+            f"{_CORE}/keyed/page.py::copy_keyed",
             # the collection write path: every save, delete and L2 put the rule routes writes into, method by
             # method, so a raw write added anywhere else in BaseCollection is a finding
             f"{_CORE}/collections/base.py::BaseCollection.save_entity",
@@ -103,6 +109,7 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             f"{_CORE}/collections/write_marks.py::WriteMarkReconciler",
             f"{_CORE}/collections/scope_epochs.py::ScopeEpochs",
             f"{_CORE}/coordination/source_token.py::SourceTokenFence",
+            f"{_CORE}/coordination/source_token.py::clear_signals",
             # the change-note ring in L3: its ring row, its note tables and its triggers (installed, emptied)
             f"{_CORE}/collections/change_notes.py::ChangeNoteKeeper",
             # the migration runner's own version ledger, _schema_migrations
@@ -115,6 +122,10 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
         {
             # the L3 backend's scan and the L1 backend's own reads of the copy it holds
             f"{_CORE}/backends/sql.py::SqlL3Backend",
+            # a step's count and existence over the relation its caller hands it: the caller's read, judged where
+            # it names the relation (no_whole_reads judges the step)
+            f"{_CORE}/keyed/steps.py::count_step",
+            f"{_CORE}/keyed/steps.py::any_step",
             f"{_CORE}/cache/duckdb.py::DuckDBBackend",
         }
     ),

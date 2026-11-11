@@ -54,6 +54,9 @@ _EXPECTED_RUNTIME_DEPENDENCIES = {
     # extra, and 3tears-nats does not depend back on 3tears-datasources, so no cycle. deliberate.
     "3tears-nats",
     "pydantic",
+    # the query client measures a reply's width as the hub does (pydantic_core.to_json, compact UTF-8): pydantic's
+    # own core, pinned by pydantic, declared where it is imported (tests/enforcement/test_imports_declared.py)
+    "pydantic-core",
     "asyncpg",
     "pyyaml",
 }

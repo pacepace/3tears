@@ -412,7 +412,7 @@ def _referenced_elsewhere(repo_root: Path, path: Path, name: str) -> bool:
         try:
             if pattern.search(other.read_text(encoding="utf-8")):
                 return True
-        except UnicodeDecodeError, OSError:
+        except UnicodeDecodeError, OSError:  # NOSILENT: a file no text can be read from names no constant
             continue
     return False
 
@@ -705,6 +705,15 @@ def _config(repo: Path, spec: str) -> NoWholeReadsConfig:
     return config
 
 
+def _say(line: str) -> None:
+    """write one line of the command's output to stdout: the command's product, so a stream write, not a log record.
+
+    :param line: the line
+    :ptype line: str
+    """
+    sys.stdout.write(f"{line}\n")
+
+
 def main(argv: list[str] | None = None) -> int:
     """the command line: ``point`` (the only shape so far).
 
@@ -737,29 +746,29 @@ def main(argv: list[str] | None = None) -> int:
         )
         (repo / options.module).write_text(text, encoding="utf-8")
         subprocess.run([options.ruff, "format", "--quiet", str(options.module)], cwd=repo, check=True)
-        print(f"wrote {options.module}")
+        _say(f"wrote {options.module}")
         return 0
     config = _config(repo, options.config)
     before, _ = _hits(config)
     rewrites, refusals = plan_point_rewrites(config)
     reasons = Counter(refusal.reason.split(":")[0].split(" (")[0] for refusal in refusals)
-    print(f"point: {len(rewrites)} rewrites, {len(refusals)} refusals")
+    _say(f"point: {len(rewrites)} rewrites, {len(refusals)} refusals")
     for reason, count in reasons.most_common():
-        print(f"  refused {count:4d}  {reason}")
+        _say(f"  refused {count:4d}  {reason}")
     if options.refusals is not None:
         options.refusals.write_text(
             json.dumps([asdict(refusal) for refusal in refusals], indent=1) + "\n", encoding="utf-8"
         )
     if options.dry_run:
         for rewrite in rewrites:
-            print(f"  {rewrite.path}:{rewrite.line} {rewrite.function}: {rewrite.new_call}")
+            _say(f"  {rewrite.path}:{rewrite.line} {rewrite.function}: {rewrite.new_call}")
         return 0
     touched = apply_rewrites(repo, rewrites, ruff=options.ruff)
     write_manifest(repo / options.manifest, rewrites)
     added = _after_check(config, before, rewrites)
-    print(f"rewrote {len(rewrites)} statements in {len(touched)} modules; manifest {options.manifest}")
+    _say(f"rewrote {len(rewrites)} statements in {len(touched)} modules; manifest {options.manifest}")
     for line in added:
-        print(f"  AFTER-CHECK: a rewrite added a whole-read finding: {line}")
+        _say(f"  AFTER-CHECK: a rewrite added a whole-read finding: {line}")
     return 1 if added else 0
 
 

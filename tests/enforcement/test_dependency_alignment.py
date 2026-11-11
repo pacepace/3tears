@@ -303,6 +303,9 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "pydantic",
             "asyncpg",
             "pyyaml",
+            # the query client measures a reply's width as the hub does (pydantic_core.to_json): pydantic's own core,
+            # pinned by pydantic, declared where it is imported (test_imports_declared)
+            "pydantic-core",
         ),
     ),
     (

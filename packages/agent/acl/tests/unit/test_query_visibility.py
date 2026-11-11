@@ -13,6 +13,10 @@ widening or narrowing what rows a caller can see.
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 from uuid import uuid4
 
 import pytest
@@ -24,12 +28,11 @@ from threetears.agent.acl import (
     customer_scope_visibility_clause,
     three_scope_visibility_clause,
 )
-from threetears.agent.acl.query_visibility import (
-    CALLER_VISIBLE_CUSTOMERS_OF_TYPE_SQL,
-    CALLER_VISIBLE_CUSTOMERS_SQL,
-    _to_depth,
+from threetears.agent.acl.types import (
+    MAX_CONFIGURABLE_GROUP_NESTING_LEVELS,
+    MAX_GROUP_NESTING_LEVELS_ENV,
+    MIN_CONFIGURABLE_GROUP_NESTING_LEVELS,
 )
-from threetears.agent.acl.types import MAX_CONFIGURABLE_GROUP_NESTING_LEVELS, MIN_CONFIGURABLE_GROUP_NESTING_LEVELS
 
 
 def test_returns_fragment_and_two_binds() -> None:
@@ -424,18 +427,41 @@ SELECT
 _CONFIGURABLE_DEPTHS = range(MIN_CONFIGURABLE_GROUP_NESTING_LEVELS - 1, MAX_CONFIGURABLE_GROUP_NESTING_LEVELS)
 
 
+#: a process configured for a nesting, answering the customers query at each offset, typed and not, as JSON
+_QUERIES_AT_A_NESTING = """
+import json
+from uuid import uuid4
+from threetears.agent.acl import caller_visible_customers_query
+print(json.dumps({
+    f"{offset}/{typed}": caller_visible_customers_query(
+        user_id=uuid4(), param_offset=offset, scope_namespace_type="tool" if typed else None
+    )[0]
+    for offset in (1, 3)
+    for typed in (False, True)
+}))
+"""
+
+
+def _queries_configured_for(levels: int) -> subprocess.CompletedProcess[str]:
+    """the customers queries of a process whose deployment configures ``levels`` nesting levels (its front door: the
+    environment, read once at import)."""
+    environ = {**os.environ, MAX_GROUP_NESTING_LEVELS_ENV: str(levels)}
+    return subprocess.run(
+        [sys.executable, "-c", _QUERIES_AT_A_NESTING], env=environ, capture_output=True, text=True, check=False
+    )
+
+
 @pytest.mark.parametrize("depth", _CONFIGURABLE_DEPTHS)
-@pytest.mark.parametrize("param_offset", [1, 3])
-@pytest.mark.parametrize("typed", [False, True])
-def test_the_written_out_customers_statements_are_the_generators(depth: int, param_offset: int, typed: bool) -> None:
+def test_the_written_out_customers_statements_are_the_generators(depth: int) -> None:
     """Flips if CALLER_VISIBLE_CUSTOMERS_SQL or its typed form, cut to any nesting a deployment may configure, drifts
     from the reference generator (an arm edited in one place, a hop missing, the statement not written out to the
-    deepest nesting): each statement is the generator's, at every depth and offset."""
-    sql = CALLER_VISIBLE_CUSTOMERS_OF_TYPE_SQL if typed else CALLER_VISIBLE_CUSTOMERS_SQL
-    cut = _to_depth(sql, depth)
-    if param_offset != 1:
-        cut = cut.replace("$2", f"${param_offset + 1}").replace("$1", f"${param_offset}")
-    assert cut == _generated_customers_query(depth, param_offset, typed)
+    deepest nesting): a deployment configured for each nesting answers the generator's statement, at every offset."""
+    answered = _queries_configured_for(depth + 1)
+    assert answered.returncode == 0, answered.stderr
+    queries = json.loads(answered.stdout)
+    for offset in (1, 3):
+        for typed in (False, True):
+            assert queries[f"{offset}/{typed}"] == _generated_customers_query(depth, offset, typed), (offset, typed)
 
 
 @pytest.mark.parametrize("param_offset", [1, 3])
@@ -449,8 +475,12 @@ def test_the_customers_query_walks_the_configured_nesting(param_offset: int, typ
     assert sql == _generated_customers_query(MAX_GROUP_MEMBERSHIP_DEPTH, param_offset, typed)
 
 
-@pytest.mark.parametrize("depth", [0, MAX_CONFIGURABLE_GROUP_NESTING_LEVELS])
-def test_a_nesting_past_the_written_statement_refuses(depth: int) -> None:
-    """Flips if a depth the statement is not written out for is cut silently to another walk."""
-    with pytest.raises(ValueError, match="group nesting"):
-        _to_depth(CALLER_VISIBLE_CUSTOMERS_SQL, depth)
+@pytest.mark.parametrize(
+    "levels", [MIN_CONFIGURABLE_GROUP_NESTING_LEVELS - 1, MAX_CONFIGURABLE_GROUP_NESTING_LEVELS + 1]
+)
+def test_a_nesting_past_the_written_statement_refuses(levels: int) -> None:
+    """Flips if a deployment configured for a nesting the statement is not written out for is cut silently to
+    another walk: the process refuses the setting before any statement is built."""
+    answered = _queries_configured_for(levels)
+    assert answered.returncode != 0
+    assert MAX_GROUP_NESTING_LEVELS_ENV in answered.stderr and "outside" in answered.stderr, answered.stderr

@@ -9,7 +9,14 @@ from typing import Any
 
 import pytest
 
-from threetears.core.testing.rewrites import _Column, _row_factory, _scalar, _Table, assert_source_says, entry_id
+from threetears.core.testing.rewrites import (
+    CatalogColumn,
+    row_factory,
+    seed_scalar,
+    CatalogTable,
+    assert_source_says,
+    entry_id,
+)
 from threetears.core.testing.same_results import Seeded
 
 _ENTRY: dict[str, Any] = {
@@ -101,11 +108,11 @@ def test_the_source_check_refuses_columns_it_cannot_read_as_recorded(
         assert_source_says(_module_with_columns(tmp_path, constant, call_columns), _ENTRY)
 
 
-def _shape() -> _Table:
-    def column(name: str, kind: str, category: str, *, nullable: bool = True) -> _Column:
-        return _Column(name, kind, category, "", nullable, False, False)
+def _shape() -> CatalogTable:
+    def column(name: str, kind: str, category: str, *, nullable: bool = True) -> CatalogColumn:
+        return CatalogColumn(name, kind, category, "", nullable, False, False)
 
-    return _Table(
+    return CatalogTable(
         columns={
             "id": column("id", "uuid", "U", nullable=False),
             "customer_id": column("customer_id", "uuid", "U"),
@@ -127,7 +134,7 @@ def test_a_key_column_is_shared_by_a_tenant_s_rows_unless_a_unique_key_needs_it_
         "table": "agents",
         "pins": [{"column": "customer_id", "kind": "param", "param": 1, "literal": None}],
     }
-    row, params = _row_factory(_shape(), by_customer, {})
+    row, params = row_factory(_shape(), by_customer, {})
     assert row(_seed(0))["customer_id"] == row(_seed(5))["customer_id"] == params[0]
     assert row(_seed(5, tenant=1))["customer_id"] != params[0]
     assert len({row(_seed(index))["id"] for index in range(10)}) == 10
@@ -140,7 +147,7 @@ def test_a_key_column_is_shared_by_a_tenant_s_rows_unless_a_unique_key_needs_it_
             {"column": "slug", "kind": "param", "param": 1, "literal": None},
         ],
     }
-    row, params = _row_factory(_shape(), by_slug, {})
+    row, params = row_factory(_shape(), by_slug, {})
     assert len({(row(_seed(index))["customer_id"], row(_seed(index))["slug"]) for index in range(10)}) == 10
     assert params == [row(_seed(0))["slug"], row(_seed(0))["customer_id"]]
 
@@ -154,7 +161,7 @@ def test_a_literal_pin_holds_its_value_on_two_rows_in_three_and_nulls_follow_the
             {"column": "is_deleted", "kind": "literal", "param": None, "literal": False},
         ],
     }
-    row, _ = _row_factory(_shape(), entry, {"note": lambda seed: "fixed"})
+    row, _ = row_factory(_shape(), entry, {"note": lambda seed: "fixed"})
     assert [row(_seed(index))["is_deleted"] for index in range(6)] == [False, False, True, False, False, True]
     assert row(_seed(1, null=True))["customer_id"] is None
     assert row(_seed(1, null=True))["note"] == "fixed"
@@ -164,6 +171,6 @@ def test_a_json_column_is_seeded_as_its_text() -> None:
     """Flips if a json or jsonb column is seeded as a Python mapping: asyncpg with no json codec refuses it (the
     generated test then errors seeding every table holding one), and takes the value as text."""
     for kind in ("jsonb", "json"):
-        value = _scalar(_Column("doc", kind, "U", "", True, False, False), "U", 7)
+        value = seed_scalar(CatalogColumn("doc", kind, "U", "", True, False, False), "U", 7)
         assert isinstance(value, str)
         assert json.loads(value) == {"n": 7}

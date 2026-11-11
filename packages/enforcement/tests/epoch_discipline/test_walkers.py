@@ -112,6 +112,11 @@ _VIOLATIONS: dict[str, list[str]] = {
         "class WidgetCollection:\n    async def stash(self, key, value):\n        kv = await self._ensure_kv()\n"
         "        await kv.put(key=key, value=value)\n",
         "class WidgetCollection:\n    async def fill(self, key, value):\n        await self._kv.update(key=key, value=value, revision=0)\n",
+        # a keyed write helper writes the table it is handed, as the SQL it sends would
+        "async def bump(pool, key):\n    await update_keyed(pool, 'agent_skills', values={'uses': 1}, by={'id': key})\n",
+        "_FIRES = 'wake_fires'\n\nasync def drop(pool, key):\n    await delete_keyed(pool, _FIRES, by={'id': key})\n",
+        "async def sweep(conn, t):\n    await delete_before('leases', collection=None, key=['id'], column='at', before=t, page=5)\n",
+        "async def land(conn):\n    await apply_stage(conn, 'results', 'staged', key=['id'])\n",
     ],
     RULE_WHOLE_REREAD: [
         "async def all_roles(pool):\n    return await pool.fetch('SELECT id, name FROM roles')\n",
@@ -151,6 +156,12 @@ _COMPLIANT: dict[str, list[str]] = {
         "async def read(pool, key):\n    return await pool.fetchrow('SELECT * FROM t WHERE id = $1 FOR UPDATE', key)\n",
         # a coordination primitive's own bucket holds no collection's rows
         "class KVLease:\n    async def take(self, key, value):\n        await self._kv.create(key=key, value=value)\n",
+        # a keyed write inside the collection's bypassing_write, or announced
+        "async def touch(coll, key):\n    async with coll.bypassing_write((key,)):\n"
+        "        await update_keyed(coll.l3_pool, 'wake_fires', values={'seen': 1}, by={'id': key})\n",
+        "async def drop(pool, key):\n    await delete_keyed(pool, 't', by={'id': key})\n    await announce_change('t', [key])\n",
+        # a paged keyed write handed its collection runs each page in its bypassing_write
+        "async def sweep(coll, t):\n    await delete_before('leases', collection=coll, key=['id'], column='at', before=t, page=5)\n",
     ],
     RULE_WHOLE_REREAD: [
         "async def one(pool, key):\n    return await pool.fetchrow('SELECT * FROM roles WHERE id = $1', key)\n",

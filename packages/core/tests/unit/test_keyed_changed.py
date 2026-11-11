@@ -67,9 +67,12 @@ class _Counted:
     binds_native_arrays = False
     sql_dialect = Dialect.DUCKDB
 
-    def __init__(self, db: duckdb.DuckDBPyConnection) -> None:
+    def __init__(self, db: duckdb.DuckDBPyConnection, *, rows_per_statement: int | None = None) -> None:
         self._db = InlineDuckDB(db)
         self.statements: list[str] = []
+        if rows_per_statement is not None:
+            # the transport's row cap, as a rail states it: a page asks one row under it
+            self.rows_per_statement = rows_per_statement
 
         self.bytes = 0
 
@@ -601,14 +604,12 @@ def test_a_group_holding_a_row_stored_with_no_hash_is_read_again(grouped: duckdb
     assert [row["id"] for row in changed.rows] == [44]
 
 
-def test_phase_zero_pages_by_the_group(grouped: duckdb.DuckDBPyConnection, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_phase_zero_pages_by_the_group(grouped: duckdb.DuckDBPyConnection) -> None:
     """Flips if phase 0 loses a group at a page's edge."""
-    from threetears.core.keyed import changed as changed_module
-
-    monkeypatch.setattr(changed_module, "_GROUP_PAGE", 2)
     held = _grouped_held(grouped)
     grouped.execute("UPDATE grouped SET votes = -1 WHERE state = 'PA' AND id IN (5, 55)")
-    counted = _Counted(grouped)
+    # a transport answering 3 rows a statement: phase 0 asks 2 groups a page
+    counted = _Counted(grouped, rows_per_statement=3)
     changed = _grouped_changed(counted, held)
     assert sorted(row["id"] for row in changed.rows) == [5, 55]
     assert sum("GROUP BY" in statement for statement in counted.statements) == 4
@@ -674,20 +675,17 @@ def test_every_scope_s_group_hashes_are_one_statement_and_each_slice_is_its_own_
     assert gone.gone_keys == [("WV", "c0", 1)] and gone.rows == []
 
 
-def test_group_hashes_page_by_scope_then_group_across_null_groups(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_group_hashes_page_by_scope_then_group_across_null_groups() -> None:
     """Flips if a page's edge (inside a scope, between two scopes, at a NULL group) loses or repeats a group."""
-    from threetears.core.keyed import changed as changed_module
-
-    monkeypatch.setattr(changed_module, "_GROUP_PAGE", 2)
     db = duckdb.connect()
     db.execute("CREATE TABLE grouped (state VARCHAR, county VARCHAR, id BIGINT, name VARCHAR, votes BIGINT)")
     db.execute(
         "INSERT INTO grouped SELECT s, CASE WHEN i % 4 = 0 THEN NULL ELSE 'c' || (i % 4) END, i, 'n' || i, i "
         "FROM range(12) r(i), (VALUES ('OH'), ('PA'), ('WV')) v(s)"
     )
-    counted = _Counted(db)
+    # a transport answering 3 rows a statement: 2 groups a page; the inline connection states no cap (10,000 a page)
+    counted = _Counted(db, rows_per_statement=3)
     paged = _scoped_hashes(counted, ["WV", "OH", "PA"])
-    monkeypatch.setattr(changed_module, "_GROUP_PAGE", 10_000)
     whole = _scoped_hashes(InlineDuckDB(db), ["WV", "OH", "PA"])
     assert paged == whole
     assert {state: sorted(groups, key=str) for state, groups in paged.items()} == dict.fromkeys(
@@ -724,10 +722,10 @@ def test_the_rows_after_applying_a_grouped_read_are_a_full_read_s(conn: duckdb.D
         "CREATE TABLE seeded_groups (tenant VARCHAR, grp BIGINT, id BIGINT, name VARCHAR, votes BIGINT, "
         "PRIMARY KEY (tenant, grp, id))"
     )
-    run_inline(assert_same_results(InlineDuckDB(conn), **_grouped_same_results(Dialect.DUCKDB)))
+    run_inline(assert_same_results(InlineDuckDB(conn), **grouped_same_results(Dialect.DUCKDB)))
 
 
-def _grouped_same_results(dialect: Dialect) -> dict[str, Any]:
+def grouped_same_results(dialect: Dialect) -> dict[str, Any]:
     """assert_same_results' arguments for a grouped read: a stale copy with every kind of group move."""
     hashed = (HashColumn("name"), HashColumn("votes", HashKind.INTEGER))
     columns = ["tenant", "grp", "id", "name", "votes"]

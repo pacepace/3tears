@@ -47,6 +47,7 @@ __all__ = [
     "assert_source_says",
     "entry_id",
     "load_manifest",
+    "row_factory",
 ]
 
 #: per table, column -> its value for a seed, where the catalog's row does not fit
@@ -82,7 +83,9 @@ def entry_id(entry: Mapping[str, Any]) -> str:
 
 
 @dataclass
-class _Column:
+class CatalogColumn:
+    """one column of a table as its catalog describes it: what a seeded row's value is built from."""
+
     name: str
     type: str
     category: str
@@ -94,8 +97,10 @@ class _Column:
 
 
 @dataclass
-class _Table:
-    columns: dict[str, _Column] = field(default_factory=dict)
+class CatalogTable:
+    """a table's columns and unique sets as its catalog describes them: the shape a seeded row fills."""
+
+    columns: dict[str, CatalogColumn] = field(default_factory=dict)
     unique: list[frozenset[str]] = field(default_factory=list)
 
 
@@ -112,7 +117,7 @@ async def _drop_checks(conn: Any, table: str) -> None:
         await conn.execute(f'ALTER TABLE {table} DROP CONSTRAINT "{name}"')
 
 
-async def _catalog(conn: Any, table: str) -> _Table:
+async def _catalog(conn: Any, table: str) -> CatalogTable:
     """the table as migrated: its columns, their types and constraints, its unique keys."""
     found = await conn.fetchval("SELECT to_regclass($1)::oid", table)
     if found is None:
@@ -126,7 +131,7 @@ async def _catalog(conn: Any, table: str) -> _Table:
         " WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum",
         found,
     )
-    shape = _Table()
+    shape = CatalogTable()
     for attribute in attributes:
         labels: tuple[str, ...] = ()
         if attribute["typtype"] == "e":
@@ -136,7 +141,7 @@ async def _catalog(conn: Any, table: str) -> _Table:
                     "SELECT enumlabel FROM pg_enum WHERE enumtypid = $1 ORDER BY enumsortorder", attribute["atttypid"]
                 )
             )
-        shape.columns[attribute["attname"]] = _Column(
+        shape.columns[attribute["attname"]] = CatalogColumn(
             name=attribute["attname"],
             type=attribute["type"],
             category=attribute["typcategory"],
@@ -156,7 +161,7 @@ async def _catalog(conn: Any, table: str) -> _Table:
     return shape
 
 
-def _text_of(column: _Column, n: int) -> str:
+def _text_of(column: CatalogColumn, n: int) -> str:
     width = re.search(r"\((\d+)\)", column.type)
     text = f"{column.name}-{n}"
     if width is not None:
@@ -165,7 +170,7 @@ def _text_of(column: _Column, n: int) -> str:
     return text
 
 
-def _scalar(column: _Column, category: str, n: int) -> Any:
+def seed_scalar(column: CatalogColumn, category: str, n: int) -> Any:
     """a value of a column's type, distinct for each ``n``."""
     kind = column.type.split("(")[0].removesuffix("[]").strip()
     if column.labels:
@@ -202,13 +207,13 @@ def _scalar(column: _Column, category: str, n: int) -> Any:
     raise AssertionError(f"column {column.name} ({column.type}): no generic value; give it an override")
 
 
-def _value(column: _Column, n: int) -> Any:
+def _value(column: CatalogColumn, n: int) -> Any:
     if column.category == "A":
-        return [_scalar(column, column.element_category, n)]
-    return _scalar(column, column.category, n)
+        return [seed_scalar(column, column.element_category, n)]
+    return seed_scalar(column, column.category, n)
 
 
-def _other(column: _Column, literal: Any) -> Any:
+def _other(column: CatalogColumn, literal: Any) -> Any:
     """a value of the column other than ``literal``."""
     choices = column.labels
     if choices:
@@ -224,8 +229,8 @@ def _other(column: _Column, literal: Any) -> Any:
     return other if other != literal else _value(column, 999_998)
 
 
-def _row_factory(
-    shape: _Table, entry: Mapping[str, Any], overrides: Mapping[str, Callable[[Seeded], Any]]
+def row_factory(
+    shape: CatalogTable, entry: Mapping[str, Any], overrides: Mapping[str, Callable[[Seeded], Any]]
 ) -> tuple[Callable[[Seeded], dict[str, Any]], list[Any]]:
     """the row a seed puts in the entry's table, and the old statement's parameters (the first row's)."""
     pins = {pin["column"]: pin for pin in entry["pins"]}
@@ -247,7 +252,7 @@ def _row_factory(
 
     alone = {next(iter(unique)) for unique in shape.unique if len(unique) == 1}
 
-    def value(column: _Column, seed: Seeded) -> Any:
+    def value(column: CatalogColumn, seed: Seeded) -> Any:
         pin = pins.get(column.name)
         if column.name in overrides:
             return overrides[column.name](seed)
@@ -280,7 +285,7 @@ def _row_factory(
     return row, params
 
 
-def _seedable(column: _Column) -> bool:
+def _seedable(column: CatalogColumn) -> bool:
     """whether a generic value is written to an unpinned column (else it takes its default or NULL)."""
     try:
         _value(column, 0)
@@ -319,7 +324,7 @@ async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides:
     table = entry["table"]
     await _drop_checks(conn, table)
     shape = await _catalog(conn, table)
-    row, params = _row_factory(shape, entry, (overrides or {}).get(table, {}))
+    row, params = row_factory(shape, entry, (overrides or {}).get(table, {}))
     by = _by(entry, params)
     columns = entry["columns"]
     old_sql = entry["old_sql"]
