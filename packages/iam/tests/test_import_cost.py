@@ -75,9 +75,15 @@ _PERMITTED_THIRD_PARTY_ROOTS = frozenset(
 )
 
 #: Family trees the base floor names: the namespace packages on the way down, iam itself,
-#: observe, and the interfaces package.
+#: observe, and the interfaces package's vocabularies iam speaks: access (the impersonation taxonomy) and keyed (the
+#: Postgres stores' statements, owner ruling 2026-11-11; dependency-free, so it adds nothing past the stdlib).
 _PERMITTED_FAMILY_MODULES = frozenset({"threetears", "threetears.interfaces"})
-_PERMITTED_FAMILY_PREFIXES = ("threetears.iam", "threetears.observe", "threetears.interfaces.access")
+_PERMITTED_FAMILY_PREFIXES = (
+    "threetears.iam",
+    "threetears.observe",
+    "threetears.interfaces.access",
+    "threetears.interfaces.keyed",
+)
 
 
 _FLOOR = ImportFloorConfig(
