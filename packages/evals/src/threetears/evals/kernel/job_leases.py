@@ -1409,10 +1409,16 @@ class JobLeases:
             f"job lease: its holder, process {self._holder_id}, could not renew it for {spell_declared(self._lease_s)}s, its "
             f"whole lease, and stopped the job — {why}"
         )
+        # The stop is in a ``finally``: the two writes are awaits, and a cancel landing on either (a slow store, a
+        # loaded machine) must not skip it, or the job runs on, spending, past a lease it already gave up. The
+        # renewer never cancels an expiry — it waits for a running renewal though nothing is held
+        # (:meth:`_renew_while_held`), and the expiry runs in a task of its own, shielded (:meth:`_expiring`) — but
+        # a shutdown whose bound passes cancels it (:meth:`_let_expiries_finish`), as does a loop tearing down; this
+        # stop is what still ends the job then.
         try:
             await self._write_why_and_loss(held, why, entry)
         finally:
-            held.stop()  # a cancelled expiry (a shutdown's bound passed) still stops its job
+            held.stop()
 
     async def _write_why_and_loss(self, held: _Held, why: str, entry: str) -> None:
         """An expiry's two writes (:meth:`_expire`): the fault saying why, then the loss — the lapse a reader would

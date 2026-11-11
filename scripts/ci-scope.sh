@@ -3,10 +3,11 @@
 #
 #   EVENT_NAME=pull_request BASE_SHA=<sha> ./scripts/ci-scope.sh
 #
-# One classifier for every job that skips its work on a documentation-only PR: ci.yml's `check`
-# and each `unit` shard both run it as their `scope` step, so the shards cannot disagree with the
-# gate about what a doc-only change is. tests/enforcement/test_ci_doc_only_skip.py runs THIS file
-# against fixture changesets and fails if either job stops calling it.
+# One classifier for every job that skips its work on a documentation-only PR: ci.yml's `check`,
+# each `unit` shard and `unit-pool` (the testament pool route) all run it as their `scope` step, so
+# neither unit route can disagree with the gate about what a doc-only change is.
+# tests/enforcement/test_ci_doc_only_skip.py runs THIS file against fixture changesets and fails if
+# any of those jobs stops calling it.
 #
 # A documentation-only PR runs no suite. The skip is decided inside the jobs, rather than by a
 # `paths-ignore:` on the trigger -- and that is not a style preference. `check` is a REQUIRED

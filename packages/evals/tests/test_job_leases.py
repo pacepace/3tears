@@ -10,7 +10,8 @@ are to the engine. Pinned:
   later read in either process answers from that write.
 - **Fencing**: a holder whose record was written lost writes nothing more — its paid analysis is not stored, its
   run's progress write stops the run, and its ending does not overwrite the loss; a holder that finds its own lease
-  lapsed at renewal writes itself lost and stops.
+  lapsed at renewal writes itself lost and stops, and one whose renewals fail for a whole lease stops its job however
+  long the writes before the stop take.
 - **A graceful shutdown** writes every job its process holds lost at once, its cause the shutdown, lease released.
 - **Store time**: a store offering a clock stamps and reads every lease; a clock with no zone is refused.
 - **Old records**: a record that has not ended and carries no lease reads lost.
@@ -411,6 +412,12 @@ class RenewalRefusingStore(ClockedStore):
                 raise RuntimeError("the store refused the renewal")
         super().upsert(document, if_match=if_match, create_only=create_only)
 
+    def refuse_from(self, at: datetime) -> None:
+        """Start refusing, then move the clock to ``at``: in that order, so a renewal landing between the two
+        writes the lease it already had, and no renewal lands a lease extended from ``at`` unrefused."""
+        self.refusing = True
+        self.at = at
+
 
 def _results(host: OpsHost, run_id: str) -> list[EvalResult]:
     return off_loop(host.eval_host.storage.query_eval_results_by_run, run_id, TOYHOST_SCOPE)
@@ -522,8 +529,7 @@ async def test_a_run_whose_renewals_fail_for_a_whole_lease_is_stopped_and_writes
     holder, heard = _heard(off_loop(ops_fixture, store=store, job_lease_s=0.3).host)
     elsewhere = other_process(holder)
     run_id = await _running_run(holder)
-    store.at = T0 + timedelta(seconds=0.1)  # inside the lease by the store's clock, for the whole test
-    store.refusing = True
+    store.refuse_from(T0 + timedelta(seconds=0.1))  # inside the lease by the store's clock, for the whole test
     heard.broadcasts.clear()
 
     await until(lambda: not holder.launch.job_manager.is_active(run_id), timeout=5)
@@ -545,8 +551,7 @@ async def test_a_generation_whose_renewals_fail_for_a_whole_lease_is_stopped_bef
     (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     attempt_id = job.job_id.rsplit(":", 1)[1]
     await asyncio.sleep(0)
-    store.at = T0 + timedelta(seconds=0.1)
-    store.refusing = True
+    store.refuse_from(T0 + timedelta(seconds=0.1))
 
     await until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id), timeout=5)
 
@@ -561,6 +566,39 @@ async def test_a_generation_whose_renewals_fail_for_a_whole_lease_is_stopped_bef
     store.at = T0 + timedelta(seconds=1)
     lost = await job_poll(other_process(fixture.host), job.job_id, TOYHOST_SCOPE)
     assert (lost.state, lost.status) == ("lost", "cancelled"), "the next reader writes the loss, as for any lapse"
+
+
+class SlowFaultRenewalRefusingStore(RenewalRefusingStore):
+    """A renewal-refusing store that, while refusing, takes a write adding to a record's faults only after a wait."""
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Wait before a write adding a fault while refusing; then write it as the renewal-refusing store does."""
+        if self.refusing:
+            stored = self.get(str(document["id"]), str(document["scope_id"]))
+            if stored is not None and stored.get("faults") != document.get("faults"):
+                time.sleep(0.25)  # past the renewer's next wake, one 0.1s interval on; inside the write's 0.3s bound
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def test_a_job_whose_lease_lapsed_is_stopped_though_the_writes_before_its_stop_outlast_its_renewer() -> None:
+    """An expiry lets go of the job's record before it writes why the job stopped, so with nothing else held the
+    renewer's next wake finds nothing held — while that write is still running.
+
+    A renewer that exited then cancelled every renewal task it started, the expiring one among them, mid-write, and
+    the job was never stopped. The stop comes regardless: a store slower than one renewal interval must not leave
+    the job spending past the lease it gave up.
+    """
+    gate = asyncio.Event()
+    store = SlowFaultRenewalRefusingStore()
+    fixture = off_loop(ops_fixture, gate=gate, store=store, job_lease_s=0.3)
+    (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    attempt_id = job.job_id.rsplit(":", 1)[1]
+    await asyncio.sleep(0)
+    store.refuse_from(T0 + timedelta(seconds=0.1))
+
+    await until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id), timeout=5)
+
+    assert not gate.is_set() and all(not writer.calls for writer in fixture.writers), "no call was paid for"
 
 
 class LeasedWriteRefusingStore(ClockedStore):
