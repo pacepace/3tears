@@ -42,7 +42,7 @@ and effort: [the keys a TOML file takes](examples/README.md#the-keys-a-toml-file
 | Rung | Example | Climb it when |
 |---|---|---|
 | [1](docs/ladder.md#rung-1-your-own-function) | [`1-triage/triage.py`](examples/1-triage/triage.py) | Point it at your own function: 15 lines of Python. |
-| [2](docs/ladder.md#rung-2-a-judge-checked-against-a-person) | [`2-replies/`](examples/2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check the judge against a person. |
+| [2](docs/ladder.md#rung-2-a-judge-checked-against-a-person) | [`2-replies/`](examples/2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check that the judge is right. |
 | [3](docs/ladder.md#rung-3-two-prompts-compared) | [`3-invoices/`](examples/3-invoices/extract.py) | Changing a prompt? Compare it against the current one, get a report you can hand to a reviewer, and have a model write the analysis over it. |
 | [4](docs/ladder.md#rung-4-an-agent-graded-on-the-world-it-leaves) | [`4-booking/`](examples/4-booking/agent.py) | Is your agent doing the right thing to the world, not only saying it? Then serve your evals, and the reports over them, to the team. |
 | [5](docs/ladder.md#rung-5-evaluate-the-evaluator) | [`5-writer/`](examples/5-writer/writer.py) | Is the model that writes your reports writing them well? A writer is a model too: compare two of its skills on frozen campaigns, and let the engine read the promotion. Its Sonnet recording replays offline, free. |

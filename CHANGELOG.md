@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a judge is checked on its examples in the run
+
+**Added:** `Judge(examples=[Example(...)])` on the quick path now grades each example `k` times as part of the eval's
+run, through the same judge call its answers are graded by, where it only stored the examples for a host's judge
+campaign. `Result.judge_examples` holds each example's verdicts, how many were graded as they must be on every repeat,
+the misses, and the judge's spend on them. The print says it in one line plus a line per miss (`judge: 3 of 4 examples
+graded as they must be on every one of 2 repeats ($0.0010 over 8 call(s))`), and the page in one sentence under Design &
+provenance, beside the judge's calibration and never pooled into it. The calls count against the eval's cost cap.
+
+**Hosts:** a judge with no examples makes no extra call; its print and page are unchanged. A recorded judge needs its
+examples' calls in its recording; rung 2's recording gains them (8 calls, $0.00086).
+
 ### evals: the retired per-1,000 money mark is removed
 
 **Removed:** the per-1,000 money mark (`$8/1000` for $0.008), retired on 2026-11-07, which the package kept only so a

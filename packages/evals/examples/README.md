@@ -10,7 +10,7 @@ it in order; each rung adds one idea to the one before.
 |---|---|---|
 | 0 | [`1-triage/triage.toml`](1-triage/triage.toml), after [Building an inventory](../docs/building-an-inventory.md) | Write down what your app must never get wrong, then run it with one TOML file. |
 | 1 | [`1-triage/triage.py`](1-triage/triage.py) | Point it at your own function: 15 lines of Python. |
-| 2 | [`2-replies/replies.py`](2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check the judge against a person. |
+| 2 | [`2-replies/replies.py`](2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check that the judge is right. |
 | 3 | [`3-invoices/extract.py`](3-invoices/extract.py) | Changing a prompt? Compare it against the current one, get a report you can hand to a reviewer, and have a model write the analysis over it. |
 | 4 | [`4-booking/agent.py`](4-booking/agent.py), then [`serve.py`](4-booking/serve.py) | Is your agent doing the right thing to the world, not only saying it? Then serve your evals, and the reports over them, to the team. |
 | 5 | [`5-writer/writer.py`](5-writer/writer.py) | Is the model that writes your reports writing them well? A writer is a model too: compare two of its skills on frozen campaigns, and let the engine read the promotion. Its Sonnet recording replays offline, free. |
@@ -90,13 +90,20 @@ No code can say whether a reply is right, so the grader is a `Judge`: `google/ge
 reply on three pass/fail dimensions, `grounded`, `answers` and `safe`, one call per dimension, reading the policy and
 the email beside the reply (`case_material`). The judge is another family than the runner
 (`deepseek/deepseek-v4-flash`) on purpose: a model tends to rate its own output higher, and judging with the runner's
-own model prints the self-judging warning under the scores, a warning no quiet print drops. Its four `Example`s are
-hard negatives in pairs, one that must fail and one that looks like it and must pass; a run stores them for a judge
-campaign to measure the judge on, and calls no model to do it.
+own model prints the self-judging warning under the scores, a warning no quiet print drops.
 
-**A judge is a model too, so check it against a person.** The recorded judge passes all 40 replies on all three
-dimensions. That is what an unchecked judge looks like, not proof the replies are right: read a few, and you will find
-claims the policy never makes. The run says so in the line it never quiets:
+**A judge is a model too, so check that it is right, two ways.** Its four `Example`s are hard negatives in pairs, one
+that must fail and one that looks like it and must pass. The run grades each one twice, through the same call it
+grades the replies with, and the recorded judge gets all four right:
+
+```text
+judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00086 over 8 call(s))
+```
+
+A miss would print under it, with what the judge gave and what it must get. But the judge also passes all 40 replies
+on all three dimensions, and read a few, you will find claims the policy never makes: telling four written pairs
+apart is not grading the run's replies right. That takes a person's labels on the replies, and the run says they are
+missing in the line it never quiets:
 
 ```text
 judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs of each dimension in the to_label.csv the report writes, which holds 40 per dimension, without looking at the judge's verdict
@@ -113,9 +120,9 @@ Calibrating it is yours to do; no person's labels ship with the rung.
    dimension, how many labels paired, κ with its lower bound, and the evidence tier it earns. Below 20 labels the
    tier says the judge is not yet calibrated; reword a rubric dimension and its labels no longer pair.
 
-Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017) and 120 judge calls on
-`google/gemini-2.5-flash-lite` ($0.0151), the runner's and the judge's in recordings of their own
-(`recordings/replies.jsonl`, `recordings/judge.jsonl`).
+Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017) and 128 judge calls on
+`google/gemini-2.5-flash-lite` ($0.0159, 8 of them on the examples), the runner's and the judge's in recordings of
+their own (`recordings/replies.jsonl`, `recordings/judge.jsonl`).
 
 ### Rung 3: two prompts compared, `3-invoices/`
 
