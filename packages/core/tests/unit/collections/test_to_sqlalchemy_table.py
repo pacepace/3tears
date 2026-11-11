@@ -40,7 +40,9 @@ import sys
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
+from sqlalchemy.schema import CreateTable
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
     BOOL_TYPE,
@@ -48,6 +50,7 @@ from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
     ENUM_TYPE,
     INT_TYPE,
+    JSONB_TYPE,
     NUMERIC_TYPE,
     STRING_TYPE,
     TSVECTOR_TYPE,
@@ -305,6 +308,23 @@ def test_to_sqla_server_default_propagates() -> None:
     sd = t.c.category.server_default
     assert sd is not None
     assert str(sd.arg) == "image"
+
+
+def test_to_sqla_server_default_is_the_expression_in_the_ddl() -> None:
+    """Flips if a declared ``server_default`` (a raw Postgres expression) reaches the DDL quoted as a string
+    literal: ``'[]'::jsonb`` becomes an invalid json literal, ``now()`` the text 'now()' cast once at CREATE."""
+    schema = TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[
+            Column("a", UUID_TYPE),
+            Column("tags", JSONB_TYPE, server_default="'[]'::jsonb"),
+            Column("created", DATETIMETZ_TYPE, server_default="now()"),
+        ],
+    )
+    ddl = str(CreateTable(schema.to_sqlalchemy_table(sa.MetaData())).compile(dialect=postgresql.dialect()))
+    assert "tags JSONB DEFAULT '[]'::jsonb" in ddl
+    assert "created TIMESTAMP WITH TIME ZONE DEFAULT now()" in ddl
 
 
 def test_to_sqla_pgvector_unavailable_raises_at_call() -> None:

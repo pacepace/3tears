@@ -3,12 +3,13 @@ in each repo's generated equivalence test."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from threetears.core.testing.rewrites import _Column, _row_factory, _Table, assert_source_says, entry_id
+from threetears.core.testing.rewrites import _Column, _row_factory, _scalar, _Table, assert_source_says, entry_id
 from threetears.core.testing.same_results import Seeded
 
 _ENTRY: dict[str, Any] = {
@@ -121,3 +122,12 @@ def test_a_literal_pin_holds_its_value_on_two_rows_in_three_and_nulls_follow_the
     assert [row(_seed(index))["is_deleted"] for index in range(6)] == [False, False, True, False, False, True]
     assert row(_seed(1, null=True))["customer_id"] is None
     assert row(_seed(1, null=True))["note"] == "fixed"
+
+
+def test_a_json_column_is_seeded_as_its_text() -> None:
+    """Flips if a json or jsonb column is seeded as a Python mapping: asyncpg with no json codec refuses it (the
+    generated test then errors seeding every table holding one), and takes the value as text."""
+    for kind in ("jsonb", "json"):
+        value = _scalar(_Column("doc", kind, "U", "", True, False, False), "U", 7)
+        assert isinstance(value, str)
+        assert json.loads(value) == {"n": 7}

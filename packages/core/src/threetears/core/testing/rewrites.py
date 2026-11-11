@@ -194,7 +194,8 @@ def _scalar(column: _Column, category: str, n: int) -> Any:
     if kind == "interval":
         return timedelta(seconds=n)
     if kind in {"jsonb", "json"}:
-        return {"n": n}
+        # as its text: a connection with no json codec (asyncpg's default) takes and gives json as text
+        return json.dumps({"n": n})
     if kind == "bytea":
         return f"{n}".encode()
     if kind == "inet":

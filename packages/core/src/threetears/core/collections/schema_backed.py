@@ -1455,7 +1455,8 @@ class TableSchema:
                 "nullable": nullable,
             }
             if col.server_default is not None:
-                kwargs["server_default"] = col.server_default
+                # a raw Postgres expression (``now()``, ``'[]'::jsonb``): a plain string would be quoted as a literal
+                kwargs["server_default"] = sa.text(col.server_default)
             if col.foreign_key is not None:
                 ref_table, ref_col = col.foreign_key
                 sa_columns.append(
