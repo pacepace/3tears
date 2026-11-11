@@ -314,12 +314,14 @@ def test_a_run_time_where_only_narrows_so_the_call_is_judged_by_its_pins(
     keyed = _call(call.replace("{by}", '{"state": s}').replace("{where}", where))
     statements = list(helper_statements(keyed))
     assert statements and not any(s.unseen for s in statements), [s.unseen for s in statements]
+    # a keyed count is named so (a count by a key prefix); anything else keyed is clean
+    keyed_kinds = {"keyed-count"}
     judged = _judged(ast.unparse(keyed), schema)
-    assert judged and all(findings == [] for findings in judged), judged
+    assert judged and all(found[0] in keyed_kinds for findings in judged for found in findings), judged
     if call.startswith("read_keyed"):
         return  # its key batch keys it whatever it pins
     whole = ast.unparse(_call(call.replace("{by}", "{}").replace("{where}", where)))
-    assert any(findings for findings in _judged(whole, schema)), whole
+    assert any(found[0] not in keyed_kinds for findings in _judged(whole, schema) for found in findings), whole
 
 
 def test_joined_rows_are_judged_as_the_keyed_read_they_send(schema: SchemaCatalog) -> None:

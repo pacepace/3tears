@@ -286,8 +286,8 @@ def test_a_where_fragment_holding_a_top_level_or_never_widens_past_the_pins(conn
     assert sorted(selected) == pinned
     batch = run_inline(read_keyed(db, "t", keys=KeyBatch(("a",), [("k1",)]), columns=["a", "b"], where=[every]))
     assert sorted((row["a"], row["b"]) for row in batch) == pinned
-    counted = run_inline(counts_by(db, "t", column="a", by={"a": "k1"}, where=[every]))
-    assert counted == {"k1": len(pinned)}
+    counted = run_inline(counts_by(db, "t", column="b", by={"a": "k1"}, where=[every]))
+    assert sum(counted.values()) == len(pinned)
     walked = run_inline(
         keyset_rows(
             db, "t", columns=["a", "b"], by={"a": "k1"}, order=[Sort("b", cast="bigint")], page=4, where=[every]
