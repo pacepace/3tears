@@ -38,12 +38,11 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
 
 from threetears.epoch.client import DurableEpoch, EpochClient, PoolLike
 from threetears.epoch.generation import (
-    DEFAULT_EPOCH_CHANGE_RETENTION,
     EPOCH_CHANGES_BUCKET,
+    EPOCH_CHANGES_FILL_WARN_RATIO,
     EpochChangeRetention,
     EpochGenerationReader,
     EpochGenerationSource,
-    epoch_change_kv_key,
     generation_kv_key,
 )
 from threetears.epoch.generation_tick import (
@@ -59,6 +58,7 @@ from threetears.epoch.table_follow import (
     MAX_WATCH_RESTART_DELAY,
     TableFollower,
     WatchHealth,
+    follow_l2_kept_tables,
     follow_tables,
 )
 from threetears.epoch.tick import catchup_tick
@@ -76,12 +76,11 @@ __all__ = [
     "EpochBumpMessage",
     "DurableEpoch",
     "EpochClient",
-    "DEFAULT_EPOCH_CHANGE_RETENTION",
     "EPOCH_CHANGES_BUCKET",
+    "EPOCH_CHANGES_FILL_WARN_RATIO",
     "EpochChangeRetention",
     "EpochGenerationReader",
     "EpochGenerationSource",
-    "epoch_change_kv_key",
     "follow_generation_key",
     "follow_tables",
     "generation_catchup_tick",
@@ -89,5 +88,6 @@ __all__ = [
     "EpochListener",
     "PoolLike",
     "TableFollower",
+    "follow_l2_kept_tables",
     "WatchHealth",
 ]

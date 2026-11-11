@@ -35,7 +35,7 @@ from threetears.core.collections import (
     WriteBuffer,
 )
 from threetears.core.collections.tier_reads import hold_tier_reads_timer, release_tier_reads_timer
-from threetears.core.collections.epoch_change import ChangedRow, EpochChange
+from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.kv import FakeNatsClient
@@ -83,15 +83,24 @@ class _Source:
         self.count += 1
         return f"inc:{self.count}"
 
-    async def advance_with_change(self, table_name: str, rows: Sequence[ChangedRow] | None) -> str:
+    async def advance_with_change(
+        self, table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+    ) -> str:
         token = await self.advance(table_name)
         self.changes[(table_name, token)] = EpochChange(
-            table=table_name, token=token, whole_table=rows is None, rows=list(rows) if rows is not None else []
+            table=table_name,
+            token=token,
+            whole_table=rows is None and not keys_unknown,
+            keys_unknown=keys_unknown,
+            rows=list(rows) if rows is not None else [],
         )
         return token
 
     async def change(self, table_name: str, token: str) -> EpochChange | None:
         return self.changes.get((table_name, token))
+
+    async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+        return await walk_by_count(self, table_name, after, upto)
 
 
 class _Members(BaseCollection[_Member]):

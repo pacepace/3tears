@@ -33,10 +33,12 @@ import asyncpg
 
 from threetears.core.backends.arrow_reply import reply_rows
 from threetears.core.backends.broker_generation import (
+    CHANGED_ROWS_FIELD,
     GENERATION_UNAVAILABLE_ERROR_CODE,
     GENERATIONS_FAILED_REPLY_FIELD,
     GENERATIONS_REPLY_FIELD,
     forget_reply_generations,
+    named_changed_rows,
     record_reply_generations,
 )
 from threetears.core.backends.protocol import (
@@ -83,6 +85,7 @@ if TYPE_CHECKING:
 __all__ = [
     "CONSTRAINT_VIOLATION_ERROR_CODE",
     "DATA_VERSION_NOT_READY_ERROR_CODE",
+    "CHANGED_ROWS_FIELD",
     "DATA_VERSION_SUPERSEDED_ERROR_CODE",
     "GENERATIONS_FAILED_REPLY_FIELD",
     "GENERATIONS_REPLY_FIELD",
@@ -1193,6 +1196,9 @@ class NatsProxyL3Backend:
             ],
             "transaction": transaction,
         }
+        named = named_changed_rows()
+        if named:
+            payload[CHANGED_ROWS_FIELD] = named
         subject = Subjects.l3_batch(namespace=self.ns).path
         response = await self.nats_request(subject, payload)
         # before the success check: a batch run statement by statement commits each one that ran,
@@ -1297,6 +1303,10 @@ class NatsProxyL3Backend:
             if offload
             else self._query_payload(query, params, operation, namespace, customer_scope=customer_scope)
         )
+        named = named_changed_rows()
+        if named and operation != "select":
+            # the rows a collection's write names, so the broker's epoch record is exactly them
+            payload[CHANGED_ROWS_FIELD] = named
         subject = Subjects.l3_query(namespace=self.ns).path
         # a read sent again changes nothing; a statement that may write, ``RETURNING`` and a writing CTE
         # included, is never resent
@@ -1678,6 +1688,9 @@ class _ProxyConnection:
         :rtype: None
         """
         self._backend = backend
+        # the rows the open transaction's statements were named as changing, by table and key, sent
+        # on its commit (CHANGED_ROWS_FIELD); emptied when the transaction ends
+        self.tx_changed_rows: dict[str, dict[tuple[str, ...], Any]] = {}
         # set to the broker-minted tx_id while a transaction is open;
         # reset to None on commit or rollback.
         self.tx_id: UUID | None = None
@@ -1722,6 +1735,10 @@ class _ProxyConnection:
         :return: the request payload
         :rtype: dict[str, Any]
         """
+        for table, rows in named_changed_rows().items():
+            held = self.tx_changed_rows.setdefault(table, {})
+            for row in rows:
+                held[tuple(str(each) for each in row["ids"])] = row
         return {
             "correlation_id": str(uuid7()),
             "identity_token": self._backend.forwarded_identity_token(),
@@ -2192,6 +2209,10 @@ class _ProxyTransaction:
             "tx_id": str(tx_id),  # convert at border: NATS l3.tx.commit/rollback request payload field
         }
         action: Literal["commit", "rollback"] = "rollback" if exc_type is not None else "commit"
+        named = {table: list(rows.values()) for table, rows in self._connection.tx_changed_rows.items() if rows}
+        self._connection.tx_changed_rows = {}
+        if action == "commit" and named:
+            payload[CHANGED_ROWS_FIELD] = named
         subject = Subjects.l3_tx(action, namespace=self._backend.ns).path
         if action == "rollback":
             # nothing the session wrote lands, so no collection settling it may be handed a token

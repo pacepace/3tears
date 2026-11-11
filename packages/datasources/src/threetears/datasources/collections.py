@@ -195,6 +195,8 @@ _TABLE_TEMPLATES_SCHEMA = TableSchema(
         Column("date_created", DATETIMETZ_TYPE, immutable=True),
         Column("date_updated", DATETIMETZ_TYPE),
     ],
+    # a template a follower missed the change of is caught up from its epoch, as every datasource table is
+    write_generation=WRITE_GENERATION,
 )
 
 
