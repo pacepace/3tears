@@ -10,6 +10,10 @@ kit (``threetears.evals.testing``) proves it case by case:
 - **One table**, keyed by ``(scope_id, id)``. ``doc_type`` is a column of its own, so every typed read
   selects on it, and the document itself is stored as its JSON text. The etag lives in a column beside
   the document, never in it, so a read has nothing to strip.
+- **Every statement is a shared keyed builder's** (:mod:`threetears.interfaces.keyed`, dependency-free): a point
+  read by ``(scope_id, id)``, a keyed batch of ids, a listing read by the ``documents_by_type`` index a page at a
+  time in ``seq`` order, a keyed write; run here on the store's own connection, ``$n`` read as SQLite's ``?n``. No
+  statement is written by hand but the table's own DDL and its inserts.
 - **Predicates and ordering run in SQLite**, on the stored JSON type: ``json_type`` tells ``true`` from
   ``1`` and a number from its text, as the port requires, and a document without the order field (or
   with it null) sorts below every document that has it. A projection (``exclude``, ``keep``) is applied
@@ -43,7 +47,24 @@ import sqlite3
 import threading
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from typing import Any
+
+from threetears.interfaces.keyed import (
+    Fragment,
+    KeyBatch,
+    KeyPage,
+    Selected,
+    Sort,
+    delete_keyed_statements,
+    keyset_page_statement,
+    keyset_rows_statement,
+    next_past,
+    read_keyed_statements,
+    read_row_statement,
+    sqlite_numbered,
+    update_keyed_statements,
+)
 
 from threetears.evals.schema.store_port import StoreConflict, field_in_values, keep_fields, omit_paths
 
@@ -65,8 +86,23 @@ CREATE TABLE IF NOT EXISTS documents (
     body TEXT NOT NULL,
     UNIQUE (scope_id, id)
 );
+-- purpose: packages/evals/src/threetears/evals/storage/sqlite.py::_listing; packages/evals/src/threetears/evals/storage/sqlite.py::SqliteDocumentStore.by_doc_type
+-- plan_test: packages/evals/tests/test_sqlite_store_plans.py::test_a_scopes_documents_of_one_type_are_read_through_documents_by_type
 CREATE INDEX IF NOT EXISTS documents_by_type ON documents (scope_id, doc_type);
 """
+
+#: the ids :meth:`SqliteDocumentStore.get_many` names a statement: well under SQLite's bound-parameter limit
+_ID_BATCH = 500
+
+#: the documents a listing statement reads past the one that says more follow
+_LISTING_PAGE = 500
+
+#: a listing's order, insertion order: ``seq`` is the table's rowid, which ``documents_by_type`` carries beside its
+#: columns, so a page past a ``seq`` reads that index from the place (uncast: SQLite compares by the column's own type)
+_BY_SEQ = (Sort("seq", cast=None),)
+
+#: the name a listing's order value is read under (the JSON field's value, as SQLite extracts it)
+_ORDER_VALUE = "__order"
 
 
 def _path(field: str) -> str:
@@ -76,25 +112,28 @@ def _path(field: str) -> str:
     return f'$."{field}"'
 
 
-def _predicate(field: str, value: Any) -> tuple[str, list[Any]]:
-    """One equality predicate on the stored JSON type, as SQL and its parameters.
+def _predicate(field: str, value: Any) -> Fragment:
+    """One equality predicate on the stored JSON type, as a fragment numbered from ``$1``.
 
     :raises TypeError: ``value`` is not a scalar the port compares (``str``, ``int``, ``float``, ``bool``, ``None``).
     """
     path = _path(field)
     if value is None:
-        return "(json_type(body, ?) IS NULL OR json_type(body, ?) = 'null')", [path, path]
+        return Fragment("json_type(t.body, $1) IS NULL OR json_type(t.body, $2) = 'null'", (path, path))
     if isinstance(value, bool):
-        return "json_type(body, ?) = ?", [path, "true" if value else "false"]
+        return Fragment("json_type(t.body, $1) = $2", (path, "true" if value else "false"))
     if isinstance(value, int | float):
-        return "(json_type(body, ?) IN ('integer', 'real') AND json_extract(body, ?) = ?)", [path, path, value]
+        return Fragment(
+            "json_type(t.body, $1) IN ('integer', 'real') AND json_extract(t.body, $2) = $3", (path, path, value)
+        )
     if isinstance(value, str):
-        return "(json_type(body, ?) = 'text' AND json_extract(body, ?) = ?)", [path, path, value]
+        return Fragment("json_type(t.body, $1) = 'text' AND json_extract(t.body, $2) = $3", (path, path, value))
     raise TypeError(f"by_doc_type compares a field to a scalar, not {type(value).__name__}: {field}={value!r}")
 
 
-def _membership(field: str, values: Sequence[Any]) -> tuple[str, list[Any]]:
-    """One membership predicate on the stored JSON type, as SQL and its parameters: the field equals any of ``values``.
+def _membership(field: str, values: Sequence[Any]) -> Fragment:
+    """One membership predicate on the stored JSON type, as a fragment numbered from ``$1``: the field equals any of
+    ``values``.
 
     The values are grouped by the JSON type they can equal, and each group travels as ONE JSON array read back with
     ``json_each``, so the parameter count is fixed whatever the number of values and no list outgrows SQLite's
@@ -104,24 +143,115 @@ def _membership(field: str, values: Sequence[Any]) -> tuple[str, list[Any]]:
     path = _path(field)
     clauses: list[str] = []
     params: list[Any] = []
+
+    def mark() -> str:
+        return f"${len(params)}"
+
     if any(value is None for value in values):
-        clauses.append("(json_type(body, ?) IS NULL OR json_type(body, ?) = 'null')")
-        params += [path, path]
+        params.append(path)
+        null_type = mark()
+        params.append(path)
+        clauses.append(f"(json_type(t.body, {null_type}) IS NULL OR json_type(t.body, {mark()}) = 'null')")
     flags = sorted({"true" if value else "false" for value in values if isinstance(value, bool)})
     if flags:
-        clauses.append("json_type(body, ?) IN (SELECT value FROM json_each(?))")
-        params += [path, json.dumps(flags)]
+        params.append(path)
+        flag_type = mark()
+        params.append(json.dumps(flags))
+        clauses.append(f"json_type(t.body, {flag_type}) IN (SELECT value FROM json_each({mark()}))")
     numbers = [value for value in values if isinstance(value, int | float) and not isinstance(value, bool)]
     if numbers:
+        params.append(path)
+        number_type = mark()
+        params.append(path)
+        number_value = mark()
+        params.append(json.dumps(numbers))
         clauses.append(
-            "(json_type(body, ?) IN ('integer', 'real') AND json_extract(body, ?) IN (SELECT value FROM json_each(?)))"
+            f"(json_type(t.body, {number_type}) IN ('integer', 'real') AND json_extract(t.body, {number_value}) IN "
+            f"(SELECT value FROM json_each({mark()})))"
         )
-        params += [path, path, json.dumps(numbers)]
     texts = [value for value in values if isinstance(value, str)]
     if texts:
-        clauses.append("(json_type(body, ?) = 'text' AND json_extract(body, ?) IN (SELECT value FROM json_each(?)))")
-        params += [path, path, json.dumps(texts)]
-    return f"({' OR '.join(clauses)})", params
+        params.append(path)
+        text_type = mark()
+        params.append(path)
+        text_value = mark()
+        params.append(json.dumps(texts))
+        clauses.append(
+            f"(json_type(t.body, {text_type}) = 'text' AND json_extract(t.body, {text_value}) IN "
+            f"(SELECT value FROM json_each({mark()})))"
+        )
+    return Fragment(" OR ".join(clauses), tuple(params))
+
+
+def _sqlite_order_key(value: Any) -> tuple[int, Any]:
+    """Where SQLite sorts a value ``json_extract`` answered: NULL lowest, then numbers (a JSON ``true`` / ``false`` is
+    the integer 1 / 0), then text (a nested object or array is its JSON text), each by its own comparison."""
+    if value is None:
+        return (0, 0)
+    if isinstance(value, int | float):
+        return (1, value)
+    return (2, value)
+
+
+def _order_expression(field: str) -> str:
+    """The JSON field's value as SQLite extracts it, the field's path written as a literal (a sort takes no binds)."""
+    return "json_extract(t.body, '" + _path(field).replace("'", "''") + "')"
+
+
+def _cursor(db: sqlite3.Connection, statement: tuple[str, Sequence[Any]]) -> sqlite3.Cursor:
+    """A keyed builder's statement run on ``db``, its ``$n`` read as SQLite's ``?n``: the rows it answers, as read."""
+    sql, params = statement
+    return db.execute(sqlite_numbered(sql), list(params))
+
+
+def _row(db: sqlite3.Connection, statement: tuple[str, Sequence[Any]]) -> Any:
+    """The first row a keyed builder's statement answers, or ``None``."""
+    return _cursor(db, statement).fetchone()
+
+
+def _written(db: sqlite3.Connection, statements: Sequence[tuple[str, Sequence[Any]]]) -> int:
+    """The rows a keyed builder's writes touched, summed over its statements."""
+    return sum(_cursor(db, statement).rowcount for statement in statements)
+
+
+@contextmanager
+def _snapshot(db: sqlite3.Connection) -> Iterator[None]:
+    """One read transaction: every statement inside it reads one snapshot of the file."""
+    db.execute("BEGIN")
+    try:
+        yield
+    finally:
+        db.execute("COMMIT")
+
+
+def _listing(
+    db: sqlite3.Connection,
+    scope_id: str,
+    doc_type: str,
+    columns: Sequence[str | Selected],
+    where: Sequence[Fragment] = (),
+) -> Iterator[tuple[Any, ...]]:
+    """Every row of one scope's documents of one type that ``where`` names, in ``seq`` order: the listing's statement
+    read a page at a time through ``documents_by_type``, each next page past the last ``seq`` read. The rows are the
+    selected columns in order, ``seq`` last."""
+    selected = [*columns, "seq"]
+    past: list[Any] | None = None
+    while True:
+        statement = keyset_rows_statement(
+            "documents",
+            columns=selected,
+            by={"scope_id": scope_id, "doc_type": doc_type},
+            order=[Sort("seq", cast=None)],
+            page=_LISTING_PAGE,
+            past=past,
+            by_row=True,
+            where=where,
+        )
+        answered = _cursor(db, statement).fetchall()
+        yield from answered
+        if len(answered) <= _LISTING_PAGE:
+            return
+        past = next_past(_BY_SEQ, {"seq": answered[-1][-1]})
 
 
 class SqliteDocumentStore:
@@ -188,10 +318,9 @@ class SqliteDocumentStore:
         :return: ``(document, etag)``, or ``(None, None)`` when there is no such document.
         :rtype: tuple[dict[str, Any] | None, str | None]
         """
+        statement = read_row_statement("documents", by={"scope_id": scope_id, "id": doc_id}, columns=("body", "etag"))
         with self._lock:
-            row = self._db.execute(
-                "SELECT body, etag FROM documents WHERE scope_id = ? AND id = ?", (scope_id, doc_id)
-            ).fetchone()
+            row = _row(self._db, statement)
         if row is None:
             return None, None
         return json.loads(row[0]), row[1]
@@ -227,15 +356,18 @@ class SqliteDocumentStore:
         if not wanted:
             return []
         documents: list[dict[str, Any]] = []
-        # Under SQLite's bound-parameter limit however many ids are asked for; each row projected as it is read.
-        for start in range(0, len(wanted), 500):
-            chunk = wanted[start : start + 500]
-            marks = ", ".join("?" * len(chunk))
+        # Under SQLite's bound-parameter limit however many ids are asked for (a list of placeholders, SQLite having no
+        # arrays); each row projected as it is read.
+        statements = read_keyed_statements(
+            "documents",
+            keys=KeyBatch(("id",), [(doc_id,) for doc_id in wanted], as_list=True),
+            columns=("body",),
+            by={"scope_id": scope_id, "doc_type": doc_type},
+            batch=_ID_BATCH,
+        )
+        for statement in statements:
             with self._lock:
-                for row in self._db.execute(
-                    f"SELECT body FROM documents WHERE scope_id = ? AND doc_type = ? AND id IN ({marks})",  # noqa: S608
-                    (scope_id, doc_type, *chunk),
-                ):
+                for row in _cursor(self._db, statement):
                     document = json.loads(row[0])
                     documents.append(keep_fields(document, keep) if keep else omit_paths(document, exclude))
         return documents
@@ -283,33 +415,62 @@ class SqliteDocumentStore:
             sequence of values.
         """
         members = field_in_values(field_in, field_eq)
-        clauses = ["scope_id = ?", "doc_type = ?"]
-        params: list[Any] = [scope_id, doc_type]
-        for field, value in field_eq.items():
-            clause, values = _predicate(field, value)
-            clauses.append(clause)
-            params += values
-        for field, listed in members.items():
-            clause, values = _membership(field, listed)
-            clauses.append(clause)
-            params += values
+        where = [_predicate(field, value) for field, value in field_eq.items()]
+        where += [_membership(field, listed) for field, listed in members.items() if listed]
         if any(not listed for listed in members.values()):
             return []
-        sql = f"SELECT body FROM documents WHERE {' AND '.join(clauses)}"  # noqa: S608
-        if order_by is not None:
-            # SQLite sorts NULL lowest: first ascending, last descending, which is the port's rule for a
-            # missing or null order field. Ties keep insertion order.
-            sql += f" ORDER BY json_extract(body, ?) {'DESC' if descending else 'ASC'}, seq"
-            params.append(_path(order_by))
-        else:
-            sql += " ORDER BY seq"
-        if limit is not None:
-            sql += " LIMIT ?"
-            params.append(limit)
+        if limit is not None and limit < 0:
+            # SQLite's LIMIT -1 is no limit, as this store always read it
+            limit = None
+        if limit == 0:
+            return []
         # Each row projected as it is read, so a projected read of many large documents never holds their bodies at
         # once: the run's result keys, read before its results are read a page at a time, are a few scalars a row.
-        with self._lock:
-            return [omit_paths(json.loads(row[0]), exclude) for row in self._db.execute(sql, params)]
+        if order_by is None:
+            with self._lock:
+                if limit is None:
+                    with _snapshot(self._db):
+                        listed = _listing(self._db, scope_id, doc_type, ("body",), where)
+                        return [omit_paths(json.loads(row[0]), exclude) for row in listed]
+                # the first ``limit`` in insertion order: one bounded page
+                statement = keyset_page_statement(
+                    "documents",
+                    columns=("body", "seq"),
+                    by={"scope_id": scope_id, "doc_type": doc_type},
+                    order=[Sort("seq", cast=None)],
+                    limit=limit,
+                    where=where,
+                )
+                answered = [{"body": row[0], "seq": row[1]} for row in _cursor(self._db, statement)]
+            page = KeyPage.cut(_BY_SEQ, answered, limit)
+            return [omit_paths(json.loads(row["body"]), exclude) for row in page.rows]
+        # In the field's order, by SQLite's own rule: NULL lowest (first ascending, last descending, the port's rule
+        # for a missing or null order field), then numbers, then text, ties in insertion order. The listing reads the
+        # field's value as SQLite extracts it beside each document, in insertion order, and the order is sorted here,
+        # stably, so ties keep insertion order either way (a page past a JSON value is no keyed seek on SQLite).
+        valued = Selected(_order_expression(order_by), _ORDER_VALUE)
+        with self._lock, _snapshot(self._db):
+            if limit is None:
+                held = [
+                    (row[1], omit_paths(json.loads(row[0]), exclude))
+                    for row in _listing(self._db, scope_id, doc_type, ("body", valued), where)
+                ]
+                held.sort(key=lambda pair: _sqlite_order_key(pair[0]), reverse=descending)
+                return [document for _, document in held]
+            # the first ``limit``: their seqs found from the values alone, then only their bodies read, by seq
+            ranked = [(row[0], row[1]) for row in _listing(self._db, scope_id, doc_type, (valued,), where)]
+            ranked.sort(key=lambda pair: _sqlite_order_key(pair[0]), reverse=descending)
+            top = [seq for _, seq in ranked[:limit]]
+            bodies: dict[int, str] = {}
+            for batch in read_keyed_statements(
+                "documents",
+                keys=KeyBatch(("seq",), [(seq,) for seq in top], as_list=True),
+                columns=("seq", "body"),
+                by={"scope_id": scope_id, "doc_type": doc_type},
+                batch=_ID_BATCH,
+            ):
+                bodies.update((row[0], row[1]) for row in _cursor(self._db, batch))
+        return [omit_paths(json.loads(bodies[seq]), exclude) for seq in top]
 
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
         """Yield the id of every document of one type within a scope.
@@ -323,12 +484,8 @@ class SqliteDocumentStore:
         :rtype: Iterator[str]
         """
         with self._lock:
-            ids = [
-                row[0]
-                for row in self._db.execute(
-                    "SELECT id FROM documents WHERE scope_id = ? AND doc_type = ? ORDER BY seq", (scope_id, doc_type)
-                )
-            ]
+            with _snapshot(self._db):
+                ids = [row[0] for row in _listing(self._db, scope_id, doc_type, ("id",))]
         yield from ids
 
     def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
@@ -365,10 +522,15 @@ class SqliteDocumentStore:
                     raise StoreConflict(f"document {doc_id!r} in scope {scope_id!r} already exists") from exists
                 return
             if if_match is not None:
-                written = self._db.execute(
-                    "UPDATE documents SET doc_type = ?, etag = ?, body = ? WHERE scope_id = ? AND id = ? AND etag = ?",
-                    (document.get("doc_type"), etag, body, scope_id, doc_id, if_match),
-                ).rowcount
+                written = _written(
+                    self._db,
+                    update_keyed_statements(
+                        "documents",
+                        values={"doc_type": document.get("doc_type"), "etag": etag, "body": body},
+                        by={"scope_id": scope_id, "id": doc_id},
+                        where=[Fragment('"etag" = $1', (if_match,))],
+                    ),
+                )
                 if written == 0:
                     raise StoreConflict(
                         f"document {doc_id!r} in scope {scope_id!r} no longer carries etag {if_match!r}"
@@ -402,17 +564,22 @@ class SqliteDocumentStore:
             # One write transaction from the read to the write, so another process's write cannot land between.
             self._db.execute("BEGIN IMMEDIATE")
             try:
-                row = self._db.execute(
-                    "SELECT body FROM documents WHERE scope_id = ? AND id = ?", (scope_id, doc_id)
-                ).fetchone()
+                row = _row(
+                    self._db,
+                    read_row_statement("documents", by={"scope_id": scope_id, "id": doc_id}, columns=("body",)),
+                )
                 if row is None:
                     self._db.execute("COMMIT")
                     return False
                 document = json.loads(row[0])
                 document.update(fields)
-                self._db.execute(
-                    "UPDATE documents SET etag = ?, body = ? WHERE scope_id = ? AND id = ?",
-                    (uuid.uuid7().hex, json.dumps(document), scope_id, doc_id),
+                _written(
+                    self._db,
+                    update_keyed_statements(
+                        "documents",
+                        values={"etag": uuid.uuid7().hex, "body": json.dumps(document)},
+                        by={"scope_id": scope_id, "id": doc_id},
+                    ),
                 )
                 self._db.execute("COMMIT")
             except BaseException:
@@ -431,5 +598,4 @@ class SqliteDocumentStore:
         :rtype: bool
         """
         with self._lock:
-            deleted = self._db.execute("DELETE FROM documents WHERE scope_id = ? AND id = ?", (scope_id, doc_id))
-            return deleted.rowcount > 0
+            return _written(self._db, delete_keyed_statements("documents", by={"scope_id": scope_id, "id": doc_id})) > 0

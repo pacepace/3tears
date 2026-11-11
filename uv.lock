@@ -781,6 +781,7 @@ name = "3tears-evals"
 version = "0.95.0"
 source = { editable = "packages/evals" }
 dependencies = [
+    { name = "3tears-interfaces" },
     { name = "httpx" },
     { name = "pydantic" },
 ]
@@ -793,6 +794,7 @@ fastmcp = [
 
 [package.metadata]
 requires-dist = [
+    { name = "3tears-interfaces", editable = "packages/interfaces" },
     { name = "fastmcp", marker = "extra == 'fastmcp'", specifier = ">=3.4.2,<5" },
     { name = "fastmcp-slim", marker = "extra == 'fastmcp'", specifier = ">=3.4.2,<5" },
     { name = "httpx", specifier = ">=0.27" },
