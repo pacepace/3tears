@@ -41,13 +41,13 @@ async def test_builds_scoped_update_with_touch() -> None:
         to_user_id=to_id,
     )
 
-    assert "UPDATE channel_identities SET user_id = $2" in conn.sql
-    assert "date_updated = $3" in conn.sql
-    assert "WHERE user_id = $1" in conn.sql
-    assert "RETURNING id" in conn.sql
-    # $1 source, $2 master, $3 touch timestamp
-    assert conn.params[0] == from_id
-    assert conn.params[1] == to_id
+    # the keyed update's spelling (threetears.core.keyed.update_keyed): $1 master, $2 touch timestamp, $3 source
+    assert 'UPDATE "channel_identities" SET "user_id" = $1' in conn.sql
+    assert '"date_updated" = $2' in conn.sql
+    assert 'WHERE "user_id" = $3' in conn.sql
+    assert 'RETURNING "id"' in conn.sql
+    assert conn.params[2] == from_id
+    assert conn.params[0] == to_id
     assert len(conn.params) == 3
     assert result == [(pk1,)]
 
@@ -71,7 +71,7 @@ async def test_composite_pk_returns_tuples() -> None:
         to_user_id=uuid4(),
     )
 
-    assert "RETURNING agent_id, id" in conn.sql
+    assert 'RETURNING "agent_id", "id"' in conn.sql
     assert result == [("a1", "c1"), ("a2", "c2")]
 
 
@@ -91,7 +91,7 @@ async def test_no_touch_column_omits_set() -> None:
     )
 
     assert "date_updated" not in conn.sql
-    assert conn.sql.count("$") == 2  # $1 where, $2 set, no touch param
+    assert conn.sql.count("$") == 2  # $1 set, $2 where, no touch param
     assert len(conn.params) == 2
 
 
@@ -110,5 +110,5 @@ async def test_custom_user_column() -> None:
         touch_column=None,
     )
 
-    assert "SET requested_by_user_id = $2" in conn.sql
-    assert "WHERE requested_by_user_id = $1" in conn.sql
+    assert 'SET "requested_by_user_id" = $1' in conn.sql
+    assert 'WHERE "requested_by_user_id" = $2' in conn.sql

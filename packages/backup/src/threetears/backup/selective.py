@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
+from threetears.core.keyed import read_row
 from threetears.observe import get_logger
 
 __all__ = [
@@ -210,17 +211,15 @@ class SelectiveRestore:
             inserts: list[PlannedRow] = []
             updates: list[PlannedRow] = []
             identical: list[PlannedRow] = []
-            pk_where = " AND ".join(f"{_quote(col)} = ${i + 1}" for i, col in enumerate(pk_columns))
+            # each row's live twin read by its key (the names were checked safe where the scratch read quoted them)
+            live_table = f"{selection.schema}.{selection.table}"
             for record in rows:
                 row = dict(record)
                 key = tuple(row[col] for col in pk_columns)
-                current = await live.fetch(
-                    f"SELECT * FROM {_quote(selection.schema)}.{_quote(selection.table)} WHERE {pk_where}",
-                    *key,
-                )
-                if not current:
+                current = await read_row(live, live_table, by=dict(zip(pk_columns, key, strict=True)))
+                if current is None:
                     inserts.append(PlannedRow(key=key, action="insert", row=row))
-                elif dict(current[0]) == row:
+                elif current == row:
                     identical.append(PlannedRow(key=key, action="identical", row=row))
                 else:
                     updates.append(PlannedRow(key=key, action="update", row=row))

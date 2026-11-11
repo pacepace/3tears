@@ -59,6 +59,8 @@ from threetears.core.ddl.change_notes import NOTE_REACH_SETTING, NOTE_WHOLE_SETT
 from threetears.core.ddl.ddl_lock import database_ddl_lock
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.keyed._filters import binds_native_arrays
+from threetears.core.keyed.point import read_row
+from threetears.core.keyed.writes import delete_keyed
 from threetears.core.keyset import read_keyset_pages
 from threetears.core.sql_fragments import as_written
 
@@ -803,9 +805,8 @@ class SqlL3Backend:
         """
         schema = self._schemas.get(table)
         if schema is None:
-            pk_where, params = self._where(pk, start=1)
-            sql = f"SELECT * FROM {_quote_ident(table)} WHERE {pk_where}"
-            return await self._fetchrow(sql, *params, conn=conn)
+            _quote_ident(table)  # a name holding a quote is refused, as it always was
+            return await read_row(self if conn is None else conn, table, by=dict(pk))
         coerced: list[Any] = [
             schema_sql.normalize_write_value(schema.column(name), pk[name]) for name in schema.pk_columns
         ]
@@ -1636,8 +1637,8 @@ class SqlL3Backend:
         """
         schema = self._schemas.get(table)
         if schema is None:
-            pk_where, params = self._where(pk, start=1)
-            await self._execute(f"DELETE FROM {_quote_ident(table)} WHERE {pk_where}", *params, conn=conn)
+            _quote_ident(table)  # a name holding a quote is refused, as it always was
+            await delete_keyed(self if conn is None else conn, table, by=dict(pk))
             return
         coerced: list[Any] = [
             schema_sql.normalize_write_value(schema.column(name), pk[name]) for name in schema.pk_columns

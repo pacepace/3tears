@@ -19,6 +19,7 @@ from threetears.core.collections.schema_backed import require_pgvector
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.keyed.point import read_row
+from threetears.core.keyed.writes import delete_keyed
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.observe import get_logger
 
@@ -160,20 +161,6 @@ def _build_upsert_sql(
     return result
 
 
-def _build_delete_sql(table_name: str, pk_column: str) -> str:
-    """build DELETE SQL for removing entity by primary key.
-
-    :param table_name: name of database table
-    :ptype table_name: str
-    :param pk_column: primary key column name
-    :ptype pk_column: str
-    :return: parameterized DELETE SQL string
-    :rtype: str
-    """
-    result = f"DELETE FROM {table_name} WHERE {pk_column} = $1"
-    return result
-
-
 def _build_sa_metadata(table_def: TableDef) -> Any:
     """build SQLAlchemy MetaData for L1 cache initialization.
 
@@ -267,7 +254,6 @@ def create_dynamic_collection(
     wall_clock_columns = frozenset(col.name for col in table_def.columns if col.column_type == "timestamp")
     instant_columns = frozenset(col.name for col in table_def.columns if col.column_type == "timestamptz")
     upsert_sql = _build_upsert_sql(tbl_name, column_names, pk_column, vector_columns)
-    delete_sql = _build_delete_sql(tbl_name, pk_column)
     sa_metadata = _build_sa_metadata(table_def)
 
     # initialize L1 backend with table schema if available
@@ -384,7 +370,7 @@ def create_dynamic_collection(
             pool = self.l3_pool
             if pool is None:
                 return
-            await pool.execute(delete_sql, entity_id)
+            await delete_keyed(pool, tbl_name, by={pk_column: entity_id})
 
         def serialize(self, data: dict[str, Any]) -> bytes:
             """serialize entity data to JSON bytes for L2 cache.

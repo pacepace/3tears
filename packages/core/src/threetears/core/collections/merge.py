@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from threetears.core.keyed import update_keyed
+
 __all__ = ["repoint_user_rows"]
 
 
@@ -68,12 +70,8 @@ async def repoint_user_rows(
     :return: list of primary-key tuples for the repointed rows
     :rtype: list[tuple[Any, ...]]
     """
-    set_parts = [f"{user_column} = $2"]
-    params: list[Any] = [from_user_id, to_user_id]
+    values: dict[str, Any] = {user_column: to_user_id}
     if touch_column is not None:
-        params.append(now if now is not None else datetime.now(UTC))
-        set_parts.append(f"{touch_column} = ${len(params)}")
-    pk_list = ", ".join(pk_columns)
-    sql = f"UPDATE {table} SET {', '.join(set_parts)} WHERE {user_column} = $1 RETURNING {pk_list}"
-    rows = await conn.fetch(sql, *params)
-    return [tuple(row[col] for col in pk_columns) for row in rows]
+        values[touch_column] = now if now is not None else datetime.now(UTC)
+    moved = await update_keyed(conn, table, values=values, by={user_column: from_user_id}, returning=pk_columns)
+    return [tuple(row[col] for col in pk_columns) for row in moved.rows]
