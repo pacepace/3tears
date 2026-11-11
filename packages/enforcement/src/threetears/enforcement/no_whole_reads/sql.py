@@ -57,6 +57,7 @@ from typing import Final
 
 from threetears.enforcement.no_whole_reads.schema import (
     COPY_PREFIX,
+    NEAREST_METHODS,
     TENANT_COLUMNS,
     _DeclaredTable,
     SchemaCatalog,
@@ -473,7 +474,8 @@ def _bound_value(text: str) -> bool:
     ):
         return False
     rest = _PLACEHOLDER.sub(" ", _INTERPOLATION.sub(" ", stripped.replace("'_'", " ")))
-    rest = re.sub(r"::\s*[\w ]+(?:\[\])*", " ", rest)
+    # a cast to any type, a schema's own included (``$1::text::public.vector``)
+    rest = re.sub(r"::\s*(?:\w+\.)?[\w ]+(?:\[\])*", " ", rest)
     rest = re.sub(r"\bAS\s+\w+(?:\[\])*", " ", rest, flags=re.IGNORECASE)
     rest = re.sub(r"\b\w+\s*\(", "(", rest)
     rest = re.sub(r"\b(?:ARRAY|ANY|TRUE|FALSE|NULL|INTERVAL)\b", " ", rest, flags=re.IGNORECASE)
@@ -509,16 +511,19 @@ class _Atom:
     """one predicate, as the key judgement reads it.
 
     :ivar kind: ``eq`` (a column equals a bound value), ``range`` (a column against a bound bound), ``join`` (a
-        column equals another column), ``filter`` (anything else), ``unseen`` (an interpolation the walk cannot see)
+        column equals another column), ``either`` (an ``OR`` of branches each binding columns: ``branches``),
+        ``filter`` (anything else), ``unseen`` (an interpolation the walk cannot see)
     :ivar column: the column, ``(qualifier, name)``
     :ivar other: the other column of a join
     :ivar bound: whether the predicate holds a bound value at all
+    :ivar branches: an ``either``'s branches, each the atoms it binds
     """
 
     kind: str
     column: tuple[str, str] = ("", "")
     other: tuple[str, str] = ("", "")
     bound: bool = False
+    branches: tuple[tuple[_Atom, ...], ...] = ()
 
 
 def _atoms(predicate: str) -> list[_Atom]:
@@ -545,6 +550,9 @@ def _atoms(predicate: str) -> list[_Atom]:
         columns = {atoms[0].column for atoms in each if len(atoms) == 1 and atoms[0].kind == "eq"}
         if len(columns) == 1 and all(len(atoms) == 1 and atoms[0].kind == "eq" for atoms in each):
             return [_Atom("eq", columns.pop(), bound=True)]
+        if all(atoms and all(atom.kind in {"eq", "range"} for atom in atoms) for atoms in each):
+            # ``a = ANY($1) OR b = ANY($1)``: keyed when every branch keys the read by its own index or key
+            return [_Atom("either", bound=True, branches=tuple(tuple(atoms) for atoms in each))]
         return [_Atom("filter", bound=bound)]
     if re.match(r"\s*(?:NOT\b|EXISTS\b)", masked, re.IGNORECASE):
         return [_Atom("filter", bound=bound)]
@@ -727,6 +735,8 @@ class _Level:
     :ivar limited: whether a ``LIMIT`` bounds it
     :ivar outer: columns an outer ``WHERE`` binds, pushed into a derived table
     :ivar correlated: whether it is a subquery, where a column of a relation it does not name is an outer row's
+    :ivar nearest: the column it orders by a distance from first (``ORDER BY embedding <=> $1``), ``(qualifier,
+        name)``: with a LIMIT, the k nearest rows, which an approximate-nearest-neighbour index of that column serves
     """
 
     relations: list[_Relation]
@@ -736,6 +746,7 @@ class _Level:
     limited: bool
     outer: set[str] = field(default_factory=set)
     correlated: bool = False
+    nearest: tuple[str, str] | None = None
 
 
 def _owner(level: _Level, qualifier: str) -> list[int]:
@@ -823,6 +834,8 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
     contained: list[set[str]] = [set() for _ in range(count)]
     other: list[int] = [0] * count
     joins: list[tuple[int, str, int, str]] = []
+    #: per relation, the OR predicates whose every branch binds only its columns
+    eithers: list[list[_Atom]] = [[] for _ in range(count)]
     for column in level.outer:
         for i in _owner(level, ""):
             eq[i].add(column)
@@ -851,6 +864,16 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
             for i in _owner(level, qualifier):
                 contained[i].add(name)
                 other[i] += 1
+        elif atom.kind == "either":
+            owners = {tuple(_owner(level, part.column[0])) for branch in atom.branches for part in branch}
+            known_branches = all(_known(level, part.column[0]) for branch in atom.branches for part in branch)
+            if len(owners) == 1 and known_branches:
+                for i in owners.pop():
+                    eithers[i].append(atom)
+                    other[i] += 1
+            else:
+                for i in _owner(level, ""):
+                    other[i] += 1
         elif atom.kind in {"filter", "unseen"}:
             for i in _owner(level, ""):
                 other[i] += 1
@@ -885,10 +908,80 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
                 reader,
                 relation,
             )
+            if not hit:
+                hit = any(
+                    _either_keys(
+                        atom,
+                        primary,
+                        purposed,
+                        (eq[index], ranged[index], contained[index], tenants),
+                        other[index],
+                        level,
+                        index,
+                        reader,
+                        relation,
+                    )
+                    for atom in eithers[index]
+                )
             if hit:
                 keyed[index] = True
                 grew = True
     return keyed, known
+
+
+def _either_keys(
+    atom: _Atom,
+    primary: list[tuple[str, ...]],
+    purposed: list[tuple[str, tuple[str, ...]]],
+    bound: tuple[set[str], set[str], set[str], frozenset[str]],
+    filters: int,
+    level: _Level,
+    index: int,
+    reader: Reader,
+    relation: _Relation,
+) -> bool:
+    """whether an ``OR`` keys a relation: every branch, with the rest of the read's bound columns, keys it by its own
+    index or key (each branch's index is credited as used). One branch that keys nothing leaves the read whole.
+
+    :param atom: the ``either`` atom
+    :ptype atom: _Atom
+    :param primary: the relation's primary keys
+    :ptype primary: list[tuple[str, ...]]
+    :param purposed: its indexes whose purpose names the reader
+    :ptype purposed: list[tuple[str, tuple[str, ...]]]
+    :param bound: its columns bound outside the ``OR`` (equality, range, containment) and its tenant columns
+    :ptype bound: tuple[set[str], set[str], set[str], frozenset[str]]
+    :param filters: how many other predicates may filter it
+    :ptype filters: int
+    :param level: the level
+    :ptype level: _Level
+    :param index: its position in the level
+    :ptype index: int
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :param relation: the relation
+    :ptype relation: _Relation
+    :return: whether every branch keys it
+    :rtype: bool
+    """
+    eq, ranged, contained, tenants = bound
+    hits = []
+    for branch in atom.branches:
+        branch_eq = eq | {part.column[1] for part in branch if part.kind == "eq"}
+        branch_ranged = ranged | {part.column[1] for part in branch if part.kind == "range"}
+        hits.append(
+            _key_hit(
+                primary,
+                purposed,
+                (branch_eq, branch_ranged, contained, tenants),
+                filters,
+                level,
+                index,
+                reader,
+                relation,
+            )
+        )
+    return all(hits)
 
 
 def _covers(key: tuple[str, ...], bound: set[str], tenants: frozenset[str]) -> bool:
@@ -921,7 +1014,8 @@ def _key_hit(
     relation: _Relation,
 ) -> bool:
     """whether a relation's bound columns make its read keyed: (a) a key prefix, (b) a purposed index's leading
-    column, (c) a keyset page.
+    column, (c) a keyset page, (d) the k nearest rows through a purposed approximate-nearest-neighbour index
+    (:func:`_nearest_hit`, credited as used whichever of these keys it).
 
     :param primary: its primary keys
     :ptype primary: list[tuple[str, ...]]
@@ -942,6 +1036,7 @@ def _key_hit(
     :return: whether it is keyed
     :rtype: bool
     """
+    nearest = _nearest_hit(purposed, level, index, reader, relation)
     eq, ranged, contained, tenants = bound
     table = bare_table(relation.name)
     if table is not None and table.startswith(COPY_PREFIX):
@@ -988,7 +1083,8 @@ def _key_hit(
             serving.append(((prefix, ordered_next), name, columns, prefix, ranged_next))
     if serving:
         best = max(rank for rank, *_ in serving)
-        _, name, columns, prefix, ranged_next = next(entry for entry in serving if entry[0] == best)
+        chosen = next(entry for entry in serving if entry[0] == best)
+        _, name, columns, prefix, ranged_next = chosen
         if table is not None and ranged_next and prefix == 0 and not _local(reader, table):
             # a range on the index's first column, nothing bound before it: a hashed first column cannot seek it
             reader.schema.use_from_lead(table, name, reader.names)
@@ -997,6 +1093,18 @@ def _key_hit(
         elif reader.template is not None:
             # a table its module builds from a template (``FROM {table}``): the template's index is used
             reader.schema.use(reader.template.name, name, reader.names)
+        # every other purposed index the read's bound columns serve whole, or whose next column the read ranges or
+        # orders by, is credited too: which of them the planner routes the read through is its own (an owner's
+        # memories by the owner triple, or by the user and a date range), each index's plan test showing it used;
+        # one whose next column the read neither binds, ranges nor orders by serves it no better than its lead
+        for entry in serving:
+            (_, ordered), other, other_columns, other_prefix, _ = entry
+            if entry is chosen or not (other_prefix == len(other_columns) or ordered):
+                continue
+            if table is not None:
+                reader.schema.use(table, other, reader.names)
+            elif reader.template is not None:
+                reader.schema.use(reader.template.name, other, reader.names)
         return True
     order = level.order
     if level.limited and order is not None and index in _owner(level, order[0]) and not filters:
@@ -1011,7 +1119,8 @@ def _key_hit(
                 elif name and table is not None:
                     reader.schema.use(table, name, reader.names)
                 return True
-    return False
+    # (d) the k nearest rows through an approximate-nearest-neighbour index of the column it orders by a distance from
+    return nearest
 
 
 def _local(reader: Reader, table: str) -> bool:
@@ -1048,6 +1157,67 @@ def _order(masked: str, text: str) -> tuple[str, str] | None:
     first = re.sub(r"\s+(ASC|DESC|NULLS\s+(FIRST|LAST)).*$", "", items[0], flags=re.IGNORECASE).strip()
     row = _row(first)
     return row[0] if row else _column(first)
+
+
+#: a distance operator of pgvector (L2, inner product, cosine, L1), bare or as ``OPERATOR(<schema>.<op>)``
+_DISTANCE: Final[re.Pattern[str]] = re.compile(
+    r"^(?P<column>.+?)\s*(?:OPERATOR\s*\(\s*(?:\w+\.)?(?:<=>|<->|<#>|<\+>)\s*\)|<=>|<->|<#>|<\+>)\s*(?P<value>.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _nearest_order(masked: str, text: str) -> tuple[str, str] | None:
+    """the column a level orders by a distance from first: ``ORDER BY <column> <distance operator> <bound value>``.
+
+    :param masked: the level, deeper levels blanked
+    :ptype masked: str
+    :param text: the same span, cleaned SQL
+    :ptype text: str
+    :return: ``(qualifier, column)``, or None when its first order is no distance from a bound value
+    :rtype: tuple[str, str] | None
+    """
+    match = _ORDER_BY.search(masked)
+    if match is None:
+        return None
+    closing = re.compile(r"\b(LIMIT|OFFSET|FOR|FETCH)\b", re.IGNORECASE).search(masked, match.end())
+    items = _split(text[match.end() : closing.start() if closing else len(text)], re.compile(","))
+    first = re.sub(r"\s+(ASC|NULLS\s+(FIRST|LAST)).*$", "", items[0], flags=re.IGNORECASE).strip() if items else ""
+    distance = _DISTANCE.match(first)
+    if distance is None or not _bound_value(distance.group("value").strip()):
+        return None
+    return _column(distance.group("column").strip())
+
+
+def _nearest_hit(
+    purposed: list[tuple[str, tuple[str, ...]]], level: _Level, index: int, reader: Reader, relation: _Relation
+) -> bool:
+    """whether a relation's read is the k nearest rows through an approximate-nearest-neighbour index whose purpose
+    names the reader: the level orders by a distance from the index's column and a LIMIT bounds it (the index is
+    credited as used). Ordered so without such an index, the read sorts every row it reads.
+
+    :param purposed: the relation's indexes whose purpose names the reader, ``(name, columns)``
+    :ptype purposed: list[tuple[str, tuple[str, ...]]]
+    :param level: the level
+    :ptype level: _Level
+    :param index: the relation's position in the level
+    :ptype index: int
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :param relation: the relation
+    :ptype relation: _Relation
+    :return: whether it is
+    :rtype: bool
+    """
+    if level.nearest is None or not level.limited or index not in _owner(level, level.nearest[0]):
+        return False
+    table = bare_table(relation.name)
+    declared = reader.schema.table(relation.name) if table is not None else reader.template
+    for name, columns in purposed:
+        found = declared.indexes.get(name) if declared is not None else None
+        if columns[:1] == (level.nearest[1],) and found is not None and found.method in NEAREST_METHODS:
+            reader.schema.use(table if table is not None else declared.name, name, reader.names)  # type: ignore[union-attr]
+            return True
+    return False
 
 
 def _bound_ctes(text: str, depths: list[int], ctes: set[str], reader: Reader) -> set[str]:
@@ -1145,6 +1315,7 @@ def _level(
         correlated=depth > 0,
     )
     level.outer = _outer_columns(text, depths, start, depth)
+    level.nearest = _nearest_order(masked, text[start : start + len(masked)])
     return level
 
 

@@ -22,7 +22,7 @@ import json
 import math
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Final, cast
 from uuid import UUID
 
 from sqlalchemy import MetaData, Table
@@ -85,6 +85,7 @@ from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.observe import get_logger
 
 __all__ = [
+    "MEMORY_REFS_PAGE",
     "ConsolidationCycleError",
     "MediaCollection",
     "MediaContentCollection",
@@ -296,53 +297,31 @@ def _build_fts_text(user_text: str, min_len: int = 3, max_len: int = 500) -> str
     return text[:max_len]
 
 
-def _build_user_scope_clause(
-    user_id: UUID,
-    *,
-    agent_id: UUID,
-    customer_id: UUID,
-    start_param: int = 2,
-    table_prefix: str = "",
-) -> tuple[str, list[UUID], int]:
-    """Build WHERE fragments scoping by agent / customer / user.
+#: the most refs :meth:`MemoryRefsCollection.find_by_conversation` reads by default: the surfaced-refs FIFO a
+#: conversation keeps per agent (``threetears.agent.tools.context``) holds this many and deletes the oldest past it
+MEMORY_REFS_PAGE: Final[int] = 50
 
-    collections-task-04 requires the partition column ``agent_id`` and
-    its sub-scope ``customer_id`` to be mandatory: the legacy "optional
-    scoping tag" doctrine is retired with v008's NOT NULL restoration.
-    every memory hybrid-search SQL site receives a fully-scoped
-    ``(agent_id, customer_id, user_id)`` triple.
+#: the owner triple every memory hybrid-search read is scoped to, written out so the read's key is in its text: the
+#: partition column ``agent_id`` and its sub-scopes ``customer_id`` and ``user_id``, bound at $2..$4 (each search's
+#: query text or vector is $1). collections-task-04 made the triple mandatory; v008 restored its NOT NULLs.
+_OWNER_SCOPE: Final[str] = "agent_id = $2 AND customer_id = $3 AND user_id = $4"
+#: :data:`_OWNER_SCOPE` on a table aliased ``mc``
+_OWNER_SCOPE_MC: Final[str] = "mc.agent_id = $2 AND mc.customer_id = $3 AND mc.user_id = $4"
 
-    :param user_id: user ID
-    :ptype user_id: UUID
-    :param agent_id: partition column for the memory tables; required
+
+def _owner_scope_params(agent_id: UUID, customer_id: UUID, user_id: UUID) -> tuple[list[UUID], int]:
+    """the values :data:`_OWNER_SCOPE` binds, and the last parameter index it uses.
+
+    :param agent_id: partition column for the memory tables
     :ptype agent_id: UUID
-    :param customer_id: customer ID sub-scope; required
+    :param customer_id: customer sub-scope
     :ptype customer_id: UUID
-    :param start_param: starting positional parameter index
-    :ptype start_param: int
-    :param table_prefix: optional table alias prefix
-    :ptype table_prefix: str
-    :return: tuple of (conditions string, param values, last param
-        index used)
-    :rtype: tuple[str, list[UUID], int]
+    :param user_id: user sub-scope
+    :ptype user_id: UUID
+    :return: ``([agent_id, customer_id, user_id], 4)``
+    :rtype: tuple[list[UUID], int]
     """
-    prefix = f"{table_prefix}." if table_prefix else ""
-    conditions: list[str] = []
-    params: list[UUID] = []
-    idx = start_param
-
-    conditions.append(f"{prefix}agent_id = ${idx}")
-    params.append(agent_id)
-    idx += 1
-
-    conditions.append(f"{prefix}customer_id = ${idx}")
-    params.append(customer_id)
-    idx += 1
-
-    conditions.append(f"{prefix}user_id = ${idx}")
-    params.append(user_id)
-
-    return " AND ".join(conditions), params, idx
+    return [agent_id, customer_id, user_id], 4
 
 
 def _normalize_scores(candidates: list[dict[str, Any]], key: str) -> None:
@@ -638,6 +617,20 @@ _MEMORY_MARK_COLUMNS = (
 )
 _MEMORY_MARK_KEYS = ("alias", "evergreen", "tags", "superseded_by", "superseded_at", "corrected_by")
 
+#: the columns :meth:`MemoriesCollection.find_active_for_consolidation` loads for each candidate
+_CANDIDATE_COLUMNS = (
+    "m.memory_id, m.customer_id, m.user_id, m.conversation_id, m.type_memory, m.content, "
+    "m.embedding::text AS embedding, m.date_created, m.tags"
+)
+#: what every consolidation candidate also is, after its owner: not pinned, embedded, not superseded by a live gist,
+#: not retracted; oldest first
+_CANDIDATE_TAIL = (
+    "AND NOT m.evergreen AND m.embedding IS NOT NULL "
+    "AND (m.superseded_by IS NULL OR NOT EXISTS ("
+    "SELECT 1 FROM memories g WHERE g.agent_id = m.agent_id AND g.memory_id = m.superseded_by)) "
+    f"AND {_NOT_RETRACTED_M} ORDER BY m.date_created"
+)
+
 #: A memory a live replacement stands in for. A replacement that is gone leaves
 #: its sources current again, as every other read here treats them.
 _REPLACED = (
@@ -874,11 +867,53 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             ),
         ),
         indexes=(
-            SchemaIndex("ix_memories_user_date", "user_id", "date_created"),
+            # v036: one user's memories under one agent, newest first: every per-user read and count, and the
+            # history pool's date bound read off it. it replaced idx_memories_agent_user (agent_id, user_id) and
+            # ix_memories_user_date (user_id, date_created), which YugabyteDB passed over for the owner index
+            SchemaIndex(
+                "ix_memories_agent_user_date",
+                "agent_id",
+                "user_id",
+                "date_created",
+                desc="date_created",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.count_by_user; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_similar_for_dedup; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_same_event; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.search_by_semantic; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.search_by_fts; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.list_for_user; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_by_scope; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_for_user_in_agents; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.hybrid_search._nearest"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memories_agent_user",
+                reason=(
+                    "memories carries six indexes: one user's memories under one agent, every per-user read and count"
+                ),
+            ),
             # v004: every memory a conversation produced, for the
             # conversation-scoped reads and the delete cascade from a
             # conversation. no other index leads with conversation_id.
-            SchemaIndex("idx_mem_conversation", "conversation_id"),
+            SchemaIndex(
+                "idx_mem_conversation",
+                "conversation_id",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.find_by_conversation_id"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_mem_conversation",
+                reason="memories carries six indexes: the memories one conversation produced, for its chunks",
+            ),
             SchemaIndex(
                 "ix_memories_user_alias",
                 "agent_id",
@@ -886,16 +921,42 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                 "alias",
                 unique=True,
                 where="alias IS NOT NULL",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_by_alias"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memories_user_alias",
+                reason="memories carries six indexes: a memory by its name, unique per agent and user",
             ),
             # v0.8.1: parity-gate enrichments relocated from upstream
             # alembic. tenancy-scope btree composites used by the
             # cross-tenant access guards.
-            SchemaIndex("idx_memories_agent_user", "agent_id", "user_id"),
             SchemaIndex(
                 "idx_memories_agent_customer_user",
                 "agent_id",
                 "customer_id",
                 "user_id",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_by_user; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection._ids_by_tags; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_by_scope; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_active_for_consolidation; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.hybrid_search; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.hybrid_search._nearest; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_for_user_in_agents"
+                ),
+                plan_test=(
+                    "packages/agent/memory/tests/integration/test_index_plans.py::test_memories_agent_customer_user"
+                ),
+                reason=(
+                    "memories carries six indexes: one owner's memories by the whole owner triple, every ambient read"
+                ),
             ),
             # no GIN over ``search_vector``: v027 dropped it. the keyword
             # predicate goes through ``gin_filter`` (ybgin refuses a
@@ -1074,9 +1135,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         when ``caller_user_id`` is provided the rbac evaluator
         decides ``memory.read`` on the ``(agent_id, customer_id)``
         memory namespace before the SQL runs. ``customer_id`` is
-        required for evaluator invocation -- single-argument
-        ``find_by_scope(agent_id)`` is an agent-internal row-scan
-        path (no user dimension) and runs without evaluation.
+        required for evaluator invocation. ``user_id`` must be given:
+        the read is keyed by the owner's index, and ``agent_id`` alone
+        or with only ``customer_id`` (every memory of the agent, or of a
+        whole customer) is refused (0.95.0).
 
         :param agent_id: agent ID scope (required)
         :ptype agent_id: UUID
@@ -1093,8 +1155,13 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         :rtype: list[MemoryEntity]
         :raises MemoryAccessDenied: when rbac enforcement denies
         :raises ValueError: when ``caller_user_id`` is set without
-            ``customer_id``
+            ``customer_id``, or without ``user_id``
         """
+        if user_id is None:
+            raise ValueError(
+                "find_by_scope reads one user's memories: give user_id (with customer_id or without);"
+                " agent_id alone, or with only customer_id, would read a whole agent or customer",
+            )
         if caller_user_id is not None:
             if customer_id is None:
                 raise ValueError(
@@ -1110,27 +1177,28 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             )
         if self.l3_pool is None:
             return []
-        conditions = ["agent_id = $1"]
-        params: list[object] = [agent_id]
-        param_idx = 2
-
-        if customer_id is not None:
-            conditions.append(f"customer_id = ${param_idx}")
-            params.append(customer_id)
-            param_idx += 1
-
-        if user_id is not None:
-            conditions.append(f"user_id = ${param_idx}")
-            params.append(user_id)
-            param_idx += 1
-
-        where_clause = " AND ".join(conditions) + filter_clause(self.read_filter, "memories.tags", params)
-        query = f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE {where_clause} ORDER BY date_created DESC"
-
-        # cache-bypass: multi-row scan by agent scope is not primary-
+        # cache-bypass: one owner's rows by the owner's index are not primary-
         # key addressable; L1 row cache would not help. method on
-        # Collection preserves single entry point + rbac gating.
-        rows = await self.l3_pool.fetch(query, *params)
+        # Collection preserves single entry point + rbac gating. each owner
+        # form's statement writes its owner out, so the read's key is in its
+        # own text.
+        params: list[object] = [agent_id]
+        if customer_id is None:
+            params.append(user_id)
+            allowed = filter_clause(self.read_filter, "memories.tags", params)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE agent_id = $1 AND user_id = $2{allowed}"
+                " ORDER BY date_created DESC",
+                *params,
+            )
+        else:
+            params.extend((customer_id, user_id))
+            allowed = filter_clause(self.read_filter, "memories.tags", params)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories"
+                f" WHERE agent_id = $1 AND customer_id = $2 AND user_id = $3{allowed} ORDER BY date_created DESC",
+                *params,
+            )
 
         entities: list[MemoryEntity] = []
         for row in rows:
@@ -1185,11 +1253,15 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             return []
         fragments, scope_params, _next = build_scope_conditions(scope, next_param=4)
         args: list[Any] = [agent_id, customer_id, user_id, *scope_params]
-        where = " AND ".join(["agent_id = $1", "customer_id = $2", "user_id = $3", *fragments])
+        narrowing = "".join(f" AND {fragment}" for fragment in fragments)
         if filtered:
-            where += filter_clause(self.read_filter, "memories.tags", args)
-        # cache-bypass: a multi-row scan by tag is not primary-key addressable, as find_by_scope.
-        rows = await self.l3_pool.fetch(f"SELECT memory_id FROM memories WHERE {where} ORDER BY date_created", *args)
+            narrowing += filter_clause(self.read_filter, "memories.tags", args)
+        # cache-bypass: one owner's rows by tag, found through the owner's index (not the primary key).
+        rows = await self.l3_pool.fetch(
+            "SELECT memory_id FROM memories WHERE agent_id = $1 AND customer_id = $2 AND user_id = $3"
+            f"{narrowing} ORDER BY date_created",
+            *args,
+        )
         return [row["memory_id"] for row in rows]
 
     async def delete_by_tags(
@@ -1607,12 +1679,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             return []
         embedding_str = json.dumps(embedding)
 
-        scope_conditions, scope_params, param_offset = _build_user_scope_clause(
-            user_id,
-            agent_id=agent_id,
-            customer_id=customer_id,
-            start_param=2,
-        )
+        scope_params, param_offset = _owner_scope_params(agent_id, customer_id, user_id)
         # v0.7.5 date filter: append ``AND date_created >= $X`` /
         # ``AND date_created <= $Y`` to both the vector and FTS sub-
         # queries. Bound parameters are appended after the existing
@@ -1632,7 +1699,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         for fragment in vec_scope_fragments:
             vec_date_clause += f" AND {fragment}"
         vec_extra_params.extend(vec_scope_params)
-        vec_where = f"WHERE {scope_conditions}"
         limit_param = f"${param_offset + 1}"
 
         # cache-bypass: vector-distance search is not primary-key-
@@ -1665,26 +1731,54 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         vec_salience_idx = len(vec_params)
 
         def _nearest(older_than: datetime | None = None) -> Any:
-            # ``older_than`` narrows the scan to the history: see the history pool below.
+            # ``older_than`` narrows the scan to the history (see the history pool below): its own
+            # statement, the date bound written out, so the read of one user's memories older than
+            # the window is the one ix_memories_agent_user_date names.
             args = list(vec_params)
-            history_clause = ""
-            if older_than is not None:
-                args.append(older_than)
-                history_clause = f" AND date_created < ${len(args)}"
+            if older_than is None:
+                allowed = filter_clause(self.read_filter, "memories.tags", args)
+                return self.l3_pool.fetch(  # type: ignore[union-attr]
+                    f"""
+                    SELECT memory_id, content, summary, type_memory, date_created,
+                           embedding::text AS embedding,
+                           1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
+                    FROM memories
+                    WHERE {_OWNER_SCOPE}
+                      AND embedding IS NOT NULL{vec_date_clause}
+                      AND (superseded_by IS NULL OR NOT EXISTS (
+                            SELECT 1 FROM memories g
+                            WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
+                      AND {_NOT_RETRACTED}
+                      AND salience >= ${vec_salience_idx}{allowed}
+                    ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
+                    LIMIT {limit_param}
+                    """,
+                    *args,
+                )
+            args.append(older_than)
+            history_idx = len(args)
             allowed = filter_clause(self.read_filter, "memories.tags", args)
+            # the user's memories older than the window are read by ix_memories_agent_user_date inside a subquery
+            # the planner keeps whole (OFFSET 0), the customer checked after: with the customer beside them,
+            # YugabyteDB read the owner's every memory by idx_memories_agent_customer_user. a subquery, not a
+            # MATERIALIZED CTE, so the rows stream to the distance sort instead of being held with their embeddings.
             return self.l3_pool.fetch(  # type: ignore[union-attr]
                 f"""
                 SELECT memory_id, content, summary, type_memory, date_created,
                        embedding::text AS embedding,
                        1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
-                FROM memories
-                {vec_where}
+                FROM (
+                    SELECT * FROM memories
+                    WHERE agent_id = $2 AND user_id = $4 AND date_created < ${history_idx}
+                    OFFSET 0
+                ) memories
+                WHERE customer_id = $3
                   AND embedding IS NOT NULL{vec_date_clause}
                   AND (superseded_by IS NULL OR NOT EXISTS (
                         SELECT 1 FROM memories g
                         WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
                   AND {_NOT_RETRACTED}
-                  AND salience >= ${vec_salience_idx}{history_clause}{allowed}
+                  AND salience >= ${vec_salience_idx}{allowed}
                 ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
                 LIMIT {limit_param}
                 """,
@@ -1703,12 +1797,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
         if fts_text:
-            fts_scope_conditions, fts_scope_params, fts_param_offset = _build_user_scope_clause(
-                user_id,
-                agent_id=agent_id,
-                customer_id=customer_id,
-                start_param=2,
-            )
+            fts_scope_params, fts_param_offset = _owner_scope_params(agent_id, customer_id, user_id)
             # v0.7.5 date filter on FTS sub-query.
             fts_date_clause = ""
             fts_extra_params: list[Any] = []
@@ -1724,7 +1813,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             for fragment in fts_retrieval_fragments:
                 fts_date_clause += f" AND {fragment}"
             fts_extra_params.extend(fts_retrieval_params)
-            fts_where = f"WHERE {fts_scope_conditions}"
             fts_limit_param = f"${fts_param_offset + 1}"
             # cache-bypass: FTS rank query is not primary-key-
             # addressable. See :meth:`hybrid_search` docstring.
@@ -1743,7 +1831,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                        embedding::text AS embedding,
                        ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM memories
-                {fts_where}
+                WHERE {_OWNER_SCOPE}
                   AND embedding IS NOT NULL
                   AND {_MEMORY_FTS_MATCH}{fts_date_clause}
                   AND (superseded_by IS NULL OR NOT EXISTS (
@@ -1923,7 +2011,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             return []
         embedding_str = json.dumps(embedding)
         params: list[Any] = [embedding_str, agent_id, user_id]
-        conditions = ["agent_id = $2", "user_id = $3"]
+        # the narrowing after the read's key (agent_id = $2 AND user_id = $3), written into the statement itself
+        conditions: list[str] = []
         param_idx = 4
         if type_filter:
             conditions.append(f"type_memory = ${param_idx}")
@@ -1945,7 +2034,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             conditions.append(_NOT_RETRACTED)
         limit_param = f"${param_idx}"
         params.append(max_results)
-        where_clause = " AND ".join(conditions) + filter_clause(self.read_filter, "memories.tags", params)
+        narrowing = "".join(f" AND {condition}" for condition in conditions)
+        narrowing += filter_clause(self.read_filter, "memories.tags", params)
         # ``embedding IS NOT NULL`` guard: ``NULL <=> vector`` is NULL,
         # which trips ``float(similarity)`` downstream.
         # DELIBERATE-RECALL by design (§3): this is the agent-invoked
@@ -1963,7 +2053,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS},
                    1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memories
-            WHERE {where_clause}
+            WHERE agent_id = $2 AND user_id = $3{narrowing}
             ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
         """
@@ -2034,11 +2124,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         """
         if self.l3_pool is None or scope_matches_nothing(scope):
             return []
-        conditions = [
-            "agent_id = $2",
-            "user_id = $3",
-            _MEMORY_FTS_MATCH,
-        ]
+        # the narrowing after the read's key (agent_id = $2 AND user_id = $3), written into the statement itself
+        conditions = [_MEMORY_FTS_MATCH]
         params: list[Any] = [fts_text, agent_id, user_id]
         idx = 4
         if type_filter:
@@ -2058,7 +2145,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         params.extend(scope_extra_params)
         if not include_retracted:
             conditions.append(_NOT_RETRACTED)
-        where = " AND ".join(conditions) + filter_clause(self.read_filter, "memories.tags", params)
+        narrowing = "".join(f" AND {condition}" for condition in conditions)
+        narrowing += filter_clause(self.read_filter, "memories.tags", params)
         # DELIBERATE-RECALL by design (§3), mirroring search_by_semantic:
         # the agent-invoked memory_search keyword leg applies NO salience
         # floor and NO supersession filter (unlike ambient hybrid_search) --
@@ -2067,7 +2155,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS},
                    ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
             FROM memories
-            WHERE {where}
+            WHERE agent_id = $2 AND user_id = $3{narrowing}
             ORDER BY fts_rank DESC
             LIMIT {max_results}
         """
@@ -2171,7 +2259,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             raise ValueError(f"list_for_user: unknown state {state!r}")
         if self.l3_pool is None:
             return [], 0
-        conditions = ["agent_id = $1", "user_id = $2"]
+        # the narrowing after the read's key (agent_id = $1 AND user_id = $2), written into each statement itself
+        conditions: list[str] = []
         params: list[Any] = [agent_id, user_id]
 
         def _bind(fragment: str, value: Any) -> None:
@@ -2195,13 +2284,16 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             conditions.append(f"NOT ({_NOT_RETRACTED})")
         elif state == "replaced":
             conditions.append(_REPLACED)
-        where = " AND ".join(conditions) + filter_clause(self.read_filter, "memories.tags", params)
+        narrowing = "".join(f" AND {condition}" for condition in conditions)
+        narrowing += filter_clause(self.read_filter, "memories.tags", params)
         # cache-bypass: a filtered scan of one person's rows is not primary-key
-        # addressable; ix_memories_user_date backs the order.
-        total = await self.l3_pool.fetchval(f"SELECT count(*) FROM memories WHERE {where}", *params)
+        # addressable; ix_memories_agent_user_date backs the order.
+        total = await self.l3_pool.fetchval(
+            f"SELECT count(*) FROM memories WHERE agent_id = $1 AND user_id = $2{narrowing}", *params
+        )
         rows = await self.l3_pool.fetch(
             f"SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS} "
-            f"FROM memories WHERE {where} "
+            f"FROM memories WHERE agent_id = $1 AND user_id = $2{narrowing} "
             f"ORDER BY date_created DESC, memory_id DESC LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}",
             *params,
             limit,
@@ -2404,15 +2496,21 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # AST walker treats agent_id as deliberately fanned-out.
         args: list[Any] = [list(agent_ids)]
         if customer_id is not None:
-            args.append(customer_id)
-        args.append(user_id)
-        owner = "customer_id = $2 AND user_id = $3" if customer_id is not None else "user_id = $2"
-        allowed = filter_clause(self.read_filter, "memories.tags", args)
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories "
-            f"WHERE agent_id = ANY($1::uuid[]) AND {owner}{allowed} ORDER BY date_created DESC",
-            *args,
-        )
+            args.extend((customer_id, user_id))
+            allowed = filter_clause(self.read_filter, "memories.tags", args)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE agent_id = ANY($1::uuid[])"
+                f" AND customer_id = $2 AND user_id = $3{allowed} ORDER BY date_created DESC",
+                *args,
+            )
+        else:
+            args.append(user_id)
+            allowed = filter_clause(self.read_filter, "memories.tags", args)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE agent_id = ANY($1::uuid[])"
+                f" AND user_id = $2{allowed} ORDER BY date_created DESC",
+                *args,
+            )
         entities: list[MemoryEntity] = []
         for row in rows:
             data = dict(row)
@@ -2603,26 +2701,9 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         """
         if self.l3_pool is None:
             return []
-        conditions = ["m.agent_id = $1"]
-        params: list[object] = [agent_id]
-        param_idx = 2
-
-        # exact scope match, including the NULL grain (see docstring): a
-        # None argument narrows to IS NULL rather than dropping the filter.
-        if customer_id is None:
-            conditions.append("m.customer_id IS NULL")
-        else:
-            conditions.append(f"m.customer_id = ${param_idx}")
-            params.append(customer_id)
-            param_idx += 1
-        if user_id is None:
-            conditions.append("m.user_id IS NULL")
-        else:
-            conditions.append(f"m.user_id = ${param_idx}")
-            params.append(user_id)
-            param_idx += 1
-
-        where_clause = " AND ".join(conditions) + filter_clause(self.read_filter, "m.tags", params)
+        # exact scope match, including the NULL grain (see docstring): a None argument narrows to IS NULL rather
+        # than dropping the filter. each grain's statement writes its owner out, so the read's key is in its own
+        # text; the owner's index (agent_id, customer_id, user_id) serves IS NULL as an equality.
         # cache-bypass: a scope-scanned candidate load is not primary-key
         # addressable, so the L1 row cache cannot serve it; keeping the SQL
         # on the Collection preserves the single-entry-point contract.
@@ -2630,21 +2711,38 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # (same cast as _MEMORIES_SELECT_COLUMNS); decode_vector parses the
         # bracketed text back to list[float] below. The self-healing
         # supersession filter is a NOT EXISTS against a live gist row.
-        query = (
-            "SELECT m.memory_id, m.customer_id, m.user_id, m.conversation_id, "
-            "m.type_memory, m.content, m.embedding::text AS embedding, "
-            "m.date_created, m.tags "
-            "FROM memories m "
-            f"WHERE {where_clause} "
-            "AND NOT m.evergreen "
-            "AND m.embedding IS NOT NULL "
-            "AND (m.superseded_by IS NULL OR NOT EXISTS ("
-            "SELECT 1 FROM memories g "
-            "WHERE g.agent_id = m.agent_id AND g.memory_id = m.superseded_by)) "
-            f"AND {_NOT_RETRACTED_M} "
-            "ORDER BY m.date_created"
-        )
-        rows = await self.l3_pool.fetch(query, *params)
+        params: list[object] = [agent_id]
+        if customer_id is None and user_id is None:
+            allowed = filter_clause(self.read_filter, "m.tags", params)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_CANDIDATE_COLUMNS} FROM memories m WHERE m.agent_id = $1{allowed} AND m.customer_id IS NULL"
+                f" AND m.user_id IS NULL {_CANDIDATE_TAIL}",
+                *params,
+            )
+        elif customer_id is None:
+            params.append(user_id)
+            allowed = filter_clause(self.read_filter, "m.tags", params)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_CANDIDATE_COLUMNS} FROM memories m WHERE m.agent_id = $1 AND m.customer_id IS NULL"
+                f" AND m.user_id = $2{allowed} {_CANDIDATE_TAIL}",
+                *params,
+            )
+        elif user_id is None:
+            params.append(customer_id)
+            allowed = filter_clause(self.read_filter, "m.tags", params)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_CANDIDATE_COLUMNS} FROM memories m WHERE m.agent_id = $1 AND m.customer_id = $2{allowed}"
+                f" AND m.user_id IS NULL {_CANDIDATE_TAIL}",
+                *params,
+            )
+        else:
+            params.extend((customer_id, user_id))
+            allowed = filter_clause(self.read_filter, "m.tags", params)
+            rows = await self.l3_pool.fetch(
+                f"SELECT {_CANDIDATE_COLUMNS} FROM memories m WHERE m.agent_id = $1 AND m.customer_id = $2"
+                f" AND m.user_id = $3{allowed} {_CANDIDATE_TAIL}",
+                *params,
+            )
         candidates: list[dict[str, Any]] = []
         for row in rows:
             data = dict(row)
@@ -2793,24 +2891,36 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
             ),
         ),
         indexes=(
-            SchemaIndex("ix_media_user_date", "user_id", "date_created"),
-            SchemaIndex("ix_media_mime_type", "mime_type"),
-            SchemaIndex("ix_media_memory_id", "memory_id"),
+            # v036: led by the agent, so YugabyteDB looks up each chunk's file by key instead of hashing the agent's
+            SchemaIndex(
+                "ix_media_agent_memory",
+                "agent_id",
+                "memory_id",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.search_by_ids; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.find_for_recall; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.hybrid_search; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.search_by_semantic; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.hybrid_search_within_memory"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_memory_id",
+                reason="media carries two indexes: the file a memory wraps, joined to that memory's chunks",
+            ),
             SchemaIndex(
                 "uq_media_cloud_connection_file",
                 "cloud_connection_id",
                 "cloud_file_id",
                 unique=True,
-            ),
-            # v0.8.1: parity-gate enrichments relocated from upstream
-            # alembic. tenancy-scope btree composite.
-            SchemaIndex("idx_media_agent_user", "agent_id", "user_id"),
-            # v0.8.1: partial btree over rows still awaiting extraction;
-            # selective enough to keep the queue-scan cheap.
-            SchemaIndex(
-                "ix_media_extraction_pending",
-                "extraction_status",
-                where="extraction_status = 'pending'",
+                purpose="constraint",
+                plan_test=(
+                    "packages/agent/memory/tests/integration/test_index_plans.py::test_media_cloud_connection_file"
+                ),
+                reason="media carries two indexes: one media row per provider file of a cloud connection",
             ),
         ),
         # v0.8.1: global uniqueness on ``media_id`` (stronger than the
@@ -2934,14 +3044,29 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
                 "ix_media_content_media_type",
                 "media_id",
                 "content_type",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MediaContentCollection.search_by_ids"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_content_media_type",
+                reason="media_content carries three indexes: the contents of the files a search names by file id",
             ),
-            SchemaIndex("ix_media_content_user", "user_id"),
             # v0.8.1: parity-gate enrichments relocated from upstream
             # alembic. tenancy-scope btree composite.
             SchemaIndex(
                 "idx_media_content_agent_user",
                 "agent_id",
                 "user_id",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MediaContentCollection.hybrid_search; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MediaContentCollection.search_by_semantic; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MediaContentCollection.search_by_fts"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_content_agent_user",
+                reason="media_content carries three indexes: one user's file contents, every search of them",
             ),
             # no GIN over ``search_vector``: v027 dropped it. the keyword
             # predicate goes through ``gin_filter`` (ybgin refuses a
@@ -3057,13 +3182,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
             return []
         embedding_str = json.dumps(embedding)
 
-        scope_conditions, scope_params, param_offset = _build_user_scope_clause(
-            user_id,
-            agent_id=agent_id,
-            customer_id=customer_id,
-            start_param=2,
-            table_prefix="mc",
-        )
+        scope_params, param_offset = _owner_scope_params(agent_id, customer_id, user_id)
         limit_param = f"${param_offset + 1}"
 
         # cache-bypass: vector-distance search joining media_content ->
@@ -3083,7 +3202,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
             JOIN media med
               ON mc.agent_id = med.agent_id
              AND mc.media_id = med.media_id
-            WHERE {scope_conditions} AND mc.embedding IS NOT NULL{vec_allowed}
+            WHERE {_OWNER_SCOPE_MC} AND mc.embedding IS NOT NULL{vec_allowed}
             ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
             """,
@@ -3092,13 +3211,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
         if fts_text:
-            fts_scope_conditions, fts_scope_params, fts_param_offset = _build_user_scope_clause(
-                user_id,
-                agent_id=agent_id,
-                customer_id=customer_id,
-                start_param=2,
-                table_prefix="mc",
-            )
+            fts_scope_params, fts_param_offset = _owner_scope_params(agent_id, customer_id, user_id)
             fts_limit_param = f"${fts_param_offset + 1}"
             # cache-bypass: FTS rank query joining media_content ->
             # media. see vec_coro justification above.
@@ -3114,7 +3227,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
                 JOIN media med
                   ON mc.agent_id = med.agent_id
                  AND mc.media_id = med.media_id
-                WHERE {fts_scope_conditions} AND mc.embedding IS NOT NULL
+                WHERE {_OWNER_SCOPE_MC} AND mc.embedding IS NOT NULL
                   AND {_CHUNK_FTS_MATCH}{fts_allowed}
                 ORDER BY fts_rank DESC
                 LIMIT {fts_limit_param}
@@ -3227,20 +3340,29 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
         if self.l3_pool is None or not content_ids:
             return []
         # cache-bypass: batch IN(...) join spanning media_content ->
-        # media. see :meth:`hybrid_search` for the detailed rationale.
+        # media. see :meth:`hybrid_search` for the detailed rationale. the
+        # ids' rows are read by their keys alone (media_content_pkey and
+        # ix_media_content_media_type) behind a MATERIALIZED fence, then the
+        # user is checked on both the content and its file: with the user
+        # beside the ids, YugabyteDB read every content row of the user. both
+        # are bound because no constraint makes a content row's user its file's.
         args: list[Any] = [agent_id, content_ids, user_id]
         allowed = _media_parent_clause(self.read_filter, "mc", args)
         rows = await self.l3_pool.fetch(
             f"""
+            WITH named AS MATERIALIZED (
+                SELECT * FROM media_content
+                WHERE agent_id = $1
+                  AND (content_id = ANY($2::uuid[]) OR media_id = ANY($2::uuid[]))
+            )
             SELECT mc.content_id, mc.content, mc.content_type, mc.media_id,
                    med.media_category, med.metadata_json, med.date_created
-            FROM media_content mc
+            FROM named mc
             JOIN media med
               ON mc.agent_id = med.agent_id
              AND mc.media_id = med.media_id
-            WHERE mc.agent_id = $1
-              AND (mc.content_id = ANY($2::uuid[]) OR mc.media_id = ANY($2::uuid[]))
-              AND mc.user_id = $3{allowed}
+            WHERE mc.user_id = $3
+              AND med.user_id = $3{allowed}
             ORDER BY mc.media_id, mc.date_created DESC
             """,
             *args,
@@ -3504,6 +3626,20 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                 "ix_memory_chunks_memory",
                 "memory_id",
                 "chunk_index",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.find_by_chunk_indexes; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.count_by_memory_id; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.find_for_recall; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.hybrid_search_within_memory; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.find_by_conversation_id"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memory_chunks_memory",
+                reason="memory_chunks carries four indexes: one memory's chunks by their index, and their count",
             ),
             # v015: cursor paging within one memory (``find_by_memory_id``
             # orders by chunk_id).
@@ -3512,29 +3648,28 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                 "memory_id",
                 "chunk_id",
                 where="memory_id IS NOT NULL",
-            ),
-            # v015: transcript chunks by the last message they cover.
-            SchemaIndex(
-                "idx_chunks_message_id_end",
-                "message_id_end",
-                where="message_id_end IS NOT NULL",
-            ),
-            SchemaIndex("ix_memory_chunks_user", "user_id"),
-            # v0.8.1: parity-gate enrichments relocated from upstream
-            # alembic. partial composite covering the agent-scoped
-            # conversation-replay lookup that follows
-            # ``message_id_start`` chains.
-            SchemaIndex(
-                "idx_chunks_message_id_start",
-                "agent_id",
-                "message_id_start",
-                where="message_id_start IS NOT NULL",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.find_by_memory_id"
+                ),
+                plan_test=(
+                    "packages/agent/memory/tests/integration/test_index_plans.py::test_chunks_memory_id_chunk_id"
+                ),
+                reason="memory_chunks carries four indexes: one memory's chunks paged in chunk order",
             ),
             # v0.8.1: tenancy-scope btree composite.
             SchemaIndex(
                 "idx_memory_chunks_agent_user",
                 "agent_id",
                 "user_id",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.hybrid_search; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.search_by_semantic"
+                ),
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memory_chunks_agent_user",
+                reason="memory_chunks carries four indexes: one user's chunks, every search of them",
             ),
             # no GIN over ``search_vector``: v027 dropped it. the keyword
             # predicate goes through ``gin_filter`` (ybgin refuses a
@@ -3663,13 +3798,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
             return []
         embedding_str = json.dumps(embedding)
 
-        scope_conditions, scope_params, param_offset = _build_user_scope_clause(
-            user_id,
-            agent_id=agent_id,
-            customer_id=customer_id,
-            start_param=2,
-            table_prefix="mc",
-        )
+        scope_params, param_offset = _owner_scope_params(agent_id, customer_id, user_id)
         cursor_clause = ""
         cursor_value: UUID | None = None
         if chunk_id_after is not None:
@@ -3704,7 +3833,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
             LEFT JOIN media med
               ON mc.agent_id = med.agent_id
              AND mc.memory_id = med.memory_id
-            WHERE {scope_conditions}
+            WHERE {_OWNER_SCOPE_MC}
               AND mc.embedding IS NOT NULL
               {cursor_clause}{vec_allowed}
             ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
@@ -3715,13 +3844,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
         if fts_text:
-            fts_scope_conditions, fts_scope_params, fts_param_offset = _build_user_scope_clause(
-                user_id,
-                agent_id=agent_id,
-                customer_id=customer_id,
-                start_param=2,
-                table_prefix="mc",
-            )
+            fts_scope_params, fts_param_offset = _owner_scope_params(agent_id, customer_id, user_id)
             fts_cursor_clause = ""
             fts_cursor_params: list[Any] = []
             if cursor_value is not None:
@@ -3744,7 +3867,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                 LEFT JOIN media med
                   ON mc.agent_id = med.agent_id
                  AND mc.memory_id = med.memory_id
-                WHERE {fts_scope_conditions}
+                WHERE {_OWNER_SCOPE_MC}
                   AND mc.embedding IS NOT NULL
                   AND {_CHUNK_FTS_MATCH}
                   {fts_cursor_clause}{fts_allowed}
@@ -3846,7 +3969,9 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         # cache-bypass: vector-distance search joining memory_chunks
         # -> media via the memory_id parent FK. see :meth:`hybrid_search`.
         # ``mc.embedding IS NOT NULL`` guard: same NULL-cosine
-        # rationale as :meth:`hybrid_search`.
+        # rationale as :meth:`hybrid_search`. the file is a lateral lookup by
+        # ix_media_agent_memory per chunk: as a plain join YugabyteDB hashed
+        # every file of the agent.
         args: list[Any] = [embedding_str, agent_id, user_id, max_results, date_after, date_before]
         allowed = _chunk_parent_clause(self.read_filter, "mc", args)
         rows = await self.l3_pool.fetch(
@@ -3856,9 +3981,10 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                    mc.date_created, med.metadata_json,
                    1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memory_chunks mc
-            LEFT JOIN media med
-              ON mc.agent_id = med.agent_id
-             AND mc.memory_id = med.memory_id
+            LEFT JOIN LATERAL (
+                SELECT media.metadata_json FROM media
+                WHERE media.agent_id = mc.agent_id AND media.memory_id = mc.memory_id
+            ) med ON TRUE
             WHERE mc.agent_id = $2
               AND mc.user_id = $3
               AND mc.embedding IS NOT NULL
@@ -4196,7 +4322,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         chunks have ``message_id_start`` NULL and are excluded from
         this query (the cross-memory scope is narrative-order, which
         document chunks don't participate in). Auth triple enforced
-        on the joined memories row.
+        on each chunk row.
 
         Cursor paging semantics match :meth:`find_by_memory_id`.
 
@@ -4224,10 +4350,12 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         if self.l3_pool is None:
             return []
 
-        # cache-bypass: JOIN scan across memory_chunks + memories
-        # filtered by memories.conversation_id. backed by the
-        # idx_chunks_message_id_start partial index for the ORDER BY.
-        # auth triple enforced on the joined memories row.
+        # cache-bypass: the conversation's memories by idx_mem_conversation
+        # behind a MATERIALIZED fence, then their chunks by
+        # ix_memory_chunks_memory, the owner checked on each chunk. one form
+        # both planners take: with the owner on the chunk in a plain join
+        # YugabyteDB read every chunk of the user; with it on the memory,
+        # PostgreSQL read every memory of the owner.
         params: list[Any] = [agent_id, conversation_id, user_id, customer_id]
         cursor_clause = ""
         if chunk_id_after is not None:
@@ -4246,17 +4374,20 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
 
         rows = await self.l3_pool.fetch(
             f"""
+            WITH conversation AS MATERIALIZED (
+                SELECT m.memory_id FROM memories m
+                WHERE m.agent_id = $1
+                  AND m.conversation_id = $2
+            )
             SELECT mc.chunk_id, mc.memory_id, mc.chunk_index, mc.content, mc.summary,
                    mc.heading_context, mc.page_number,
                    mc.message_id_start, mc.message_id_end,
                    mc.date_created
-            FROM memory_chunks mc
-            JOIN memories m
-              ON m.agent_id = mc.agent_id
-             AND m.memory_id = mc.memory_id
-            WHERE mc.agent_id = $1
-              AND m.conversation_id = $2
-              AND mc.user_id = $3
+            FROM conversation
+            JOIN memory_chunks mc
+              ON mc.agent_id = $1
+             AND mc.memory_id = conversation.memory_id
+            WHERE mc.user_id = $3
               AND mc.customer_id = $4
               AND mc.message_id_start IS NOT NULL
               {cursor_clause}{allowed}
@@ -4323,13 +4454,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
             return []
         embedding_str = json.dumps(embedding)
 
-        scope_conditions, scope_params, param_offset = _build_user_scope_clause(
-            user_id,
-            agent_id=agent_id,
-            customer_id=customer_id,
-            start_param=2,
-            table_prefix="mc",
-        )
+        scope_params, param_offset = _owner_scope_params(agent_id, customer_id, user_id)
         memory_id_param = f"${param_offset + 1}"
         limit_param = f"${param_offset + 2}"
         vec_args: list[Any] = [embedding_str, *scope_params, memory_id, candidate_k]
@@ -4353,7 +4478,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
             LEFT JOIN media med
               ON mc.agent_id = med.agent_id
              AND mc.memory_id = med.memory_id
-            WHERE {scope_conditions}
+            WHERE {_OWNER_SCOPE_MC}
               AND mc.memory_id = {memory_id_param}
               AND mc.embedding IS NOT NULL{vec_allowed}
             ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
@@ -4364,13 +4489,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
         if fts_text:
-            fts_scope_conditions, fts_scope_params, fts_param_offset = _build_user_scope_clause(
-                user_id,
-                agent_id=agent_id,
-                customer_id=customer_id,
-                start_param=2,
-                table_prefix="mc",
-            )
+            fts_scope_params, fts_param_offset = _owner_scope_params(agent_id, customer_id, user_id)
             fts_memory_id_param = f"${fts_param_offset + 1}"
             fts_limit_param = f"${fts_param_offset + 2}"
             fts_args: list[Any] = [fts_text, *fts_scope_params, memory_id, candidate_k]
@@ -4388,7 +4507,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                 LEFT JOIN media med
                   ON mc.agent_id = med.agent_id
                  AND mc.memory_id = med.memory_id
-                WHERE {fts_scope_conditions}
+                WHERE {_OWNER_SCOPE_MC}
                   AND mc.memory_id = {fts_memory_id_param}
                   AND {_CHUNK_FTS_MATCH}{fts_allowed}
                 ORDER BY fts_rank DESC
@@ -4489,12 +4608,23 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
             ),
         ),
         indexes=(
-            # the ledger read: one conversation's refs in date order. the
-            # primary key already serves a conversation_id-only lookup.
+            # the ledger read: the refs one agent surfaced in a conversation, newest first (v034; it
+            # replaced the conversation-wide (conversation_id, date_created) index). date_created is
+            # stored descending: YugabyteDB will not read an ascending one backwards for the newest first
             SchemaIndex(
-                "idx_conv_mem_refs_conversation_date_created",
+                "idx_conv_mem_refs_conversation_agent_date",
                 "conversation_id",
+                "agent_id",
                 "date_created",
+                desc="date_created",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryRefsCollection.find_by_conversation"
+                ),
+                plan_test=(
+                    "packages/agent/memory/tests/integration/test_index_plans.py"
+                    "::test_conv_mem_refs_conversation_agent_date"
+                ),
             ),
         ),
     )
@@ -4554,12 +4684,19 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
     async def find_by_conversation(
         self,
         conversation_id: UUID,
-        agent_id: UUID | None = None,
+        agent_id: UUID,
+        *,
+        limit: int = MEMORY_REFS_PAGE,
     ) -> list[MemoryRefEntity]:
-        """fetch a conversation's refs, ordered by ``date_created`` asc.
+        """fetch the newest ``limit`` refs one agent surfaced in a conversation, returned oldest first.
 
-        with ``agent_id``, only the refs that agent surfaced: in a
-        conversation several agents share, what one recalled is its own.
+        in a conversation several agents share, what one recalled is its
+        own: the read names the agent (0.95.0; a read of every agent's refs
+        was a manager built without its agent, which read the others' refs).
+        the surfaced-refs FIFO a caller keeps holds at most
+        :data:`MEMORY_REFS_PAGE` per agent and deletes the oldest past it,
+        so the default reads every ref it kept; each read is one page of
+        the conversation's (and agent's) date index, newest first.
 
         absorbs the former ``MemoryLedger.load(pool, conversation_id)``
         SQL into a Collection method. multi-row scan is not primary-
@@ -4571,32 +4708,30 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
 
         :param conversation_id: conversation UUID to scan for
         :ptype conversation_id: UUID
-        :param agent_id: only this agent's refs; ``None`` reads every ref
-        :ptype agent_id: UUID | None
+        :param agent_id: the agent whose refs these are
+        :ptype agent_id: UUID
+        :param limit: the most refs to read, newest first
+        :ptype limit: int
         :return: list of ref entities in chronological order
         :rtype: list[MemoryRefEntity]
         """
         if self.l3_pool is None:
             return []
-        # cache-bypass: multi-row scan by ``conversation_id`` (first
-        # column of the composite pk) is not primary-key-addressable.
-        # L1 row cache serves per-``(conversation_id, item_id)`` lookups
-        # only; a prefix scan would not hit. keeping the query on the
-        # Collection preserves the single entry point + lets callers
+        # cache-bypass: a page of one conversation's refs by its date index
+        # is not primary-key-addressable. L1 row cache serves per-
+        # ``(conversation_id, item_id)`` lookups only. keeping the query on
+        # the Collection preserves the single entry point + lets callers
         # share L2 invalidation channels.
         rows = await self.l3_pool.fetch(
-            """
-            SELECT conversation_id, item_id, item_type, short_desc,
-                   date_created, date_updated, agent_id
-            FROM conversation_memory_refs
-            WHERE conversation_id = $1 AND ($2::uuid IS NULL OR agent_id = $2)
-            ORDER BY date_created ASC
-            """,
+            "SELECT conversation_id, item_id, item_type, short_desc, date_created, date_updated, agent_id"
+            " FROM conversation_memory_refs WHERE conversation_id = $1 AND agent_id = $2"
+            " ORDER BY date_created DESC LIMIT $3",
             conversation_id,
             agent_id,
+            limit,
         )
         entities: list[MemoryRefEntity] = []
-        for row in rows:
+        for row in reversed(rows):
             data = self._coerce_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
             entities.append(entity)
@@ -4740,6 +4875,14 @@ class MemoryConsolidationsCollection(SchemaBackedCollection[MemoryConsolidationE
                 "idx_memory_consolidations_source",
                 "agent_id",
                 "source_memory_id",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryConsolidationsCollection.find_consolidated_into; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py::_MEMORY_MARK_COLUMNS"
+                ),
+                plan_test=(
+                    "packages/agent/memory/tests/integration/test_index_plans.py::test_memory_consolidations_source"
+                ),
             ),
         ),
     )

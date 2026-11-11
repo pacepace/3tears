@@ -116,3 +116,9 @@ async def test_the_result_cap_is_each_agents_own(collection: ContextItemCollecti
     # B's third result evicts B's oldest, never one of A's
     assert sorted(by_agent.get(AGENT_A, [])) == ["a0", "a1"]
     assert sorted(by_agent.get(AGENT_B, [])) == ["b1", "b2"]
+
+
+def test_a_manager_holding_memory_refs_names_its_agent(collection: ContextItemCollection) -> None:
+    """Flips if a manager wired to the memory refs collection is built without the agent whose refs it reads."""
+    with pytest.raises(ValueError, match="names its agent_id"):
+        ToolContextManager(collection, uuid.uuid4(), "user1", memory_refs_collection=object())  # type: ignore[arg-type]

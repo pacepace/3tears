@@ -99,10 +99,10 @@ _EXEMPT_LITERAL_FRAGMENTS: tuple[tuple[str, str], ...] = (
     # via parameterized fragments rather than a literal column name in
     # the same string. these helpers live in the memories collection
     # and inject ``user_id`` / ``agent_id`` / ``customer_id`` predicates
-    # via _build_user_scope_clause; the walker cannot statically prove
+    # via _OWNER_SCOPE / _OWNER_SCOPE_MC; the walker cannot statically prove
     # the resulting SQL contains the partition column, so the test
     # treats the unparametrized template as exempt and trusts the
-    # authoring discipline (every consumer of _build_user_scope_clause
+    # authoring discipline (every consumer of _OWNER_SCOPE
     # passes scope params).
     ("websearch_to_tsquery", "dynamic-scope-clause"),
     # rationale: one-time data translation at boot. matches the

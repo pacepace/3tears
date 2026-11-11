@@ -33,6 +33,8 @@ from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MemoryChunkCollection
 from threetears.agent.memory.migrations import align_indexes_with_declarations
 from threetears.agent.memory.migrations import register as register_memory
+from threetears.agent.memory.migrations.v033_drop_legacy_index_names import DROP_LEGACY_INDEXES_SQL
+from threetears.agent.memory.migrations.v035_drop_unread_indexes import DROP_UNREAD_INDEXES_SQL
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import VECTOR_TYPE, SchemaBackedCollection, TableSchema
@@ -213,6 +215,29 @@ async def _catalog_snapshot(conn: asyncpg.Connection, schema: str) -> list[tuple
     return result
 
 
+async def _index_rows(conn: asyncpg.Connection, schema: str) -> list[tuple[str, str, str]]:
+    """every index of ``schema`` as ``(table, name, definition)``, the schema's own name taken out of each definition.
+
+    :param conn: connection to the test database
+    :ptype conn: asyncpg.Connection
+    :param schema: schema to read
+    :ptype schema: str
+    :return: the sorted rows
+    :rtype: list[tuple[str, str, str]]
+    """
+    rows = await conn.fetch("SELECT tablename, indexname, indexdef FROM pg_indexes WHERE schemaname = $1", schema)
+    return sorted((r["tablename"], r["indexname"], r["indexdef"].replace(f"{schema}.", "")) for r in rows)
+
+
+def v033_names() -> list[str]:
+    """the index names v033 drops, read off its statements.
+
+    :return: the names
+    :rtype: list[str]
+    """
+    return [sql.rsplit(" ", 1)[1] for sql in DROP_LEGACY_INDEXES_SQL]
+
+
 async def _memory_foreign_keys_on_media(conn: asyncpg.Connection, schema: str) -> list[tuple[str, ...]]:
     """the local column lists of every foreign key from ``media`` to ``memories``.
 
@@ -310,6 +335,53 @@ class TestBuiltSchemaMatchesDeclarations:
             assert await _memory_foreign_keys_on_media(conn, schema) == [("agent_id", "memory_id")]
         finally:
             await conn.close()
+
+    async def test_an_upgraded_schema_ends_with_the_fresh_schemas_indexes(
+        self, two_schemas: tuple[str, str, str]
+    ) -> None:
+        """a schema built before v028 (legacy index names in place) and carried through the rest of the chain ends
+        with exactly the indexes a fresh build has, none of the names v033 drops among them."""
+        url, fresh, upgraded = two_schemas
+        conn = await asyncpg.connect(url)
+        try:
+            await _migrate(conn, fresh)
+            await _migrate(conn, upgraded, target=27)
+            before = {name for _, name, _ in await _index_rows(conn, upgraded)}
+            assert {"idx_mem_agent", "idx_chunks_user", "idx_media_memory_id"} <= before
+            await _migrate(conn, upgraded)
+            fresh_rows = await _index_rows(conn, fresh)
+            upgraded_rows = await _index_rows(conn, upgraded)
+        finally:
+            await conn.close()
+        assert upgraded_rows == fresh_rows
+        names = {name for _, name, _ in fresh_rows}
+        assert not names & set(v033_names()), names & set(v033_names())
+
+    async def test_a_schema_holding_the_unread_indexes_ends_without_them(
+        self, two_schemas: tuple[str, str, str]
+    ) -> None:
+        """a schema built through v034 holds the eight indexes no read uses; carried through v035 it ends with
+        exactly the indexes a fresh build has, none of them among them."""
+        url, fresh, upgraded = two_schemas
+        unread = {sql.rsplit(" ", 1)[1] for sql in DROP_UNREAD_INDEXES_SQL}
+        conn = await asyncpg.connect(url)
+        try:
+            await _migrate(conn, fresh)
+            await _migrate(conn, upgraded, target=34)
+            # the released v028 (before 0.95.0) also built these two; a schema it migrated holds them
+            await conn.execute(f'SET search_path TO "{upgraded}", public')
+            await conn.execute("CREATE INDEX IF NOT EXISTS ix_media_user_date ON media (user_id, date_created)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS ix_media_mime_type ON media (mime_type)")
+            before = {name for _, name, _ in await _index_rows(conn, upgraded)}
+            assert unread <= before, unread - before
+            await _migrate(conn, upgraded)
+            fresh_rows = await _index_rows(conn, fresh)
+            upgraded_rows = await _index_rows(conn, upgraded)
+        finally:
+            await conn.close()
+        assert upgraded_rows == fresh_rows
+        names = {name for _, name, _ in upgraded_rows}
+        assert not names & unread, names & unread
 
     async def test_memories_date_updated_is_not_null_on_both_sides(self, pg_schema: tuple[str, str]) -> None:
         url, schema = pg_schema
@@ -673,3 +745,32 @@ class TestAnAdoptedSchemaConverges:
             assert filled is True
         finally:
             await conn.close()
+
+    async def test_v031_converges_where_an_earlier_attempt_stopped(self, pg_schema: tuple[str, str]) -> None:
+        """an earlier v031 run that stopped at memories.date_updated (YugabyteDB refused the SET NOT NULL its own
+        block's backfill had not reached) left customer_id tightened and the version at 30; the next run finishes."""
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await _migrate(conn, schema, target=30)
+            await conn.execute("ALTER TABLE memories ALTER COLUMN date_updated DROP NOT NULL")
+            memory_id = await _insert_memory(conn, agent_id=uuid.uuid4(), user_id=uuid.uuid4())
+            await conn.execute("UPDATE memories SET date_updated = NULL WHERE memory_id = $1", memory_id)
+            # what the stopped attempt committed before it reached memories
+            for table in ("media", "media_content", "memory_chunks"):
+                await conn.execute(f"ALTER TABLE {table} ALTER COLUMN customer_id SET NOT NULL")
+
+            await _migrate(conn, schema)
+
+            nullable = await conn.fetchval(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_schema = $1 AND table_name = 'memories' AND column_name = 'date_updated'",
+                schema,
+            )
+            filled = await conn.fetchval(
+                "SELECT date_updated = date_created FROM memories WHERE memory_id = $1", memory_id
+            )
+        finally:
+            await conn.close()
+        assert nullable == "NO"
+        assert filled is True

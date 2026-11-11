@@ -568,6 +568,20 @@ def test_an_index_needs_a_purpose_its_read_uses_and_a_plan_test(tmp_path: Path, 
     assert any(f"index datasources_by_kind on datasources: {kind}" in finding for finding in findings), findings
 
 
+def test_an_index_a_migration_renames_onto_its_declared_name_keeps_the_declared_purpose(tmp_path: Path) -> None:
+    """Flips if a later migration's ALTER INDEX ... RENAME TO the name a collection declares (with its purpose and
+    plan test) leaves that index with no purpose: the renamed index is the declared one. The migrations sit after the
+    declaring module in the walk, as a package's migrations/ sits after its collections.py."""
+    _plans(tmp_path)
+    modules = {
+        "registry.py": _REGISTRY,
+        "versions/v001.py": 'UP = "CREATE INDEX IF NOT EXISTS datasources_kind ON datasources (kind)"\n',
+        "versions/v002.py": 'UP = "ALTER INDEX IF EXISTS datasources_kind RENAME TO datasources_by_kind"\n',
+    }
+    findings = no_whole_reads_findings(_config(tmp_path, modules))
+    assert not [finding for finding in findings if ": index-" in finding], findings
+
+
 def test_a_plan_test_must_ask_the_plan_for_the_index(tmp_path: Path) -> None:
     """Flips if a plan test that never calls plan_uses_index, or never names the index, proves the index is used."""
     _plans(tmp_path, _PLANS.replace("plan_uses_index(await", "(await"))
@@ -1041,6 +1055,145 @@ def test_a_purpose_may_name_several_reads_each_of_which_uses_the_index(tmp_path:
     findings = no_whole_reads_findings(_config(tmp_path, {"grants.py": stray}))
     assert any("index-purpose-unused -- src/grants.py::neither" in finding for finding in findings), findings
     assert not any("index-purpose-unused -- src/grants.py::one" in finding for finding in findings), findings
+
+
+_TWO_SERVING = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+
+    NOTES = TableSchema(
+        name="notes",
+        primary_key="note_id",
+        columns=[],
+        indexes=(
+            Index("by_owner", "agent_id", "user_id", purpose="src/notes.py::nearest", plan_test="tests/test_plans.py::test_owner"),
+            Index("by_user_date", "user_id", "date_created", purpose="src/notes.py::nearest", plan_test="tests/test_plans.py::test_user_date"),
+            Index("by_kind", "kind", purpose="src/notes.py::nearest", plan_test="tests/test_plans.py::test_kind"),
+        ),
+    )
+
+    async def nearest(conn, agent_id, user_id, older_than):
+        return await conn.fetch(
+            "SELECT note_id FROM notes WHERE agent_id = $1 AND user_id = $2 AND date_created < $3 ORDER BY score LIMIT 5",
+            agent_id,
+            user_id,
+            older_than,
+        )
+"""
+
+
+def test_every_purposed_index_serving_a_read_is_credited_with_it(tmp_path: Path) -> None:
+    """Flips if, of two purposed indexes that both serve one read no key prefix keys (the owner pair; the user and a
+    date range), only the first declared is credited (the other reports its purpose unused), or if an index naming the
+    read whose leading column the read never binds is credited. (A read a key prefix keys already credits every
+    purposed index serving it.)"""
+    _plans(
+        tmp_path,
+        "def test_owner(plan):\n    assert plan_uses_index(plan, 'by_owner')\n"
+        "def test_user_date(plan):\n    assert plan_uses_index(plan, 'by_user_date')\n"
+        "def test_kind(plan):\n    assert plan_uses_index(plan, 'by_kind')\n",
+    )
+    findings = no_whole_reads_findings(_config(tmp_path, {"notes.py": _TWO_SERVING}))
+    unused = [finding for finding in findings if "index-purpose-unused" in finding]
+    assert not any("index by_owner" in finding for finding in unused), unused
+    assert not any("index by_user_date" in finding for finding in unused), unused
+    assert any("index by_kind" in finding for finding in unused), findings
+
+
+_PARTLY_SERVING = _TWO_SERVING.replace(
+    'Index("by_kind", "kind",',
+    'Index("by_user_kind", "user_id", "kind", purpose="src/notes.py::nearest", '
+    'plan_test="tests/test_plans.py::test_user_kind"),\n            Index("by_kind", "kind",',
+)
+
+
+def test_an_index_whose_next_column_the_read_neither_binds_ranges_nor_orders_is_not_credited(tmp_path: Path) -> None:
+    """Flips if a purposed index led by a bound column whose next column the read neither binds, ranges nor orders
+    by (``(user_id, kind)`` under the owner pair and a date range) is credited beside the indexes that serve it."""
+    _plans(
+        tmp_path,
+        "def test_owner(plan):\n    assert plan_uses_index(plan, 'by_owner')\n"
+        "def test_user_date(plan):\n    assert plan_uses_index(plan, 'by_user_date')\n"
+        "def test_user_kind(plan):\n    assert plan_uses_index(plan, 'by_user_kind')\n"
+        "def test_kind(plan):\n    assert plan_uses_index(plan, 'by_kind')\n",
+    )
+    findings = no_whole_reads_findings(_config(tmp_path, {"notes.py": _PARTLY_SERVING}))
+    unused = [finding for finding in findings if "index-purpose-unused" in finding]
+    assert any("index by_user_kind" in finding for finding in unused), findings
+    assert not any("index by_owner" in finding or "index by_user_date" in finding for finding in unused), unused
+
+
+_NEAREST = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+
+    NOTES = TableSchema(
+        name="notes",
+        primary_key="note_id",
+        columns=[],
+        indexes=(
+            Index("by_owner", "agent_id", "user_id", purpose="src/notes.py::owned_nearest", plan_test="tests/test_plans.py::test_owner"),
+            Index(
+                "by_embedding",
+                "embedding",
+                using="hnsw",
+                purpose="src/notes.py::nearest; src/notes.py::owned_nearest",
+                plan_test="tests/test_plans.py::test_embedding",
+            ),
+            Index("by_tags", "tags", using="gin", purpose="src/notes.py::tagged", plan_test="tests/test_plans.py::test_tags"),
+        ),
+    )
+
+    async def nearest(conn, vector):
+        return await conn.fetch("SELECT note_id FROM notes ORDER BY embedding <=> $1 LIMIT 5", vector)
+
+    async def owned_nearest(conn, vector, agent_id, user_id):
+        return await conn.fetch(
+            "SELECT note_id FROM notes WHERE agent_id = $2 AND user_id = $3 AND embedding IS NOT NULL"
+            " ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector LIMIT 10",
+            vector,
+            agent_id,
+            user_id,
+        )
+
+    async def tagged(conn, tags):
+        return await conn.fetch("SELECT note_id FROM notes WHERE tags @> $1::jsonb", tags)
+"""
+
+_NEAREST_PLANS = (
+    "def test_owner(plan):\n    assert plan_uses_index(plan, 'by_owner')\n"
+    "def test_embedding(plan):\n    assert plan_uses_index(plan, 'by_embedding')\n"
+    "def test_tags(plan):\n    assert plan_uses_index(plan, 'by_tags')\n"
+)
+
+
+def test_the_k_nearest_and_a_containment_are_read_through_their_purposed_hnsw_and_gin_indexes(tmp_path: Path) -> None:
+    """Flips if the k nearest rows by a distance from a column (``ORDER BY embedding <=> $1 LIMIT k``, bare or as
+    ``OPERATOR(public.<=>)``) are not judged index-served through a purposed HNSW index of that column, or a
+    containment test (``tags @> $1``) through a purposed GIN index of it; or if either index is reported unused."""
+    _plans(tmp_path, _NEAREST_PLANS)
+    findings = no_whole_reads_findings(_config(tmp_path, {"notes.py": _NEAREST}))
+    assert findings == [], findings
+
+
+def test_the_k_nearest_or_a_containment_without_its_index_is_a_whole_read(tmp_path: Path) -> None:
+    """Flips if the k nearest rows pass with no approximate-nearest-neighbour index of the column (none at all, or a
+    plain btree one: it holds no distance order), or a containment test passes with no index of its column."""
+    _plans(tmp_path, _NEAREST_PLANS)
+    unserved = (
+        _NEAREST.replace('using="hnsw",', "")
+        .replace(
+            'purpose="src/notes.py::nearest; src/notes.py::owned_nearest"', 'purpose="src/notes.py::owned_nearest"'
+        )
+        .replace(
+            'Index("by_tags", "tags", using="gin", purpose="src/notes.py::tagged", plan_test="tests/test_plans.py::test_tags"),',
+            "",
+        )
+    )
+    findings = no_whole_reads_findings(_config(tmp_path, {"notes.py": unserved}))
+    assert any("in nearest:" in finding for finding in findings), findings
+    assert any("in tagged:" in finding for finding in findings), findings
+    # owned_nearest is still keyed by the owner pair; the plain index of embedding is not what serves its order
+    assert not any("in owned_nearest:" in finding for finding in findings), findings
+    assert any("index by_embedding" in finding and "index-purpose-unused" in finding for finding in findings), findings
 
 
 def test_a_purpose_may_be_a_tuple_of_the_reads_it_serves(tmp_path: Path) -> None:

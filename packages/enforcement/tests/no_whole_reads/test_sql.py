@@ -200,6 +200,18 @@ def test_a_purposed_index_keys_only_the_read_it_names(schema: SchemaCatalog) -> 
     assert schema.used == {("datasources", "datasources_by_kind", _DIGEST)}
 
 
+def test_an_or_whose_every_branch_keys_the_read_is_keyed_and_credits_each_index(schema: SchemaCatalog) -> None:
+    """Flips if an OR of branches each keyed by its own index or the key is refused, if its purposed index is not
+    recorded as used, or if an OR with one branch that keys nothing (or keys through an index another function's
+    purpose names) passes."""
+    keyed = "SELECT id, kind FROM datasources WHERE id = ANY($1::uuid[]) OR kind = $2"
+    assert _kinds(keyed, schema, _DIGEST) == []
+    assert ("datasources", "datasources_by_kind", _DIGEST) in schema.used
+    mixed = "SELECT id, kind FROM datasources WHERE id = ANY($1::uuid[]) OR status = $2"
+    assert _kinds(mixed, schema, _DIGEST) == [("non-key-where", "datasources")]
+    assert _kinds(keyed, schema, "src/hub/other.py::elsewhere") == [("non-key-where", "datasources")]
+
+
 def test_without_a_schema_every_predicate_on_a_table_is_unknown() -> None:
     """Flips if a statement judged against no declarations passes on the strength of any bound value."""
     assert _kinds("SELECT a FROM t WHERE k = $1", SchemaCatalog()) == [("unknown-schema", "t")]

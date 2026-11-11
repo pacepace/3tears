@@ -181,6 +181,27 @@ table's changes by key. Removed, with what replaces each:
 - `DuckDBBackend.stored_keys`: read the keys a change names by key (`threetears.core.keyed.read_keyed`); a whole
   key listing has no replacement.
 
+### agent/memory: every read names its key; `find_by_scope` reads one user
+
+- **Migrating: `MemoriesCollection.find_by_scope` requires `user_id` (contract change).** It reads one user's
+  memories (with `customer_id` or without) through the owner's index. A call with `agent_id` alone, or with only
+  `customer_id`, read a whole agent or customer and now raises `ValueError` before any SQL. No caller in the hub,
+  the SDK, reports, admin or DIPP made one; a caller that needs them names the user.
+- **The owner scope is written into each statement.** The hybrid, semantic, keyword, tag, listing and consolidation
+  reads write `agent_id`/`customer_id`/`user_id` in their own text (`_OWNER_SCOPE`, one statement per scope grain
+  for the consolidation load) instead of building them at run time; the narrowing filters follow. Same SQL, same
+  parameters.
+- **Migrating: `MemoryRefsCollection.find_by_conversation(conversation_id, agent_id)` requires `agent_id`
+  (contract change).** It reads the newest `limit` (default `MEMORY_REFS_PAGE`, 50: the surfaced-refs FIFO's
+  capacity) refs one agent surfaced in a conversation, returned oldest first, as one page of the new
+  `idx_conv_mem_refs_conversation_agent_date`. A read of every agent's refs was a manager built without its agent;
+  `ToolContextManager` with a memory refs collection now refuses a missing `agent_id`.
+- **Migration v034** creates `idx_conv_mem_refs_conversation_agent_date (conversation_id, agent_id, date_created)` and
+  drops `idx_conv_mem_refs_conversation_date_created`, which no read uses any more.
+- **Migration v033** drops the legacy index names v018 and v028 already removed (`idx_mem_agent`, `idx_mem_user`,
+  `idx_media_memory_id`, `idx_chunks_memory_id`, `idx_chunks_user`, ...), in literal `DROP INDEX IF EXISTS`
+  statements: a no-op on a migrated schema.
+
 ### core: `ScopedSnapshot` and `SharedSnapshot` are removed
 
 **Removed (core):** `threetears.core.collections.scoped_snapshot` (`ScopedSnapshot`, its `SnapshotTable`,
