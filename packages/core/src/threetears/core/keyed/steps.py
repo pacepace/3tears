@@ -68,6 +68,7 @@ __all__ = [
     "largest",
     "latest_per_key",
     "materialize",
+    "ordered",
     "read_step",
     "read_step_arrow",
     "row_count",
@@ -566,6 +567,27 @@ def union(*rels: Rel, keep_all: bool = False) -> Step:
 
 def _as_step(rel: Rel) -> Step:
     return rel if isinstance(rel, Step) else scan(rel)
+
+
+def ordered(step: Rel, order: Sequence[Sort], *, limit: int | None = None) -> Step:
+    """the step's rows in ``order`` (and the first ``limit`` of them), as a step of its own: what a read of it, or a
+    table made from it whole (:func:`materialize`, an ordered renewal's ``INSERT ... SELECT``), answers in that order.
+    A step reading it as one of its relations promises no order: a relation's rows have none.
+
+    :param step: the step, or a relation read whole
+    :ptype step: str | Derived | Step
+    :param order: the order, at least one sort
+    :ptype order: Sequence[Sort]
+    :param limit: the most rows (the first in ``order``); every row when None
+    :ptype limit: int | None
+    :return: the step
+    :rtype: Step
+    :raises ValueError: for an order naming nothing, or a limit that is no count of rows
+    """
+    if not order:
+        raise ValueError("an ordered step names its order: at least one sort")
+    sql, params = _ordered(_as_step(step), order, limit)
+    return Step(sql, tuple(params))
 
 
 async def read_step(

@@ -25,13 +25,13 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Final, Literal
 
-from threetears.enforcement.no_whole_reads.helpers import STEP_CALLS, STEP_RELATIONS, STEP_TARGETS
+from threetears.enforcement.no_whole_reads.helpers import COPY_CALLS, STEP_CALLS, STEP_RELATIONS, STEP_TARGETS
 
-__all__ = ["CLEAN", "HANDED", "Callee", "Kind", "RelationFlow", "step_relation_arguments"]
+__all__ = ["CLEAN", "HANDED", "Callee", "RelationFlow", "step_relation_arguments"]
 
 #: what an expression a step names is: a change relation or a step judged where it is written (``clean``), a
 #: forwarder's parameter judged at its call sites (``handed``), or None for anything the walk cannot tell
-Kind = Literal["clean", "handed"] | None
+_Kind = Literal["clean", "handed"] | None
 
 CLEAN: Final = "clean"
 HANDED: Final = "handed"
@@ -147,7 +147,7 @@ def step_relation_arguments(call: ast.Call) -> Iterator[tuple[ast.expr, Mode]]:
             yield found, "rel"
 
 
-def _combine(kinds: list[Kind | str]) -> Kind:
+def _combine(kinds: list[_Kind | str]) -> _Kind:
     if any(kind is None for kind in kinds):
         return None
     told = [kind for kind in kinds if kind != _NEUTRAL]
@@ -322,7 +322,7 @@ class RepoForwarders:
 
 
 class RelationFlow:
-    """what each expression a step names in one module is (:data:`Kind`), and the module's forwarders.
+    """what each expression a step names in one module is (:data:`_Kind`), and the module's forwarders.
 
     :param tree: the module
     :ptype tree: ast.Module
@@ -515,7 +515,8 @@ class RelationFlow:
         arguments, and its returns where it is a relation-returning forwarder."""
         for node in ast.walk(function):
             if isinstance(node, ast.Call):
-                if _final(node) in STEP_CALLS and self._keyed_step(node):
+                # a step, or a keyed write from a relation (apply_stage's stage, update_from's source)
+                if (_final(node) in STEP_CALLS or _final(node) in STEP_RELATIONS) and self._keyed_step(node):
                     yield from step_relation_arguments(node)
                 callee = self.callee(node)
                 if callee is not None:
@@ -544,7 +545,7 @@ class RelationFlow:
 
     # -- kinds -----------------------------------------------------------------------------------------------
 
-    def kind(self, expression: ast.expr, function: Function | None, owner: ast.ClassDef | None) -> Kind:
+    def kind(self, expression: ast.expr, function: Function | None, owner: ast.ClassDef | None) -> _Kind:
         """what a relation expression is where the walk is.
 
         :param expression: the expression a step names
@@ -554,13 +555,13 @@ class RelationFlow:
         :param owner: that function's class, None for a module function
         :ptype owner: ast.ClassDef | None
         :return: its kind
-        :rtype: Kind
+        :rtype: _Kind
         """
         if function is None:
             return None
         return self._judged(expression, "rel", _Scope(function, owner))
 
-    def elements(self, expression: ast.expr, function: Function | None, owner: ast.ClassDef | None) -> Kind:
+    def elements(self, expression: ast.expr, function: Function | None, owner: ast.ClassDef | None) -> _Kind:
         """what every value of a container of relations is where the walk is.
 
         :param expression: the container (``parts``, ``self.sources``)
@@ -570,7 +571,7 @@ class RelationFlow:
         :param owner: that function's class, None for a module function
         :ptype owner: ast.ClassDef | None
         :return: their kind
-        :rtype: Kind
+        :rtype: _Kind
         """
         if function is None:
             return None
@@ -586,11 +587,11 @@ class RelationFlow:
         """
         return None if function is None else self._owners.get(id(function))
 
-    def _judged(self, expression: ast.expr, mode: Mode, scope: _Scope) -> Kind:
+    def _judged(self, expression: ast.expr, mode: Mode, scope: _Scope) -> _Kind:
         found = self._kind(expression, scope) if mode == "rel" else self._elements(expression, scope)
         return CLEAN if found == CLEAN else HANDED if found == HANDED else None
 
-    def _kind(self, node: ast.expr, scope: _Scope, depth: int = 0) -> Kind | str:
+    def _kind(self, node: ast.expr, scope: _Scope, depth: int = 0) -> _Kind | str:
         if depth > _DEPTH:
             return None
         if isinstance(node, ast.Constant):
@@ -615,8 +616,16 @@ class RelationFlow:
             return self._kind(node.value, scope, depth + 1)
         return None
 
-    def _call_kind(self, node: ast.Call, scope: _Scope, depth: int) -> Kind | str:
+    def _call_kind(self, node: ast.Call, scope: _Scope, depth: int) -> _Kind | str:
         name = _final(node)
+        if (
+            name == "Derived"
+            and node.args
+            and isinstance(node.args[0], ast.Call)
+            and _final(node.args[0]) in COPY_CALLS
+        ):
+            # a derived select the code is handed as a copy's relation (a limited copy's): the copy relation it names
+            return None
         if name in {"change_relation", "Derived"}:
             return CLEAN
         if name == "Quoted" and len(node.args) == 1:
@@ -632,7 +641,7 @@ class RelationFlow:
         if callee is not None and id(callee.function) in self._returning:
             # a relation-returning forwarder: what it returns is what each call hands the parameters its returns hand on
             returned = self._returned.get(id(callee.function), {})
-            kinds: list[Kind | str] = [CLEAN]
+            kinds: list[_Kind | str] = [CLEAN]
             for parameter, position in callee.parameters():
                 for mode in sorted(returned.get(parameter, set())):
                     argument = _argument(node, parameter, position)
@@ -650,13 +659,13 @@ class RelationFlow:
             return _combine(kinds)
         return None
 
-    def _elements(self, node: ast.expr, scope: _Scope, depth: int = 0) -> Kind | str:
+    def _elements(self, node: ast.expr, scope: _Scope, depth: int = 0) -> _Kind | str:
         if depth > _DEPTH:
             return None
         if isinstance(node, ast.Constant):
             return CLEAN if node.value is None else None
         if isinstance(node, ast.Dict):
-            kinds: list[Kind | str] = [
+            kinds: list[_Kind | str] = [
                 self._elements(value, scope, depth + 1) if key is None else self._kind(value, scope, depth + 1)
                 for key, value in zip(node.keys, node.values, strict=True)
             ]
@@ -703,7 +712,7 @@ class RelationFlow:
     def _self_attribute(node: ast.Attribute, scope: _Scope) -> bool:
         return isinstance(node.value, ast.Name) and node.value.id == "self" and scope.owner is not None
 
-    def _name(self, name: str, mode: Mode, scope: _Scope, depth: int) -> Kind | str:
+    def _name(self, name: str, mode: Mode, scope: _Scope, depth: int) -> _Kind | str:
         if name in scope.comprehension:
             return self._bound(scope.comprehension[name], mode, scope, depth)
         function = scope.function
@@ -719,7 +728,7 @@ class RelationFlow:
             return None
         return self._bound(bindings, mode, scope, depth)
 
-    def _parameter(self, function: Function, name: str, mode: Mode) -> Kind:
+    def _parameter(self, function: Function, name: str, mode: Mode) -> _Kind:
         if id(function) not in self._candidates or name in {"self", "cls"}:
             return None
         if self._dry:
@@ -733,7 +742,7 @@ class RelationFlow:
             handed[parameter] = handed.get(parameter, set()) | modes
         return HANDED if mode in handed.get(name, set()) else None
 
-    def _field(self, attribute: str, mode: Mode, scope: _Scope, depth: int) -> Kind | str:
+    def _field(self, attribute: str, mode: Mode, scope: _Scope, depth: int) -> _Kind | str:
         owner = scope.owner
         if owner is None:
             return None
@@ -750,7 +759,7 @@ class RelationFlow:
             self._busy.discard(key)
         return _combine(kinds)
 
-    def _bound(self, bindings: list[_Binding], mode: Mode, scope: _Scope, depth: int) -> Kind | str:
+    def _bound(self, bindings: list[_Binding], mode: Mode, scope: _Scope, depth: int) -> _Kind | str:
         key = (id(bindings), mode)
         if key in self._busy:
             return _NEUTRAL
@@ -761,7 +770,7 @@ class RelationFlow:
             self._busy.discard(key)
         return _combine(kinds)
 
-    def _one(self, binding: _Binding, mode: Mode, scope: _Scope, depth: int) -> Kind | str:
+    def _one(self, binding: _Binding, mode: Mode, scope: _Scope, depth: int) -> _Kind | str:
         """what one binding says of a name read as a relation (``rel``) or as a container of them (``each``)."""
         value = binding.value
         if value is None:

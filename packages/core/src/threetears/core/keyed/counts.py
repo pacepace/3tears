@@ -26,7 +26,17 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final, overload
 
-from threetears.core.keyed._filters import _SQL_TYPE, AnyOf, Derived, Fragment, by_conditions, relation, narrowing
+from threetears.core.keyed._filters import (
+    _SQL_TYPE,
+    AnyOf,
+    Derived,
+    Fragment,
+    Selected,
+    by_conditions,
+    narrowing,
+    relation,
+)
+from threetears.core.keyed import _filters
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
@@ -40,6 +50,7 @@ __all__ = [
     "empty_tables",
     "estimated_rows",
     "holds_any",
+    "read_packed",
     "rows_affected",
 ]
 
@@ -618,18 +629,75 @@ async def _packed_rows(
     conn: Any, texts: str, params: Sequence[Any], items: int, packed_rows: int, alias: str
 ) -> list[list[str]]:
     """the fields of each packed text ``texts`` answers, packed several to a row so at most ``packed_rows`` come."""
+    return [
+        text.split(_PACKED_SEPARATOR) for text in await _packed_cells(conn, texts, params, items, packed_rows, alias)
+    ]
+
+
+async def _packed_cells(
+    conn: Any, texts: str, params: Sequence[Any], items: int, packed_rows: int, alias: str
+) -> list[str]:
+    """each text ``texts`` answers (its column ``alias``), packed several to a row so at most ``packed_rows`` come:
+    the texts numbered from 0, ``width`` a row (a 1-based number would start a row more at the last)."""
     width = max(1, -(-items // packed_rows))
     cells = ", ".join(f"MAX(CASE WHEN n % {width} = {cell} THEN {alias} END) AS c{cell}" for cell in range(width))
     sql = (
-        f"SELECT {cells} FROM (SELECT ROW_NUMBER() OVER (ORDER BY {alias}) AS n, {alias} FROM ({texts}) AS texts) "
+        f"SELECT {cells} FROM (SELECT ROW_NUMBER() OVER (ORDER BY {alias}) - 1 AS n, {alias} FROM ({texts}) AS texts) "
         f"AS numbered GROUP BY n - n % {width}"
     )
-    return [
-        str(text).split(_PACKED_SEPARATOR)
-        for row in await conn.fetch(sql, *params)
-        for text in dict(row).values()
-        if text is not None
-    ]
+    return [str(text) for row in await conn.fetch(sql, *params) for text in dict(row).values() if text is not None]
+
+
+async def read_packed(
+    conn: Any,
+    relation: str | Derived,
+    column: str | Selected,
+    *,
+    by: Mapping[str, Any] | None = None,
+    where: Sequence[Fragment] = (),
+    packed_rows: int,
+    items: int,
+    packed_as: str = "packed",
+) -> list[str]:
+    """each text of ``column`` the rows ``by`` and ``where`` name hold, read packed several to a row so at most
+    ``packed_rows`` rows come back: for a reader answering at most so many rows a statement (the hub's rail, its row
+    cap), a read of up to ``items`` short texts in one statement. In the texts' order; a NULL is no text (left out).
+
+    :param conn: anything with an asyncpg-shaped ``fetch``
+    :ptype conn: Any
+    :param relation: the relation read, a TRUSTED name or a :class:`Derived` select
+    :ptype relation: str | Derived
+    :param column: the column read (TRUSTED), or a :class:`Selected` text expression of the row's columns (``r.``)
+    :ptype column: str | Selected
+    :param by: columns pinned, each a value, ``None`` (``IS NULL``) or an :class:`AnyOf`; none when None
+    :ptype by: Mapping[str, Any] | None
+    :param where: conditions beside the pins, each a fragment written as ``r."col"`` from ``$1``
+    :ptype where: Sequence[Fragment]
+    :param packed_rows: the most rows the statement answers, at least one
+    :ptype packed_rows: int
+    :param items: the most texts the rows hold (what sizes each row's width)
+    :ptype items: int
+    :param packed_as: the packed column's alias
+    :ptype packed_as: str
+    :return: the texts
+    :rtype: list[str]
+    :raises ValueError: when ``packed_rows`` is under one or ``items`` is negative
+    """
+    if packed_rows < 1:
+        raise ValueError(f"a packed read answers at least one row, got {packed_rows}")
+    if items < 0:
+        raise ValueError(f"a packed read holds no fewer than no texts, got {items}")
+    if items == 0:
+        return []
+    conditions, params = by_conditions(dict(by or {}))
+    for fragment in where:
+        conditions.append(narrowing(fragment, len(params)))
+        params += list(fragment.params)
+    alias = quote_identifier(packed_as)
+    text = column.expression if isinstance(column, Selected) else f"r.{quote_identifier(column)}"
+    clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    texts = f"SELECT CAST({text} AS VARCHAR) AS {alias} FROM {_filters.relation(relation, 'r')}{clause}"
+    return await _packed_cells(conn, texts, params, items, packed_rows, alias)
 
 
 def _past_marks(marks: Mapping[str, str | None], first: int) -> tuple[str, list[Any], dict[str, str]]:

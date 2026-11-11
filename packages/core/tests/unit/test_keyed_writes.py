@@ -33,6 +33,7 @@ from threetears.core.keyed import (
     keyset_page,
     keyset_rows,
     read_keyed,
+    read_packed,
     update_from,
     update_keyed,
 )
@@ -570,6 +571,46 @@ class TestCountsPackedNullsAndName:
         )
         assert packed == unpacked and None in packed["t"]
         assert 'AS "run_rows"' in reader.statements[0][0] and "AS packed" not in reader.statements[0][0]
+
+
+class TestReadPacked:
+    async def test_the_texts_come_back_packed_in_one_statement_of_at_most_its_rows(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a packed read answers other texts than the plain read of the same rows (a pin or filter lost, a
+        text split at its own separators), takes more than one statement, answers more rows than its cap, keeps a
+        NULL as a text, or takes a cap under one row."""
+        where = [Fragment('r."v" >= $1', (40,))]
+        plain = sorted(
+            str(row[0]) for row in db.execute("SELECT a || chr(31) || b FROM t WHERE s = 'on' AND v >= 40").fetchall()
+        )
+        answered: list[int] = []
+
+        class _Counting(_Recording):
+            async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+                rows = await super().fetch(query, *params)
+                answered.append(len(rows))
+                return rows
+
+        reader = _Counting(db)
+        texts = await read_packed(
+            reader,
+            "t",
+            Selected("r.a || chr(31) || CAST(r.b AS VARCHAR)", "run_text"),
+            by={"s": "on"},
+            where=where,
+            packed_rows=5,
+            items=40,
+        )
+        assert sorted(texts) == plain and len(texts) == 40
+        assert len(reader.statements) == 1 and answered == [5]
+        nullable = await read_packed(
+            ThreadedDuckDB(db), "t", "s", where=[Fragment('r."b" < $1', (6,))], packed_rows=2, items=6
+        )
+        assert sorted(nullable) == ["on"] * 4
+        assert await read_packed(ThreadedDuckDB(db), "t", "s", packed_rows=1, items=0) == []
+        with pytest.raises(ValueError, match="at least one row"):
+            await read_packed(ThreadedDuckDB(db), "t", "s", packed_rows=0, items=3)
 
 
 def _changes(db: duckdb.DuckDBPyConnection) -> None:

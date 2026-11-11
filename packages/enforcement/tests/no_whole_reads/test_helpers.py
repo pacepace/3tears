@@ -100,6 +100,9 @@ def _judged(code: str, schema: SchemaCatalog, name: str = "src/app.py::reader") 
         # a delete of the rows a prefix names, through the C-ordered index its reader's purpose names
         'delete_keyed(c, "fence", prefix={"signal": p}, returning=("signal",))',
         'update_keyed(c, "fence", values={"run_id": r}, prefix={"signal": p})',
+        # texts of a key prefix's rows, packed several to a row
+        'read_packed(c, "results", "geo", by={"state": s}, packed_rows=5, items=100)',
+        'read_packed(c, "results", "geo", where=[Fragment(\'r."state" = $1\', (s,))], packed_rows=5, items=9)',
         # a delete or update of the rows a key prefix or a batch of keys names
         'delete_keyed(c, "results", by={"state": s})',
         'delete_keyed(c, "results", keys=KeyBatch(("state", "geo", "id"), ks), returning=("id",))',
@@ -156,6 +159,11 @@ def test_a_keyed_count_is_a_keyed_count(schema: SchemaCatalog) -> None:
         # a prefix delete on a column no index ranges
         ('delete_keyed(c, "unindexed", prefix={"name": p})', "non-key-where"),
         ('update_keyed(c, "unindexed", values={"run_id": r}, prefix={"name": p})', "non-key-where"),
+        # a packed read pinning a column no key leads with, or nothing
+        ('read_packed(c, "results", "geo", by={"kind": k}, packed_rows=5, items=100)', "non-key-where"),
+        ('read_packed(c, "results", "geo", packed_rows=5, items=100)', "whole-select"),
+        # a relation ordered whole: every row read to order it
+        ('ordered("results", [Sort("geo")])', "whole-select"),
         # a delete or update pinning a column no key leads with: every row is read to find them
         ('delete_keyed(c, "results", by={"kind": k})', "non-key-where"),
         ('update_keyed(c, "results", values={"geo": g}, by={"kind": k})', "non-key-where"),
@@ -249,6 +257,15 @@ def test_a_by_column_named_at_run_time_is_judged_as_its_interpolation(
     """Flips if a ``by`` column named at run time stays unknown where SQL interpolating it would be judged (a generic
     reader's ``{pk_column}`` is its key), or passes where its name says nothing of the key."""
     assert [[kind for kind, _ in findings] for findings in _judged(code, schema)] == [expected]
+
+
+def test_an_ordered_step_is_judged_by_the_step_it_orders() -> None:
+    """Flips if an ordered step over another step sends a statement of its own (the step it orders is judged where it
+    is written), or one over a relation reads nothing."""
+    assert list(helper_statements(_call('ordered(scan(c, "results"), [Sort("geo")], limit=3)'))) == []
+    assert [s.sql for s in helper_statements(_call('ordered(change, [Sort("geo")])'))] == [
+        "SELECT * FROM {change} AS t"
+    ]
 
 
 def test_any_other_call_sends_nothing() -> None:

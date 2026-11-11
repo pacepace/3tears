@@ -37,6 +37,7 @@ from threetears.core.keyed import (
     largest,
     latest_per_key,
     materialize,
+    ordered,
     read_step,
     read_step_arrow,
     row_count,
@@ -452,6 +453,42 @@ def test_whether_a_step_answers_any_row_is_the_exists_it_replaces(conn: duckdb.D
     )
     assert run_inline(any_step(InlineDuckDB(conn), "changed")) is True
     assert run_inline(any_step(InlineDuckDB(conn), scan("changed", where=[Fragment("FALSE")]))) is False
+
+
+def test_an_ordered_step_answers_the_hand_written_order_by_and_a_table_made_of_it_holds_that_order(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if ordered answers other rows than the hand-written ``ORDER BY`` (or ``LIMIT``) over the step, loses the
+    step's parameters, a table made from it (``materialize``, an ordered renewal's append) holds its rows in another
+    order, or an order naming nothing is taken."""
+    _same(
+        conn,
+        "SELECT t.state, t.run_id, t.v FROM held AS t WHERE t.state = $1 ORDER BY t.run_id DESC, t.v ASC",
+        lambda c: read_step(
+            c,
+            ordered(
+                scan("held", ["state", "run_id", "v"], where=[_TENANT]),
+                [Sort("run_id", descending=True), Sort("v")],
+            ),
+        ),
+        ordered=True,
+        order_by=["run_id"],
+    )
+    _same(
+        conn,
+        "SELECT t.state, t.run_id FROM held AS t WHERE t.state = $1 ORDER BY t.run_id ASC LIMIT 2",
+        lambda c: read_step(c, ordered(scan("held", ["state", "run_id"], where=[_TENANT]), [Sort("run_id")], limit=2)),
+        ordered=True,
+        order_by=["run_id"],
+    )
+    conn.execute("INSERT INTO held VALUES ('S0', 'o0', 3, NULL, 1), ('S0', 'o0', 1, NULL, 2), ('S0', 'o1', 2, NULL, 3)")
+    db = InlineDuckDB(conn)
+    step = ordered(scan("held", ["run_id"], where=[_TENANT]), [Sort("run_id", descending=True)])
+    assert step.params == ("S0",)
+    assert run_inline(materialize(db, "renewed", step)) == 3
+    assert conn.execute("SELECT run_id FROM renewed").fetchall() == [(3,), (2,), (1,)]
+    with pytest.raises(ValueError, match="order"):
+        ordered(scan("held"), [])
 
 
 def test_a_table_of_a_steps_rows_holds_what_the_hand_written_create_table_as_does(

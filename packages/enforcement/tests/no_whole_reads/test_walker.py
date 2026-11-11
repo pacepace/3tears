@@ -3496,3 +3496,244 @@ def test_a_relation_already_quoted_is_judged_as_the_relation_it_names(tmp_path: 
     functions = {function for function, _ in found}
     assert not functions & {"one_state", "staged"}, found
     assert {"every_state", "every_office"} <= functions, found
+
+
+_SCRATCH_STEPS = """
+    from threetears.core import keyed
+    from threetears.core.keyed import InlineDuckDB, run_inline
+
+    _SCRATCH = "_export"
+    STATE_COLUMN = "state"
+
+
+    def quote_identifier(name):
+        return '"' + name + '"'
+
+
+    def runs_step(relation, state):
+        return keyed.grouped(
+            relation,
+            by=["run_id"],
+            aggregates=[keyed.Selected("max(t.at)", "instant")],
+            where=[keyed.Fragment(f"t.{quote_identifier(STATE_COLUMN)} = $1", (state,))],
+        )
+
+
+    class Retaining:
+        def _scratch(self, table):
+            return f"{_SCRATCH}.{quote_identifier(table)}"
+
+        def block_runs(self, table, state):
+            runs = runs_step(f"main.{table}", state)
+            return run_inline(keyed.read_step(InlineDuckDB(self._db), runs))
+
+        def exported(self, table, state):
+            scoped = keyed.scan(f"{_SCRATCH}.{table}", where=[keyed.Fragment(f"t.{STATE_COLUMN} = $1", (state,))])
+            return run_inline(keyed.read_step(InlineDuckDB(self._db), scoped))
+
+        def exported_whole(self, table):
+            return run_inline(keyed.read_step(InlineDuckDB(self._db), keyed.scan(f"{_SCRATCH}.{table}")))
+
+        def options(self, table, states):
+            pinned = keyed.Fragment(f"t.{STATE_COLUMN} IN ({', '.join('?' for _ in states)})", tuple(states))
+            return run_inline(keyed.read_step(InlineDuckDB(self._db), keyed.scan(f"main.{table}", where=[pinned])))
+
+        def whole(self, table):
+            return run_inline(keyed.read_step(InlineDuckDB(self._db), keyed.scan(f"main.{table}")))
+
+        def unpinned(self, table, kind):
+            narrowed = keyed.Fragment(f"t.{quote_identifier('kind')} = $1", (kind,))
+            return run_inline(keyed.read_step(InlineDuckDB(self._db), keyed.scan(f"main.{table}", where=[narrowed])))
+"""
+
+
+def test_an_f_string_relation_and_an_f_string_fragment_are_read_as_their_text(tmp_path: Path) -> None:
+    """Flips if a step's relation written as an f-string (``f"main.{table}"``, ``f"{_SCRATCH}.{table}"``) stays
+    unknown rather than read as the relation it names (a local copy's, judged against the copy's default key; a
+    declared transient producer's spelling, a change set), or if a ``where=`` fragment written as an f-string pins
+    nothing rather than what its text pins (R6, R7); a read of the copy whole, or pinned by a column no key leads
+    with, is still a finding."""
+    found = _symbols(
+        _config(
+            tmp_path,
+            {"retention.py": _SCRATCH_STEPS},
+            transient_producers=frozenset({"Retaining._scratch"}),
+            local_relations={"*": ("state", "run_id")},
+            public_forwarders=True,
+        )
+    )
+    functions = {function for function, _ in found}
+    assert not functions & {"Retaining.block_runs", "Retaining.exported", "Retaining.exported_whole"}, found
+    assert not functions & {"Retaining.options"}, found
+    assert "Retaining.whole" in functions, found
+    assert "Retaining.unpinned" in functions, found
+    assert not any(symbol.startswith("unknown-predicate") for _, symbol in found), found
+
+
+_FORWARDED_WHERE = """
+    from threetears.core import keyed
+    from threetears.core.keyed import InlineDuckDB, run_inline
+
+    STATE_COLUMN = "state"
+
+
+    def annotated_step(relation, where=()):
+        return keyed.scan(relation, where=list(where))
+
+
+    def runs_step(relation, where=()):
+        rows = annotated_step(relation, where)
+        return keyed.grouped(rows, by=["run_id"], aggregates=[keyed.row_count("n")])
+
+
+    def one_state(db, table, state):
+        where = [keyed.Fragment(f"t.{STATE_COLUMN} = $1", (state,))]
+        return run_inline(keyed.read_step(InlineDuckDB(db), runs_step(f"main.{table}", where)))
+
+
+    def one_state_inline(db, table, state):
+        step = runs_step(f"main.{table}", [keyed.Fragment("t.state = $1", (state,))])
+        return run_inline(keyed.read_step(InlineDuckDB(db), step))
+
+
+    def every_state(db, table):
+        return run_inline(keyed.read_step(InlineDuckDB(db), runs_step(f"main.{table}")))
+
+
+    def by_kind(db, table, kind):
+        where = [keyed.Fragment("t.kind = $1", (kind,))]
+        return run_inline(keyed.read_step(InlineDuckDB(db), runs_step(f"main.{table}", where)))
+
+
+    def _made(db, table, step):
+        return run_inline(keyed.materialize(InlineDuckDB(db), table, step, temp=True))
+
+
+    def made_keys(db, flag):
+        one = keyed.scan(keyed.change_relation("changed"), ["k"])
+        return _made(db, "_named_keys", one if flag else keyed.union(one, one, keep_all=True))
+
+
+    def made_whole(db, table):
+        return _made(db, "_named_keys", f"main.{table}")
+"""
+
+
+def test_a_forwarder_s_steps_are_judged_at_its_call_with_what_the_call_passes(tmp_path: Path) -> None:
+    """Flips if a public forwarder whose step reads the relation it is handed under the where= it is handed
+    (``runs_step`` -> ``annotated_step``, R8) is judged at its call as a whole read of the relation, dropping the
+    call's pins (a list literal, a local bound once to one), or if a call passing no pins, or pins on a column no key
+    leads with, passes."""
+    found = _symbols(
+        _config(
+            tmp_path,
+            {"runs.py": _FORWARDED_WHERE},
+            local_relations={"*": ("state", "run_id")},
+            public_forwarders=True,
+            transient_relations=r"^_named_keys$",
+        )
+    )
+    functions = {function for function, _ in found}
+    assert not functions & {"one_state", "one_state_inline", "annotated_step", "runs_step", "made_keys", "_made"}, found
+    assert {"every_state", "by_kind", "made_whole"} <= functions, found
+    assert not any(symbol.startswith("unknown-predicate") for _, symbol in found), found
+
+
+_WRITES_FROM = """
+    from threetears.core import keyed
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import InlineDuckDB, run_inline
+
+    GEOS = TableSchema(name="geos", primary_key="geo_id", columns=[])
+
+
+    def _computed_source(relation, state):
+        return keyed.scan(relation, where=[keyed.Fragment("t.state = $1", (state,))])
+
+
+    class Writer:
+        def compute(self, state):
+            source = _computed_source("_partition_chunk", state)
+            return run_inline(
+                keyed.update_from(InlineDuckDB(self._db), "__stage__x", key=["geo_id"], source=source, columns=["n"])
+            )
+
+        def compute_inline(self, state):
+            return run_inline(
+                keyed.update_from(
+                    InlineDuckDB(self._db),
+                    "__stage__x",
+                    key=["geo_id"],
+                    source=_computed_source("_partition_chunk", state),
+                    columns=["n"],
+                )
+            )
+
+        def add_rows(self, stage, key):
+            return run_inline(
+                keyed.apply_stage(InlineDuckDB(self._db), "__stage__x", "_partition_chunk", key=key, columns=["a"])
+            )
+
+        def replace(self, table):
+            return run_inline(
+                keyed.apply_stage(
+                    InlineDuckDB(self._db), "geos", "_partition_chunk", key=self._keys[table], columns=["a"]
+                )
+            )
+"""
+
+
+def test_a_write_from_a_forwarder_s_step_or_by_a_run_time_key_is_judged(tmp_path: Path) -> None:
+    """Flips if update_from's source passed straight as a forwarder's call stays unknown where the same call bound to
+    a local is judged (R8), or if apply_stage / update_from by a key named at run time (``key=key``,
+    ``self._keys[table]``) stays unknown rather than judged as a key the walk cannot see (R9): onto a change set's
+    stage it writes nothing whole; onto a data table it is still a finding."""
+    found = _symbols(
+        _config(
+            tmp_path,
+            {"writer.py": _WRITES_FROM},
+            transient_relations=r"^(?:__stage__\w+|_partition_chunk)$",
+            public_forwarders=True,
+        )
+    )
+    functions = {function for function, _ in found}
+    assert not functions & {"Writer.compute", "Writer.compute_inline", "Writer.add_rows", "_computed_source"}, found
+    assert "Writer.replace" in functions, found
+    assert not any(symbol.startswith("unknown-predicate") for _, symbol in found), found
+
+
+_HANDED_DERIVED = """
+    from threetears.core import keyed
+    from threetears.core.keyed import InlineDuckDB, run_inline
+
+    GEOS = "geos"
+
+
+    def _relation(snapshot, name):
+        return keyed.Quoted(snapshot.relation(name)) if snapshot.states is None else keyed.Derived(snapshot.relation(name))
+
+
+    def by_geo(db, snapshot, geo):
+        rel = keyed.Derived(snapshot.relation(GEOS))
+        step = keyed.scan(rel, where=[keyed.Fragment("t.geo_id = $1", (geo,))])
+        return run_inline(keyed.read_step(InlineDuckDB(db), step))
+
+
+    def every_geo(db, snapshot):
+        return run_inline(keyed.read_step(InlineDuckDB(db), keyed.scan(keyed.Derived(snapshot.relation(GEOS)))))
+
+
+    def handed(db, sql):
+        return run_inline(keyed.read_step(InlineDuckDB(db), keyed.scan(keyed.Derived(sql))))
+"""
+
+
+def test_a_derived_select_handed_as_a_copy_s_relation_is_read_as_that_relation(tmp_path: Path) -> None:
+    """Flips if ``Derived(snapshot.relation(NAME))`` (a limited copy's relation, a parenthesized select the code does
+    not write) is passed as a derived select judged elsewhere, or stays unknown, rather than read as the copy relation
+    it names, keyed by its key and whole when it pins nothing (R10); a derived select of text the walk cannot read is
+    no relation it can name."""
+    found = _symbols(_config(tmp_path, {"read.py": _HANDED_DERIVED}, local_relations={"geos": ("geo_id",)}))
+    functions = {function for function, _ in found}
+    assert "by_geo" not in functions, found
+    assert "every_geo" in functions, found

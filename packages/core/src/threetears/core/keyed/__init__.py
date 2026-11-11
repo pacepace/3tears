@@ -80,6 +80,7 @@ from threetears.core.keyed.counts import (
     empty_tables,
     estimated_rows,
     holds_any,
+    read_packed,
     rows_affected,
 )
 from threetears.core.keyed.deletes import SweptRows, delete_before, delete_oldest, update_before
@@ -119,6 +120,7 @@ from threetears.core.keyed.steps import (
     largest,
     latest_per_key,
     materialize,
+    ordered,
     read_step,
     read_step_arrow,
     row_count,
@@ -206,6 +208,7 @@ __all__ = [
     "read_joined",
     "read_keyed",
     "read_keyed_arrow",
+    "read_packed",
     "read_past_marks",
     "read_row",
     "read_value",
@@ -230,6 +233,7 @@ __all__ = [
     "largest",
     "latest_per_key",
     "materialize",
+    "ordered",
     "read_step",
     "read_step_arrow",
     "row_count",

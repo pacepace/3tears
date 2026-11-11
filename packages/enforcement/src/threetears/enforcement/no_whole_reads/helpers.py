@@ -45,6 +45,7 @@ from typing import Final
 from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, PRODUCED_PREFIX
 
 __all__ = [
+    "COPY_CALLS",
     "KEYED_FRAGMENT_BUILDERS",
     "KEYED_HELPER_CALLS",
     "START_KEYWORDS",
@@ -58,6 +59,9 @@ __all__ = [
     "narrows",
     "templated",
 ]
+
+#: the calls answering a local copy's relation by its table's name (``snapshot.relation(NAME)``)
+COPY_CALLS: Final[frozenset[str]] = frozenset({"relation", "relation_reading"})
 
 #: the helpers judged by the statement a call sends; each reads (or deletes) only what its arguments key
 KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
@@ -79,6 +83,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "holds_any",
         "read_after",
         "read_past_marks",
+        "read_packed",
         "literal_select",
         "delete_before",
         "delete_oldest",
@@ -114,6 +119,7 @@ STEP_CALLS: Final[frozenset[str]] = frozenset(
         "joined",
         "any_step",
         "materialize",
+        "ordered",
     }
 )
 
@@ -135,6 +141,10 @@ STEP_RELATIONS: Final[Mapping[str, tuple[tuple[int | None, str], ...]]] = {
     "joined": ((0, "rel"), (1, "other")),
     "any_step": ((1, "step"),),
     "materialize": ((2, "step"),),
+    "ordered": ((0, "step"),),
+    # the keyed writes from a relation: what they read is a step's or a stage's rows
+    "apply_stage": ((2, "stage"),),
+    "update_from": ((None, "source"),),
 }
 
 #: where a step names the table it writes whole (``materialize``'s, replaced by the step's rows): a change set's
@@ -569,6 +579,15 @@ def _probe(call: ast.Call) -> list[str]:
     return [f"SELECT 1 FROM {relation} AS r{_where(pinned)} ORDER BY {order} LIMIT {limit}", *own]
 
 
+def _read_packed(call: ast.Call) -> list[str]:
+    """a packed read (``read_packed``): the texts of the rows its ``by`` pins and ``where`` narrows, as the read of
+    those rows it sends; one pinning nothing is the whole read it is."""
+    relation, own = _relation(_argument(call, "relation", 1), "relation")
+    pinned, place = _conditions(_by(_argument(call, "by", None)))
+    filtered, _ = _filters(call, place)
+    return [f"SELECT * FROM {relation} AS r{_where([*pinned, *filtered])}", *own]
+
+
 def _any_rows(call: ast.Call) -> list[str]:
     """a bounded look (``any_rows``): its rows up to its ``limit``, which it must name; ``by`` and ``where`` judged."""
     if _argument(call, "limit", None) is None:
@@ -688,8 +707,9 @@ def _step_relation(node: ast.expr | None, argument: str, where: Sequence[str] = 
         if isinstance(named, ast.Constant) and isinstance(named.value, str):
             return [f"SELECT * FROM {named.value} AS t{_where(where)}"]
         return [f"SELECT * FROM {_named(named, argument)} AS t{_where(where)}"]
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return [f"SELECT * FROM {'.'.join(_quoted(part) for part in node.value.split('.'))} AS t{_where(where)}"]
+    if isinstance(node, ast.Constant | ast.JoinedStr):
+        # a literal, a run-time name of the local database's (``main.{}``: a local copy's), an f-string's text
+        return [f"SELECT * FROM {_relation(node, argument)[0]} AS t{_where(where)}"]
     return [f"SELECT * FROM {_named(node, argument)} AS t{_where(where)}"]
 
 
@@ -697,6 +717,19 @@ def _step_relation(node: ast.expr | None, argument: str, where: Sequence[str] = 
 _WHERE_ON_T: Final[frozenset[str]] = frozenset(
     {"scan", "semi", "anti", "distinct", "grouped", "latest_per_key", "windowed"}
 )
+
+
+def _key_columns(node: ast.expr | None) -> list[str]:
+    """the key a stage or source writes its target by, each column as the statement spells it: a literal list's
+    columns quoted, one named at run time (``key=self._keys[table]``) as one interpolation (``{}``), a key the walk
+    cannot see, as ``delete_matching``'s run-time ``on=`` is (R9)."""
+    if isinstance(node, ast.Tuple | ast.List) and all(
+        isinstance(element, ast.Constant) and isinstance(element.value, str) for element in node.elts
+    ):
+        return [_quoted(_text(element, "key")) for element in node.elts]
+    if isinstance(node, ast.Name | ast.Attribute | ast.Subscript | ast.Call):
+        return ["{}"]
+    raise _Unseen("key")
 
 
 def _match_columns(node: ast.expr | None) -> list[str]:
@@ -761,10 +794,7 @@ def _apply_stage(call: ast.Call) -> list[str]:
         return statements
     target = _argument(call, "target", 1)
     table = _relation(target, "target")[0] if isinstance(target, ast.Constant) else '"{}"'
-    keyed = [
-        f"{_quoted(column)} = ANY(${place})"
-        for place, column in enumerate(_texts(_argument(call, "key", None), "key"), 1)
-    ]
+    keyed = [f"{column} = ANY(${place})" for place, column in enumerate(_key_columns(_argument(call, "key", None)), 1)]
     statements.append(f"DELETE FROM {table}{_where(keyed)}")
     scope, _ = _conditions(_by(_argument(call, "by", None)))
     if scope:
@@ -779,10 +809,7 @@ def _update_from(call: ast.Call) -> list[str]:
     statements = _step_relation(_argument(call, "source", None), "source")
     target = _argument(call, "table", 1)
     table = _relation(target, "table")[0] if isinstance(target, ast.Constant) else '"{}"'
-    keyed = [
-        f"{_quoted(column)} = ANY(${place})"
-        for place, column in enumerate(_texts(_argument(call, "key", None), "key"), 1)
-    ]
+    keyed = [f"{column} = ANY(${place})" for place, column in enumerate(_key_columns(_argument(call, "key", None)), 1)]
     pinned, place = _conditions(_by(_argument(call, "by", None)), first=len(keyed) + 1)
     statements.append(f"UPDATE {table} SET {_quoted('_')} = ${place}{_where([*keyed, *pinned])}")
     return statements
@@ -807,6 +834,7 @@ _SYNTHESIZERS: Final = {
     "holds_any": _probe,
     "read_after": _read_after,
     "read_past_marks": _read_past_marks,
+    "read_packed": _read_packed,
     "literal_select": _literal_select,
     "delete_before": _delete_before,
     "delete_oldest": _delete_oldest,
@@ -839,7 +867,7 @@ _READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
         ),
         ("table", 1),
     ),
-    **dict.fromkeys(("read_changed", "group_hashes", "read_past_marks"), ("relation", 1)),
+    **dict.fromkeys(("read_changed", "group_hashes", "read_past_marks", "read_packed"), ("relation", 1)),
 }
 
 

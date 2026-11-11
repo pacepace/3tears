@@ -50,11 +50,13 @@ from threetears.enforcement.common import dotted, iter_python_files, parse_pytho
 from threetears.enforcement.no_whole_reads.flow import (
     CLEAN,
     HANDED,
+    Callee,
     RelationFlow,
     RepoForwarders,
     step_relation_arguments,
 )
 from threetears.enforcement.no_whole_reads.helpers import (
+    COPY_CALLS,
     KEYED_FRAGMENT_BUILDERS,
     KEYED_HELPER_CALLS,
     STEP_CALLS,
@@ -565,7 +567,7 @@ _KEY_NAME: Final[re.Pattern[str]] = re.compile(
 
 
 #: a local copy's relation accessors: ``snapshot.relation(NAME)`` names the copy's own table, never the L3 one
-_COPY_CALLS: Final[frozenset[str]] = frozenset({"relation", "relation_reading"})
+_COPY_CALLS: Final[frozenset[str]] = COPY_CALLS
 
 
 #: the key under which a function returning a string template is kept beside the names bound to strings
@@ -1047,6 +1049,9 @@ class _ModuleWalk(ast.NodeVisitor):
         )
         #: per class, the ``self`` attributes every assignment of which is a producer's return
         self._produced_attributes: dict[int, frozenset[str]] = {}
+        #: the module's transient producers' returns as written (:meth:`_producer_spellings`), read once
+        self._spellings: frozenset[str] | None = None
+        self._tree = tree
         self._verify = verify
         self._exec_calls = _EXEC_CALLS | exec_calls
         self._cte_arguments = cte_arguments or {}
@@ -2057,11 +2062,39 @@ class _ModuleWalk(ast.NodeVisitor):
             if isinstance(declared, ast.Call) and _final(declared) == "change_relation":
                 return declared
             if isinstance(value, ast.Name) and (stepped := self._bound_step(value.id)) is not None:
-                return literal(stepped) if _final(stepped) == "Quoted" else stepped
+                return literal(stepped) if _final(stepped) in {"Quoted", "Derived"} else stepped
             # a local the function binds once to the argument's shape and never changes (``by = {"id": i}``,
-            # ``order = [Sort("at")]``): that shape, as a step local is read
+            # ``order = [Sort("at")]``, ``pinned = Fragment(...)``): that shape, as a step local is read
             if isinstance(value, ast.Name) and (shaped := self._bound_shape(value.id)) is not None:
                 return literal(shaped)
+            # a sequence copied (``list(where)``, ``tuple(order)``): what it copies
+            if (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id in {"list", "tuple"}
+                and len(value.args) == 1
+                and not value.keywords
+            ):
+                copied = literal(value.args[0])
+                if isinstance(copied, ast.Tuple | ast.List):
+                    return copied
+            # a relation written as an f-string (``f"main.{table}"``, ``f"{_SCRATCH}.{table}"``): its text, each
+            # constant resolved, each other interpolation ``{}``; the spelling of a declared transient producer's
+            # return (``_scratch``: ``f"{_SCRATCH}.{quote(table)}"``) is that producer's change set (R6)
+            if isinstance(value, ast.JoinedStr):
+                text = _string_text(value, self._envs[-1], self._produced_by)
+                if text is not None and not is_sql(text):
+                    return ast.Constant(TRANSIENT_PRODUCED if text in self._producer_spellings() else text)
+            # a fragment written as an f-string (``Fragment(f"t.{STATE_COLUMN} IN ({marks})")``): its text, as raw
+            # SQL interpolating the same parts is read (R7)
+            if (
+                isinstance(value, ast.Call)
+                and _final(value) == "Fragment"
+                and value.args
+                and isinstance(value.args[0], ast.JoinedStr)
+                and (text := _string_text(value.args[0], self._envs[-1], self._produced_by)) is not None
+            ):
+                return ast.Call(func=value.func, args=[ast.Constant(text), *value.args[1:]], keywords=value.keywords)
             # a module constant holding the argument's shape (``_NEWEST_FIRST = (Sort("date_started"), ...)``)
             if isinstance(value, ast.Name) and isinstance(
                 self._module_values.get(value.id), (ast.Tuple, ast.List, ast.Dict)
@@ -2072,6 +2105,20 @@ class _ModuleWalk(ast.NodeVisitor):
             if isinstance(value, ast.Call) and _final(value) == "Quoted" and len(value.args) == 1:
                 text = _placeholder(value.args[0], self._envs[-1], self._produced_by)
                 return ast.Call(func=value.func, args=[ast.Constant(text)], keywords=[])
+            # a derived select the code does not write, but is handed (``Derived(snapshot.relation(NAME))``, a limited
+            # copy's ``(SELECT ... WHERE state IN ...)``): the relation it names, as a quoted name is read (R10);
+            # one naming nothing the walk can tell stays the derived select it is
+            if (
+                isinstance(value, ast.Call)
+                and _final(value) == "Derived"
+                and len(value.args) == 1
+                and not value.keywords
+                and isinstance(value.args[0], ast.Call)
+                and _final(value.args[0]) in COPY_CALLS
+            ):
+                text = _placeholder(value.args[0], self._envs[-1], self._produced_by)
+                if text.startswith(COPY_PREFIX) or not re.fullmatch(r"\{[^}]*\}", text):
+                    return ast.Call(func=ast.Name("Quoted", ast.Load()), args=[ast.Constant(text)], keywords=[])
             # a relation a declared producer yields at run time (``source.relation``, ``derived(part.relation)``):
             # the name its declaration is judged as; a mapping every value of which is one, that one relation
             produced = self._relation_produced(value)
@@ -2108,7 +2155,10 @@ class _ModuleWalk(ast.NodeVisitor):
         if self._hands_on_helper_relation(node, name):
             # a helper calling a helper on its own relation parameter: judged where the outer helper is called
             return
-        self._judge_statements(node, self._flowed(node) if name in STEP_CALLS else node)
+        # a step's relations, and what a keyed write from a relation reads (a forwarder's step as update_from's
+        # source, R8), as the flow says they are
+        flowed = name in STEP_CALLS or name in STEP_RELATIONS
+        self._judge_statements(node, self._flowed(node) if flowed else node)
 
     def _flowed(self, node: ast.Call) -> ast.Call:
         """a step call with each relation it names that the flow says is a change relation, a step judged where it
@@ -2163,9 +2213,9 @@ class _ModuleWalk(ast.NodeVisitor):
         for argument, mode in self._flow.handed_arguments(node, callee):
             if mode == "rel":
                 if self._flow.kind(argument, function, owner) not in {CLEAN, HANDED}:
-                    self._judge_statements(
-                        node, ast.Call(func=ast.Name("scan", ast.Load()), args=[argument], keywords=[])
-                    )
+                    inlined = self._inlined_steps(node, callee, argument)
+                    for step in inlined or [ast.Call(func=ast.Name("scan", ast.Load()), args=[argument], keywords=[])]:
+                        self._judge_statements(node, step)
                 continue
             if self._flow.elements(argument, function, owner) in {CLEAN, HANDED}:
                 continue
@@ -2182,6 +2232,128 @@ class _ModuleWalk(ast.NodeVisitor):
             for value in values:
                 if self._flow.kind(value, function, owner) not in {CLEAN, HANDED}:
                     self._judge_statements(node, ast.Call(func=ast.Name("scan", ast.Load()), args=[value], keywords=[]))
+
+    def _inlined_steps(self, call: ast.Call, callee: Callee, argument: ast.expr) -> list[ast.Call]:
+        """the forwarder's own steps over the relation a call hands it, as the call makes them: each step in the
+        forwarder's body naming the parameter ``argument`` binds as a relation, every parameter in it written as
+        what the call passes (its relation, its state, a ``where`` list), so the step's own pins are judged with
+        the relation handed; through a forwarder it hands the parameter on to (``runs_step`` ->
+        ``annotated_step``), the same way. None when the forwarder hands the parameter on only some other way, or a
+        step reads a parameter the call leaves to its default or the forwarder's ``self``.
+
+        :param call: the forwarder's call
+        :ptype call: ast.Call
+        :param callee: the forwarder
+        :ptype callee: Callee
+        :param argument: the relation the call hands it
+        :ptype argument: ast.expr
+        :return: the steps to judge, or none
+        :rtype: list[ast.Call]
+        """
+        passed = _passed_arguments(call, callee)
+        if passed is None:
+            return []
+        handed = next((name for name, value in passed.items() if value is argument), None)
+        if handed is None:
+            return []
+        # each other relation the call hands that the flow says is a change set or a step judged where it is
+        # written stays one in the steps inlined, as the call's own judgement of it says
+        function = self._function_node
+        owner = self._flow.owner_of(function)
+        settled = {
+            id(value)
+            for value, mode in self._flow.handed_arguments(call, callee)
+            if value is not argument
+            and (
+                self._flow.kind(value, function, owner)
+                if mode == "rel"
+                else self._flow.elements(value, function, owner)
+            )
+            in {CLEAN, HANDED}
+        }
+        passed = {
+            name: ast.Constant(TRANSIENT_PRODUCED) if id(value) in settled else value for name, value in passed.items()
+        }
+        return self._forwarded_steps(callee, passed, handed, 0) or []
+
+    def _forwarded_steps(
+        self, callee: Callee, passed: dict[str, ast.expr], handed: str, depth: int
+    ) -> list[ast.Call] | None:
+        """:meth:`_inlined_steps` for one forwarder, its parameters bound to ``passed``; None where it cannot.
+
+        :param callee: the forwarder
+        :ptype callee: Callee
+        :param passed: each parameter the call binds, onto what it passes
+        :ptype passed: dict[str, ast.expr]
+        :param handed: the parameter holding the relation
+        :ptype handed: str
+        :param depth: forwarders followed so far
+        :ptype depth: int
+        :return: the steps, or None
+        :rtype: list[ast.Call] | None
+        """
+        if depth > _FORWARD_DEPTH:
+            return None
+        parameters = {name for name, _ in callee.parameters()}
+        # the forwarder's own locals: never read as the caller's names of the same spelling
+        local = {
+            node.id
+            for node in ast.walk(callee.function)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id not in parameters
+        }
+        receivers = {a.arg for a in [*callee.function.args.posonlyargs, *callee.function.args.args]} - parameters
+        unbound: list[str] = []
+
+        class _Bind(ast.NodeTransformer):
+            def visit_Name(self, node: ast.Name) -> ast.expr:
+                if node.id in receivers or (node.id in parameters and node.id not in passed):
+                    # the forwarder's ``self`` (nothing the call site can read), or a parameter left to its default
+                    unbound.append(node.id)
+                    return node
+                if node.id in parameters:
+                    return passed[node.id]
+                if node.id in local:
+                    return ast.Name(id=f"__forwarded__{node.id}", ctx=node.ctx)
+                return node
+
+        def bind(node: ast.expr) -> ast.expr:
+            bound: ast.expr = _Bind().visit(ast.parse(ast.unparse(node), mode="eval").body)
+            return bound
+
+        steps: list[ast.Call] = []
+        for node in ast.walk(callee.function):
+            if not isinstance(node, ast.Call):
+                continue
+            if _final(node) in STEP_CALLS and self._keyed_step(node):
+                if any(
+                    isinstance(relation, ast.Name) and relation.id == handed
+                    for relation, _ in step_relation_arguments(node)
+                ):
+                    bound = bind(node)
+                    if unbound or not isinstance(bound, ast.Call):
+                        return None
+                    steps.append(bound)
+                continue
+            inner = self._flow.callee(node)
+            if inner is None:
+                continue
+            given = _passed_arguments(node, inner)
+            if given is None:
+                return None
+            onward = next(
+                (name for name, value in given.items() if isinstance(value, ast.Name) and value.id == handed), None
+            )
+            if onward is None:
+                continue
+            rebound = {name: bind(value) for name, value in given.items() if name != onward}
+            if unbound:
+                return None
+            rebound[onward] = passed[handed]
+            found = self._forwarded_steps(inner, rebound, onward, depth + 1)
+            if found is None:
+                return None
+            steps += found
+        return steps
 
     def _match_calls(self, call: ast.Call) -> list[ast.Call]:
         """a ``delete_matching`` call once for each ``Match`` list its ``on=`` may be, where a repo function builds it
@@ -2385,15 +2557,15 @@ class _ModuleWalk(ast.NodeVisitor):
                 return bound[0]
         return None
 
-    def _bound_shape(self, name: str) -> ast.Dict | ast.Tuple | ast.List | None:
+    def _bound_shape(self, name: str) -> ast.Dict | ast.Tuple | ast.List | ast.Call | None:
         """the literal mapping or sequence the enclosing function binds ``name`` to, if it binds it exactly once and
         never changes it after (no item stored or deleted, no method called on it, no other binding): a ``by`` or
         ``order`` held in a local reads as the literal it holds, and one the function may change reads as unknown.
 
         :param name: the local name
         :ptype name: str
-        :return: the literal, or None
-        :rtype: ast.Dict | ast.Tuple | ast.List | None
+        :return: the literal (a mapping, a sequence, a ``Fragment``), or None
+        :rtype: ast.Dict | ast.Tuple | ast.List | ast.Call | None
         """
         if not self._function_nodes:
             return None
@@ -2419,7 +2591,30 @@ class _ModuleWalk(ast.NodeVisitor):
                 return None
         if len(bound) == 1 and isinstance(bound[0], ast.Dict | ast.Tuple | ast.List):
             return bound[0]
+        if len(bound) == 1 and isinstance(bound[0], ast.Call) and _final(bound[0]) == "Fragment":
+            return bound[0]
         return None
+
+    def _producer_spellings(self) -> frozenset[str]:
+        """the text each declared transient producer of this module returns (``_scratch``: ``_export.{}``), an
+        interpolation's every name ``{}``: a relation spelled the same is one of the change sets the producer names.
+        A text naming nothing but interpolations (``{}``, ``"{}"``) is no spelling: it would match any relation.
+
+        :return: the spellings
+        :rtype: frozenset[str]
+        """
+        if self._spellings is None:
+            found: set[str] = set()
+            for function, owner in _definitions(self._tree):
+                if (owner.name if owner is not None else "", function.name) not in self._producers:
+                    continue
+                for node in ast.walk(function):
+                    if isinstance(node, ast.Return) and node.value is not None:
+                        text = _string_text(node.value, self._envs[0])
+                        if text is not None and re.sub(r"\{[^}]*\}|[\s\"'.]", "", text):
+                            found.add(text)
+            self._spellings = frozenset(found)
+        return self._spellings
 
     def _keyed_step(self, node: ast.Call) -> bool:
         """whether ``node`` calls one of 3tears' relational steps (``semi``, ``union``, ...): a name imported from
@@ -4152,6 +4347,35 @@ def _record_site(
         value = value if value is not None else defaults.get(argument.arg)
         values: list[Passed] = [None] if unknown or value is None else _site_values(value, known, caller, found)
         followed.setdefault((name or function.name, argument.arg), []).extend(values)
+
+
+#: the most forwarders a relation handed on is followed through to the steps reading it
+_FORWARD_DEPTH: Final[int] = 4
+
+
+def _passed_arguments(call: ast.Call, callee: Callee) -> dict[str, ast.expr] | None:
+    """each parameter of a forwarder a call binds, onto what it passes; None where a ``*args`` / ``**kwargs`` hides
+    which.
+
+    :param call: the call
+    :ptype call: ast.Call
+    :param callee: the forwarder it reaches
+    :ptype callee: Callee
+    :return: parameter onto argument, or None
+    :rtype: dict[str, ast.expr] | None
+    """
+    if any(isinstance(argument, ast.Starred) for argument in call.args) or any(
+        keyword.arg is None for keyword in call.keywords
+    ):
+        return None
+    passed: dict[str, ast.expr] = {}
+    for name, position in callee.parameters():
+        given = next((keyword.value for keyword in call.keywords if keyword.arg == name), None)
+        if given is None and position is not None and position < len(call.args):
+            given = call.args[position]
+        if given is not None:
+            passed[name] = given
+    return passed
 
 
 def _constructors(modules: list[tuple[str, ast.Module]]) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
