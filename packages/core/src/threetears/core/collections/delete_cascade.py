@@ -31,6 +31,7 @@ from threetears.core.collections.generation import (
     tables_with_write_generation,
 )
 from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.keyed import AnyOf, Sort, keyset_rows
 from threetears.observe import get_logger
 
 __all__ = ["CascadedRows", "DeleteCascade", "announce_delete_cascade", "read_delete_cascade"]
@@ -218,7 +219,12 @@ async def _children(
     pool: Any, table: str, column: str, carried: Sequence[str], key: Sequence[str], values: Sequence[Any]
 ) -> list[Any]:
     """the rows of ``table`` whose ``column`` is one of ``values``, read in pages of ``key`` under the L3 rail's row
-    cap: ``WHERE column = ANY($1) [AND (key) > (...)] ORDER BY key LIMIT``.
+    cap (:func:`~threetears.core.keyed.keyset_rows`): ``WHERE column = ANY($1) [AND past the last row] ORDER BY key
+    LIMIT``.
+
+    The child is known here by its columns' names alone (a table only :func:`primary_key_of_table` declares), so the
+    set and the key after the last row are bound untyped (``AnyOf(cast=None)``, ``Sort(cast=None)``): the database
+    types them by the columns.
 
     :param pool: the L3, an asyncpg-shaped ``fetch``
     :ptype pool: Any
@@ -235,17 +241,12 @@ async def _children(
     :return: the rows
     :rtype: list[Any]
     """
-    page_size = L3_RAIL_ROW_CAP - 1
-    order = ", ".join(key)
-    head = f"SELECT {', '.join(carried)} FROM {table} WHERE {column} = ANY($1)"  # noqa: S608 -- declared identifiers
-    found: list[Any] = []
-    page = list(await pool.fetch(f"{head} ORDER BY {order} LIMIT {page_size}", values))
-    found += page
-    while len(page) == page_size:
-        last = [page[-1][c] for c in key]
-        after = ", ".join(f"${2 + i}" for i in range(len(key)))
-        page = list(
-            await pool.fetch(f"{head} AND ({order}) > ({after}) ORDER BY {order} LIMIT {page_size}", values, *last)
-        )
-        found += page
-    return found
+    # each statement asks one row under the cap, which the rail answers whole; a full answer says more follow
+    return await keyset_rows(
+        pool,
+        table,
+        columns=list(carried),
+        by={column: AnyOf(list(values), cast=None)},
+        order=[Sort(name, cast=None) for name in key],
+        page=L3_RAIL_ROW_CAP - 2,
+    )

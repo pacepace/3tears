@@ -196,6 +196,26 @@ class TestKeysetRows:
         rows = await keyset_rows(single, "t", columns=["a", "b"], by={"a": "k1"}, order=order, page=50)
         assert len(rows) == 10 and len(single.statements) == 1
 
+    async def test_an_untyped_set_and_sort_bind_as_the_column_types_them(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a set with no cast is cast (or refused), or a drain past its first page binds an uncast sort
+        column's last value as text rather than the row's own value: a caller knowing a table only by its columns'
+        names (a delete's cascade to a table only its key declares) cannot name the types, and text bound against
+        a bigint key is refused by asyncpg."""
+        reader = _Recording(db)
+        rows = await keyset_rows(
+            reader,
+            "t",
+            columns=["a", "b"],
+            by={"a": AnyOf(["k2", "k5"], cast=None)},
+            order=[Sort("b", cast=None)],
+            page=4,
+        )
+        plain = _plain(db, "SELECT a, b FROM t WHERE a IN ('k2', 'k5') ORDER BY b")
+        assert [(row["a"], row["b"]) for row in rows] == plain
+        assert all('t."a" = ANY($1) ' in sql for sql, _ in reader.statements), reader.statements[0][0]
+        past = [params[1:] for _, params in reader.statements[1:]]
+        assert past and all(isinstance(value, int) for bound in past for value in bound), past
+
 
 class TestSortExpression:
     async def test_a_page_sorted_by_an_expression_pages_by_its_value(self, db: duckdb.DuckDBPyConnection) -> None:

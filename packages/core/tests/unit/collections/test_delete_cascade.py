@@ -37,17 +37,18 @@ class _Entity(BaseEntity):
 
 
 class _Pool:
-    """an L3 holding each table's rows; answers the cascade's ``SELECT pk FROM t WHERE col = ANY($1)``."""
+    """an L3 holding each table's rows; answers the cascade's keyed page, ``SELECT t."pk" FROM "t" AS t WHERE
+    t."col" = ANY($1) ...`` (:func:`threetears.core.keyed.keyset_rows`), untyped as the cascade binds it."""
 
     def __init__(self, tables: dict[str, list[dict[str, Any]]]) -> None:
         self.tables = tables
         self.reads: list[str] = []
 
-    async def fetch(self, sql: str, values: list[Any]) -> list[dict[str, Any]]:
+    async def fetch(self, sql: str, values: list[Any], *after: Any) -> list[dict[str, Any]]:
         self.reads.append(sql)
-        match = re.match(r"SELECT (.+) FROM (\w+) WHERE (\w+) = ANY\(\$1\)", sql)
+        match = re.match(r'SELECT (.+) FROM "(\w+)" AS t WHERE t\."(\w+)" = ANY\(\$1\)', sql)
         assert match is not None, sql
-        columns = [c.strip() for c in match.group(1).split(",")]
+        columns = [c.strip().removeprefix("t.").strip('"') for c in match.group(1).split(",")]
         return [{c: row[c] for c in columns} for row in self.tables[match.group(2)] if row[match.group(3)] in values]
 
 
@@ -216,7 +217,7 @@ class _CuttingPool(_Pool):
     """the L3 rail: a page's ``ORDER BY ... LIMIT`` and its key after the last row honoured, and every answer cut at
     four rows without a word."""
 
-    async def fetch(self, sql: str, values: list[Any], *after: Any) -> list[dict[str, Any]]:  # type: ignore[override]
+    async def fetch(self, sql: str, values: list[Any], *after: Any) -> list[dict[str, Any]]:
         rows = sorted(await super().fetch(sql, values), key=lambda r: r["id"])
         if after:
             rows = [r for r in rows if r["id"] > after[0]]

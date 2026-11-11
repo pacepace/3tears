@@ -49,22 +49,25 @@ class AnyOf:
 
     Bound as one array (``"col" = ANY($n::<cast>[])``), a statement's text the same however many values; or, for a
     database with no arrays (Redshift, SQLite), as a list of placeholders (``"col" IN ($n, $n+1, ...)``), each value
-    bound on its own.
+    bound on its own. With no cast (``cast=None``) the array is bound untyped (``"col" = ANY($n)``): the database types
+    it by the column, for a caller that holds the values but not the column's type (a table it knows only by its key
+    columns' names).
 
     :param values: the values the column may hold; none keeps no row
     :ptype values: Sequence[Any]
-    :param cast: the column's SQL type, which the array is cast to (``text``, ``uuid``, ``bigint``); unused in a list
-    :ptype cast: str
+    :param cast: the column's SQL type, which the array is cast to (``text``, ``uuid``, ``bigint``); None binds it
+        untyped, typed by the column; unused in a list
+    :ptype cast: str | None
     :param as_list: bind the values as a list of placeholders, for a database with no arrays
     :ptype as_list: bool
     """
 
     values: Sequence[Any]
-    cast: str = "text"
+    cast: str | None = "text"
     as_list: bool = False
 
     def __post_init__(self) -> None:
-        if not _SQL_TYPE.match(self.cast):
+        if self.cast is not None and not _SQL_TYPE.match(self.cast):
             raise ValueError(f"AnyOf: {self.cast!r} is not a SQL type name")
 
 
@@ -269,7 +272,8 @@ def by_conditions(
             )
             values.extend(listed)
         elif isinstance(value, AnyOf):
-            conditions.append(f"{prefix}{quote(column)} = ANY(${place}::{value.cast}[])")
+            typed = "" if value.cast is None else f"::{value.cast}[]"
+            conditions.append(f"{prefix}{quote(column)} = ANY(${place}{typed})")
             values.append(list(value.values))
         elif value is None:
             conditions.append(f"{prefix}{quote(column)} IS NULL")

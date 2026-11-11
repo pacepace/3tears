@@ -70,8 +70,9 @@ class Sort:
 
     :param column: the column, a TRUSTED identifier of the paged table
     :ptype column: str
-    :param cast: its SQL type, which the cursor's text is cast back to; None binds the text as it is (SQLite, which
-        has no ``::`` casts and compares by the column's own affinity)
+    :param cast: its SQL type, which the cursor's text is cast back to; None binds it uncast (SQLite, which has no
+        ``::`` casts and compares by the column's own affinity; a column whose type the caller does not know): a page
+        past a cursor binds its text, :func:`keyset_rows` the last row's own value, typed by the column
     :ptype cast: str | None
     :param descending: whether it sorts descending
     :ptype descending: bool
@@ -156,7 +157,7 @@ def _seeks_by_row(order: Sequence[Sort]) -> bool:
 
 def _past(
     order: Sequence[Sort],
-    values: Sequence[str | None],
+    values: Sequence[Any],
     first: int,
     *,
     by_row: bool = False,
@@ -347,14 +348,14 @@ def _statement(
     by: Mapping[str, Any],
     order: Sequence[Sort],
     rows: int,
-    past: Sequence[str | None] | None,
+    past: Sequence[Any] | None,
     by_row: bool,
     visible: Sequence[Fragment],
     where: Sequence[Fragment],
     lock: Lock | None,
 ) -> tuple[str, list[Any]]:
-    """one page's statement: ``rows`` rows past ``past`` (the last row's sort values as text; the first page when
-    None), and its parameters."""
+    """one page's statement: ``rows`` rows past ``past`` (the last row's sort values, as text where cast; the first
+    page when None), and its parameters."""
     conditions, params = by_conditions(by, alias="t")
     lead = _pinned(by, order)
     for fragment in where:
@@ -402,7 +403,8 @@ async def keyset_rows(
     For a listing whose caller takes every row (a conversation's schedules, a group's members): each statement reads
     one page through the sort's index, never the prefix's rows in one statement past the transport's cap. Each asks
     ``page + 1`` rows and keeps every one: a full answer says more follow, and the next statement starts past its
-    last row, its sort values bound straight from that row (no cursor text between them). A listing of one page is
+    last row, its sort values bound straight from that row (no cursor text between them; an uncast sort column,
+    ``Sort(cast=None)``, binds the row's own value, so the database types it by the column). A listing of one page is
     one statement. Past a place, PostgreSQL steps by the row comparison, YugabyteDB by the leading bound and the
     expansion (:func:`_past`), as :func:`keyset_page` does.
 
@@ -430,7 +432,7 @@ async def keyset_rows(
     """
     _check(table, columns, order, page)
     rows: list[dict[str, Any]] = []
-    past: list[str | None] | None = None
+    past: list[Any] | None = None
     by_row: bool | None = None
     while True:
         sql, params = _statement(table, columns, by, order, page + 1, past, bool(by_row), visible, where, None)
@@ -441,7 +443,15 @@ async def keyset_rows(
         if by_row is None:
             by_row = await _steps_by_row(conn, order)
         last = rows[-1]
-        past = [None if last[sort.column] is None else _as_text(last[sort.column]) for sort in order]
+        past = [_bound(sort, last[sort.column]) for sort in order]
+
+
+def _bound(sort: Sort, value: Any) -> Any:
+    """how :func:`keyset_rows` binds a sort column's value from the last row: its text, cast back by the sort; the
+    value as read when the sort names no cast (the database types it by the column); None for ``NULL``."""
+    if value is None or sort.cast is None:
+        return value
+    return _as_text(value)
 
 
 async def copy_keyed(
