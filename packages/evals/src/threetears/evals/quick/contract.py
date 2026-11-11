@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, TypeIs
 
 from threetears.evals.kernel.eval_file import beside_eval_file
+from threetears.evals.kernel.eval_scope import eval_running
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel import GuardrailMargin
 from threetears.evals.kernel.host import CompletionClients, EvalHost
@@ -426,6 +427,19 @@ class Eval:
             anything the cases, the runner or the graders refuse, before anything runs.
         :raises ValidationFailedError: The launch refused, or the host refuses the campaign's declaration.
         """
+        # Its arms, its judge and every task they start read as this one run, so a replay serving one of its calls
+        # can tell this eval's calls from another's in the process (eval_running).
+        with eval_running(self.name):
+            return await self._run(store=store, host=host, scope=scope)
+
+    async def _run(
+        self,
+        *,
+        store: DocumentStore | str | os.PathLike[str] | None,
+        host: EvalHost | None,
+        scope: str | None,
+    ) -> Result:
+        """:meth:`run`'s body, inside its eval's run."""
         if host is not None and store is not None:
             raise ValueError(
                 f"store= is where the host this eval builds keeps the runs, and host {host.profile.host_id!r} brings "

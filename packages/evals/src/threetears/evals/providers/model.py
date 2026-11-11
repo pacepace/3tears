@@ -928,7 +928,10 @@ class Model:
     **Recording.** Given ``recording=``, a file that exists is replayed, offline and free, and ``RECORD=1`` in the
     environment records it again live (started afresh by the first model built on it in the run). A file that does
     not exist yet is recorded live. A replay serves only calls recorded under the same model and request settings,
-    and refuses any other by name (:class:`~threetears.evals.testing.RecordingRefused`).
+    and refuses any other by name (:class:`~threetears.evals.testing.RecordingRefused`). **A replay serves each
+    recorded call once per model, so build a model per eval:** one model shared by two evals in a process, or by one
+    eval run twice, serves the second eval nothing, and its calls are refused naming the eval that took them; the
+    recording is whole, so recording it again is never the remedy.
 
     **Spend.** A call made inside an eval's runner call, live or replayed, is added to that call's spend
     (:func:`~threetears.evals.kernel.note_spend`), so a runner that calls a model reports what it cost with no

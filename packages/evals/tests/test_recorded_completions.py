@@ -18,8 +18,16 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from threetears.evals.kernel import OutOfRunBudget, PlannedCall
+from threetears.evals.kernel.eval_scope import eval_running
 from threetears.evals.kernel.host import ApparatusError
-from threetears.evals.schema import ClientRequestSettings, CompletionResult, OutOfRunSpend, StopReason
+from threetears.evals.schema import (
+    CellIdentity,
+    ClientRequestSettings,
+    CompletionResult,
+    OutOfRunSpend,
+    StopReason,
+    bind_cell_identity,
+)
 from threetears.evals.testing import (
     CompletionConformanceFailure,
     ReplayedCompletion,
@@ -183,6 +191,54 @@ async def test_replay_serves_repeats_in_order_and_refuses_the_call_past_the_reco
     assert f"re-record {path} with the client it stands in for" in message, "no command given: the generic remedy"
     assert "RECORD=1" not in message, "no convention is named that the caller did not pass"
     assert refused.value.remedy in message
+
+
+async def test_a_cell_s_repeat_is_served_the_call_of_its_own_index_whatever_order_the_repeats_ask_in(
+    tmp_path: Path,
+) -> None:
+    """A run's cells start in an order shuffled by its id, several at once, so serving a prompt's calls in the order
+    they are asked gave a recorded answer to a different repeat on each replay. Repeat ``i`` is served call ``i``."""
+    path = tmp_path / "rec.jsonl"
+    await _record(path, *(("Roll a die.", _Reply(content=face)) for face in ("4", "2", "6")))
+
+    async def served(order: list[int]) -> dict[int, str]:
+        client = RecordedCompletions.replay(path, settings=BUDGETED)
+        got: dict[int, str] = {}
+        for repeat in order:
+            with bind_cell_identity(
+                CellIdentity(run_id="r", test_case_id="t", subject_id="s", cell_id=f"c{repeat}", k_iteration=repeat)
+            ):
+                got[repeat] = (await client.generate(system=SYSTEM, user="Roll a die.")).content
+        return got
+
+    assert await served([2, 0, 1]) == await served([0, 1, 2]) == {0: "4", 1: "2", 2: "6"}
+
+
+async def test_a_call_another_eval_s_run_took_is_refused_naming_that_eval_and_never_says_to_record_again(
+    tmp_path: Path,
+) -> None:
+    """A replay serves each recorded call once per client: a second eval on the same client finds them spent. The
+    cause is the shared client, so the refusal names the eval that took them and the remedy is a client per eval;
+    recording again would spend money on a recording that is whole."""
+    path = tmp_path / "rec.jsonl"
+    await _record(path, ("Roll a die.", _Reply(content="4")))
+    client = RecordedCompletions.replay(path, settings=BUDGETED)
+    with eval_running("compare"):
+        assert (await client.generate(system=SYSTEM, user="Roll a die.")).content == "4"
+    with eval_running("margin"), pytest.raises(RecordingRefused) as refused:
+        await client.generate(system=SYSTEM, user="Roll a die.")
+    message = str(refused.value)
+    assert "every one was already served to another eval's run in this process ('compare')" in message
+    assert refused.value.remedy == "build a Model per eval; the recording is whole, so record nothing again"
+    assert "re-record" not in message
+
+    # The same eval's run asking past the recording is the code asking more often: there, recording again is the cure.
+    again = RecordedCompletions.replay(path, settings=BUDGETED)
+    with eval_running("compare"):
+        await again.generate(system=SYSTEM, user="Roll a die.")
+        with pytest.raises(RecordingRefused, match="the code asks it more often") as more:
+            await again.generate(system=SYSTEM, user="Roll a die.")
+    assert more.value.remedy.startswith(f"re-record {path}")
 
 
 async def test_a_prompt_the_recording_does_not_hold_is_refused_by_name(tmp_path: Path) -> None:

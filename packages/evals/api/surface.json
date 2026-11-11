@@ -238,7 +238,7 @@
     },
     "threetears.evals.schema.CellIdentity": {
       "kind": "dataclass",
-      "signature": "CellIdentity(run_id: str, test_case_id: str, subject_id: str, cell_id: str)",
+      "signature": "CellIdentity(run_id: str, test_case_id: str, subject_id: str, cell_id: str, k_iteration: int | None = None)",
       "tier": "stable"
     },
     "threetears.evals.schema.CellTermination": {

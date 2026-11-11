@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a replay is deterministic, and a model shared between evals is named as the cause
+
+**Fixed:** replaying an eval twice could print different repeat numbers (rung 3e's c02 malformed reply on repeat 3,
+then repeat 1). A run's cells start in an order shuffled by its fresh id, several at once, and a replay served a
+prompt's recorded answers in the order they were asked. Inside a cell, repeat `i` is now served the recorded call of
+index `i`, so a replay hands each repeat the same answer every time; outside a cell, or where that index is taken
+(one prompt asked twice in a cell, or by two arms), the first call left is served, as before. `CellIdentity` gains
+`k_iteration` (default `None`), the cell's repeat, which the run loop sets.
+
+**Fixed:** a `Model` shared by two evals in one process (or one eval run twice) serves the second nothing, since a
+replay serves each recorded call once per model; the second eval's calls were refused as "the code asks it more often
+than it did when it was recorded" with a remedy to re-record, which spends money on a recording that is whole. The
+refusal now names the eval whose run took the calls and says to build a `Model` per eval, never to record again.
+`Eval.run` marks its extent as one eval's run (`threetears.evals.kernel.eval_scope`, no root), which the replay reads.
+`Model`'s docstring states the rule.
+
 ### evals: an unnamed comparison is refused
 
 **Changed:** a quick-path `Eval` with several arms and neither `name=` nor a cases file is refused when it is written
