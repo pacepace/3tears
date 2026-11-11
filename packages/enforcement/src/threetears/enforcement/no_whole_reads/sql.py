@@ -57,6 +57,7 @@ from typing import Final
 
 from threetears.enforcement.no_whole_reads.schema import (
     COPY_PREFIX,
+    NEAREST_METHODS,
     TENANT_COLUMNS,
     _DeclaredTable,
     SchemaCatalog,
@@ -483,7 +484,8 @@ def _bound_value(text: str) -> bool:
     ):
         return False
     rest = _PLACEHOLDER.sub(" ", _INTERPOLATION.sub(" ", stripped.replace("'_'", " ")))
-    rest = re.sub(r"::\s*[\w ]+(?:\[\])*", " ", rest)
+    # a cast to any type, a schema's own included (``$1::text::public.vector``)
+    rest = re.sub(r"::\s*(?:\w+\.)?[\w ]+(?:\[\])*", " ", rest)
     rest = re.sub(r"\bAS\s+\w+(?:\[\])*", " ", rest, flags=re.IGNORECASE)
     rest = re.sub(r"\b\w+\s*\(", "(", rest)
     rest = re.sub(r"\b(?:ARRAY|ANY|TRUE|FALSE|NULL|INTERVAL)\b", " ", rest, flags=re.IGNORECASE)
@@ -780,6 +782,8 @@ class _Level:
     :ivar limited: whether a ``LIMIT`` bounds it
     :ivar outer: columns an outer ``WHERE`` binds, pushed into a derived table
     :ivar correlated: whether it is a subquery, where a column of a relation it does not name is an outer row's
+    :ivar nearest: the column it orders by a distance from first (``ORDER BY embedding <=> $1``), ``(qualifier,
+        name)``: with a LIMIT, the k nearest rows, which an approximate-nearest-neighbour index of that column serves
     """
 
     relations: list[_Relation]
@@ -789,6 +793,7 @@ class _Level:
     limited: bool
     outer: set[str] = field(default_factory=set)
     correlated: bool = False
+    nearest: tuple[str, str] | None = None
 
 
 def _owner(level: _Level, qualifier: str) -> list[int]:
@@ -1060,7 +1065,8 @@ def _key_hit(
     relation: _Relation,
 ) -> bool:
     """whether a relation's bound columns make its read keyed: (a) a key prefix, (b) a purposed index's leading
-    column, (c) a keyset page.
+    column, (c) a keyset page, (d) the k nearest rows through a purposed approximate-nearest-neighbour index
+    (:func:`_nearest_hit`, credited as used whichever of these keys it).
 
     :param primary: its primary keys
     :ptype primary: list[tuple[str, ...]]
@@ -1081,6 +1087,7 @@ def _key_hit(
     :return: whether it is keyed
     :rtype: bool
     """
+    nearest = _nearest_hit(purposed, level, index, reader, relation)
     eq, ranged, contained, tenants, bounded = bound
     table = bare_table(relation.name)
     if table is not None and table.startswith(COPY_PREFIX):
@@ -1166,7 +1173,8 @@ def _key_hit(
                 elif name and table is not None:
                     reader.schema.use(table, name, reader.names)
                 return True
-    return False
+    # (d) the k nearest rows through an approximate-nearest-neighbour index of the column it orders by a distance from
+    return nearest
 
 
 def _local(reader: Reader, table: str) -> bool:
@@ -1203,6 +1211,67 @@ def _order(masked: str, text: str) -> tuple[str, str] | None:
     first = re.sub(r"\s+(ASC|DESC|NULLS\s+(FIRST|LAST)).*$", "", items[0], flags=re.IGNORECASE).strip()
     row = _row(first)
     return row[0] if row else _column(first)
+
+
+#: a distance operator of pgvector (L2, inner product, cosine, L1), bare or as ``OPERATOR(<schema>.<op>)``
+_DISTANCE: Final[re.Pattern[str]] = re.compile(
+    r"^(?P<column>.+?)\s*(?:OPERATOR\s*\(\s*(?:\w+\.)?(?:<=>|<->|<#>|<\+>)\s*\)|<=>|<->|<#>|<\+>)\s*(?P<value>.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _nearest_order(masked: str, text: str) -> tuple[str, str] | None:
+    """the column a level orders by a distance from first: ``ORDER BY <column> <distance operator> <bound value>``.
+
+    :param masked: the level, deeper levels blanked
+    :ptype masked: str
+    :param text: the same span, cleaned SQL
+    :ptype text: str
+    :return: ``(qualifier, column)``, or None when its first order is no distance from a bound value
+    :rtype: tuple[str, str] | None
+    """
+    match = _ORDER_BY.search(masked)
+    if match is None:
+        return None
+    closing = re.compile(r"\b(LIMIT|OFFSET|FOR|FETCH)\b", re.IGNORECASE).search(masked, match.end())
+    items = _split(text[match.end() : closing.start() if closing else len(text)], re.compile(","))
+    first = re.sub(r"\s+(ASC|NULLS\s+(FIRST|LAST)).*$", "", items[0], flags=re.IGNORECASE).strip() if items else ""
+    distance = _DISTANCE.match(first)
+    if distance is None or not _bound_value(distance.group("value").strip()):
+        return None
+    return _column(distance.group("column").strip())
+
+
+def _nearest_hit(
+    purposed: list[tuple[str, tuple[str, ...]]], level: _Level, index: int, reader: Reader, relation: _Relation
+) -> bool:
+    """whether a relation's read is the k nearest rows through an approximate-nearest-neighbour index whose purpose
+    names the reader: the level orders by a distance from the index's column and a LIMIT bounds it (the index is
+    credited as used). Ordered so without such an index, the read sorts every row it reads.
+
+    :param purposed: the relation's indexes whose purpose names the reader, ``(name, columns)``
+    :ptype purposed: list[tuple[str, tuple[str, ...]]]
+    :param level: the level
+    :ptype level: _Level
+    :param index: the relation's position in the level
+    :ptype index: int
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :param relation: the relation
+    :ptype relation: _Relation
+    :return: whether it is
+    :rtype: bool
+    """
+    if level.nearest is None or not level.limited or index not in _owner(level, level.nearest[0]):
+        return False
+    table = bare_table(relation.name)
+    declared = reader.schema.table(relation.name) if table is not None else reader.template
+    for name, columns in purposed:
+        found = declared.indexes.get(name) if declared is not None else None
+        if columns[:1] == (level.nearest[1],) and found is not None and found.method in NEAREST_METHODS:
+            reader.schema.use(table if table is not None else declared.name, name, reader.names)  # type: ignore[union-attr]
+            return True
+    return False
 
 
 def _bound_ctes(text: str, depths: list[int], ctes: set[str], reader: Reader) -> set[str]:
@@ -1300,6 +1369,7 @@ def _level(
         correlated=depth > 0,
     )
     level.outer = _outer_columns(text, depths, start, depth)
+    level.nearest = _nearest_order(masked, text[start : start + len(masked)])
     return level
 
 

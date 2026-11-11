@@ -862,16 +862,39 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             ),
         ),
         indexes=(
+            # v036: one user's memories under one agent, newest first: every per-user read and count, and the
+            # history pool's date bound read off it. it replaced idx_memories_agent_user (agent_id, user_id) and
+            # ix_memories_user_date (user_id, date_created), which YugabyteDB passed over for the owner index
             SchemaIndex(
-                "ix_memories_user_date",
+                "ix_memories_agent_user_date",
+                "agent_id",
                 "user_id",
                 "date_created",
+                desc="date_created",
                 purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.count_by_user; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_similar_for_dedup; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_same_event; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.search_by_semantic; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.search_by_fts; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.list_for_user; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_by_scope; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_for_user_in_agents; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MemoriesCollection.hybrid_search._nearest"
                 ),
-                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memories_user_date",
-                reason="memories carries seven indexes: one user's memories older than a date (hybrid_search's history)",
+                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memories_agent_user",
+                reason=(
+                    "memories carries six indexes: one user's memories under one agent, every per-user read and count"
+                ),
             ),
             # v004: every memory a conversation produced, for the
             # conversation-scoped reads and the delete cascade from a
@@ -884,7 +907,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                     "::MemoryChunkCollection.find_by_conversation_id"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_mem_conversation",
-                reason="memories carries seven indexes: the memories one conversation produced, for its chunks",
+                reason="memories carries six indexes: the memories one conversation produced, for its chunks",
             ),
             SchemaIndex(
                 "ix_memories_user_alias",
@@ -897,7 +920,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                     "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_by_alias"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memories_user_alias",
-                reason="memories carries seven indexes: a memory by its name, unique per agent and user",
+                reason="memories carries six indexes: a memory by its name, unique per agent and user",
             ),
             # v0.8.1: parity-gate enrichments relocated from upstream
             # alembic. tenancy-scope btree composites used by the
@@ -927,34 +950,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                     "packages/agent/memory/tests/integration/test_index_plans.py::test_memories_agent_customer_user"
                 ),
                 reason=(
-                    "memories carries seven indexes: one owner's memories by the whole owner triple, every ambient read"
-                ),
-            ),
-            SchemaIndex(
-                "idx_memories_agent_user",
-                "agent_id",
-                "user_id",
-                purpose=(
-                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
-                    "::MemoriesCollection.count_by_user; "
-                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
-                    "::MemoriesCollection.find_similar_for_dedup; "
-                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
-                    "::MemoriesCollection.find_same_event; "
-                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
-                    "::MemoriesCollection.search_by_semantic; "
-                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
-                    "::MemoriesCollection.search_by_fts; "
-                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
-                    "::MemoriesCollection.list_for_user; "
-                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
-                    "::MemoriesCollection.find_by_scope; "
-                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
-                    "::MemoriesCollection.find_for_user_in_agents"
-                ),
-                plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memories_agent_user",
-                reason=(
-                    "memories carries seven indexes: one user's memories under one agent, every per-user read and count"
+                    "memories carries six indexes: one owner's memories by the whole owner triple, every ambient read"
                 ),
             ),
             # no GIN over ``search_vector``: v027 dropped it. the keyword
@@ -1730,26 +1726,54 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         vec_salience_idx = len(vec_params)
 
         def _nearest(older_than: datetime | None = None) -> Any:
-            # ``older_than`` narrows the scan to the history: see the history pool below.
+            # ``older_than`` narrows the scan to the history (see the history pool below): its own
+            # statement, the date bound written out, so the read of one user's memories older than
+            # the window is the one ix_memories_agent_user_date names.
             args = list(vec_params)
-            history_clause = ""
-            if older_than is not None:
-                args.append(older_than)
-                history_clause = f" AND date_created < ${len(args)}"
+            if older_than is None:
+                allowed = filter_clause(self.read_filter, "memories.tags", args)
+                return self.l3_pool.fetch(  # type: ignore[union-attr]
+                    f"""
+                    SELECT memory_id, content, summary, type_memory, date_created,
+                           embedding::text AS embedding,
+                           1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
+                    FROM memories
+                    WHERE {_OWNER_SCOPE}
+                      AND embedding IS NOT NULL{vec_date_clause}
+                      AND (superseded_by IS NULL OR NOT EXISTS (
+                            SELECT 1 FROM memories g
+                            WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
+                      AND {_NOT_RETRACTED}
+                      AND salience >= ${vec_salience_idx}{allowed}
+                    ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
+                    LIMIT {limit_param}
+                    """,
+                    *args,
+                )
+            args.append(older_than)
+            history_idx = len(args)
             allowed = filter_clause(self.read_filter, "memories.tags", args)
+            # the user's memories older than the window are read by ix_memories_agent_user_date inside a subquery
+            # the planner keeps whole (OFFSET 0), the customer checked after: with the customer beside them,
+            # YugabyteDB read the owner's every memory by idx_memories_agent_customer_user. a subquery, not a
+            # MATERIALIZED CTE, so the rows stream to the distance sort instead of being held with their embeddings.
             return self.l3_pool.fetch(  # type: ignore[union-attr]
                 f"""
                 SELECT memory_id, content, summary, type_memory, date_created,
                        embedding::text AS embedding,
                        1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
-                FROM memories
-                WHERE {_OWNER_SCOPE}
+                FROM (
+                    SELECT * FROM memories
+                    WHERE agent_id = $2 AND user_id = $4 AND date_created < ${history_idx}
+                    OFFSET 0
+                ) memories
+                WHERE customer_id = $3
                   AND embedding IS NOT NULL{vec_date_clause}
                   AND (superseded_by IS NULL OR NOT EXISTS (
                         SELECT 1 FROM memories g
                         WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
                   AND {_NOT_RETRACTED}
-                  AND salience >= ${vec_salience_idx}{history_clause}{allowed}
+                  AND salience >= ${vec_salience_idx}{allowed}
                 ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
                 LIMIT {limit_param}
                 """,
@@ -2258,7 +2282,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         narrowing = "".join(f" AND {condition}" for condition in conditions)
         narrowing += filter_clause(self.read_filter, "memories.tags", params)
         # cache-bypass: a filtered scan of one person's rows is not primary-key
-        # addressable; ix_memories_user_date backs the order.
+        # addressable; ix_memories_agent_user_date backs the order.
         total = await self.l3_pool.fetchval(
             f"SELECT count(*) FROM memories WHERE agent_id = $1 AND user_id = $2{narrowing}", *params
         )
@@ -2862,10 +2886,10 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
             ),
         ),
         indexes=(
-            SchemaIndex("ix_media_user_date", "user_id", "date_created"),
-            SchemaIndex("ix_media_mime_type", "mime_type"),
+            # v036: led by the agent, so YugabyteDB looks up each chunk's file by key instead of hashing the agent's
             SchemaIndex(
-                "ix_media_memory_id",
+                "ix_media_agent_memory",
+                "agent_id",
                 "memory_id",
                 purpose=(
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
@@ -2880,7 +2904,7 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
                     "::MemoryChunkCollection.hybrid_search_within_memory"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_memory_id",
-                reason="media carries seven indexes: the file a memory wraps, joined to that memory's chunks",
+                reason="media carries two indexes: the file a memory wraps, joined to that memory's chunks",
             ),
             SchemaIndex(
                 "uq_media_cloud_connection_file",
@@ -2891,17 +2915,7 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
                 plan_test=(
                     "packages/agent/memory/tests/integration/test_index_plans.py::test_media_cloud_connection_file"
                 ),
-                reason="media carries seven indexes: one media row per provider file of a cloud connection",
-            ),
-            # v0.8.1: parity-gate enrichments relocated from upstream
-            # alembic. tenancy-scope btree composite.
-            SchemaIndex("idx_media_agent_user", "agent_id", "user_id"),
-            # v0.8.1: partial btree over rows still awaiting extraction;
-            # selective enough to keep the queue-scan cheap.
-            SchemaIndex(
-                "ix_media_extraction_pending",
-                "extraction_status",
-                where="extraction_status = 'pending'",
+                reason="media carries two indexes: one media row per provider file of a cloud connection",
             ),
         ),
         # v0.8.1: global uniqueness on ``media_id`` (stronger than the
@@ -3030,9 +3044,8 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
                     "::MediaContentCollection.search_by_ids"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_content_media_type",
-                reason="media_content carries four indexes: the contents of the files a search names by file id",
+                reason="media_content carries three indexes: the contents of the files a search names by file id",
             ),
-            SchemaIndex("ix_media_content_user", "user_id"),
             # v0.8.1: parity-gate enrichments relocated from upstream
             # alembic. tenancy-scope btree composite.
             SchemaIndex(
@@ -3048,7 +3061,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
                     "::MediaContentCollection.search_by_fts"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_content_agent_user",
-                reason="media_content carries four indexes: one user's file contents, every search of them",
+                reason="media_content carries three indexes: one user's file contents, every search of them",
             ),
             # no GIN over ``search_vector``: v027 dropped it. the keyword
             # predicate goes through ``gin_filter`` (ybgin refuses a
@@ -3322,20 +3335,29 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
         if self.l3_pool is None or not content_ids:
             return []
         # cache-bypass: batch IN(...) join spanning media_content ->
-        # media. see :meth:`hybrid_search` for the detailed rationale.
+        # media. see :meth:`hybrid_search` for the detailed rationale. the
+        # ids' rows are read by their keys alone (media_content_pkey and
+        # ix_media_content_media_type) behind a MATERIALIZED fence, then the
+        # user is checked on both the content and its file: with the user
+        # beside the ids, YugabyteDB read every content row of the user. both
+        # are bound because no constraint makes a content row's user its file's.
         args: list[Any] = [agent_id, content_ids, user_id]
         allowed = _media_parent_clause(self.read_filter, "mc", args)
         rows = await self.l3_pool.fetch(
             f"""
+            WITH named AS MATERIALIZED (
+                SELECT * FROM media_content
+                WHERE agent_id = $1
+                  AND (content_id = ANY($2::uuid[]) OR media_id = ANY($2::uuid[]))
+            )
             SELECT mc.content_id, mc.content, mc.content_type, mc.media_id,
                    med.media_category, med.metadata_json, med.date_created
-            FROM media_content mc
+            FROM named mc
             JOIN media med
               ON mc.agent_id = med.agent_id
              AND mc.media_id = med.media_id
-            WHERE mc.agent_id = $1
-              AND (mc.content_id = ANY($2::uuid[]) OR mc.media_id = ANY($2::uuid[]))
-              AND mc.user_id = $3{allowed}
+            WHERE mc.user_id = $3
+              AND med.user_id = $3{allowed}
             ORDER BY mc.media_id, mc.date_created DESC
             """,
             *args,
@@ -3612,7 +3634,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                     "::MemoryChunkCollection.find_by_conversation_id"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memory_chunks_memory",
-                reason="memory_chunks carries eight indexes: one memory's chunks by their index, and their count",
+                reason="memory_chunks carries four indexes: one memory's chunks by their index, and their count",
             ),
             # v015: cursor paging within one memory (``find_by_memory_id``
             # orders by chunk_id).
@@ -3628,24 +3650,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                 plan_test=(
                     "packages/agent/memory/tests/integration/test_index_plans.py::test_chunks_memory_id_chunk_id"
                 ),
-                reason="memory_chunks carries eight indexes: one memory's chunks paged in chunk order",
-            ),
-            # v015: transcript chunks by the last message they cover.
-            SchemaIndex(
-                "idx_chunks_message_id_end",
-                "message_id_end",
-                where="message_id_end IS NOT NULL",
-            ),
-            SchemaIndex("ix_memory_chunks_user", "user_id"),
-            # v0.8.1: parity-gate enrichments relocated from upstream
-            # alembic. partial composite covering the agent-scoped
-            # conversation-replay lookup that follows
-            # ``message_id_start`` chains.
-            SchemaIndex(
-                "idx_chunks_message_id_start",
-                "agent_id",
-                "message_id_start",
-                where="message_id_start IS NOT NULL",
+                reason="memory_chunks carries four indexes: one memory's chunks paged in chunk order",
             ),
             # v0.8.1: tenancy-scope btree composite.
             SchemaIndex(
@@ -3659,7 +3664,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                     "::MemoryChunkCollection.search_by_semantic"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memory_chunks_agent_user",
-                reason="memory_chunks carries eight indexes: one user's chunks, every search of them",
+                reason="memory_chunks carries four indexes: one user's chunks, every search of them",
             ),
             # no GIN over ``search_vector``: v027 dropped it. the keyword
             # predicate goes through ``gin_filter`` (ybgin refuses a
@@ -3959,7 +3964,9 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         # cache-bypass: vector-distance search joining memory_chunks
         # -> media via the memory_id parent FK. see :meth:`hybrid_search`.
         # ``mc.embedding IS NOT NULL`` guard: same NULL-cosine
-        # rationale as :meth:`hybrid_search`.
+        # rationale as :meth:`hybrid_search`. the file is a lateral lookup by
+        # ix_media_agent_memory per chunk: as a plain join YugabyteDB hashed
+        # every file of the agent.
         args: list[Any] = [embedding_str, agent_id, user_id, max_results, date_after, date_before]
         allowed = _chunk_parent_clause(self.read_filter, "mc", args)
         rows = await self.l3_pool.fetch(
@@ -3969,9 +3976,10 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                    mc.date_created, med.metadata_json,
                    1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memory_chunks mc
-            LEFT JOIN media med
-              ON mc.agent_id = med.agent_id
-             AND mc.memory_id = med.memory_id
+            LEFT JOIN LATERAL (
+                SELECT media.metadata_json FROM media
+                WHERE media.agent_id = mc.agent_id AND media.memory_id = mc.memory_id
+            ) med ON TRUE
             WHERE mc.agent_id = $2
               AND mc.user_id = $3
               AND mc.embedding IS NOT NULL
@@ -4309,7 +4317,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         chunks have ``message_id_start`` NULL and are excluded from
         this query (the cross-memory scope is narrative-order, which
         document chunks don't participate in). Auth triple enforced
-        on the joined memories row.
+        on each chunk row.
 
         Cursor paging semantics match :meth:`find_by_memory_id`.
 
@@ -4337,10 +4345,12 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         if self.l3_pool is None:
             return []
 
-        # cache-bypass: JOIN scan across memory_chunks + memories
-        # filtered by memories.conversation_id. backed by the
-        # idx_chunks_message_id_start partial index for the ORDER BY.
-        # auth triple enforced on the joined memories row.
+        # cache-bypass: the conversation's memories by idx_mem_conversation
+        # behind a MATERIALIZED fence, then their chunks by
+        # ix_memory_chunks_memory, the owner checked on each chunk. one form
+        # both planners take: with the owner on the chunk in a plain join
+        # YugabyteDB read every chunk of the user; with it on the memory,
+        # PostgreSQL read every memory of the owner.
         params: list[Any] = [agent_id, conversation_id, user_id, customer_id]
         cursor_clause = ""
         if chunk_id_after is not None:
@@ -4359,17 +4369,20 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
 
         rows = await self.l3_pool.fetch(
             f"""
+            WITH conversation AS MATERIALIZED (
+                SELECT m.memory_id FROM memories m
+                WHERE m.agent_id = $1
+                  AND m.conversation_id = $2
+            )
             SELECT mc.chunk_id, mc.memory_id, mc.chunk_index, mc.content, mc.summary,
                    mc.heading_context, mc.page_number,
                    mc.message_id_start, mc.message_id_end,
                    mc.date_created
-            FROM memory_chunks mc
-            JOIN memories m
-              ON m.agent_id = mc.agent_id
-             AND m.memory_id = mc.memory_id
-            WHERE mc.agent_id = $1
-              AND m.conversation_id = $2
-              AND mc.user_id = $3
+            FROM conversation
+            JOIN memory_chunks mc
+              ON mc.agent_id = $1
+             AND mc.memory_id = conversation.memory_id
+            WHERE mc.user_id = $3
               AND mc.customer_id = $4
               AND mc.message_id_start IS NOT NULL
               {cursor_clause}{allowed}
@@ -4591,12 +4604,14 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         ),
         indexes=(
             # the ledger read: the refs one agent surfaced in a conversation, newest first (v034; it
-            # replaced the conversation-wide (conversation_id, date_created) index)
+            # replaced the conversation-wide (conversation_id, date_created) index). date_created is
+            # stored descending: YugabyteDB will not read an ascending one backwards for the newest first
             SchemaIndex(
                 "idx_conv_mem_refs_conversation_agent_date",
                 "conversation_id",
                 "agent_id",
                 "date_created",
+                desc="date_created",
                 purpose=(
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MemoryRefsCollection.find_by_conversation"

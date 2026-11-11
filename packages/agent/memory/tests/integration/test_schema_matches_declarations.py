@@ -34,6 +34,7 @@ from threetears.agent.memory.collections import MemoryChunkCollection
 from threetears.agent.memory.migrations import align_indexes_with_declarations
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.agent.memory.migrations.v033_drop_legacy_index_names import DROP_LEGACY_INDEXES_SQL
+from threetears.agent.memory.migrations.v035_drop_unread_indexes import DROP_UNREAD_INDEXES_SQL
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import VECTOR_TYPE, SchemaBackedCollection, TableSchema
@@ -355,6 +356,32 @@ class TestBuiltSchemaMatchesDeclarations:
         assert upgraded_rows == fresh_rows
         names = {name for _, name, _ in fresh_rows}
         assert not names & set(v033_names()), names & set(v033_names())
+
+    async def test_a_schema_holding_the_unread_indexes_ends_without_them(
+        self, two_schemas: tuple[str, str, str]
+    ) -> None:
+        """a schema built through v034 holds the eight indexes no read uses; carried through v035 it ends with
+        exactly the indexes a fresh build has, none of them among them."""
+        url, fresh, upgraded = two_schemas
+        unread = {sql.rsplit(" ", 1)[1] for sql in DROP_UNREAD_INDEXES_SQL}
+        conn = await asyncpg.connect(url)
+        try:
+            await _migrate(conn, fresh)
+            await _migrate(conn, upgraded, target=34)
+            # the released v028 (before 0.95.0) also built these two; a schema it migrated holds them
+            await conn.execute(f'SET search_path TO "{upgraded}", public')
+            await conn.execute("CREATE INDEX IF NOT EXISTS ix_media_user_date ON media (user_id, date_created)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS ix_media_mime_type ON media (mime_type)")
+            before = {name for _, name, _ in await _index_rows(conn, upgraded)}
+            assert unread <= before, unread - before
+            await _migrate(conn, upgraded)
+            fresh_rows = await _index_rows(conn, fresh)
+            upgraded_rows = await _index_rows(conn, upgraded)
+        finally:
+            await conn.close()
+        assert upgraded_rows == fresh_rows
+        names = {name for _, name, _ in upgraded_rows}
+        assert not names & unread, names & unread
 
     async def test_memories_date_updated_is_not_null_on_both_sides(self, pg_schema: tuple[str, str]) -> None:
         url, schema = pg_schema

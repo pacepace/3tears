@@ -1873,11 +1873,11 @@ class TestExistingTableSchemaBackwardCompat:
         assert schema.pk_columns == ("agent_id", "memory_id")
         # the partition column survives coercion + v0.8.0 validation
         assert schema.partition_column == "agent_id"
-        # v0.8.0: indexes declared (ix_memories_user_date from v0.7.5
-        # factory + ix_memories_user_alias relocated from prod
-        # alembic 088).
+        # v0.8.0: indexes declared (the user/date index from the v0.7.5
+        # factory, ix_memories_agent_user_date since agent-memory v036,
+        # + ix_memories_user_alias relocated from prod alembic 088).
         index_names = {idx.name for idx in schema.indexes}
-        assert "ix_memories_user_date" in index_names
+        assert "ix_memories_agent_user_date" in index_names
         assert "ix_memories_user_alias" in index_names
         # v0.8.0: every Column with ``foreign_key=`` survives partition
         # coercion. user_id has an inline FK to users.user_id.

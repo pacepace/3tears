@@ -79,6 +79,8 @@ class _World:
         self.memory = uuid.UUID(int=0)
         self.chunk = uuid.UUID(int=0)
         self.conversation = uuid.UUID(int=0)
+        #: the one conversation holding 3,000 surfaced refs, where reading one agent's newest needs their index
+        self.busy_conversation = uuid.UUID(int=0)
 
     def _collection(self, kind: type[Any], captured: _Captured) -> Any:
         registry = CollectionRegistry()
@@ -220,6 +222,16 @@ async def world(pg_url: str) -> AsyncIterator[_World]:
         " generate_series(1, 60) n",
         agents,
     )
+    # and one busy conversation: 3,000 refs, 1,000 by each agent (with 60 a conversation, reading them all by the
+    # pk and sorting is the cheaper plan, so only a busy one shows whether the agent's newest read their index)
+    busy = uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO conversation_memory_refs (conversation_id, item_id, item_type, short_desc, date_created,"
+        " date_updated, agent_id) SELECT $1, gen_random_uuid(), 'memory', 'a ref', now() - n * interval '1 second',"
+        " now(), ($2::uuid[])[1 + n % 3] FROM generate_series(1, 3000) n",
+        busy,
+        agents,
+    )
     tables = (
         "memories",
         "media",
@@ -239,6 +251,7 @@ async def world(pg_url: str) -> AsyncIterator[_World]:
         world.user,
     )
     world.memory, world.conversation, world.chunk = mine["memory_id"], mine["conversation_id"], mine["chunk_id"]
+    world.busy_conversation = busy
     try:
         yield world
     finally:
@@ -274,7 +287,7 @@ async def _only_plan(world: _World, captured: _Captured) -> StatementPlan:
 
 
 async def test_memories_agent_user(world: _World) -> None:
-    """Flips if one user's reads by agent and user stop reading idx_memories_agent_user."""
+    """Flips if one user's reads by agent and user stop reading ix_memories_agent_user_date."""
     captured = _Captured()
     memories = world.memories(captured)
     await memories.count_by_user(world.user, agent_id=world.agent)
@@ -292,7 +305,7 @@ async def test_memories_agent_user(world: _World) -> None:
     await memories.find_by_scope(world.agent, user_id=world.user)
     await memories.find_for_user_in_agents(user_id=world.user, agent_ids=(world.agent, uuid.uuid4()))
     missed = [
-        _shape(plan) for plan in await world.plans(captured) if not plan_uses_index(plan, "idx_memories_agent_user")
+        _shape(plan) for plan in await world.plans(captured) if not plan_uses_index(plan, "ix_memories_agent_user_date")
     ]
     assert not missed, "\n\n".join(missed)
 
@@ -342,12 +355,12 @@ def _history_pool(plan: StatementPlan) -> bool:
 
 async def test_memories_user_date(world: _World) -> None:
     """Flips if hybrid_search's history pool (one owner's memories older than its recent ones, nearest first) stops
-    reading ix_memories_user_date: the user's memories by date, the range bounding them."""
+    reading ix_memories_agent_user_date: the user's memories by date, the range bounding them."""
     captured = _Captured()
     await _hybrid_search(world, world.memories(captured))
     history = [plan for plan in await world.plans(captured) if _history_pool(plan)]
     assert history, [sql for sql, _ in captured.asked]
-    missed = [_shape(plan) for plan in history if not plan_uses_index(plan, "ix_memories_user_date")]
+    missed = [_shape(plan) for plan in history if not plan_uses_index(plan, "ix_memories_agent_user_date")]
     assert not missed, "\n\n".join(missed)
 
 
@@ -461,7 +474,7 @@ async def test_mem_conversation(world: _World) -> None:
 
 
 async def test_media_memory_id(world: _World) -> None:
-    """Flips if a chunk's file, joined by its memory, stops being found through ix_media_memory_id."""
+    """Flips if a chunk's file, joined by its memory, stops being found through ix_media_agent_memory."""
     captured = _Captured()
     chunks = world.chunks(captured)
     await chunks.search_by_ids([world.chunk], world.user, agent_id=world.agent)
@@ -490,7 +503,9 @@ async def test_media_memory_id(world: _World) -> None:
         similarity_threshold=0.0,
         chunk_signal_weights=_CHUNK_WEIGHTS,
     )
-    missed = [_shape(plan) for plan in await world.plans(captured) if not plan_uses_index(plan, "ix_media_memory_id")]
+    missed = [
+        _shape(plan) for plan in await world.plans(captured) if not plan_uses_index(plan, "ix_media_agent_memory")
+    ]
     assert not missed, "\n\n".join(missed)
 
 
@@ -508,11 +523,10 @@ async def test_memory_consolidations_source(world: _World) -> None:
 
 
 async def test_conv_mem_refs_conversation_agent_date(world: _World) -> None:
-    """Flips if the newest refs one agent surfaced in a conversation stop reading
+    """Flips if the newest refs one agent surfaced in a busy conversation stop reading
     idx_conv_mem_refs_conversation_agent_date."""
-    conversation = await world.conn.fetchval("SELECT conversation_id FROM conversation_memory_refs LIMIT 1")
     captured = _Captured()
-    await world.refs(captured).find_by_conversation(conversation, world.agent)
+    await world.refs(captured).find_by_conversation(world.busy_conversation, world.agent)
     plan = await _only_plan(world, captured)
     assert plan_uses_index(plan, "idx_conv_mem_refs_conversation_agent_date"), _shape(plan)
 
