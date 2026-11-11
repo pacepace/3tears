@@ -30,8 +30,10 @@ bar's decision (`BarStatus.decision`, from the bundle's verdict) where they held
 fingerprint wherever the bundle carries the level (`LEVEL_PRESENTATION_FIELDS`: the variant index, the coverage, the
 declared design and the campaign's declaration); a declared crossing's cell holds each level's content hash
 (`DeclaredCellCoverage.levels`, named on the page through `AnalysisContextBundle.level_name`); and the decision surface,
-the scoreboard and the time axis order their arms by the host's display, never a declared name. So renaming a measure or
-a level moves no fingerprint or digest and stales no analysis; a page built now prints the new name, and a stored
+the scoreboard and the time axis order their arms by the host's display, never a declared name. A test case's label, the
+name its author gave it, rides on each trial (`TrialRow.case_label`) outside every fingerprint
+(`TRIAL_PRESENTATION_FIELDS`), the bundle holding and ordering the case by its id. So renaming a measure, a level or a
+test case moves no fingerprint or digest and stales no analysis; a page built now prints the new name, and a stored
 analysis's page the names it was frozen with. Every page reads as it did. A judge's identity is untouched: a rubric
 criterion's wording keys its judge profile (`criterion_digest`) as before, and the trial keeps the criterion the judge
 was asked.

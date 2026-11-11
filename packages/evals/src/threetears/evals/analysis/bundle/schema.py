@@ -2604,6 +2604,13 @@ class TrialJudgement(EvalDocumentModel):
     reason: str = Field(description="The judge's reasoning, or why it could not tell; capped.")
 
 
+#: The fields of a trial row that say only how a page names its case: the label its author gave it, or the one read off
+#: its stratum and first input where it was given none. A bundle carries it on every trial and leaves it out of its
+#: fingerprint, so naming or renaming a test case stales no analysis and moves no reporter case: the case is held by its
+#: ``case_id`` (owner ruling, 2026-11-11: names are presentation, never evidence).
+TRIAL_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"case_label"})
+
+
 class TrialRow(EvalDocumentModel):
     """One trial — one case run once on one arm — and how it ended, with what a reader needs to see why."""
 
@@ -2613,7 +2620,10 @@ class TrialRow(EvalDocumentModel):
         min_length=1,
         description=(
             "The case as a reader names it: the name its author gave it (`double-charge`); else its stratum, then "
-            "the first 80 characters of the first input its first trial's transcript recorded, else its id."
+            "the first 80 characters of the first input its first trial's transcript recorded, else its id. "
+            "Presentation only (`TRIAL_PRESENTATION_FIELDS`): no part of the bundle's fingerprint, which holds the "
+            "case by `case_id`, so renaming a case stales no analysis and a page built from a stored analysis prints "
+            "the label it was frozen with."
         ),
     )
     stratum: str | None = Field(default=None, description="The case's stratum; None when it declares none.")
@@ -2927,9 +2937,10 @@ class AnalysisContextBundle(EvalDocumentModel):
     # (`_NAMES_LEFT_THE_EVIDENCE`).
     # Unmoved by declared names: `short_name`, `goal_check_names`, `stratum_names` and `lever_names` are written only when declared and
     # are no part of the fingerprint, and neither is a declared axis's `reader_name` (`AXIS_PRESENTATION_FIELDS`), a
-    # catalogued measure's `reader_name` and `reader_prose` (`MEASURE_PRESENTATION_FIELDS`), nor any level's `display`
-    # in the variant index, the coverage or the declared design (`LEVEL_PRESENTATION_FIELDS`): a bundle naming nothing
-    # is this shape byte for byte, and naming or renaming a measure, a lever or a level moves no fingerprint.
+    # catalogued measure's `reader_name` and `reader_prose` (`MEASURE_PRESENTATION_FIELDS`), any level's `display`
+    # in the variant index, the coverage or the declared design (`LEVEL_PRESENTATION_FIELDS`), nor a trial's
+    # `case_label` (`TRIAL_PRESENTATION_FIELDS`): a bundle naming nothing is this shape byte for byte, and naming or
+    # renaming a measure, a lever, a level or a test case moves no fingerprint.
     # Unmoved by the run apparatus and the unanswered calls: each run summary's `apparatus` and each arm's
     # `scoreboard[].unanswered` are written only when the run recorded one or a usage row counted them, so a bundle over
     # runs that recorded neither is this shape byte for byte and its fingerprint stays put. A run recording either moves
@@ -3965,16 +3976,17 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
     """A bundle document's fingerprint: the digest of every field but what built it (``package_version``), how a page
     prints it (:data:`_NOT_EVIDENCE`, the declared control's
     :data:`~threetears.evals.kernel.declaration.ARM_PRESENTATION_FIELDS`, each catalogued measure's
-    :data:`~threetears.evals.kernel.metrics.MEASURE_PRESENTATION_FIELDS` and each level's
-    :data:`~threetears.evals.kernel.declaration.LEVEL_PRESENTATION_FIELDS`), and how each arm's cost was priced
-    (:data:`_NOT_ARM_EVIDENCE`).
+    :data:`~threetears.evals.kernel.metrics.MEASURE_PRESENTATION_FIELDS`, each level's
+    :data:`~threetears.evals.kernel.declaration.LEVEL_PRESENTATION_FIELDS` and each trial's
+    :data:`TRIAL_PRESENTATION_FIELDS`), and how each arm's cost was priced (:data:`_NOT_ARM_EVIDENCE`).
 
-    **Names are presentation, never evidence** (owner ruling, 2026-11-11). What a reader calls a measure, a lever or a
-    level is carried where a page reads it and left out here, so naming or renaming one moves no fingerprint and stales
-    no analysis; a page built from a stored analysis prints the names it was frozen with until it is regenerated. A
-    level is identified by its ``content_hash``, a measure by its key. A version 1 (unprefixed) fingerprint is computed
-    as it was taken, every measure's and level's name in it; a version 2 one taken before bundle shape 66 read them
-    too, and is never compared, since no bundle of an earlier shape is read.
+    **Names are presentation, never evidence** (owner ruling, 2026-11-11). What a reader calls a measure, a lever, a
+    level or a test case is carried where a page reads it and left out here, so naming or renaming one moves no
+    fingerprint and stales no analysis; a page built from a stored analysis prints the names it was frozen with until it
+    is regenerated. A level is identified by its ``content_hash``, a measure by its key, a test case by its id. A
+    version 1 (unprefixed) fingerprint is computed as it was taken, every measure's, level's and case's name in it; a
+    version 2 one taken before bundle shape 66 read them too, and is never compared, since no bundle of an earlier
+    shape is read.
 
     **Two bundles may share a fingerprint with different pricing** (owner ruling, 2026-10-28: "I recognize the
     implications, but it's ok"). The same runs priced by another source, or served by another provider, fingerprint
@@ -3996,8 +4008,11 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
     if isinstance(scoreboard := evidence.get("scoreboard"), list):
         # How an arm's cost was priced (_NOT_ARM_EVIDENCE) is no part of what the bundle read.
         evidence["scoreboard"] = _unpresented(scoreboard, _NOT_ARM_EVIDENCE)
-    # A version 1 fingerprint read every measure's and level's name: computed as it was taken.
+    # A version 1 fingerprint read every measure's, level's and case's name: computed as it was taken.
     unnamed = like is None or like.startswith(FINGERPRINT_PREFIX)
+    if unnamed and isinstance(trials := evidence.get("trials"), list):
+        # What a reader calls a test case (TRIAL_PRESENTATION_FIELDS) is no part of what the bundle read: its id is.
+        evidence["trials"] = _unpresented(trials, TRIAL_PRESENTATION_FIELDS)
     if unnamed and isinstance(catalog := evidence.get("measure_catalog"), Mapping):
         # What a reader calls a measure (MEASURE_PRESENTATION_FIELDS) is no part of what the bundle read: its key is.
         evidence["measure_catalog"] = {
@@ -4413,6 +4428,7 @@ __all__ = [
     "VerdictOrder",
     "WholeSwing",
     "FINGERPRINT_PREFIX",
+    "TRIAL_PRESENTATION_FIELDS",
     "evidence_digest",
     "unnamed_axes",
     "fingerprint_digest",

@@ -16,8 +16,12 @@ function of facts the bundle keeps:
 - a campaign's readings hold each bar's decision where they held its reason (``readings.bars[].reason`` becomes
   ``.decision``, read off the reason's last clause, which says it) and no measure's name (``readings.measures[].name``).
 
-A measure's ``reader_name`` and ``reader_prose`` and every level's ``display`` stay where they are: presentation, left
-out of every fingerprint, so a page built from the moved file prints the names it printed.
+A measure's ``reader_name`` and ``reader_prose``, every level's ``display`` and each trial's ``case_label`` stay where
+they are: presentation, left out of every fingerprint, so a page built from the moved file prints the names it printed.
+
+A file already at shape 66 is re-fingerprinted: a trial's ``case_label`` left the fingerprint within shape 66, so a file
+moved before that records fingerprints this build no longer computes over the same bundles. Only the fingerprints it
+records move (each aspect's, each frame entry's and the campaign's), and a file whose fingerprints are current refuses.
 
 A campaign's derived arm is labelled by its levers' ids read as words from 66 on, where a build between the lever
 names and 66 spelled it with their reader names. Such a label cannot be told from a person's by what the frame holds,
@@ -39,8 +43,8 @@ fixture::
     uv run python packages/evals/tests/fixtures/report_inputs/migrate_bundle_shape_66.py <file.json | file.json.gz>...
 
 A file is written in the serialization it was read in (compact or indented by one or two, every character past ASCII
-escaped or not, as it was read; a gzipped one at gzip level 9 with no timestamp), so running it on a shape-66 file
-refuses and writes nothing.
+escaped or not, as it was read; a gzipped one at gzip level 9 with no timestamp), so running it twice on one file
+refuses the second time and writes nothing.
 """
 
 from __future__ import annotations
@@ -172,8 +176,15 @@ def _migrate_readings(readings: Document) -> Document:
     }
 
 
+def _at_66(aspects: list[Document]) -> bool:
+    """Whether every aspect bundle is at shape 66 already, so only the fingerprints over them are moved."""
+    return bool(aspects) and all(aspect.get("schema_version") == TO_SHAPE for aspect in aspects)
+
+
 def _migrate_campaign(data: Document) -> Document:
-    """A whole campaign bundle (``CampaignBundle.to_dict()``) at shape 66."""
+    """A whole campaign bundle (``CampaignBundle.to_dict()``) at shape 66; one there already as it is."""
+    if _at_66(data["aspects"]):
+        return data
     return {
         **data,
         "readings": _migrate_readings(data["readings"]),
@@ -182,14 +193,18 @@ def _migrate_campaign(data: Document) -> Document:
 
 
 def _migrate_analysis(stored: Document) -> Document:
-    """A stored analysis with its frozen bundles, its frame's readings and the fingerprints over them at 66."""
+    """A stored analysis with its frozen bundles, its frame's readings and the fingerprints over them at 66; one at 66
+    already with only its fingerprints computed again."""
     analysis = deepcopy(stored)
+    moving = not _at_66([aspect["bundle"] for aspect in analysis["aspects"]])
     for aspect in analysis["aspects"]:
-        aspect["bundle"] = _migrate_aspect(aspect["bundle"])
+        if moving:
+            aspect["bundle"] = _migrate_aspect(aspect["bundle"])
         aspect["bundle_fingerprint"] = evidence_digest(aspect["bundle"])
     fingerprints = {aspect["label"]: aspect["bundle_fingerprint"] for aspect in analysis["aspects"]}
     frame = analysis["campaign_bundle"]
-    frame["readings"] = _migrate_readings(frame["readings"])
+    if moving:
+        frame["readings"] = _migrate_readings(frame["readings"])
     frame["aspects"] = [{**entry, "fingerprint": fingerprints[entry["aspect"]]} for entry in frame["aspects"]]
     bundles = [AnalysisContextBundle.from_dict(aspect["bundle"]) for aspect in analysis["aspects"]]
     analysis["generation"]["bundle_fingerprint"] = CampaignBundle.from_frame(frame, bundles).fingerprint()
@@ -204,18 +219,19 @@ def _migrate_snapshot(snapshot: Document) -> Document:
     return {**snapshot, "bundle": bundle, "bundle_fingerprint": CampaignBundle.from_dict(bundle).fingerprint()}
 
 
-def _frozen_at_65(document: Document) -> bool:
-    """Whether a stored document holds an aspect bundle of shape 65."""
+def _frozen(document: Document) -> bool:
+    """Whether a stored document holds an aspect bundle of shape 65 or 66."""
+    shapes = (FROM_SHAPE, TO_SHAPE)
     if document.get("doc_type") == "eval_analysis":
-        return any(aspect["bundle"].get("schema_version") == FROM_SHAPE for aspect in document.get("aspects") or [])
+        return any(aspect["bundle"].get("schema_version") in shapes for aspect in document.get("aspects") or [])
     if document.get("doc_type") == "eval_report_snapshot" and isinstance(document.get("bundle"), dict):
-        return any(aspect.get("schema_version") == FROM_SHAPE for aspect in document["bundle"].get("aspects") or [])
+        return any(aspect.get("schema_version") in shapes for aspect in document["bundle"].get("aspects") or [])
     return False
 
 
 def _migrate_stored(document: Document) -> Document:
-    """One stored document of a captured store at 66, or as it was where it holds no shape-65 bundle."""
-    if not _frozen_at_65(document):
+    """One stored document of a captured store at 66, or as it was where it holds no bundle of shape 65 or 66."""
+    if not _frozen(document):
         return document
     if document["doc_type"] == "eval_analysis":
         return _migrate_analysis(document)
@@ -224,10 +240,11 @@ def _migrate_stored(document: Document) -> Document:
 
 def migrate(data: Document | list[Document]) -> Document | list[Document]:
     """A campaign bundle, a stored analysis record, a writer case or a captured store with every shape-65 aspect bundle
-    at shape 66 and the fingerprints over them moved with it; everything else as it was."""
+    at shape 66 and the fingerprints over them moved with it, or every fingerprint over a shape-66 one computed again;
+    everything else as it was."""
     if isinstance(data, list):
-        if not any(_frozen_at_65(document) for document in data):
-            raise SystemExit(f"the captured store holds no bundle of shape {FROM_SHAPE}")
+        if not any(_frozen(document) for document in data):
+            raise SystemExit(f"the captured store holds no bundle of shape {FROM_SHAPE} or {TO_SHAPE}")
         return [_migrate_stored(document) for document in data]
     if "analysis" in data:
         return {**data, "analysis": _migrate_analysis(data["analysis"])}
@@ -331,6 +348,8 @@ def main(paths: list[str]) -> None:
         path = Path(name)
         before, indent, ascii_only = _read(path)
         after = migrate(before)
+        if not moved_paths(before, after):
+            raise SystemExit(f"{path}: every bundle is at shape {TO_SHAPE} and every fingerprint it records is current")
         stray = [moved for moved in moved_paths(before, after) if not _allowed(moved)]
         if stray:
             raise SystemExit(f"{path}: shape 66 moves no other field, but these moved: {stray[:20]}")

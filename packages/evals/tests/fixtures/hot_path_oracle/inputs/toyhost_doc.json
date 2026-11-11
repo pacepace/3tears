@@ -12832,7 +12832,7 @@
    "subject_kind": "extractor_config"
   },
   "bundle_assembled_at": "2026-11-09T23:45:12.772212+00:00",
-  "bundle_fingerprint": "v3:bf5a93707d56ebddcd1c15af1a64a6a1550af6ba55f4e11e0b328663871218e5",
+  "bundle_fingerprint": "v3:4baf81b725ada01518146e45866c312df6e60ec84984390b56bf65da71d7e68e",
   "campaign_id": "2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03",
   "created_at": "2026-11-09T23:45:12.840349+00:00",
   "created_by": "agent:test",
@@ -18334,7 +18334,7 @@
       "start": "2026-03-14T09:30:00+00:00"
      }
     },
-    "bundle_fingerprint": "v2:8d81e9d62bdcdede01d82aa507ad0cf0b70246a4bb335dd9556625017fcf1f90",
+    "bundle_fingerprint": "v2:69022b399ef02deccc331894af85a50d3648feef3ffbea3fb3a1f4cfd3a8b705",
     "coverage": {
      "levers": [
       {
@@ -19300,7 +19300,7 @@
    "aspects": [
     {
      "aspect": "extract_invoice_fields",
-     "fingerprint": "v2:8d81e9d62bdcdede01d82aa507ad0cf0b70246a4bb335dd9556625017fcf1f90"
+     "fingerprint": "v2:69022b399ef02deccc331894af85a50d3648feef3ffbea3fb3a1f4cfd3a8b705"
     }
    ],
    "behavior": "extract_invoice_fields",
@@ -19650,7 +19650,7 @@
   "document": null,
   "generation": {
    "bundle_assembled_at": "2026-11-09T23:45:12.772212+00:00",
-   "bundle_fingerprint": "v3:bf5a93707d56ebddcd1c15af1a64a6a1550af6ba55f4e11e0b328663871218e5",
+   "bundle_fingerprint": "v3:4baf81b725ada01518146e45866c312df6e60ec84984390b56bf65da71d7e68e",
    "bundle_schema_version": 66,
    "cell_model_version": 14,
    "generated_at": "2026-11-09T23:45:12.898523+00:00",
