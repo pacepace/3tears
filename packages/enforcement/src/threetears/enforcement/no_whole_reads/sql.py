@@ -1574,6 +1574,28 @@ def data_relations(sql: str, reader: Reader | None = None) -> list[str]:
     return found
 
 
+def change_relations(sql: str, reader: Reader) -> list[str]:
+    """the change relations a statement reads or writes, as written: every name after ``FROM``, ``JOIN``, ``UPDATE``
+    or ``INTO`` the reader says is transient (rows registered from memory, a stage, a declared change relation).
+
+    :param sql: the statement, each interpolation as ``{}``
+    :ptype sql: str
+    :param reader: what decides a relation is transient
+    :ptype reader: Reader
+    :return: the names, in text order, each once
+    :rtype: list[str]
+    """
+    text = _clean(sql)
+    ctes = {match.group(1).strip('"').lower() for match in _CTE.finditer(text)}
+    found: list[str] = []
+    for match in _NAMED_RELATION.finditer(text):
+        name, call = match.group(1), match.group(2)
+        bare = name.strip('"')
+        if call is None and bare.lower() not in ctes and reader.transient(bare) and bare not in found:
+            found.append(bare)
+    return found
+
+
 def statement_shape(sql: str) -> str | None:
     """the shape of a statement written as text: ``write`` (an ``UPDATE``, a ``DELETE``, a ``MERGE``, an ``INSERT ...
     SELECT``), ``join`` (a read joining relations), ``count`` (a count, an existence or a sum), ``list`` (a read of

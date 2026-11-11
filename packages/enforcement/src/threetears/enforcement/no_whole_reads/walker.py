@@ -50,6 +50,7 @@ from threetears.enforcement.common import dotted, iter_python_files, parse_pytho
 from threetears.enforcement.no_whole_reads.helpers import (
     KEYED_FRAGMENT_BUILDERS,
     KEYED_HELPER_CALLS,
+    STEP_CALLS,
     START_KEYWORDS,
     HelperStatement,
     UNSEEN,
@@ -781,10 +782,12 @@ class _ModuleWalk(ast.NodeVisitor):
             node.args[0].value
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
-            and _final(node) == "register"
+            and _final(node) in {"register", "change_relation"}
             and node.args
             and isinstance(node.args[0], ast.Constant)
             and isinstance(node.args[0].value, str)
+            # a change relation declared over a data table is flagged where it is declared, never made a change set
+            and not (_final(node) == "change_relation" and self._schema.table(node.args[0].value) is not None)
         }
         # a temp view over only the rows being written (``CREATE TEMP VIEW typed AS SELECT ... FROM raw``) is those rows
         self._registered |= _transient_views(tree, self._registered, transient)
@@ -1564,6 +1567,7 @@ class _ModuleWalk(ast.NodeVisitor):
         if name is not None:
             self._judge_call(node, name)
             self._judge_helper(node)
+            self._judge_change_relation(node)
         self.generic_visit(node)
 
     def _resolved_call(self, node: ast.Call) -> ast.Call:
@@ -1596,6 +1600,13 @@ class _ModuleWalk(ast.NodeVisitor):
                     if isinstance(value, ast.Tuple)
                     else ast.List(elts=elements, ctx=ast.Load())
                 )
+            # a module constant declaring a change relation (``_CHANGED = keyed.change_relation("changed")``), or a
+            # name the function binds once to a step (``step = semi(...)``): the call itself, judged where it is made
+            declared = self._module_values.get(value.id) if isinstance(value, ast.Name) else None
+            if isinstance(declared, ast.Call) and _final(declared) == "change_relation":
+                return declared
+            if isinstance(value, ast.Name) and (stepped := self._bound_step(value.id)) is not None:
+                return stepped
             # a module constant holding the argument's shape (``_NEWEST_FIRST = (Sort("date_started"), ...)``)
             if isinstance(value, ast.Name) and isinstance(
                 self._module_values.get(value.id), (ast.Tuple, ast.List, ast.Dict)
@@ -1618,7 +1629,10 @@ class _ModuleWalk(ast.NodeVisitor):
         :return: nothing
         :rtype: None
         """
-        if _final(node) not in KEYED_HELPER_CALLS or _on_an_attribute(node):
+        name = _final(node)
+        if _on_an_attribute(node) or not (
+            name in KEYED_HELPER_CALLS or (name in STEP_CALLS and self._keyed_step(node))
+        ):
             # a call on an object's attribute (``self._store.holds_any``) is the repo's own method, judged in its body
             return
         statement: HelperStatement
@@ -1634,6 +1648,61 @@ class _ModuleWalk(ast.NodeVisitor):
                         hits.setdefault(f"{finding.kind} {finding.table}", statement.sql)
         for symbol, statement_text in hits.items():
             self._hit(node, symbol, statement_text)
+
+    def _bound_step(self, name: str) -> ast.Call | None:
+        """the step (or change relation, or derived select) the enclosing function binds ``name`` to once, if it does.
+
+        :param name: the local name
+        :ptype name: str
+        :return: the call it is bound to, or None
+        :rtype: ast.Call | None
+        """
+        if not self._function_nodes:
+            return None
+        bound = [
+            node.value
+            for node in ast.walk(self._function_nodes[-1])
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == name
+        ]
+        if len(bound) == 1 and isinstance(bound[0], ast.Call):
+            callee = _final(bound[0])
+            if callee in STEP_CALLS or callee in {"change_relation", "Derived"}:
+                return bound[0]
+        return None
+
+    def _keyed_step(self, node: ast.Call) -> bool:
+        """whether ``node`` calls one of 3tears' relational steps (``semi``, ``union``, ...): a name imported from
+        ``threetears.core.keyed``, or an attribute of a module imported as it (``keyed.semi``); a set's ``union`` or a
+        repo's own ``scan`` is not one.
+
+        :param node: the call
+        :ptype node: ast.Call
+        :return: whether it is
+        :rtype: bool
+        """
+        func = node.func
+        if isinstance(func, ast.Name):
+            return self.imports.get(func.id, "").startswith("threetears.core.keyed")
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            return self.imports.get(func.value.id, "").startswith("threetears.core.keyed")
+        return False
+
+    def _judge_change_relation(self, node: ast.Call) -> None:
+        """a change relation declared over a data table is a whole read laundered: flag it where it is declared.
+
+        :param node: the call
+        :ptype node: ast.Call
+        :return: nothing
+        :rtype: None
+        """
+        if _final(node) != "change_relation" or not node.args:
+            return
+        name = _constant_text(node.args[0], self._envs[-1])
+        if name is not None and self._schema.table(name.strip('"')) is not None:
+            self._hit(node, f"change-relation-is-a-table {name}", self._spelled(node))
 
     def _mapping_calls(self, call: ast.Call) -> list[ast.Call]:
         """the call once per combination of the entries its arguments pick from module mappings of literal sequences

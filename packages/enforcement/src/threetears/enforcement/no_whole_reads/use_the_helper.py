@@ -9,10 +9,12 @@ one more place a whole read, a wrong index or a missed tenant can hide.
 **The rule** (:func:`statement_findings`; per repo, ``threetears.enforcement.no_whole_reads.use_the_helper_findings``): every SQL statement a module writes as text -- a ``SELECT`` (or
 ``WITH ... SELECT``), an ``UPDATE``, a ``DELETE``, a ``MERGE``, an ``INSERT ... SELECT`` -- whose relations include
 a data table (one the repo's or 3tears' declarations key: a ``TableSchema``, SQLAlchemy ``Table``, migration DDL,
-``tables.yaml``) or a table named at run time (``FROM {table}``) is a finding, ``use-the-helper <shape> <table>``,
+``tables.yaml``), a table named at run time (``FROM {table}``) or a change relation (``change:<name>``: rows a
+change registers, a stage; their steps are :mod:`threetears.core.keyed.steps`) is a finding,
+``use-the-helper <shape> <table>``,
 unless the module is one of the sanctioned helper modules (:data:`_HELPER_MODULES`, plus the repo's reviewed
-``NoWholeReadsConfig.helper_modules``). A relation of a local copy (``copy.<name>``), a change set being applied
-(``transient_relations``), a CTE, a catalog or a function is no data table. Migrations are never walked.
+``NoWholeReadsConfig.helper_modules``). A relation of a local copy (``copy.<name>``), a CTE, a catalog or a function
+is no data table. Migrations are never walked.
 
 **Its shapes** (:func:`~threetears.enforcement.no_whole_reads.sql.statement_shape`), the backlog's buckets: ``point``
 (the rows a ``WHERE`` names), ``list`` (ordered, limited past a row, or unfiltered), ``count`` (a count, an
@@ -36,7 +38,7 @@ from pathlib import Path
 from typing import Final
 
 from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX
-from threetears.enforcement.no_whole_reads.sql import data_relations, statement_shape
+from threetears.enforcement.no_whole_reads.sql import change_relations, data_relations, statement_shape
 from threetears.enforcement.no_whole_reads.walker import WrittenStatement
 
 __all__ = [
@@ -66,7 +68,9 @@ _MIN_REASON: Final[int] = 30
 #: what each finding is told to do instead
 _ADVICE: Final[str] = (
     "write it through threetears.core.keyed (read_keyed, keyset_page, counts_by, holds_any, delete_before, "
-    "update_before, read_after), threetears.core.keyset or a RowFollower; where none fits, add the helper to 3tears, "
+    "update_before, read_after; over a change relation its steps: semi, anti, distinct, grouped, latest_per_key, "
+    "windowed, except_rows, union, read_step, delete_matching), threetears.core.keyset or a RowFollower; where none "
+    "fits, add the helper to 3tears, "
     f"never the SQL here; until then it goes in {_LEDGER} with the reason"
 )
 
@@ -154,6 +158,10 @@ def _data_table(statement: WrittenStatement, producers: frozenset[str] = frozens
             return name, True
         if "{" in name:
             return name, False
+    for name in change_relations(statement.text, statement.reader):
+        # a relational step over a change relation (its produced rows, a stage, rows registered from memory) has one
+        # home too: threetears.core.keyed.steps
+        return f"change:{name}", True
     return None
 
 
