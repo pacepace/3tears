@@ -1156,3 +1156,40 @@ def test_a_published_version_s_mark_is_read_from_its_view_as_from_the_table() ->
         assert DuckDBBackend.staged_mark(conn) == 7
     finally:
         conn.close()
+
+
+def test_a_fill_deletes_what_it_was_not_given_through_the_backend_s_own_delete() -> None:
+    """:func:`fill_table` lets go of each held key it was not given through the backend's ``delete_by_id``, so a
+    backend that keeps something in step with each delete (a subclass renewing what it takes from the table's rows)
+    keeps it in step; what the table then holds is exactly what the fill gave."""
+
+    class Counting(DuckDBBackend):
+        deleted: list[Any]
+
+        def delete_by_id(self, table: str, entity_id: Any, primary_key: str | tuple[str, ...] = "id") -> None:
+            self.deleted.append(entity_id)
+            super().delete_by_id(table, entity_id, primary_key)
+
+    metadata = MetaData()
+    Table(
+        "results",
+        metadata,
+        Column("race", String(64), primary_key=True),
+        Column("county", String(64), primary_key=True),
+        Column("votes", Integer),
+    )
+    backend = Counting()
+    backend.deleted = []
+    backend.initialize(metadata)
+    fill_table(
+        backend,
+        "results",
+        [{"race": "r1", "county": "c1", "votes": 1}, {"race": "r2", "county": "c2", "votes": 2}],
+        _KEY,
+    )
+    assert backend.deleted == []
+    fill_table(backend, "results", [{"race": "r2", "county": "c2", "votes": 3}], _KEY)
+    assert backend.deleted == [("r1", "c1")]
+    assert backend.execute_query("SELECT race, county, votes FROM results") == [
+        {"race": "r2", "county": "c2", "votes": 3}
+    ]
