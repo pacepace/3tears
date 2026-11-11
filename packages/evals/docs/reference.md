@@ -1774,11 +1774,12 @@ options:
   --scope SCOPE         the scope to read and write in
   --format {markdown,json,html}
                         markdown (default), html (one page, charts drawn by its inlined kit
-                        script) or json (the bundle the report was computed from)
+                        script) or json (campaign.json: code's readings, the person's call and
+                        each aspect's bundle by its fingerprint)
   --trials {table,all}  table (default): each failed or lost trial's row and stored result; all:
                         each one's full record too
-  --out DIR             write report.html, report.md and bundle.json into DIR instead of printing
-                        one form
+  --out DIR             write report.html, report.md, campaign.json and one bundle-<aspect>.json
+                        per aspect into DIR instead of printing one form
 ```
 
 ### `bundle`

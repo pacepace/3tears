@@ -2,13 +2,14 @@
 
 A change to the writer (a line of its skill, its reasoning effort, its revisions, its editor's model) is a decision the engine's corrected
 comparison makes, so the writer runs as a kind (:data:`~threetears.evals.ops.report_writer.writer_contract.WRITER_KIND`)
-through the ordinary run path, beside the analysis reporter.
+through the ordinary run path. It is the one kind that measures report writing: the analysis reporter kind is
+retired, and the package ships no kind for a stored reporter template, so its launch is refused.
 
 - **A case** (:class:`WriterCase`) is one report snapshot, frozen whole into the case's ``host_payload``, and the
   exemplar notes its analyst is not given. A snapshot is derived and regenerable: a schema wipe sweeps it, and freezing
   the campaign again after one builds it from evidence that may have moved. So the case carries the snapshot document
-  itself (its report input, the bundle it was built from and its digests), as a reporter case carries its bundle, and
-  a cell puts it back in the run's scope before any turn (``report_snapshot_restore``): its id is derived from its
+  itself (its report input, the bundle it was built from and its digests), not a reference to it, and a cell puts
+  it back in the run's scope before any turn (``report_snapshot_restore``): its id is derived from its
   evidence, so the snapshot restored is the one the case froze, byte for byte, and the analyst tools read it as they
   read any. A snapshot this build no longer reads excludes the cell as the harness's, naming the remedy: freeze the
   case again. Withholding is per case, so a blind run withholds what the case froze and nothing a launch chose.
@@ -498,7 +499,7 @@ class ReportWriterKind:
         cannot be restored are the harness's (``infra_errors``, the cell excluded), each before any turn. A loop that
         ends with no document (refused, its review unreadable, its budget spent before a review) is the
         candidate's (``candidate_errors``); one whose client failed is the account's or the provider's when the host's
-        describer says so, as a reporter cell's is, and the candidate's otherwise. Every turn's spend is on the
+        describer says so, and the candidate's otherwise. Every turn's spend is on the
         output's usage and on the sink's reading, so a cell cut off at its deadline keeps what it paid for.
 
         :param instance: What :meth:`prepare` bound.
