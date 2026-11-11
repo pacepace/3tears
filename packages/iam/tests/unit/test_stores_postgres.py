@@ -21,7 +21,8 @@ _TTL = timedelta(minutes=30)
 
 # parity-with: threetears.iam.stores.postgres.PoolLike
 class _FakePool:
-    """A pool double modelling the two statements these stores issue.
+    """A pool double modelling the statements these stores issue: their inserts, their claims and point
+    reads (one keyed statement each, through ``fetch``), and the purge's pages.
 
     Deliberately implements DELETE-RETURNING as a single indivisible step, because that is the
     guarantee under test: if the store ever split it into a read then a write, this double
@@ -38,10 +39,7 @@ class _FakePool:
         self.rows: dict[str, dict[str, Any]] = {}
         self.statements: list[str] = []
 
-    def _key_column(self, query: str) -> str:
-        return "hashed" if "hashed = $1" in query else "key"
-
-    async def execute(self, query: str, *args: object) -> None:
+    async def execute(self, query: str, /, *args: object) -> None:
         self.statements.append(query)
         collapsed = " ".join(query.split())
         if collapsed.startswith("INSERT"):
@@ -57,22 +55,26 @@ class _FakePool:
             if key in self.rows and "ON CONFLICT" not in collapsed:
                 raise AssertionError(f"duplicate key {key!r} violates the primary key")
             self.rows[key] = {"payload": payload, "expires_at": expires}
-        elif collapsed.startswith("DELETE") and "expires_at <= $1" in collapsed:
-            cutoff = args[0]
-            self.rows = {k: v for k, v in self.rows.items() if v["expires_at"] > cutoff}  # type: ignore[operator]
         else:  # pragma: no cover - the stores issue nothing else
             raise AssertionError(f"unhandled execute: {collapsed}")
 
-    async def fetchrow(self, query: str, *args: object) -> dict[str, Any] | None:
+    async def fetch(self, query: str, /, *args: object) -> list[dict[str, Any]]:
         self.statements.append(query)
         collapsed = " ".join(query.split())
+        if '"expires_at" < $1' in collapsed and "LIMIT" in collapsed:
+            # the purge's page: the expired rows' keys, at most the page, deleted and returned
+            cutoff, page = args[0], int(collapsed.rsplit("LIMIT ", 1)[1].split(")", 1)[0])
+            expired = [k for k, v in self.rows.items() if v["expires_at"] < cutoff][:page]  # type: ignore[operator]
+            for k in expired:
+                del self.rows[k]
+            return [{"key": k} for k in expired]
         key, now = str(args[0]), args[1]
         row = self.rows.get(key)
         if row is None or row["expires_at"] <= now:  # type: ignore[operator]
-            return None
+            return []
         if collapsed.startswith("DELETE"):
             del self.rows[key]
-        return {"payload": row["payload"]}
+        return [{"payload": row["payload"]}]
 
 
 @pytest.fixture
