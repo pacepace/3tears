@@ -2450,3 +2450,32 @@ def test_a_page_whose_lead_is_a_set_credits_the_index_it_orders_by_after_it(tmp_
     assert not any(function in {"source_page", "name_page"} for function, _ in found), found
     findings = no_whole_reads_findings(_config(tmp_path, {"listing.py": _ANY_KIND_LEAD}))
     assert not any("index-purpose-unused" in finding for finding in findings), findings
+
+
+_COPIED = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import Sort, copy_keyed
+
+    CONNECTIONS = TableSchema(
+        name="connections",
+        primary_key="connection_id",
+        columns=[],
+        indexes=(Index("by_principal", "principal_kind", "principal_id", "admitted", purpose="src/fence.py::by_principal"),),
+    )
+    _ORDER = [Sort("admitted"), Sort("connection_id")]
+
+    async def by_principal(pool, kind, principal):
+        return await copy_keyed(pool, "connections", columns=["connection_id"], by={"principal_kind": kind, "principal_id": principal}, order=_ORDER)
+
+    async def every_one(pool):
+        return await copy_keyed(pool, "connections", columns=["connection_id"], by={}, order=_ORDER)
+"""
+
+
+def test_a_copy_of_a_prefix_is_judged_as_the_keyed_drain_it_is(tmp_path: Path) -> None:
+    """Flips if copy_keyed by a prefix its purposed index leads is flagged or leaves the index unused, or if a copy
+    with no prefix (every row) passes."""
+    found = _symbols(_config(tmp_path, {"fence.py": _COPIED}))
+    assert {function for function, _ in found} == {"every_one"}, found
+    findings = no_whole_reads_findings(_config(tmp_path, {"fence.py": _COPIED}))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings

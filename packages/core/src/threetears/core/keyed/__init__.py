@@ -9,7 +9,8 @@ as keyed by construction, judged by the key it names):
 - **a listing's page**: a bound prefix, a closed sort, an opaque cursor, a ``LIMIT``, visibility as a keyed
   ``EXISTS``, filters on a partial index's predicate or a range (``where=``), a row lock (:class:`Lock`):
   :func:`keyset_page` (:class:`Sort`, :func:`exists_keyed`, :class:`Fragment`); its joined rows by a keyed read of
-  the values the page holds: :func:`read_joined`. An internal drain of
+  the values the page holds: :func:`read_joined`; every row of a prefix as ``COPY`` CSV text: :func:`copy_keyed`. An
+  internal drain of
   every row a prefix names, a page a statement, from a saved place: :func:`threetears.core.keyset.keyset_pages`
   (``after=``);
 - **a bounded look**, any rows up to a cap in no order (an operator command's "any 500"): :func:`any_rows`;
@@ -79,7 +80,7 @@ from threetears.core.keyed.deletes import SweptRows, delete_before, delete_oldes
 from threetears.core.keyed.inline import InlineDuckDB, InlineTransaction, run_inline
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
 from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_past_marks
-from threetears.core.keyed.page import KeyPage, Sort, exists_keyed, keyset_cursor, keyset_page, keyset_rows
+from threetears.core.keyed.page import KeyPage, Sort, copy_keyed, exists_keyed, keyset_cursor, keyset_page, keyset_rows
 from threetears.core.keyed.rows import (
     ANY_ROWS_CAP,
     DEFAULT_KEY_BATCH,
@@ -169,6 +170,7 @@ __all__ = [
     "any_rows",
     "key_batch_for",
     "apply_stage",
+    "copy_keyed",
     "count_at_most",
     "counts_by",
     "counts_by_relations",
