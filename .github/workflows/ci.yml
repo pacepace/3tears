@@ -20,32 +20,57 @@ on:
     branches: [develop]
 
 jobs:
-  # The unit + enforcement suite takes one of two routes, and exactly one runs:
-  # - `unit-pool`, when the repo holds the TESTAMENT_KEY secret: one job hands the suite to the
-  #   testament pool (scripts/ci-unit-pool.sh), and GitHub's runner only waits.
-  # - `unit`, the GitHub shards, when it does not: a fork's pull request never gets secrets.
-  # A job's `if:` cannot read a secret, so `route` turns its presence into an output.
+  # The unit + enforcement suite takes one of two routes:
+  # - `unit-pool`, the testament pool (scripts/ci-unit-pool.sh run), when `route` chose it: the repo
+  #   holds the TESTAMENT_KEY secret, the event is a push or a pull request from a branch of this
+  #   repo, the repo variable TESTAMENT_CI is not "off", and the pool answered a probe.
+  # - `unit`, the GitHub shards, otherwise, AND when `unit-pool` reports the pool lost during its run
+  #   (outcome `unreachable`: never a test failure, which fails CI on the pool's verdict).
+  # A job's `if:` cannot read a secret, so `route` turns everything it decided into outputs.
+  # docs/testing.md, "CI on the testament pool".
   route:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
-      pool: ${{ steps.key.outputs.pool }}
+      pool: ${{ steps.route.outputs.pool }}
+      why: ${{ steps.route.outputs.why }}
     steps:
-      - name: Choose the testament pool when the repo holds its key
-        id: key
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "latest"
+
+      - name: Choose the unit route (the testament pool if it answers a probe, else the GitHub shards)
+        id: route
         env:
-          HAS_KEY: ${{ secrets.TESTAMENT_KEY != '' }}
-        run: |
-          echo "pool=${HAS_KEY}" >> "$GITHUB_OUTPUT"
-          if [ "$HAS_KEY" = true ]; then echo "unit suite: the testament pool"; else echo "unit suite: GitHub shards"; fi
+          # the key only for a push or a pull request from a branch of this repo, whatever GitHub's
+          # fork policy does; the script checks the event again
+          TESTAMENT_KEY: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.TESTAMENT_KEY || '' }}
+          TESTAMENT_COORDINATOR: ${{ vars.TESTAMENT_COORDINATOR }}
+          # the console the client downloads from; the variable overrides it if the pool moves
+          TESTAMENT_CONSOLE: ${{ vars.TESTAMENT_CONSOLE || 'https://testament.rodeo.illuminati.org/' }}
+          # "off" sends CI to the shards on purpose, with the secret left in place
+          TESTAMENT_CI: ${{ vars.TESTAMENT_CI }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: ./scripts/ci-unit-pool.sh route
 
   # The suite on the testament pool: .testament.toml selects what ci-unit-tests.sh runs (packages/
-  # and tests/, -m "not integration"). docs/testing.md, "CI on the testament pool".
+  # and tests/, -m "not integration"). Its outcome is passed, failed or unreachable; the last runs
+  # the shards below, whose verdict `check` then reads.
   unit-pool:
     name: unit (testament pool)
     needs: route
     if: needs.route.outputs.pool == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    outputs:
+      outcome: ${{ steps.pool.outputs.outcome }}
+      why: ${{ steps.pool.outputs.why }}
     steps:
       # fetch-depth 0: the scope step diffs against the PR base, and the client sends the worktree
       # as a commit whose objects it walks, with the release tags the manifest asks for.
@@ -67,15 +92,15 @@ jobs:
           version: "latest"
 
       - name: Test (unit + enforcement, on the testament pool)
+        id: pool
         if: steps.scope.outputs.needed == 'true'
         env:
-          TESTAMENT_KEY: ${{ secrets.TESTAMENT_KEY }}
+          TESTAMENT_KEY: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.TESTAMENT_KEY || '' }}
           TESTAMENT_COORDINATOR: ${{ vars.TESTAMENT_COORDINATOR }}
-          # the console the client downloads from; the variable overrides it if the pool moves
           TESTAMENT_CONSOLE: ${{ vars.TESTAMENT_CONSOLE || 'https://testament.rodeo.illuminati.org/' }}
           TESTAMENT_BRANCH: ${{ github.head_ref || github.ref_name }}
           OUT: ${{ runner.temp }}/testament
-        run: ./scripts/ci-unit-pool.sh
+        run: ./scripts/ci-unit-pool.sh run
 
       - uses: actions/upload-artifact@v7
         if: always() && steps.scope.outputs.needed == 'true'
@@ -88,10 +113,12 @@ jobs:
   # took ~25 of `check`'s ~27 minutes, evals alone 12. The shards partition exactly what
   # `./scripts/ci-unit-tests.sh` runs with no selector (see its header), so every test still runs
   # once. `check` below waits for all of them and is the one status the branches require.
+  # They run when `route` chose them, or when the pool was lost during `unit-pool`'s run; they
+  # wait for `unit-pool` to know which (skipped when route chose the shards, so `!cancelled()`).
   unit:
     name: unit (${{ matrix.shard }})
-    needs: route
-    if: needs.route.outputs.pool != 'true'
+    needs: [route, unit-pool]
+    if: "!cancelled() && needs.route.result == 'success' && (needs.route.outputs.pool == 'false' || needs.unit-pool.outputs.outcome == 'unreachable')"
     runs-on: ubuntu-latest
     strategy:
       # every shard reports, so one failure does not hide another's
@@ -134,26 +161,40 @@ jobs:
 
   check:
     # the required status: it reports whatever the unit route did, so it never waits on a check
-    # that cannot arrive, and it is red unless the route that ran passed.
+    # that cannot arrive, and it is red unless the route that ran to a verdict passed.
     needs: [route, unit, unit-pool]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      # The chosen route runs its suite or, for a doc-only PR, skips its steps and still succeeds;
-      # that job itself is never skipped, so anything but success (failure, cancelled, or skipped
-      # because the run broke before it started) means the suite did not pass. The other route is
-      # skipped by design, and a `route` that never decided fails here too.
+      # The verdict comes from the route that ran to one: the pool's, or the shards' when route
+      # chose them or the pool was lost during its run (unit-pool's outcome `unreachable`). The job
+      # that ran runs its suite or, for a doc-only PR, skips its steps and still succeeds, so
+      # anything but success (failure, cancelled, or skipped because the run broke before it
+      # started) means the suite did not pass. A `route` that never decided fails here too.
+      # tests/enforcement/test_ci_unit_shards.py runs this step against every combination.
       - name: The unit suite passed
         env:
           ROUTE: ${{ needs.route.outputs.pool }}
+          ROUTE_WHY: ${{ needs.route.outputs.why }}
           UNIT_RESULT: ${{ needs.unit.result }}
           POOL_RESULT: ${{ needs.unit-pool.result }}
+          POOL_OUTCOME: ${{ needs.unit-pool.outputs.outcome }}
+          POOL_WHY: ${{ needs.unit-pool.outputs.why }}
         run: |
+          level=notice
           case "$ROUTE" in
-            true) ran="unit (testament pool)"; result="$POOL_RESULT" ;;
-            false) ran="the unit shards"; result="$UNIT_RESULT" ;;
+            true)
+              if [ "$POOL_OUTCOME" = unreachable ]; then
+                ran="the unit shards"; result="$UNIT_RESULT"; level=warning
+                why="pool unreachable during the run (${POOL_WHY}): ran the shards"
+              else
+                ran="unit (testament pool)"; result="$POOL_RESULT"; why="$ROUTE_WHY"
+              fi ;;
+            false) ran="the unit shards"; result="$UNIT_RESULT"; why="$ROUTE_WHY" ;;
             *) echo "::error::the route job chose no unit route ('$ROUTE')"; exit 1 ;;
           esac
+          echo "::${level} title=unit route::${ran}: ${why//%/%25}"
+          printf '### unit route: %s\n\n%s\n' "$ran" "$why" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
           if [ "$result" != "success" ]; then
             echo "::error::$ran finished '$result'; see the failing unit (...) job."
             exit 1

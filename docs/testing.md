@@ -86,30 +86,86 @@ goes local only with `TESTAMENT=off` and a stated reason, `TESTAMENT_OFF_REASON=
 
 ### CI on the testament pool
 
-CI's unit + enforcement suite takes one of two routes, and `check` is red unless the one that ran
-passed:
+CI's unit + enforcement suite takes one of two routes, and `check` is green only when the route
+that ran to a verdict passed:
 
-- **The testament pool**, when the repo holds the Actions secret `TESTAMENT_KEY`. One job,
-  `unit (testament pool)`, runs `./scripts/ci-unit-pool.sh`: it downloads the client from the
-  console (`/api/v1/cli/wheel`, which hands any client key the pool's own build, checked against
-  the sha256 its release names, so no GitHub token for the private testament repo is needed), then
-  runs `testament run --no-fallback`. GitHub's runner only waits. The pool's address is the Actions
-  variable `TESTAMENT_COORDINATOR`; the console defaults to `https://testament.rodeo.illuminati.org/`,
-  and an Actions variable `TESTAMENT_CONSOLE` overrides it.
-- **The GitHub shards** (above) when it does not. A fork's pull request never gets secrets, so it
-  always takes this route.
+- **The testament pool**, one job, `unit (testament pool)`, running
+  `./scripts/ci-unit-pool.sh run`. GitHub's runner only waits.
+- **The GitHub shards** (above), otherwise.
 
-The pool runs what the shards run: `.testament.toml` selects `packages/` and `tests/` with
-`-m "not integration"`, the same tests `ci-unit-tests.sh` partitions. Two differences: the pool runs
-each batch serially rather than in xdist groups, and the `loop_timing` tests run in its batches
-rather than in a serial session of their own, as every local `test.sh` run on the pool already
-does.
+The `route` job chooses, with `./scripts/ci-unit-pool.sh route`. It takes the shards, without
+asking the pool, when the repo variable `TESTAMENT_CI` is `off`; when no `TESTAMENT_KEY` secret
+reached the run (a fork's pull request gets none); when the event is neither a push nor a pull
+request from a branch of this repo (ci.yml withholds the key then too, whatever GitHub's fork
+policy does); or when no `TESTAMENT_COORDINATOR` variable names the pool. Otherwise it installs
+the client and runs `testament run --probe`, which asks the coordinator whether a run is possible:
+the project allowed, a runner connected that can take it, disk to record it. A probe that says no,
+or a client it cannot get, routes to the shards too.
 
-The key is a client key the owner mints in the testament console: People, their own page,
+**When the pool is down or lost, CI falls back to the shards**, never to testament's own local
+fallback (`--no-fallback`), which would run the whole suite in one session on one runner: that
+OOMs its xdist workers (`ci-unit-tests.sh`'s header) and takes about two hours.
+
+| The probe | The pool's run | What runs | `check` |
+|---|---|---|---|
+| not asked: `TESTAMENT_CI=off`, no key, a fork's PR, no coordinator | | the shards | the shards' verdict |
+| fails, or the client can't be had | | the shards | the shards' verdict |
+| passes | passed | the pool | green |
+| passes | failed: a test failed or errored, nothing collected, or any other refusal (`forbidden`, `upgrade_required`, ...) | the pool only | red |
+| passes | unreachable: `coordinator_unreachable`, `connection_lost`, `batches_lost` or `no_runner`, and no test failed | the pool, then the shards | the shards' verdict |
+| passes | the job broke, timed out (75 min) or was cancelled | the pool only | red |
+| `route` itself broke | | nothing | red |
+
+A retryable ending (`coordinator_unreachable`, `connection_lost`, `batches_lost`) runs once more
+before it counts. A fallback found during the run starts the shards only once `unit-pool` ends, so
+that run takes the pool's time plus the shards'. A fallback is never silent: `route` or
+`unit (testament pool)` says why in an annotation and its job summary, and `check` names the route
+that ran and why in both. `tests/test_ci_unit_pool_script.py` pins the script's choices and
+`tests/enforcement/test_ci_unit_shards.py` runs `check`'s verdict against each row.
+
+**To take the shards on purpose**, set the repo's Actions variable `TESTAMENT_CI` to `off`
+(*Settings → Secrets and variables → Actions → Variables*); delete it to go back. The secret stays.
+
+**What the pool runs.** `testament run --fresh --no-cache --no-fallback`. `.testament.toml`
+selects `packages/` and `tests/` with `-m "not integration"`, the same tests `ci-unit-tests.sh`
+partitions. `--fresh` runs every batch in a container started cold from the project's image (one
+per runner, removed when the run ends), so nothing an earlier run left in a warm container reaches
+the required check; it costs a cold start and a full `[setup]` (`uv sync`) on each runner it
+reaches. `--fresh` does not turn off the cache, so `--no-cache` makes every test run rather than
+serving an earlier passing result on the same tree. Every difference from the shard route:
+
+- **Batches, not xdist workers.** The pool runs each batch with `-n 0`, its runners being the
+  parallelism; the shards run `-n 4 --dist loadgroup` inside each session. An `xdist_group` still
+  keeps its tests together on the pool.
+- **`loop_timing`** runs in the pool's batches beside other work, as every local `test.sh` pool
+  run does; the shards run it in a serial session of its own (the `rest` shard).
+- **The environment.** The pool's image (`docker/testament.Dockerfile`: `python:3.14` slim, a
+  pinned uv) with `uv sync --frozen --extra vision`; the shards use `ubuntu-latest`, the latest uv
+  and `uv sync --extra vision` (not frozen).
+- **The split.** The pool batches by its own planner; the shards split evals by
+  `.test_durations` and the rest by package.
+- **Limits.** A pool batch stops at `batch_timeout_s` (30 min); the pool job at 75 min. A shard has
+  no per-batch limit.
+- **Nothing collected** is a failure on the pool (testament's exit 5); a shard session tolerates it
+  (a session of only integration tests).
+- **History.** The pool records every result under `TESTAMENT_BRANCH`, so `testament` can report
+  on CI runs; the shards record nothing outside the job log.
+
+**The client.** testament is private and not on PyPI. The console serves its current release's
+wheel at `/api/v1/cli/wheel` to any client key, so no GitHub token for the private repo is needed,
+and the client is always the pool's own version. The response names the wheel's sha256 in a
+header, and the script refuses a file that does not match it or is not a testament wheel: an
+integrity check of the download, not provenance, since one HTTPS response carries both. The trust
+is HTTPS to the console, so the script refuses a `TESTAMENT_CONSOLE` that is not `https://` before
+sending the key, and sends the key to curl on stdin, never in its arguments. The console defaults
+to `https://testament.rodeo.illuminati.org/`; an Actions variable `TESTAMENT_CONSOLE` overrides it.
+
+**The key** is a client key the owner mints in the testament console: People, their own page,
 **+ New client key**, named `ci-3tears`. Store it as the repo's Actions secret `TESTAMENT_KEY`
 (*Settings → Secrets and variables → Actions*), and revoke it there in the console when CI no
-longer needs it. Integration, lint, typecheck, the mcp 1.x and OpenTelemetry-floor suites and the
-attribution check stay on GitHub either way.
+longer needs it. The pool's address is the Actions variable `TESTAMENT_COORDINATOR`. Integration,
+lint, typecheck, the mcp 1.x and OpenTelemetry-floor suites and the attribution check stay on
+GitHub either way.
 
 ### Where the unit suite's time goes
 

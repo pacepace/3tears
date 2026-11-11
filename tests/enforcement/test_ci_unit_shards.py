@@ -6,14 +6,20 @@ is a slice of the suite that silently never runs, with every job green. And the 
 anything through the job that waits for them: ``check`` in ``ci.yml`` (the required status) and
 ``check`` in ``release.yml`` (which ``build`` needs). This module pins both.
 
-``ci.yml`` has a second route: when the repo holds the ``TESTAMENT_KEY`` secret, ``unit-pool``
-runs the same suite on the testament pool instead of the shards. Exactly one route runs, and
-``check`` is red unless the one that ran passed; this module pins that too.
+``ci.yml`` has a second route: ``unit-pool`` runs the same suite on the testament pool when
+``route`` chose it (``scripts/ci-unit-pool.sh route``: the key, a same-repo event, ``TESTAMENT_CI``
+not off, and a pool that answers its probe). The shards run when route chose them, or when the pool
+was lost during ``unit-pool``'s run (its outcome ``unreachable``), never after a test failed there.
+``check`` is green only when the route that ran to a verdict passed; this module pins the wiring and
+runs ``check``'s verdict step against every combination. tests/test_ci_unit_pool_script.py pins the
+script's own decisions.
 """
 
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -125,43 +131,188 @@ def test_check_waits_for_the_shards_and_fails_unless_all_passed(workflow: str) -
     assert '!= "success"' in str(first.get("run", "")) and "exit 1" in str(first.get("run", ""))
 
 
-def test_ci_runs_exactly_one_unit_route() -> None:
-    """``unit-pool`` runs when the repo holds TESTAMENT_KEY and the shards when it does not, never both."""
+#: the key reaches a job only for a push or a pull request from a branch of this repo
+_GATED_KEY = (
+    "${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)"
+    " && secrets.TESTAMENT_KEY || '' }}"
+)
+
+
+def _step(job: str, script: str) -> dict[str, object]:
+    """Return the one step of a ci.yml job that runs ``script``.
+
+    :param job: the job name in ci.yml
+    :ptype job: str
+    :param script: the command the step's ``run`` must be
+    :ptype script: str
+    :return: the step mapping
+    :rtype: dict[str, object]
+    """
+    steps = _jobs("ci.yml")[job]["steps"]
+    assert isinstance(steps, list)
+    found = [step for step in steps if str(step.get("run", "")).strip() == script]
+    assert len(found) == 1, f"ci.yml's {job} job no longer runs {script} in one step"
+    step: dict[str, object] = found[0]
+    return step
+
+
+def test_route_chooses_with_the_script_and_a_gated_key() -> None:
+    """``route`` runs ``ci-unit-pool.sh route``, which probes the pool, and only same-repo events get the key."""
+    route = _jobs("ci.yml")["route"]
+    step = _step("route", "./scripts/ci-unit-pool.sh route")
+    env = step["env"]
+    assert isinstance(env, dict)
+    assert env["TESTAMENT_KEY"] == _GATED_KEY, "route must withhold the key from anything but this repo's events"
+    assert env["TESTAMENT_CI"] == "${{ vars.TESTAMENT_CI }}", "TESTAMENT_CI=off must reach route"
+    assert env["TESTAMENT_COORDINATOR"] == "${{ vars.TESTAMENT_COORDINATOR }}"
+    assert env["EVENT_NAME"] == "${{ github.event_name }}"
+    assert env["HEAD_REPO"] == "${{ github.event.pull_request.head.repo.full_name }}"
+    assert env["REPO"] == "${{ github.repository }}"
+    outputs = route["outputs"]
+    assert isinstance(outputs, dict)
+    assert outputs == {
+        "pool": f"${{{{ steps.{step['id']}.outputs.pool }}}}",
+        "why": f"${{{{ steps.{step['id']}.outputs.why }}}}",
+    }
+
+
+def test_the_pool_runs_when_route_chose_it() -> None:
+    """``unit-pool`` runs the pool script's ``run`` as the gated key, and reports its outcome."""
     jobs = _jobs("ci.yml")
-    route = jobs["route"]
-    steps = route["steps"]
-    assert isinstance(steps, list)
-    assert "secrets.TESTAMENT_KEY != ''" in str(steps[0].get("env", "")), "route must decide on the key's presence"
-    assert "steps.key.outputs.pool" in str(route.get("outputs", ""))
-    assert jobs["unit-pool"].get("if") == "needs.route.outputs.pool == 'true'"
-    assert jobs["unit"].get("if") == "needs.route.outputs.pool != 'true'"
-    assert "route" in _needs(jobs["unit-pool"]) and "route" in _needs(jobs["unit"])
-
-
-def test_the_pool_route_runs_the_pool_script_as_the_ci_key() -> None:
-    """the pool job runs scripts/ci-unit-pool.sh with the key from the secret and the pool from the variable."""
-    steps = _jobs("ci.yml")["unit-pool"]["steps"]
-    assert isinstance(steps, list)
-    runs = [step for step in steps if "./scripts/ci-unit-pool.sh" in str(step.get("run", ""))]
-    assert len(runs) == 1, "ci.yml's unit-pool job no longer runs ./scripts/ci-unit-pool.sh"
-    env = runs[0]["env"]
-    assert env["TESTAMENT_KEY"] == "${{ secrets.TESTAMENT_KEY }}"
+    pool = jobs["unit-pool"]
+    assert pool.get("if") == "needs.route.outputs.pool == 'true'"
+    assert _needs(pool) == ["route"]
+    step = _step("unit-pool", "./scripts/ci-unit-pool.sh run")
+    env = step["env"]
+    assert isinstance(env, dict)
+    assert env["TESTAMENT_KEY"] == _GATED_KEY
     assert env["TESTAMENT_COORDINATOR"] == "${{ vars.TESTAMENT_COORDINATOR }}"
     assert env["TESTAMENT_BRANCH"] == "${{ github.head_ref || github.ref_name }}"
+    outputs = pool["outputs"]
+    assert isinstance(outputs, dict)
+    assert outputs["outcome"] == f"${{{{ steps.{step['id']}.outputs.outcome }}}}"
 
 
-def test_check_fails_unless_the_route_that_ran_passed() -> None:
-    """ci.yml's ``check`` needs both routes and reads the one ``route`` chose, refusing an undecided route."""
+def test_the_shards_run_when_route_chose_them_or_the_pool_was_lost() -> None:
+    """the shards wait for ``unit-pool`` and run for route's ``false`` or the pool's ``unreachable``, nothing else.
+
+    A pool outcome of ``failed`` (a test failed) never runs them: the pool's verdict stands.
+    """
+    unit = _jobs("ci.yml")["unit"]
+    assert set(_needs(unit)) == {"route", "unit-pool"}
+    assert unit.get("if") == (
+        "!cancelled() && needs.route.result == 'success' && "
+        "(needs.route.outputs.pool == 'false' || needs.unit-pool.outputs.outcome == 'unreachable')"
+    )
+
+
+def _verdict_step() -> tuple[dict[str, str], str]:
+    """Return ci.yml's ``check`` verdict step: its env and its shell text.
+
+    :return: the env mapping and the run text
+    :rtype: tuple[dict[str, str], str]
+    """
     check = _jobs("ci.yml")["check"]
     assert {"route", "unit", "unit-pool"} <= set(_needs(check))
     steps = check["steps"]
     assert isinstance(steps, list)
-    env, run = str(steps[0].get("env", "")), str(steps[0].get("run", ""))
-    for read in ("needs.route.outputs.pool", "needs.unit.result", "needs.unit-pool.result"):
-        assert read in env, f"check's first step must read {read}"
-    assert 'true) ran="unit (testament pool)"; result="$POOL_RESULT"' in run
-    assert 'false) ran="the unit shards"; result="$UNIT_RESULT"' in run
-    assert "*) echo" in run and run.count("exit 1") == 2
+    env, run = steps[0].get("env"), steps[0].get("run")
+    assert isinstance(env, dict) and isinstance(run, str)
+    return {str(k): str(v) for k, v in env.items()}, run
+
+
+def test_check_reads_both_routes() -> None:
+    """``check``'s verdict step reads route's choice, the pool's result and outcome, and the shards' result."""
+    env, _ = _verdict_step()
+    assert env == {
+        "ROUTE": "${{ needs.route.outputs.pool }}",
+        "ROUTE_WHY": "${{ needs.route.outputs.why }}",
+        "UNIT_RESULT": "${{ needs.unit.result }}",
+        "POOL_RESULT": "${{ needs.unit-pool.result }}",
+        "POOL_OUTCOME": "${{ needs.unit-pool.outputs.outcome }}",
+        "POOL_WHY": "${{ needs.unit-pool.outputs.why }}",
+    }
+
+
+#: (route's pool output, unit-pool's outcome, unit-pool's result, the shards' result) -> check green?
+_VERDICTS = [
+    pytest.param("true", "passed", "success", "skipped", True, "unit (testament pool)", id="pool-passed"),
+    pytest.param("true", "", "success", "skipped", True, "unit (testament pool)", id="pool-doc-only"),
+    pytest.param("true", "failed", "failure", "skipped", False, "unit (testament pool)", id="pool-test-failed"),
+    pytest.param(
+        "true", "failed", "failure", "success", False, "unit (testament pool)", id="pool-failed-shards-ignored"
+    ),
+    pytest.param("true", "", "failure", "skipped", False, "unit (testament pool)", id="pool-job-broke"),
+    pytest.param("true", "", "cancelled", "skipped", False, "unit (testament pool)", id="pool-cancelled"),
+    pytest.param("true", "unreachable", "success", "success", True, "the unit shards", id="pool-lost-shards-passed"),
+    pytest.param("true", "unreachable", "success", "failure", False, "the unit shards", id="pool-lost-shards-failed"),
+    pytest.param(
+        "true", "unreachable", "success", "skipped", False, "the unit shards", id="pool-lost-shards-never-ran"
+    ),
+    pytest.param(
+        "true", "unreachable", "success", "cancelled", False, "the unit shards", id="pool-lost-shards-cancelled"
+    ),
+    pytest.param("false", "", "skipped", "success", True, "the unit shards", id="shards-passed"),
+    pytest.param("false", "", "skipped", "failure", False, "the unit shards", id="shards-failed"),
+    pytest.param("false", "", "skipped", "skipped", False, "the unit shards", id="shards-skipped"),
+    pytest.param("", "", "skipped", "skipped", False, "no unit route", id="route-decided-nothing"),
+    pytest.param("", "", "skipped", "success", False, "no unit route", id="route-broke-shards-ran"),
+]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="the workflow step is bash; none on this host")
+@pytest.mark.parametrize(("route", "outcome", "pool", "shards", "green", "ran"), _VERDICTS)
+def test_check_is_green_iff_the_route_that_ran_to_a_verdict_passed(
+    route: str, outcome: str, pool: str, shards: str, green: bool, ran: str, tmp_path: Path
+) -> None:
+    """runs ``check``'s own verdict step: the pool's verdict, or the shards' when they ran in its place.
+
+    :param route: route's pool output
+    :ptype route: str
+    :param outcome: unit-pool's outcome output
+    :ptype outcome: str
+    :param pool: unit-pool's job result
+    :ptype pool: str
+    :param shards: the unit matrix's job result
+    :ptype shards: str
+    :param green: whether check must pass
+    :ptype green: bool
+    :param ran: the route the step must name
+    :ptype ran: str
+    :param tmp_path: pytest's per-test directory
+    :ptype tmp_path: Path
+    :return: nothing
+    :rtype: None
+    """
+    _, run = _verdict_step()
+    summary = tmp_path / "summary"
+    summary.write_text("")
+    result = subprocess.run(
+        ["bash", "-e", "-c", run],
+        env={
+            "PATH": "/usr/bin:/bin",
+            "GITHUB_STEP_SUMMARY": str(summary),
+            "ROUTE": route,
+            "ROUTE_WHY": "the pool answered the probe" if route == "true" else "no TESTAMENT_KEY secret",
+            "UNIT_RESULT": shards,
+            "POOL_RESULT": pool,
+            "POOL_OUTCOME": outcome,
+            "POOL_WHY": "connection_lost: gone" if outcome == "unreachable" else "",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert (result.returncode == 0) is green, result.stdout + result.stderr
+    if ran == "no unit route":
+        assert "::error::the route job chose no unit route" in result.stdout
+        return
+    # the route that ran, and why, as an annotation and in the job summary: a fallback is never silent
+    assert f"title=unit route::{ran}: " in result.stdout
+    assert f"### unit route: {ran}" in summary.read_text()
+    if outcome == "unreachable":
+        assert "::warning title=unit route::the unit shards: pool unreachable during the run" in result.stdout
 
 
 def test_the_release_build_waits_for_check() -> None:
