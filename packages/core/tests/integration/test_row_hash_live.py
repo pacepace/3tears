@@ -34,6 +34,8 @@ from threetears.core.keyed import (
 )
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
+from packages.core.tests.unit.test_keyed_changed import _grouped_same_results
+
 pytestmark = pytest.mark.integration
 
 _HASHED = (
@@ -219,3 +221,73 @@ async def test_a_typed_key_held_as_text_reads_only_its_changed_row_on_the_databa
     moved = await changed()
     assert [(row["cid"], row["name"]) for row in moved.rows] == [(7002, "moved")]
     assert moved.gone_keys == [("PA", "7004", "2026-11-03 22:30:04+00:00")]
+
+
+async def test_a_group_hash_is_the_same_from_stored_hashes_and_from_sql_on_the_database(
+    conn: asyncpg.Connection,
+) -> None:
+    """Flips if the group hash this database computes (phase 0) differs from the one computed from the row hashes
+    stored from it: every unchanged group would read as moved, phase 1 and more than one statement."""
+    dialect = await dialect_of(conn)
+    await conn.execute(
+        "CREATE TABLE grouped (state TEXT, county TEXT, id BIGINT, name TEXT, votes BIGINT, "
+        "PRIMARY KEY (state, county, id))"
+    )
+    await conn.execute(
+        "INSERT INTO grouped SELECT 'PA', 'c' || (i / 10), i, CASE WHEN i % 7 = 0 THEN NULL ELSE 'n' || i END, "
+        "i * 7 FROM generate_series(0, 59) i"
+    )
+    hashed = (HashColumn("name"), HashColumn("votes", HashKind.INTEGER))
+    held: dict[tuple[Any, ...], str | None] = {
+        (row["state"], row["county"], row["id"]): row["h"]
+        for row in await conn.fetch(f"SELECT state, county, id, {row_hash_sql(hashed, dialect)} AS h FROM grouped AS t")
+    }
+
+    class _Counted:
+        binds_native_arrays = True
+        sql_dialect = dialect
+
+        def __init__(self) -> None:
+            self.statements = 0
+
+        async def fetch(self, query: str, *params: Any) -> Any:
+            self.statements += 1
+            return await conn.fetch(query, *params)
+
+    counted = _Counted()
+    changed = await read_changed(
+        counted,
+        "grouped",
+        key=["state", "county", Sort("id", cast="bigint")],
+        columns=["state", "county", "id", "name", "votes"],
+        held=held,
+        hash_columns=hashed,
+        by={"state": "PA"},
+        group="county",
+    )
+    assert (changed.rows, changed.gone_keys, counted.statements) == ([], [], 1)
+    await conn.execute("UPDATE grouped SET votes = -1 WHERE id = 33")
+    moved = await read_changed(
+        counted,
+        "grouped",
+        key=["state", "county", Sort("id", cast="bigint")],
+        columns=["state", "county", "id", "name", "votes"],
+        held=held,
+        hash_columns=hashed,
+        by={"state": "PA"},
+        group="county",
+    )
+    assert [row["id"] for row in moved.rows] == [33]
+
+
+async def test_the_rows_after_applying_a_grouped_read_are_a_full_read_s_on_the_database(
+    conn: asyncpg.Connection,
+) -> None:
+    """Flips if a follower's copy after read_changed(group=...) (phases 0, 1 and 2) differs from a plain full read of
+    the scope on a live database: a group with one row changed, one with a row added, one with a row removed, and a
+    held group gone."""
+    await conn.execute(
+        "CREATE TABLE seeded_groups (tenant TEXT, grp BIGINT, id BIGINT, name TEXT, votes BIGINT, "
+        "PRIMARY KEY (tenant, grp, id))"
+    )
+    await assert_same_results(conn, **_grouped_same_results(await dialect_of(conn)))
