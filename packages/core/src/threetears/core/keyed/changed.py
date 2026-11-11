@@ -287,8 +287,12 @@ def _group_hash_sql(hashed: str, dialect: Dialect) -> list[str]:
     :return: the items
     :rtype: list[str]
     """
+    # each lane reduced into [0, 2**32) before its 8 hex digits: LPAD cuts a longer text from the right (Redshift
+    # and PostgreSQL alike), so a value outside the range would keep its high digits and lose its low ones. A sum of
+    # slices is never negative; the second MOD holds the range for any value all the same, on every engine
     lanes = " || ".join(
-        f"LPAD(TO_HEX(CAST(MOD(SUM({_lane_value(hashed, start, dialect)}), {_LANE_MOD}) AS BIGINT)), 8, '0')"
+        f"LPAD(TO_HEX(CAST(MOD(MOD(SUM({_lane_value(hashed, start, dialect)}), {_LANE_MOD}) + {_LANE_MOD}, "
+        f"{_LANE_MOD}) AS BIGINT)), 8, '0')"
         for start in _LANES
     )
     return ["count(*) AS group_rows", f"{_base64_of_hex(lanes, dialect)} AS group_hash"]

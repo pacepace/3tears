@@ -40,7 +40,7 @@ from threetears.core.testing.same_results import Seeded, assert_same_results
 from threetears.core.keyed import InlineDuckDB
 from threetears.interfaces.keyed import HashEncoding
 
-from packages.core.tests.unit.test_keyed_changed import grouped_same_results
+from packages.core.tests.unit.test_keyed_changed import LANE_EDGES, grouped_same_results, lane_packings
 
 pytestmark = pytest.mark.integration
 
@@ -477,3 +477,16 @@ async def test_phase_zero_hashes_each_row_once_on_the_database(conn: asyncpg.Con
     outputs = list(scan["Output"])
     assert sum("md5(" in output for output in outputs) == 1, outputs
     assert not {"t.name", "t.votes", "name", "votes"} & set(outputs), outputs
+
+
+async def test_a_lane_is_its_value_mod_2_32_as_8_hex_digits_at_every_edge_on_the_database(
+    conn: asyncpg.Connection,
+) -> None:
+    """Flips if this database packs a lane value outside [0, 2**32) (negative, 2**32, past it) other than as
+    ``value mod 2**32`` in 8 hex digits, as Python and DuckDB do: LPAD cuts from the right, so an unreduced value
+    would keep its high digits only."""
+    packings = lane_packings(await dialect_of(conn))
+    assert len(packings) == 4 and len(set(packings)) == 1
+    for value in LANE_EDGES:
+        found = await conn.fetchval(f"SELECT {packings[0].format(f'CAST({value} AS BIGINT)')}")
+        assert found.lower() == f"{value % 2**32:08x}", (value, found)

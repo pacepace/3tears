@@ -889,3 +889,70 @@ def test_a_held_text_that_is_no_hash_in_either_spelling_is_read_again(conn: duck
     held[fourth] = "z" * 32
     changed = _changed(InlineDuckDB(conn), held)
     assert sorted(row["geo"] for row in changed.rows) == sorted(key[1] for key in (first, second, third, fourth))
+
+
+#: lane values at and past the edges of [0, 2**32): a lane outside it would keep only LPAD's high digits
+LANE_EDGES = (-1, -2, -(2**32) - 3, 0, 2**32 - 1, 2**32, 2**33 + 5, 2**40 + 2**32 + 7)
+
+
+def phase_zero_lanes(statement: str) -> list[str]:
+    """each lane's packing in a phase-0 statement (``LPAD(TO_HEX(...SUM(<slice>)...), 8, '0')``), its ``SUM(...)``
+    replaced by ``{}``: the expression a lane value is written through, to evaluate at chosen values."""
+
+    def closing(text: str, opening: int) -> int:
+        depth = 0
+        for at in range(opening, len(text)):
+            depth += {"(": 1, ")": -1}.get(text[at], 0)
+            if depth == 0:
+                return at
+        raise ValueError(f"unbalanced: {text[opening:]}")
+
+    lanes = []
+    start = statement.find("LPAD(TO_HEX(")
+    while start != -1:
+        lane = statement[start : closing(statement, start + len("LPAD")) + 1]
+        summed = lane.index("SUM(")
+        lanes.append(lane[:summed] + "{}" + lane[closing(lane, summed + len("SUM")) + 1 :])
+        start = statement.find("LPAD(TO_HEX(", start + len(lane))
+    return lanes
+
+
+class _Phase0:
+    """a reader of ``dialect`` that keeps phase 0's statement and answers no group."""
+
+    binds_native_arrays = False
+
+    def __init__(self, dialect: Dialect) -> None:
+        self.sql_dialect = dialect
+        self.statements: list[str] = []
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        self.statements.append(query)
+        return []
+
+
+def lane_packings(dialect: Dialect) -> list[str]:
+    """the four lane packings of ``dialect``'s phase 0, as :func:`phase_zero_lanes` reads them."""
+    reader = _Phase0(dialect)
+    run_inline(
+        group_hashes(reader, "grouped", scope="state", scopes=["PA"], group="county", hash_columns=_GROUPED_HASHED)
+    )
+    [statement] = reader.statements
+    return phase_zero_lanes(statement)
+
+
+def test_a_lane_is_its_value_mod_2_32_as_8_hex_digits_at_every_edge() -> None:
+    """Flips if a lane value outside [0, 2**32) (negative, 2**32, past it) reaches TO_HEX unreduced: LPAD would cut
+    its text from the right, keeping the high digits and dropping the low ones (a lost 32 bits, real collisions)
+    while the engines still agreed. Each lane packs ``value mod 2**32`` as 8 hex digits, as Python does."""
+    db = duckdb.connect()
+    try:
+        packings = lane_packings(Dialect.DUCKDB)
+        assert len(packings) == 4 and len(set(packings)) == 1
+        for value in LANE_EDGES:
+            (found,) = db.execute(f"SELECT {packings[0].format(f'CAST({value} AS BIGINT)')}").fetchone() or (None,)
+            assert str(found).lower() == f"{value % 2**32:08x}", (value, found)
+    finally:
+        db.close()
+    for dialect in (Dialect.POSTGRES, Dialect.REDSHIFT):
+        assert all(f"MOD(MOD({{}}, {2**32}) + {2**32}, {2**32})" in packing for packing in lane_packings(dialect))
