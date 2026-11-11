@@ -123,6 +123,12 @@ Declared = tuple[tuple[str, str], ...]
 #: what a call site passes a parameter: a string, a declared object, or None for anything the walk cannot read
 Passed = str | Declared | None
 
+#: the calls that quote a relation's name, read through to the name they quote
+_QUOTING_CALLS: Final = frozenset({"quoted_table", "quote_identifier"})
+
+#: where 3tears' keyed helpers live: a helper there may declare its own parameter a change relation
+_KEYED_PACKAGE: Final = "threetears/core/keyed/"
+
 #: whether an expression is a declared transient producer's return; None when the repo declares none
 Produced = Callable[[ast.expr], bool] | None
 
@@ -2045,6 +2051,8 @@ class _ModuleWalk(ast.NodeVisitor):
         :return: whether the relation it names is a change set
         :rtype: bool
         """
+        if self._helper_change_parameter(node):
+            return True
         owner = self._class_nodes[-1] if self._class_nodes else None
         if (
             isinstance(node, ast.Attribute)
@@ -2054,6 +2062,28 @@ class _ModuleWalk(ast.NodeVisitor):
         ):
             return node.attr in self._attributes_produced(owner)
         return self._produces(node, self._function_node, owner)
+
+    def _helper_change_parameter(self, node: ast.expr) -> bool:
+        """whether an expression is a 3tears keyed helper's own parameter declared a change relation
+        (``quoted_table(change_relation(stage))`` in ``apply_stage``): inside a helper of ``threetears/core/keyed``
+        whose every call site the rule judges by the relation it is handed, so a caller handing it a data table is
+        flagged where it calls; ``change_relation`` of a parameter anywhere else is no change set.
+
+        :param node: the expression, through ``quoted_table`` / ``quote_identifier``
+        :ptype node: ast.expr
+        :return: whether it is
+        :rtype: bool
+        """
+        while isinstance(node, ast.Call) and _final(node) in _QUOTING_CALLS and len(node.args) == 1:
+            node = node.args[0]
+        if not (isinstance(node, ast.Call) and _final(node) == "change_relation" and len(node.args) == 1):
+            return False
+        function = self._function_node
+        if function is None or function.name not in KEYED_HELPER_CALLS or _KEYED_PACKAGE not in str(self.path):
+            return False
+        arguments = function.args
+        named = {argument.arg for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]}
+        return isinstance(node.args[0], ast.Name) and node.args[0].id in named
 
     def _produces(
         self, node: ast.expr, function: ast.FunctionDef | ast.AsyncFunctionDef | None, owner: ast.ClassDef | None
