@@ -3593,7 +3593,7 @@
     },
     "threetears.evals.kernel.host.Sweepable": {
       "kind": "dataclass",
-      "signature": "Sweepable(name: str, role: SweepableRole, read: SweepableReader, reader_prose: str, confounds: str | None = None, indeterminate_when_blank: bool = False, result_level: bool = False, no_own_coordinate: str | None = None, no_rig_coordinate: str | None = None, open_family: str | None = None, owns_member: FamilyMemberTest | None = None, resolves_into: str | None = None, read_residual: ResidualReader | None = None, departs_production: ProductionDepartureReader | None = None, acts_on: str | None = None, member_acts_on: Mapping[str, str] | None = None)",
+      "signature": "Sweepable(name: str, role: SweepableRole, read: SweepableReader, reader_prose: str, confounds: str | None = None, indeterminate_when_blank: bool = False, result_level: bool = False, no_own_coordinate: str | None = None, no_rig_coordinate: str | None = None, open_family: str | None = None, owns_member: FamilyMemberTest | None = None, resolves_into: str | None = None, read_residual: ResidualReader | None = None, departs_production: ProductionDepartureReader | None = None, acts_on: str | None = None, member_acts_on: Mapping[str, str] | None = None, reader_name: str | None = None, member_reader_name: Callable[[str], str] | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.host.SweepableReader": {

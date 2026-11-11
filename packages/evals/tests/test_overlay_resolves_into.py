@@ -114,12 +114,14 @@ _SURFACES = (
     Sweepable(
         name=_PARAMS,
         role="lever",
+        reader_name="model parameters",
         read=_recorded(_PARAMS),
         reader_prose="the model parameters the extractor resolved, after any overlaid knob",
     ),
     Sweepable(
         name=_TOOLS,
         role="lever",
+        reader_name="tool configuration",
         read=_recorded(_TOOLS),
         reader_prose="the tool configuration the extractor resolved, after any overlaid entry",
     ),
@@ -139,10 +141,10 @@ class _Overlays(BaseModel):
     """The extractor's knobs, each written into a surface the host records resolved."""
 
     reasoning_effort: Annotated[Literal["low", "high"], Ordinal(), ResolvesInto(_PARAMS)] = Field(
-        "low", description="how hard the extractor is told to reason"
+        "low", title="reasoning effort", description="how hard the extractor is told to reason"
     )
     tool_configs: Annotated[dict[str, str], ResolvesInto(_TOOLS)] = Field(
-        default_factory=dict, description="the per-tool settings the launch overlaid"
+        default_factory=dict, title="tool configs", description="the per-tool settings the launch overlaid"
     )
 
 
@@ -419,9 +421,9 @@ class _ReadOverlays(BaseModel):
 
     reasoning_effort: Annotated[
         Literal["low", "high"], Ordinal(), ResolvesInto(_PARAMS, read_residual=_params_without_effort)
-    ] = Field("low", description="how hard the extractor is told to reason")
+    ] = Field("low", title="reasoning effort", description="how hard the extractor is told to reason")
     tool_configs: Annotated[dict[str, str], ResolvesInto(_TOOLS)] = Field(
-        default_factory=dict, description="the per-tool settings the launch overlaid"
+        default_factory=dict, title="tool configs", description="the per-tool settings the launch overlaid"
     )
 
 
@@ -429,10 +431,10 @@ class _UnreadableOverlays(BaseModel):
     """The same knob, with a residual reader that cannot say."""
 
     reasoning_effort: Annotated[Literal["low", "high"], Ordinal(), ResolvesInto(_PARAMS, read_residual=_cannot_say)] = (
-        Field("low", description="how hard the extractor is told to reason")
+        Field("low", title="reasoning effort", description="how hard the extractor is told to reason")
     )
     tool_configs: Annotated[dict[str, str], ResolvesInto(_TOOLS)] = Field(
-        default_factory=dict, description="the per-tool settings the launch overlaid"
+        default_factory=dict, title="tool configs", description="the per-tool settings the launch overlaid"
     )
 
 
@@ -609,7 +611,9 @@ def _knob(marker: object) -> type[BaseModel]:
     """An overlay model whose one knob carries ``marker``."""
 
     class _One(BaseModel):
-        reasoning_effort: Annotated[Literal["low", "high"], marker] = Field("low", description="how hard to reason")
+        reasoning_effort: Annotated[Literal["low", "high"], marker] = Field(
+            "low", title="reasoning effort", description="how hard to reason"
+        )
 
     return _One
 
@@ -625,7 +629,7 @@ class TestAResolvesIntoNoLensCouldFoldIsRefusedWhereItIsDeclared:
         class _Marked(BaseModel):
             reasoning_effort: Annotated[
                 Literal["low", "high"], Ordinal(), ActsOn("reasoning_ratio"), ResolvesInto(_PARAMS)
-            ] = Field("low", description="how hard to reason")
+            ] = Field("low", title="reasoning effort", description="how hard to reason")
 
         declared = _profile(_Marked).sweepables.get(_EFFORT)
         assert declared is not None
@@ -652,6 +656,7 @@ class TestAResolvesIntoNoLensCouldFoldIsRefusedWhereItIsDeclared:
         family = Sweepable(
             name="tool_overrides",
             role="lever",
+            member_reader_name=str,
             read=lambda _run, _results: {},
             reader_prose="any tool setting the launch overlaid",
             open_family="a launch may overlay any tool's settings",
@@ -662,9 +667,11 @@ class TestAResolvesIntoNoLensCouldFoldIsRefusedWhereItIsDeclared:
     def test_two_knobs_written_into_one_surface_are_refused(self) -> None:
         class _Two(BaseModel):
             reasoning_effort: Annotated[Literal["low", "high"], ResolvesInto(_PARAMS)] = Field(
-                "low", description="how hard to reason"
+                "low", title="reasoning effort", description="how hard to reason"
             )
-            max_tokens: Annotated[int, ResolvesInto(_PARAMS)] = Field(4096, description="the output token cap")
+            max_tokens: Annotated[int, ResolvesInto(_PARAMS)] = Field(
+                4096, title="max tokens", description="the output token cap"
+            )
 
         with pytest.raises(RegistrationError, match=f"'{_PARAMS}' is named as the resolved surface of both"):
             _profile(_Two)
@@ -672,7 +679,7 @@ class TestAResolvesIntoNoLensCouldFoldIsRefusedWhereItIsDeclared:
     def test_the_marker_twice_on_one_field_is_refused(self) -> None:
         class _Twice(BaseModel):
             reasoning_effort: Annotated[Literal["low", "high"], ResolvesInto(_PARAMS), ResolvesInto(_TOOLS)] = Field(
-                "low", description="how hard to reason"
+                "low", title="reasoning effort", description="how hard to reason"
             )
 
         with pytest.raises(KindContractError, match="ResolvesInto more than once"):
@@ -684,7 +691,9 @@ class TestAFixedLeverDeclaringASurfaceIsCheckedAtRegistration:
 
     @staticmethod
     def _lever(name: str, **declared: Any) -> Sweepable:
-        return Sweepable(name=name, role="lever", read=lambda _run, _results: None, reader_prose=name, **declared)
+        return Sweepable(
+            name=name, role="lever", reader_name=name, read=lambda _run, _results: None, reader_prose=name, **declared
+        )
 
     def test_a_fixed_lever_naming_a_fixed_lever_is_admitted(self) -> None:
         registry = SHARED_CORE.extend([self._lever("surface"), self._lever("knob", resolves_into="surface")])
@@ -726,6 +735,7 @@ class TestAFixedLeverDeclaringASurfaceIsCheckedAtRegistration:
         family = Sweepable(
             name="knobs",
             role="lever",
+            member_reader_name=str,
             read=lambda _run, _results: {},
             reader_prose="any knob",
             open_family="a launch may overlay any knob",

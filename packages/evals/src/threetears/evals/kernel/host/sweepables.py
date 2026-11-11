@@ -390,6 +390,30 @@ class Sweepable:
     refused at registration. Declaration metadata like :attr:`acts_on`: it enters no key.
     """
 
+    reader_name: str | None = None
+    """What a reader calls this input: the few words every page names it by, wherever it names one.
+
+    An arm's name computed from its levers (``prompt v2``), a configuration's setting, a factor of a grid, the
+    production-check sentence and the lever-effect rows all print this, never the dimension's id
+    (``extractor.reasoning_effort``) and never a rule's guess at one. **Required of every fixed ``lever``** (the
+    registry refuses one without it, as :class:`~threetears.evals.kernel.host.measures.MeasureRegistry` refuses a
+    host measure with no ``reader_name``); optional on an apparatus or a label input, which a page names by its
+    disclosure. An open family names its members with :attr:`member_reader_name` instead.
+
+    Presentation, never identity: it enters no variant key, no measurement context and no fingerprint, so a host
+    renaming a lever splits no history. A campaign stores the name of each axis it declares
+    (:attr:`~threetears.evals.kernel.declaration.SweptAxis.reader_name`), filled from here when its author gives none.
+    """
+
+    member_reader_name: Callable[[str], str] | None = field(default=None, hash=False)
+    """What a reader calls one member of this open family, by the member's lever name: :attr:`reader_name` for each
+    member, since a family's members cannot be listed at registration.
+
+    **Required of every open family**, refused on any other declaration. Host code the engine calls with a name the
+    family's :attr:`owns_member` claims, and never inspects; it returns the words a page prints for that member. A
+    kind contract's map field names its members by the field's title and the entry's key as the launch wrote it.
+    """
+
     @property
     def rig_dimension(self) -> bool:
         """Whether this input is a dimension of the rig: apparatus, and not taken out of it by
@@ -584,6 +608,7 @@ class SweepableRegistry(HostAttributed):
             seen.add(name)
             if not declared.reader_prose.strip():
                 defects.append(f"{name} states no reader prose — a bare dimension name cannot be rendered to a reader")
+            defects.extend(self._reader_name_defects(declared))
             if declared.rig_dimension and not declared.confounds:
                 defects.append(f"{name} is apparatus but states no reason it confounds — a bare name is a label")
             if declared.role != "apparatus" and declared.confounds:
@@ -848,6 +873,45 @@ class SweepableRegistry(HostAttributed):
         return defects
 
     @staticmethod
+    def _reader_name_defects(declared: Sweepable) -> list[str]:
+        """Refuse a lever a page could name only by its id: the one rule over :attr:`Sweepable.reader_name`.
+
+        Every surface names a lever by what a reader calls it, so a fixed lever with no reader name would print its id
+        on an arm's name, a setting and a factor — refused here, at startup, rather than discovered on a page. An open
+        family names its members through :attr:`Sweepable.member_reader_name`, which only a family may declare.
+
+        :param declared: The declaration to check.
+        :ptype declared: Sweepable
+        :return: One message per defect, empty when the declaration names itself.
+        :rtype: list[str]
+        """
+        defects: list[str] = []
+        if declared.reader_name is not None and not declared.reader_name.strip():
+            defects.append(
+                f"{declared.name} declares a blank reader_name — a page would print nothing for it; give it the words "
+                "a reader calls it"
+            )
+        if declared.open_family is not None:
+            if declared.member_reader_name is None:
+                defects.append(
+                    f"lever family {declared.name} has no member_reader_name — every member's name, setting and factor "
+                    "would print its id; declare Sweepable(member_reader_name=...) returning the words a reader calls "
+                    "each member"
+                )
+            return defects
+        if declared.member_reader_name is not None:
+            defects.append(
+                f"{declared.name} declares member_reader_name and is not an open family — a fixed declaration has no "
+                "members to name; declare its reader_name"
+            )
+        if declared.role == "lever" and declared.reader_name is None:
+            defects.append(
+                f"lever {declared.name} has no reader_name — an arm's name, a setting or a factor would print its id; "
+                "declare Sweepable(reader_name=...) with the words a reader calls it"
+            )
+        return defects
+
+    @staticmethod
     def _family_defects(declared: Sweepable) -> list[str]:
         """Check an open-family declaration is on a role that can have members, and says why.
 
@@ -1024,6 +1088,25 @@ class SweepableRegistry(HostAttributed):
             (family for family in self.open_families if family.owns_member is not None and family.owns_member(name)),
             None,
         )
+
+    def reader_name_of(self, name: str) -> str | None:
+        """What a reader calls the lever ``name``, as this host declares it: a fixed declaration's
+        :attr:`~Sweepable.reader_name`, or the name the open family claiming it gives the member
+        (:attr:`~Sweepable.member_reader_name`). None for a name this host declares no reader name for: an apparatus or
+        label input declared without one, or a name it does not declare at all.
+
+        :param name: A lever's name, as a variant's levers key it.
+        :ptype name: str
+        :return: Its declared reader name, or None.
+        :rtype: str | None
+        """
+        declared = self._by_name.get(name)
+        if declared is not None and declared.open_family is None:
+            return declared.reader_name
+        family = self.family_owning(name)
+        if family is not None and family.member_reader_name is not None:
+            return family.member_reader_name(name)
+        return None
 
     def refuse_as_axis(self, name: str) -> str | None:
         """Why a campaign may not declare it swept ``name``, or None when it may.
@@ -1806,6 +1889,7 @@ CORE_SWEEPABLES: tuple[Sweepable, ...] = (
         role="lever",
         read=lambda run, _results: run.candidate_model,
         reader_prose="the models the subject itself ran on",
+        reader_name="model",
         departs_production=_candidate_model_departs,
     ),
     # The kind is what the candidate IS — its code, its seam, what it was asked to produce — so it
@@ -1817,6 +1901,7 @@ CORE_SWEEPABLES: tuple[Sweepable, ...] = (
         role="lever",
         read=lambda run, _results: run.candidate_kind,
         reader_prose="what kind of candidate the subject ran as",
+        reader_name="candidate kind",
         departs_production=lambda _run, _results: False,
     ),
     # The models that SCORED, observed across the results — not the run's ``judge_model`` pin,

@@ -77,7 +77,7 @@ class _Overlays(BaseModel):
     """The extractor's model, written into the parameters the host records resolved."""
 
     model: Annotated[Literal["m-a", "m-b", "m-c"], ResolvesInto(_PARAMS)] = Field(
-        "m-a", description="which model the extractor calls"
+        "m-a", title="model", description="which model the extractor calls"
     )
 
 
@@ -96,6 +96,7 @@ def _profile() -> HostProfile:
     surface = Sweepable(
         name=_PARAMS,
         role="lever",
+        reader_name="model parameters",
         read=_recorded_params,
         reader_prose="the model parameters the extractor resolved, after any overlaid knob",
     )

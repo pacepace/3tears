@@ -220,6 +220,7 @@ def _sweepables_naming(dimension: str) -> SweepableRegistry:
             Sweepable(
                 name=dimension,
                 role="lever",
+                reader_name=dimension,
                 read=lambda run, results: None,
                 reader_prose="how many documents were queued behind this batch when it ran",
             )

@@ -244,7 +244,7 @@ class TestNoTwoArmsShareAName:
 class _Summarizer(BaseModel):
     """A second kind's one overlay, so every toy-extractor run carries a lever that does not apply to it."""
 
-    style: str = Field(default="terse", description="how terse the summary reads")
+    style: str = Field(default="terse", title="style", description="how terse the summary reads")
 
 
 def _profile_with_a_second_kind() -> HostProfile:

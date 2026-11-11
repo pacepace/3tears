@@ -45,16 +45,20 @@ class ExtractorOverlays(BaseModel):
     """The knobs a launch of the toy extractor may turn."""
 
     prompt_style: Annotated[Literal["terse", "standard", "verbose"], Ordinal()] = Field(
-        "standard", description="how much instruction the extraction prompt carries"
+        "standard", title="extractor prompt style", description="how much instruction the extraction prompt carries"
     )
     # More pages read is more context carried into extraction, so the knob names the engine covariate it
     # should move; the bundle checks it moved, exactly as for a lever the host declares itself.
     page_limit: Annotated[int, Interval(unit="pages"), ActsOn("context_tokens_in")] = Field(
-        10, ge=1, le=50, description="how many pages of a document the extractor reads"
+        10, ge=1, le=50, title="extractor page limit", description="how many pages of a document the extractor reads"
     )
-    instructions: str = Field("", description="the free-text instructions prepended to the extraction prompt")
+    instructions: str = Field(
+        "", title="extractor instructions", description="the free-text instructions prepended to the extraction prompt"
+    )
     field_aliases: dict[str, str] = Field(
-        default_factory=dict, description="the other labels the extractor is told a field may appear under"
+        default_factory=dict,
+        title="extractor field aliases",
+        description="the other labels the extractor is told a field may appear under",
     )
 
 

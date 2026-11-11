@@ -376,7 +376,9 @@ async def test_a_grader_the_callers_host_declares_no_measure_for_is_refused() ->
 class _ATemperature(pydantic.BaseModel):
     """A knob a launch could turn, which an eval's run neither turns nor states."""
 
-    temperature: float = pydantic.Field(default=0.0, description="How freely the candidate samples its answer.")
+    temperature: float = pydantic.Field(
+        default=0.0, title="temperature", description="How freely the candidate samples its answer."
+    )
 
 
 def _host_whose_callable_contract_is(contract: KindContract | None) -> EvalHost:

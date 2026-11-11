@@ -168,6 +168,7 @@ COURIER_SWEEPABLES = SHARED_CORE.extend(
         Sweepable(
             name="search_depth",
             role="lever",
+            reader_name="search depth",
             read=_read("search_depth"),
             reader_prose="how many alternative orderings the planner tried per stop",
         ),
