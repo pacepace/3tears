@@ -13,6 +13,7 @@ __all__ = [
     "DataVersionNotReadyError",
     "DataVersionSupersededError",
     "GenerationNotCommittedError",
+    "L2LostError",
     "GenerationUnavailableError",
     "InvalidL2ScopeError",
     "L2EpochRegressedError",
@@ -28,6 +29,15 @@ class GenerationUnavailableError(Exception):
     A reader treats it as "cannot trust a cached absence": it neither serves a negative-cache
     marker nor records one, and asks L3. A writer surfaces it, because a generation it failed to
     advance leaves older markers valid over the write it just committed.
+    """
+
+
+class L2LostError(GenerationUnavailableError):
+    """Raised when a table's epoch log is absent from L2: the broker lost it, and nothing put it back.
+
+    An L2-first commit is its change message, so a write meeting it does not commit; the refiller
+    puts the log back from L3 at its old sequences. Never answered by starting a new log, which no
+    follower could follow from its mark.
     """
 
 

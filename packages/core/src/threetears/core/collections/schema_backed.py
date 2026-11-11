@@ -2478,7 +2478,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             registry.drop_table(self.table_name, reason=reason)
         if registry is None or registry.get_collection(self.table_name) is not self:
             self.drop_cached_table()
-        bump = await self._bump_after_commit()
+        bump = await self._bump_after_commit(None)
         log.info(
             "table changed with no row write mark; caches dropped and generation advanced",
             extra={"extra_data": {"table": self.table_name, "change": reason, "generation": bump.token, **detail}},
