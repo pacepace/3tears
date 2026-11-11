@@ -967,7 +967,8 @@ class TestNamespaceListIdsByCustomerAndType:
 
 
 class TestNamespacePageIds:
-    """``page_ids``: every namespace id, a keyset page at a time by id."""
+    """``page_ids``: every namespace id, a keyset page at a time by id (each page within one partition, its
+    primary key's lead pinned: feat/acl-keyed-methods' page, the hub's caller)."""
 
     @pytest.mark.asyncio
     async def test_pages_by_id(self) -> None:
@@ -975,10 +976,11 @@ class TestNamespacePageIds:
         pool = AsyncMock()
         pool.fetch.return_value = [{"namespace_id": i} for i in ids]
         coll = make_collection(NamespaceCollection, l3_pool=pool)
-        page, following = await coll.page_ids(limit=2)
-        assert page == ids[:2]
-        assert following is not None
-        assert 'ORDER BY t."namespace_id"' in pool.fetch.await_args.args[0]
+        page = await coll.page_ids(limit=2)
+        assert [row["namespace_id"] for row in page.rows] == ids[:2]
+        assert page.next_cursor is not None
+        # by id within the partition the page pins (the primary key's lead)
+        assert 'ORDER BY t."row_scope" ASC, t."namespace_id" ASC' in pool.fetch.await_args.args[0]
 
 
 class TestGroupMemberPageByGroup:

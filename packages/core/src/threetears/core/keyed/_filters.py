@@ -237,6 +237,34 @@ def narrowing(fragment: Fragment, before: int) -> str:
     return f"({renumbered(fragment, before)})"
 
 
+class Pin(str):
+    """a ``by`` key pinning a TRUSTED expression of the row rather than a column: ``by={Pin.expr("metadata->>'pod'"):
+    pod}`` binds ``metadata->>'pod' = $n``, the expression rendered once, as written, with no alias or quoting added.
+
+    A ``str`` so every ``by: Mapping[str, Any]`` takes it as it takes a column; an index on the same expression keys
+    the read (``CREATE INDEX ... (namespace_type, (metadata->>'pod'))``), as a :class:`Sort` expression orders one.
+    The expression names the table's columns as written (``t.`` when it must), with no parameters of its own.
+    """
+
+    __slots__ = ()
+
+    @classmethod
+    def expr(cls, expression: str) -> Pin:
+        """the pin of ``expression``.
+
+        :param expression: the expression, TRUSTED SQL of the row's columns
+        :ptype expression: str
+        :return: the pin
+        :rtype: Pin
+        :raises ValueError: when the expression is empty or names a placeholder
+        """
+        if not expression.strip():
+            raise ValueError("a pinned expression names its expression")
+        if _PLACEHOLDER.search(expression):
+            raise ValueError(f"a pinned expression takes no parameters, got {expression!r}")
+        return cls(expression)
+
+
 def by_conditions(
     by: Mapping[str, Any],
     *,
@@ -246,7 +274,8 @@ def by_conditions(
 ) -> tuple[list[str], list[Any]]:
     """the conditions keeping only ``by``'s rows, placeholders numbered from ``first``, and their values.
 
-    :param by: column -> its value, or an :class:`AnyOf` of its values; columns are TRUSTED identifiers
+    :param by: column -> its value, or an :class:`AnyOf` of its values; columns are TRUSTED identifiers, or a
+        :class:`Pin` of a TRUSTED expression
     :ptype by: Mapping[str, Any]
     :param first: the first placeholder's number
     :ptype first: int
@@ -262,23 +291,23 @@ def by_conditions(
     prefix = f"{alias}." if alias else ""
     for column, value in by.items():
         place = first + len(values)
+        # a pinned expression is rendered as written; a column is the alias's, quoted
+        spelled = f"{column}" if isinstance(column, Pin) else f"{prefix}{quote(column)}"
         if isinstance(value, AnyOf) and value.as_list:
             listed = list(value.values)
             if not listed:
                 conditions.append("1 = 0")
                 continue
-            conditions.append(
-                f"{prefix}{quote(column)} IN ({', '.join(f'${place + index}' for index in range(len(listed)))})"
-            )
+            conditions.append(f"{spelled} IN ({', '.join(f'${place + index}' for index in range(len(listed)))})")
             values.extend(listed)
         elif isinstance(value, AnyOf):
             typed = "" if value.cast is None else f"::{value.cast}[]"
-            conditions.append(f"{prefix}{quote(column)} = ANY(${place}{typed})")
+            conditions.append(f"{spelled} = ANY(${place}{typed})")
             values.append(list(value.values))
         elif value is None:
-            conditions.append(f"{prefix}{quote(column)} IS NULL")
+            conditions.append(f"{spelled} IS NULL")
         else:
-            conditions.append(f"{prefix}{quote(column)} = ${place}")
+            conditions.append(f"{spelled} = ${place}")
             values.append(value)
     return conditions, values
 
