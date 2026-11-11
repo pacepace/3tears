@@ -24,8 +24,10 @@ path: `Judge(model, rubric, *, examples=(), labels=None, case_material=None, gua
 - **`examples`** are hard negatives: answers that must be graded a known way, in pairs that look alike. Every
   judged eval grades each one `k` times as part of its run, through the call its answers are graded by, and says
   how many it graded as they must be: one `judge:` line in the print, then a `missed:` line per miss, and one
-  sentence under the page's Design & provenance. `result.judge_examples` holds each example's verdicts and the
-  spend, which is the judge's and counts against the eval's cost cap. An example is graded as it must be only if
+  sentence under the page's Design & provenance, each with what the calls cost. `result.judge_examples` holds each
+  example's verdicts and the spend, which is the judge's, counts against the eval's cost cap, and is written to the
+  out-of-run spend ledger (purpose `judge`), since the calls are made after the arms' runs. Each example is judged as
+  a run's answer is: its case without `id`, `stratum` or `world`, and without a classifier's answer key. An example is graded as it must be only if
   every repeat gives its verdict. This reading sits beside the labels' and is never pooled into it: a few answers
   written to be hard are not a sample of the run's, and reach no tier's floor. The examples are also stored as cases
   a host's judge campaign calibrates on ([Seeding hard negatives](#seeding-hard-negatives)).

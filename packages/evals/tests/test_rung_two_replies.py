@@ -127,7 +127,10 @@ def test_the_run_replays_offline_and_says_its_judge_is_uncalibrated_with_the_nex
     assert printed.splitlines()[printed.splitlines().index(UNCALIBRATED) + 1] == EXAMPLES_GRADED
     assert "  missed: " not in printed
     page = (replies_dir / ".evals" / "reports" / "replies" / "report.md").read_text(encoding="utf-8")
-    assert "The judge graded 4 of 4 of its examples as they must be on every one of 2 repeats." in page.splitlines()
+    assert (
+        "The judge graded 4 of 4 of its examples as they must be on every one of 2 repeats ($0.00086 over 8 call(s))."
+        in page.splitlines()
+    ), "the page states what the examples cost, as the print does"
     # The judge is another family, so nothing warns that a model judged its own answers.
     assert "self-judging:" not in printed
 

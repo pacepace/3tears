@@ -245,12 +245,15 @@ reasoning_effort='high'`), so moving your judge's reasoning effort or output cap
 replaying answers the new configuration never asked for. Each line also keeps what the call's request was actually
 SENT with, when your completion reports it (`sent_settings`, below), and a replayed completion reports the same, so
 a replay records what the recorded call was sent with, never the settings it was asked under. A recording made by a
-build before `.25` (recording format 1, `RecordedCompletions.FORMAT_VERSION` is 2) kept none, and is refused by name:
+build before `.25` (recording format 1; `RecordedCompletions.FORMAT_VERSION` is 3) kept none, and is refused by name:
 re-record it.
 
 A call is matched on its prompt (`system`, `user`, `response_format`), the model and temperature its completion
 reported, the settings the client was built with, and how many times that prompt was asked before, so `k` repeats
-replay as the `k` answers they were. A prompt the recording does not hold, or one asked once more than it was, is
+replay as the `k` answers they were. Inside an eval's cell, each call is also recorded with the cell it was made for
+(the arm, the case, the repeat), and a replay serves each cell the call recorded for it, so two arms sending a judge
+one prompt get back what each got, whatever order the cells run in. A recording made before format 3 noted no cell
+and is still read: repeat `i` is served the call of index `i`, and otherwise the first call left. A prompt the recording does not hold, or one asked once more than it was, is
 refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
 an `ApparatusError`, so a candidate that meets one has its cell excluded rather than scored. To name a prompt that
 changed under its recording before a replay starts, hand

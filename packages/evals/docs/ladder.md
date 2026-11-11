@@ -95,7 +95,7 @@ report: .evals/reports/emails/report.html
 ```
 
 The misses print in the report's order, the order its Trials table lists the failed trials in. Which repeat of a
-case missed can differ between replays: a recorded answer may serve another repeat of the same case.
+case missed is the same on every replay: each repeat is served the answer it was recorded with.
 
 **The lesson: the rule you write decides what you measured, so read the misses before the means.** Rung 0 graded
 `needs_human` both ways and read 0.81; 16 of its 17 misses were emails escalated that did not need a person, a minute

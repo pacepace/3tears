@@ -23,20 +23,30 @@ process did.
 less the quick path's `callable.` prefix). Every other durable type passes through unchanged. A build before this one
 refuses what this one writes, so a fleet does not roll back past it.
 
-**Not identity:** the name enters no variant key, measurement context, host declarations digest or fingerprint, so a
-rename splits no history and stales no analysis.
+**Not identity:** the name enters no variant key, measurement context or host declarations digest, so a rename splits
+no history. An arm whose label is computed from its levers is spelled with the stored names, and that label is in the
+campaign bundle's fingerprint, so a rename re-labels such arms and marks their analyses for regeneration.
 
 **Hosts:** add `reader_name=` to every lever `Sweepable`, `member_reader_name=` to every open family, and `title=` to
 every overlay field, before upgrading (MIGRATIONS.toml).
 
-### evals: a replay is deterministic, and a model shared between evals is named as the cause
+### evals: a replay serves each cell its own recorded answer, and a model shared between evals is named as the cause
 
 **Fixed:** replaying an eval twice could print different repeat numbers (rung 3e's c02 malformed reply on repeat 3,
 then repeat 1). A run's cells start in an order shuffled by its fresh id, several at once, and a replay served a
 prompt's recorded answers in the order they were asked. Inside a cell, repeat `i` is now served the recorded call of
-index `i`, so a replay hands each repeat the same answer every time; outside a cell, or where that index is taken
-(one prompt asked twice in a cell, or by two arms), the first call left is served, as before. `CellIdentity` gains
-`k_iteration` (default `None`), the cell's repeat, which the run loop sets.
+index `i`. `CellIdentity` gains `k_iteration` (default `None`), the cell's repeat, which the run loop sets.
+
+**Fixed:** that still left two askers of one prompt in one repeat to the order they asked in: two arms giving the same
+answer send their judge the same prompt, and a follow-up can be asked by several cells. A recording now notes on each
+call the cell it was made for (recording format 3: a `cell` member holding the arm's subject and contestant identity,
+the case, the repeat, and how many times that cell had asked the prompt before), and a replay serves a cell the call
+recorded for that very cell, in any order, on every replay. `CellIdentity` gains `variant_key` (default `None`), the
+arm's contestant identity, which the run loop sets. A format-2 line, which noted no cell, is still read: it is served
+by repeat index and then the first call left, as before, so the claim holds for it only while each repeat asks a
+prompt once. Every shipped recording replays the same under that fallback: replayed, rungs 0 to 4 ask each recorded
+prompt once per repeat, except rung 2's four judge-example prompts, graded outside any cell, whose two recorded calls
+each are identical; rung 5's judge recording holds one call per prompt. Nothing was re-recorded. A recording made in format 1 is still refused.
 
 **Fixed:** a `Model` shared by two evals in one process (or one eval run twice) serves the second nothing, since a
 replay serves each recorded call once per model; the second eval's calls were refused as "the code asks it more often
@@ -44,6 +54,32 @@ than it did when it was recorded" with a remedy to re-record, which spends money
 refusal now names the eval whose run took the calls and says to build a `Model` per eval, never to record again.
 `Eval.run` marks its extent as one eval's run (`threetears.evals.kernel.eval_scope`, no root), which the replay reads.
 `Model`'s docstring states the rule.
+
+### evals: a judge's examples are ledgered, judged as the run's answers are, and never cost the eval its result
+
+**Fixed:** the paid judge calls that grade `Judge(examples=...)` are made after the arms, outside any run, and were
+written nowhere. Each is now written to the out-of-run spend ledger (`OutOfRunSpend`, purpose `judge`, stamped with
+the template) as it is made, and the page's sentence states what they cost, as the print does.
+
+**Fixed:** an example is judged exactly as a run's answer is: its case less `id`, `stratum` and `world`, and on a
+classifier eval without the label the case expects. The authored judge case seeded from it carries the same evidence.
+
+**Fixed:** with `max_cost_usd` set, an eval whose arms' spend went unpriced graded no example and said the cost cap
+stopped it. It now says the arms spent what nobody priced, which the cap cannot bound, and stops for that reason, as an
+enforcing run's cap stops at unpriced spend. The cap is read before each example's call against landed spend, as a
+run's is before each cell, so the call that crosses it lands whole; the line now says the eval went over, with what it
+landed against its cap. `Eval.max_cost_usd`'s docstring says the examples draw on it too.
+
+**Fixed:** a grading of the examples that fails (the template gone from the store, a judge the host cannot build, a
+judge completion that breaks the protocol) is contained and stated on the reading ("not graded, since the grading
+failed ..."), and the eval files its campaign and returns its result, where the arms' spent results were lost.
+
+### evals: a shutdown lets an expiry already running finish
+
+**Fixed:** a graceful shutdown cancelled a lease expiry partway through: its record, already let go, was skipped by the
+shutdown's pass, its job never stopped and its fault never written, so it later read lost by lapse with no cause. An
+expiry now runs in a task of its own, shielded from the renewal that found the lease lapsed, and `JobLeases.shut_down`
+waits for every one still running, within the expiry's own bound (two leases), so the record reads lost with its cause.
 
 ### evals: an unnamed comparison is refused
 

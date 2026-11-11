@@ -1518,6 +1518,58 @@ async def test_hangs_retire_the_lease_pool_so_they_never_take_renewal_capacity_f
         await leases.shut_down()
 
 
+class FaultHoldingStore(InMemoryDocumentStore):
+    """A store that refuses every renewal (a conditional write moving only a run's lease), and holds a write of a run's
+    faults until released: an expiry is under way, writing why its record stopped, for as long as a test needs."""
+
+    def __init__(self) -> None:
+        """Refuse renewals; hold fault writes until :attr:`release` is set, noting in :attr:`fault_held` that one is."""
+        super().__init__()
+        self.fault_held = threading.Event()
+        self.release = threading.Event()
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Refuse a renewal, hold a fault write, and write anything else."""
+        if if_match is not None and document.get("doc_type") == "eval_run":
+            stored = self.get(str(document["id"]), str(document["scope_id"]))
+            if stored is not None and {**stored, "lease": None} == {**document, "lease": None}:
+                raise RuntimeError("the store refuses renewals")
+            if stored is not None and stored.get("faults") != document.get("faults"):
+                self.fault_held.set()
+                self.release.wait(timeout=10.0)
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def test_a_shutdown_lets_an_expiry_already_running_write_why_and_stop_its_job() -> None:
+    """A shutdown cancels the renewer, which cancelled every renewal it had started, an expiry partway through
+    included: the record, already let go, was skipped by the shutdown's pass, its fault never written and its job
+    never stopped, so it read lost by lapse with no cause. The expiry now runs on, and the shutdown waits for it."""
+    store = FaultHoldingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)  # renewed every 0.4 s; every renewal fails, so it expires at 1.2 s
+    stopped: list[str] = []
+    try:
+        _seeded_run(storage, "run-lapsing", off_loop(leases.grant))
+        leases.hold(
+            RUN_JOB, "run-lapsing", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: stopped.append("x")
+        )
+        await until(store.fault_held.is_set, timeout=5.0)  # the expiry let it go and is writing why
+        assert leases.fenced("run-lapsing") and stopped == []
+
+        threading.Timer(0.3, store.release.set).start()  # the fault write lands once the shutdown is under way
+        began = time.monotonic()
+        assert await leases.shut_down() == [], "a record an expiry was stopping is not the shutdown's to write lost"
+
+        assert time.monotonic() - began < 2 * 1.2 + 0.4, "within the expiry's own bound"
+        assert stopped == ["x"], "the expiry ran on and stopped its job"
+        run, _ = off_loop(_stored_run, storage, "run-lapsing")
+        (fault,) = run.faults
+        assert "could not renew it for 1.2s, its whole lease" in fault and "the store refuses renewals" in fault
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
 def test_the_kernel_keeps_its_leases_by_the_numbers_the_schema_defines() -> None:
     leases = kernel.JobLeases(kernel.EvalStorage(InMemoryDocumentStore()))
 
