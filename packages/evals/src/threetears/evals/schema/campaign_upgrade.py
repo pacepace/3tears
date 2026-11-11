@@ -17,6 +17,7 @@ superseded question is dropped with its rule and a live one's id goes with it.
 from __future__ import annotations
 
 import copy
+import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
@@ -25,7 +26,13 @@ from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.schema.logs import get_logger
 
 
-__all__ = ["QUESTION_SEPARATOR", "UPGRADED_CONTROL_LABEL", "aware_instant", "upgrade_campaign_v15"]
+__all__ = [
+    "QUESTION_SEPARATOR",
+    "UPGRADED_CONTROL_LABEL",
+    "aware_instant",
+    "upgrade_campaign_v15",
+    "upgrade_campaign_v16",
+]
 
 log = get_logger(__name__)
 
@@ -125,6 +132,51 @@ def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
                 "identity_version": design.get("control_identity_version"),
             }
         ]
+    return upgraded
+
+
+#: The lever prefixes the quick path's two kinds key a factor under (``callable.prompt``), which no author wrote: the
+#: step names such a lever by the factor alone (``prompt``), as the quick path now stores it.
+_QUICK_PATH_PREFIXES = ("callable.", "callable-judged.")
+
+
+def _migrated_lever_name(lever: str) -> str:
+    """The reader name the v16 step gives a stored axis that has none, from its id: the one place a lever's name is
+    derived rather than declared, run once, when a campaign is read up from v16.
+
+    The id read as words, as the pages printed it before levers were named (``max_output_tokens`` to ``max output
+    tokens``, ``extractor.prompt_style`` to ``extractor prompt style``), less the quick path's kind namespace, which no
+    author wrote (``callable.prompt`` to ``prompt``).
+
+    :param lever: The axis's id.
+    :ptype lever: str
+    :return: Its reader name.
+    :rtype: str
+    """
+    factor = next((lever.removeprefix(prefix) for prefix in _QUICK_PATH_PREFIXES if lever.startswith(prefix)), lever)
+    return re.sub(r"[_.]+", " ", " ".join(factor.split())).strip() or lever
+
+
+def upgrade_campaign_v16(document: Mapping[str, Any]) -> dict[str, Any]:
+    """A stored v16 ``eval_campaign`` with every declared axis named: each axis of each aspect's design that stores no
+    ``reader_name`` takes :func:`_migrated_lever_name` of its id; an axis that stores one keeps it.
+
+    Pure, and total: an aspect with no design, a design with no axes and an axis that is not a mapping pass through as
+    they are, and ``document`` is not modified. Nothing else moves: no key, digest, time or addressing field.
+
+    :param document: The stored v16 campaign, as the store returned it (or as the v15 step left it).
+    :ptype document: Mapping[str, Any]
+    :return: A new document whose every declared axis carries a reader name.
+    :rtype: dict[str, Any]
+    """
+    upgraded = copy.deepcopy(dict(document))
+    for aspect in upgraded.get("aspects") or []:
+        design = aspect.get("design") if isinstance(aspect, dict) else None
+        if not isinstance(design, dict):
+            continue
+        for axis in design.get("axes") or []:
+            if isinstance(axis, dict) and not axis.get("reader_name") and isinstance(axis.get("axis_id"), str):
+                axis["reader_name"] = _migrated_lever_name(axis["axis_id"])
     return upgraded
 
 

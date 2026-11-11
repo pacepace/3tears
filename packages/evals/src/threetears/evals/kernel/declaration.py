@@ -33,7 +33,7 @@ this whole layer exists to avoid — the slot is shared, the word is not.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal
 
@@ -112,6 +112,19 @@ class SweptAxis(EvalDocumentModel, CoreShapeModel):
             "and neither can become an arm. The refusal carries the host's own vocabulary as its remedy."
         ),
     )
+    reader_name: str | None = Field(
+        default=None,
+        min_length=1,
+        # Presentation only: written only when set, and left out of every fingerprint (AXIS_PRESENTATION_FIELDS).
+        exclude_if=lambda name: name is None,
+        description=(
+            "What a reader calls this lever: the words every page names it by, in an arm's name, a setting, a factor "
+            "and the production check (`prompt`, never `callable.prompt`). Stored on every campaign: a create or "
+            "update that gives none takes the name the host declares for the lever (`Sweepable.reader_name`, a kind "
+            "field's `title`, which every host lever must declare). No part of any variant key, "
+            "measurement context or fingerprint, so renaming a lever splits no history and stales no analysis."
+        ),
+    )
     values: list[SweepableValue] = Field(
         min_length=1,
         description=(
@@ -122,6 +135,17 @@ class SweptAxis(EvalDocumentModel, CoreShapeModel):
     rationale: str = Field(
         default="", description="Why this axis is in the campaign. Optional, and the first thing a reader wants."
     )
+
+    @field_validator("reader_name")
+    @classmethod
+    def _a_reader_name_says_something(cls, name: str | None) -> str | None:
+        """Refuse a blank reader name: a page would print nothing for the lever.
+
+        :raises ValueError: The name is only whitespace.
+        """
+        if name is not None and not name.strip():
+            raise ValueError("an axis's reader_name is the words a page names the lever by, and this one is blank")
+        return name
 
     @field_validator("values", mode="before")
     @classmethod
@@ -922,6 +946,12 @@ def resolve_control_arm(arm: CampaignArm | None) -> ResolvedControl:
 ARM_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"short_name"})
 
 
+#: The fields of a declared axis that say only how a page prints it: the one list every reader that must not see them
+#: reads. An aspect bundle's fingerprint leaves them out of its declared design's axes, and a campaign bundle's out of
+#: its declaration's, so naming a lever stales no analysis and moves no reporter case.
+AXIS_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"reader_name"})
+
+
 #: The fields of an aspect that say only how a page prints it: the one list every reader that must not see them reads.
 #: A bundle carries them under the same names and leaves them out of its fingerprint, and a campaign bundle's
 #: fingerprint leaves them out of its declaration's aspects.
@@ -1558,6 +1588,53 @@ def _refuse_unreadable_floor_readings(
     )
 
 
+def name_declared_axes(design: AspectDesign, profile: HostProfile) -> AspectDesign:
+    """The design with each axis its author named none for named as the host names the lever
+    (:meth:`~threetears.evals.kernel.host.sweepables.SweepableRegistry.reader_name_of`): what a create or an update
+    stores, so every page names the lever from the campaign. An axis the author named keeps its name. The host names
+    every lever it declares (its registry refuses one it does not), so an axis left unnamed is one the gate
+    (:func:`refuse_an_undeclarable_design`) refuses as no lever of the host's.
+
+    :param design: An aspect's design, as its author declared it.
+    :ptype design: AspectDesign
+    :param profile: The host whose levers it declares.
+    :ptype profile: HostProfile
+    :return: The design, its axes named.
+    :rtype: AspectDesign
+    """
+    named = [
+        axis
+        if axis.reader_name is not None or not (name := profile.sweepables.reader_name_of(axis.axis_id) or "").strip()
+        else axis.model_copy(update={"reader_name": name})
+        for axis in design.axes
+    ]
+    return design if named == list(design.axes) else design.model_copy(update={"axes": named})
+
+
+def lever_names_of(levers: Iterable[str], designs: Iterable[AspectDesign], profile: HostProfile) -> dict[str, str]:
+    """What every page calls each lever, by id: the name a declared axis stores for it (the first design's that
+    declares it), else the name the host declares (:meth:`~threetears.evals.kernel.host.sweepables.SweepableRegistry.
+    reader_name_of`); a lever neither names is left out, and a page reads its id as words. The one rule a bundle's
+    ``lever_names`` and a derived arm's label read.
+
+    :param levers: The levers to name, by id; a declared axis is named whether or not it is among them.
+    :ptype levers: Iterable[str]
+    :param designs: The declared designs whose axes store names, in the order their names win.
+    :ptype designs: Iterable[AspectDesign]
+    :param profile: The host whose lever declarations name the rest.
+    :ptype profile: HostProfile
+    :return: Lever id to reader name, sorted by id.
+    :rtype: dict[str, str]
+    """
+    stored: dict[str, str] = {}
+    for design in designs:
+        for axis in design.axes:
+            if axis.reader_name is not None:
+                stored.setdefault(axis.axis_id, axis.reader_name)
+    named = {lever: name for lever in levers if (name := profile.sweepables.reader_name_of(lever)) is not None}
+    return dict(sorted((named | stored).items()))
+
+
 def refuse_an_undeclarable_design(
     design: AspectDesign,
     *,
@@ -1892,7 +1969,9 @@ __all__ = [
     "aware_instant",
     "axis_in_question_scope",
     "decision_readings",
+    "lever_names_of",
     "mechanism_measure_names",
+    "name_declared_axes",
     "refuse_an_undeclarable_design",
     "resolve_bar_name",
     "resolve_control_arm",

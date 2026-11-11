@@ -72,15 +72,19 @@ class TestAStratumsName:
         assert "stratum_names" in TEMPLATE_PRESENTATION_FIELDS
 
     def test_a_v16_4_template_naming_no_stratum_reads_and_is_written_back_unchanged(self) -> None:
-        document = {**_template().to_dict(), "schema_minor": 4}
+        # Stamped as v16.4 wrote it: the durable major is 17 since a lever's reader name was stored, and a template
+        # passes that step unchanged but for its number.
+        document = {**_template().to_dict(), "schema_version": 16, "schema_minor": 4}
         assert "stratum_names" not in document
 
         read = EvalTemplate.from_dict(document)
 
         assert read.stratum_names == {}
         assert read.to_dict()["schema_minor"] == EvalTemplate.model_fields["schema_minor"].default
-        assert {k: v for k, v in read.to_dict().items() if k != "schema_minor"} == {
-            k: v for k, v in document.items() if k != "schema_minor"
+        assert read.to_dict()["schema_version"] == EvalTemplate.model_fields["schema_version"].default
+        version = {"schema_minor", "schema_version"}
+        assert {k: v for k, v in read.to_dict().items() if k not in version} == {
+            k: v for k, v in document.items() if k not in version
         }
 
     def test_a_named_template_round_trips(self) -> None:
