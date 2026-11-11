@@ -402,6 +402,13 @@ def test_duckdb_loads_a_parquet_file_with_computed_columns(tmp_path: Path) -> No
             {"row_key": 0, "state": "TX", "votes": 10, "party": "Dem", "scope": "TX", "kind": "R"},
             {"row_key": 1, "state": "GA", "votes": 7, "party": "Other", "scope": "GA", "kind": "R"},
         ]
+        # filled fresh: the same rows by a plain INSERT, which refuses a key the table already holds
+        backend.reset()
+        backend.initialize(metadata)
+        assert backend.load_parquet("results", tmp_path / "r.parquet", row_number_column="row_key", replace=False) == 2
+        assert backend.execute_query("SELECT count(*) AS n FROM results") == [{"n": 2}]
+        with pytest.raises(duckdb.ConstraintException):
+            backend.load_parquet("results", tmp_path / "r.parquet", row_number_column="row_key", replace=False)
         with pytest.raises(ValueError, match="does not declare"):
             backend.load_parquet("results", tmp_path / "r.parquet", row_number_column="row_key", computed={"x": "1"})
         with pytest.raises(ValueError, match="row number"):

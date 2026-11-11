@@ -1061,6 +1061,7 @@ class DuckDBBackend:
         *,
         row_number_column: str | None = None,
         computed: Mapping[str, str] | None = None,
+        replace: bool = True,
     ) -> int:
         """load a Parquet file into a table this backend created, in one statement.
 
@@ -1082,6 +1083,10 @@ class DuckDBBackend:
             file's columns instead of as the file holds them (a column the file lacks, a
             constant, a value rewritten as it is read), each written by the same one INSERT
         :ptype computed: Mapping[str, str] | None
+        :param replace: a row whose key the table holds replaces it (``INSERT OR REPLACE``); False writes a plain
+            ``INSERT`` for a table being filled fresh (no key is looked up to replace: about a third cheaper),
+            refusing a key the table already holds
+        :ptype replace: bool
         :return: how many rows the file held
         :rtype: int
         :raises ValueError: when the table is not one this backend created, or is key-less,
@@ -1114,7 +1119,7 @@ class DuckDBBackend:
                 columns.insert(0, row_number_column)
                 selects.insert(0, "row_number() OVER () - 1")
             inserted = self._db.execute(
-                f"INSERT OR REPLACE INTO {quote_identifier(table)} ({', '.join(quote_identifier(c) for c in columns)}) "
+                f"INSERT{' OR REPLACE' if replace else ''} INTO {quote_identifier(table)} ({', '.join(quote_identifier(c) for c in columns)}) "
                 f"SELECT {', '.join(selects)} FROM read_parquet(?)",
                 [str(path)],
             ).fetchone()
