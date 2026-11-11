@@ -29,8 +29,8 @@ from packages.evals.tests.rung_support import (
     recorded_cost,
     recorded_settings,
     root_only_imports,
-    rung_copy,
 )
+from packages.evals.tests.ladder_support import offline_copy
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 
 RUNG = EXAMPLES / "1-triage"
@@ -42,7 +42,7 @@ MAX_PROGRAM_LINES = 15
 @pytest.fixture
 def triage_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A copy of ``examples/1-triage/`` as the working directory, with no key: every call must replay."""
-    return rung_copy("1-triage", tmp_path, monkeypatch)
+    return offline_copy("1-triage", tmp_path, monkeypatch)
 
 
 def _load(path: Path) -> ModuleType:

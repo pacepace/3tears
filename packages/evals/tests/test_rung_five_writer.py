@@ -27,7 +27,8 @@ import pytest
 
 from packages.evals.tests.example_loader import EXAMPLES
 from packages.evals.tests.report_writer_support import reply
-from packages.evals.tests.rung_support import program_lines, rung_copy
+from packages.evals.tests.ladder_support import offline_copy
+from packages.evals.tests.rung_support import program_lines
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 from packages.evals.tests.writer_eval_support import ScoredReply
 from threetears.evals.analysis.analyst.skill import load_skill
@@ -75,7 +76,7 @@ SILENT_TURNS: Final = 4
 @pytest.fixture
 def writer_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A copy of ``examples/5-writer/`` as the working directory, with no key, and every socket connect refused."""
-    copy = rung_copy("5-writer", tmp_path, monkeypatch)
+    copy = offline_copy("5-writer", tmp_path, monkeypatch)
 
     def connect(_self: socket.socket, address: object) -> None:
         raise AssertionError(f"a replay-only run connected to {address}")

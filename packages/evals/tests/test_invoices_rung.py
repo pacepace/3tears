@@ -327,6 +327,8 @@ async def test_3e_the_grid_crosses_two_factors_and_reads_one_lever_against_anoth
     # The same runs read against another control, no run repeated: the prompt's effect at high effort.
     again = await result.against(_CELLS[2])
     assert again.control == _CELLS[2] and again.run_ids == result.run_ids
+    # Read again, it asks what the grid asked, on the same readings in the same order.
+    assert again.question == result.question and again.grader_readings == result.grader_readings
     assert {row["arm"] for row in again.contrasts("accuracy")} == set(_CELLS) - {_CELLS[2]}
 
 
