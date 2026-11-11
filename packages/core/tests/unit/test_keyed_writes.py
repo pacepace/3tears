@@ -7,6 +7,7 @@ conversion's equivalence on PostgreSQL and YugabyteDB is its package's ``assert_
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Iterator
 from typing import Any
@@ -611,6 +612,28 @@ class TestReadPacked:
         assert await read_packed(ThreadedDuckDB(db), "t", "s", packed_rows=1, items=0) == []
         with pytest.raises(ValueError, match="at least one row"):
             await read_packed(ThreadedDuckDB(db), "t", "s", packed_rows=0, items=3)
+
+    async def test_a_long_text_is_never_cut_to_redshift_s_bare_varchar(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a packed read (or a packed count's value text) casts to a bare VARCHAR, which Redshift reads as
+        VARCHAR(256) and cuts a longer text (a long model_version) to, or if a text past 256 characters does not come
+        back whole."""
+        long = "m" * 1000
+        db.execute("CREATE TABLE longs AS SELECT 'on' AS s, $1 AS model_version", [long])
+        reader = _Recording(db)
+        texts = await read_packed(reader, "longs", "model_version", by={"s": "on"}, packed_rows=1, items=1)
+        assert texts == [long]
+        counted = await counts_by_relations(
+            reader,
+            {"longs": "longs"},
+            column="model_version",
+            where=[Fragment('"s" = $1', ("on",))],
+            packed_rows=1,
+            groups=1,
+        )
+        assert counted == {"longs": {long: 1}}
+        for sql, _params in reader.statements:
+            assert not re.search(r"AS VARCHAR\)", sql), sql
+            assert "AS VARCHAR(65535))" in sql, sql
 
 
 def _changes(db: duckdb.DuckDBPyConnection) -> None:

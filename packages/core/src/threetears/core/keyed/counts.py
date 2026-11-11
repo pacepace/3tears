@@ -496,6 +496,11 @@ async def counts_by_relations(
 #: what joins a packed count's fields: the relation's place, the value's text, its count
 _PACKED_SEPARATOR: Final = chr(31)
 
+#: the type a packed text is cast to: sized, since Redshift reads a bare ``VARCHAR`` as ``VARCHAR(256)`` and cuts a
+#: longer text to it (a long ``model_version``); 65535 is Redshift's widest (``VARCHAR(MAX)``), and PostgreSQL,
+#: YugabyteDB and DuckDB take the same spelling
+_PACKED_TEXT: Final = "VARCHAR(65535)"
+
 
 async def _counts_packed(
     conn: Any,
@@ -537,7 +542,8 @@ async def _counts_packed(
     quoted = quote_identifier(column)
     alias = quote_identifier(packed_as)
     texts = " UNION ALL ".join(
-        f"SELECT '{index}' || CHR(31) || {_nullable_text(quoted)} || CHR(31) || CAST(count(*) AS VARCHAR) AS {alias} "
+        f"SELECT '{index}' || CHR(31) || {_nullable_text(quoted)} || CHR(31) || CAST(count(*) AS {_PACKED_TEXT}) "
+        f"AS {alias} "
         f"FROM {relation(tables[label], 'r')} WHERE {clause} GROUP BY {quoted}"
         for index, label in enumerate(labels)
     )
@@ -549,7 +555,7 @@ async def _counts_packed(
 
 def _nullable_text(expression: str) -> str:
     """a packed field's text: ``v`` and the value's text, or empty for NULL, so a NULL never nulls the whole text."""
-    return f"COALESCE('v' || CAST({expression} AS VARCHAR), '')"
+    return f"COALESCE('v' || CAST({expression} AS {_PACKED_TEXT}), '')"
 
 
 def _unpacked_text(field: str) -> str | None:
@@ -627,7 +633,7 @@ async def read_packed(
     alias = quote_identifier(packed_as)
     text = column.expression if isinstance(column, Selected) else f"r.{quote_identifier(column)}"
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    texts = f"SELECT CAST({text} AS VARCHAR) AS {alias} FROM {_filters.relation(relation, 'r')}{clause}"
+    texts = f"SELECT CAST({text} AS {_PACKED_TEXT}) AS {alias} FROM {_filters.relation(relation, 'r')}{clause}"
     return await _packed_cells(conn, texts, params, items, packed_rows, alias)
 
 
