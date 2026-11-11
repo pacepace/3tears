@@ -231,8 +231,15 @@ async def test_stage_whole_speed_at_real_size(db: _Db) -> None:
         con = duckdb.connect(":memory:")
         try:
             first = True
+            # the key's lead (state, TEXT) is hashed on YugabyteDB, as the follower's declaration says: the bare read
+            # walks it the way the follower does, or every page of the baseline would read the whole table there
             async for page in keyset_arrow_pages(
-                db.pool, f"SELECT {selected} FROM {_TABLE}", _KEY, types=types, page_size=DEFAULT_PAGE_SIZE
+                db.pool,
+                f"SELECT {selected} FROM {_TABLE}",
+                _KEY,
+                types=types,
+                page_size=DEFAULT_PAGE_SIZE,
+                lead_array="text[]",
             ):
                 await asyncio.to_thread(copy_in, con, page, first)
                 first = False
