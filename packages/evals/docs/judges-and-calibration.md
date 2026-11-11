@@ -21,8 +21,14 @@ path: `Judge(model, rubric, *, examples=(), labels=None, case_material=None, gua
   reliably; a dimension on 1 to 5 is a `RubricDim` stating its scale ([Step 1](#step-1-choose-a-scale-and-prefer-passfail)).
 - **`case_material`** renders what the judge reads beside each answer: what the runner answered from. With none, the
   judge reads the case as JSON, with a classifier's answer key left out.
-- **`examples`** are hard negatives: answers that must be graded a known way, in pairs that look alike. They are
-  stored as cases a judge campaign calibrates on, calling no model ([Seeding hard negatives](#seeding-hard-negatives)).
+- **`examples`** are hard negatives: answers that must be graded a known way, in pairs that look alike. Every
+  judged eval grades each one `k` times as part of its run, through the call its answers are graded by, and says
+  how many it graded as they must be: one `judge:` line in the print, then a `missed:` line per miss, and one
+  sentence under the page's Design & provenance. `result.judge_examples` holds each example's verdicts and the
+  spend, which is the judge's and counts against the eval's cost cap. An example is graded as it must be only if
+  every repeat gives its verdict. This reading sits beside the labels' and is never pooled into it: a few answers
+  written to be hard are not a sample of the run's, and reach no tier's floor. The examples are also stored as cases
+  a host's judge campaign calibrates on ([Seeding hard negatives](#seeding-hard-negatives)).
 - **`labels`** names a person's labels, a CSV. Every judged run's report writes `to_label.csv`: each judged answer on
   each dimension, the judge's verdict withheld. A person fills in `label` and `rater` for about 20 rows of a
   dimension, without looking at the judge's scores, and saves it as the file `labels=` names. The next run pairs
@@ -721,8 +727,9 @@ negatives seeds them at boot instead: its definition seed corpus has a `judge_ca
 templates named by name), which `seed_eval_definitions` builds through the same door as `judge_case_author` and
 writes only into a judge template holding no cases yet; a case added or changed later waits for a definition reset
 ([Adopting the engine](adopting-a-host.md#what-the-judge-reads-and-conversations)). On the quick path, hand the
-`Judge` its examples, and every judged eval stores them as authored cases of the judge template
-`<template id>-judge`, listed by the case set of that name, calling no model:
+`Judge` its examples: every judged eval grades each one `k` times in its run and says how many it graded as they
+must be (`result.judge_examples`), and stores them as authored cases of the judge template `<template id>-judge`,
+listed by the case set of that name, for the judge campaign below:
 
 ```
 Judge(client, [GROUNDED], case_material=...,

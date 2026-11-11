@@ -42,7 +42,7 @@ and effort: [the keys a TOML file takes](examples/README.md#the-keys-a-toml-file
 | Rung | Example | Climb it when |
 |---|---|---|
 | [1](docs/ladder.md#rung-1-your-own-function) | [`1-triage/triage.py`](examples/1-triage/triage.py) | Point it at your own function: 15 lines of Python. |
-| [2](docs/ladder.md#rung-2-a-judge-checked-against-a-person) | [`2-replies/`](examples/2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check the judge against a person. |
+| [2](docs/ladder.md#rung-2-a-judge-checked-against-a-person) | [`2-replies/`](examples/2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check that the judge is right. |
 | [3a](docs/ladder.md#rung-3a-two-prompts-compared) | [`3-invoices/compare.py`](examples/3-invoices/compare.py) | Changing a prompt? Compare it against the current one, and read the verdict. |
 | [3b](docs/ladder.md#rung-3b-a-margin-so-a-reading-can-be-equivalent) | [`3-invoices/margin.py`](examples/3-invoices/margin.py) | Is it good enough? Declare a margin, so a reading can come out equivalent. |
 | [3c](docs/ladder.md#rung-3c-a-guardrail-decided-on-its-own) | [`3-invoices/guardrail.py`](examples/3-invoices/guardrail.py) | Must it not get worse somewhere? A guardrail, decided on its own. |

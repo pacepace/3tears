@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import os
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
@@ -50,6 +51,7 @@ from threetears.evals.quick.one_call import (
     SHARED_ARM_MODEL,
     CallableArm,
     callable_host,
+    grade_judge_examples,
     refuse_an_unusable_cap,
     run_arms,
 )
@@ -61,6 +63,7 @@ from threetears.evals.quick.result import (
     declare,
     judged_rows,
     refuse_an_unusable_margin,
+    with_judge_examples,
 )
 from threetears.evals.quick.tools import RECORD_ENV
 from threetears.evals.quick.world import World, WorldRunner
@@ -456,6 +459,20 @@ class Eval:
             margins=self.plan.run_margins,
             measure_latency=self.measure_latency,
         )
+        examples = None
+        if judge is not None and judge.examples and summaries[0].template_id is not None:
+            # Graded once for the eval, after its arms, through the judge every arm's answers were graded by, and held
+            # to what the arms left of the eval's cap.
+            totals = [summary.total_cost_usd for summary in summaries]
+            examples = await grade_judge_examples(
+                host,
+                judge,
+                summaries[0].template_id,
+                scope_id,
+                k=self.k,
+                max_cost_usd=self.max_cost_usd,
+                landed_usd=None if None in totals else math.fsum(total for total in totals if total is not None),
+            )
         keyed = {
             arm if arm is not None else summary.candidate_model: summary
             for arm, summary in zip(self.arms, summaries, strict=True)
@@ -490,14 +507,17 @@ class Eval:
                 margin=self.margin,
                 measure_order=self.plan.readings,
             )
-            return replace(
-                result,
-                store=where,
-                fields=tuple(self.plan.fields),
-                judge=judge,
-                disclosures=disclosures,
-                calibrations=tuple(calibrate(judge, host, keyed, scope_id)),
-                to_label=tuple(judged_rows(host, keyed, scope_id, case_names)) if judge is not None else (),
+            return with_judge_examples(
+                replace(
+                    result,
+                    store=where,
+                    fields=tuple(self.plan.fields),
+                    judge=judge,
+                    disclosures=disclosures,
+                    calibrations=tuple(calibrate(judge, host, keyed, scope_id)),
+                    to_label=tuple(judged_rows(host, keyed, scope_id, case_names)) if judge is not None else (),
+                ),
+                examples,
             )
 
         # Filing the campaign and reading its report and labels are store reads and writes, so they run off the loop.
