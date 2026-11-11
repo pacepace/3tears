@@ -617,8 +617,29 @@ def _step(call: ast.Call) -> list[str]:
 
 def _apply_stage(call: ast.Call) -> list[str]:
     """the stage read whole, as the helper reads it to write the target by its key: a stage that is a change relation
-    (registered, declared, a transient producer's) passes, and one that is a data table is the whole read it is."""
-    return _step_relation(_argument(call, "stage", 2), "stage")
+    (registered, declared, a transient producer's) passes, and one that is a data table is the whole read it is.
+    The target is written by the stage's key (``replace``/``difference``: its rows of the stage's keys deleted, as a
+    delete by those keys is; ``upsert``: by its conflict key); a scope (``by``) deletes the target's rows of that
+    scope. A target its caller names is the caller module's template (``TableSchema(name=<parameter>)``), as
+    ``delete_keyed``'s is; an ``append`` names no target row."""
+    statements = _step_relation(_argument(call, "stage", 2), "stage")
+    mode = _argument(call, "mode", None)
+    spelled = mode.value if isinstance(mode, ast.Constant) else mode.attr if isinstance(mode, ast.Attribute) else None
+    if mode is not None and spelled is None:
+        raise _Unseen("mode")
+    if str(spelled).lower() == "append":
+        return statements
+    target = _argument(call, "target", 1)
+    table = _relation(target, "target")[0] if isinstance(target, ast.Constant) else '"{}"'
+    keyed = [
+        f"{_quoted(column)} = ANY(${place})"
+        for place, column in enumerate(_texts(_argument(call, "key", None), "key"), 1)
+    ]
+    statements.append(f"DELETE FROM {table}{_where(keyed)}")
+    scope, _ = _conditions(_by(_argument(call, "by", None)))
+    if scope:
+        statements.append(f"DELETE FROM {table}{_where(scope)}")
+    return statements
 
 
 _SYNTHESIZERS: Final = {

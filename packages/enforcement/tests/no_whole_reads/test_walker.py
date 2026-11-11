@@ -2448,6 +2448,23 @@ _STAGE_CALLERS = """
         return await apply_stage(conn, "held", "results", key=["state", "run_id"], columns=["state", "run_id"])
 
 
+    async def by_part_of_the_key(conn, chunk):
+        conn.register("chunk", chunk)
+        return await apply_stage(conn, "held", "chunk", key=["run_id"], columns=["state", "run_id"])
+
+
+    async def appended(conn, chunk):
+        conn.register("chunk", chunk)
+        return await apply_stage(conn, "held", "chunk", key=[], columns=["state", "run_id"], mode="append")
+
+
+    async def scoped(conn, chunk):
+        conn.register("chunk", chunk)
+        return await apply_stage(
+            conn, "held", "chunk", key=["state", "run_id"], columns=["state", "run_id"], mode="difference", by={"state": "S"}
+        )
+
+
     async def not_a_helper(conn, rel):
         staged = quoted_table(change_relation(rel))
         return await conn.execute(f"INSERT INTO held (state, run_id) SELECT state, run_id FROM {staged}")
@@ -2465,8 +2482,43 @@ def test_a_keyed_helper_s_stage_parameter_is_a_change_relation_judged_where_it_i
         )
     )
     functions = {function for function, _ in found}
-    assert not functions & {"apply_stage", "from_a_chunk"}, found
-    assert {"from_a_table", "not_a_helper"} <= functions, found
+    assert not functions & {"apply_stage", "from_a_chunk", "appended", "scoped"}, found
+    assert {"from_a_table", "not_a_helper", "by_part_of_the_key"} <= functions, found
+
+
+_STAGE_TEMPLATE = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import apply_stage
+
+    def fence_schema(name: str = "fence"):
+        return TableSchema(name=name, primary_key=("signal", "seq"), columns=[])
+
+    async def settle(conn, table, chunk):
+        conn.register("chunk", chunk)
+        return await apply_stage(conn, table, "chunk", key=["signal", "seq"], columns=["signal", "seq"])
+
+    async def by_seq(conn, table, chunk):
+        conn.register("chunk", chunk)
+        return await apply_stage(conn, table, "chunk", key=["seq"], columns=["signal", "seq"])
+"""
+
+_STAGE_NO_TEMPLATE = """
+    from threetears.core.keyed import apply_stage
+
+    async def settle(conn, table, chunk):
+        conn.register("chunk", chunk)
+        return await apply_stage(conn, table, "chunk", key=["signal", "seq"], columns=["signal", "seq"])
+"""
+
+
+def test_a_stage_s_target_its_caller_names_is_judged_by_its_module_s_template(tmp_path: Path) -> None:
+    """Flips if apply_stage onto a table its caller names passes unjudged: keyed by the template's key where the
+    stage's key leads it, a whole delete where it does not, and where the module declares no template to judge it by."""
+    found = _symbols(_config(tmp_path, {"fence.py": _STAGE_TEMPLATE}))
+    functions = {function for function, _ in found}
+    assert "settle" not in functions and "by_seq" in functions, found
+    bare = _symbols(_config(tmp_path / "bare", {"fence.py": _STAGE_NO_TEMPLATE}))
+    assert any(function == "settle" for function, _ in bare), bare
 
 
 _ANY_KIND_LEAD = """
