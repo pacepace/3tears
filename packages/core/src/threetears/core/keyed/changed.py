@@ -28,14 +28,14 @@ row (:func:`row_hash_selected` among its ``columns=``); the hash is never comput
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Final
 
 from threetears.core.backends.dialect import known_on_yugabyte
-from threetears.core.keyed._filters import Derived, Fragment, Selected
+from threetears.core.keyed._filters import Derived, Fragment, Selected, by_conditions, relation as _relation, renumbered
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import ThreadedDuckDB
@@ -67,6 +67,19 @@ DEFAULT_HASH_PAGE: Final = 50_000
 
 #: a hashed NULL: every value's text starts with its length's digits, so this mark is no value's
 _NULL_MARK: Final = "'~'"
+
+#: a group's hash lanes: each the sum, mod 2**32, of one 8-hex-digit slice of every row hash in the group (1-based
+#: start in the 32 digits of the md5); four distinct slices, so the group hash covers all 128 bits of every row's
+_LANES: Final = (1, 9, 17, 25)
+
+#: each lane is summed modulo this
+_LANE_MOD: Final = 2**32
+
+#: the groups a phase-0 statement answers (a group's row is its value, a count and four lanes: about 100 bytes of JSON)
+_GROUP_PAGE: Final = 10_000
+
+#: the moved groups a phase-1 statement names
+_GROUP_BATCH: Final = 1_000
 
 
 class HashKind(StrEnum):
@@ -212,6 +225,78 @@ def row_hash_selected(columns: Sequence[HashColumn], dialect: Dialect, *, alias:
 
 
 @dataclass(frozen=True)
+class _GroupHash:
+    """an order-free hash of a group's rows: how many, and four 32-bit lanes each summing one slice of every row's
+    hash (:func:`row_hash_sql`) modulo 2**32. The same rows give the same group hash in any order; a changed, added or
+    removed row moves it.
+
+    :param rows: the rows in the group
+    :ptype rows: int
+    :param lanes: the four lane sums, in :data:`_LANES` order
+    :ptype lanes: tuple[int, int, int, int]
+    """
+
+    rows: int
+    lanes: tuple[int, int, int, int]
+
+
+def _group_hash(hashes: Sequence[str]) -> _GroupHash:
+    """the group hash of rows held with these row hashes (the stored text of :func:`row_hash_sql`): what
+    :func:`_group_hash_sql` answers for the same rows on every dialect.
+
+    :param hashes: each row's hash, 32 hex digits
+    :ptype hashes: Sequence[str]
+    :return: the group hash
+    :rtype: _GroupHash
+    :raises ValueError: for a hash that is not 32 hex digits
+    """
+    sums = [0, 0, 0, 0]
+    for hashed in hashes:
+        if len(hashed) != 32:
+            raise ValueError(f"a row hash is 32 hex digits, got {hashed!r}")
+        for lane, start in enumerate(_LANES):
+            sums[lane] += int(hashed[start - 1 : start + 7], 16)
+    return _GroupHash(
+        rows=len(hashes), lanes=(sums[0] % _LANE_MOD, sums[1] % _LANE_MOD, sums[2] % _LANE_MOD, sums[3] % _LANE_MOD)
+    )
+
+
+def _lane_value(hashed: str, start: int, dialect: Dialect) -> str:
+    """one 8-hex-digit slice of a row hash expression as a non-negative integer, on ``dialect``."""
+    piece = f"SUBSTRING({hashed}, {start}, 8)"
+    match dialect:
+        case Dialect.REDSHIFT:
+            return f"STRTOL({piece}, 16)"
+        case Dialect.DUCKDB:
+            return f"CAST('0x' || {piece} AS BIGINT)"
+    return f"CAST(CAST('x' || LPAD({piece}, 16, '0') AS BIT(64)) AS BIGINT)"
+
+
+def _group_hash_sql(hashed: str, dialect: Dialect) -> list[str]:
+    """the select items of a group's hash over the row hash expression ``hashed`` (:func:`row_hash_sql`, or a column
+    holding it), for a ``GROUP BY``: the count as ``group_rows`` and each lane as ``lane0`` .. ``lane3``, as
+    :func:`_group_hash` computes them from the stored hashes.
+
+    :param hashed: the row hash, a TRUSTED expression
+    :ptype hashed: str
+    :param dialect: the database the statement runs on
+    :ptype dialect: Dialect
+    :return: the items
+    :rtype: list[str]
+    """
+    items = ["count(*) AS group_rows"]
+    for lane, start in enumerate(_LANES):
+        items.append(f"CAST(MOD(SUM({_lane_value(hashed, start, dialect)}), {_LANE_MOD}) AS BIGINT) AS lane{lane}")
+    return items
+
+
+def _answered_group_hash(row: Mapping[str, Any]) -> _GroupHash:
+    """a phase-0 row's group hash."""
+    lanes = tuple(int(row[f"lane{lane}"]) % _LANE_MOD for lane in range(len(_LANES)))
+    return _GroupHash(rows=int(row["group_rows"]), lanes=lanes)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True)
 class ChangedRows:
     """what a read of a scope's changed rows answered.
 
@@ -220,10 +305,17 @@ class ChangedRows:
     :ptype rows: list[dict[str, Any]]
     :param gone_keys: the held keys the scope no longer holds
     :ptype gone_keys: list[tuple[Any, ...]]
+    :param changed_keys: the keys whose hash moved or that were not held, as the scope answers them
+    :ptype changed_keys: list[tuple[Any, ...]]
+    :param capped: True when more keys moved than ``full_rows_at_most`` allows: ``rows`` is empty, no full row was
+        read, and ``changed_keys`` names them (the caller reads them its own way: one export)
+    :ptype capped: bool
     """
 
     rows: list[dict[str, Any]]
     gone_keys: list[tuple[Any, ...]]
+    changed_keys: list[tuple[Any, ...]] = field(default_factory=list)
+    capped: bool = False
 
 
 #: the SQL type a key column of each kind is cast to where its value is bound as text (a page's cursor, a key array)
@@ -339,6 +431,8 @@ async def read_changed(
     batch: int | None = None,
     row_cap: int | None = None,
     key_kinds: Sequence[HashColumn] = (),
+    group: str | None = None,
+    full_rows_at_most: int | None = None,
 ) -> ChangedRows:
     """the rows of ``relation`` inside the scope ``by`` / ``where`` names whose hash differs from ``held``, read in
     full by key, and the held keys the scope no longer holds.
@@ -378,51 +472,106 @@ async def read_changed(
     :param key_kinds: the kind of each key column the hash does not cover, or covers as another kind than the
         warehouse holds the key in; a key column named in neither is text
     :ptype key_kinds: Sequence[HashColumn]
+    :param group: a key column the scope's rows are grouped by (a geography): first a phase 0 reads one row a group,
+        its row count and an order-free hash of its rows' hashes (:func:`_group_hash_sql`), compared with the same
+        hash of the held rows' stored hashes (:func:`_group_hash`); phase 1 then reads the keys and hashes of only the
+        groups whose hash moved, and a held group the scope no longer answers is gone whole. None: no phase 0
+    :ptype group: str | None
+    :param full_rows_at_most: the most changed keys phase 2 reads in full; past it no full row is read and the
+        answer is ``capped``, naming the changed keys (the caller reads them its own way, one export). None: no cap
+    :ptype full_rows_at_most: int | None
     :return: the changed rows (each key as the warehouse answers it) and the gone keys (as ``held`` names them)
     :rtype: ChangedRows
     :raises ValueError: when the key is empty, or as :func:`row_hash_sql`, :func:`~threetears.core.keyed.keyset_rows`
-        and :func:`~threetears.core.keyed.read_keyed` refuse, or a held key's value is no value of its kind
+        and :func:`~threetears.core.keyed.read_keyed` refuse, or a held key's value is no value of its kind; when
+        ``group`` is no key column or ``full_rows_at_most`` is negative
     """
     kinds = _key_kinds(key, hash_columns, key_kinds)
     order = _sorts(key, kinds)
     if not order:
         raise ValueError(f"a changed-rows read of {relation} names its key")
+    if full_rows_at_most is not None and full_rows_at_most < 0:
+        raise ValueError(f"full_rows_at_most is a count of rows, got {full_rows_at_most}")
     dialect = await dialect_of(conn)
     hashed = row_hash_selected(hash_columns, dialect)
     key_columns = tuple(sort.column for sort in order)
-    read_scope = getattr(conn, "read_scope", None)
-    if read_scope is not None and isinstance(relation, str):
-        # a reader with a pager of its own (a datasource's, sized from the hub's reply cap, reading on past a cut
-        # reply) reads the scope's keys and hashes through it
-        scope = await read_scope(relation, columns=[*key_columns, hashed], key=key_columns, by=by or {}, where=where)
-    else:
-        scope = await keyset_rows(
-            conn,
-            relation,
-            columns=[*key_columns, hashed],
-            by=by or {},
-            order=order,
-            page=_hash_page(conn) if page is None else page,
-            where=where,
-        )
 
     def canonical(values: Sequence[Any]) -> tuple[str | None, ...]:
         return tuple(key_text(value, kind.kind, kind.scale) for value, kind in zip(values, kinds, strict=True))
 
     # held and answered keys meet in one form: each value's canonical text by its column's kind
     held_by_text = {canonical(held_key): (held_key, held_hash) for held_key, held_hash in held.items()}
+    vanished: list[tuple[Any, ...]] = []
+    scopes: list[Sequence[Fragment]] = [where]
+    if group is not None:
+        if group not in key_columns:
+            raise ValueError(f"a changed-rows read groups by a key column, {group!r} is none of {key_columns}")
+        at = key_columns.index(group)
+        answered_groups = await _group_hashes(
+            conn,
+            relation,
+            group=group,
+            order=order[at],
+            kind=kinds[at],
+            by=by or {},
+            where=where,
+            hash_columns=hash_columns,
+            dialect=dialect,
+        )
+        held_groups: dict[str | None, list[str | None]] = {}
+        for text, (_, held_hash) in held_by_text.items():
+            held_groups.setdefault(text[at], []).append(held_hash)
+        moved: list[Any] = []
+        moved_texts: set[str | None] = set()
+        for group_text, (value, answered) in answered_groups.items():
+            if _held_group_hash(held_groups.get(group_text)) != answered:
+                moved.append(value)
+                moved_texts.add(group_text)
+        # a held group the scope answers no row of: every held key of it is gone, read no further
+        vanished = [held_key for text, (held_key, _) in held_by_text.items() if text[at] not in answered_groups]
+        held_by_text = {text: holding for text, holding in held_by_text.items() if text[at] in moved_texts}
+        if not moved:
+            return ChangedRows(rows=[], gone_keys=vanished)
+        scopes = [
+            [*where, _in_groups(group, moved[start : start + _GROUP_BATCH])]
+            for start in range(0, len(moved), _GROUP_BATCH)
+        ]
+    read_scope = getattr(conn, "read_scope", None)
+    scope: list[Mapping[str, Any]] = []
+    for scoped in scopes:
+        if read_scope is not None and isinstance(relation, str):
+            # a reader with a pager of its own (a datasource's, sized from the hub's reply cap, reading on past a cut
+            # reply) reads the scope's keys and hashes through it
+            scope.extend(
+                await read_scope(relation, columns=[*key_columns, hashed], key=key_columns, by=by or {}, where=scoped)
+            )
+        else:
+            scope.extend(
+                await keyset_rows(
+                    conn,
+                    relation,
+                    columns=[*key_columns, hashed],
+                    by=by or {},
+                    order=order,
+                    page=_hash_page(conn) if page is None else page,
+                    where=scoped,
+                )
+            )
+
     seen: set[tuple[str | None, ...]] = set()
     wanted: list[tuple[Any, ...]] = []
     for row in scope:
-        answered = tuple(row[column] for column in key_columns)
-        text = canonical(answered)
+        answered_key = tuple(row[column] for column in key_columns)
+        text = canonical(answered_key)
         seen.add(text)
         holding = held_by_text.get(text)
         if holding is None or holding[1] != row[ROW_HASH_COLUMN]:
-            wanted.append(answered)
-    gone = [held_key for text, (held_key, _) in held_by_text.items() if text not in seen]
+            wanted.append(answered_key)
+    gone = [*vanished, *(held_key for text, (held_key, _) in held_by_text.items() if text not in seen)]
     if not wanted:
         return ChangedRows(rows=[], gone_keys=gone)
+    if full_rows_at_most is not None and len(wanted) > full_rows_at_most:
+        return ChangedRows(rows=[], gone_keys=gone, changed_keys=wanted, capped=True)
     keys = KeyBatch(
         columns=key_columns,
         values=wanted,
@@ -439,4 +588,73 @@ async def read_changed(
         row_cap=getattr(conn, "rows_per_statement", None) if row_cap is None else row_cap,
         where=where,
     )
-    return ChangedRows(rows=rows, gone_keys=gone)
+    return ChangedRows(rows=rows, gone_keys=gone, changed_keys=wanted)
+
+
+def _held_group_hash(hashes: Sequence[str | None] | None) -> _GroupHash | None:
+    """the group hash of a held group's stored hashes; None (always moved) for a group not held, or holding a row
+    stored with no hash or with one that is no row hash."""
+    if hashes is None or any(hashed is None for hashed in hashes):
+        return None
+    try:
+        return _group_hash([hashed for hashed in hashes if hashed is not None])
+    except ValueError:
+        return None
+
+
+def _in_groups(group: str, values: Sequence[Any]) -> Fragment:
+    """a phase-1 filter keeping the rows of ``values``' groups (a NULL group by ``IS NULL``)."""
+    quoted = f"t.{quote_identifier(group)}"
+    named = [value for value in values if value is not None]
+    parts = [f"{quoted} IN ({', '.join(f'${place}' for place in range(1, len(named) + 1))})"] if named else []
+    if len(named) < len(values):
+        parts.append(f"{quoted} IS NULL")
+    return Fragment(f"({' OR '.join(parts)})", tuple(named))
+
+
+async def _group_hashes(
+    conn: Any,
+    relation: str | Derived,
+    *,
+    group: str,
+    order: Sort,
+    kind: HashColumn,
+    by: Mapping[str, Any],
+    where: Sequence[Fragment],
+    hash_columns: Sequence[HashColumn],
+    dialect: Dialect,
+) -> dict[str | None, tuple[Any, _GroupHash]]:
+    """phase 0: each group of the scope -> its value as answered and its group hash, a page of groups a statement in
+    the group's order (the NULL group first, on the first page)."""
+    quoted = quote_identifier(group)
+    stated = getattr(conn, "rows_per_statement", None)
+    page = min(_GROUP_PAGE, stated - 1) if isinstance(stated, int) and stated > 1 else _GROUP_PAGE
+    items = ", ".join(_group_hash_sql("s.h", dialect))
+    answered: dict[str | None, tuple[Any, _GroupHash]] = {}
+    last: Any = None
+    past_null = False
+    while True:
+        conditions, params = by_conditions(by, alias="t")
+        for fragment in where:
+            conditions.append(renumbered(fragment, len(params)))
+            params.extend(fragment.params)
+        if last is not None:
+            params.append(last)
+            conditions.append(f"t.{quoted} > CAST(${len(params)} AS {order.cast or 'text'})")
+        elif past_null:
+            conditions.append(f"t.{quoted} IS NOT NULL")
+        filtered = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        sql = (
+            f"SELECT s.g AS group_value, {items} FROM (SELECT t.{quoted} AS g, "
+            f"{row_hash_sql(hash_columns, dialect, alias='t')} AS h FROM {_relation(relation, 't')}{filtered}) AS s"
+            f" GROUP BY s.g ORDER BY s.g NULLS FIRST LIMIT {page}"
+        )
+        rows = await conn.fetch(sql, *params)
+        for row in rows:
+            value = row["group_value"]
+            answered[key_text(value, kind.kind, kind.scale)] = (value, _answered_group_hash(row))
+        if len(rows) < page:
+            break
+        last = rows[-1]["group_value"]
+        past_null = True
+    return answered

@@ -467,3 +467,199 @@ def test_a_key_the_hash_does_not_cover_is_typed_by_key_kinds(typed: duckdb.DuckD
         )
     )
     assert (changed.rows, changed.gone_keys) == ([], [])
+
+
+# --- phase 0: a group's hash (read_changed(group=...)) ---------------------------------------------------------------
+
+_GROUPED_HASHED = (HashColumn("name"), HashColumn("votes", HashKind.INTEGER))
+_GROUPED_COLUMNS = ["state", "county", "id", "name", "votes"]
+
+
+@pytest.fixture
+def grouped() -> Iterator[duckdb.DuckDBPyConnection]:
+    """PA's six counties of ten rows each (county c0 .. c5, ids 0 .. 59), and OH's, outside the scope."""
+    db = duckdb.connect()
+    db.execute(
+        "CREATE TABLE grouped (state VARCHAR, county VARCHAR, id BIGINT, name VARCHAR, votes BIGINT, "
+        "PRIMARY KEY (state, county, id))"
+    )
+    db.execute(
+        "INSERT INTO grouped SELECT s, 'c' || (i // 10), i, 'n' || i, i * 7 FROM range(60) r(i), "
+        "(VALUES ('PA'), ('OH')) v(s)"
+    )
+    yield db
+    db.close()
+
+
+def _grouped_held(db: duckdb.DuckDBPyConnection, state: str = "PA") -> dict[tuple[Any, ...], str | None]:
+    sql = (
+        f"SELECT state, county, id, {row_hash_sql(_GROUPED_HASHED, Dialect.DUCKDB)} FROM grouped AS t WHERE state = $1"
+    )
+    return {(row[0], row[1], row[2]): row[3] for row in db.execute(sql, [state]).fetchall()}
+
+
+def _grouped_changed(db: Any, held: Mapping[tuple[Any, ...], str | None], **options: Any) -> ChangedRows:
+    return run_inline(
+        read_changed(
+            db,
+            "grouped",
+            key=["state", "county", Sort("id", cast="bigint")],
+            columns=_GROUPED_COLUMNS,
+            held=held,
+            hash_columns=_GROUPED_HASHED,
+            by={"state": "PA"},
+            **({"group": "county"} | options),
+        )
+    )
+
+
+def test_an_unchanged_scope_by_group_is_one_statement_of_one_row_a_group(grouped: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a scope whose every group hash matches reads a key's hash or a full row: one statement, a row a
+    group. The held side's group hash is computed from the stored row hashes, the scope's in SQL: any difference
+    between the two (a lane's slice, its sum, the modulus) reads every group as moved. The held rows in any order."""
+    held = _grouped_held(grouped)
+    for order in (held, dict(reversed(list(held.items())))):
+        counted = _Counted(grouped)
+        changed = _grouped_changed(counted, order)
+        assert (changed.rows, changed.gone_keys, changed.capped) == ([], [], False)
+        assert len(counted.statements) == 1 and "GROUP BY" in counted.statements[0]
+
+
+def test_only_the_moved_groups_keys_are_read_and_only_the_changed_rows_in_full(
+    grouped: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if phase 1 reads a key of a group whose hash matches, or phase 2 a row whose hash matches; a changed, an
+    added and a removed row are each found, and a held group the scope no longer has is gone whole."""
+    held = _grouped_held(grouped)
+    held[("PA", "c9", 900)] = "a" * 32  # a held group the warehouse no longer has
+    grouped.execute("UPDATE grouped SET votes = -1 WHERE state = 'PA' AND id = 3")  # c0: one row changed
+    grouped.execute("INSERT INTO grouped VALUES ('PA', 'c1', 1000, 'new', 1)")  # c1: a row added
+    grouped.execute("DELETE FROM grouped WHERE state = 'PA' AND id = 25")  # c2: a row removed
+    grouped.execute("INSERT INTO grouped VALUES ('PA', 'c7', 7000, 'new county', 1)")  # a group not held
+    grouped.execute("UPDATE grouped SET votes = -1 WHERE state = 'OH'")  # outside the scope
+    counted = _Counted(grouped)
+    changed = _grouped_changed(counted, held)
+    assert sorted(row["id"] for row in changed.rows) == [3, 1000, 7000]
+    assert sorted(changed.gone_keys) == [("PA", "c2", 25), ("PA", "c9", 900)]
+    assert sorted(key[2] for key in changed.changed_keys) == [3, 1000, 7000]
+    phase_one = [
+        statement for statement in counted.statements if " LIMIT " in statement and "GROUP BY" not in statement
+    ]
+    assert len(counted.statements) == 3 and len(phase_one) == 1
+    # phase 1 named only the four moved groups: c0, c1, c2 and c7 (c3, c4, c5 matched; c9 is gone without a read)
+    assert phase_one[0].count("$") - counted.statements[0].count("$") >= 4
+
+
+def test_past_full_rows_at_most_the_changed_keys_are_named_and_no_full_row_is_read(
+    grouped: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if a move past the cap reads full rows, or names the moved keys wrong: broad is judged on keys whose
+    hash moved, never on what the scope names."""
+    held = _grouped_held(grouped)
+    grouped.execute("UPDATE grouped SET votes = -1 WHERE state = 'PA' AND id < 15")
+    counted = _Counted(grouped)
+    capped = _grouped_changed(counted, held, full_rows_at_most=14)
+    assert capped.capped and capped.rows == [] and capped.gone_keys == []
+    assert sorted(key[2] for key in capped.changed_keys) == list(range(15))
+    assert len(counted.statements) == 2, "a capped read reads no full row"
+    under = _grouped_changed(InlineDuckDB(grouped), held, full_rows_at_most=15)
+    assert not under.capped and sorted(row["id"] for row in under.rows) == list(range(15))
+    with pytest.raises(ValueError, match="key column"):
+        _grouped_changed(InlineDuckDB(grouped), held, group="name")
+
+
+def test_a_group_holding_a_row_stored_with_no_hash_is_read_again(grouped: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a group with a row held under no hash (stored before hashes) passes phase 0 as unchanged."""
+    held = _grouped_held(grouped)
+    held[("PA", "c4", 44)] = None
+    changed = _grouped_changed(InlineDuckDB(grouped), held)
+    assert [row["id"] for row in changed.rows] == [44]
+
+
+def test_phase_zero_pages_by_the_group(grouped: duckdb.DuckDBPyConnection, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flips if phase 0 loses a group at a page's edge."""
+    from threetears.core.keyed import changed as changed_module
+
+    monkeypatch.setattr(changed_module, "_GROUP_PAGE", 2)
+    held = _grouped_held(grouped)
+    grouped.execute("UPDATE grouped SET votes = -1 WHERE state = 'PA' AND id IN (5, 55)")
+    counted = _Counted(grouped)
+    changed = _grouped_changed(counted, held)
+    assert sorted(row["id"] for row in changed.rows) == [5, 55]
+    assert sum("GROUP BY" in statement for statement in counted.statements) == 4
+
+
+def test_the_rows_after_applying_a_grouped_read_are_a_full_read_s(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if what a follower holds after applying read_changed(group=...) (phases 0, 1 and 2) to its stale copy
+    differs from a plain full read of the scope, over the harness's seeds and both tenants: a group with one row
+    changed, one with a row added, one with a row removed, and a held group gone."""
+    conn.execute(
+        "CREATE TABLE seeded_groups (tenant VARCHAR, grp BIGINT, id BIGINT, name VARCHAR, votes BIGINT, "
+        "PRIMARY KEY (tenant, grp, id))"
+    )
+    run_inline(assert_same_results(InlineDuckDB(conn), **_grouped_same_results(Dialect.DUCKDB)))
+
+
+def _grouped_same_results(dialect: Dialect) -> dict[str, Any]:
+    """assert_same_results' arguments for a grouped read: a stale copy with every kind of group move."""
+    hashed = (HashColumn("name"), HashColumn("votes", HashKind.INTEGER))
+    columns = ["tenant", "grp", "id", "name", "votes"]
+
+    def row(seed: Seeded) -> dict[str, Any]:
+        return {
+            "tenant": f"t{seed.tenant}",
+            "grp": seed.index % 4,
+            "id": seed.index,
+            "name": None if seed.null else f"n{seed.tie}",
+            "votes": seed.tie,
+        }
+
+    async def follow(db: Any) -> Sequence[Mapping[str, Any]]:
+        copy = await read_keyed(
+            db,
+            "seeded_groups",
+            keys=KeyBatch(columns=("tenant",), values=[("t0",)]),
+            columns=[*columns, row_hash_selected(hashed, dialect)],
+        )
+        rows = {("t0", found["grp"], found["id"]): dict(found) for found in copy}
+        held: dict[tuple[Any, ...], str | None] = {key: found[ROW_HASH_COLUMN] for key, found in rows.items()}
+        ordered = sorted(rows)
+        if ordered:
+            # group of the first row: one row held stale (changed)
+            held[ordered[0]] = "0" * 32
+        if len(ordered) > 1:
+            # one row the copy lacks (added since)
+            del held[ordered[1]], rows[ordered[1]]
+        # a row the copy holds that the scope no longer has (removed), in a group the scope still has
+        removed = ("t0", ordered[-1][1] if ordered else 0, 10_000)
+        held[removed] = "f" * 32
+        rows[removed] = {"tenant": "t0", "grp": removed[1], "id": 10_000, "name": "gone", "votes": 0}
+        # a whole group the scope no longer has
+        held[("t0", 99, 20_000)] = "e" * 32
+        rows[("t0", 99, 20_000)] = {"tenant": "t0", "grp": 99, "id": 20_000, "name": "gone", "votes": 0}
+        changed = await read_changed(
+            db,
+            "seeded_groups",
+            key=["tenant", Sort("grp", cast="bigint"), Sort("id", cast="bigint")],
+            columns=columns,
+            held=held,
+            hash_columns=hashed,
+            by={"tenant": "t0"},
+            group="grp",
+            page=5,
+        )
+        assert removed in changed.gone_keys and ("t0", 99, 20_000) in changed.gone_keys
+        for gone in changed.gone_keys:
+            del rows[gone]
+        rows.update({("t0", found["grp"], found["id"]): dict(found) for found in changed.rows})
+        return [{c: found[c] for c in columns} for found in rows.values()]
+
+    return {
+        "table": "seeded_groups",
+        "row": row,
+        "old_sql": "SELECT tenant, grp, id, name, votes FROM seeded_groups WHERE tenant = $1",
+        "params": ["t0"],
+        "helper": follow,
+        "columns": columns,
+        "ordered": False,
+    }
