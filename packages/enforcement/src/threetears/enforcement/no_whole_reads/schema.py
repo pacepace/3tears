@@ -597,6 +597,10 @@ def _column_of(item: str) -> str:
     :rtype: str
     """
     stripped = item.strip()
+    # an item's order (``(name COLLATE "C") ASC``, ``"b" DESC NULLS LAST``) says nothing of the column it names
+    stripped = re.sub(
+        r"\s+(?:(?:ASC|DESC)(?:\s+NULLS\s+(?:FIRST|LAST))?|NULLS\s+(?:FIRST|LAST))$", "", stripped, flags=re.I
+    )
     while stripped.startswith("(") and stripped.endswith(")") and "," not in stripped:
         stripped = stripped[1:-1].strip()
     collation = re.fullmatch(r"(.+?)\s+COLLATE\s+(\"[^\"]+\"|\w+)", stripped, re.IGNORECASE | re.DOTALL)

@@ -471,6 +471,23 @@ def test_a_sqlite_rowid_is_a_key_and_a_bound_probe_passes(
     assert _kinds(sql, schema) == expected
 
 
+@pytest.mark.parametrize("order", ["ASC", "DESC", "ASC NULLS LAST"])
+def test_a_collated_index_item_with_an_order_is_still_that_collation_s_column(tmp_path: Path, order: str) -> None:
+    """Flips if an ordered collated index item (``(name COLLATE "C") ASC``, how YugabyteDB is asked for a range
+    index) is not read as the column in that collation, so the byte range beneath a node it serves is flagged."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "v001.sql").write_text(
+        "CREATE TABLE paths (id UUID PRIMARY KEY, name TEXT);\n"
+        f"-- purpose: {_UNDER}\n"
+        f'CREATE INDEX paths_name_c ON paths ((name COLLATE "C") {order});\n',
+        encoding="utf-8",
+    )
+    catalog = collect_schema(tmp_path, (tmp_path / "src",))
+    either = 'SELECT id FROM paths WHERE id = $1 OR (name COLLATE "C" >= $2 AND name COLLATE "C" < $3)'
+    assert _kinds(either, catalog, _UNDER) == []
+    assert ("paths", "paths_name_c", _UNDER) in catalog.used
+
+
 def test_a_range_bounded_both_sides_on_a_purposed_index_is_its_key(schema: SchemaCatalog) -> None:
     """Flips if a range bounded on both sides by bound values, on the next column of an index whose purpose names the
     read (after its bound prefix), is not keyed and credited to that index, or if a one-sided range, one bounded by a
