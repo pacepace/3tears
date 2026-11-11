@@ -1,6 +1,6 @@
 # Testing 3tears
 
-The four suites, why three of them sit outside `./scripts/test.sh`, how to make the integration
+The suites, why several of them sit outside `./scripts/test.sh`, how to make the integration
 suite run everything it can, and how test fakes declare what they stand in for. The rules are in
 `CLAUDE.md`; this is the detail behind them.
 
@@ -11,11 +11,15 @@ suite run everything it can, and how test fakes declare what they stand in for. 
 ./scripts/test.sh agent/memory    # one agent-family package: packages/agent/memory/tests/
 ./scripts/test.sh agent           # the whole agent family: packages/agent/
 ./scripts/test.sh core -k lease   # one package, narrowed; pytest's options pass through
+./scripts/test.sh evals packages/evals/tests/test_fastmcp_transport.py   # one file, not all of evals
+./scripts/test.sh evals packages/evals/tests/test_fastmcp_transport.py::test_name   # one test
 ./scripts/test.sh                 # everything
 ```
 
 `./scripts/test.sh <package>` runs that package's `tests/` and nothing else, so evals stays out
-unless you name it (`./scripts/test.sh evals`). A bare `./scripts/test.sh` runs every package and
+unless you name it (`./scripts/test.sh evals`). Name test files or `file.py::name` node ids after
+the package and only those run, on the pool as locally, so a one-file run takes seconds rather
+than the whole package's minutes. A bare `./scripts/test.sh` runs every package and
 the repo-level `tests/`, and evals is most of that test time (roughly four fifths, by testament's per-test
 medians from a full run on 2026-11-03; its duration totals are unreliable, see below).
 
@@ -44,12 +48,14 @@ over its session, and one session over the whole suite grew four workers past th
 so the job was killed with no summary. Each session starts fresh workers, and together they
 collect exactly the tests one session would.
 
-Where `testament` is installed (outside CI, unless `TESTAMENT=off`), `test.sh` hands the run to its
+Where `testament` is installed (outside CI), `test.sh` hands the run to its
 runners instead, and none of the above applies: testament distributes the tests itself, `-n`,
 `-x`, `--maxfail` or `--lf` make it run locally, and a package run there skips its integration
 tests (`.testament.toml` selects `-m "not integration"`). Two kinds of run never go to the pool:
 one gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`, `THREETEARS_EVALS_PAID*`),
-whose tests would skip on runners without it, and one that passes its own `-m`.
+whose tests would skip on runners without it, and one that passes its own `-m`. Any other run
+goes local only with `TESTAMENT=off` and a stated reason, `TESTAMENT_OFF_REASON="..."`, which
+`test.sh` prints; without the reason it refuses and exits 2.
 
 ### Where the unit suite's time goes
 
