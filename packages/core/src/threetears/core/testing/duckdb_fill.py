@@ -3,7 +3,9 @@
 A pod's L1 changes by key (an upsert, a scope's replacement, a follower's staged change); nothing it runs empties a
 table and fills it again. A test, though, often wants a table to hold exactly some rows, whatever it held before.
 :func:`fill_table` does that through the backend's front door: the rows go in first (one write, so a row that fails
-to insert leaves the table as it was), then every key it held and was not given goes.
+to insert leaves the table as it was), then every key it held and was not given goes, through the backend's own
+delete (:meth:`~threetears.core.cache.duckdb.DuckDBBackend.delete_many_by_id`), so a backend that keeps something in
+step with each write (a subclass renewing what it takes from a table's rows) keeps it in step for these too.
 """
 
 from __future__ import annotations
@@ -42,9 +44,9 @@ def fill_table(
         backend.upsert_many(table, rows, key)
     given = {tuple(backend.serialize_value(row[column], types[column]) for column in key) for row in rows}
     columns = ", ".join(quote_identifier(column) for column in key)
-    quoted = quote_identifier(table)
-    held = backend.execute_query(f"SELECT {columns} FROM {quoted}")  # noqa: S608 - a test's own table
-    matching = " AND ".join(f"{quote_identifier(column)} = ?" for column in key)
-    for stored in {tuple(row[column] for column in key) for row in held} - given:
-        backend.execute_query(f"DELETE FROM {quoted} WHERE {matching}", stored)  # noqa: S608 - a test's own table
+    held = backend.execute_query(f"SELECT {columns} FROM {quote_identifier(table)}")  # noqa: S608 - a test's own table
+    gone = sorted({tuple(row[column] for column in key) for row in held} - given, key=repr)
+    if gone:
+        # through the backend's own delete, so a backend that keeps something in step with each delete stays in step
+        backend.delete_many_by_id(table, gone, key)
     return len(rows)
