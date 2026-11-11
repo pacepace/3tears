@@ -61,7 +61,7 @@ from threetears.core.keyed._filters import (
 from threetears.core.pagination import CursorError
 from threetears.core.sql_fragments import quote_identifier
 
-__all__ = ["Sort", "KeyPage", "exists_keyed", "keyset_cursor", "keyset_page", "keyset_rows"]
+__all__ = ["Sort", "KeyPage", "copy_keyed", "exists_keyed", "keyset_cursor", "keyset_page", "keyset_rows"]
 
 
 @dataclass(frozen=True)
@@ -447,3 +447,53 @@ async def keyset_rows(
             by_row = await _steps_by_row(conn, order)
         last = rows[-1]
         past = [None if last[sort.column] is None else _as_text(last[sort.column]) for sort in order]
+
+
+async def copy_keyed(
+    conn: Any,
+    table: str,
+    *,
+    columns: Sequence[str | Selected],
+    by: Mapping[str, Any],
+    order: Sequence[Sort],
+    where: Sequence[Fragment] = (),
+    force_quote: Sequence[str] = (),
+) -> bytes:
+    """every row of ``table`` that ``by`` names, in ``order``, as PostgreSQL ``COPY`` CSV text (no header): the read
+    :func:`keyset_rows` makes, streamed as the server writes it, never a row decoded here.
+
+    For a pass that parses the text where it judges it (``pyarrow.csv`` in a worker process). A ``NULL`` is an
+    unquoted empty field; ``force_quote`` columns are quoted always, so their empty strings stay apart from ``NULL``.
+    asyncpg only (``copy_from_query``).
+
+    :param conn: an asyncpg connection or pool
+    :ptype conn: Any
+    :param table: the table, a TRUSTED identifier
+    :ptype table: str
+    :param columns: the columns, TRUSTED identifiers, or :class:`~threetears.core.keyed.Selected` expressions under
+        their names (a time as its UTC text)
+    :ptype columns: Sequence[str | Selected]
+    :param by: the bound prefix, as :func:`keyset_page` takes it; every row when empty (a security backstop's read)
+    :ptype by: Mapping[str, Any]
+    :param order: the order, as :func:`keyset_page` takes it
+    :ptype order: Sequence[Sort]
+    :param where: filters beside the prefix, as :func:`keyset_page` takes them
+    :ptype where: Sequence[Fragment]
+    :param force_quote: the columns (by their names) always quoted
+    :ptype force_quote: Sequence[str]
+    :return: the text, a line per row
+    :rtype: bytes
+    :raises ValueError: as :func:`keyset_page`
+    """
+    # no cursor is made from the rows, so a sort column need not be read (a time sorted by, read as its text)
+    _check(table, [*columns, *(sort.column for sort in order if sort.expression is None)], order, 1)
+    sql, params = _statement(table, columns, by, order, 1, None, False, (), where, None)
+    sql = sql.removesuffix(" LIMIT 1")
+    chunks: list[bytes] = []
+
+    async def sink(chunk: bytes) -> None:
+        chunks.append(chunk)
+
+    options: dict[str, Any] = {"force_quote": list(force_quote)} if force_quote else {}
+    await conn.copy_from_query(sql, *params, output=sink, format="csv", **options)
+    return b"".join(chunks)

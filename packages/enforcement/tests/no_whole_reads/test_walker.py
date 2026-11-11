@@ -2415,3 +2415,67 @@ def test_a_step_over_a_change_relation_passes_and_one_over_a_table_is_the_whole_
     assert not functions & {"over_the_change", "drop_changed", "a_set"}, found
     assert {"over_a_table", "semi_of_a_table"} <= functions, found
     assert ("laundered", "change-relation-is-a-table results") in found, found
+
+
+_ANY_KIND_LEAD = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import AnyOf, Sort, keyset_page
+
+    DATASOURCES = TableSchema(
+        name="datasources",
+        primary_key="id",
+        columns=[],
+        indexes=(
+            Index("page_by_name", "kind", "name", "id", purpose="src/listing.py::name_page"),
+            Index("page_by_date_created", "kind", "date_created", "id", purpose="src/listing.py::source_page"),
+        ),
+    )
+
+    async def source_page(pool, kinds, cols):
+        return await keyset_page(
+            pool, "datasources", columns=cols, by={"kind": AnyOf(kinds)},
+            order=[Sort("date_created"), Sort("id")], limit=50,
+        )
+
+    async def name_page(pool, kind, cols):
+        return await keyset_page(pool, "datasources", columns=cols, by={"kind": kind}, order=[Sort("name"), Sort("id")], limit=50)
+"""
+
+
+def test_a_page_whose_lead_is_a_set_credits_the_index_it_orders_by_after_it(tmp_path: Path) -> None:
+    """Flips if a keyset page pinning its index's lead to a set (``by={"kind": AnyOf(...)}``) and ordered by the
+    index's next columns is flagged, or leaves that index's purpose unused (credited to the pinned-lead index of
+    another order instead)."""
+    found = _symbols(_config(tmp_path, {"listing.py": _ANY_KIND_LEAD}))
+    assert not any(function in {"source_page", "name_page"} for function, _ in found), found
+    findings = no_whole_reads_findings(_config(tmp_path, {"listing.py": _ANY_KIND_LEAD}))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
+
+
+_COPIED = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import Sort, copy_keyed
+
+    CONNECTIONS = TableSchema(
+        name="connections",
+        primary_key="connection_id",
+        columns=[],
+        indexes=(Index("by_principal", "principal_kind", "principal_id", "admitted", purpose="src/fence.py::by_principal"),),
+    )
+    _ORDER = [Sort("admitted"), Sort("connection_id")]
+
+    async def by_principal(pool, kind, principal):
+        return await copy_keyed(pool, "connections", columns=["connection_id"], by={"principal_kind": kind, "principal_id": principal}, order=_ORDER)
+
+    async def every_one(pool):
+        return await copy_keyed(pool, "connections", columns=["connection_id"], by={}, order=_ORDER)
+"""
+
+
+def test_a_copy_of_a_prefix_is_judged_as_the_keyed_drain_it_is(tmp_path: Path) -> None:
+    """Flips if copy_keyed by a prefix its purposed index leads is flagged or leaves the index unused, or if a copy
+    with no prefix (every row) passes."""
+    found = _symbols(_config(tmp_path, {"fence.py": _COPIED}))
+    assert {function for function, _ in found} == {"every_one"}, found
+    findings = no_whole_reads_findings(_config(tmp_path, {"fence.py": _COPIED}))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
