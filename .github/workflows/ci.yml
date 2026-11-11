@@ -60,8 +60,9 @@ jobs:
         run: ./scripts/ci-unit-pool.sh route
 
   # The suite on the testament pool: .testament.toml selects what ci-unit-tests.sh runs (packages/
-  # and tests/, -m "not integration"). Its outcome is passed, failed or unreachable; the last runs
-  # the shards below, whose verdict `check` then reads.
+  # and tests/, -m "not integration"), all but the loop_timing tests, which run serially on this
+  # job's own runner after it. Its outcome is passed, failed or unreachable; the last runs the
+  # shards below, whose verdict `check` then reads.
   unit-pool:
     name: unit (testament pool)
     needs: route
@@ -101,6 +102,23 @@ jobs:
           TESTAMENT_BRANCH: ${{ github.head_ref || github.ref_name }}
           OUT: ${{ runner.temp }}/testament
         run: ./scripts/ci-unit-pool.sh run
+
+      # The event loop's wall-clock tests, which the pool run leaves out (`-m "not loop_timing"`):
+      # on a shared runner they run beside other batches and fail on the machine's load, not the
+      # code (#1140). Here they run serially on this job's own runner, as the `rest` shard runs them,
+      # after a pool verdict whether it passed or failed, so one failure does not hide the other.
+      # Not after `unreachable`: the shards then run the whole suite, these tests included.
+      - name: Set up Python (loop_timing, serial)
+        if: "!cancelled() && steps.scope.outputs.needed == 'true' && steps.pool.outputs.outcome != 'unreachable'"
+        run: uv python install 3.14
+
+      - name: Install dependencies (loop_timing, serial)
+        if: "!cancelled() && steps.scope.outputs.needed == 'true' && steps.pool.outputs.outcome != 'unreachable'"
+        run: uv sync --extra vision
+
+      - name: Test loop_timing (serial, on this runner)
+        if: "!cancelled() && steps.scope.outputs.needed == 'true' && steps.pool.outputs.outcome != 'unreachable'"
+        run: ./scripts/ci-unit-tests.sh --loop-timing -v
 
       - uses: actions/upload-artifact@v7
         if: always() && steps.scope.outputs.needed == 'true'

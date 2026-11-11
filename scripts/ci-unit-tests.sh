@@ -3,6 +3,10 @@
 #
 #   ./scripts/ci-unit-tests.sh [extra pytest args...]                  e.g. -v
 #   ./scripts/ci-unit-tests.sh --shard <name> [extra pytest args...]   one piece, e.g. --shard evals-2 -v
+#   ./scripts/ci-unit-tests.sh --loop-timing [extra pytest args...]    only the serial loop_timing session
+#
+# --loop-timing is not a shard: on the pool route the testament pool runs every other test, and the
+# `unit (testament pool)` job then runs this on its own runner (scripts/ci-unit-pool.sh, `-m`).
 #
 # Without --shard every session below runs, one after another (local use). CI runs the shards as
 # parallel jobs instead, so the gate takes as long as its slowest shard rather than their sum:
@@ -39,13 +43,17 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$REPO_ROOT"
+cd "$REPO_ROOT" || exit 2
 
 export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 
 SHARDS="evals-1 evals-2 evals-3 evals-4 evals-5 evals-6 evals-7 evals-8 core tests rest"
 shard=""
-if [ "${1:-}" = "--shard" ]; then
+loop_timing_only=""
+if [ "${1:-}" = "--loop-timing" ]; then
+    loop_timing_only=1
+    shift
+elif [ "${1:-}" = "--shard" ]; then
     shard="${2:-}"
     case " $SHARDS " in
         *" $shard "*) ;;
@@ -77,13 +85,16 @@ case "$shard" in
     rest) SESSIONS=(packages/agent "${remaining[*]}") ;;
 esac
 
+# --loop-timing runs none of the parallel sessions, only the serial run below
+[ -n "$loop_timing_only" ] && SESSIONS=()
+
 failed=()
-for session in "${SESSIONS[@]}"; do
+for session in ${SESSIONS+"${SESSIONS[@]}"}; do
     dirs="${session%%|*}"
     split=""
     [ "$dirs" != "$session" ] && split="${session#*|}"
-    # shellcheck disable=SC2086 -- dirs is a space-separated list of directories, split a list of arguments
     echo "::group::pytest ${session}"
+    # shellcheck disable=SC2086 # dirs is a space-separated list of directories, split a list of arguments
     uv run pytest $dirs -m "not integration and not loop_timing" -n 4 --dist loadgroup $split "$@"
     status=$?
     echo "::endgroup::"
@@ -95,7 +106,7 @@ done
 
 # the event-loop wall-clock tests, apart and serially: beside busy workers the kernel preempts the thread holding the
 # interpreter lock, and a bound on the code becomes a bound on the runner (release run 41231693608: 34.9 ms against
-# 25.4). 5 = nothing collected. Part of the `rest` shard, and of the full run.
+# 25.4). 5 = nothing collected. Part of the `rest` shard, of the full run, and all of --loop-timing.
 if [ -z "$shard" ] || [ "$shard" = "rest" ]; then
     echo "::group::pytest loop_timing (serial)"
     uv run pytest packages tests -m "loop_timing and not integration" -n 0 "$@"

@@ -126,9 +126,9 @@ that ran and why in both. `tests/test_ci_unit_pool_script.py` pins the script's 
 **To take the shards on purpose**, set the repo's Actions variable `TESTAMENT_CI` to `off`
 (*Settings → Secrets and variables → Actions → Variables*); delete it to go back. The secret stays.
 
-**What the pool runs.** `testament run --fresh --no-cache --no-fallback`. `.testament.toml`
-selects `packages/` and `tests/` with `-m "not integration"`, the same tests `ci-unit-tests.sh`
-partitions. `--fresh` runs every batch in a container started cold from the project's image (one
+**What the pool runs.** `testament run --fresh --no-cache --no-fallback -- -m "not loop_timing"`.
+`.testament.toml` selects `packages/` and `tests/` with `-m "not integration"`, the same tests
+`ci-unit-tests.sh` partitions, less the `loop_timing` ones (below). `--fresh` runs every batch in a container started cold from the project's image (one
 per runner, removed when the run ends), so nothing an earlier run left in a warm container reaches
 the required check; it costs a cold start and a full `[setup]` (`uv sync`) on each runner it
 reaches. `--fresh` does not turn off the cache, so `--no-cache` makes every test run rather than
@@ -137,8 +137,14 @@ serving an earlier passing result on the same tree. Every difference from the sh
 - **Batches, not xdist workers.** The pool runs each batch with `-n 0`, its runners being the
   parallelism; the shards run `-n 4 --dist loadgroup` inside each session. An `xdist_group` still
   keeps its tests together on the pool.
-- **`loop_timing`** runs in the pool's batches beside other work, as every local `test.sh` pool
-  run does; the shards run it in a serial session of its own (the `rest` shard).
+- **`loop_timing`** stays off the pool in CI. Its tests bound the event loop's lateness by wall
+  clock, and in a pool batch beside other work they fail on the runner's load, not the code
+  (#1140). The pool run passes `-m "not loop_timing"`, which testament narrows the manifest's
+  expression with rather than replacing it, and the same `unit (testament pool)` job then runs them
+  serially on its own runner (`./scripts/ci-unit-tests.sh --loop-timing`), as the `rest` shard
+  does. When the pool is lost mid-run it skips that step, since the shards run them. A local
+  `test.sh` pool run still sends them to the pool; `./scripts/ci-unit-tests.sh --loop-timing` runs
+  them serially here.
 - **The environment.** The pool's image (`docker/testament.Dockerfile`: `python:3.14` slim, a
   pinned uv) with `uv sync --frozen --extra vision`; the shards use `ubuntu-latest`, the latest uv
   and `uv sync --extra vision` (not frozen).

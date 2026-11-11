@@ -193,6 +193,77 @@ def test_the_pool_runs_when_route_chose_it() -> None:
     assert outputs["outcome"] == f"${{{{ steps.{step['id']}.outputs.outcome }}}}"
 
 
+#: the serial loop_timing session, as ci-unit-tests.sh runs it: every loop_timing test, one at a time
+_LOOP_TIMING_SESSION = "pytest packages tests -m loop_timing and not integration -n 0"
+
+
+def test_the_pool_job_runs_loop_timing_serially_unless_the_pool_was_lost() -> None:
+    """the pool run leaves the loop_timing tests out, so ``unit-pool`` runs them itself, on its own runner.
+
+    After a pool verdict, passed or failed (one failure must not hide the other), and never after
+    ``unreachable``: the shards then run the whole suite, these tests in ``rest``, and running them
+    here too would run them twice. Every step the serial run needs is gated the same way.
+    """
+    steps = _jobs("ci.yml")["unit-pool"]["steps"]
+    assert isinstance(steps, list)
+    pool = _step("unit-pool", "./scripts/ci-unit-pool.sh run")
+    after = steps[steps.index(pool) + 1 :]
+    runs = [str(step.get("run", "")).strip() for step in after]
+    assert "./scripts/ci-unit-tests.sh --loop-timing -v" in runs, "unit-pool no longer runs loop_timing after the pool"
+    gate = (
+        f"!cancelled() && steps.scope.outputs.needed == 'true' && steps.{pool['id']}.outputs.outcome != 'unreachable'"
+    )
+    serial = after[: runs.index("./scripts/ci-unit-tests.sh --loop-timing -v") + 1]
+    assert [step.get("run") for step in serial if step.get("if") != gate] == [], "a loop_timing step is gated otherwise"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="ci-unit-tests.sh is bash; none on this host")
+@pytest.mark.parametrize(
+    ("args", "sessions"),
+    [
+        pytest.param(["--loop-timing", "-v"], 0, id="loop-timing-alone"),
+        pytest.param(["--shard", "rest", "-v"], 2, id="rest-shard"),
+        pytest.param(["--shard", "core", "-v"], 1, id="core-shard"),
+    ],
+)
+def test_loop_timing_runs_once_serially_and_only_where_it_should(
+    args: list[str], sessions: int, tmp_path: Path
+) -> None:
+    """``--loop-timing`` runs the serial session and nothing else; ``rest`` runs it after its parallel sessions.
+
+    Run against a stand-in ``uv`` that records each pytest call.
+
+    :param args: the script's arguments
+    :ptype args: list[str]
+    :param sessions: how many parallel (``not loop_timing``) sessions run first
+    :ptype sessions: int
+    :param tmp_path: pytest's per-test directory
+    :ptype tmp_path: Path
+    :return: nothing
+    :rtype: None
+    """
+    calls = tmp_path / "uv.calls"
+    uv = tmp_path / "bin" / "uv"
+    uv.parent.mkdir()
+    uv.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{calls}"\n')
+    uv.chmod(0o755)
+    result = subprocess.run(
+        ["bash", str(_SCRIPT), *args],
+        env={"PATH": f"{uv.parent}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    ran = calls.read_text().splitlines()
+    parallel = [call for call in ran if "-m not integration and not loop_timing" in call]
+    serial = [call for call in ran if _LOOP_TIMING_SESSION in call]
+    assert len(parallel) == sessions, ran
+    assert len(serial) == (0 if args[:2] == ["--shard", "core"] else 1), ran
+    assert len(ran) == len(parallel) + len(serial), ran
+
+
 def test_the_shards_run_when_route_chose_them_or_the_pool_was_lost() -> None:
     """the shards wait for ``unit-pool`` and run for route's ``false`` or the pool's ``unreachable``, nothing else.
 

@@ -379,6 +379,23 @@ class TestTheRunsOutcome:
         assert args[0] == "run"
         assert {"--fresh", "--no-cache", "--no-fallback", "--json=summary"} <= set(args)
 
+    def test_the_run_leaves_the_loop_timing_tests_to_github(self, stage: _Stage) -> None:
+        """the pool run narrows the manifest's marker expression by ``not loop_timing`` and names no path.
+
+        testament ANDs a selection's ``-m`` with the suite's own (``not integration``), so the pool runs
+        every unit test but the wall-clock ones, which ci.yml's ``unit-pool`` job then runs serially.
+        No path: the manifest's ``default_selection`` (``packages/`` and ``tests/``) stays the selection.
+
+        :param stage: the staged script
+        :ptype stage: _Stage
+        :return: nothing
+        :rtype: None
+        """
+        stage.runs(_PASSED)
+        run = stage.go("run")
+        selection = run.testament[0].partition(" -- ")[2]
+        assert selection == "-m not loop_timing", run.testament[0]
+
     def test_a_lost_pool_says_the_shards_run(self, stage: _Stage) -> None:
         """unreachable is never silent: an annotation and the summary say the shards run instead.
 

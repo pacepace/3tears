@@ -6,7 +6,8 @@
 #
 # The same tests `./scripts/ci-unit-tests.sh` runs on GitHub's runners: .testament.toml selects
 # packages/ and tests/ with -m "not integration", and the pool spreads them over its runners, so
-# GitHub's job only waits. docs/testing.md, "CI on the testament pool", lists every difference.
+# GitHub's job only waits, all but the loop_timing tests (`-m`, below). docs/testing.md, "CI on the
+# testament pool", lists every difference.
 #
 # THE ROUTE (`route`, writes pool=true|false and why=<text> to $GITHUB_OUTPUT). The shards run,
 # and the pool does not, when any of these holds, checked in this order:
@@ -23,7 +24,7 @@
 # silent: the reason goes to $GITHUB_OUTPUT, the step summary and an annotation.
 #
 # THE RUN (`run`, writes outcome=passed|failed|unreachable and why=<text> to $GITHUB_OUTPUT):
-#   testament run --fresh --no-cache --no-fallback --json=summary
+#   testament run --fresh --no-cache --no-fallback --json=summary -- -m "not loop_timing"
 # --fresh: every batch in a container started cold from the project's image, so nothing an earlier
 #   run left in a warm container reaches the required check (testament's advice for a merge or
 #   release gate). It does not turn the cache off, so:
@@ -31,6 +32,12 @@
 # --no-fallback: never testament's own local fallback, which would run the whole suite in one
 #   session on this one runner (ci-unit-tests.sh's header: that OOMs its workers, and takes ~2 h).
 #   ci.yml falls back to the GitHub shards instead, as below.
+# -m "not loop_timing": the event loop's wall-clock tests stay off the pool. testament narrows the
+#   manifest's own expression with it, never replaces it (the client sends
+#   -m "(not integration) and (not loop_timing)"). On a shared runner they run beside other batches,
+#   and a bound on the code becomes a bound on the machine (#1140; run 43087460269: two of them
+#   22 ms late). ci.yml's `unit (testament pool)` job runs them after this, serially on its own
+#   runner (`ci-unit-tests.sh --loop-timing`), unless the pool was lost and the shards run them.
 # The outcome, from testament's exit code and its envelope (classify, below):
 #   passed       exit 0
 #   failed       exit 1 (a test failed), any failed or errored test in the report whatever the
@@ -261,7 +268,7 @@ run() {
         for attempt in 1 2; do
             code=0
             testament run --fresh --no-cache --no-fallback --json=summary --junit-xml "$OUT/unit.xml" \
-                >"$OUT/envelope.json" || code=$?
+                -- -m "not loop_timing" >"$OUT/envelope.json" || code=$?
             verdict="$(classify "$code" "$OUT/envelope.json")"
             outcome="${verdict%% *}"
             verdict="${verdict#* }"
