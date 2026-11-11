@@ -83,6 +83,42 @@ async def test_a_start_with_every_index_usable_takes_no_ddl_lock() -> None:
     assert not any("advisory" in s for s in conn.statements), conn.statements
 
 
+_DECLARED = 'CREATE INDEX IF NOT EXISTS "ring_key" ON ring.notes (k, noted_at)'
+
+
+class _UniqueLeftover(_Conn):
+    """the same connection, whose unusable ``ring_key`` a failed build of a UNIQUE index left under the ring's name:
+    usable again only once the ring's declared statement runs."""
+
+    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        rows = await super().fetch(sql, *params)
+        if "indisvalid" in sql:
+            return [
+                {**row, "is_unique": True, "definition": "CREATE UNIQUE INDEX ring_key ON ring.notes (k)"}
+                for row in rows
+            ]
+        if "HAVING count(*) > 1" in sql:
+            return [{"k0": "lsf_runs", "n": 50}]
+        return rows
+
+    async def execute(self, sql: str, *params: Any) -> str:
+        self.statements.append(sql)
+        if sql == _DECLARED:
+            self._unusable = False
+        return "OK"
+
+
+async def test_an_installer_s_unusable_index_is_built_from_its_declared_statement() -> None:
+    """Flips if a declared index name is built again from what a failed build left under it (a UNIQUE index the
+    table's duplicates refuse) rather than from the installer's own statement."""
+    conn = _UniqueLeftover(unusable=True)
+    rebuilt = await rebuild_unusable_indexes(conn, ["ring"], names=["ring_key"], definitions={"ring_key": _DECLARED})
+    assert [index.name for index in rebuilt] == ["ring_key"]
+    assert _DECLARED in conn.statements
+    assert not any(s.startswith("CREATE UNIQUE") for s in conn.statements), conn.statements
+    assert not any("HAVING count(*) > 1" in s for s in conn.statements), conn.statements
+
+
 class _Pool:
     """an asyncpg-shaped pool handing out one connection."""
 

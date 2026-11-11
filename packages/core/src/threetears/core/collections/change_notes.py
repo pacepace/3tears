@@ -191,8 +191,9 @@ async def _install_change_notes(
     conn: Any, schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE, policy: DdlLockPolicy | None = None
 ) -> None:
     """create the ring where missing (:func:`~threetears.core.ddl.change_notes.change_notes_ddl`), every index of it
-    usable: one a failed build left unusable is dropped and built again
-    (:func:`~threetears.core.ddl.index_health.rebuild_unusable_indexes`, by the ring's own index names).
+    usable: one a failed build left unusable is dropped and built again from the ring's own statement
+    (:func:`~threetears.core.ddl.index_health.rebuild_unusable_indexes`, by the ring's own index names and
+    definitions).
 
     An index build that fails part way leaves its index behind not valid, which the planner never reads and
     ``CREATE INDEX IF NOT EXISTS`` takes as present. On YugabyteDB 2026.1 an online build racing other DDL on the
@@ -219,11 +220,14 @@ async def _install_change_notes(
     """
     statements = change_notes_ddl(schema, fence=fence)
     # each index's name, as its own statement creates it (CREATE INDEX IF NOT EXISTS "<name>" ON ...)
-    names = [statement.split()[5].strip('"') for statement in statements if statement.startswith("CREATE INDEX ")]
+    declared = {
+        statement.split()[5].strip('"'): statement for statement in statements if statement.startswith("CREATE INDEX ")
+    }
     async with database_ddl_lock(ConnectionSession(conn), policy):
         for statement in statements:
             await conn.execute(statement)
-        await rebuild_unusable_indexes(conn, [schema], names=names, policy=policy)
+        # built again from the ring's own statement: a failed build may have left another definition under its name
+        await rebuild_unusable_indexes(conn, [schema], names=list(declared), policy=policy, definitions=declared)
 
 
 def _status_count(status: str) -> int:
