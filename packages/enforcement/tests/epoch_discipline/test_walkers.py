@@ -117,6 +117,16 @@ _VIOLATIONS: dict[str, list[str]] = {
         "_FIRES = 'wake_fires'\n\nasync def drop(pool, key):\n    await delete_keyed(pool, _FIRES, by={'id': key})\n",
         "async def sweep(conn, t):\n    await delete_before('leases', collection=None, key=['id'], column='at', before=t, page=5)\n",
         "async def land(conn):\n    await apply_stage(conn, 'results', 'staged', key=['id'])\n",
+        # a private writer is judged at its callers: called from outside the write path, it is that caller's bypass
+        "async def _fenced(pool, table, key):\n    await update_keyed(pool, table, values={'n': 1}, by={'id': key})\n\n"
+        "async def bump(pool, key):\n    await _fenced(pool, 'wake_fires', key)\n",
+        # ... through a chain of private writers, and from the write path's caller too when one caller is not it
+        "async def _write(pool, table, key):\n    await update_keyed(pool, table, values={'n': 1}, by={'id': key})\n\n"
+        "async def _fenced(pool, table, key):\n    await _write(pool, table, key)\n\n"
+        "class WakeCollection:\n    async def save_to_store(self, key):\n        await _fenced(self.pool, 't', key)\n\n"
+        "    async def touch(self, key):\n        await _fenced(self.pool, 't', key)\n",
+        # a private writer its module never calls keeps its hit
+        "async def _orphan(pool, key):\n    await update_keyed(pool, 'wake_fires', values={'n': 1}, by={'id': key})\n",
     ],
     RULE_WHOLE_REREAD: [
         "async def all_roles(pool):\n    return await pool.fetch('SELECT id, name FROM roles')\n",
@@ -162,6 +172,11 @@ _COMPLIANT: dict[str, list[str]] = {
         "async def drop(pool, key):\n    await delete_keyed(pool, 't', by={'id': key})\n    await announce_change('t', [key])\n",
         # a paged keyed write handed its collection runs each page in its bypassing_write
         "async def sweep(coll, t):\n    await delete_before('leases', collection=coll, key=['id'], column='at', before=t, page=5)\n",
+        # a private writer only the collection write path (or an announcing caller) calls is that write path
+        "async def _fenced(pool, table, key):\n    await update_keyed(pool, table, values={'n': 1}, by={'id': key})\n\n"
+        "class WakeCollection:\n    async def save_to_store(self, key):\n        return await _fenced(self.pool, 't', key)\n",
+        "async def _fenced(pool, table, key):\n    await update_keyed(pool, table, values={'n': 1}, by={'id': key})\n\n"
+        "async def bump(pool, key):\n    await _fenced(pool, 't', key)\n    await announce_change('t', [key])\n",
     ],
     RULE_WHOLE_REREAD: [
         "async def one(pool, key):\n    return await pool.fetchrow('SELECT * FROM roles WHERE id = $1', key)\n",

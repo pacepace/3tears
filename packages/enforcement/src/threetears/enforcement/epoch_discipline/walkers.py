@@ -9,6 +9,12 @@ SQL is read where it is statically known: a string literal, an f-string (each pl
 ``{}``), a concatenation, ``.format`` or ``dedent`` of one, or a name or ``self.``/``cls.``
 attribute bound to one in the module, the function or a class body. SQL assembled at run time
 elsewhere is not seen; the gate can miss a site, never invent one.
+
+A module's private function (a top-level ``def _name``) that writes is judged where its own module calls it: each
+epoch-bypass hit in its body moves to every call site, under the caller's function and its announce and
+``bypassing_write`` state (``UPDATE wake_fires via _fenced_update``), so a helper the collection write path alone
+calls is the write path, and the same helper called from anywhere else is the bypass it is. A private writer its
+module never calls keeps its hit in place.
 """
 
 from __future__ import annotations
@@ -522,6 +528,14 @@ class _ModuleWalk(ast.NodeVisitor):
         self._announcing: list[bool] = [False]
         self._bypassing: int = 0
         self._attributes: dict[str, str] = {}
+        #: the module's private top-level functions, judged at their callers for epoch-bypass
+        self._private: frozenset[str] = frozenset(
+            node.name
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("_")
+        )
+        #: each call of one: (callee, caller's qualified name, line, caller announces or is inside bypassing_write)
+        self._private_calls: list[tuple[str, str, int, bool]] = []
         _strings_bound(tree.body, self._envs[0])
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
@@ -736,6 +750,10 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: None
         """
         name = _final_name(node)
+        if isinstance(node.func, ast.Name) and node.func.id in self._private:
+            self._private_calls.append(
+                (node.func.id, self._function, node.lineno, self._announcing[-1] or bool(self._bypassing))
+            )
         if name is not None:
             self._whole_drop_call(node, name)
             self._ttl_call(node, name)
@@ -873,6 +891,34 @@ class _ModuleWalk(ast.NodeVisitor):
         if reads or _WHOLE_READ_HELPER.match(name):
             self._hit(RULE_WHOLE_REREAD, node, f"recovery read {name}")
 
+    def judged_at_callers(self) -> None:
+        """move each epoch-bypass hit in a private top-level function to its module's calls of it, under each
+        caller (none where the caller announces or writes inside ``bypassing_write``); a function its module never
+        calls keeps its hit. Repeated until no hit sits in a called private function, so a chain of private helpers
+        is judged at its first public or write-path caller.
+
+        :return: nothing
+        :rtype: None
+        """
+        for _ in range(len(self._private) + 1):
+            moved = False
+            kept: list[EpochHit] = []
+            for hit in self.hits:
+                callers = [call for call in self._private_calls if call[0] == hit.function and call[1] != hit.function]
+                if hit.rule != RULE_EPOCH_BYPASS or hit.function not in self._private or not callers:
+                    kept.append(hit)
+                    continue
+                moved = True
+                symbol = hit.symbol if " via " in hit.symbol else f"{hit.symbol} via {hit.function}"
+                kept.extend(
+                    EpochHit(hit.rule, hit.path, line, caller, symbol)
+                    for _, caller, line, covered in callers
+                    if not covered
+                )
+            self.hits = kept
+            if not moved:
+                return
+
 
 def _handed_a_collection(node: ast.Call, name: str) -> bool:
     """whether a keyed paged write (``delete_before`` / ``update_before``) is handed a collection, whose
@@ -918,6 +964,7 @@ def _walk(repo_root: Path, src_roots: tuple[Path, ...], excluded_prefixes: tuple
             tree = parse_python_path(path)
             walk = _ModuleWalk(relative, tree)
             walk.visit(tree)
+            walk.judged_at_callers()
             scan.hits.extend(walk.hits)
             scan.definitions.update(walk.definitions)
             scan.files_scanned += 1
