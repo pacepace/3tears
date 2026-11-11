@@ -310,14 +310,23 @@ class ChangedRows:
     :param changed_keys: the keys whose hash moved or that were not held, as the scope answers them
     :ptype changed_keys: list[tuple[Any, ...]]
     :param capped: True when more keys moved than ``full_rows_at_most`` allows: ``rows`` is empty, no full row was
-        read, and ``changed_keys`` names them (the caller reads them its own way: one export)
+        read, and ``changed_keys`` names them (the caller reads them its own way: one export); or when the moved
+        groups held more rows than ``group_rows_at_most`` allows: no key or full row was read, ``changed_keys`` is
+        empty and ``moved_groups`` names them
     :ptype capped: bool
+    :param moved_groups: of a grouped read (``group``), the groups whose hash moved, as the scope answers them, and the
+        held groups the scope no longer answers, as ``held`` names them
+    :ptype moved_groups: list[Any]
+    :param moved_group_rows: the rows the moved groups hold, as phase 0 answered them
+    :ptype moved_group_rows: int
     """
 
     rows: list[dict[str, Any]]
     gone_keys: list[tuple[Any, ...]]
     changed_keys: list[tuple[Any, ...]] = field(default_factory=list)
     capped: bool = False
+    moved_groups: list[Any] = field(default_factory=list)
+    moved_group_rows: int = 0
 
 
 #: the SQL type a key column of each kind is cast to where its value is bound as text (a page's cursor, a key array)
@@ -436,6 +445,7 @@ async def read_changed(
     group: str | None = None,
     full_rows_at_most: int | None = None,
     groups: Mapping[str | None, tuple[Any, GroupHash]] | None = None,
+    group_rows_at_most: int | None = None,
 ) -> ChangedRows:
     """the rows of ``relation`` inside the scope ``by`` / ``where`` names whose hash differs from ``held``, read in
     full by key, and the held keys the scope no longer holds.
@@ -487,11 +497,17 @@ async def read_changed(
     :param full_rows_at_most: the most changed keys phase 2 reads in full; past it no full row is read and the
         answer is ``capped``, naming the changed keys (the caller reads them its own way, one export). None: no cap
     :ptype full_rows_at_most: int | None
+    :param group_rows_at_most: the most rows the groups whose hash moved may hold, as phase 0 counts them, for their
+        keys to be read; past it no key's hash and no full row is read, and the answer is ``capped``, naming the moved
+        groups (the caller reads them its own way, one export: a move judged broad on phase 0 alone, with no phase 1
+        spent). Needs ``group``. None: no cap
+    :ptype group_rows_at_most: int | None
     :return: the changed rows (each key as the warehouse answers it) and the gone keys (as ``held`` names them)
     :rtype: ChangedRows
     :raises ValueError: when the key is empty, or as :func:`row_hash_sql`, :func:`~threetears.core.keyed.keyset_rows`
         and :func:`~threetears.core.keyed.read_keyed` refuse, or a held key's value is no value of its kind; when
-        ``group`` is no key column or ``full_rows_at_most`` is negative, or ``groups`` is given without ``group``
+        ``group`` is no key column or ``full_rows_at_most`` is negative, or ``groups`` or ``group_rows_at_most`` is
+        given without ``group``
     """
     kinds = _key_kinds(key, hash_columns, key_kinds)
     order = _sorts(key, kinds)
@@ -499,6 +515,8 @@ async def read_changed(
         raise ValueError(f"a changed-rows read of {relation} names its key")
     if full_rows_at_most is not None and full_rows_at_most < 0:
         raise ValueError(f"full_rows_at_most is a count of rows, got {full_rows_at_most}")
+    if group_rows_at_most is not None and (group is None or group_rows_at_most < 0):
+        raise ValueError(f"group_rows_at_most is a count of rows of a grouped read, got {group_rows_at_most}")
     dialect = await dialect_of(conn)
     hashed = row_hash_selected(hash_columns, dialect)
     key_columns = tuple(sort.column for sort in order)
@@ -509,6 +527,8 @@ async def read_changed(
     # held and answered keys meet in one form: each value's canonical text by its column's kind
     held_by_text = {canonical(held_key): (held_key, held_hash) for held_key, held_hash in held.items()}
     vanished: list[tuple[Any, ...]] = []
+    moved_groups: list[Any] = []
+    moved_group_rows = 0
     scopes: list[Sequence[Fragment]] = [where]
     if groups is not None and group is None:
         raise ValueError(f"a changed-rows read of {relation} given its groups' hashes names its group column")
@@ -540,11 +560,26 @@ async def read_changed(
             if _held_group_hash(held_groups.get(group_text)) != answered:
                 moved.append(value)
                 moved_texts.add(group_text)
+                moved_group_rows += answered.rows
         # a held group the scope answers no row of: every held key of it is gone, read no further
         vanished = [held_key for text, (held_key, _) in held_by_text.items() if text[at] not in answered_groups]
+        gone_groups: dict[str | None, Any] = {}
+        for held_text, (held_key, _) in held_by_text.items():
+            if held_text[at] not in answered_groups:
+                gone_groups.setdefault(held_text[at], held_key[at])
+        moved_groups = [*moved, *gone_groups.values()]
         held_by_text = {text: holding for text, holding in held_by_text.items() if text[at] in moved_texts}
         if not moved:
-            return ChangedRows(rows=[], gone_keys=vanished)
+            return ChangedRows(rows=[], gone_keys=vanished, moved_groups=moved_groups)
+        if group_rows_at_most is not None and moved_group_rows > group_rows_at_most:
+            # broad on phase 0 alone: the moved groups' rows are past the cap, so none of their keys is read here
+            return ChangedRows(
+                rows=[],
+                gone_keys=vanished,
+                capped=True,
+                moved_groups=moved_groups,
+                moved_group_rows=moved_group_rows,
+            )
         scopes = [
             [*where, _in_groups(group, moved[start : start + _GROUP_BATCH])]
             for start in range(0, len(moved), _GROUP_BATCH)
@@ -585,9 +620,16 @@ async def read_changed(
             answered_hashes[text] = row[ROW_HASH_COLUMN]
     gone = [*vanished, *(held_key for text, (held_key, _) in held_by_text.items() if text not in seen)]
     if not wanted:
-        return ChangedRows(rows=[], gone_keys=gone)
+        return ChangedRows(rows=[], gone_keys=gone, moved_groups=moved_groups, moved_group_rows=moved_group_rows)
     if full_rows_at_most is not None and len(wanted) > full_rows_at_most:
-        return ChangedRows(rows=[], gone_keys=gone, changed_keys=wanted, capped=True)
+        return ChangedRows(
+            rows=[],
+            gone_keys=gone,
+            changed_keys=wanted,
+            capped=True,
+            moved_groups=moved_groups,
+            moved_group_rows=moved_group_rows,
+        )
     keys = KeyBatch(
         columns=key_columns,
         values=wanted,
@@ -613,7 +655,13 @@ async def read_changed(
         }
         for row in rows
     ]
-    return ChangedRows(rows=stamped, gone_keys=gone, changed_keys=wanted)
+    return ChangedRows(
+        rows=stamped,
+        gone_keys=gone,
+        changed_keys=wanted,
+        moved_groups=moved_groups,
+        moved_group_rows=moved_group_rows,
+    )
 
 
 def _held_group_hash(hashes: Sequence[str | None] | None) -> GroupHash | None:
