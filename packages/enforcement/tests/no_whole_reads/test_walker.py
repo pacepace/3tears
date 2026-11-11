@@ -2368,3 +2368,50 @@ def test_an_index_a_read_ranges_or_orders_from_its_first_column_is_declared_rang
         if "index-hashed-range" in f
     ]
     assert bool(found) == (not declared_ddl), found
+
+
+_STEPS = """
+    from threetears.core import keyed
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import Match, change_relation, delete_matching, read_step, semi, union
+
+    RESULTS = TableSchema(name="results", primary_key=("state", "run_id"), columns=[])
+    _CHANGED = change_relation("changed_runs")
+
+
+    async def over_the_change(conn, held):
+        conn.register("held_rows", held)
+        step = semi("held_rows", _CHANGED, on=[Match("state"), Match("run_id")])
+        return await read_step(conn, keyed.distinct(step, ["state"]))
+
+
+    async def drop_changed(conn):
+        return await delete_matching(conn, "results", _CHANGED, on=[Match("state"), Match("run_id")])
+
+
+    async def over_a_table(conn):
+        return await read_step(conn, keyed.scan("results"))
+
+
+    async def semi_of_a_table(conn):
+        return await read_step(conn, semi("results", _CHANGED, on=[Match("state")]))
+
+
+    def laundered():
+        return change_relation("results")
+
+
+    def a_set(left, right):
+        return left.union(right)
+"""
+
+
+def test_a_step_over_a_change_relation_passes_and_one_over_a_table_is_the_whole_read_it_is(tmp_path: Path) -> None:
+    """Flips if a relational step over a registered or declared change relation is flagged, a delete by a change
+    relation's keys is judged other than as the keyed delete it is, a step over a data table (whole, or as a semi's
+    read side) passes, a change relation declared over a data table passes, or a set's ``union`` is judged as a step."""
+    found = _symbols(_config(tmp_path, {"steps.py": _STEPS}))
+    functions = {function for function, _ in found}
+    assert not functions & {"over_the_change", "drop_changed", "a_set"}, found
+    assert {"over_a_table", "semi_of_a_table"} <= functions, found
+    assert ("laundered", "change-relation-is-a-table results") in found, found

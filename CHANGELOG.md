@@ -29,6 +29,8 @@ packages (bumped in lock-step).
 
 ### enforcement: use-the-helper, every data table read and written through 3tears' helpers
 
+**Added:** SQL written by hand over a change relation (rows a module registers, a stage, a declared `change_relation`, a transient producer's return) is a finding, `use-the-helper <shape> change:<name>`: its home is `core.keyed`'s steps. no_whole_reads judges each step call (imported from `threetears.core.keyed`) by the relations it names, each read whole, so a step over a change relation passes and one over a data table is the whole read it is; `delete_matching` is judged as the keyed delete by its `Match` columns; a step bound to a local name once, or a change relation bound to a module constant, is followed; `change_relation(<a declared table>)` is flagged where written (`change-relation-is-a-table`) and never makes the table a change set.
+
 **Added:** `threetears.enforcement.no_whole_reads.use_the_helper_findings(config)`, the `use-the-helper` rule: every
 SQL statement a module writes as text (`SELECT`, `WITH ... SELECT`, `UPDATE`, `DELETE`, `MERGE`, `INSERT ... SELECT`)
 against a data table (a declared one, or one named at run time) outside the helper modules (`threetears.core.keyed`,

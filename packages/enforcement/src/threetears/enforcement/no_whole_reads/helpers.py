@@ -46,6 +46,7 @@ __all__ = [
     "KEYED_FRAGMENT_BUILDERS",
     "KEYED_HELPER_CALLS",
     "START_KEYWORDS",
+    "STEP_CALLS",
     "UNSEEN",
     "HelperStatement",
     "helper_statements",
@@ -76,6 +77,46 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "update_before",
     }
 )
+
+#: the relational steps over change relations (:mod:`threetears.core.keyed.steps`), judged by the relations a call
+#: names: each one read whole, as the step reads it, so a step over a change relation (one a module registers or
+#: declares with ``change_relation``) passes and one over a data table is the whole read it is; a step a step reads
+#: is judged at its own call. Judged only where the call is the keyed helper's (imported from ``threetears.core.keyed``)
+STEP_CALLS: Final[frozenset[str]] = frozenset(
+    {
+        "scan",
+        "semi",
+        "anti",
+        "distinct",
+        "grouped",
+        "latest_per_key",
+        "windowed",
+        "except_rows",
+        "union",
+        "read_step",
+        "read_step_arrow",
+        "count_step",
+        "delete_matching",
+        "first_difference",
+    }
+)
+
+#: where each step names the relations it reads: a positional index or a keyword; ``*`` every positional
+_STEP_RELATIONS: Final[Mapping[str, tuple[tuple[int | None, str], ...]]] = {
+    "scan": ((0, "rel"),),
+    "semi": ((0, "rel"), (1, "keys")),
+    "anti": ((0, "rel"), (1, "keys")),
+    "distinct": ((0, "rel"),),
+    "grouped": ((0, "rel"),),
+    "latest_per_key": ((0, "rel"),),
+    "windowed": ((0, "rel"),),
+    "except_rows": ((0, "rel"), (1, "other")),
+    "read_step": ((1, "step"),),
+    "read_step_arrow": ((1, "step"),),
+    "count_step": ((1, "step"),),
+    "delete_matching": ((2, "keys"),),
+    "first_difference": ((1, "rel"), (2, "other")),
+}
 
 #: builders of a visibility clause reviewed once where it is written: a keyed predicate wherever it is placed
 KEYED_FRAGMENT_BUILDERS: Final[frozenset[str]] = frozenset(
@@ -527,7 +568,53 @@ def _update_before(call: ast.Call) -> list[str]:
     ]
 
 
+def _step_relation(node: ast.expr | None, argument: str) -> list[str]:
+    """the read a step makes of one relation it names: the relation whole; nothing for a step or derived select (each
+    judged where it is written)."""
+    if isinstance(node, ast.Call) and _name(node) == "change_relation":
+        node = _argument(node, "name", 0)
+    if isinstance(node, ast.Call) and (_name(node) in STEP_CALLS or _name(node) == "Derived"):
+        return []
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [f"SELECT * FROM {'.'.join(_quoted(part) for part in node.value.split('.'))} AS t"]
+    return [f"SELECT * FROM {_named(node, argument)} AS t"]
+
+
+def _match_columns(node: ast.expr | None) -> list[str]:
+    """the step relation's columns a ``Match`` list names."""
+    if not isinstance(node, ast.Tuple | ast.List) or not node.elts:
+        raise _Unseen("on")
+    columns = []
+    for element in node.elts:
+        if not (isinstance(element, ast.Call) and _name(element) == "Match"):
+            raise _Unseen("on")
+        columns.append(_text(_argument(element, "column", 0), "on"))
+    return columns
+
+
+def _step(call: ast.Call) -> list[str]:
+    """each relation a step names, read whole; a delete by a change relation's keys as the keyed delete it is."""
+    helper = _name(call)
+    statements: list[str] = []
+    if helper == "union":
+        for index, node in enumerate(call.args):
+            if isinstance(node, ast.Starred):
+                raise _Unseen("rels")
+            statements += _step_relation(node, f"rels[{index}]")
+    for position, keyword in _STEP_RELATIONS.get(helper, ()):
+        statements += _step_relation(_argument(call, keyword, position), keyword)
+    if helper == "delete_matching":
+        table, _ = _relation(_argument(call, "table", 1), "table")
+        pinned = [
+            f"{_quoted(column)} = ANY(${place})"
+            for place, column in enumerate(_match_columns(_argument(call, "on", None)), 1)
+        ]
+        statements.append(f"DELETE FROM {table}{_where(pinned)}")
+    return statements
+
+
 _SYNTHESIZERS: Final = {
+    **dict.fromkeys(STEP_CALLS, _step),
     "read_keyed": _read_keyed,
     "read_keyed_arrow": _read_keyed,
     "read_joined": _read_joined,

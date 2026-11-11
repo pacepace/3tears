@@ -125,9 +125,9 @@ def _named(findings: list[str]) -> dict[str, str]:
 
 
 def test_a_statement_written_as_text_against_a_data_table_is_named_with_its_shape(tmp_path: Path) -> None:
-    """Flips if a hand-written point read, page, count, join, write (a change set's rows written into a table too) or
-    read of a table named at run time is not a finding with its shape, or if a keyed helper's read, a local copy's, a
-    read of only a change set, a plain insert or a catalog read is."""
+    """Flips if a hand-written point read, page, count, join, write (a change set's rows written into a table too),
+    read of a table named at run time or read of only a change set (its home is core.keyed's steps, Pace 2026-11-10)
+    is not a finding with its shape, or if a keyed helper's read, a local copy's, a plain insert or a catalog read is."""
     config = _config(
         tmp_path, {"pkg/tables.py": _TABLES, "pkg/reads.py": _HAND_WRITTEN}, transient_relations=r"^__stage_\w+$"
     )
@@ -140,16 +140,17 @@ def test_a_statement_written_as_text_against_a_data_table_is_named_with_its_shap
         "drop_state": "write geos",
         "from_a_stage": "write geos",
         "any_table": "point {}",
+        "a_stage": "point change:__stage_geos",
     }, named
     counts = use_the_helper_counts(config)
     assert counts == {
-        "point": 2,
+        "point": 3,
         "list": 1,
         "count": 1,
         "join": 1,
         "write": 2,
         "named-at-run-time": 1,
-        "total": 7,
+        "total": 8,
     }, counts
 
 
@@ -251,3 +252,27 @@ def test_a_local_copys_relation_and_the_l1_storage_layer_are_not_counted(tmp_pat
     assert _named(use_the_helper_findings(config)) == {"loose": "point {}"}
     undeclared = _config(tmp_path, modules)
     assert set(_named(use_the_helper_findings(undeclared))) == {"copy_rows", "_view_sql", "loose"}
+
+
+_CHANGE_SQL = """
+    from threetears.core.keyed import Match, change_relation, read_step, semi
+
+    _CHANGED = change_relation("changed_runs")
+
+
+    async def by_hand(db):
+        db.register("held_rows", rows)
+        return db.execute("SELECT h.* FROM held_rows AS h SEMI JOIN changed_runs AS k ON h.run_id = k.run_id")
+
+
+    async def through_the_step(db):
+        db.register("held_rows", rows)
+        return await read_step(db, semi("held_rows", _CHANGED, on=[Match("run_id")]))
+"""
+
+
+def test_hand_written_sql_over_a_change_relation_is_named_and_its_step_is_not(tmp_path: Path) -> None:
+    """Flips if SQL written by hand over a registered or declared change relation is not a use-the-helper finding
+    naming the relation, or if the same computation through core.keyed's steps is."""
+    config = _config(tmp_path, {"pkg/settle.py": _CHANGE_SQL})
+    assert _named(use_the_helper_findings(config)) == {"by_hand": "join change:held_rows"}
