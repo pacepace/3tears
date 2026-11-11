@@ -56,6 +56,7 @@ __all__ = [
     "helper_statements",
     "is_keyed_fragment",
     "narrows",
+    "templated",
 ]
 
 #: the helpers judged by the statement a call sends; each reads (or deletes) only what its arguments key
@@ -224,14 +225,17 @@ def _texts(node: ast.expr | None, argument: str) -> list[str]:
 
 
 def _by(node: ast.expr | None, argument: str = "by") -> list[tuple[str, str]]:
-    """each pinned column and how it is bound: ``=``, ``= ANY`` (an ``AnyOf``) or ``IS NULL``."""
+    """each pinned column and how it is bound: ``=``, ``= ANY`` (an ``AnyOf``) or ``IS NULL``. A ``by`` column named
+    at run time (``by={pk_column: i}``) is the interpolation it would be in SQL the caller wrote (``{pk_column}``):
+    the rule reads one that says it is the key as the key, and any other as a predicate it cannot see."""
     if node is None or (isinstance(node, ast.Constant) and node.value is None):
         return []
     if not isinstance(node, ast.Dict) or any(key is None for key in node.keys):
         raise _Unseen(argument)
     pinned = []
     for key, value in zip(node.keys, node.values, strict=True):
-        column = _text(key, argument)
+        column = _named(key, argument)[1:-1] if argument == "by" and not isinstance(key, ast.Constant) else ""
+        column = "{" + column + "}" if column else _text(key, argument)
         if isinstance(value, ast.Call) and _name(value) == "AnyOf":
             pinned.append((column, "any"))
         elif isinstance(value, ast.Constant) and value.value is None:
@@ -245,16 +249,21 @@ def _quoted(column: str) -> str:
     return '"' + column.replace('"', '""') + '"'
 
 
+def _pinned(column: str) -> str:
+    """a pinned column as the statement spells it: quoted, or a column named at run time as its interpolation."""
+    return column if column.startswith("{") and column.endswith("}") else _quoted(column)
+
+
 def _conditions(pinned: Sequence[tuple[str, str]], *, first: int = 1, alias: str = "") -> tuple[list[str], int]:
     prefix = f"{alias}." if alias else ""
     conditions = []
     place = first
     for column, how in pinned:
         if how == "null":
-            conditions.append(f"{prefix}{_quoted(column)} IS NULL")
+            conditions.append(f"{prefix}{_pinned(column)} IS NULL")
             continue
         conditions.append(
-            f"{prefix}{_quoted(column)} = ANY(${place})" if how == "any" else f"{prefix}{_quoted(column)} = ${place}"
+            f"{prefix}{_pinned(column)} = ANY(${place})" if how == "any" else f"{prefix}{_pinned(column)} = ${place}"
         )
         place += 1
     return conditions, place
@@ -571,20 +580,32 @@ def _any_rows(call: ast.Call) -> list[str]:
 
 
 def _keyed_write(call: ast.Call) -> list[str]:
-    """a delete or update by key (``delete_keyed`` / ``update_keyed``): judged only where it writes by a prefix
-    (``prefix={"signal": p}``), as the code-point range it sends (``"signal" >= $n AND "signal" < $m``, judged as a
-    page of that range); one by ``by``/``keys`` sends nothing here to judge. A table its caller names (a fence's,
-    ``clear_signals(conn, table)``) is the module's template (``TableSchema(name=<parameter>)``), as a generic read's
-    ``FROM {table}`` is: keyed by the template's index whose purpose names the caller, and a whole read where the
-    module declares no template."""
+    """a delete or update by key (``delete_keyed`` / ``update_keyed``), as the statement it sends: the rows its
+    ``keys`` batch (``= ANY`` each column) and ``by`` pin, its ``where`` guards beside them; a write by a prefix
+    (``prefix={"signal": p}``) as the code-point range it sends (``"signal" >= $n AND "signal" < $m``, judged as a page
+    of that range). A table its caller names (a fence's, ``clear_signals(conn, table)``) is the module's template
+    (``TableSchema(name=<parameter>)``), as a generic read's ``FROM {table}`` is: keyed by the template's index whose
+    purpose names the caller, and a whole read where the module declares no template. A pinned column named at run
+    time (``by={user_column: u}``) is a predicate the walk cannot see."""
+    table_node = _argument(call, "table", 1)
+    table = _relation(table_node, "table")[0] if isinstance(table_node, ast.Constant) else '"{}"'
     node = _argument(call, "prefix", None)
     if node is None:
-        return []
+        keys_node = _argument(call, "keys", None)
+        keyed = (
+            []
+            if keys_node is None
+            else [f"{column} = ANY(${place})" for place, column in enumerate(_key_batch_columns(keys_node), 1)]
+        )
+        pinned, place = _conditions(_by(_argument(call, "by", None)), first=len(keyed) + 1)
+        filtered, place = _filters(call, place)
+        conditions = [*keyed, *pinned, *filtered]
+        if _name(call) == "update_keyed":
+            return [f"UPDATE {table} SET {_quoted('_')} = ${place}{_where(conditions)}"]
+        return [f"DELETE FROM {table}{_where(conditions)}"]
     started = _by(node, "prefix")
     if not started:
         raise _Unseen("prefix")
-    table_node = _argument(call, "table", 1)
-    table = _relation(table_node, "table")[0] if isinstance(table_node, ast.Constant) else '"{}"'
     pinned, place = _conditions(_by(_argument(call, "by", None)))
     # the prefix's rows are a range read in the column's order: keyed exactly when an index ranges that column for
     # the reader (a C-ordered, ASC one), as a page of the range is
@@ -796,6 +817,61 @@ _SYNTHESIZERS: Final = {
     "apply_stage": _apply_stage,
     "update_from": _update_from,
 }
+
+
+#: the argument naming the relation a keyed read reads, by helper: keyword and position
+_READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
+    **dict.fromkeys(
+        (
+            "read_keyed",
+            "read_keyed_arrow",
+            "read_by",
+            "read_row",
+            "read_value",
+            "any_rows",
+            "keyset_page",
+            "keyset_rows",
+            "copy_keyed",
+            "counts_by",
+            "count_at_most",
+            "holds_any",
+            "read_after",
+        ),
+        ("table", 1),
+    ),
+    **dict.fromkeys(("read_changed", "group_hashes", "read_past_marks"), ("relation", 1)),
+}
+
+
+def templated(call: ast.Call) -> ast.Call | None:
+    """the keyed read with the table its caller names at run time (a name or an attribute: ``self.table_name``) as the
+    calling module's template (``"{}"``, judged against ``TableSchema(name=<parameter>)``, as ``FROM {table}`` in SQL
+    the caller writes is); None when the read names its table any other way.
+
+    :param call: a keyed read whose table the walk could not read
+    :ptype call: ast.Call
+    :return: the call reading the template, or None
+    :rtype: ast.Call | None
+    """
+    where = _READ_RELATION.get(_name(call))
+    if where is None:
+        return None
+    keyword, position = where
+    named = _argument(call, keyword, position)
+    if not isinstance(named, ast.Name | ast.Attribute):
+        return None
+    template = ast.Constant("{}")
+    by_keyword = any(given.arg == keyword for given in call.keywords)
+    return ast.Call(
+        func=call.func,
+        args=[
+            template if index == position and not by_keyword else argument for index, argument in enumerate(call.args)
+        ],
+        keywords=[
+            ast.keyword(arg=given.arg, value=template if given.arg == keyword else given.value)
+            for given in call.keywords
+        ],
+    )
 
 
 def helper_statements(call: ast.Call) -> Iterator[HelperStatement]:

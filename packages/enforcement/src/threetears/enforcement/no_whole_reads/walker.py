@@ -65,6 +65,7 @@ from threetears.enforcement.no_whole_reads.helpers import (
     helper_statements,
     is_keyed_fragment,
     narrows,
+    templated,
 )
 from threetears.enforcement.no_whole_reads.schema import (
     COPY_PREFIX,
@@ -2057,6 +2058,10 @@ class _ModuleWalk(ast.NodeVisitor):
                 return declared
             if isinstance(value, ast.Name) and (stepped := self._bound_step(value.id)) is not None:
                 return literal(stepped) if _final(stepped) == "Quoted" else stepped
+            # a local the function binds once to the argument's shape and never changes (``by = {"id": i}``,
+            # ``order = [Sort("at")]``): that shape, as a step local is read
+            if isinstance(value, ast.Name) and (shaped := self._bound_shape(value.id)) is not None:
+                return literal(shaped)
             # a module constant holding the argument's shape (``_NEWEST_FIRST = (Sort("date_started"), ...)``)
             if isinstance(value, ast.Name) and isinstance(
                 self._module_values.get(value.id), (ast.Tuple, ast.List, ast.Dict)
@@ -2297,7 +2302,7 @@ class _ModuleWalk(ast.NodeVisitor):
             for each in self._parameter_calls(picked)
             for matched in self._match_calls(each)
         ):
-            for statement in helper_statements(call):
+            for statement in self._helper_statements(call):
                 if statement.sql is UNSEEN or statement.sql is None:
                     hits.setdefault(f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(site))
                     continue
@@ -2306,6 +2311,24 @@ class _ModuleWalk(ast.NodeVisitor):
                         hits.setdefault(f"{finding.kind} {finding.table}", statement.sql)
         for symbol, statement_text in hits.items():
             self._hit(site, symbol, statement_text)
+
+    def _helper_statements(self, call: ast.Call) -> list[HelperStatement]:
+        """the statements a keyed helper call sends; a read of a table its caller names at run time
+        (``read_row(conn, self.table_name, ...)``) read as the module's template where the module declares one
+        (ruling #13), as SQL the caller wrote over ``{table}`` is, and unknown where it declares none.
+
+        :param call: the helper call, its arguments resolved
+        :ptype call: ast.Call
+        :return: each statement
+        :rtype: list[HelperStatement]
+        """
+        statements = list(helper_statements(call))
+        if self._schema.templates.get(self.path) is None or not any(
+            statement.sql is UNSEEN and statement.unseen in {"table", "relation"} for statement in statements
+        ):
+            return statements
+        named = templated(call)
+        return statements if named is None else list(helper_statements(named))
 
     def _hands_on_helper_relation(self, node: ast.Call, name: str | None) -> bool:
         """whether a keyed helper call inside a keyed helper's body reads only the outer helper's relation parameter
@@ -2360,6 +2383,42 @@ class _ModuleWalk(ast.NodeVisitor):
             callee = _final(bound[0])
             if callee in STEP_CALLS or callee in {"change_relation", "Derived", "Quoted"}:
                 return bound[0]
+        return None
+
+    def _bound_shape(self, name: str) -> ast.Dict | ast.Tuple | ast.List | None:
+        """the literal mapping or sequence the enclosing function binds ``name`` to, if it binds it exactly once and
+        never changes it after (no item stored or deleted, no method called on it, no other binding): a ``by`` or
+        ``order`` held in a local reads as the literal it holds, and one the function may change reads as unknown.
+
+        :param name: the local name
+        :ptype name: str
+        :return: the literal, or None
+        :rtype: ast.Dict | ast.Tuple | ast.List | None
+        """
+        if not self._function_nodes:
+            return None
+        bound: list[ast.expr] = []
+        for node in ast.walk(self._function_nodes[-1]):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    named = [element for element in ast.walk(target) if isinstance(element, ast.Name)]
+                    if any(element.id == name for element in named):
+                        if not (isinstance(target, ast.Name) and target.id == name):
+                            return None
+                        bound.append(node.value)
+            elif isinstance(node, ast.AugAssign | ast.AnnAssign | ast.NamedExpr | ast.For | ast.AsyncFor):
+                if any(isinstance(element, ast.Name) and element.id == name for element in ast.walk(node.target)):
+                    return None
+            elif isinstance(node, ast.Subscript) and not isinstance(node.ctx, ast.Load):
+                if isinstance(node.value, ast.Name) and node.value.id == name:
+                    return None
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if isinstance(node.func.value, ast.Name) and node.func.value.id == name:
+                    return None
+            elif isinstance(node, ast.arg) and node.arg == name:
+                return None
+        if len(bound) == 1 and isinstance(bound[0], ast.Dict | ast.Tuple | ast.List):
+            return bound[0]
         return None
 
     def _keyed_step(self, node: ast.Call) -> bool:
@@ -2477,6 +2536,14 @@ class _ModuleWalk(ast.NodeVisitor):
             named = _bound_name(value)
             if named is None:
                 continue
+            held = self._held_parameter(named[1]) if named[0] == "self" and named[1] is not None else None
+            if held is not None:
+                # an attribute the object keeps from its constructor: what every construction passes it
+                passed = self._parameter_values.get(held)
+                texts = _texts_of(passed, None) if passed and all(v is not None for v in passed) else None
+                if texts:
+                    choices[ast.unparse(value)] = sorted(set(texts))
+                continue
             passed = _passed_values(function.name, named[0], bindings, self._parameter_values)
             texts = _texts_of(passed, named[1]) if passed is not None else None
             if texts:
@@ -2500,6 +2567,51 @@ class _ModuleWalk(ast.NodeVisitor):
                 )
             )
         return calls
+
+    def _held_parameter(self, attribute: str) -> tuple[str, str] | None:
+        """the constructor parameter the enclosing class keeps as ``self.<attribute>``: assigned once in the whole
+        class, in its ``__init__``'s own body, straight from a parameter ``__init__`` never rebinds; None otherwise.
+
+        :param attribute: the attribute
+        :ptype attribute: str
+        :return: ``(<Class>.__init__, parameter)``, as the constructions' values are kept, or None
+        :rtype: tuple[str, str] | None
+        """
+        owner = self._class_nodes[-1] if self._class_nodes else None
+        if owner is None:
+            return None
+        init = next(
+            (
+                statement
+                for statement in owner.body
+                if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef) and statement.name == "__init__"
+            ),
+            None,
+        )
+        if init is None:
+            return None
+        stores = [
+            node
+            for node in ast.walk(owner)
+            if isinstance(node, ast.Attribute)
+            and node.attr == attribute
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+            and not isinstance(node.ctx, ast.Load)
+        ]
+        assigned = [
+            statement
+            for statement in init.body
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and any(statement.targets[0] is store for store in stores)
+        ]
+        if len(stores) != 1 or len(assigned) != 1 or not isinstance(assigned[0].value, ast.Name):
+            return None
+        parameter = assigned[0].value.id
+        if parameter not in _function_bindings(init, {}).parameters:
+            return None
+        return f"{owner.name}.__init__", parameter
 
     def _judge_call(self, node: ast.Call, name: str) -> None:
         """every call-shaped check over one call.
@@ -3924,6 +4036,7 @@ def _parameter_values(
             # a protocol's stub (a docstring and ``...``) declares a signature; only a body says what it does
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not _stub(node):
                 definitions.setdefault(node.name, []).append(node)
+    constructors = _constructors(modules)
     contexts: list[tuple[dict[str, str], tuple[str, _Bindings] | None, list[ast.Call]]] = []
     for relative, tree in modules:
         known = {**_imported_strings(tree, strings), **strings.get(relative, {})}
@@ -3958,7 +4071,12 @@ def _parameter_values(
         followed: dict[tuple[str, str], list[Passed]] = {}
         for known, caller, calls in contexts:
             for call in calls:
-                defined = definitions.get(_final(call) or "", [])
+                callee = _final(call) or ""
+                defined = definitions.get(callee, [])
+                if not defined and callee in constructors:
+                    # a construction of a repo class: what it passes its ``__init__``, kept as ``<Class>.__init__``
+                    _record_site(call, constructors[callee], known, caller, found, followed, name=f"{callee}.__init__")
+                    continue
                 if len(defined) != 1:
                     # a name defined twice could be either: no site of it says what its parameters hold
                     continue
@@ -3976,6 +4094,8 @@ def _record_site(
     caller: tuple[str, _Bindings] | None,
     found: dict[tuple[str, str], list[Passed]],
     followed: dict[tuple[str, str], list[Passed]],
+    *,
+    name: str | None = None,
 ) -> None:
     """add what one call of ``function`` passes each of its parameters to ``followed``.
 
@@ -3991,11 +4111,18 @@ def _record_site(
     :ptype found: dict[tuple[str, str], list[Passed]]
     :param followed: what this pass finds
     :ptype followed: dict[tuple[str, str], list[Passed]]
+    :param name: the name its parameters are kept under (a constructor's ``<Class>.__init__``, its ``self`` not
+        passed); the function's own when None
+    :ptype name: str | None
     :return: nothing
     :rtype: None
     """
     positional = [*function.args.posonlyargs, *function.args.args]
-    if positional[:1] and positional[0].arg in ("self", "cls") and isinstance(call.func, ast.Attribute):
+    if (
+        positional[:1]
+        and positional[0].arg in ("self", "cls")
+        and (isinstance(call.func, ast.Attribute) or name is not None)
+    ):
         positional = positional[1:]
     defaults = dict(
         zip(
@@ -4024,7 +4151,77 @@ def _record_site(
         unknown = value is None and ((star is not None and place >= star) or spread)
         value = value if value is not None else defaults.get(argument.arg)
         values: list[Passed] = [None] if unknown or value is None else _site_values(value, known, caller, found)
-        followed.setdefault((function.name, argument.arg), []).extend(values)
+        followed.setdefault((name or function.name, argument.arg), []).extend(values)
+
+
+def _constructors(modules: list[tuple[str, ast.Module]]) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    """each repo class whose every construction the walk can see, onto its ``__init__``: defined once in the repo,
+    with an ``__init__`` of its own, no repo class built on it (a subclass's construction passes the same
+    ``__init__`` under another name), never built through ``cls(...)`` / ``type(self)(...)`` inside it, and its name
+    never used as a value (handed to a factory, a ``partial``) outside a call, an annotation or a base list.
+
+    :param modules: each module's path and parse
+    :ptype modules: list[tuple[str, ast.Module]]
+    :return: class name onto its constructor
+    :rtype: dict[str, ast.FunctionDef | ast.AsyncFunctionDef]
+    """
+    classes: dict[str, list[ast.ClassDef]] = {}
+    based: set[str] = set()
+    loose: set[str] = set()
+    for _, tree in modules:
+        annotations: set[int] = set()
+        called: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                classes.setdefault(node.name, []).append(node)
+                for base in node.bases:
+                    spelled = dotted(base)
+                    if spelled:
+                        based.add(spelled.rsplit(".", 1)[-1])
+                annotations.update(id(element) for base in node.bases for element in ast.walk(base))
+            elif isinstance(node, ast.arg | ast.AnnAssign) and node.annotation is not None:
+                annotations.update(id(element) for element in ast.walk(node.annotation))
+            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.returns is not None:
+                annotations.update(id(element) for element in ast.walk(node.returns))
+            elif isinstance(node, ast.Call):
+                called.add(id(node.func))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Name | ast.Attribute)
+                and isinstance(node.ctx, ast.Load)
+                and id(node) not in called
+                and id(node) not in annotations
+            ):
+                loose.add(node.id if isinstance(node, ast.Name) else node.attr)
+    found: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for name, defined in classes.items():
+        if len(defined) != 1 or name in based or name in loose:
+            continue
+        (owner,) = defined
+        if any(
+            isinstance(node, ast.Call)
+            and (
+                (isinstance(node.func, ast.Name) and node.func.id == "cls")
+                or (
+                    isinstance(node.func, ast.Call)
+                    and isinstance(node.func.func, ast.Name)
+                    and node.func.func.id == "type"
+                )
+            )
+            for node in ast.walk(owner)
+        ):
+            continue
+        init = next(
+            (
+                statement
+                for statement in owner.body
+                if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef) and statement.name == "__init__"
+            ),
+            None,
+        )
+        if init is not None:
+            found[name] = init
+    return found
 
 
 def _stub(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:

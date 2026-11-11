@@ -2643,6 +2643,197 @@ def test_a_stage_s_target_its_caller_names_is_judged_by_its_module_s_template(tm
     assert any(function == "settle" for function, _ in bare), bare
 
 
+_READ_TEMPLATE = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import Sort, keyset_rows, read_row, read_value
+
+    def epochs_schema(name: str = "scope_epochs"):
+        return TableSchema(
+            name=name,
+            primary_key="scope",
+            columns=[],
+            indexes=(
+                Index(
+                    f"{name}_by_kind",
+                    "kind",
+                    "scope",
+                    purpose="src/epochs.py::Epochs.kinds",
+                    plan_test="tests/test_epochs.py::test_plan",
+                ),
+            ),
+        )
+
+    class Epochs:
+        async def one(self, conn, scope):
+            return await read_row(conn, self.table_name, by={"scope": scope})
+
+        async def epoch(self, conn, table, scope):
+            return await read_value(conn, table, by={"scope": scope}, column="epoch")
+
+        async def kinds(self, conn, kind):
+            return await keyset_rows(conn, self.table_name, columns=("scope",), by={"kind": kind}, order=[Sort("scope")])
+
+        async def stale(self, conn, epoch):
+            return await read_row(conn, self.table_name, by={"epoch": epoch})
+"""
+
+_READ_NO_TEMPLATE = """
+    from threetears.core.keyed import read_row
+
+    class Epochs:
+        async def one(self, conn, scope):
+            return await read_row(conn, self.table_name, by={"scope": scope})
+"""
+
+
+def test_a_read_of_a_table_its_caller_names_is_judged_by_its_module_s_template(tmp_path: Path) -> None:
+    """Flips if a keyed read (read_row, read_value, keyset_rows) of a table the caller names at run time stays
+    unknown where its module declares the template the table is built from (ruling #13): keyed by the template's key
+    or its purposed index, a non-key read where neither leads; and unknown where the module declares none."""
+    found = _symbols(_config(tmp_path, {"epochs.py": _READ_TEMPLATE}))
+    functions = {function for function, _ in found}
+    assert not functions & {"Epochs.one", "Epochs.epoch", "Epochs.kinds"}, found
+    assert ("Epochs.stale", 'non-key-where "{}"') in found, found
+    assert not any(symbol.startswith("unknown-predicate") for _, symbol in found), found
+    bare = _symbols(_config(tmp_path / "bare", {"epochs.py": _READ_NO_TEMPLATE}))
+    assert ("Epochs.one", "unknown-predicate read_row(table)") in bare, bare
+
+
+_HELD_TABLE = """
+    from threetears.core.keyed import KeyBatch, delete_keyed, read_keyed, read_row
+
+    from pkg.tables import GEOS
+
+
+    class Geos:
+        def __init__(self, conn, *, table):
+            self._conn = conn
+            self._name = table
+
+        async def read(self, ids):
+            return await read_keyed(self._conn, self._name, keys=KeyBatch(("geo_id",), ids), columns=("geo_id",))
+
+        async def drop(self, geo):
+            return await delete_keyed(self._conn, self._name, by={"geo_id": geo})
+
+        async def by_state(self, state):
+            return await read_row(self._conn, self._name, by={"state": state})
+
+
+    class Loose:
+        def __init__(self, conn, table):
+            self._conn = conn
+            self._name = table
+
+        async def read(self, ids):
+            return await read_keyed(self._conn, self._name, keys=KeyBatch(("geo_id",), ids), columns=("geo_id",))
+
+
+    class Moved:
+        def __init__(self, conn, table):
+            self._conn = conn
+            self._name = table
+
+        def move(self, table):
+            self._name = table
+
+        async def read(self, ids):
+            return await read_keyed(self._conn, self._name, keys=KeyBatch(("geo_id",), ids), columns=("geo_id",))
+
+
+    class Based:
+        def __init__(self, conn, table):
+            self._conn = conn
+            self._name = table
+
+        async def read(self, ids):
+            return await read_keyed(self._conn, self._name, keys=KeyBatch(("geo_id",), ids), columns=("geo_id",))
+
+
+    class Derived(Based):
+        pass
+
+
+    def build(conn, named):
+        Geos(conn, table=GEOS)
+        Loose(conn, named)
+        Moved(conn, GEOS)
+        Based(conn, GEOS)
+        Derived(conn, named)
+"""
+
+
+def test_a_table_an_object_holds_from_its_constructor_is_the_table_every_construction_passes(tmp_path: Path) -> None:
+    """Flips if a keyed read or write of a table an object keeps from its constructor (``self._name = table``)
+    stays unknown when every construction passes a declared table's constant (``Geos``: keyed by its key, non-key by
+    another column), or resolves when one construction passes a value the walk cannot read (``Loose``), the object
+    rebinds it after (``Moved``) or a subclass may be constructed with another (``Based``)."""
+    found = _symbols(_config(tmp_path, {"pkg/tables.py": _TABLES, "pkg/geos.py": _HELD_TABLE}))
+    functions = {function for function, _ in found}
+    assert not functions & {"Geos.read", "Geos.drop"}, found
+    assert ("Geos.by_state", 'non-key-where "geos"') in found, found
+    for unread in ("Loose.read", "Moved.read", "Based.read"):
+        assert (unread, "unknown-predicate read_keyed(table)") in found, (unread, found)
+
+
+_LOCAL_ARGUMENTS = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import AnyOf, Sort, counts_by, keyset_page, read_row
+
+    FIRES = TableSchema(
+        name="fires",
+        primary_key="id",
+        columns=[],
+        indexes=(
+            Index(
+                "fires_by_schedule",
+                "schedule_id",
+                "fired_at",
+                "id",
+                purpose=("src/fires.py::latest", "src/fires.py::counted"),
+                plan_test="tests/test_fires.py::test_plan",
+            ),
+        ),
+    )
+
+    async def latest(conn, schedule):
+        by = {"schedule_id": schedule}
+        order = [Sort("fired_at"), Sort("id")]
+        return await keyset_page(conn, "fires", columns=("id",), by=by, order=order, limit=1)
+
+    async def counted(conn, schedule, kinds):
+        by = {"schedule_id": schedule}
+        return await counts_by(conn, "fires", column="kind", values=AnyOf(kinds), by=by)
+
+    async def loose(conn, kind):
+        by = {"kind": kind}
+        return await read_row(conn, "fires", by=by)
+
+    async def widened(conn, schedule):
+        by = {"schedule_id": schedule}
+        by.pop("schedule_id")
+        return await read_row(conn, "fires", by=by)
+
+    async def rebound(conn, schedule, kind):
+        by = {"schedule_id": schedule}
+        if kind:
+            by = {"kind": kind}
+        return await read_row(conn, "fires", by=by)
+"""
+
+
+def test_a_helper_s_by_or_order_held_in_a_local_is_read_as_its_value(tmp_path: Path) -> None:
+    """Flips if a by= or order= the function binds once to a literal (``by = {...}; keyset_page(..., by=by)``) stays
+    unknown rather than judged as that literal, or if one the function changes after binding (``by.pop``) or binds
+    twice is read as either value instead of staying unknown."""
+    found = _symbols(_config(tmp_path, {"fires.py": _LOCAL_ARGUMENTS}))
+    functions = {function for function, _ in found}
+    assert not functions & {"latest", "counted"}, found
+    assert ("loose", 'non-key-where "fires"') in found, found
+    assert ("widened", "unknown-predicate read_row(by)") in found, found
+    assert ("rebound", "unknown-predicate read_row(by)") in found, found
+
+
 _ANY_KIND_LEAD = """
     from threetears.core.collections.schema_backed import Index, TableSchema
     from threetears.core.keyed import AnyOf, Sort, keyset_page

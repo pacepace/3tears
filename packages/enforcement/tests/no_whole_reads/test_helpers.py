@@ -100,6 +100,11 @@ def _judged(code: str, schema: SchemaCatalog, name: str = "src/app.py::reader") 
         # a delete of the rows a prefix names, through the C-ordered index its reader's purpose names
         'delete_keyed(c, "fence", prefix={"signal": p}, returning=("signal",))',
         'update_keyed(c, "fence", values={"run_id": r}, prefix={"signal": p})',
+        # a delete or update of the rows a key prefix or a batch of keys names
+        'delete_keyed(c, "results", by={"state": s})',
+        'delete_keyed(c, "results", keys=KeyBatch(("state", "geo", "id"), ks), returning=("id",))',
+        'update_keyed(c, "results", values={"kind": k}, by={"state": s, "geo": g})',
+        'update_keyed(c, "results", values={"kind": k}, keys=KeyBatch(("state", "geo", "id"), ks))',
         # a bounded look: any rows up to its limit, of the table or of a key's rows
         'any_rows(c, "results", ["state", "geo"], limit=500)',
         'any_rows(c, "results", cols, limit=1, by={"state": s})',
@@ -151,6 +156,9 @@ def test_a_keyed_count_is_a_keyed_count(schema: SchemaCatalog) -> None:
         # a prefix delete on a column no index ranges
         ('delete_keyed(c, "unindexed", prefix={"name": p})', "non-key-where"),
         ('update_keyed(c, "unindexed", values={"run_id": r}, prefix={"name": p})', "non-key-where"),
+        # a delete or update pinning a column no key leads with: every row is read to find them
+        ('delete_keyed(c, "results", by={"kind": k})', "non-key-where"),
+        ('update_keyed(c, "results", values={"geo": g}, by={"kind": k})', "non-key-where"),
         # a bounded look filtered on a column no key leads with
         ('any_rows(c, "results", cols, limit=5, by={"kind": k})', "non-key-where"),
         # the same listing with its customers' fragment missing: every customer's rows, by no index
@@ -213,12 +221,34 @@ def test_a_helper_naming_no_key_is_a_whole_read(code: str, kind: str, schema: Sc
         ('group_hashes(c, "results", scope="state", group="geo", hash_columns=hc)', "scopes"),
         # a look with no bound is no bounded look
         ('any_rows(c, "results", cols)', "limit"),
+        ('delete_keyed(c, "results", by=pinned)', "by"),
     ],
 )
 def test_a_helper_whose_arguments_the_walk_cannot_read_is_unseen(code: str, argument: str) -> None:
     """Flips if a call the walk cannot read is passed (or judged on a guess) instead of named unknown-predicate."""
     statements = list(helper_statements(_call(code)))
     assert [(statement.sql, statement.unseen) for statement in statements] == [(UNSEEN, argument)]
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        # a generic collection's own row by the key column it names: keyed, as its SQL over {pk_column} would be
+        # (``"{}"``: a table its caller names, as the walk writes it where the module declares no template)
+        ('delete_keyed(c, "{}", by={pk_column: i})', []),
+        ('read_row(c, "{}", by={self._pk_column: i})', []),
+        # a write pinning a column named at run time that says nothing of the key (merge.repoint_user_rows' owner
+        # column): a predicate the walk cannot see on a table it does not know
+        ('update_keyed(c, "{}", values=v, by={user_column: u}, returning=pk)', ["unknown-schema"]),
+        ('read_row(c, "results", by={column: v})', ["non-key-where"]),
+    ],
+)
+def test_a_by_column_named_at_run_time_is_judged_as_its_interpolation(
+    code: str, expected: list[str], schema: SchemaCatalog
+) -> None:
+    """Flips if a ``by`` column named at run time stays unknown where SQL interpolating it would be judged (a generic
+    reader's ``{pk_column}`` is its key), or passes where its name says nothing of the key."""
+    assert [[kind for kind, _ in findings] for findings in _judged(code, schema)] == [expected]
 
 
 def test_any_other_call_sends_nothing() -> None:
