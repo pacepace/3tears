@@ -18,9 +18,11 @@ import pytest
 
 from threetears.agent.acl import caller_visible_customer_clause, caller_visible_customers_query
 from threetears.agent.acl.migrations import register as register_acl
+from threetears.agent.acl.query_visibility import _caller_membership_predicate
 from threetears.agent.tools.platform_migrations import register as register_tools_platform
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.testing.plans import explain_statement, plan_uses_index
+from threetears.core.testing.same_results import Seeded, assert_same_results
 
 pytestmark = pytest.mark.integration
 
@@ -179,3 +181,150 @@ async def test_the_typed_set_reads_the_callers_memberships_then_their_groups_gra
     plan = await explain_statement(conn, sql, *params)
     assert plan_uses_index(plan, "idx_group_members_reverse"), plan.plan
     assert plan_uses_index(plan, "idx_role_assignments_group_scope"), plan.plan
+
+
+#: the groups the equivalence seeds hang memberships on, each holding one grant (some a second)
+_GROUPS = 26
+
+
+def _old_customers_query(typed: bool) -> str:
+    """the visible-customer set as it was read before the keyed rewrite (7c7936732): every grant joined to its
+    group's memberships, the caller matched on each, directly or through the nested hops, at this deployment's depth.
+    """
+    of_type = " AND ra.scope_namespace_type = $2" if typed else ""
+    return f"""SELECT
+        COALESCE(bool_or(ra.scope_type = 'all'), false) AS is_all,
+        COALESCE(
+            array_remove(
+                array_agg(DISTINCT
+                    CASE
+                        WHEN ra.scope_type = 'type_customer'{of_type} THEN ra.scope_customer_id
+                        WHEN ra.scope_type = 'namespace' THEN ns.customer_id
+                    END
+                ),
+                NULL
+            ),
+            ARRAY[]::uuid[]
+        ) AS customer_ids
+      FROM role_assignments ra
+      JOIN group_members gm ON gm.group_id = ra.group_id
+      LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id
+     WHERE {_caller_membership_predicate(1)}"""
+
+
+async def _granting_groups(conn: asyncpg.Connection) -> list[uuid.UUID]:
+    """``_GROUPS`` groups, group k granting customer k's rows by arm k % 4 (type_customer on the type, a namespace
+    of the customer's, type_customer on another type, type_customer on the type again), group 21 also ``all``."""
+    role = uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO roles (role_id, customer_id, name, description, permissions) VALUES ($1, NULL, 'r', 'r', '[]'::jsonb)",
+        role,
+    )
+    groups = [uuid.uuid4() for _ in range(_GROUPS)]
+    for k, group in enumerate(groups):
+        await conn.execute(
+            "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ('platform', $1, NULL, $2)",
+            group,
+            f"g{k}",
+        )
+        customer = uuid.UUID(int=k + 1)
+        grant: dict[str, Any] = {
+            0: {"scope_type": "type_customer", "scope_customer_id": customer, "scope_namespace_type": _TYPE},
+            1: {"scope_type": "namespace", "scope_namespace_id": await _namespace(conn, customer)},
+            2: {"scope_type": "type_customer", "scope_customer_id": customer, "scope_namespace_type": "tool"},
+            3: {"scope_type": "type_customer", "scope_customer_id": customer, "scope_namespace_type": _TYPE},
+        }[k % 4]
+        grants = [grant, {"scope_type": "all"}] if k == 21 else [grant]
+        for values in grants:
+            columns = ", ".join(values)
+            marks = ", ".join(f"${index}" for index in range(4, 4 + len(values)))
+            await conn.execute(
+                f"INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, {columns})"
+                f" VALUES ('platform', $1, $2, $3, {marks})",
+                uuid.uuid4(),
+                role,
+                group,
+                *values.values(),
+            )
+    return groups
+
+
+async def _allow_group_members(conn: asyncpg.Connection) -> None:
+    """let ``group_members`` hold a group: the hub's platform schema takes group-in-group members, acl v001's check
+    names users and agents only."""
+    await conn.execute("ALTER TABLE group_members DROP CONSTRAINT group_members_member_type_check")
+
+
+@pytest.mark.parametrize("typed", [False, True])
+async def test_the_keyed_set_gives_the_rows_the_joined_set_gave(conn: asyncpg.Connection, typed: bool) -> None:
+    """Flips if the keyed read of the caller's groups (their memberships, then each group edge up, then those groups'
+    grants) gives another is_all or customer set than the statement it replaced, for any seed: empty, one, many,
+    NULLs, ties, a tenant boundary (tenant 1's members are another user), a page boundary. Members by index: the
+    caller in group i; group i-1 (the caller's) in group i, a nested hop; group i-1 (itself reached by a hop) in
+    group i, two hops, past the default nesting; another user in group i."""
+    await _allow_group_members(conn)
+    groups = await _granting_groups(conn)
+    caller, other = uuid.uuid4(), uuid.uuid4()
+
+    def member(seed: Seeded) -> dict[str, Any]:
+        group = groups[seed.index % _GROUPS]
+        below = groups[(seed.index - 1) % _GROUPS]
+        kind, member_id = {
+            0: ("user", caller),
+            1: ("group", below),
+            2: ("group", below),
+            3: ("user", other),
+        }[seed.index % 4]
+        if seed.tenant == 1:
+            kind, member_id = "user", other
+        return {
+            "id": uuid.uuid5(uuid.NAMESPACE_OID, f"{seed.case}/{seed.index}"),
+            "group_id": group,
+            "member_type": kind,
+            "member_id": member_id,
+            "customer_id": None if seed.null else uuid.UUID(int=seed.tie + 1),
+        }
+
+    sql, params = caller_visible_customers_query(user_id=caller, scope_namespace_type=_TYPE if typed else None)
+    await assert_same_results(
+        conn,
+        table="group_members",
+        row=member,
+        old_sql=_old_customers_query(typed),
+        params=params,
+        helper=lambda c: c.fetch(sql, *params),
+    )
+
+
+async def test_the_set_reaches_a_grant_through_a_nested_group(conn: asyncpg.Connection) -> None:
+    """Flips if a caller in group A, A a member of granting group B, does not get B's customer (the nested hop the
+    rewrite reads from the caller's groups up)."""
+    await _allow_group_members(conn)
+    user, customer = uuid.uuid4(), uuid.uuid4()
+    await _grant(conn, user, "all")
+    await conn.execute("DELETE FROM role_assignments")
+    granting, role = uuid.uuid4(), await conn.fetchval("SELECT role_id FROM roles")
+    caller_group = await conn.fetchval("SELECT group_id FROM group_members WHERE member_id = $1", user)
+    await conn.execute(
+        "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ('platform', $1, NULL, 'granting')",
+        granting,
+    )
+    await conn.execute(
+        "INSERT INTO group_members (id, group_id, member_type, member_id) VALUES ($1, $2, 'group', $3)",
+        uuid.uuid4(),
+        granting,
+        caller_group,
+    )
+    await conn.execute(
+        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_customer_id,"
+        " scope_namespace_type) VALUES ('platform', $1, $2, $3, 'type_customer', $4, $5)",
+        uuid.uuid4(),
+        role,
+        granting,
+        customer,
+        _TYPE,
+    )
+    sql, params = caller_visible_customers_query(user_id=user, scope_namespace_type=_TYPE)
+    row = await conn.fetchrow(sql, *params)
+    assert row is not None
+    assert (row["is_all"], list(row["customer_ids"])) == (False, [customer])
