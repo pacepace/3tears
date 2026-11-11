@@ -6,14 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: a replay is deterministic, and a model shared between evals is named as the cause
+### evals: a replay serves each cell its own recorded answer, and a model shared between evals is named as the cause
 
 **Fixed:** replaying an eval twice could print different repeat numbers (rung 3e's c02 malformed reply on repeat 3,
 then repeat 1). A run's cells start in an order shuffled by its fresh id, several at once, and a replay served a
 prompt's recorded answers in the order they were asked. Inside a cell, repeat `i` is now served the recorded call of
-index `i`, so a replay hands each repeat the same answer every time; outside a cell, or where that index is taken
-(one prompt asked twice in a cell, or by two arms), the first call left is served, as before. `CellIdentity` gains
-`k_iteration` (default `None`), the cell's repeat, which the run loop sets.
+index `i`. `CellIdentity` gains `k_iteration` (default `None`), the cell's repeat, which the run loop sets.
+
+**Fixed:** that still left two askers of one prompt in one repeat to the order they asked in: two arms giving the same
+answer send their judge the same prompt, and a follow-up can be asked by several cells. A recording now notes on each
+call the cell it was made for (recording format 3: a `cell` member holding the arm's subject and contestant identity,
+the case, the repeat, and how many times that cell had asked the prompt before), and a replay serves a cell the call
+recorded for that very cell, in any order, on every replay. `CellIdentity` gains `variant_key` (default `None`), the
+arm's contestant identity, which the run loop sets. A format-2 line, which noted no cell, is still read: it is served
+by repeat index and then the first call left, as before, so the claim holds for it only while each repeat asks a
+prompt once. Every shipped recording replays the same under that fallback: replayed, rungs 0 to 4 ask each recorded
+prompt once per repeat, except rung 2's four judge-example prompts, graded outside any cell, whose two recorded calls
+each are identical; rung 5's judge recording holds one call per prompt. Nothing was re-recorded. A recording made in format 1 is still refused.
 
 **Fixed:** a `Model` shared by two evals in one process (or one eval run twice) serves the second nothing, since a
 replay serves each recorded call once per model; the second eval's calls were refused as "the code asks it more often

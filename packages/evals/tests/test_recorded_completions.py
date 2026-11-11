@@ -214,6 +214,88 @@ async def test_a_cell_s_repeat_is_served_the_call_of_its_own_index_whatever_orde
     assert await served([2, 0, 1]) == await served([0, 1, 2]) == {0: "4", 1: "2", 2: "6"}
 
 
+def _cell(arm: str, repeat: int, case: str = "t") -> CellIdentity:
+    """A cell of arm ``arm`` (its subject and variant), with a fresh run id and cell id as every run mints."""
+    return CellIdentity(
+        run_id=f"run-{arm}-{repeat}",
+        test_case_id=case,
+        subject_id=arm,
+        cell_id=f"{arm}-{case}-{repeat}",
+        k_iteration=repeat,
+        variant_key=f"variant-{arm}",
+    )
+
+
+async def test_each_cell_is_served_the_call_recorded_for_it_when_two_arms_ask_one_prompt(tmp_path: Path) -> None:
+    """Two arms that send a judge one prompt share its key, and their repeats share call indexes: a cell is served the
+    call recorded for that very cell, whichever arm asks first, and its second ask of the prompt its second call."""
+    path = tmp_path / "rec.jsonl"
+    asked = [("a", 0), ("b", 0), ("b", 1), ("a", 1), ("a", 1)]
+    inner = _FakeInner(
+        *(_Reply(content=f"{arm}{repeat}") for arm, repeat in asked[:4]),
+        _Reply(content="a1 again"),
+        _Reply(content="outside"),
+    )
+    async with RecordedCompletions.record(inner, path, settings=BUDGETED) as client:
+        for arm, repeat in asked:
+            with bind_cell_identity(_cell(arm, repeat)):
+                await client.generate(system=SYSTEM, user="Grade it.")
+        await client.generate(system=SYSTEM, user="Grade it.")  # outside every cell
+    cells = [line["cell"] for line in _lines(path)]
+    assert cells[0] == {"subject": "a", "variant": "variant-a", "case": "t", "repeat": 0, "ask": 0}
+    assert [cell["ask"] for cell in cells[:5]] == [0, 0, 0, 0, 1] and cells[5] is None
+    assert all(line["recorder_version"] == RecordedCompletions.FORMAT_VERSION == 3 for line in _lines(path))
+
+    async def served(order: list[tuple[str, int]]) -> list[tuple[str, int, str]]:
+        replay = RecordedCompletions.replay(path, settings=BUDGETED)
+        got = []
+        for arm, repeat in order:
+            with bind_cell_identity(_cell(arm, repeat)):
+                got.append((arm, repeat, (await replay.generate(system=SYSTEM, user="Grade it.")).content))
+        return sorted(got)
+
+    expected = sorted([("a", 0, "a0"), ("b", 0, "b0"), ("b", 1, "b1"), ("a", 1, "a1"), ("a", 1, "a1 again")])
+    assert await served(asked) == expected
+    assert await served(list(reversed(asked))) == expected, "whichever arm asks first, each is served its own call"
+
+
+async def test_a_format_2_line_names_no_cell_and_is_served_by_repeat_index_then_first_left(tmp_path: Path) -> None:
+    """A recording made before format 3 noted no cell: it is still read, and replays as it did, by repeat index."""
+    path = tmp_path / "rec.jsonl"
+    await _record(path, *(("Roll a die.", _Reply(content=face)) for face in ("4", "2")))
+    lines = _lines(path)
+    for line in lines:
+        line["recorder_version"] = 2
+        del line["cell"]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+
+    client = RecordedCompletions.replay(path, settings=BUDGETED)
+    with bind_cell_identity(_cell("a", 1)):
+        assert (await client.generate(system=SYSTEM, user="Roll a die.")).content == "2"
+    assert (await client.generate(system=SYSTEM, user="Roll a die.")).content == "4", "outside a cell: the first left"
+    # Recording onto it appends format-3 lines beside the format-2 ones, and the file is read whole.
+    await _record(path, ("Roll a die.", _Reply(content="6")))
+    assert [line["recorder_version"] for line in _lines(path)] == [2, 2, 3]
+    RecordedCompletions.check_covers(path, [RecordedPrompt(SYSTEM, "Roll a die.")] * 3, settings=BUDGETED)
+
+
+@pytest.mark.parametrize(
+    ("cell", "problem"),
+    [
+        ("a0", "its cell is a JSON str, not an object or null"),
+        ({"subject": "a", "variant": None, "case": "t", "repeat": 0}, "its cell lacks ask"),
+        ({"subject": "a", "variant": None, "case": "t", "repeat": -1, "ask": 0}, "is not a cell"),
+        ({"subject": "a", "variant": 7, "case": "t", "repeat": None, "ask": 0}, "is not a cell"),
+    ],
+)
+async def test_a_malformed_cell_refuses_the_recording_by_its_line(tmp_path: Path, cell: Any, problem: str) -> None:
+    path = tmp_path / "rec.jsonl"
+    path.write_text(json.dumps(_good_line(cell=cell)) + "\n", encoding="utf-8")
+    with pytest.raises(RecordingRefused, match="line 1 is not a recorded call") as refused:
+        RecordedCompletions.replay(path, settings=BUDGETED)
+    assert problem in str(refused.value)
+
+
 async def test_a_call_another_eval_s_run_took_is_refused_naming_that_eval_and_never_says_to_record_again(
     tmp_path: Path,
 ) -> None:
@@ -419,6 +501,7 @@ def _good_line(**overrides: Any) -> dict[str, Any]:
             "stop_reason": "end_turn",
         },
         "extra": {},
+        "cell": None,
     }
     return {**line, **overrides}
 
@@ -493,12 +576,12 @@ async def test_a_line_from_an_older_recording_format_is_refused_by_name(tmp_path
     path.write_text(json.dumps(older) + "\n", encoding="utf-8")
 
     with pytest.raises(
-        RecordingRefused, match="line 1 was written in recording format 1, older than this build's 2"
+        RecordingRefused, match="line 1 was written in recording format 1, older than the oldest this build reads, 2"
     ) as refused:
         RecordedCompletions.replay(path, settings=BUDGETED)
     assert "kept no sent_settings" in str(refused.value)
     assert refused.value.remedy.startswith("re-record")
-    with pytest.raises(RecordingRefused, match="older than this build's"):
+    with pytest.raises(RecordingRefused, match="older than the oldest this build reads"):
         RecordedCompletions.record(_FakeInner(), path, settings=BUDGETED)
 
 

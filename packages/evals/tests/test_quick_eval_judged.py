@@ -14,6 +14,7 @@ import json
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Self
 
 import pytest
@@ -21,6 +22,7 @@ import pytest
 from threetears.evals import Eval, Example, Judge
 from threetears.evals.providers.failures import error_from_response
 from threetears.evals.schema import JudgedArtifact, RubricDim, StopReason
+from threetears.evals.testing import RecordedCompletions
 from threetears.evals.kernel.host import EvalHost, KindContract, TemplateChecks
 from threetears.evals.quick.one_call import (
     CALLABLE_KIND_CONTRACT,
@@ -661,3 +663,50 @@ async def test_a_judge_with_examples_adds_one_line_to_the_engine_s_page_and_noth
     assert [block.anchor for block in added] == ["judge-examples"]
     without = result.page.model_copy(update={"blocks": [block for block in result.page.blocks if block not in added]})
     assert campaign_report_markdown(without) == campaign_report_markdown(stored)
+
+
+# --- a judge's recording, replayed ------------------------------------------------------------------------------------
+
+
+async def other_answer(case: Mapping[str, Any]) -> str:
+    """Answer a question in a few words, as :func:`answer` does."""
+    return ANSWERS[case["question"]]
+
+
+async def test_two_arms_sending_the_judge_one_prompt_replay_the_verdicts_they_were_recorded_with_every_time(
+    tmp_path: Path,
+) -> None:
+    """Two arms giving one answer send the judge one prompt, so their repeats share each recorded call's index. A run's
+    cells start in an order shuffled by its fresh id, several at once: a replay that served the first asker the first
+    call swapped the arms' verdicts between replays. Each cell is served the call recorded for it."""
+
+    # parity-with: threetears.evals.schema.CompletionClient
+    class _FakeDrawingJudge(_FakeJudgeClient):
+        """A judge whose every call scores the next of 1 to 5 in turn, so no two neighbouring calls agree."""
+
+        async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Reply:
+            reply = await super().generate(system=system, user=user, response_format=response_format)
+            match = re.search(r'single key "([^"]+)"', system)
+            assert match is not None
+            score = len(self.calls) % 5 + 1
+            return dataclasses.replace(
+                reply, content=json.dumps({"reasoning": "drawn", "criteria_scores": {match[1]: score}})
+            )
+
+    recording = tmp_path / "judge.jsonl"
+
+    async def verdicts(client: Any) -> dict[str, list[tuple[str, int, list[tuple[str, int]]]]]:
+        twin = Eval(CASES, {"a": answer, "b": other_answer}, [_judge(client)], k=2, name="twin")
+        result = await twin.run(store=MEMORY, scope=SCOPE)
+        return {
+            arm: sorted(
+                (row.case_id, row.repeat, [(grade.dimension, grade.score) for grade in row.judged])
+                for row in result.results(arm)
+            )
+            for arm in ("a", "b")
+        }
+
+    recorded = await verdicts(RecordedCompletions.record(_FakeDrawingJudge(), recording, settings=None))
+    assert len({str(rows) for rows in recorded.values()}) == 2, "the arms were recorded with different verdicts"
+    for _ in range(2):
+        assert await verdicts(RecordedCompletions.replay(recording, settings=None)) == recorded

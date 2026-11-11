@@ -84,6 +84,11 @@ class CellIdentity:
     #: loop minted the identity. A coordinate, never the identity's uniqueness, which is ``cell_id``'s: a replaying
     #: client reads it to serve a case's repeats their recorded answers in one order on every replay.
     k_iteration: int | None = None
+    #: The arm this execution is a cell of, as the run's resolved contestant identity names it (its ``variant_key``:
+    #: the model, the kind and every lever's level, the arm's name among them); ``None`` where no run's loop minted the
+    #: identity. A coordinate like ``k_iteration``: with ``subject_id``, ``test_case_id`` and ``k_iteration`` it is
+    #: what a recording notes beside each call, so a replay serves every cell the call recorded for that very cell.
+    variant_key: str | None = None
 
 
 #: The cell the running task is working for. Set by the engine around everything it does for one cell, so a host's
