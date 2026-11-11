@@ -26,6 +26,7 @@ from threetears.core.keyed import (
     read_keyed,
     KeyBatch,
     dialect_of,
+    group_hashes,
     key_text,
     row_hash_selected,
     row_hash_sql,
@@ -589,6 +590,108 @@ def test_phase_zero_pages_by_the_group(grouped: duckdb.DuckDBPyConnection, monke
     changed = _grouped_changed(counted, held)
     assert sorted(row["id"] for row in changed.rows) == [5, 55]
     assert sum("GROUP BY" in statement for statement in counted.statements) == 4
+
+
+# --- phase 0 for many scopes at once (group_hashes, read_changed(groups=...)) --------------------------------------
+
+
+def _scoped_changed(db: Any, held: Mapping[tuple[Any, ...], str | None], state: str, **options: Any) -> ChangedRows:
+    return run_inline(
+        read_changed(
+            db,
+            "grouped",
+            key=["state", "county", Sort("id", cast="bigint")],
+            columns=_GROUPED_COLUMNS,
+            held=held,
+            hash_columns=_GROUPED_HASHED,
+            by={"state": state},
+            **options,
+        )
+    )
+
+
+def _scoped_hashes(db: Any, scopes: Sequence[str], **options: Any) -> dict[Any, dict[Any, Any]]:
+    return run_inline(
+        group_hashes(
+            db, "grouped", scope="state", scopes=scopes, group="county", hash_columns=_GROUPED_HASHED, **options
+        )
+    )
+
+
+def test_every_scope_s_group_hashes_are_one_statement_and_each_slice_is_its_own_phase_zero(
+    grouped: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if group_hashes reads a statement per scope, or a scope's slice differs from the phase 0 read_changed
+    reads of that scope alone: handed the slice, an unchanged scope reads no statement, and a moved one reads only
+    its moved groups' keys and changed rows, finding what a read with its own phase 0 finds."""
+    grouped.execute("UPDATE grouped SET votes = -1 WHERE state = 'OH' AND id = 12")
+    counted = _Counted(grouped)
+    where = [Fragment('t."county" IN ($1, $2, $3)', ("c0", "c1", "c5"))]
+    sliced = _scoped_hashes(counted, ["PA", "OH", "WV"], where=where)
+    assert len(counted.statements) == 1 and "GROUP BY" in counted.statements[0]
+    assert sorted(sliced) == ["OH", "PA", "WV"] and sliced["WV"] == {}
+    assert sorted(sliced["PA"]) == ["c0", "c1", "c5"]
+    for state in ("PA", "OH"):
+        held = {key: hashed for key, hashed in _grouped_held(grouped, "PA").items() if key[1] in {"c0", "c1", "c5"}}
+        held = {(state, *key[1:]): hashed for key, hashed in held.items()}  # OH holds what PA holds: id 12 moved
+        own = _scoped_changed(InlineDuckDB(grouped), held, state, group="county", where=where)
+        given = _Counted(grouped)
+        handed = _scoped_changed(given, held, state, group="county", where=where, groups=sliced[state])
+        assert (handed.rows, sorted(handed.gone_keys), handed.changed_keys) == (
+            own.rows,
+            sorted(own.gone_keys),
+            own.changed_keys,
+        )
+        assert not any("GROUP BY" in statement for statement in given.statements)
+        assert len(given.statements) == (0 if state == "PA" else 2)
+    assert [row["id"] for row in handed.rows] == [12]
+    # a scope with no row answers no group: every held key of it is gone, read no further
+    gone = _scoped_changed(
+        InlineDuckDB(grouped), {("WV", "c0", 1): "a" * 32}, "WV", group="county", groups=sliced["WV"]
+    )
+    assert gone.gone_keys == [("WV", "c0", 1)] and gone.rows == []
+
+
+def test_group_hashes_page_by_scope_then_group_across_null_groups(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flips if a page's edge (inside a scope, between two scopes, at a NULL group) loses or repeats a group."""
+    from threetears.core.keyed import changed as changed_module
+
+    monkeypatch.setattr(changed_module, "_GROUP_PAGE", 2)
+    db = duckdb.connect()
+    db.execute("CREATE TABLE grouped (state VARCHAR, county VARCHAR, id BIGINT, name VARCHAR, votes BIGINT)")
+    db.execute(
+        "INSERT INTO grouped SELECT s, CASE WHEN i % 4 = 0 THEN NULL ELSE 'c' || (i % 4) END, i, 'n' || i, i "
+        "FROM range(12) r(i), (VALUES ('OH'), ('PA'), ('WV')) v(s)"
+    )
+    counted = _Counted(db)
+    paged = _scoped_hashes(counted, ["WV", "OH", "PA"])
+    monkeypatch.setattr(changed_module, "_GROUP_PAGE", 10_000)
+    whole = _scoped_hashes(InlineDuckDB(db), ["WV", "OH", "PA"])
+    assert paged == whole
+    assert {state: sorted(groups, key=str) for state, groups in paged.items()} == dict.fromkeys(
+        ("WV", "OH", "PA"), [None, "c1", "c2", "c3"]
+    )
+    assert len(counted.statements) == 7  # 12 groups, 2 a page, and the empty page that ends it
+    db.close()
+
+
+def test_group_hashes_need_a_scope_apart_from_the_group_and_read_nothing_for_no_scope(
+    grouped: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if no scope costs a statement, or a scope the same as the group, a NULL scope or groups= with no group
+    is taken."""
+    counted = _Counted(grouped)
+    assert _scoped_hashes(counted, []) == {} and counted.statements == []
+    with pytest.raises(ValueError, match="both"):
+        run_inline(
+            group_hashes(
+                grouped, "grouped", scope="county", scopes=["c0"], group="county", hash_columns=_GROUPED_HASHED
+            )
+        )
+    with pytest.raises(ValueError, match="NULL"):
+        _scoped_hashes(InlineDuckDB(grouped), ["PA", None])  # type: ignore[list-item]
+    with pytest.raises(ValueError, match="group column"):
+        _scoped_changed(InlineDuckDB(grouped), {}, "PA", groups={})
 
 
 def test_the_rows_after_applying_a_grouped_read_are_a_full_read_s(conn: duckdb.DuckDBPyConnection) -> None:
