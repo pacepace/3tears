@@ -44,11 +44,13 @@ from threetears.evals.analysis.arms import (
     surface_order,
 )
 from threetears.evals.analysis.bundle.schema import (
+    AliasedFactors,
     AnalysisContextBundle,
     ArmScoreboard,
     ComparisonFamily,
     CellCoordinate,
     ComparedCell,
+    FactorPairScan,
     FLOOR_COST_MEASURE,
     TRIAL_PASS_NAME,
     FamilyComparison,
@@ -4107,17 +4109,24 @@ def _design_disclosures(
     for dimension in unverified:
         reason = bundle.confound_catalog[dimension]
         say("comparisons", reason[:1].upper() + reason[1:] + ".")
+    # The bundle holds the factor reads as facts, by id; each sentence is worded here, every factor by its reader name.
     for group in bundle.aliased_factors:
-        say("comparisons", group.sentence)
+        say("comparisons", _aliased_sentence(group, bundle))
     if bundle.factor_pairs is not None and bundle.factor_pairs.factors:
-        say("comparisons", f"{bundle.factor_pairs.completeness} {bundle.factor_pairs.interaction_aliasing}")
+        say("comparisons", f"{_pair_scan_completeness(bundle.factor_pairs)} {bundle.factor_pairs.interaction_aliasing}")
         for pivot in bundle.factor_pairs.pivots:
             holes = [f"{cell.row_level} with {cell.column_level}" for cell in pivot.cells if cell.status == "not_run"]
             if holes:
+                pair = _listed_words(
+                    [
+                        lever_reader_name(factor, bundle.lever_names)
+                        for factor in (pivot.row_factor, pivot.column_factor)
+                    ]
+                )
                 say(
                     "comparisons",
-                    f"{pivot.row_factor} and {pivot.column_factor} co-vary; {len(holes)} of their {len(pivot.cells)} "
-                    f"combinations never ran: {_listed(holes)}.",
+                    f"{pair[:1].upper()}{pair[1:]} co-vary; {len(holes)} of their {len(pivot.cells)} combinations "
+                    f"never ran: {_listed(holes)}.",
                 )
     if bundle.declared_crossing is not None:
         say("comparisons", bundle.declared_crossing.sentence)
@@ -4235,6 +4244,51 @@ def _production_footing_sentence(bundle: AnalysisContextBundle, arm: Callable[[s
 def _arm_words(names: Sequence[str]) -> str:
     """``arm a`` or ``arms a and b``."""
     return f"{'arm' if len(names) == 1 else 'arms'} {_listed_words(names)}"
+
+
+def _aliased_sentence(group: AliasedFactors, bundle: AnalysisContextBundle) -> str:
+    """The one sentence naming a group of factors that moved in lockstep, each by the name every page calls it
+    (:func:`~threetears.evals.analysis.style.lever_reader_name` over ``lever_names``), worded from the group's facts."""
+    names = _listed_words([lever_reader_name(factor, bundle.lever_names) for factor in group.factors])
+    across = (
+        f"all {group.n_runs} runs"
+        if group.n_runs == len(bundle.run_ids)
+        else f"the {group.n_runs} runs that recorded them"
+    )
+    return (
+        f"{names[:1].upper()}{names[1:]} move together across {across}, splitting them into the same {group.n_levels} "
+        f"groups; no comparison separates them, so a difference across them belongs to all {len(group.factors)} at "
+        "once."
+    )
+
+
+def _pair_scan_completeness(scan: FactorPairScan) -> str:
+    """What the factor-pair scan examined and what it shows, worded from its counts."""
+    factors = len(scan.factors)
+    if factors < 2:
+        return f"{factors} factor varied, so no pair of factors could co-vary."
+    outside = scan.n_covarying - scan.n_covarying_in_groups
+    shown = len(scan.pivots) + scan.pivots_omitted
+    return (
+        f"{scan.n_pairs_examined} factor pair(s) examined over the {factors} factors that varied; "
+        f"{scan.n_covarying} co-vary"
+        + (
+            f", {scan.n_covarying_in_groups} of them inside a group that moves in lockstep"
+            if scan.n_covarying_in_groups
+            else ""
+        )
+        + (
+            f"; the {outside} outside any group are shown in {shown} pivot(s), a group's members sharing one"
+            if outside
+            else ""
+        )
+        + (
+            f", of which {scan.pivots_omitted} with the fewest unrun combinations are left out"
+            if scan.pivots_omitted
+            else ""
+        )
+        + "."
+    )
 
 
 def _listed_words(names: Sequence[str]) -> str:

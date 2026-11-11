@@ -1360,12 +1360,21 @@ class DeclaredCrossing(EvalDocumentModel):
 
 
 class AliasedFactors(EvalDocumentModel):
-    """Factors that moved in lockstep: every one splits the runs into the same groups, so no comparison separates them."""
+    """Factors that moved in lockstep: every one splits the runs into the same groups, so no comparison separates them.
 
-    factors: list[str] = Field(description="The factors, sorted; two or more.")
-    n_runs: int = Field(ge=0, description="The runs whose levels of every one of these factors were read.")
+    Facts only, by id: the one sentence naming the group is worded when a page is rendered, each factor by the name
+    every page calls it (``lever_names``), so renaming a lever moves nothing here.
+    """
+
+    factors: list[str] = Field(description="The factors, by id, sorted; two or more.")
+    n_runs: int = Field(
+        ge=0,
+        description=(
+            "The runs whose levels of every one of these factors were read; every resolved run of the bundle "
+            "(`run_ids`) where it equals their count."
+        ),
+    )
     n_levels: int = Field(ge=2, description="How many groups each of them splits those runs into.")
-    sentence: str = Field(description="The one sentence that names the group; quote it rather than a factor apiece.")
 
 
 class UnexercisedFactor(EvalDocumentModel):
@@ -1419,7 +1428,8 @@ class FactorPairScan(EvalDocumentModel):
 
     Two factors co-vary when one never moves while the other holds still: across the runs at any one level of
     either, the other takes a single level. Every pair is checked; only the pivots are bounded, so the count says
-    how complete the short list is.
+    how complete the short list is. Facts only, by id: what was examined and what is shown, and each co-varying pair,
+    are worded when a page is rendered, each factor by the name every page calls it.
     """
 
     factors: list[str] = Field(
@@ -1433,7 +1443,6 @@ class FactorPairScan(EvalDocumentModel):
     n_covarying_in_groups: int = Field(ge=0, description="Of those, the pairs whose two factors share a group.")
     pivots: list[FactorPairPivot] = Field(default_factory=list)
     pivots_omitted: int = Field(default=0, ge=0, description="Pivots past the cap, fewest holes first.")
-    completeness: str = Field(description="The sentence stating what was examined and what is shown.")
     interaction_aliasing: str = Field(default=INTERACTION_ALIASING_UNCHECKED)
 
 
@@ -2245,15 +2254,22 @@ ASPECT_BUNDLE_SHAPE = 59
 #: the interval it was drawn on (``FamilyComparison.basis``), so a page names it as it was drawn. A bump that changes
 #: what a stored figure means, or adds a field this build cannot do without, does not join, and a bundle of an earlier
 #: shape outside the set is refused. Reading as stored is no migration: every figure renders as it was written, never
-#: recomputed (``tests/fixtures/report_inputs/migrate_bundle_shape_65.py`` stays a fixture tool).
-#: 64: the bump to 65 drew a new rate contrast on its bounded interval and added ``FamilyComparison.interval_basis``
-#: and ``LateCriterion.aspect`` and ``.reading``, each optional; a shape-64 contrast's interval is its own test's.
-_READ_AS_STORED: Final[Mapping[int, str]] = {
-    64: (
-        "Its rate contrasts were read on the t interval; the current build draws them on a bounded interval, so a "
-        "separation shown here may read today as one the evidence cannot tell apart."
-    )
-}
+#: recomputed (``tests/fixtures/report_inputs/migrate_bundle_shape_66.py`` stays a fixture tool).
+#: None today: 64 was read as stored until the bump to 66, which no earlier shape can join
+#: (:data:`_NAMES_LEFT_THE_EVIDENCE`).
+_READ_AS_STORED: Final[Mapping[int, str]] = {}
+
+#: The first bundle shape whose evidence carries no name (owner ruling, 2026-11-11): every bundle of an earlier shape
+#: holds sentences worded with lever ids, and its campaign's derived arms labelled with lever names, that a page now
+#: words and names at render time, so none is read as stored, and a stored analysis frozen over one is regenerated once.
+_NAMES_LEFT_THE_EVIDENCE: Final[int] = 66
+
+#: Why a bundle frozen before :data:`_NAMES_LEFT_THE_EVIDENCE` is refused, in a reader's words.
+_FROZEN_WITH_NAMES = (
+    "{what} holds an evidence bundle of shape {shape}, frozen before names left the evidence: it carries arm labels and "
+    "sentences worded when it was frozen, and this build (shape {current}) freezes ids and facts only and names every "
+    "lever and arm when a page is rendered, so it cannot read it"
+)
 
 #: The one line a page read from evidence of an earlier shape this build reads as stored says first, and the analysis
 #: listing's verdict says after the verdict: what the page is, then what that means for its figures, then, last and
@@ -2297,7 +2313,8 @@ def refuse_a_bundle_of_another_shape(data: Mapping[str, Any], *, what: str, reme
     :param remedy: What to do instead: regenerate what holds it, or freeze it again.
     :ptype remedy: str
     :raises RefusedInput: The bundle's ``schema_version`` is missing, or is neither this build's
-        (``AnalysisContextBundle.schema_version``'s default) nor one in :data:`_READ_AS_STORED`.
+        (``AnalysisContextBundle.schema_version``'s default) nor one in :data:`_READ_AS_STORED`; one frozen before
+        :data:`_NAMES_LEFT_THE_EVIDENCE` is refused saying so.
     """
     shape = data.get("schema_version")
     current = AnalysisContextBundle.model_fields["schema_version"].default
@@ -2307,11 +2324,13 @@ def refuse_a_bundle_of_another_shape(data: Mapping[str, Any], *, what: str, reme
             f"(shape {ASPECT_BUNDLE_SHAPE}), so this build cannot read it",
             remedy=remedy,
         )
+    if shape < _NAMES_LEFT_THE_EVIDENCE:
+        raise RefusedInput(_FROZEN_WITH_NAMES.format(what=what, shape=shape, current=current), remedy=remedy)
     if shape != current and shape not in _READ_AS_STORED:
-        stored = ", ".join(map(str, sorted(_READ_AS_STORED)))
+        stored = f" and, as stored, {', '.join(map(str, sorted(_READ_AS_STORED)))}" if _READ_AS_STORED else ""
         raise RefusedInput(
-            f"{what} holds an evidence bundle of shape {shape}, and this build reads shape {current} and, as stored, "
-            f"{stored} only, so it cannot read it: a bundle is regenerated across a shape change, never migrated",
+            f"{what} holds an evidence bundle of shape {shape}, and this build reads shape {current}{stored} only, so "
+            "it cannot read it: a bundle is regenerated across a shape change, never migrated",
             remedy=remedy,
         )
 
@@ -2863,9 +2882,15 @@ class AnalysisContextBundle(EvalDocumentModel):
     # its interval was drawn by (`interval_basis`), and a rate whose adjusted p clears alpha while its bounded interval
     # reaches zero says so (`not_separated_reason`). A late floor names its aspect and reading
     # (`reading_scope.late_criteria[].aspect`, `.reading`).
+    # 66: names leave the evidence (owner ruling, 2026-11-11: names are presentation, never evidence). The bundle holds
+    # ids and structured facts only, and every name is applied when a page is rendered: `aliased_factors[].sentence`
+    # and `factor_pairs.completeness` are gone, a page wording each group and the pair scan from their facts with every
+    # factor by its reader name, and a campaign bundle's derived arm is labelled by its levers' ids read as words, a
+    # page printing it with their stored names. Nothing read moves, but no bundle of an earlier shape is read as stored:
+    # every stored analysis is regenerated once (`_NAMES_LEFT_THE_EVIDENCE`).
     # Unmoved by declared names: `short_name`, `goal_check_names`, `stratum_names` and `lever_names` are written only when declared and
     # are no part of the fingerprint, and neither is a declared axis's `reader_name` (`AXIS_PRESENTATION_FIELDS`), so a
-    # bundle naming nothing is this shape byte for byte and every fingerprint stays put.
+    # bundle naming nothing is this shape byte for byte and naming or renaming a lever moves no fingerprint.
     # Unmoved by the run apparatus and the unanswered calls: each run summary's `apparatus` and each arm's
     # `scoreboard[].unanswered` are written only when the run recorded one or a usage row counted them, so a bundle over
     # runs that recorded neither is this shape byte for byte and its fingerprint stays put. A run recording either moves
@@ -2875,7 +2900,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # only when a production usage row was recorded, and is no part of the fingerprint whether written or not (owner
     # ruling, 2026-10-28), so a bundle over unchanged runs fingerprints as it did.
     schema_version: int = Field(
-        default=65, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=66, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2929,10 +2954,12 @@ class AnalysisContextBundle(EvalDocumentModel):
         default_factory=dict,
         exclude_if=lambda names: not names,
         description=(
-            "What every page calls each lever this bundle names, by its id: the name the aspect's declared axis stores "
-            "(`SweptAxis.reader_name`), else the one the host declares for it (`Sweepable.reader_name`, a kind field's "
-            "title, an open family's member name). The one source an arm name computed from levers, a setting, a "
-            "factor, the production check and a lever-effect row read. A lever absent here has no declaration at all "
+            "What every page calls each lever this bundle names, by its id, by one rule across the campaign: the name "
+            "the first of the campaign's declared axes to name it stores (`SweptAxis.reader_name`, in aspect order), "
+            "else the one the host declares for it (`Sweepable.reader_name`, a kind field's title, an open family's "
+            "member name), so every aspect of a campaign names a lever alike. The one source an arm name computed from "
+            "levers, a derived arm's label, a setting, a factor, the lockstep and factor-pair sentences, the "
+            "production check and a lever-effect row read, when a page is rendered. A lever absent here has no declaration at all "
             "and is printed as its id read as words. Presentation only: written only when a lever is named and no part "
             "of the bundle's fingerprint, so renaming a lever stales no analysis."
         ),
@@ -3451,7 +3478,7 @@ class AnalysisContextBundle(EvalDocumentModel):
         default_factory=list,
         description=(
             "Factors that moved in lockstep across the campaign: each group's factors split the runs identically, "
-            "so no comparison separates them. Name a group once, by its sentence, never one factor at a time. "
+            "so no comparison separates them. Name a group once, never one factor at a time. "
             "Pairs only: see factor_pairs.interaction_aliasing."
         ),
     )

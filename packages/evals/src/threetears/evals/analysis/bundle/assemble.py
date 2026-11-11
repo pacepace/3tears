@@ -799,7 +799,11 @@ def assemble_context_bundle(
         profile=profile,
     )
     bundle.verdict_order = _verdict_order(bundle.bar_adjudications, view.aspect, declared)
-    bundle.lever_names = _lever_names(bundle, declared_design, profile=profile)
+    # One rule across the campaign: every aspect names a lever alike, by the first of the campaign's declared axes to
+    # store a name for it, in aspect order, else as the host declares it.
+    bundle.lever_names = _lever_names(
+        bundle, [aspect.design for aspect in campaign.aspects if aspect.design is not None], profile=profile
+    )
     # The decision surface, over the same grouping and the same population the bars were read over,
     # and before the catalog: its collections are measure collections like any other here, so the
     # catalog has to describe their names too. Laid out in the surface's one row order (the control as
@@ -980,19 +984,22 @@ def _check_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate])
 
 
 def _lever_names(
-    bundle: AnalysisContextBundle, declared: AspectDesign | None, *, profile: HostProfile
+    bundle: AnalysisContextBundle, designs: Sequence[AspectDesign], *, profile: HostProfile
 ) -> dict[str, str]:
     """What every page calls each lever the bundle names, by id (:attr:`AnalysisContextBundle.lever_names`).
 
     The levers are those a page can name off the bundle: each arm's lever map, the coverage rows, the production
-    footings and the factors no comparison exercised. Each is named as the aspect's declared axis stores it, else as
-    the host declares it (:func:`~threetears.evals.kernel.declaration.lever_names_of`); a lever neither names is left
-    out, and a page reads its id as words.
+    footings, the factors no comparison exercised, and the factors the aliasing read and the pair scan name. Each is
+    named by the one rule across the campaign (:func:`~threetears.evals.kernel.declaration.lever_names_of`): as the
+    first of the campaign's declared axes to store a name for it stores it, in aspect order, else as the host declares
+    it; a lever neither names is left out, and a page reads its id as words. So every aspect of a campaign names a
+    lever alike, whichever aspect declares it, and the campaign bundle's names are each aspect's
+    (:attr:`~threetears.evals.analysis.campaign_bundle.CampaignBundle.lever_names`).
 
     :param bundle: The bundle, assembled but for its lever names.
     :ptype bundle: AnalysisContextBundle
-    :param declared: The aspect's declared design, or None.
-    :ptype declared: AspectDesign | None
+    :param designs: Every declared design of the bundle's campaign, in aspect order.
+    :ptype designs: Sequence[AspectDesign]
     :param profile: The host it was assembled under.
     :ptype profile: HostProfile
     :return: Lever id to reader name, sorted by id.
@@ -1001,6 +1008,9 @@ def _lever_names(
     levers = {lever for entry in bundle.variant_index for lever in entry.levers}
     levers |= {row.name for row in bundle.coverage}
     levers |= {factor.factor for factor in bundle.unexercised_factors}
+    # The factors the aliasing read and the pair scan name, which a page words with their names.
+    levers |= {factor for group in bundle.aliased_factors for factor in group.factors}
+    levers |= set(bundle.factor_pairs.factors) if bundle.factor_pairs is not None else set()
     levers |= {
         name
         for pooled in bundle.arm_production_footings.values()
@@ -1008,7 +1018,7 @@ def _lever_names(
         if footing is not None
         for name in (*footing.moved, *footing.unchecked)
     }
-    return lever_names_of(levers, [declared] if declared is not None else [], profile)
+    return lever_names_of(levers, designs, profile)
 
 
 def _stratum_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) -> dict[str, str]:

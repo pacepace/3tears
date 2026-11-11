@@ -8,7 +8,10 @@
   changes from what the bundle holds, and refuses when any other field moves. At shape 65 that was
   ``migrate_bundle_shape_65.py kairo-round2-bundle.json.gz``, which moved eight rate contrasts' intervals (the pass
   rate, a goal check and two pass/fail judged dimensions, two arms each) onto their stored bounded intervals, every
-  verdict holding, named each corrected comparison's interval basis, and moved the shape.
+  verdict holding, named each corrected comparison's interval basis, and moved the shape. At shape 66 it was
+  ``migrate_bundle_shape_66.py kairo-round2-bundle.json.gz``, which dropped the pair scan's completeness sentence (a
+  page words it from the scan's counts) and moved the shape; the same script moved the retired writers' stored
+  analyses (``fixtures/retired_writers``) and the fingerprints they record over their bundles.
 
 The plans the retired report planner stored beside these inputs, and its scoring dataset, left with it. The charts a
 few of those plans stored are kept for the chart resolver's tests (``fixtures/plan_charts/``).

@@ -68,7 +68,6 @@ from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN, FIND_TEMPL
 from threetears.evals.kernel.declaration import (
     NO_TEMPLATE_REMEDY,
     DesignRefused,
-    lever_names_of,
     name_declared_axes,
     refuse_an_undeclarable_design,
 )
@@ -1818,10 +1817,13 @@ def campaign_arms(storage: CampaignStore, campaign: EvalCampaign, *, profile: Ho
     A campaign stored before arms existed names its control alone, and a campaign named from a sweep names none, so
     every variant among an aspect's runs that no named arm resolves to is read as a candidate of its own, in aspect
     order then the order its runs first carry it. A derived candidate is labelled by the levers on which the
-    campaign's variants differ (:func:`~threetears.evals.analysis.arms.arm_names`), read as the page reads them
-    (:func:`~threetears.evals.analysis.style.arm_name`: ``careful``, never ``candidate=careful``), its digest beside the
-    label where two would read alike, and a ``(2)``, ``(3)`` … where a label is still taken. Derived on every read and never
-    stored, so a person naming the arms later replaces them whole.
+    campaign's variants differ (:func:`~threetears.evals.analysis.arms.arm_names`), read as words
+    (:func:`~threetears.evals.analysis.style.arm_name`: ``careful``, never ``candidate=careful``; several levers each by
+    its id read as words, never by its reader name), its digest beside the label where two would read alike, and a
+    ``(2)``, ``(3)`` … where a label is still taken. Derived on every read and never stored, so a person naming the arms
+    later replaces them whole. A page prints it with each lever's stored name
+    (:func:`~threetears.evals.analysis.report.words.printed_arm_labels`), so renaming a lever moves no label and no
+    fingerprint.
 
     **A derived label is not an identity.** It is read over the variants the runs carry now, so a variant joining
     the campaign can change the levers the variants differ on, and with them every derived label. Whatever names a
@@ -1851,19 +1853,14 @@ def campaign_arms(storage: CampaignStore, campaign: EvalCampaign, *, profile: Ho
                 derived[addressed.key] = addressed
     if not derived:
         return named
-    entries = [_index_entry(arm) for arm in [*map(_addressed, named), *derived.values()]]
-    names = arm_names(entries)
-    levers = lever_names_of(
-        {lever for entry in entries for lever in entry.levers},
-        [aspect.design for aspect in campaign.aspects if aspect.design is not None],
-        profile,
-    )
+    names = arm_names([_index_entry(arm) for arm in [*map(_addressed, named), *derived.values()]])
     taken = {arm.label for arm in named}
     arms = list(named)
     for key, addressed in derived.items():
-        # The page's word for the arm (`careful`, not `candidate=careful`), so the first screen and every fold read it;
-        # an arm spelled by several levers names each by its stored reader name (`prompt v2, effort low`).
-        word = arm_name(names[key], declared=levers).label
+        # The arm's word (`careful`, not `candidate=careful`), an arm spelled by several levers naming each by its id
+        # read as words (`prompt style v2, effort low`), never by a reader name: the label is frozen with the evidence
+        # and fingerprinted, and a page prints it with the levers' stored names (`printed_arm_labels`).
+        word = arm_name(names[key]).label
         label, suffix = word, 2
         while label in taken:
             label, suffix = f"{word} ({suffix})", suffix + 1

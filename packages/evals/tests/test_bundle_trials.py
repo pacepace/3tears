@@ -230,6 +230,6 @@ def test_the_trials_are_capped_with_the_lost_and_failed_kept_first(monkeypatch: 
 
 def test_the_build_is_carried_and_left_out_of_the_fingerprint() -> None:
     bundle = _bundle(_results())
-    assert bundle.schema_version == 65
+    assert bundle.schema_version == 66
     assert bundle.package_version is not None
     assert bundle.model_copy(update={"package_version": "9.9.9"}).fingerprint() == bundle.fingerprint()
