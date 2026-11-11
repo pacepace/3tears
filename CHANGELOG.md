@@ -10,16 +10,30 @@ packages (bumped in lock-step).
 
 **Changed:** `examples/3-invoices/extract.py` taught six ideas at once; it is now a file each, numbered as steps of
 rung 3: `compare.py` (3a: two arms, a control and a verdict), `margin.py` (3b: a margin, so a reading can come out
-equivalent), `guardrail.py` (3c: a guardrail decided on its own; the old file's eval, unchanged and still named
-`invoices`), `ci.py` (3d: the gate in CI) and `grid.py` (3e: two levers at once, read by one lever with
-`Result.against`); 3f is `--write-report` over `compare.py`. The answer's shape and the two prompts move to
-`invoice.py`, which declares no eval, and each file builds its own `Model`. Rung 4's `agent.py` and `serve.py` are 4a
-and 4b. The grid's high-effort cells replay a new recording, `recordings/invoices-high.jsonl` (180 calls, $0.0188).
-Rung 5's frozen `3-invoices` case is the pre-split campaign and is not refrozen. No package code moves.
+equivalent, fixed before the run from what the decision is for), `guardrail.py` (3c: a guardrail decided on its own;
+the old file's eval, still named `invoices`, without the 5-point margin on `total` it carried, which is 3b's idea),
+`ci.py` (3d: the gate in CI) and `grid.py` (3e: two levers at once, read by one lever with `Result.against`); 3f is
+`--write-report` over `compare.py`. The answer's shape and the two prompts move to `invoice.py`, which declares no
+eval and builds no `Model`; every other file builds its own (`grid.py` two, one per effort) but `ci.py`, which runs
+`guardrail.py`'s eval. Rung 4's `agent.py` and `serve.py` are 4a and 4b. The grid's high-effort cells replay a new
+recording, `recordings/invoices-high.jsonl` (180 calls, $0.0188). Rung 5's frozen `3-invoices` case is the pre-split
+campaign (frozen 2026-11-03: no question, the 5-point margin on `total`), which no rung-3 file declares now; it is
+not refrozen. The grid's arm names moved package code: see the next entry.
 
 **Readers:** a link to `extract.py`, or to the ladder's `#rung-3-two-prompts-compared` or
-`#rung-4-an-agent-graded-on-the-world-it-leaves`, is dead: link `guardrail.py` (the same eval),
+`#rung-4-an-agent-graded-on-the-world-it-leaves`, is dead: link `guardrail.py` (the same eval, less the margin),
 `#rung-3a-two-prompts-compared` or `#rung-4a-an-agent-graded-on-the-world-it-leaves` instead.
+
+### evals: a factor arm reads by its declared factors everywhere
+
+**Fixed:** an eval whose arms are named as `k=v` factors (`"prompt=v1, effort=low"`) labelled only its control on
+the campaign, by its raw key, and every other arm by its variant's levers: the page and the verdict line read
+`Callable effort high, callable prompt v1` (the engine's kind as a word, the factors in sorted order) while the print
+read `prompt=v1, effort=low`. Every surface now names a factor arm by its factors, in the order the eval declares
+them (`Prompt v1, effort low`): the campaign's arm labels, the verdict line, the contrast rows, the scoreboard, the
+misses, the guardrail lines and `against()`'s default name. `Result.arm_labels` (new) holds each such arm's name by
+variant key; `contrast_rows` and `report_cell_labels` take `arm_labels=` as `aspect_verdict` already did
+(`quick/result.py`, `analysis/report/build.py`). An arm named plainly is unchanged.
 
 ### evals: a judge is checked on its examples in the run
 
