@@ -10,8 +10,8 @@ the real collections against real Postgres. The contract this pins (epoch-task-0
 - a heard row evicts exactly the entries it reaches and leaves every other entry;
 - the raw-SQL writes of :class:`RoleAssignmentCollection` (the ensure and the revoke) are announced
   with their advance, and a revoke that matches nothing advances nothing;
-- a missed broadcast is caught by the follower, by a pass or by the key watcher, and empties only
-  the layer derived from that table.
+- a missed broadcast is caught by the follower, by a pass or by the key watcher, and its epoch's
+  change record evicts only the entries its row reaches.
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch import (
+    EPOCH_CHANGES_BUCKET,
     EpochGenerationReader,
     EpochGenerationSource,
     TableFollower,
@@ -164,8 +165,14 @@ class _Follower:
 
 
 async def _count(bus: FakeNatsClient, table: str) -> int | None:
-    raw = await (await bus.kv_bucket(name="epochs")).get(key=generation_kv_key(table))
-    return None if raw is None else int(raw.decode().rpartition(":")[2])
+    """how many epochs the change log holds for the table; ``None`` before the log exists."""
+    log = bus.change_log(EPOCH_CHANGES_BUCKET)
+    if await log.state() is None:
+        return None
+    count, seq = 0, 0
+    while (entry := await log.next_after(generation_kv_key(table), seq)) is not None:
+        count, seq = count + 1, entry.seq
+    return count
 
 
 @pytest.fixture
@@ -343,17 +350,17 @@ class TestANamespaceRowEvictsWhatWasResolvedForIt:
         assert await generation_catchup_tick(follower.registry, follower.reader) == 0
 
 
-class TestAMissedBroadcastEmptiesOnlyItsTablesLayer:
+class TestAMissedBroadcastEvictsOnlyWhatItsRowReaches:
     async def test_by_one_pass(self, pool: asyncpg.Pool, bus: _Lossy) -> None:
         writer, follower = await _pods(pool, bus)
         ada, group, ns = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
         follower.seed(("user", ada), ("user", uuid.uuid4()), groups=((group, ns, frozenset()),))
         bus.deaf = True
-        await writer.add_member(uuid.uuid4(), "user", uuid.uuid4())
+        await writer.add_member(uuid.uuid4(), "user", ada)
         bus.deaf = False
         assert follower.cache.membership_size == 2  # nothing heard yet
         assert await generation_catchup_tick(follower.registry, follower.reader) == 1
-        assert follower.cache.membership_size == 0
+        assert follower.cache.membership_size == 1, "the epoch's record evicted ada and no one else"
         assert follower.holds_group(group, ns)
 
     async def test_by_the_key_watcher(self, pool: asyncpg.Pool, bus: _Lossy) -> None:
@@ -369,7 +376,7 @@ class TestAMissedBroadcastEmptiesOnlyItsTablesLayer:
             assert follower.holds_group(group, ns)
             bus.deaf = True
             await writer.assignments.ensure_group_role_assignment(
-                group_id=uuid.uuid4(), role_id=uuid.uuid4(), scope_type="all", scope_id=None
+                group_id=group, role_id=uuid.uuid4(), scope_type="all", scope_id=None
             )
             bus.deaf = False
             for _ in range(50):
@@ -384,7 +391,7 @@ class TestAMissedBroadcastEmptiesOnlyItsTablesLayer:
 
 
 class TestOneCallBindsAndFollows:
-    async def test_follow_access_tables_evicts_heard_rows_drops_missed_ones_and_reports_health(
+    async def test_follow_access_tables_evicts_heard_and_missed_rows_and_reports_health(
         self, pool: asyncpg.Pool, bus: _Lossy
     ) -> None:
         writer = _Writer(pool, bus)
@@ -409,7 +416,7 @@ class TestOneCallBindsAndFollows:
             assert cache.get_membership(ActorMembershipKey("user", ada)) is None
             assert cache.get_membership(ActorMembershipKey("user", bob)) is not None
             bus.deaf = True
-            await writer.add_member(uuid.uuid4(), "user", uuid.uuid4())
+            await writer.add_member(uuid.uuid4(), "user", bob)
             bus.deaf = False
             for _ in range(50):
                 if cache.membership_size == 0:

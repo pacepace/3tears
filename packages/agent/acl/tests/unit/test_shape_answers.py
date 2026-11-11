@@ -54,6 +54,7 @@ from threetears.agent.acl.types import (
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import tier_reads_total
 from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
+from threetears.core.collections.epoch_change import EpochChange, EpochWalk
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 
@@ -457,7 +458,18 @@ class TestAChangeDropsOnlyWhatItReaches:
         replica = await _replica(bus, store)
         shape = await estate.shape(store, estate.reader)
         await _ask(replica, estate, shape, _Computer())
-        replica.registry.settle_generation("groups", "inc:9")
+        # an epoch whose change is the whole table (a truncate, a bulk load), caught up from its record
+        whole = EpochChange(table="groups", token="inc:1", whole_table=True)
+
+        class _Log:
+            async def change(self, table_name: str, token: str) -> EpochChange | None:
+                return whole if (table_name, token) == ("groups", "inc:1") else None
+
+            async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+                return EpochWalk(changes=(whole,), complete=True)
+
+        await replica.registry.catch_up_generation("groups", "inc:1", changes=_Log())
+        assert not replica.registry.behind_on("groups")
         assert replica.answers.held == 0
         compute = _Computer()
         assert (await _ask(replica, estate, shape, compute)).outcome is ShapeAnswerOutcome.DERIVED

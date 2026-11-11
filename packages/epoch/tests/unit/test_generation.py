@@ -1,26 +1,24 @@
-"""collection write generations over the epoch bucket.
+"""collection write generations over the epoch change log.
 
 The contract this pins:
 
-- a table's first read mints an incarnation and returns the same token until a write advances it;
-- every advance changes the token, and concurrent advances are all counted;
-- a bucket emptied by a broker restart yields a token that matches nothing issued before it;
+- a table's first read declares the log and returns the same token until a write advances it;
+- every advance changes the token, and concurrent advances each get their own epoch, none lost;
+- a log lost by a broker restart yields tokens that match nothing issued before it;
 - every failure reaches the caller as ``GenerationUnavailableError``, never as a stale token.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
-
 import pytest
 
 from threetears.core.collections.generation import GenerationSource
 from threetears.core.exceptions import GenerationUnavailableError
-from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
-from threetears.epoch import EpochGenerationSource
+from threetears.core.testing.kv import FakeChangeLog, FakeNatsClient
+from threetears.epoch import EPOCH_CHANGES_BUCKET, EpochGenerationReader, EpochGenerationSource, generation_kv_key
 from threetears.nats import KvError
-from threetears.nats.subjects import Subjects, set_default_namespace
+from threetears.nats.subjects import set_default_namespace
 
 _TABLE = "revocation_standing"
 
@@ -30,8 +28,8 @@ def _namespace() -> None:
     set_default_namespace("genprobe")
 
 
-async def _epochs_bucket(client: FakeNatsClient) -> FakeKvBucket:
-    return await client.kv_bucket(name="epochs")
+def _log(client: FakeNatsClient) -> FakeChangeLog:
+    return client.change_log(EPOCH_CHANGES_BUCKET)
 
 
 class TestTheTokenChangesExactlyWhenItShould:
@@ -79,7 +77,7 @@ class TestTheTokenChangesExactlyWhenItShould:
         for _ in range(3):
             await source.advance(_TABLE)
             earlier.add(await source.current(_TABLE))
-        (await _epochs_bucket(client)).wipe()
+        _log(client).vanish()
         later = {await source.current(_TABLE)}
         for _ in range(3):
             await source.advance(_TABLE)
@@ -91,7 +89,7 @@ class TestTheTokenChangesExactlyWhenItShould:
         client = FakeNatsClient()
         source = EpochGenerationSource(client)
         before = await source.current(_TABLE)
-        (await _epochs_bucket(client)).wipe()
+        _log(client).vanish()
         await source.advance(_TABLE)
         after = await source.current(_TABLE)
         assert after.rpartition(":")[0] != before.rpartition(":")[0]
@@ -99,24 +97,22 @@ class TestTheTokenChangesExactlyWhenItShould:
 
 class TestFailuresAreNeverAToken:
     @pytest.mark.asyncio
-    async def test_a_malformed_value_is_unavailable(self) -> None:
+    async def test_a_malformed_record_is_unavailable(self) -> None:
         client = FakeNatsClient()
-        bucket = await _epochs_bucket(client)
-        await bucket.put(key=Subjects.collection_generation_epoch(_TABLE).path, value=b"not-a-generation")
         source = EpochGenerationSource(client)
+        before = await source.current(_TABLE)
+        seq = await _log(client).append(generation_kv_key(_TABLE), b"not-a-record", msg_id="m1")
+        token = f"{before.rpartition(':')[0]}:{seq}"
         with pytest.raises(GenerationUnavailableError):
-            await source.current(_TABLE)
+            await EpochGenerationReader(client).change(_TABLE, token)
         with pytest.raises(GenerationUnavailableError):
-            await source.advance(_TABLE)
+            await EpochGenerationReader(client).changes_after(_TABLE, before, token)
 
     @pytest.mark.asyncio
     async def test_an_unreachable_store_is_unavailable(self) -> None:
-        # parity-exempt: a client whose only method raises the transport failure under test
-        class _Unreachable:
-            async def kv_bucket(self, **_: Any) -> Any:
-                raise KvError("broker unreachable")
-
-        source = EpochGenerationSource(_Unreachable())  # type: ignore[arg-type]
+        client = FakeNatsClient()
+        _log(client).unreachable = KvError("broker unreachable")
+        source = EpochGenerationSource(client)
         with pytest.raises(GenerationUnavailableError):
             await source.current(_TABLE)
         with pytest.raises(GenerationUnavailableError):

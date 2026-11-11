@@ -1102,9 +1102,10 @@ class TestScopedCollectionsGrant:
             assert resource.scope is None, f"{principal}: {resource.name} would deny its own reads"
             # a pod binds what the hub declared and holds no stream verb; an infra identity that
             # declares what it opens keeps the management grant. The registry binds the epoch
-            # bucket the hub declared, read only, to follow the access tables' generations.
+            # bucket the hub declared, read only, to follow the access tables' generations, and the
+            # epoch change log beside it, to apply an epoch whose broadcasts it missed.
             binds_only = principal in _POD_PRINCIPALS or (
-                principal is Principal.REGISTRY and resource.name == f"{_NS}-epochs"
+                principal is Principal.REGISTRY and resource.name in (f"{_NS}-epochs", f"{_NS}-epoch-changes")
             )
             expected = JsCapability.KV_BUCKET_KEYS if binds_only else JsCapability.FULL
             assert resource.capability is expected, f"{principal}: {resource.name}"
@@ -2870,3 +2871,40 @@ class TestGatewayDoorProofLedger:
 
         bucket = f"{_NS}-{GATEWAY_DOOR_PROOF_NONCE_BUCKET}"
         assert not [r for r in _build(principal).js_resources if r.name == bucket], principal
+
+
+class TestTheEpochChangeLogIsGrantedBesideTheEpochBucket:
+    """a principal that reads or writes a table's generation reads or writes its epochs' change records too.
+
+    A follower that misses a row broadcast applies that epoch's change record; without a read of the
+    log it is behind on the table for good. A writer advances a generation and then stores the
+    record; without a write of the log every advance fails after its commit.
+    """
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_the_log_carries_the_epoch_buckets_capability(self, principal: Principal) -> None:
+        resources = {resource.name: resource for resource in _build(principal).js_resources}
+        epochs = resources.get(f"{_NS}-epochs")
+        changes = resources.get(f"{_NS}-epoch-changes")
+        if epochs is None:
+            assert changes is None, f"{principal}: the change log without the epoch bucket"
+            return
+        assert changes is not None, f"{principal}: follows or advances generations with no grant on their change log"
+        assert (changes.capability, changes.writable) == (epochs.capability, epochs.writable), principal
+
+    def test_the_writers_write_it_and_the_followers_only_read_it(self) -> None:
+        writers = {
+            principal
+            for principal in Principal
+            for resource in _build(principal).js_resources
+            if resource.name == f"{_NS}-epoch-changes" and resource.writable
+        }
+        readers = {
+            principal
+            for principal in Principal
+            for resource in _build(principal).js_resources
+            if resource.name == f"{_NS}-epoch-changes" and not resource.writable
+        }
+        assert writers == {Principal.HUB, Principal.GATEWAY}
+        assert Principal.AGENT_POD in readers
+        assert Principal.REGISTRY in readers

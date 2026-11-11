@@ -142,17 +142,17 @@ uv sync                    # install all packages in dev mode
 
 | Script | Purpose |
 |---|---|
-| `./scripts/test.sh` | Run tests. One package while you work (`./scripts/test.sh core`, `agent/memory`), which leaves evals out unless you name it; all packages, with no argument, before a PR |
+| `./scripts/test.sh` | Run tests. One package while you work (`./scripts/test.sh core`, `agent/memory`), which leaves evals out unless you name it; all packages with no argument. Before a PR, `./scripts/check-all.sh`, which runs it and CI's other suites |
 | `./scripts/test-sidecar.sh` | Run the nodriver sidecar's own tests |
 | `./scripts/test-integration.sh` | Run the integration tests |
 | `./scripts/test-live-claude-cli.sh` | Run the live Claude CLI batch -- structured output and the session pool -- and record the result (needs `CLAUDE_CODE_OAUTH_TOKEN`; before tagging a `packages/models` release) |
 | `./scripts/lint.sh` | ruff check plus format check. `--fix` to auto-fix |
 | `./scripts/typecheck.sh` | mypy on all packages, or one: `./scripts/typecheck.sh evals` |
-| `./scripts/check-all.sh` | lint plus typecheck plus tests |
+| `./scripts/check-all.sh` | lint plus typecheck plus tests, including CI's mcp-1.x and OpenTelemetry-floor suites |
 
 Extra args pass through: `./scripts/test.sh core -v -x`
 
-Where `testament` is installed, `test.sh` hands the run to testament's runners (outside CI); `TESTAMENT=off` forces the local run. There, a package run skips its integration tests, which `test-integration.sh` covers, and `-x`, `--maxfail`, `-n` or `--lf` make testament run it locally instead. `test.sh` itself stays local for a run gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`) or one that passes `-m`, since on the pool those would skip or lose their marker.
+Where `testament` is installed, `test.sh` hands the run to testament's runners (outside CI); `TESTAMENT=off` forces the local run, with the reason stated in `TESTAMENT_OFF_REASON`. There, a package run skips its integration tests, which `test-integration.sh` covers, and `-x`, `--maxfail`, `-n` or `--lf` make testament run it locally instead. `test.sh` itself stays local for a run gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`, `THREETEARS_EVALS_PAID*`) or one that passes `-m`, since on the pool those would skip or lose their marker.
 
 `test-sidecar.sh` and `test-integration.sh` sit outside `test.sh` on purpose (an AGPL dependency, and Docker). Neither is optional:
 

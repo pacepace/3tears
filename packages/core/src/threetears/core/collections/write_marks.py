@@ -52,7 +52,8 @@ from typing import Any, Final, Protocol
 from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter, gauge
 
-from threetears.core.collections.generation import GenerationSource
+from threetears.core.collections.epoch_change import advance_recording
+from threetears.core.collections.generation import GenerationSource, tables_written_l2_first
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
 from threetears.core.ddl.errors import DdlLockTimeoutError
@@ -214,7 +215,8 @@ async def install_write_mark_triggers(
     :return: ``schema.table`` for each trigger this call created
     :rtype: list[str]
     """
-    names = sorted(set(tables))
+    # an L2-first table advances before its L3 write, so a mark on it would only ever be covered
+    names = sorted(set(tables) - tables_written_l2_first())
     if not await tables_missing_the_trigger(pool, names):
         return []
     created: list[str] = []
@@ -488,9 +490,16 @@ class WriteMarkReconciler:
         """
         done: set[str] = set()
         failed: set[str] = set()
+        l2_first = tables_written_l2_first()
         for table in sorted({str(row["table_name"]) for row in page}):
+            if table in l2_first:
+                # its epoch was advanced, naming its rows, before the row reached L3: the mark is covered,
+                # and advancing it again would tell every follower the whole table changed
+                done.add(table)
+                continue
             try:
-                await self._source.advance(table)
+                # a mark names its table, not its rows: the reach of the writes it covers is the table
+                await advance_recording(self._source, table, None)
             # prawduct:allow prawduct/broad-except -- a table that cannot be advanced keeps its marks for the next pass, is counted, and the pass drains around it
             except Exception as exc:
                 failed.add(table)

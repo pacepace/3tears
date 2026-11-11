@@ -6,12 +6,15 @@ Two registries on one in-process bus stand in for two pods. The contract this pi
   names, and reaches every cache derived from the table, row by row;
 - a message from a sender that names no generation is handled as it always was and counts nothing;
 - a writer's own derived caches hear its writes, which its listener skips;
-- a derived cache is told to drop everything ONLY when the table drops;
+- a derived cache is told to drop everything ONLY when the table drops, which a whole-table change
+  does and a missed row never does (its epoch's change record evicts that row alone);
 - dropping a table removes its rows from L1, its cached scans, and stops the pod trusting its own
   L2 entries for the table until each has been read through from L3 again.
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 import asyncio
 import json
@@ -32,6 +35,7 @@ from threetears.core.collections import (
     WriteBuffer,
 )
 from threetears.core.collections.tier_reads import hold_tier_reads_timer, release_tier_reads_timer
+from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.kv import FakeNatsClient
@@ -69,6 +73,7 @@ class _Source:
     """one generation shared by every pod of a test, counted in memory."""
 
     def __init__(self) -> None:
+        self.changes: dict[tuple[str, str], EpochChange] = {}
         self.count = 0
 
     async def current(self, table_name: str) -> str:
@@ -77,6 +82,25 @@ class _Source:
     async def advance(self, table_name: str) -> str:
         self.count += 1
         return f"inc:{self.count}"
+
+    async def advance_with_change(
+        self, table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+    ) -> str:
+        token = await self.advance(table_name)
+        self.changes[(table_name, token)] = EpochChange(
+            table=table_name,
+            token=token,
+            whole_table=rows is None and not keys_unknown,
+            keys_unknown=keys_unknown,
+            rows=list(rows) if rows is not None else [],
+        )
+        return token
+
+    async def change(self, table_name: str, token: str) -> EpochChange | None:
+        return self.changes.get((table_name, token))
+
+    async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+        return await walk_by_count(self, table_name, after, upto)
 
 
 class _Members(BaseCollection[_Member]):
@@ -216,7 +240,7 @@ class _Pod:
     async def follow(self, source: _Source) -> None:
         """follow the table and take the first mark, as a pod does once at startup."""
         self.registry.follow_generation(_TABLE)
-        self.registry.settle_generation(_TABLE, await source.current(_TABLE))
+        await self.registry.catch_up_generation(_TABLE, await source.current(_TABLE), changes=source)
 
 
 async def _save(pod: _Pod, entity_id: str, member_id: str) -> None:
@@ -266,7 +290,10 @@ class TestAHeardRowIsEvictedCountedAndPassedOnRowByRow:
         assert cache.entries == {"ada": "access-of-ada", "edsger": "access-of-edsger"}
         assert cache.dropped_all == 0
         # every row of the advance was heard, so the reader is not behind and drops nothing
-        assert reader.registry.settle_generation(_TABLE, await source.current(_TABLE)) is GenerationVerdict.CURRENT
+        assert (
+            await reader.registry.catch_up_generation(_TABLE, await source.current(_TABLE), changes=source)
+            is GenerationVerdict.CURRENT
+        )
         assert cache.dropped_all == 0
 
     async def test_a_delete_reaches_the_entry_of_the_row_it_removed(self, bus: _Lossy, source: _Source) -> None:
@@ -369,7 +396,7 @@ class TestAMessageFromAnOlderSenderIsHandledAsItAlwaysWas:
 
 
 class TestDroppingATable:
-    async def test_a_missed_row_drops_the_table_and_everything_derived_from_it(
+    async def test_a_missed_row_is_caught_up_and_evicts_only_what_it_reaches(
         self, bus: _Lossy, source: _Source
     ) -> None:
         rows: dict[str, dict[str, Any]] = {}
@@ -389,13 +416,13 @@ class TestDroppingATable:
         # nothing told the reader, so it still serves the row it cached
         assert await _member_id(reader, "m1") == "ada"
 
-        verdict = reader.registry.settle_generation(_TABLE, await source.current(_TABLE))
+        verdict = await reader.registry.catch_up_generation(_TABLE, await source.current(_TABLE), changes=source)
 
         assert verdict is GenerationVerdict.MISSED
         assert not reader.members.exists_in_cache_sync("m1")
-        assert not reader.members.exists_in_cache_sync("m2")
-        assert cache.entries == {}
-        assert cache.dropped_all == 1
+        assert reader.members.exists_in_cache_sync("m2"), "a row the missed epoch did not change stays cached"
+        assert cache.entries == {"ada": "access-of-ada", "grace": "access-of-grace"}
+        assert cache.dropped_all == 0
         assert await _member_id(reader, "m1") == "edsger"
 
     async def test_the_pods_own_stale_l2_entry_is_not_served_after_a_drop(self, bus: _Lossy, source: _Source) -> None:
@@ -474,10 +501,13 @@ class TestDroppingATable:
         bare = CollectionRegistry()
         cache = _PersonCache(bare, ("ada",))
         bare.follow_generation(_TABLE)
-        assert bare.settle_generation(_TABLE, "inc:3") is GenerationVerdict.FIRST_SIGHT
+        assert await bare.catch_up_generation(_TABLE, "inc:3", changes=None) is GenerationVerdict.FIRST_SIGHT
+        # a derived cache keeps its own marks and re-bases them on the first sight
         assert cache.dropped_all == 1
-        assert bare.settle_generation(_TABLE, "inc:3") is GenerationVerdict.CURRENT
-        assert cache.dropped_all == 1
+        bare.drop_table(_TABLE, reason="the whole table changed")
+        assert cache.dropped_all == 2
+        assert await bare.catch_up_generation(_TABLE, "inc:3", changes=None) is GenerationVerdict.CURRENT
+        assert cache.dropped_all == 2
 
     async def test_every_l1_change_listener_hears_each_row_go(self, bus: _Lossy, source: _Source) -> None:
         rows: dict[str, dict[str, Any]] = {}
@@ -618,8 +648,12 @@ class TestADerivedCacheThatFails:
 
         # the row was evicted all the same, so the reader does not go on serving the old one
         assert not reader.members.exists_in_cache_sync("m1")
-        # and the message was not counted, so the next pass drops the table
-        assert reader.registry.settle_generation(_TABLE, await source.current(_TABLE)) is GenerationVerdict.MISSED
+        # and the message was not counted, so the next catch-up applies the epoch's record again, which
+        # reaches the broken cache again and leaves the mark where it was
+        mark = reader.registry.generation_marks.recorded(_TABLE)
+        with pytest.raises(RuntimeError, match="derived cache"):
+            await reader.registry.catch_up_generation(_TABLE, await source.current(_TABLE), changes=source)
+        assert reader.registry.generation_marks.recorded(_TABLE) == mark
 
 
 async def _drained() -> dict[str, dict[str, int]]:

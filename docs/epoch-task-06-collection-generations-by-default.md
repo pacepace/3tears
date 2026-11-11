@@ -1415,3 +1415,69 @@ follower's trust test, `announce_unheard_writes`, the grant contract, the regist
 test, the authorizer bundles, the hub's start announcement, the CLI's announcements, the
 gateway's construction, and the SDK stack's.
 
+
+---
+
+## An Epoch Is Its Change Set (Owner, 2026-11-08)
+
+**Decided.** A gap never drops a table and nothing bulk-reloads. "The Model" above dropped the table
+because a generation cannot say which row changed; the owner's ruling replaces that drop. Each
+advance stores the rows it covered as the epoch's change record, and a pod catches up by applying
+exactly those rows. Catching up after a missed broadcast, a restart and a partition is one operation:
+fetch epochs `mine+1 .. head`, apply each.
+
+**What exists now.**
+
+- `EpochChange` / `ChangedRow` (`threetears.core.collections.epoch_change`): the table, the token,
+  and either the rows (ids, the L2 scope a fenced write left current, the invalidation columns) or
+  `whole_table` for a write whose reach is the table (a truncate, a file load, a migration
+  announced through `announce_unheard_writes`, the write-mark reconciler).
+- `EpochGenerationSource.advance_with_change` writes the record after its compare-and-swap, into
+  `{ns}-epoch-changes`: memory storage, replicas per `EpochChangeRetention` (a platform declares
+  three), `max_age` 24h, `max_bytes` 64 MiB with `discard: new`. A refused record raises
+  `GenerationUnavailableError` and counts `collection_epoch_change_refused_total`; nothing is
+  evicted. Every advance goes through `advance_recording`, so a recording source is never handed
+  an advance without its change. A table kept in L2 keeps its records beside its generation,
+  `{scope}.{table}-epoch.{incarnation}.{count}`, with a per-entry lifetime of 24h.
+- `CollectionRegistry.catch_up_generation` replaces `settle_generation`. FIRST_SIGHT takes the mark
+  at the head (a follower starts before it serves, so it holds nothing older) and re-reads nothing
+  from any tier; a table first seen with no generation follows the first incarnation minted after
+  it. A principal's own L2 entries written before a restart, while no replica of it followed, are
+  on no epoch it applies; the L2-first write path is what makes them current. MISSED reads each unheard epoch's record and applies it through the same path a heard broadcast
+  takes; a missing record holds the mark there while later epochs are still applied. A record not in
+  L2, or a REPLACED generation, leaves the registry behind on the table: it serves what it holds,
+  derived caches included, logs at error once, and counts `collection_epoch_behind_total` /
+  `collection_epoch_tables_behind` until the epoch is applied. No cache is withdrawn and no read
+  falls through to another tier for it.
+  Until the L3 refill of the epoch log is deployed, a lost record or a REPLACED generation is ended
+  only by restarting the process (a first sight).
+- A commit whose rows would make a record past 256 KiB is recorded
+  as the whole table. Pods, the registry, the hub and the gateway are granted `{ns}-epoch-changes`
+  beside `{ns}-epochs`.
+
+**Still owed, in the same release.** The L2-first write path (a write lands in NATS and that is the
+commit; the saver persists row and epoch log to L3; L3 refills the epoch log in L2, which is what
+ends a REPLACED or lost-record "behind"). The hub broker carrying each commit's rows, so a pod's
+writes are recorded (a pod's `BrokerGenerationSource` records nothing today). The write-mark
+reconciler's and migrations' whole-table records become row records once the write path names
+their rows. Declarations on every collection (hub, SDK), the per-commit write-cost bench, and a
+pre-full gauge on the change log (it needs a bucket-usage read in `threetears.nats.kv`).
+
+### The Epoch Is the Change Log's Sequence (Owner, 2026-11-08)
+
+The write-cost bench (PR #1122) showed the per-table counter key failing at 32 concurrent writers:
+3.6 lost compare-and-swaps per write, and saves committed with no advance. Decided: no counter. The
+change log, `{ns}-epoch-changes`, is one memory stream (KV-shaped, every key keeping its history); an
+advance appends one record under the table's key with `Nats-Msg-Id`, and the sequence the stream gives
+it is the epoch. A token is `{incarnation}:{sequence}`; the incarnation is the log's stream metadata,
+minted when it is declared and kept by `restore_epochs`, so a mark survives the broker losing the log
+once the refiller puts it back at its old sequences.
+
+A table's sequences have other tables' between them, so a follower walks the table's records after its
+mark (`changes_after`, by next-by-subject reads). A gap is known only where the log cannot vouch for the
+range: its oldest record is newer than the mark's next sequence (retention), or the log is absent or of
+another incarnation. A table whose own newest record aged out reads as `:0` and its follower as current:
+nothing distinguishes "no write since the mark" from "written and aged out" once retention has passed;
+the L3 epoch log is what covers a partition longer than retention. Records carry no `prev`: knowing it
+would take a compare-and-swap on the table's subject, which is the contention this removes.
+

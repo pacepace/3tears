@@ -201,6 +201,15 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/registry.py",
         class_name="CollectionRegistry",
+        attr_name="_behind",
+        rationale=(
+            "per-table reason THIS process is behind on a followed table: an epoch its own registry "
+            "could not apply, judged against its own marks, so it cannot be shared across pods"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/registry.py",
+        class_name="CollectionRegistry",
         attr_name="_overrides",
         rationale=("per-collection backend overrides, IS the infrastructure"),
     ),
@@ -435,6 +444,33 @@ _ALLOWLIST = (
             "named, owned by one client and closed with it. They are objects holding sockets, not "
             "data: an L1/L2/L3 backend stores values, cannot hold a connection, and a transport "
             "rebuilt per request would defeat the pooling it exists for. Nothing outlives the client"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeChangeLog",
+        attr_name="_seen_ids",
+        rationale=(
+            "an in-memory test double's record of each append's Nats-Msg-Id, standing in for the stream's "
+            "dedup window; it lives and dies with the one test that built the double"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeChangeLog",
+        attr_name="_watchers",
+        rationale=(
+            "an in-memory test double's queue per watched key, standing in for the broker's push consumers; "
+            "it lives and dies with the one test that built the double"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeNatsClient",
+        attr_name="_change_logs",
+        rationale=(
+            "the test double client's change logs by name, so every caller in one test binds the same "
+            "in-memory log, as every caller of a broker binds the same stream"
         ),
     ),
     DictStateAllowlistEntry(
