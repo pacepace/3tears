@@ -34,7 +34,15 @@ from typing import Any
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.protocol import parse_rowcount
-from threetears.core.keyed._filters import Derived, Fragment, Selected, quoted_table, renumbered, selected_column
+from threetears.core.keyed._filters import (
+    Derived,
+    Fragment,
+    Selected,
+    quoted_table,
+    narrowing,
+    renumbered,
+    selected_column,
+)
 from threetears.core.keyed.page import Sort
 from threetears.core.sql_fragments import quote_identifier
 
@@ -148,7 +156,7 @@ class _Statement:
         """each fragment's text, its parameters bound after those already bound."""
         texts = []
         for fragment in fragments:
-            texts.append(renumbered(fragment, len(self.params)))
+            texts.append(narrowing(fragment, len(self.params)))
             self.params += list(fragment.params)
         return texts
 

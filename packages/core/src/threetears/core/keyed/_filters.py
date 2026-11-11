@@ -32,6 +32,7 @@ __all__ = [
     "quoted_table",
     "selected_column",
     "relation",
+    "narrowing",
     "renumbered",
 ]
 
@@ -210,6 +211,23 @@ def renumbered(fragment: Fragment, before: int) -> str:
     if numbers and max(numbers) > len(fragment.params):
         raise ValueError(f"a fragment names ${max(numbers)} but binds {len(fragment.params)} parameters")
     return _PLACEHOLDER.sub(lambda match: f"${int(match.group(1)) + before}", fragment.sql)
+
+
+def narrowing(fragment: Fragment, before: int) -> str:
+    """``fragment`` as a condition a helper ANDs after its pins: renumbered (:func:`renumbered`) and wrapped in its own
+    parentheses, so whatever it holds (a top-level ``OR`` among them) only narrows the rows the pins name, never widens
+    past them. Every helper writes a ``where`` (and a ``visible``) fragment through this one function: a run-time
+    fragment is judged by the pins alone (the no-whole-reads rule), which holds only because of it.
+
+    :param fragment: the fragment
+    :ptype fragment: Fragment
+    :param before: the parameters bound ahead of it
+    :ptype before: int
+    :return: ``(<the text, renumbered>)``
+    :rtype: str
+    :raises ValueError: when the fragment names a placeholder it binds no parameter for
+    """
+    return f"({renumbered(fragment, before)})"
 
 
 def by_conditions(

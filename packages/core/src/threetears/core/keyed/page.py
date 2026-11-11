@@ -55,7 +55,7 @@ from threetears.core.keyed._filters import (
     by_conditions,
     quoted_table,
     relation,
-    renumbered,
+    narrowing,
     selected_column,
 )
 from threetears.core.pagination import CursorError
@@ -358,14 +358,14 @@ def _statement(
     conditions, params = by_conditions(by, alias="t")
     lead = _pinned(by, order)
     for fragment in where:
-        conditions.append(renumbered(fragment, len(params)))
+        conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
     if past is not None:
         condition, past_params = _past(order, past, len(params) + 1, by_row=by_row)
         conditions.append(condition)
         params += past_params
     for fragment in visible:
-        conditions.append(renumbered(fragment, len(params)))
+        conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     selected = ", ".join(

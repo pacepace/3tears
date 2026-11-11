@@ -56,7 +56,7 @@ from typing import Any, Final
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.dialect import l3_on_yugabyte
 from threetears.core.backends.protocol import L3Page
-from threetears.core.keyed._filters import Fragment, renumbered
+from threetears.core.keyed._filters import Fragment, narrowing
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
 from threetears.observe import get_logger
 
@@ -685,7 +685,7 @@ class _KeysetStatement:
             self._filters = f"{self._filters} AND {condition}" if self._filters else condition
             self._values.append(list(values))
         for fragment in conditions:
-            condition = renumbered(fragment, len(self._values))
+            condition = narrowing(fragment, len(self._values))
             self._filters = f"{self._filters} AND {condition}" if self._filters else condition
             self._values += list(fragment.params)
         self._mark = mark

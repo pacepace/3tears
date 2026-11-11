@@ -52,7 +52,7 @@ from threetears.core.keyed._filters import (
     binds_native_arrays,
     by_conditions,
     relation,
-    renumbered,
+    narrowing,
     selected_column,
 )
 from threetears.core.sql_fragments import quote_identifier
@@ -190,7 +190,7 @@ class _Statement:
         conditions: list[str] = []
         params: list[Any] = []
         for fragment in self.where:
-            conditions.append(renumbered(fragment, before + len(params)))
+            conditions.append(narrowing(fragment, before + len(params)))
             params += list(fragment.params)
         return conditions, params
 
@@ -666,7 +666,7 @@ async def any_rows(
         raise ValueError(f"a bounded look of {table} reads at least one column")
     conditions, params = by_conditions(by or {}, alias="t")
     for fragment in where:
-        conditions.append(renumbered(fragment, len(params)))
+        conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     selected = ", ".join(f"t.{quote_identifier(column)}" for column in columns)

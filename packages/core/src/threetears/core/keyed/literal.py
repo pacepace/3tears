@@ -21,7 +21,7 @@ from threetears.core.keyed._filters import (
     Fragment,
     Selected,
     by_conditions,
-    renumbered,
+    narrowing,
     selected_column,
 )
 from threetears.core.keyed._filters import relation as _relation_sql
@@ -94,7 +94,7 @@ def literal_select(
     }
     conditions, values = by_conditions(listed, alias=alias)
     for fragment in where:
-        conditions.append(renumbered(fragment, len(values)))
+        conditions.append(narrowing(fragment, len(values)))
         values.extend(fragment.params)
     text = " AND ".join(conditions)
     written = _PLACEHOLDER.sub(lambda match: _sql_literal(values[int(match.group(1)) - 1]), text)

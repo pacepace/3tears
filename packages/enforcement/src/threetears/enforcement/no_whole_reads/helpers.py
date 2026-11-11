@@ -381,20 +381,27 @@ def _visible_columns(call: ast.Call) -> list[str]:
 
 
 def _filters(call: ast.Call, first: int) -> tuple[list[str], int]:
-    """a page's ``where=`` fragments as written (``Fragment("t.due_at <= $1", (now,))``), renumbered past ``first``."""
+    """a helper's ``where=`` fragments as written (``Fragment("t.due_at <= $1", (now,))``), renumbered past ``first``.
+
+    A fragment the walk cannot read (a run-time list, a ``Fragment`` of run-time text) only narrows: every helper ANDs
+    each fragment after its pins inside its own parentheses (``threetears.core.keyed._filters.narrowing``), so it can
+    never widen past them, and the call is judged by its pins (``by``) alone: keyed when they are, a whole read when
+    they pin nothing. A fragment the walk reads is judged with them, as it may pin a key itself."""
     node = _argument(call, "where", None)
-    if node is None:
+    if node is None or not isinstance(node, ast.Tuple | ast.List):
         return [], first
-    if not isinstance(node, ast.Tuple | ast.List):
-        raise _Unseen("where")
     written = []
     place = first
     for element in node.elts:
         if not (isinstance(element, ast.Call) and _name(element) == "Fragment"):
-            raise _Unseen("where")
-        text = _text(_argument(element, "sql", 0), "where")
+            continue
+        sql = _argument(element, "sql", 0)
+        if not (isinstance(sql, ast.Constant) and isinstance(sql.value, str)):
+            continue
+        text = sql.value
         numbers = [int(found) for found in re.findall(r"\$(\d+)", text)]
-        written.append(re.sub(r"\$(\d+)", lambda match: f"${int(match.group(1)) + place - 1}", text))
+        # in its own parentheses, as the helper writes it
+        written.append("(" + re.sub(r"\$(\d+)", lambda match: f"${int(match.group(1)) + place - 1}", text) + ")")
         place += max(numbers, default=0)
     return written, place
 

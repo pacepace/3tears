@@ -35,7 +35,7 @@ from enum import StrEnum
 from typing import Any, Final
 
 from threetears.core.backends.dialect import known_on_yugabyte
-from threetears.core.keyed._filters import Derived, Fragment, Selected, by_conditions, relation as _relation, renumbered
+from threetears.core.keyed._filters import Derived, Fragment, Selected, by_conditions, relation as _relation, narrowing
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import ThreadedDuckDB
@@ -838,7 +838,7 @@ async def _group_hash_rows(
     while True:
         conditions, params = by_conditions(by, alias="t")
         for fragment in where:
-            conditions.append(renumbered(fragment, len(params)))
+            conditions.append(narrowing(fragment, len(params)))
             params.extend(fragment.params)
         if last is not None:
             conditions.append(_past(levels, last, params))
