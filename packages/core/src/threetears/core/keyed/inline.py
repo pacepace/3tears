@@ -106,7 +106,9 @@ class InlineDuckDB:
         """
         return _rows(self._conn.execute(query, list(params)))
 
-    async def fetch_arrow(self, query: str, /, *params: Any, types: Mapping[str, Any] | None) -> Any:
+    async def fetch_arrow(
+        self, query: str, /, *params: Any, types: Mapping[str, Any] | None, size: int | None = None
+    ) -> Any:
         """the statement's rows as one Arrow table typed by ``types``, never a Python object a row
         (:func:`~threetears.core.keyed.threaded.duckdb_arrow`): what :func:`~threetears.core.keyed.read_keyed_arrow`
         reads through, so a keyed read into Arrow runs inline, in the caller's transaction.
@@ -117,10 +119,13 @@ class InlineDuckDB:
         :ptype params: Any
         :param types: column name -> its Arrow type, every column selected, in order; None for DuckDB's own
         :ptype types: Mapping[str, pyarrow.DataType] | None
+        :param size: the most rows one Arrow batch is sized for, as
+            :func:`~threetears.core.keyed.threaded.duckdb_arrow` takes it
+        :ptype size: int | None
         :return: the rows
         :rtype: pyarrow.Table
         """
-        return duckdb_arrow(self._conn, query, params, types)
+        return duckdb_arrow(self._conn, query, params, types, size=size)
 
     async def execute(self, query: str, /, *params: Any) -> str:
         """run a write and answer its status as asyncpg spells it (``DELETE 3``).

@@ -596,6 +596,7 @@ async def read_step_arrow(
     types: Mapping[str, Any] | None = None,
     order: Sequence[Sort] = (),
     limit: int | None = None,
+    size: int | None = None,
 ) -> Any:
     """the step's rows as one Arrow table typed by ``types`` (DuckDB's own Arrow answer through
     :meth:`~threetears.core.keyed.InlineDuckDB.fetch_arrow`; any other reader's rows made the table on a thread).
@@ -613,16 +614,23 @@ async def read_step_arrow(
     :ptype order: Sequence[Sort]
     :param limit: the most rows answered (the first in ``order``); every row when None
     :ptype limit: int | None
+    :param size: on DuckDB, the most rows one Arrow batch is sized for (the rows the step holds at most, as
+        :func:`threetears.core.cache.duckdb.fetch_arrow` takes them): DuckDB sizes a batch's buffers for a million
+        rows otherwise, and the table holds them while it is held. ``limit`` when None and given; DuckDB's own
+        default when both are None. Unused off DuckDB (the rows arrive as they are and make the table)
+    :ptype size: int | None
     :return: the rows
     :rtype: pyarrow.Table
     :raises TypeError: without ``types`` on a reader that is no DuckDB (its rows carry no Arrow types)
-    :raises ValueError: for a limit that is no count of rows
+    :raises ValueError: for a limit that is no count of rows, or a size under one row
     """
+    if size is not None and (isinstance(size, bool) or not isinstance(size, int) or size < 1):
+        raise ValueError(f"an Arrow batch is sized for at least one row, not {size!r}")
     sql, params = _ordered(_as_step(step), order, limit)
+    if isinstance(conn, (InlineDuckDB, ThreadedDuckDB)):
+        return await conn.fetch_arrow(sql, *params, types=types, size=size if size is not None else limit)
     if types is None:
-        if not isinstance(conn, (InlineDuckDB, ThreadedDuckDB)):
-            raise TypeError("read_step_arrow needs types= off DuckDB: its rows carry no Arrow types")
-        return await conn.fetch_arrow(sql, *params, types=None)
+        raise TypeError("read_step_arrow needs types= off DuckDB: its rows carry no Arrow types")
     return await l3_fetch_arrow(conn, sql, *params, types=types)
 
 

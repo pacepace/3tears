@@ -282,6 +282,35 @@ def test_a_step_read_into_arrow_on_duckdb_with_no_types_is_duckdbs_own_answer(co
         asyncio.run(read_step_arrow(_Rows(), step))
 
 
+def test_a_step_read_into_arrow_on_duckdb_is_batched_at_its_size(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if read_step_arrow on DuckDB (inline or on a thread, typed or not) holds an Arrow batch of more rows than
+    ``size`` (or than ``limit`` when no size is given), answers other rows than the unsized read, or takes a size
+    under one row: DuckDB sizes a batch's buffers for a million rows unless asked, and a pod with no scratch disk
+    holds them for as long as it holds the table."""
+    conn.execute("INSERT INTO held SELECT 'S0', 'o' || (i % 3), i, NULL, i * 10 FROM range(7) r(i)")
+    step = "held"
+    order = [Sort("run_id")]
+    types = {
+        "state": pa.string(),
+        "office": pa.string(),
+        "run_id": pa.int64(),
+        "instant": pa.timestamp("us"),
+        "v": pa.int64(),
+    }
+    whole = run_inline(read_step_arrow(InlineDuckDB(conn), step, order=order))
+    assert whole.num_rows == 7 and max(batch.num_rows for batch in whole.to_batches()) == 7
+    for reader in (InlineDuckDB(conn), ThreadedDuckDB(conn)):
+        for typed in (None, types):
+            sized = asyncio.run(read_step_arrow(reader, step, types=typed, order=order, size=3))
+            assert [batch.num_rows for batch in sized.to_batches()] == [3, 3, 1]
+            assert sized.to_pylist() == whole.to_pylist()
+    limited = run_inline(read_step_arrow(InlineDuckDB(conn), step, order=order, limit=2))
+    assert [batch.num_rows for batch in limited.to_batches()] == [2]
+    for bad in (0, -1, True):
+        with pytest.raises(ValueError, match="at least one row"):
+            run_inline(read_step_arrow(InlineDuckDB(conn), step, order=order, size=bad))
+
+
 def test_a_delete_by_a_change_relation_s_keys_deletes_what_the_exists_delete_does(
     conn: duckdb.DuckDBPyConnection,
 ) -> None:

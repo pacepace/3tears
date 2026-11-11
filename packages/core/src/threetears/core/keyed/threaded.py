@@ -20,6 +20,8 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
+from threetears.core.cache.duckdb import _ARROW_BATCH_ROWS, fetch_arrow
+
 try:
     import pyarrow as pa
 
@@ -58,7 +60,9 @@ def _execute(conn: Any, query: str, params: Sequence[Any]) -> str:
         cursor.close()
 
 
-def duckdb_arrow(conn: Any, query: str, params: Sequence[Any], types: Mapping[str, Any] | None) -> Any:
+def duckdb_arrow(
+    conn: Any, query: str, params: Sequence[Any], types: Mapping[str, Any] | None, *, size: int | None = None
+) -> Any:
     """a DuckDB SELECT's rows as one Arrow table typed by ``types``, never one Python object a row: DuckDB's own
     Arrow answer, its columns taken in ``types``' order and cast to theirs (the table
     :func:`~threetears.core.backends.arrow_reply.l3_fetch_arrow` answers for any other L3); with no ``types``,
@@ -72,6 +76,10 @@ def duckdb_arrow(conn: Any, query: str, params: Sequence[Any], types: Mapping[st
     :ptype params: Sequence[Any]
     :param types: column name -> its Arrow type, every column selected, in order; None for DuckDB's own
     :ptype types: Mapping[str, pyarrow.DataType] | None
+    :param size: the most rows one Arrow batch is sized for (:func:`threetears.core.cache.duckdb.fetch_arrow`): the
+        rows the read holds at most, so a small read never carries a million-row batch's buffers; DuckDB's own
+        default when None
+    :ptype size: int | None
     :return: the rows
     :rtype: pyarrow.Table
     :raises ImportError: without pyarrow
@@ -79,7 +87,7 @@ def duckdb_arrow(conn: Any, query: str, params: Sequence[Any], types: Mapping[st
     """
     if not _PYARROW:
         raise ImportError("a DuckDB read as Arrow needs pyarrow: install 3tears[snapshot]")
-    answered = conn.execute(query, list(params)).fetch_arrow_table()
+    answered = fetch_arrow(conn.execute(query, list(params)), _ARROW_BATCH_ROWS if size is None else size)
     if types is None:
         return answered
     if sorted(answered.column_names) != sorted(types):
@@ -87,10 +95,12 @@ def duckdb_arrow(conn: Any, query: str, params: Sequence[Any], types: Mapping[st
     return answered.select(list(types)).cast(pa.schema([pa.field(name, kind) for name, kind in types.items()]))
 
 
-def _cursor_arrow(conn: Any, query: str, params: Sequence[Any], types: Mapping[str, Any] | None) -> Any:
+def _cursor_arrow(
+    conn: Any, query: str, params: Sequence[Any], types: Mapping[str, Any] | None, size: int | None
+) -> Any:
     cursor = conn.cursor()
     try:
-        return duckdb_arrow(cursor, query, params, types)
+        return duckdb_arrow(cursor, query, params, types, size=size)
     finally:
         cursor.close()
 
@@ -117,7 +127,9 @@ class ThreadedDuckDB:
         """
         return await asyncio.to_thread(_fetch, self._conn, query, params)
 
-    async def fetch_arrow(self, query: str, /, *params: Any, types: Mapping[str, Any] | None) -> Any:
+    async def fetch_arrow(
+        self, query: str, /, *params: Any, types: Mapping[str, Any] | None, size: int | None = None
+    ) -> Any:
         """the statement's rows as one Arrow table typed by ``types`` (:func:`duckdb_arrow`), on a thread.
 
         :param query: the SELECT, ``$n`` placeholders
@@ -126,10 +138,12 @@ class ThreadedDuckDB:
         :ptype params: Any
         :param types: column name -> its Arrow type, every column selected, in order; None for DuckDB's own
         :ptype types: Mapping[str, pyarrow.DataType] | None
+        :param size: the most rows one Arrow batch is sized for, as :func:`duckdb_arrow` takes it
+        :ptype size: int | None
         :return: the rows
         :rtype: pyarrow.Table
         """
-        return await asyncio.to_thread(_cursor_arrow, self._conn, query, params, types)
+        return await asyncio.to_thread(_cursor_arrow, self._conn, query, params, types, size)
 
     async def execute(self, query: str, /, *params: Any) -> str:
         """run a write and answer its status as asyncpg spells it (``DELETE 3``).
