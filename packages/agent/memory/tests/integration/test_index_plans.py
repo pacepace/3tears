@@ -274,7 +274,7 @@ async def _only_plan(world: _World, captured: _Captured) -> StatementPlan:
 
 
 async def test_memories_agent_user(world: _World) -> None:
-    """Flips if one user's reads by agent and user stop reading idx_memories_agent_user."""
+    """Flips if one user's reads by agent and user stop reading ix_memories_agent_user_date."""
     captured = _Captured()
     memories = world.memories(captured)
     await memories.count_by_user(world.user, agent_id=world.agent)
@@ -292,7 +292,7 @@ async def test_memories_agent_user(world: _World) -> None:
     await memories.find_by_scope(world.agent, user_id=world.user)
     await memories.find_for_user_in_agents(user_id=world.user, agent_ids=(world.agent, uuid.uuid4()))
     missed = [
-        _shape(plan) for plan in await world.plans(captured) if not plan_uses_index(plan, "idx_memories_agent_user")
+        _shape(plan) for plan in await world.plans(captured) if not plan_uses_index(plan, "ix_memories_agent_user_date")
     ]
     assert not missed, "\n\n".join(missed)
 
@@ -342,12 +342,12 @@ def _history_pool(plan: StatementPlan) -> bool:
 
 async def test_memories_user_date(world: _World) -> None:
     """Flips if hybrid_search's history pool (one owner's memories older than its recent ones, nearest first) stops
-    reading ix_memories_user_date: the user's memories by date, the range bounding them."""
+    reading ix_memories_agent_user_date: the user's memories by date, the range bounding them."""
     captured = _Captured()
     await _hybrid_search(world, world.memories(captured))
     history = [plan for plan in await world.plans(captured) if _history_pool(plan)]
     assert history, [sql for sql, _ in captured.asked]
-    missed = [_shape(plan) for plan in history if not plan_uses_index(plan, "ix_memories_user_date")]
+    missed = [_shape(plan) for plan in history if not plan_uses_index(plan, "ix_memories_agent_user_date")]
     assert not missed, "\n\n".join(missed)
 
 
@@ -461,7 +461,7 @@ async def test_mem_conversation(world: _World) -> None:
 
 
 async def test_media_memory_id(world: _World) -> None:
-    """Flips if a chunk's file, joined by its memory, stops being found through ix_media_memory_id."""
+    """Flips if a chunk's file, joined by its memory, stops being found through ix_media_agent_memory."""
     captured = _Captured()
     chunks = world.chunks(captured)
     await chunks.search_by_ids([world.chunk], world.user, agent_id=world.agent)
@@ -490,7 +490,9 @@ async def test_media_memory_id(world: _World) -> None:
         similarity_threshold=0.0,
         chunk_signal_weights=_CHUNK_WEIGHTS,
     )
-    missed = [_shape(plan) for plan in await world.plans(captured) if not plan_uses_index(plan, "ix_media_memory_id")]
+    missed = [
+        _shape(plan) for plan in await world.plans(captured) if not plan_uses_index(plan, "ix_media_agent_memory")
+    ]
     assert not missed, "\n\n".join(missed)
 
 

@@ -3,7 +3,8 @@
 :meth:`~threetears.agent.memory.collections.MemoryRefsCollection.find_by_conversation`
 reads the newest refs one agent surfaced in a conversation, newest first, as
 one page of ``idx_conv_mem_refs_conversation_agent_date``, which this step
-creates. It replaces ``idx_conv_mem_refs_conversation_date_created``: the read
+creates with ``date_created DESC``: YugabyteDB will not read an ascending index
+backwards, and sorts the conversation's refs instead. It replaces ``idx_conv_mem_refs_conversation_date_created``: the read
 always names its agent now, so the conversation-wide index has no reader and
 is dropped.
 
@@ -25,7 +26,7 @@ _AGENT_REFS_INDEX_SQL = (
     "-- plan_test: packages/agent/memory/tests/integration/test_index_plans.py"
     "::test_conv_mem_refs_conversation_agent_date\n"
     "CREATE INDEX IF NOT EXISTS idx_conv_mem_refs_conversation_agent_date "
-    "ON conversation_memory_refs (conversation_id, agent_id, date_created)"
+    "ON conversation_memory_refs (conversation_id, agent_id, date_created DESC)"
 )
 
 

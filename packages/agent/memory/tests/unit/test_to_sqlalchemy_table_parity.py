@@ -134,7 +134,7 @@ def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
             ["messages.message_id"],
             ondelete="SET NULL",
         ),
-        SAIndex("ix_memories_user_date", "user_id", "date_created"),
+        SAIndex("ix_memories_agent_user_date", "agent_id", "user_id", sa_text("date_created DESC")),
         # v0.57.0: the v004 conversation index, now declared.
         SAIndex("idx_mem_conversation", "conversation_id"),
         SAIndex(
@@ -146,7 +146,6 @@ def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
             postgresql_where=sa_text("alias IS NOT NULL"),
         ),
         # v0.8.1 enrichments mirror prod alembic.
-        SAIndex("idx_memories_agent_user", "agent_id", "user_id"),
         SAIndex(
             "idx_memories_agent_customer_user",
             "agent_id",
@@ -241,7 +240,7 @@ def _reference_media_table(metadata: sa.MetaData) -> sa.Table:
             ["memories.agent_id", "memories.memory_id"],
             ondelete="CASCADE",
         ),
-        SAIndex("ix_media_memory_id", "memory_id"),
+        SAIndex("ix_media_agent_memory", "agent_id", "memory_id"),
         SAIndex(
             "uq_media_cloud_connection_file",
             "cloud_connection_id",
@@ -422,12 +421,12 @@ def _reference_conversation_memory_refs_table(metadata: sa.MetaData) -> sa.Table
             ondelete="CASCADE",
         ),
         # v034 (0.95.0): the ledger's read of the refs one agent surfaced,
-        # newest first; it replaced the (conversation_id, date_created) index.
+        # newest first, stored descending; it replaced the (conversation_id, date_created) index.
         SAIndex(
             "idx_conv_mem_refs_conversation_agent_date",
             "conversation_id",
             "agent_id",
-            "date_created",
+            sa_text("date_created DESC"),
         ),
     )
 
