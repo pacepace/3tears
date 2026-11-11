@@ -16,13 +16,14 @@ progress writes waited a whole interval. Pinned, each against the shape that fai
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import pytest
@@ -67,35 +68,41 @@ def _live(storage: EvalStorage, run_id: str) -> bool:
     return run.lost is None and run.status == "running" and run.lease.expires() > datetime.now(UTC)
 
 
-class _SpyLeases(JobLeases):
-    """Leases counting how often a holder was stopped for a whole unrenewed lease."""
+def _held(leases: JobLeases, storage: EvalStorage, run_ids: Sequence[str]) -> list[str]:
+    """Hold each run as :func:`_hold` does; the list each job's ``stop`` appends its run to, as it is called."""
+    stopped: list[str] = []
+    for run_id in run_ids:
+        _hold(leases, storage, run_id, stop=functools.partial(stopped.append, run_id))
+    return stopped
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.expired: list[str] = []
 
-    async def _expire(self, held: Any) -> None:
-        self.expired.append(held.record_id)
-        await super()._expire(held)
+def _expiry_faults(storage: EvalStorage, run_id: str) -> list[str]:
+    """The faults the holder wrote on the run when it stopped the job for a whole unrenewed lease."""
+    return [fault for fault in _stored(storage, run_id).faults if "could not renew it" in fault]
+
+
+def _expired(leases: JobLeases, storage: EvalStorage, stopped: list[str], run_id: str) -> bool:
+    """Whether the holder has begun to expire the run, or has: an expiry lets go of the record first (so it reads
+    fenced), writes on it why, and stops its job."""
+    return leases.fenced(run_id) or run_id in stopped or bool(_expiry_faults(storage, run_id))
 
 
 async def test_leases_renew_though_every_worker_of_the_hosts_pool_is_busy_for_longer_than_a_lease() -> None:
     storage = _storage()
     host_pool = ThreadPoolExecutor(max_workers=2)
     asyncio.get_running_loop().set_default_executor(host_pool)
-    leases = _SpyLeases(storage, lease_s=LEASE_S)
+    leases = JobLeases(storage, lease_s=LEASE_S)
     try:
         # the host's cells: every worker occupied for well over two leases
         for _ in range(2):
             host_pool.submit(time.sleep, 5.2)
         ids = [f"run-{n}" for n in range(9)]
-        for run_id in ids:
-            _hold(leases, storage, run_id)
+        stopped = _held(leases, storage, ids)
 
         await asyncio.sleep(3.8)  # past two lease durations: a lease not renewed has lapsed
 
         assert all(_live(storage, run_id) for run_id in ids), "every lease was renewed while the host's pool was busy"
-        assert leases.expired == [] and not any(leases.fenced(run_id) for run_id in ids)
+        assert not any(_expired(leases, storage, stopped, run_id) for run_id in ids), "no holder expired its lease"
     finally:
         await leases.shut_down()
         host_pool.shutdown(wait=True)
@@ -119,15 +126,14 @@ class _SlowRecordStore(InMemoryDocumentStore):
 async def test_one_slow_record_delays_no_other_records_renewal() -> None:
     store = _SlowRecordStore("run-slow", 3.0)  # a stall longer than a lease
     storage = _storage(store)
-    leases = _SpyLeases(storage, lease_s=LEASE_S)
+    leases = JobLeases(storage, lease_s=LEASE_S)
     try:
-        for run_id in ("run-slow", "run-b", "run-c"):  # the slow one is renewed first
-            _hold(leases, storage, run_id)
+        stopped = _held(leases, storage, ("run-slow", "run-b", "run-c"))  # the slow one is renewed first
 
         await asyncio.sleep(2.8)  # past one lease: a record waiting on the slow one would have lapsed
 
         assert _live(storage, "run-b") and _live(storage, "run-c")
-        assert "run-b" not in leases.expired and "run-c" not in leases.expired
+        assert not _expired(leases, storage, stopped, "run-b") and not _expired(leases, storage, stopped, "run-c")
     finally:
         await leases.shut_down()
 
@@ -154,9 +160,9 @@ class _ContendedStore(InMemoryDocumentStore):
 async def test_a_renewal_that_loses_its_races_is_tried_again_within_the_interval() -> None:
     store = _ContendedStore()
     storage = _storage(store)
-    leases = _SpyLeases(storage, lease_s=3.0)  # renewed every second
+    leases = JobLeases(storage, lease_s=3.0)  # renewed every second
     try:
-        _hold(leases, storage, "run-a")
+        stopped = _held(leases, storage, ("run-a",))
         store.refusals = 6  # two whole renewals' attempts lost
         started = time.monotonic()
 
@@ -164,7 +170,7 @@ async def test_a_renewal_that_loses_its_races_is_tried_again_within_the_interval
 
         assert store.landed_at is not None, "the renewal landed"
         assert store.landed_at - started < 1.9, "after the first interval and a short backoff, not another interval"
-        assert leases.expired == [] and not leases.fenced("run-a")
+        assert not _expired(leases, storage, stopped, "run-a"), "the lease the lost races delayed was not expired"
     finally:
         await leases.shut_down()
 
@@ -191,11 +197,9 @@ class _HangingRenewalStore(InMemoryDocumentStore):
 async def test_a_renewal_that_never_returns_expires_its_own_record_at_the_lease_and_no_other() -> None:
     store = _HangingRenewalStore("run-hung")
     storage = _storage(store)
-    leases = _SpyLeases(storage, lease_s=LEASE_S)
-    stopped: list[str] = []
+    leases = JobLeases(storage, lease_s=LEASE_S)
     try:
-        for run_id in ("run-hung", "run-b"):
-            _hold(leases, storage, run_id, stop=lambda run_id=run_id: stopped.append(run_id))
+        stopped = _held(leases, storage, ("run-hung", "run-b"))
 
         # the lease, the interval its expiry check waits for, and two bounded writes of the expiry, with a margin
         # for a loaded machine; the hung call itself is never released while this waits
@@ -208,10 +212,11 @@ async def test_a_renewal_that_never_returns_expires_its_own_record_at_the_lease_
         assert time.monotonic() - started < 2 * LEASE_S, "stopped within about one lease, not left to hang"
         assert store.hung.is_set(), "the renewal's store call is the one that hangs"
         assert stopped == ["run-hung"], "the job whose renewal hung was stopped, and only that one"
-        assert leases.expired == ["run-hung"] and leases.fenced("run-hung") and not leases.fenced("run-b")
+        # expired once, for its whole unrenewed lease: the expiry writes its one fault before it stops the job
+        (expiry,) = _expiry_faults(storage, "run-hung")
+        assert "had not returned" in expiry, f"the expiry's fault names the hung renewal: {expiry}"
+        assert leases.fenced("run-hung") and not _expired(leases, storage, stopped, "run-b")
         assert _live(storage, "run-b"), "another record's renewals went on"
-        faults = _stored(storage, "run-hung").faults
-        assert any("had not returned" in fault for fault in faults), f"a fault names the hung renewal: {faults}"
     finally:
         store.release.set()
         await leases.shut_down()
@@ -243,18 +248,16 @@ async def test_the_last_record_held_is_still_stopped_when_its_expirys_writes_out
     store = _RenewalRefusingSlowStore("run-last", delay_s=0.45)
     storage = _storage(store)
     leases = JobLeases(storage, lease_s=lease_s)
-    stopped: list[str] = []
     try:
-        _hold(leases, storage, "run-last", stop=lambda: stopped.append("run-last"))
+        stopped = _held(leases, storage, ("run-last",))
 
         async with asyncio.timeout(10):
-            while not (stopped and _stored(storage, "run-last").faults):
+            while not (stopped and _expiry_faults(storage, "run-last")):
                 await asyncio.sleep(0.05)
 
         assert stopped == ["run-last"], "the job whose renewals failed for a whole lease was stopped, once"
         assert leases.fenced("run-last") and not leases.holds("run-last")
-        faults = _stored(storage, "run-last").faults
-        assert any("could not renew it" in fault for fault in faults), f"a fault says why it stopped: {faults}"
+        assert len(_expiry_faults(storage, "run-last")) == 1, "a fault says why it stopped, once"
     finally:
         await leases.shut_down()
 
