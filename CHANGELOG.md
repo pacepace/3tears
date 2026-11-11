@@ -40,6 +40,8 @@ reports run it with their no-whole-reads configs.
 
 ### datasources: a reply the hub cut by its bytes never ends a read
 
+**Added:** `read_all`, `read_parts`, `read_partitions`, `export_select`, `export_part` and `export_partitions` take a `Selected` column beside the plain ones (a row's hash: `row_hash_selected(..., alias=None)`), so a full or cold read stores each row's hash as it loads; every fingerprint covers the columns read as written (the hash is computed from them), and a read of expressions alone is refused.
+
 **Fixed (P0, missing data):** with the hub's byte cap on, a page sized past it came back cut (`truncated`, short of
 its sentinel), and `read_all`, `read_counted`, `read_parts` and `read_partitions` took it as the relation's end and
 returned a prefix as the whole. Every keyset pager now reads a cut reply as "more rows follow": it keeps the rows up
