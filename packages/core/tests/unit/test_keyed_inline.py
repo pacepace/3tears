@@ -18,10 +18,12 @@ from threetears.core.keyed import (
     InlineDuckDB,
     KeyBatch,
     Sort,
+    ThreadedDuckDB,
     any_rows,
     apply_stage,
     keyset_rows,
     read_keyed,
+    read_keyed_arrow,
     run_inline,
 )
 from threetears.core.testing.same_results import Seeded, assert_same_results
@@ -216,3 +218,29 @@ def test_a_bounded_look_takes_at_most_its_limit_of_the_rows_it_names(conn: duckd
             ordered=False,
         )
     )
+
+
+def test_a_keyed_read_into_arrow_runs_inline_typed_as_asked(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if InlineDuckDB cannot answer read_keyed_arrow (no fetch_arrow), answers other rows than the plain
+    statement, or answers columns other than ``types``' names, order and types."""
+    conn.execute("BEGIN TRANSACTION")
+    conn.execute("INSERT INTO t VALUES ('k9', 900, 9)")  # only this transaction sees it
+    types = {"b": pa.int32(), "a": pa.string(), "v": pa.int64()}
+    tables = run_inline(
+        read_keyed_arrow(InlineDuckDB(conn), "t", keys=KeyBatch(("a",), [("k3",), ("k9",)]), types=types)
+    )
+    read = pa.concat_tables(tables)
+    assert read.schema == pa.schema(list(types.items()))
+    assert sorted(zip(read["a"].to_pylist(), read["b"].to_pylist(), read["v"].to_pylist(), strict=True)) == sorted(
+        conn.execute("SELECT a, b, v FROM t WHERE a IN ('k3', 'k9')").fetchall()
+    )
+
+
+def test_the_threaded_reader_answers_the_same_arrow(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if ThreadedDuckDB's Arrow read answers other rows or types than the inline one."""
+    types = {"a": pa.string(), "b": pa.int64()}
+    keys = KeyBatch(("a",), [("k1",), ("k2",)])
+    inline = pa.concat_tables(run_inline(read_keyed_arrow(InlineDuckDB(conn), "t", keys=keys, types=types)))
+    threaded = pa.concat_tables(asyncio.run(read_keyed_arrow(ThreadedDuckDB(conn), "t", keys=keys, types=types)))
+    assert threaded.schema == inline.schema
+    assert sorted(threaded.to_pylist(), key=str) == sorted(inline.to_pylist(), key=str)

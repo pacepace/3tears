@@ -18,9 +18,11 @@ it, so one ``send`` runs it whole.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Coroutine, Iterable, Sequence
+from collections.abc import Coroutine, Iterable, Mapping, Sequence
 from types import TracebackType
 from typing import Any, TypeVar
+
+from threetears.core.keyed.threaded import duckdb_arrow
 
 __all__ = ["InlineDuckDB", "InlineTransaction", "run_inline"]
 
@@ -100,6 +102,22 @@ class InlineDuckDB:
         :rtype: list[dict[str, Any]]
         """
         return _rows(self._conn.execute(query, list(params)))
+
+    async def fetch_arrow(self, query: str, /, *params: Any, types: Mapping[str, Any]) -> Any:
+        """the statement's rows as one Arrow table typed by ``types``, never a Python object a row
+        (:func:`~threetears.core.keyed.threaded.duckdb_arrow`): what :func:`~threetears.core.keyed.read_keyed_arrow`
+        reads through, so a keyed read into Arrow runs inline, in the caller's transaction.
+
+        :param query: the SELECT, ``$n`` placeholders
+        :ptype query: str
+        :param params: its parameters
+        :ptype params: Any
+        :param types: column name -> its Arrow type, every column selected, in order
+        :ptype types: Mapping[str, pyarrow.DataType]
+        :return: the rows
+        :rtype: pyarrow.Table
+        """
+        return duckdb_arrow(self._conn, query, params, types)
 
     async def execute(self, query: str, /, *params: Any) -> str:
         """run a write and answer its status as asyncpg spells it (``DELETE 3``).
