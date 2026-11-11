@@ -125,6 +125,11 @@ ALLOWED: dict[tuple[str, str], str] = {
         "record type ends and reads lost), not a host's data: one model reads the same way for every host, and a "
         "store read needs it to settle a record whose holder died"
     ),
+    ("threetears/evals/kernel/eval_scope.py", "_RUNNING_EVAL"): (
+        "a ContextVar, so each task sees its own value and none leaks between hosts: the eval run the calling task's "
+        "work belongs to, set and reset around one Eval.run, read only to name the eval a replayed call was already "
+        "served to. It holds no host data, and a second host in the process never sees the first's value"
+    ),
     ("threetears/evals/testing/recorded_completions.py", "_APPEND_LOCK"): (
         "serialises appends to recording files in the process, so two recording clients on one file never "
         "interleave a line or give two calls one index. It holds no value and nothing a host reads; a file is "

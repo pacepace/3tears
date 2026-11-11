@@ -196,6 +196,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # The one rule naming an aspect after its campaign's behavior, which every site that does so calls.
     "schema/aspect_label.py",
     "kernel/declaration.py",
+    "kernel/eval_scope.py",
     # The measure names one result carries, read off the result model, below the declaration and the host profile.
     "kernel/carried_measures.py",
     "kernel/surface.py",
