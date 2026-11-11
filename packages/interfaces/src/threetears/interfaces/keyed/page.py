@@ -436,20 +436,20 @@ def page_statement(
         ]
     )
 
-    def leg(condition: str | None, leg_order: Sequence[Sort]) -> str:
+    statements: list[str] = []
+    for condition, leg_order in legs:
         every = [*conditions, *([condition] if condition is not None else []), *after]
         clause = f" WHERE {' AND '.join(every)}" if every else ""
         # the pinned columns, constant on every row, lead the ORDER BY too: the same order, read as one range of
         # the index they lead
         ordered = ", ".join([f"{column} ASC" for column in lead] + ([_order_by(leg_order)] if leg_order else []))
         by_clause = f" ORDER BY {ordered}" if ordered else ""
-        return f"SELECT {selected} FROM {relation(table, 't')}{clause}{by_clause} LIMIT {rows}"
-
-    if len(legs) == 1:
-        sql = leg(*legs[0])
+        statements.append(f"SELECT {selected} FROM {relation(table, 't')}{clause}{by_clause} LIMIT {rows}")
+    if len(statements) == 1:
+        sql = statements[0]
     else:
         # each leg a range of the index in its own order; the page is the first rows of both, in the sort's order
-        union = " UNION ALL ".join(f"({leg(condition, leg_order)})" for condition, leg_order in legs)
+        union = " UNION ALL ".join(f"({statement})" for statement in statements)
         outer = _order_by([replace(sort, expression=f"u.{quote_identifier(sort.column)}") for sort in order])
         sql = f"SELECT * FROM ({union}) AS u ORDER BY {outer} LIMIT {rows}"
     if lock is not None:
