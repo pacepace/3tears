@@ -63,7 +63,16 @@ from typing import Any, Final, cast
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
-from threetears.core.keyed import Fragment, Sort, delete_keyed, keyset_page, keyset_rows, read_by, read_row
+from threetears.core.keyed import (
+    Fragment,
+    Sort,
+    delete_keyed,
+    keyset_page,
+    keyset_rows,
+    read_by,
+    read_row,
+    update_keyed,
+)
 from threetears.core.operator import operator_command
 from threetears.langgraph.anonymize import (
     METADATA_CHANNEL,
@@ -183,8 +192,16 @@ _MAX_THREAD_ID_LENGTH = 255
 #: rows read per page when anonymizing a thread's checkpoints or pending writes.
 _DEFAULT_ANONYMIZE_BATCH = 200
 
-#: below every ``checkpoint_writes.idx``, control channels' negative ones included.
-_MIN_WRITE_IDX = -(2**31)
+#: a thread's checkpoints in their key's order (namespace, then id), as anonymization pages them
+_CHECKPOINT_KEY_ORDER: Final = (Sort("checkpoint_ns", cast=None), Sort("checkpoint_id", cast=None))
+
+#: a thread's pending writes in their key's order, as anonymization pages them
+_WRITE_KEY_ORDER: Final = (
+    Sort("checkpoint_ns", cast=None),
+    Sort("checkpoint_id", cast=None),
+    Sort("task_id", cast=None),
+    Sort("idx", cast=None),
+)
 
 
 #: what an unreadable blob's report says, for a serializer that cannot decode or re-encode it
@@ -1214,15 +1231,16 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 records=True,
             )
         else:
-            row = await self._exec.fetchrow(
-                "SELECT checkpoint_id, parent_checkpoint_id, type, "
-                "checkpoint, metadata_ "
-                "FROM checkpoints "
-                "WHERE thread_id = $1 AND checkpoint_ns = $2 "
-                "ORDER BY checkpoint_id DESC LIMIT 1",
-                storage_thread_id,
-                checkpoint_ns,
+            # the thread's newest checkpoint: the first page of one, newest first by the key
+            latest = await keyset_page(
+                self._exec,
+                "checkpoints",
+                columns=("checkpoint_id", "parent_checkpoint_id", "type", "checkpoint", "metadata_"),
+                by={"thread_id": storage_thread_id, "checkpoint_ns": checkpoint_ns},
+                order=_NEWEST_FIRST,
+                limit=1,
             )
+            row = latest.rows[0] if latest.rows else None
 
         if row is None:
             return None
@@ -2250,18 +2268,18 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :rtype: int
         """
         rewritten = 0
-        cursor: tuple[str, str] = ("", "")
+        cursor: str | None = None
         while True:
-            rows = await self._exec.fetch(
-                "SELECT checkpoint_ns, checkpoint_id, type, checkpoint, metadata_ "
-                "FROM checkpoints WHERE thread_id = $1 "
-                "AND (checkpoint_ns > $2 OR (checkpoint_ns = $2 AND checkpoint_id > $3)) "
-                "ORDER BY checkpoint_ns, checkpoint_id LIMIT $4",
-                storage_thread_id,
-                cursor[0],
-                cursor[1],
-                batch_size,
+            page = await keyset_page(
+                self._exec,
+                "checkpoints",
+                columns=("checkpoint_ns", "checkpoint_id", "type", "checkpoint", "metadata_"),
+                by={"thread_id": storage_thread_id},
+                order=_CHECKPOINT_KEY_ORDER,
+                limit=batch_size,
+                cursor=cursor,
             )
+            rows = page.rows
             blobs: list[StoredBlob] = []
             for row in rows:
                 type_tag = row["type"] or "msgpack"
@@ -2297,14 +2315,18 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 )
                 if new_checkpoint is not None or new_metadata is not None:
                     try:
-                        await self._exec.execute(
-                            "UPDATE checkpoints SET checkpoint = $1, metadata_ = $2 "
-                            "WHERE thread_id = $3 AND checkpoint_ns = $4 AND checkpoint_id = $5",
-                            new_checkpoint if new_checkpoint is not None else checkpoint_blob,
-                            new_metadata if new_metadata is not None else row["metadata_"],
-                            storage_thread_id,
-                            row["checkpoint_ns"],
-                            row["checkpoint_id"],
+                        await update_keyed(
+                            self._exec,
+                            "checkpoints",
+                            values={
+                                "checkpoint": new_checkpoint if new_checkpoint is not None else checkpoint_blob,
+                                "metadata_": new_metadata if new_metadata is not None else row["metadata_"],
+                            },
+                            by={
+                                "thread_id": storage_thread_id,
+                                "checkpoint_ns": row["checkpoint_ns"],
+                                "checkpoint_id": row["checkpoint_id"],
+                            },
                         )
                     except (
                         Exception
@@ -2312,9 +2334,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                         exc.add_note(f"writing checkpoint ns={row['checkpoint_ns']!r} id={row['checkpoint_id']!r}")
                         raise
                     rewritten += 1
-            if len(rows) < batch_size:
+            if page.next_cursor is None:
                 break
-            cursor = (rows[-1]["checkpoint_ns"], rows[-1]["checkpoint_id"])
+            cursor = page.next_cursor
         return rewritten
 
     async def _anonymize_write_rows(
@@ -2344,18 +2366,18 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :rtype: int
         """
         rewritten = 0
-        cursor: tuple[str, str, str, int] = ("", "", "", _MIN_WRITE_IDX)
+        cursor: str | None = None
         while True:
-            rows = await self._exec.fetch(
-                "SELECT checkpoint_ns, checkpoint_id, task_id, idx, channel, type, blob "
-                "FROM checkpoint_writes WHERE thread_id = $1 "
-                "AND (checkpoint_ns > $2 OR (checkpoint_ns = $2 AND (checkpoint_id > $3 "
-                "OR (checkpoint_id = $3 AND (task_id > $4 OR (task_id = $4 AND idx > $5)))))) "
-                "ORDER BY checkpoint_ns, checkpoint_id, task_id, idx LIMIT $6",
-                storage_thread_id,
-                *cursor,
-                batch_size,
+            page = await keyset_page(
+                self._exec,
+                "checkpoint_writes",
+                columns=("checkpoint_ns", "checkpoint_id", "task_id", "idx", "channel", "type", "blob"),
+                by={"thread_id": storage_thread_id},
+                order=_WRITE_KEY_ORDER,
+                limit=batch_size,
+                cursor=cursor,
             )
+            rows = page.rows
             outcomes, page_unclassified = await anonymize_in_workers(
                 type(self.serde),
                 classification,
@@ -2376,15 +2398,17 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 new_blob = self._rewritten_or_reported(outcome, row["type"] or "msgpack", where, unreadable)
                 if new_blob is not None:
                     try:
-                        await self._exec.execute(
-                            "UPDATE checkpoint_writes SET blob = $1 WHERE thread_id = $2 AND checkpoint_ns = $3 "
-                            "AND checkpoint_id = $4 AND task_id = $5 AND idx = $6",
-                            new_blob,
-                            storage_thread_id,
-                            row["checkpoint_ns"],
-                            row["checkpoint_id"],
-                            row["task_id"],
-                            row["idx"],
+                        await update_keyed(
+                            self._exec,
+                            "checkpoint_writes",
+                            values={"blob": new_blob},
+                            by={
+                                "thread_id": storage_thread_id,
+                                "checkpoint_ns": row["checkpoint_ns"],
+                                "checkpoint_id": row["checkpoint_id"],
+                                "task_id": row["task_id"],
+                                "idx": row["idx"],
+                            },
                         )
                     except (
                         Exception
@@ -2395,10 +2419,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                         )
                         raise
                     rewritten += 1
-            if len(rows) < batch_size:
+            if page.next_cursor is None:
                 break
-            last = rows[-1]
-            cursor = (last["checkpoint_ns"], last["checkpoint_id"], last["task_id"], last["idx"])
+            cursor = page.next_cursor
         return rewritten
 
     async def _evict_anonymized(self, thread_id: str, storage_thread_id: str, *, customer: UUID | None) -> bool:

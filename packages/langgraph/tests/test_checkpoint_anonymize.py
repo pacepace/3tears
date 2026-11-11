@@ -28,6 +28,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command, interrupt
 
+from threetears.core.keyed import Dialect
 from threetears.core.testing.calibrate import bare_loop_lateness, budget_problem
 from threetears.observe.erasure import ANONYMIZED_MARKER
 from threetears.langgraph import anonymize_workers
@@ -79,8 +80,11 @@ class SqliteQueryExecutor(AsyncQueryExecutor):
 
     ``$n`` placeholders become SQLite's ``?n``; everything else is the saver's own SQL,
     run by a real engine, so a statement the saver gets wrong fails here as it would on
-    a server.
+    a server. It names its dialect as PostgreSQL's (the keyed pages' row comparison past a
+    cursor, which SQLite reads the same), so a page is never asked the server's version.
     """
+
+    sql_dialect = Dialect.POSTGRES
 
     def __init__(self) -> None:
         """create the database and the two checkpoint tables.

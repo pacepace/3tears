@@ -52,6 +52,27 @@ def _make_executor() -> Any:
     return executor
 
 
+def _answer_latest(executor: Any, answer: Any) -> None:
+    """the thread's newest checkpoint -- read as a page of one through ``fetch`` -- answers ``answer`` (a row, None, or
+    an async callable taking the statement and its parameters); the checkpoint's writes, read after it, answer none.
+
+    :param executor: the mock executor
+    :ptype executor: Any
+    :param answer: the row, None, or an async callable answering it
+    :ptype answer: Any
+    :return: nothing
+    :rtype: None
+    """
+
+    async def fetch(sql: str, *params: Any) -> list[Any]:
+        if "checkpoint_writes" in sql:
+            return []
+        row = await answer(sql, *params) if callable(answer) else answer
+        return [] if row is None else [row]
+
+    executor.fetch = AsyncMock(side_effect=fetch)
+
+
 class TestUUIDSafeSerializer:
     """UUIDSafeSerializer sanitizes uuid_utils.UUID objects."""
 
@@ -504,7 +525,7 @@ class TestCacheReadFailureFallsThrough:
         executor = _make_executor()
         l1, l2 = self._failing_caches()
         saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
-        executor.fetchrow.return_value = self._l3_row(saver)
+        _answer_latest(executor, self._l3_row(saver))
         sites = {
             tier: f"threetears.langgraph.checkpoint:ThreeTierCheckpointSaver._{tier}_or_recorded_miss"
             for tier in ("l1", "l2")
@@ -525,7 +546,7 @@ class TestCacheReadFailureFallsThrough:
         l1 = AsyncMock()
         l1.get.return_value = None
         saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, scope=_UNSCOPED)
-        executor.fetchrow.return_value = self._l3_row(saver)
+        _answer_latest(executor, self._l3_row(saver))
 
         with caplog.at_level(logging.WARNING, logger="threetears.langgraph.checkpoint"):
             await saver.aget_tuple(self._CONFIG)
@@ -534,7 +555,7 @@ class TestCacheReadFailureFallsThrough:
 
     async def test_a_failed_l3_read_after_failed_cache_reads_raises(self):
         executor = _make_executor()
-        executor.fetchrow.side_effect = ConnectionError("postgres down")
+        executor.fetch.side_effect = ConnectionError("postgres down")
         l1, l2 = self._failing_caches()
         saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
 
@@ -627,7 +648,7 @@ class TestProtocolFlow:
         assert "INSERT INTO checkpoints" in sql_stmt
 
     async def test_aget_tuple_returns_none_when_executor_empty(self):
-        """aget_tuple() returns None when executor.fetchrow returns None."""
+        """aget_tuple() returns None when the thread's newest-checkpoint page is empty."""
         executor = _make_executor()
         saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
@@ -636,7 +657,7 @@ class TestProtocolFlow:
         )
 
         assert result is None
-        executor.fetchrow.assert_called_once()
+        executor.fetch.assert_called_once()
 
     async def test_adelete_thread_issues_two_delete_statements(self):
         """adelete_thread() runs DELETE on writes and checkpoints tables."""
@@ -749,7 +770,7 @@ class TestAsyncpgPoolAdapter:
             {"configurable": {"thread_id": "thread-1", "checkpoint_ns": ""}},
         )
         assert tup is None
-        conn.fetchrow.assert_awaited_once()
+        conn.fetch.assert_awaited_once()
 
 
 def _build_pool_with_conn(conn: Any) -> Any:

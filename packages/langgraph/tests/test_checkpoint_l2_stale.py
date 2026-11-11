@@ -62,6 +62,27 @@ def _make_executor() -> Any:
     return executor
 
 
+def _answer_latest(executor: Any, answer: Any) -> None:
+    """the thread's newest checkpoint -- read as a page of one through ``fetch`` -- answers ``answer`` (a row, None, or
+    an async callable taking the statement and its parameters); the checkpoint's writes, read after it, answer none.
+
+    :param executor: the mock executor
+    :ptype executor: Any
+    :param answer: the row, None, or an async callable answering it
+    :ptype answer: Any
+    :return: nothing
+    :rtype: None
+    """
+
+    async def fetch(sql: str, *params: Any) -> list[Any]:
+        if "checkpoint_writes" in sql:
+            return []
+        row = await answer(sql, *params) if callable(answer) else answer
+        return [] if row is None else [row]
+
+    executor.fetch = AsyncMock(side_effect=fetch)
+
+
 def _fresh(exc: Exception) -> Exception:
     """a new exception like ``exc``, so each raise starts its own traceback.
 
@@ -364,7 +385,7 @@ class TestAFailedPutDeletesTheEntry:
         await saver.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})
 
         assert l2.gets == [], "the thread read the older checkpoint still cached in L2"
-        executor.fetchrow.assert_awaited_once()
+        executor.fetch.assert_awaited_once()
         # only that thread: another still reads its cache
         await saver.aget_tuple({"configurable": {"thread_id": "t-2", "checkpoint_ns": ""}})
         assert l2.gets == ["t-2"]
@@ -417,7 +438,7 @@ class TestAPinnedReadDoesNotWarmTheCache:
         l1.get.return_value = None
         executor = _make_executor()
         saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
-        executor.fetchrow.return_value = _row(saver, "cp-2")
+        _answer_latest(executor, _row(saver, "cp-2"))
 
         tup = await saver.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})
 
@@ -444,7 +465,7 @@ class TestARefillCannotReplaceANewerCheckpoint:
             await writer.aput(config, _checkpoint("cp-2"), {}, {})
             return older_row
 
-        executor.fetchrow.side_effect = _query_then_a_newer_write_lands
+        _answer_latest(executor, _query_then_a_newer_write_lands)
 
         tup = await reader.aget_tuple(config)
 
@@ -469,7 +490,7 @@ class TestARefillCannotReplaceANewerCheckpoint:
             await l2.delete(_BUCKET, "t-1")
             return older_row
 
-        executor.fetchrow.side_effect = _query_then_the_key_is_deleted
+        _answer_latest(executor, _query_then_the_key_is_deleted)
 
         await reader.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})
 
@@ -482,7 +503,7 @@ class TestARefillCannotReplaceANewerCheckpoint:
         l1.get.return_value = None
         executor = _make_executor()
         saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
-        executor.fetchrow.return_value = _row(saver, "cp-1")
+        _answer_latest(executor, _row(saver, "cp-1"))
 
         await saver.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})
 
@@ -493,7 +514,7 @@ class TestARefillCannotReplaceANewerCheckpoint:
         l2 = _RevisionLimitedL2Cache(limit=1)
         executor = _make_executor()
         saver = ThreeTierCheckpointSaver(executor=executor, l2_cache=l2, scope=_UNSCOPED)
-        executor.fetchrow.return_value = _row(saver, "cp-1")
+        _answer_latest(executor, _row(saver, "cp-1"))
 
         await saver.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})
 
@@ -549,7 +570,7 @@ class TestAFencedCacheThatFails:
         l2.fail_get_latest = RuntimeError("nats: timeout")
         executor = _make_executor()
         saver = ThreeTierCheckpointSaver(executor=executor, l2_cache=l2, scope=_UNSCOPED)
-        executor.fetchrow.return_value = _row(saver, "cp-1")
+        _answer_latest(executor, _row(saver, "cp-1"))
         before = _contained("_l2_read_with_revision", "CheckpointCacheError")
 
         tup = await saver.aget_tuple(self._CONFIG)
@@ -566,7 +587,7 @@ class TestAFencedCacheThatFails:
         l1.get.return_value = None
         executor = _make_executor()
         saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
-        executor.fetchrow.return_value = _row(saver, "cp-1")
+        _answer_latest(executor, _row(saver, "cp-1"))
         before = _contained("_refill_l2", "RuntimeError")
 
         tup = await saver.aget_tuple(self._CONFIG)

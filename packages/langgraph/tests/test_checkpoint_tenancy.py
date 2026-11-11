@@ -541,7 +541,7 @@ class TestL3StatementsAreScoped:
 
         await saver.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})
 
-        _sql, *params = executor.fetchrow.await_args.args
+        _sql, *params = executor.fetch.await_args.args
         assert params[0] == f"{_CUSTOMER_A}/t-1"
 
     async def test_aget_tuple_returns_the_logical_thread_id(self) -> None:
@@ -553,15 +553,19 @@ class TestL3StatementsAreScoped:
         executor = _make_executor()
         saver = ThreeTierCheckpointSaver(executor=executor, scope=_SCOPE_A)
         cp_type, cp_blob = saver.serde.dumps_typed(_CHECKPOINT)
-        executor.fetchrow = AsyncMock(
-            return_value={
-                "checkpoint_id": "cp-1",
-                "parent_checkpoint_id": None,
-                "type": cp_type,
-                "checkpoint": cp_blob,
-                "metadata_": b"\x00",
-            },
-        )
+        row = {
+            "checkpoint_id": "cp-1",
+            "parent_checkpoint_id": None,
+            "type": cp_type,
+            "checkpoint": cp_blob,
+            "metadata_": b"\x00",
+        }
+
+        async def fetch(sql: str, *_params: Any) -> list[Any]:
+            # the newest checkpoint answers the row; its writes, read after it, answer none
+            return [] if "checkpoint_writes" in sql else [row]
+
+        executor.fetch = AsyncMock(side_effect=fetch)
 
         tup = await saver.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})
 
@@ -1195,7 +1199,7 @@ class TestFromConfigResolvesTheCustomerPerCall:
             {"configurable": {"thread_id": "t-1", "checkpoint_ns": "", _DEFAULT_CONFIG_KEY: _CUSTOMER_A}},
         )
 
-        assert executor.fetchrow.await_args.args[1] == f"{_CUSTOMER_A}/t-1"
+        assert executor.fetch.await_args.args[1] == f"{_CUSTOMER_A}/t-1"
 
     async def test_alist_binds_the_config_customer(self) -> None:
         """:return: nothing
