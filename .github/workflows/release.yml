@@ -111,7 +111,7 @@ jobs:
             exit 1
           fi
 
-  # The unit + enforcement suite as the same six parallel shards ci.yml runs (see
+  # The unit + enforcement suite as the same eleven parallel shards ci.yml runs (see
   # scripts/ci-unit-tests.sh): one after another they were ~25 minutes of the release's critical
   # path. No doc-only skip here: a release always runs the whole suite.
   unit:
@@ -122,7 +122,7 @@ jobs:
       # every shard reports, so one failure does not hide another's
       fail-fast: false
       matrix:
-        shard: [evals-1, evals-2, evals-3, core, tests, rest]
+        shard: [evals-1, evals-2, evals-3, evals-4, evals-5, evals-6, evals-7, evals-8, core, tests, rest]
     steps:
       # fetch-depth 0: the API-growth gate in tests/enforcement compares against the latest
       # vX.Y.Z tag and refuses, rather than skips, when it cannot see one -- a manual

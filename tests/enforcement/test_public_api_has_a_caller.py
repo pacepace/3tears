@@ -291,25 +291,27 @@ class TestPublicApiHasACaller:
     def test_every_moved_module_is_a_real_move(self, scan: _Scan) -> None:
         """guard the guard: a map entry with a mistyped path would excuse nothing, silently.
 
-        The old path is gone from the tree and was in a release at or before the baseline (still true once a
-        later tag is the baseline); the new path is in the tree. Read from the release tags' own trees, never by
-        walking history: a test runner may hold the tags and their trees without the commits between them.
+        The old path is gone from the tree and was released: it is a file in the tree of some release tag at or
+        before the baseline, by version (still true once a later tag is the baseline); the new path is in the tree.
+        Read from the tags' trees alone, not from history, since a testament runner's checkout carries the release
+        tags (``.testament.toml``'s ``[git] tags``) as refs to their trees but no commits or ancestry.
         """
         tags = release_tags(_REPO_ROOT)
         released = sorted(tag for tag, version in tags.items() if version <= tags[scan.baseline])
-        assert released, f"no release tag at or before {scan.baseline}"
         for old, new in _MOVED_MODULES:
             assert not (_REPO_ROOT / old).exists(), f"{old} is still in the tree; it did not move"
             assert (_REPO_ROOT / new).is_file(), f"{new} is not in the tree"
-            holding = [
-                tag
-                for tag in released
-                if subprocess.run(
-                    ["git", "cat-file", "-e", f"{tag}:{old}"], cwd=_REPO_ROOT, capture_output=True, check=False
-                ).returncode
-                == 0
-            ]
-            assert holding, f"{old} is in no release at or before {scan.baseline}"
+            # one read for every tag: `<tag>:<path>` answers `<sha> blob <size>`, or `<tag>:<path> missing`
+            found = subprocess.run(
+                ["git", "cat-file", "--batch-check"],
+                cwd=_REPO_ROOT,
+                input="".join(f"{tag}:{old}\n" for tag in released),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            kinds = [line.split()[1] for line in found.stdout.splitlines() if not line.endswith(" missing")]
+            assert "blob" in kinds, f"{old} is in no release tag's tree at or before {scan.baseline}"
 
     def test_every_name_added_since_the_last_release_has_a_caller_or_names_one(self, scan: _Scan) -> None:
         ledger = _ledger()
