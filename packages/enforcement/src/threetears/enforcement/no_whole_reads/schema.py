@@ -56,6 +56,9 @@ __all__ = [
 #: the namespace of a local copy's relations (``snapshot.relation(NAME)``): keyed only by the repo's declared local
 #: relations, never by the L3 table that shares the name
 COPY_PREFIX: Final[str] = "copy."
+#: the namespace of a relation a declared relation producer yields at run time (``NoWholeReadsConfig.
+#: relation_producers``): judged by the keys the declaration names, as a declared table is by its own
+PRODUCED_PREFIX: Final[str] = "produced."
 
 #: the columns that name a tenant on every table: a key prefix of only these reads a whole tenant
 TENANT_COLUMNS: Final[frozenset[str]] = frozenset({"row_scope", "customer_id"})
@@ -170,12 +173,15 @@ def bare_table(name: str) -> str | None:
 
     :param name: the relation as written (``public."Results"``, ``{}.change_log``, ``copy.geos``)
     :ptype name: str
-    :return: the bare name (a local copy's keeps its ``copy.``; one numbered at run time is its template,
+    :return: the bare name (a local copy's keeps its ``copy.``, a declared producer's relation its ``produced.``; one numbered at run time is its template,
         ``threetears_change_notes_{}``), or None when the table part is only an interpolation (``{}``, ``"{}"``)
     :rtype: str | None
     """
     parts = re.findall(r"\"[^\"]+\"|[^.\"]+", name.strip())
     last = parts[-1].strip('"').strip() if parts else ""
+    if len(parts) == 2 and parts[0].strip('"').strip().lower() == PRODUCED_PREFIX.rstrip(".") and last:
+        # a declared producer's run-time relation: its own namespace, as the config declares it
+        return f"{PRODUCED_PREFIX}{last.lower()}"
     copied = len(parts) > 1 and parts[-2].strip('"').strip().lower() == COPY_PREFIX.rstrip(".")
     # a name numbered at run time (``threetears_change_notes_{}``) is its template, as its declaration is
     template = re.sub(r"\{[^{}]*\}", "{}", last).lower()
@@ -203,7 +209,11 @@ def _own_schema(name: str) -> bool:
     if len(parts) < 2:
         return False
     schema = parts[-2].strip('"').strip().lower()
-    return bool(re.fullmatch(r"\w+", schema)) and schema not in _L3_SCHEMAS and schema != COPY_PREFIX.rstrip(".")
+    return (
+        bool(re.fullmatch(r"\w+", schema))
+        and schema not in _L3_SCHEMAS
+        and schema not in {COPY_PREFIX.rstrip("."), PRODUCED_PREFIX.rstrip(".")}
+    )
 
 
 @dataclass

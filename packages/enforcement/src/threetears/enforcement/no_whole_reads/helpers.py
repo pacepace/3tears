@@ -42,6 +42,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final
 
+from threetears.enforcement.no_whole_reads.schema import PRODUCED_PREFIX
+
 __all__ = [
     "KEYED_FRAGMENT_BUILDERS",
     "KEYED_HELPER_CALLS",
@@ -468,6 +470,9 @@ def _read_joined(call: ast.Call) -> list[str]:
 def _relation(node: ast.expr | None, argument: str) -> tuple[str, list[str]]:
     """a relation a helper reads, as its statement names it, and the statements it holds of its own: a table literal
     (``schema.table`` quoted a segment at a time), or a ``Derived("SELECT ...")`` judged on its own text."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith(PRODUCED_PREFIX):
+        # a declared producer's run-time relation (the walk wrote it): the catalog's own name for it, as declared
+        return node.value, []
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return ".".join(_quoted(part) for part in node.value.split(".")), []
     if isinstance(node, ast.Call) and _name(node) == "Derived":
@@ -574,12 +579,15 @@ def _read_after(call: ast.Call) -> list[str]:
 
 
 def _read_past_marks(call: ast.Call) -> list[str]:
-    relation = _text(_argument(call, "relation", 1), "relation")
+    """the rows past the marks, as the helper sends it: its ``by`` pins and ``where`` filters, then the stamps."""
+    relation, own = _relation(_argument(call, "relation", 1), "relation")
     marks = _by(_argument(call, "marks", None), "marks")
     if not marks:
         raise _Unseen("marks")
-    past = " OR ".join(f"{_quoted(stamp)} > ${place}" for place, (stamp, _) in enumerate(marks, start=1))
-    return [f"SELECT * FROM {_quoted(relation)} WHERE {past}"]
+    pinned, place = _conditions(_by(_argument(call, "by", None)))
+    filtered, place = _filters(call, place)
+    past = " OR ".join(f"{_quoted(stamp)} > ${number}" for number, (stamp, _) in enumerate(marks, start=place))
+    return [f"SELECT * FROM {relation}{_where([*pinned, *filtered, f'({past})'])}", *own]
 
 
 def _delete_before(call: ast.Call) -> list[str]:

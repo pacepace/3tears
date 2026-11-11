@@ -59,7 +59,13 @@ from threetears.enforcement.no_whole_reads.helpers import (
     is_keyed_fragment,
     narrows,
 )
-from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, SchemaCatalog, bare_table, purposes
+from threetears.enforcement.no_whole_reads.schema import (
+    COPY_PREFIX,
+    PRODUCED_PREFIX,
+    SchemaCatalog,
+    bare_table,
+    purposes,
+)
 from threetears.enforcement.no_whole_reads.sql import (
     HEAD,
     KEYED_COUNT,
@@ -139,6 +145,115 @@ Produced = Callable[[ast.expr], str | None] | None
 #: :data:`STEP_CALLS`, or of a private renderer every in-module caller hands one): a statement over it is judged at
 #: the helper's call sites, by the relation each hands it, never in the helper's body
 HELPER_RELATION: Final[str] = "__keyed_helper_relation__"
+
+#: the generic containers whose one type argument is the type of each element they yield
+_ELEMENT_CONTAINERS: Final = frozenset(
+    {"Sequence", "Iterable", "Iterator", "Collection", "list", "set", "frozenset", "AbstractSet", "MutableSequence"}
+)
+#: the generic mappings, whose ``.items()`` yields ``tuple[key, value]`` and ``.values()`` the value
+_MAPPINGS: Final = frozenset({"Mapping", "dict", "MutableMapping"})
+
+
+def produced_relation(entry: str) -> str:
+    """the relation name a declared relation producer's run-time relations are judged as.
+
+    :param entry: the declaration (``SourceTable.relation``, ``derived``)
+    :ptype entry: str
+    :return: ``produced.<entry>``, a dot written as ``__``, lower case
+    :rtype: str
+    """
+    return PRODUCED_PREFIX + entry.replace(".", "__").lower()
+
+
+def _generic(node: ast.expr) -> tuple[str, list[ast.expr]]:
+    """an annotation's outer name and its type arguments (``Sequence[tuple[A, B]]`` -> ``Sequence``, ``[tuple[A,
+    B]]``); a bare name has none.
+
+    :param node: the annotation
+    :ptype node: ast.expr
+    :return: the name (empty when it is neither a name nor a subscript of one) and the arguments
+    :rtype: tuple[str, list[ast.expr]]
+    """
+    if isinstance(node, ast.Subscript):
+        name = node.value.attr if isinstance(node.value, ast.Attribute) else getattr(node.value, "id", "")
+        given = node.slice
+        return name, list(given.elts) if isinstance(given, ast.Tuple) else [given]
+    if isinstance(node, ast.Attribute):
+        return node.attr, []
+    if isinstance(node, ast.Name):
+        return node.id, []
+    return "", []
+
+
+def _optional_of(node: ast.expr) -> ast.expr:
+    """an annotation with any ``| None`` / ``Optional[...]`` taken off (``C | None`` -> ``C``); a string annotation
+    parsed.
+
+    :param node: the annotation
+    :ptype node: ast.expr
+    :return: the annotation it allows besides None
+    :rtype: ast.expr
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        try:
+            return _optional_of(ast.parse(node.value, mode="eval").body)
+        except SyntaxError:
+            return node
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        sides = [
+            side for side in (node.left, node.right) if not (isinstance(side, ast.Constant) and side.value is None)
+        ]
+        return _optional_of(sides[0]) if len(sides) == 1 else node
+    name, arguments = _generic(node)
+    if name == "Optional" and len(arguments) == 1:
+        return _optional_of(arguments[0])
+    return node
+
+
+def _element_type(node: ast.expr) -> ast.expr | None:
+    """the type each element of an iterable of annotation ``node`` has: ``Sequence[T]`` / ``list[T]`` -> ``T``;
+    ``tuple[T, ...]`` -> ``T``; None when the walk cannot tell.
+
+    :param node: the iterable's annotation
+    :ptype node: ast.expr
+    :return: the element's annotation, or None
+    :rtype: ast.expr | None
+    """
+    name, arguments = _generic(_optional_of(node))
+    if name in _ELEMENT_CONTAINERS and len(arguments) == 1:
+        return arguments[0]
+    if name == "tuple" and len(arguments) == 2 and isinstance(arguments[1], ast.Constant) and arguments[1].value is ...:
+        return arguments[0]
+    return None
+
+
+def _target_type(target: ast.expr, name: str, annotation: ast.expr | None) -> ast.expr | None:
+    """the annotation a loop target binds ``name`` to, its element's annotation ``annotation``: the element itself
+    for a bare name; a tuple target's matching position in a ``tuple[...]`` element, nested as written.
+
+    :param target: the loop's (or comprehension's) target
+    :ptype target: ast.expr
+    :param name: the name looked for
+    :ptype name: str
+    :param annotation: the element's annotation, or None
+    :ptype annotation: ast.expr | None
+    :return: the annotation, or None when the target does not bind the name or the walk cannot tell its type
+    :rtype: ast.expr | None
+    """
+    if annotation is None:
+        return None
+    if isinstance(target, ast.Name):
+        return annotation if target.id == name else None
+    if isinstance(target, (ast.Tuple, ast.List)):
+        outer, parts = _generic(_optional_of(annotation))
+        if outer != "tuple" or len(parts) != len(target.elts):
+            return None
+        for element, part in zip(target.elts, parts, strict=True):
+            found = _target_type(element, name, part)
+            if found is not None:
+                return found
+    return None
+
 
 #: the calls of ``threetears/core/keyed`` whose first argument is the relation a statement names (``quoted_table``,
 #: ``relation(table, "t")``, a step statement's ``source(rel, "t")``, ``_as_step(step)``)
@@ -831,6 +946,7 @@ class _ModuleWalk(ast.NodeVisitor):
         parameter_values: dict[tuple[str, str], list[Passed]] | None = None,
         view_producers: Mapping[str, tuple[tuple[str, ...], ...]] | None = None,
         tuples: dict[str, list[Passed]] | None = None,
+        relation_producers: frozenset[str] = frozenset(),
     ) -> None:
         """prepare a walk of one module.
 
@@ -872,6 +988,8 @@ class _ModuleWalk(ast.NodeVisitor):
         :param view_producers: each function that builds a view under a name it is handed onto the keys its views
             declare
         :ptype view_producers: Mapping[str, tuple[tuple[str, ...], ...]] | None
+        :param relation_producers: the declared relation producers (``NoWholeReadsConfig.relation_producers``)
+        :ptype relation_producers: frozenset[str]
         :return: nothing
         :rtype: None
         """
@@ -898,6 +1016,13 @@ class _ModuleWalk(ast.NodeVisitor):
         self._transient = transient
         #: each declared producer as ``(class, method)``, the class empty for a module function
         self._view_producers = dict(view_producers or {})
+        #: each declared relation producer as ``(class, name, entry)``: a function (the class empty for a module
+        #: function) or a class's attribute, whose run-time relation is judged as :func:`produced_relation` of it
+        self._relation_producers: tuple[tuple[str, str, str], ...] = tuple(
+            (owner.rsplit(".", 1)[-1], member, entry)
+            for entry in sorted(relation_producers)
+            for owner, _, member in (entry.rpartition("."),)
+        )
         self._producers: tuple[tuple[str, str], ...] = tuple(
             (owner.rsplit(".", 1)[-1], method)
             for owner, _, method in (producer.rpartition(".") for producer in sorted(producers))
@@ -1741,6 +1866,120 @@ class _ModuleWalk(ast.NodeVisitor):
             self._judge_change_relation(node)
         self.generic_visit(node)
 
+    def _relation_produced(self, value: ast.expr) -> str | None:
+        """the relation an expression names when a declared relation producer yields it: a call of a declared
+        function (a module function by its name; a method on ``self`` in its class, on the class, or on a receiver
+        known to be the class), or a declared attribute on ``self`` in its class or on a receiver known to be the
+        class (:meth:`_name_class`).
+
+        :param value: the expression
+        :ptype value: ast.expr
+        :return: :func:`produced_relation` of the declaration, or None
+        :rtype: str | None
+        """
+        if isinstance(value, ast.Call):
+            member = _final(value)
+            receiver = value.func.value if isinstance(value.func, ast.Attribute) else None
+        elif isinstance(value, ast.Attribute):
+            member, receiver = value.attr, value.value
+        else:
+            return None
+        for owner, name, entry in self._relation_producers:
+            if name != member:
+                continue
+            if not owner:
+                if isinstance(value, ast.Call) and receiver is None:
+                    return produced_relation(entry)
+                continue
+            if self._receiver_is(receiver, owner):
+                return produced_relation(entry)
+        return None
+
+    def _receiver_is(self, receiver: ast.expr | None, owner: str) -> bool:
+        """whether a receiver is known to be an instance (or the class) of ``owner``.
+
+        :param receiver: the expression before the attribute, or None
+        :ptype receiver: ast.expr | None
+        :param owner: the class's name
+        :ptype owner: str
+        :return: whether it is
+        :rtype: bool
+        """
+        if not isinstance(receiver, ast.Name):
+            return False
+        if receiver.id == owner:
+            return True
+        if receiver.id == "self":
+            return bool(self._class_nodes) and self._class_nodes[-1].name == owner
+        known = self._name_class(receiver.id)
+        return known is not None and _generic(_optional_of(known))[0] == owner
+
+    def _name_class(self, name: str) -> ast.expr | None:
+        """the annotation a name of the enclosing function is known to hold: its parameter's or an annotated
+        assignment's (``source: SourceTable``, ``marked: dict[str, tuple[int, SourceTable]] = ...``), or a loop's or
+        comprehension's target over an iterable whose annotation the walk knows (a ``Sequence[...]``, a mapping's
+        ``.items()`` / ``.values()``, ``enumerate(...)`` of one), its position in a ``tuple[...]`` element.
+
+        :param name: the name
+        :ptype name: str
+        :return: its annotation, or None when the walk cannot tell
+        :rtype: ast.expr | None
+        """
+        function = self._function_node
+        if function is None:
+            return None
+        declared: dict[str, ast.expr] = {
+            argument.arg: argument.annotation
+            for argument in (*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs)
+            if argument.annotation is not None
+        }
+        for node in ast.walk(function):
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                declared.setdefault(node.target.id, node.annotation)
+        if name in declared:
+            return declared[name]
+
+        def element(iterable: ast.expr, depth: int = 0) -> ast.expr | None:
+            if isinstance(iterable, ast.Name) and iterable.id in declared:
+                return _element_type(declared[iterable.id])
+            if not isinstance(iterable, ast.Call) or depth > 2:
+                return None
+            called = _final(iterable)
+            if called == "enumerate" and iterable.args:
+                inner = element(iterable.args[0], depth + 1)
+                return (
+                    None
+                    if inner is None
+                    else ast.Subscript(
+                        value=ast.Name("tuple", ast.Load()),
+                        slice=ast.Tuple(elts=[ast.Name("int", ast.Load()), inner], ctx=ast.Load()),
+                        ctx=ast.Load(),
+                    )
+                )
+            on = iterable.func.value if isinstance(iterable.func, ast.Attribute) else None
+            if called in {"items", "values"} and isinstance(on, ast.Name) and on.id in declared:
+                mapping, parts = _generic(_optional_of(declared[on.id]))
+                if mapping not in _MAPPINGS or len(parts) != 2:
+                    return None
+                if called == "values":
+                    return parts[1]
+                return ast.Subscript(
+                    value=ast.Name("tuple", ast.Load()), slice=ast.Tuple(elts=parts, ctx=ast.Load()), ctx=ast.Load()
+                )
+            return None
+
+        for node in ast.walk(function):
+            loops: list[tuple[ast.expr, ast.expr]] = []
+            if isinstance(node, (ast.For, ast.AsyncFor)):
+                loops.append((node.target, node.iter))
+            elif isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+                loops += [(generator.target, generator.iter) for generator in node.generators]
+            for target, iterable in loops:
+                found = _target_type(target, name, element(iterable))
+                if found is not None:
+                    return found
+        return None
+
     def _resolved_call(self, node: ast.Call) -> ast.Call:
         """the call with each argument that is a known string (a module or imported constant, a string the function
         binds once) written as that string, so a helper's table named by a constant (``LINK_REDEMPTIONS_TABLE``)
@@ -1783,6 +2022,13 @@ class _ModuleWalk(ast.NodeVisitor):
                 self._module_values.get(value.id), (ast.Tuple, ast.List, ast.Dict)
             ):
                 return self._module_values[value.id]
+            # a relation a declared producer yields at run time (``source.relation``, ``derived(part.relation)``):
+            # the name its declaration is judged as; a mapping every value of which is one, that one relation
+            produced = self._relation_produced(value)
+            if produced is not None:
+                return ast.Constant(produced)
+            if isinstance(value, ast.DictComp) and (produced := self._relation_produced(value.value)) is not None:
+                return ast.Dict(keys=[ast.Constant("")], values=[ast.Constant(produced)])
             return value
 
         return ast.Call(
@@ -3547,6 +3793,7 @@ def scan_whole_reads(
     exec_calls: frozenset[str] = frozenset(),
     producers: frozenset[str] = frozenset(),
     view_producers: Mapping[str, tuple[tuple[str, ...], ...]] | None = None,
+    relation_producers: frozenset[str] = frozenset(),
 ) -> WholeReadScan:
     """walk every module under ``src_roots`` and record every whole read, write and call.
 
@@ -3581,6 +3828,9 @@ def scan_whole_reads(
     :ptype producers: frozenset[str]
     :param view_producers: each function that builds a view under a name it is handed onto the keys its views declare
     :ptype view_producers: Mapping[str, tuple[tuple[str, ...], ...]] | None
+    :param relation_producers: the functions and class attributes whose run-time relation is judged by the keys
+        its declaration names (:func:`produced_relation`)
+    :ptype relation_producers: frozenset[str]
     :return: the walk
     :rtype: WholeReadScan
     """
@@ -3632,6 +3882,7 @@ def scan_whole_reads(
             parameter_values=parameter_values,
             view_producers=view_producers,
             tuples=_imported_tuples(tree, relative, tuples),
+            relation_producers=relation_producers,
         )
         walk.visit(tree)
         stubs.update(walk.stubs)

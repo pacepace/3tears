@@ -92,6 +92,7 @@ from threetears.enforcement.no_whole_reads.walker import (
     OperatorMark,
     WholeReadHit,
     WholeReadScan,
+    produced_relation,
     scan_whole_reads,
 )
 
@@ -158,6 +159,12 @@ class NoWholeReadsConfig:
         broker's synthesized ``knowledge_readiness``), onto the key that owner answers it by; one key or several
     :ivar extra_exec_calls: the repo's own calls that run their first argument as SQL (reports' ``Snapshot.ask``,
         the pod's ``work.arrow``): a bare ``SELECT ... FROM t`` handed to one is a whole read where it is run
+    :ivar relation_producers: the repo's run-time relations a keyed helper is handed, onto the key (or keys) every
+        relation each yields declares: a function returning one (``derived``, a module function's name, or
+        ``Class.method``), or a class's attribute holding one (``SourceTable.relation``), named on ``self`` in its
+        class or on a receiver the walk knows is the class (a parameter's or annotated assignment's annotation, a
+        loop target over an annotated iterable). A helper reading one is judged as reading ``produced.<entry>`` (a
+        dot ``__``) with those keys, as a declared table is by its own; ``()`` declares one read whole
     :ivar helper_modules: repo-relative prefixes of the repo's own reviewed modules that write a data table's SQL
         for the rest of it (``use-the-helper``: :mod:`~threetears.enforcement.no_whole_reads.use_the_helper`), beside
         3tears' own helpers
@@ -183,6 +190,7 @@ class NoWholeReadsConfig:
     local_relations: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
     foreign_relations: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
     helper_modules: tuple[str, ...] = ()
+    relation_producers: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -344,6 +352,9 @@ def _schema_of(config: NoWholeReadsConfig) -> SchemaCatalog:
             name = "{}" if written == "*" and prefix else written
             for key in _keys_of(declared):
                 catalog.add_key(f"{prefix}{name.lower()}", key, "NoWholeReadsConfig")
+    for entry, declared in config.relation_producers.items():
+        for key in _keys_of(declared):
+            catalog.add_key(produced_relation(entry), key, "NoWholeReadsConfig.relation_producers")
     return catalog
 
 
@@ -367,6 +378,7 @@ def _hits(config: NoWholeReadsConfig) -> tuple[list[WholeReadHit], WholeReadScan
         exec_calls=config.extra_exec_calls,
         producers=config.transient_producers,
         view_producers={producer: _keys_of(declared) for producer, declared in config.view_producers.items()},
+        relation_producers=frozenset(config.relation_producers),
     )
     return scan.hits, scan
 
