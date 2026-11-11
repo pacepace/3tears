@@ -356,3 +356,74 @@ def test_a_derived_relation_reading_whole_is_named(schema: SchemaCatalog) -> Non
     """Flips if a derived relation is trusted without its own text being judged."""
     judged = _judged('holds_any(c, Derived("SELECT state FROM results WHERE kind = \'x\'"), order=["state"])', schema)
     assert any(findings for findings in judged), judged
+
+
+@pytest.mark.parametrize(
+    ("builder", "runner"),
+    [
+        (
+            'read_row_statement("results", by={"state": s, "geo": g}, columns=cols)',
+            'read_row(c, "results", by={"state": s, "geo": g}, columns=cols)',
+        ),
+        ('read_by_statement("results", by={"kind": k})', 'read_by(c, "results", by={"kind": k})'),
+        (
+            'read_keyed_statements("results", keys=KeyBatch(("geo",), ks), columns=cols)',
+            'read_keyed(c, "results", keys=KeyBatch(("geo",), ks), columns=cols)',
+        ),
+        (
+            'keyset_page_statement("results", columns=cols, by={"state": s}, order=[Sort("geo"), Sort("id")], limit=5)',
+            'keyset_page(c, "results", columns=cols, by={"state": s}, order=[Sort("geo"), Sort("id")], limit=5)',
+        ),
+        (
+            'keyset_rows_statement("results", columns=cols, by={}, order=[Sort("kind"), Sort("id")], page=500)',
+            'keyset_rows(c, "results", columns=cols, by={}, order=[Sort("kind"), Sort("id")], page=500)',
+        ),
+        (
+            'delete_keyed_statements("unindexed", prefix={"name": p})',
+            'delete_keyed(c, "unindexed", prefix={"name": p})',
+        ),
+        (
+            'update_keyed_statements("unindexed", values={"run_id": r}, prefix={"name": p})',
+            'update_keyed(c, "unindexed", values={"run_id": r}, prefix={"name": p})',
+        ),
+        (
+            'delete_before_statement("tenant_leases", key=["customer_id", "key"], column="expires_at", before=t, '
+            'page=5, by={"customer_id": p})',
+            'delete_before("tenant_leases", collection=c, key=["customer_id", "key"], column="expires_at", '
+            'before=t, page=5, by={"customer_id": p})',
+        ),
+        (
+            'update_before_statement("leases", key=["purpose", "key"], column="expires_at", before=t, '
+            'set_to={"purpose": q}, page=5, by={"purpose": p})',
+            'update_before("leases", collection=c, key=["purpose", "key"], column="expires_at", before=t, '
+            'set_to={"purpose": q}, page=5, by={"purpose": p})',
+        ),
+    ],
+)
+def test_a_builder_s_call_is_judged_as_its_runner_s(builder: str, runner: str, schema: SchemaCatalog) -> None:
+    """Flips if a pure builder's call (threetears.interfaces.keyed, run on a caller's own connection) is judged
+    otherwise than its runner's: keyed where the runner's is, the same whole read where it is not."""
+    assert [statement.sql for statement in helper_statements(_call(builder))] == [
+        statement.sql for statement in helper_statements(_call(runner))
+    ]
+    assert _judged(builder, schema, _SWEEP) == _judged(runner, schema, _SWEEP)
+
+
+def test_a_builder_naming_no_key_is_a_whole_read(schema: SchemaCatalog) -> None:
+    """Flips if a builder's call passes on its name alone (a point read pinning a column no key leads with)."""
+    judged = _judged('read_row_statement("results", by={"kind": k})', schema)
+    assert any(found[0] == "non-key-where" for findings in judged for found in findings), judged
+
+
+@pytest.mark.parametrize(
+    ("code", "argument"),
+    [
+        ('page_statement("results", cols, {}, order, 6, None, False, (), (), None)', "order"),
+        ('keyed_read_statement("results", cols, KeyBatch(("geo",), ks), {})', "keys"),
+    ],
+)
+def test_a_runners_positional_builder_called_elsewhere_is_unseen(code: str, argument: str) -> None:
+    """Flips if a builder the runners call positionally (a page's statement, a keyed batch's), called outside the
+    keyed packages, passes unjudged rather than being named unknown-predicate."""
+    statements = list(helper_statements(_call(code)))
+    assert [(statement.sql, statement.unseen) for statement in statements] == [(UNSEEN, argument)]

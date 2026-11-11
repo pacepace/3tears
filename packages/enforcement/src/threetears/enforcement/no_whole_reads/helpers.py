@@ -46,6 +46,7 @@ from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, PRODUCED_P
 
 __all__ = [
     "KEYED_FRAGMENT_BUILDERS",
+    "BUILDER_CALLS",
     "KEYED_HELPER_CALLS",
     "START_KEYWORDS",
     "STEP_CALLS",
@@ -87,8 +88,45 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "update_before",
         "apply_stage",
         "update_from",
+        # the pure builders (threetears.interfaces.keyed) a runner sends, and a package that may not depend on core
+        # runs on its own connection: each judged as its runner's call (:data:`BUILDER_CALLS`)
+        *(
+            "read_by_statement",
+            "read_row_statement",
+            "read_keyed_statements",
+            "keyset_page_statement",
+            "keyset_rows_statement",
+            "update_keyed_statements",
+            "delete_keyed_statements",
+            "delete_before_statement",
+            "update_before_statement",
+            "page_statement",
+            "keyed_read_statement",
+        ),
     }
 )
+
+#: each pure builder a caller may run on its own connection -> the runner whose statements it writes: its call is judged
+#: as that runner's, its arguments where the runner takes them (the runner's connection, its first argument, not passed)
+BUILDER_CALLS: Final[Mapping[str, str]] = {
+    "read_by_statement": "read_by",
+    "read_row_statement": "read_row",
+    "read_keyed_statements": "read_keyed",
+    "keyset_page_statement": "keyset_page",
+    "keyset_rows_statement": "keyset_rows",
+    "update_keyed_statements": "update_keyed",
+    "delete_keyed_statements": "delete_keyed",
+    "delete_before_statement": "delete_before",
+    "update_before_statement": "update_before",
+    # a page's statement as its runners write it, positionally: read by no synthesizer's keywords, so a call outside
+    # the keyed packages is unseen (a finding), never a pass
+    "page_statement": "keyset_page",
+    # a keyed batch's statement as its runners write it, positionally: its keys unseen outside the keyed packages
+    "keyed_read_statement": "read_keyed",
+}
+
+#: the runners that take no connection first (the table is their first argument): their builders' calls stand as written
+_TABLE_FIRST: Final[frozenset[str]] = frozenset({"delete_before", "update_before"})
 
 #: the relational steps over change relations (:mod:`threetears.core.keyed.steps`), judged by the relations a call
 #: names: each one read whole, as the step reads it, so a step over a change relation (one a module registers or
@@ -808,7 +846,12 @@ def helper_statements(call: ast.Call) -> Iterator[HelperStatement]:
     :rtype: Iterator[HelperStatement]
     """
     helper = _name(call)
-    synthesize = _SYNTHESIZERS.get(helper)
+    runner = BUILDER_CALLS.get(helper)
+    if runner is not None and runner not in _TABLE_FIRST:
+        # a builder's call, its arguments where its runner takes them: the connection the runner takes first stands
+        # in as a constant no synthesizer reads
+        call = ast.Call(func=call.func, args=[ast.Constant(None), *call.args], keywords=call.keywords)
+    synthesize = _SYNTHESIZERS.get(runner or helper)
     if synthesize is None:
         return
     try:

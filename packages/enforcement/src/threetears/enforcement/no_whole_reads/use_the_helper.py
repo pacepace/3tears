@@ -53,6 +53,8 @@ _LEDGER: Final[str] = "_use_the_helper_exemptions.txt"
 #: helpers, the keyset walk, the row follower, the migration and DDL runners
 _HELPER_MODULES: Final[tuple[str, ...]] = (
     "threetears/core/keyed/",
+    # the keyed helpers' pure builders, in the dependency-free interfaces package
+    "threetears/interfaces/keyed/",
     "threetears/core/keyset.py",
     "threetears/epoch/row_follower.py",
     "threetears/core/data/migrations/",
