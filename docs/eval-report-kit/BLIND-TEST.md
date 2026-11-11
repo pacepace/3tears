@@ -8,7 +8,7 @@ It reached the same decision as `references/r5-kairo-round2`: shape D, decide mo
 
 ## Gaps and what changed
 
-`U<n>` is the kit's upstream ask by number, now tracked in [the upstream-asks issue](ISSUE_URL).
+`U<n>` is the kit's upstream ask by number, now tracked in [the upstream-asks issue](https://github.com/pacepace/3tears/issues/1142).
 
 | Gap it reported | Resolution |
 |---|---|

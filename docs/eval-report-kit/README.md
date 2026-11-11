@@ -7,7 +7,7 @@ What a campaign report is, how it is written, and the parts it is drawn with: th
 1. **[`ANALYST.md`](ANALYST.md)** is how a report is written: an analyst model investigates a frozen snapshot of the campaign with tools and a skill, writes a report document, and code verifies it before an editor reviews it. Code computes and verifies; it never chooses structure.
 2. **`references/`** holds five finished pages. Open the `.html` files in a browser.
 3. **[`GENERATOR.md`](GENERATOR.md)** holds the page rules: gate logic, the call's modes, the page's parts, chart choice, words and the visual system. Code cites its sections by number, so it keeps its old name.
-4. **[The upstream-asks issue](ISSUE_URL)** lists what the campaign bundle should still carry so the report input stops working around gaps.
+4. **[The upstream-asks issue](https://github.com/pacepace/3tears/issues/1142)** lists what the campaign bundle should still carry so the report input stops working around gaps.
 
 ## Files
 
