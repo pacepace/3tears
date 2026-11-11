@@ -69,6 +69,7 @@ from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT, generate, ops_fixture, settled
 from packages.evals.tests.lease_support import (
+    LIVE_HOLDER_LEASE_S,
     T0,
     ClockedStore,
     held_extraction,
@@ -153,7 +154,9 @@ def _heard(host: OpsHost) -> tuple[OpsHost, _Heard]:
 
 async def test_a_generation_another_process_runs_reads_running_and_is_cancelled_from_there() -> None:
     gate = asyncio.Event()
-    holder = off_loop(ops_fixture, gate=gate, job_lease_s=0.3)
+    # The store's clock held still and a lease a stall cannot outlast: the holder stays live by every count while the
+    # other process acts, so a `lost` read here could only be the other process ending the job itself.
+    holder = off_loop(ops_fixture, gate=gate, store=ClockedStore(), job_lease_s=LIVE_HOLDER_LEASE_S)
     elsewhere = other_process(holder.host)
     (job,) = (await generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
     await asyncio.sleep(0)
@@ -162,8 +165,8 @@ async def test_a_generation_another_process_runs_reads_running_and_is_cancelled_
     assert (polled.state, polled.done) == ("running", False), "the other process reads the holder's live job"
 
     asked = await job_cancel(elsewhere, job.job_id, TOYHOST_SCOPE, reason="stop it from over here")
-    # request-then-converge: the holder ends it at its next renewal, which with a 0.3 s lease may come before
-    # job_cancel's own read-back on a loaded machine; what the other process may never do is end it itself
+    # request-then-converge: the holder ends it at its next renewal, which may come before job_cancel's own read-back
+    # on a loaded machine; what the other process may never do is end it itself
     assert asked.state in ("running", "cancelled"), f"the other process's cancel reads {asked.state!r}"
     ended = await settled(elsewhere, job.job_id)
 
@@ -387,16 +390,21 @@ class RenewalRefusingStore(ClockedStore):
     The writes moving a lease are its renewals and the holder's own writes of its record, each of which extends it. A
     store a holder cannot renew through while the store's clock has not reached the lease's expiry: no reader
     writes the loss yet, so only the holder's own count can tell it its lease is gone.
+
+    ``doc_type`` narrows the refusal to the records of that type, so a job holding records of other types (a run's
+    launch) keeps renewing them, and only the narrowed record's own count can stop it.
     """
 
-    def __init__(self) -> None:
-        """Start accepting every write."""
+    def __init__(self, *, doc_type: str | None = None) -> None:
+        """Start accepting every write; refuse, once told to, the lease moves of every record or of ``doc_type``'s."""
         super().__init__()
         self.refusing = False
+        self.doc_type = doc_type
 
     def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         """Refuse a write that moves a stored record's lease while refusing; write anything else."""
-        if self.refusing and document.get("lease") is not None:
+        refused_type = self.doc_type is None or document.get("doc_type") == self.doc_type
+        if self.refusing and refused_type and document.get("lease") is not None:
             stored = self.get(str(document["id"]), str(document["scope_id"]))
             if stored is not None and stored.get("lease") != document["lease"]:
                 raise RuntimeError("the store refused the renewal")
@@ -506,7 +514,10 @@ async def test_a_run_whose_renewals_fail_for_a_whole_lease_is_stopped_and_writes
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gate = held_extraction(monkeypatch)
-    store = RenewalRefusingStore()
+    # Only the run's lease is refused: its launch keeps renewing. Refusing both raced the launch's count against the
+    # run's, and a launch reaching its whole lease a renewal before the run cancelled the run while the run still held
+    # its lease by its own count — so the run rightly wrote its own `cancelled`, and its own expiry went untested.
+    store = RenewalRefusingStore(doc_type="eval_run")
     holder, heard = _heard(off_loop(ops_fixture, store=store, job_lease_s=0.3).host)
     elsewhere = other_process(holder)
     run_id = await _running_run(holder)

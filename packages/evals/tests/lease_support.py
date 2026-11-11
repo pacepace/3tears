@@ -31,6 +31,7 @@ from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_templa
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT
 
 __all__ = [
+    "LIVE_HOLDER_LEASE_S",
     "T0",
     "ClockedStore",
     "HeldGate",
@@ -44,6 +45,14 @@ __all__ = [
 
 #: When the clocked store's clock starts.
 T0 = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
+
+#: A lease for a test whose holder must stay live while another process acts on its job through the record (a cancel
+#: it hears at its next renewal, a third of this later). Paired with a :class:`ClockedStore` held still, so no reader
+#: ever finds the lease lapsed by the store's time; what is left is the holder's own count, which stops a job whose
+#: renewals have not landed for a whole lease. That count runs on wall time, so the margin between a renewal and a
+#: lapse (the lease less its renewal interval, 1.2 s) must outlast a scheduling stall on a loaded runner, which a
+#: 0.3 s lease (a 0.2 s margin) did not (#1012). The figure the lease-renewal tests under load settled on too.
+LIVE_HOLDER_LEASE_S = 1.8
 
 
 class ClockedStore(InMemoryDocumentStore):

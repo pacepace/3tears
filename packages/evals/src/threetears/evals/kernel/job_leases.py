@@ -1079,15 +1079,21 @@ class JobLeases:
         self._let_go.discard(record_id)
 
     async def _renew_while_held(self) -> None:
-        """Renew every held lease each interval, each in a task of its own, until none is held.
+        """Renew every held lease each interval, each in a task of its own, until none is held and none is renewing.
 
         A record whose renewal is still running (a slow round-trip) is not started again, and delays no other. A
         renewal is itself given only what is left of its lease (:meth:`_renew_one`), so one that never returns still
         ends, and its record is expired.
+
+        **A renewal still running is waited for, though nothing is held any more.** An expiry (:meth:`_expire`) lets
+        go of its record first, then writes why and stops the job: when that was the last record held, cancelling it
+        here would leave the job fenced off its record and never stopped, spending on with nothing to end it. Every
+        renewal is bounded (its store call by what is left of the lease, each of an expiry's writes by a lease), so
+        the wait ends.
         """
         renewing: dict[str, asyncio.Task[None]] = {}
         try:
-            while self._held:
+            while self._held or renewing:
                 await asyncio.sleep(self.renew_every_s)
                 for record_id, task in list(renewing.items()):
                     if task.done():
