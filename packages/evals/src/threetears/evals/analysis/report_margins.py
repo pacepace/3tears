@@ -156,8 +156,9 @@ class Margin:
 
 
 def flip_margin(reading: Reading) -> float | None:
-    """The margin at which a reading flips (GENERATOR §3, UPSTREAM U6): its interval's worst drop, ``-lo``, never below
-    zero. The reading is within any margin above it and outside any at or below it.
+    """The margin at which a reading flips (GENERATOR §3): its interval's worst drop, ``-lo``, never below zero. The
+    reading is within any margin above it and outside any at or below it. Upstream ask U6 asks the bundle to carry it:
+    https://github.com/pacepace/3tears/issues/1142.
 
     :param reading: An arm's reading on an aspect.
     :ptype reading: Reading

@@ -3,8 +3,9 @@
 A product's agent has capability (things it should do well) and guardrails (things it must not do: leak,
 take a destructive action, break policy). Read on one score, a capability gain hides a guardrail loss. So:
 
-- a boundary judged dimension and a measure declared ``guardrail`` enter no composite, no pass^k and no
-  comparison family;
+- a boundary judged dimension enters no composite, no pass^k and no comparison family, and a measure declared
+  ``guardrail`` no comparison family (a pass/fail one is still a check, and fails its trials:
+  ``test_pass_k_reads_host_checks.py``);
 - the bundle decides each guardrail for every arm against the control (``guardrails``): ``held``,
   ``breached`` or ``undecided``, by the bar rule read on the difference, never reading undecided as safe;
 - both reports show them in their own section, and an adopted arm's decision states any guardrail not held.

@@ -387,10 +387,9 @@ lens tools (`runs_compare`, comparison sets) state when two runs' spans did not 
 ## Metrics that mislead
 
 **Keep the pass^k conjunction small and reliable.** A trial passes only when every goal-state check passes, its
-label matches, every check the host declares holds and every judged capability dimension reaches the pass threshold
-(`compute_pass_hat_k`): 3 of 5 unless the
-host declares another for the behavior (`PassThreshold`, registered with its `BarRegistry`), and every pass^k
-records the threshold it was computed at (`rubric_threshold`). So pass^k collapses to its weakest member, and
+label matches, every check the host declares holds (a guardrail check too) and every judged capability dimension
+reaches the pass threshold (`compute_pass_hat_k`): 3 of 5 unless the host declares another for the behavior
+(`PassThreshold`, registered with its `BarRegistry`), and every pass^k records the threshold it was computed at (`rubric_threshold`). So pass^k collapses to its weakest member, and
 judge noise counts as candidate unreliability. Conjoin checks a competent candidate clears and dimensions
 whose retest agreement you have measured. Ranking and diagnosis are two jobs.
 *Evidence:* agent with tools, 2 campaigns, 2026-07 and 2026-08, one never-clearing dimension held pass^k to 0.0 or 0.2 for every arm, and a strict check set pinned it at 0 for every arm; in simulation (2026-09) a perfect candidate with five dimensions, each falsely failing 5% of the time, shows pass^3 ≈ 0.46.
