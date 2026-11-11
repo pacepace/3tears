@@ -465,7 +465,9 @@ def _served(tool: MountedTool) -> list[str]:
 #: imports (its operator names the factory with --host).
 #: The evals tool moved again when campaign_create's and campaign_update's floors description came to say a floor never
 #: blocks or removes an option and, read broken on an asked aspect, caps the candidate's standing in the dominance read.
-_EVALS_BYTES = "ad7243d4db5055a0b42e10db4acd6f83ba15aeb7593dbee3d29d9f97dba44d87"
+#: The evals tool moved again when campaign_create's and campaign_update's aspects description gained an axis's
+#: reader_name (what every page calls the lever; omitted, the name the host declares for it).
+_EVALS_BYTES = "f9485e7733a9187e659856d6694ac13cc07cbc70c743cbed2b62f1f575aef904"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).

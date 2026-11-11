@@ -301,6 +301,19 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
             "simulator_sent_settings",
         },
     ),
+    # 66/14: names leave the evidence (a bundle freezes ids and facts; a page names and words them at render). A
+    # shape-only bump: the apparatus set and the cell model hold.
+    (
+        (66, 14),
+        (_CORE_V24 - {"max_cost_usd"})
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
 )
 
 
