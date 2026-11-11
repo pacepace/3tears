@@ -5,7 +5,7 @@ A listing of one entity type used to admit each row through a correlated EXISTS 
 caller can see are resolved once instead, by the caller's memberships through the grants' own indexes
 (:func:`threetears.agent.acl.caller_visible_customers_query` for the listing's namespace type, the same set the
 per-row clause admits), and the page reads its rows by key with ``customer_id = ANY(<those customers>)`` and its
-``LIMIT``. A platform-wide grant (``scope_type='all'``) adds no condition at all.
+``LIMIT``. A platform-wide grant (``scope_type='all'``) narrows nothing (its fragment is ``TRUE``).
 """
 
 from __future__ import annotations
@@ -56,19 +56,33 @@ class VisibleCustomers:
         """
         return not self.is_all and not self.customer_ids
 
-    def fragment(self, column: str, *, platform_rows: bool = False) -> Fragment | None:
-        """the visibility fragment a 3tears keyed read takes for ``column`` (``keyset_page(visible=...)``).
+    def fragment(self, column: str, *, platform_rows: bool = False) -> Fragment:
+        """the visibility fragment a 3tears keyed read takes for ``column`` (``keyset_page(visible=[...])``).
+
+        Always a fragment, so a listing writes its ``visible=`` as a literal list the no-whole-reads walk reads:
+        ``TRUE`` for a platform-wide grant (every row), the customers bound as ``ANY``, or, for grants that cover no
+        customer, ``FALSE`` (no row; PostgreSQL plans the constant as a one-time filter and reads nothing) -- unless
+        platform-shared rows are seen by every caller, when only those pass.
 
         :param column: the row's customer column, a TRUSTED identifier as the read aliases it (``t."customer_id"``)
         :ptype column: str
         :param platform_rows: a row with no customer (platform-shared) is seen by every caller
         :ptype platform_rows: bool
-        :return: the fragment, or None for a platform-wide grant (every row)
-        :rtype: Fragment | None
+        :return: the fragment
+        :rtype: Fragment
         """
         if self.is_all:
-            return None
+            return _EVERY_ROW
+        if not self.customer_ids and not platform_rows:
+            return _NO_ROW
         return Fragment(_within(column, "$1", platform_rows=platform_rows), (list(self.customer_ids),))
+
+
+#: the fragment every row passes: a platform-wide grant narrows nothing
+_EVERY_ROW: Final[Fragment] = Fragment("TRUE", ())
+
+#: the fragment no row passes: grants that cover no customer, where platform rows are not seen by all
+_NO_ROW: Final[Fragment] = Fragment("FALSE", ())
 
 
 def _within(column: str, placeholder: str, *, platform_rows: bool) -> str:
@@ -154,10 +168,7 @@ async def visible_rows(
     :rtype: list[dict[str, Any]]
     """
     visible = await visible_customers(conn, user_id=user_id, namespace_type=namespace_type)
-    clauses: list[Fragment] = []
-    customers = visible.fragment(f"t.{quote_identifier(customer_column)}", platform_rows=True)
-    if customers is not None:
-        clauses.append(customers)
+    clauses: list[Fragment] = [visible.fragment(f"t.{quote_identifier(customer_column)}", platform_rows=True)]
     if user_column is not None:
         owner = f"t.{quote_identifier(user_column)}"
         clauses.append(Fragment(f"({owner} IS NULL OR {owner} = $1)", (user_id,)))

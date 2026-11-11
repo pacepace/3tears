@@ -100,7 +100,19 @@ def test_the_fragment_admits_platform_rows_only_when_asked() -> None:
     assert plain is not None and plain.sql == 't."customer_id" = ANY($1::uuid[])'
     assert plain.params == ([customer],)
     assert shared is not None and shared.sql == '(t."customer_id" IS NULL OR t."customer_id" = ANY($1::uuid[]))'
-    assert VisibleCustomers(is_all=True, customer_ids=()).fragment('t."customer_id"') is None
+    assert VisibleCustomers(is_all=True, customer_ids=()).fragment('t."customer_id"').sql == "TRUE"
+
+
+def test_the_fragment_is_total_every_row_no_row_or_the_set() -> None:
+    """Flips if a fragment is ever None (a literal ``visible=[...]`` could not hold it): a platform-wide grant is
+    ``TRUE`` with no parameter, grants covering no customer ``FALSE`` -- or, platform rows seen by all, only those."""
+    every = VisibleCustomers(is_all=True, customer_ids=()).fragment('t."customer_id"', platform_rows=True)
+    assert (every.sql, every.params) == ("TRUE", ())
+    none = VisibleCustomers(is_all=False, customer_ids=())
+    assert (none.fragment('t."customer_id"').sql, none.fragment('t."customer_id"').params) == ("FALSE", ())
+    shared = none.fragment('t."customer_id"', platform_rows=True)
+    assert shared.sql == '(t."customer_id" IS NULL OR t."customer_id" = ANY($1::uuid[]))'
+    assert shared.params == ([],)
 
 
 async def test_the_set_is_read_once_for_the_namespace_type() -> None:
