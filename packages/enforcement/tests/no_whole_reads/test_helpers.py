@@ -14,7 +14,7 @@ from threetears.enforcement.no_whole_reads.helpers import (
     is_keyed_fragment,
     narrows,
 )
-from threetears.enforcement.no_whole_reads.schema import SchemaCatalog, collect_schema
+from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, SchemaCatalog, collect_schema
 from threetears.enforcement.no_whole_reads.sql import Reader, judge_sql
 from threetears.enforcement.no_whole_reads.walker import DEFAULT_NARROWING_KEYWORDS
 
@@ -511,3 +511,18 @@ def test_a_runners_positional_builder_called_elsewhere_is_unseen(code: str, argu
     keyed packages, passes unjudged rather than being named unknown-predicate."""
     statements = list(helper_statements(_call(code)))
     assert [(statement.sql, statement.unseen) for statement in statements] == [(UNSEEN, argument)]
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        'apply_stage(c, f"main.{name}", "_chunk", key=key)',
+        'update_from(c, f"main.{name}", source=Derived("SELECT id FROM _chunk"), key=["id"])',
+    ],
+)
+def test_a_stage_or_source_target_written_as_an_f_string_is_the_relation_it_names(code: str) -> None:
+    """Flips if apply_stage's / update_from's target written as an f-string (``f"main.{name}"``: a local copy named at
+    run time, R9) is written as an unknown ``"{}"`` instead of the relation it names, the default key every copy
+    declares (``local_relations["*"]``), as the same f-string handed to any other helper is."""
+    written = [statement.sql for statement in helper_statements(_call(code))]
+    assert any(f"{COPY_PREFIX}{{}}" in sql and sql.startswith(("DELETE", "UPDATE")) for sql in written), written

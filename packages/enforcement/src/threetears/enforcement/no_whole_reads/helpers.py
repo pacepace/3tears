@@ -848,7 +848,8 @@ def _apply_stage(call: ast.Call) -> list[str]:
     if str(spelled).lower() == "append":
         return statements
     target = _argument(call, "target", 1)
-    table = _relation(target, "target")[0] if isinstance(target, ast.Constant) else '"{}"'
+    # a literal or an f-string target (``f"main.{name}"``: a local copy named at run time) as _relation names it (R9)
+    table = _relation(target, "target")[0] if isinstance(target, ast.Constant | ast.JoinedStr) else '"{}"'
     keyed = [f"{column} = ANY(${place})" for place, column in enumerate(_key_columns(_argument(call, "key", None)), 1)]
     statements.append(f"DELETE FROM {table}{_where(keyed)}")
     scope, _ = _conditions(_by(_argument(call, "by", None)))
@@ -863,7 +864,7 @@ def _update_from(call: ast.Call) -> list[str]:
     caller module's template (``TableSchema(name=<parameter>)``), as ``apply_stage``'s is."""
     statements = _step_relation(_argument(call, "source", None), "source")
     target = _argument(call, "table", 1)
-    table = _relation(target, "table")[0] if isinstance(target, ast.Constant) else '"{}"'
+    table = _relation(target, "table")[0] if isinstance(target, ast.Constant | ast.JoinedStr) else '"{}"'
     keyed = [f"{column} = ANY(${place})" for place, column in enumerate(_key_columns(_argument(call, "key", None)), 1)]
     pinned, place = _conditions(_by(_argument(call, "by", None)), first=len(keyed) + 1)
     statements.append(f"UPDATE {table} SET {_quoted('_')} = ${place}{_where([*keyed, *pinned])}")
