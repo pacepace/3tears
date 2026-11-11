@@ -30,7 +30,14 @@ from threetears.evals import Eval
 from threetears.evals.analysis import host_declarations_digest
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.service import campaign_report
-from threetears.evals.kernel.declaration import AspectDesign, ControlDeclaration, SweptAxis, name_declared_axes
+from threetears.evals.analysis.campaign_title import declared_title, title_arm_name
+from threetears.evals.kernel.declaration import (
+    AspectDesign,
+    CampaignArm,
+    ControlDeclaration,
+    SweptAxis,
+    name_declared_axes,
+)
 from threetears.evals.kernel.host import RegistrationError, Sweepable, SweepableRegistry
 from threetears.evals.kernel.identity import derive_context_identity, derive_variant_identity
 from threetears.evals.quick.one_call import callable_host
@@ -118,6 +125,24 @@ def test_the_registry_names_a_fixed_lever_a_kind_field_and_a_family_member_as_de
     assert registry.reader_name_of("no_such_lever") is None
 
 
+@pytest.mark.parametrize("given", [" ", "", None], ids=["blank", "empty", "no-text"])
+def test_a_family_naming_a_member_with_no_words_is_refused_where_it_is_asked_naming_both(given: Any) -> None:
+    """A family's member_reader_name is a callable, so what it returns is seen only when a member is named: a blank
+    stored the axis unnamed, and every page printed the member's id. It is refused there, naming family and member."""
+    registry = SweepableRegistry(
+        [
+            _lever(
+                name="retrieval",
+                open_family="any retrieval setting",
+                owns_member=lambda name: name.startswith("retrieval."),
+                member_reader_name=lambda _name: given,
+            )
+        ]
+    )
+    with pytest.raises(RegistrationError, match="lever family retrieval's member_reader_name named its member "):
+        registry.reader_name_of("retrieval.rerank_depth")
+
+
 # --- a campaign stores the name --------------------------------------------------------------------------------------
 
 
@@ -182,6 +207,26 @@ async def test_a_page_rebuilt_from_the_store_names_each_lever_as_the_page_built_
         assert "changing the prompt" in page
         assert "callable prompt" not in page
     assert "callable" not in campaign_report_markdown(in_process)
+
+
+def test_a_title_and_a_listing_spell_a_code_made_arm_with_its_levers_stored_names() -> None:
+    """A title, a listing and its "Adopt ..." line named an arm code spelled from several levers by their ids read
+    as words (``Callable prompt v2, model b``) while the page spelled it with their stored names."""
+    # Built unchecked: the name is read off the label and the levers alone, and a real arm's key needs a run to address.
+    arm = CampaignArm.model_construct(
+        label="callable.prompt=v2, model=b",
+        role="candidate",
+        variant_key="b2" * 32,
+        levers={"callable.prompt": SweepableValue.of("v2", display="v2"), "model": SweepableValue.of("b", display="b")},
+        short_name=None,
+    )
+    declared = {"callable.prompt": "prompt", "model": "model"}
+
+    assert title_arm_name(arm, given=(), declared=declared) == "Prompt v2, model b"
+    assert title_arm_name(arm, given=()) == "Callable prompt v2, model b", "with no stored names, the ids as words"
+    assert declared_title("grid", [arm], [("label", None)], given=(), declared=declared).startswith(
+        "Prompt v2, model b"
+    )
 
 
 # --- the name is no identity -----------------------------------------------------------------------------------------

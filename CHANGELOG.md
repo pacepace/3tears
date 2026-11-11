@@ -16,8 +16,12 @@ would print its id; declare Sweepable(reader_name=...) with the words a reader c
 on each declared axis (`SweptAxis.reader_name`): the author's, else the host's, and the quick path's is the factor as
 its author wrote it (`prompt`, never `callable.prompt`). The production-check sentence, settings, factor columns,
 lever-effect rows, coverage lines and computed arm names read it through one source (`lever_reader_name` over the
-bundle's and the report input's `lever_names`), so a page rebuilt from the store names a lever as the page built in
-process did.
+bundle's and the report input's `lever_names`), as do a campaign's title, its listing line and the "Adopt ..." of its
+recorded call, the line under a campaign page's heading, and a figure key's refusal naming an arm's setting. So a page
+rebuilt from the store names every lever a campaign's declared axis names as the page built in process did; a lever
+no declared axis names is named as the host reading the store declares it (its id read as words where that host
+declares none). A family's `member_reader_name` that names a member with no words is refused where it is asked,
+naming the family and the member. A campaign export records each lever's `reader_name` with its declaration.
 
 **Durable v17 (a major):** the v16 step names each stored axis that has none from its id, once (the id read as words,
 less the quick path's `callable.` prefix). Every other durable type passes through unchanged. A build before this one
@@ -25,7 +29,8 @@ refuses what this one writes, so a fleet does not roll back past it.
 
 **Not identity:** the name enters no variant key, measurement context or host declarations digest, so a rename splits
 no history. An arm whose label is computed from its levers is spelled with the stored names, and that label is in the
-campaign bundle's fingerprint, so a rename re-labels such arms and marks their analyses for regeneration.
+campaign bundle's fingerprint, so a rename re-labels such arms and marks their analyses for regeneration. A report
+input's `lever_names` enters its `report_input_digest`, as its other presentation fields do.
 
 **Hosts:** add `reader_name=` to every lever `Sweepable`, `member_reader_name=` to every open family, and `title=` to
 every overlay field, before upgrading (MIGRATIONS.toml).

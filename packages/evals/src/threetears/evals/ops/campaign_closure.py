@@ -220,7 +220,8 @@ class ReasonedOn(BaseModel):
 
 
 class SweepableDeclaration(BaseModel):
-    """One sweepable a host declares, as its profile declaration records it: everything but its reader."""
+    """One sweepable a host declares, as its profile declaration records it: everything but its callables (its reader,
+    and an open family's ``member_reader_name``)."""
 
     model_config = _VALUE
 
@@ -230,6 +231,12 @@ class SweepableDeclaration(BaseModel):
     rig_dimension: bool
     open_family: str | None
     confounds: str | None
+    reader_name: str | None = Field(
+        default=None,
+        description="What a reader calls the lever (Sweepable.reader_name), as the host declared it; None where it "
+        "declared none (an apparatus or label input, an open family, which names its members by a callable). A record, "
+        "never identity: it enters no host declarations digest.",
+    )
 
 
 class KindDeclaration(BaseModel):
@@ -392,6 +399,7 @@ def _declaration(profile: HostProfile, built_by: str | None) -> ProfileDeclarati
                 rig_dimension=declared.rig_dimension,
                 open_family=declared.open_family,
                 confounds=declared.confounds,
+                reader_name=declared.reader_name,
             )
             for declared in profile.sweepables.declarations
         ],
