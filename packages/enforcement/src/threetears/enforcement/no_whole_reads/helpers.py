@@ -47,6 +47,7 @@ __all__ = [
     "KEYED_HELPER_CALLS",
     "START_KEYWORDS",
     "STEP_CALLS",
+    "STEP_RELATIONS",
     "UNSEEN",
     "HelperStatement",
     "helper_statements",
@@ -77,6 +78,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "counts_by_relations",
         "update_before",
         "apply_stage",
+        "update_from",
     }
 )
 
@@ -104,7 +106,7 @@ STEP_CALLS: Final[frozenset[str]] = frozenset(
 )
 
 #: where each step names the relations it reads: a positional index or a keyword; ``*`` every positional
-_STEP_RELATIONS: Final[Mapping[str, tuple[tuple[int | None, str], ...]]] = {
+STEP_RELATIONS: Final[Mapping[str, tuple[tuple[int | None, str], ...]]] = {
     "scan": ((0, "rel"),),
     "semi": ((0, "rel"), (1, "keys")),
     "anti": ((0, "rel"), (1, "keys")),
@@ -603,7 +605,7 @@ def _step(call: ast.Call) -> list[str]:
             if isinstance(node, ast.Starred):
                 raise _Unseen("rels")
             statements += _step_relation(node, f"rels[{index}]")
-    for position, keyword in _STEP_RELATIONS.get(helper, ()):
+    for position, keyword in STEP_RELATIONS.get(helper, ()):
         statements += _step_relation(_argument(call, keyword, position), keyword)
     if helper == "delete_matching":
         table, _ = _relation(_argument(call, "table", 1), "table")
@@ -642,6 +644,22 @@ def _apply_stage(call: ast.Call) -> list[str]:
     return statements
 
 
+def _update_from(call: ast.Call) -> list[str]:
+    """the source read whole where it is a relation (a step or derived select is judged where it is written), and the
+    target written by the key it joins on, as a keyed update by those keys is. A target its caller names is the
+    caller module's template (``TableSchema(name=<parameter>)``), as ``apply_stage``'s is."""
+    statements = _step_relation(_argument(call, "source", None), "source")
+    target = _argument(call, "table", 1)
+    table = _relation(target, "table")[0] if isinstance(target, ast.Constant) else '"{}"'
+    keyed = [
+        f"{_quoted(column)} = ANY(${place})"
+        for place, column in enumerate(_texts(_argument(call, "key", None), "key"), 1)
+    ]
+    pinned, place = _conditions(_by(_argument(call, "by", None)), first=len(keyed) + 1)
+    statements.append(f"UPDATE {table} SET {_quoted('_')} = ${place}{_where([*keyed, *pinned])}")
+    return statements
+
+
 _SYNTHESIZERS: Final = {
     **dict.fromkeys(STEP_CALLS, _step),
     "read_keyed": _read_keyed,
@@ -664,6 +682,7 @@ _SYNTHESIZERS: Final = {
     "counts_by_relations": _counts_by_relations,
     "update_before": _update_before,
     "apply_stage": _apply_stage,
+    "update_from": _update_from,
 }
 
 

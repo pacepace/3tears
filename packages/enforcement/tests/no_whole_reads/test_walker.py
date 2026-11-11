@@ -2486,6 +2486,101 @@ def test_a_keyed_helper_s_stage_parameter_is_a_change_relation_judged_where_it_i
     assert {"from_a_table", "not_a_helper", "by_part_of_the_key"} <= functions, found
 
 
+_HELPER_BODIES = """
+    from dataclasses import dataclass
+
+    from threetears.core.keyed._filters import quote_identifier, quoted_table, relation
+
+    async def read_keyed(conn, table, keys):
+        return await conn.fetch(f"SELECT * FROM {relation(table, 't')}", keys)
+
+    async def holds_any(conn, table, order):
+        target = quoted_table(table)
+        return await conn.fetch(f"SELECT 1 AS held FROM {target} LIMIT 1")
+
+    async def read_past_marks(conn, named, mark):
+        return await conn.fetch(f"SELECT * FROM {quote_identifier(named)} WHERE stamp > $1", mark)
+
+    async def any_rows(conn, table, limit):
+        return await conn.fetch(f"SELECT * FROM events WHERE note = $1 LIMIT {limit}", table)
+
+    def _render(table, where):
+        return f"SELECT * FROM {quoted_table(table)} WHERE {where}"
+
+    async def keyset_page(conn, table, where):
+        return await conn.fetch(_render(table, where))
+
+    def _shared(table):
+        return f"SELECT count(*) AS n FROM {quoted_table(table)}"
+
+    async def counts_by(conn, table):
+        return await conn.fetch(_shared(table))
+
+    async def not_a_helper(conn, table):
+        return await conn.fetch(_shared(table))
+
+    @dataclass
+    class _Statement:
+        table: str
+
+        def render(self):
+            return f"SELECT * FROM {relation(self.table, 't')}"
+
+    async def read_keyed_arrow(conn, table):
+        return await conn.fetch(_Statement(table=table).render())
+
+    async def read_joined(conn, table, keys):
+        return await read_keyed(conn, table, keys=keys)
+
+    async def counts_by_relations(conn, tables, column):
+        parts = [f"SELECT count(*) AS held FROM {relation(tables[label], 'r')} GROUP BY {column}" for label in tables]
+        return await conn.fetch(" UNION ALL ".join(parts))
+"""
+
+_HELPER_BODY_CALLERS = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import holds_any, scan, update_from
+
+    EVENTS = TableSchema(name="events", primary_key=("id",), columns=[])
+
+    async def by_id(conn, event_id):
+        return await holds_any(conn, "events", order=["id"], by={"id": event_id})
+
+    async def by_note(conn, note):
+        return await holds_any(conn, "events", order=["note"], by={"note": note})
+
+    async def from_chunk(conn, chunk):
+        conn.register("chunk", chunk)
+        return await update_from(conn, "events", key=["id"], source=scan("chunk"), columns=["v"])
+
+    async def from_chunk_by_note(conn, chunk):
+        conn.register("chunk", chunk)
+        return await update_from(conn, "events", key=["note"], source=scan("chunk"), columns=["v"])
+
+    async def from_the_table(conn):
+        return await update_from(conn, "events", key=["id"], source="events", columns=["v"])
+"""
+
+
+def test_a_keyed_helper_s_relation_parameter_is_judged_at_its_call_sites_not_in_its_body(tmp_path: Path) -> None:
+    """Flips if a keyed helper's statement over its own relation parameter is flagged in its body (straight, through
+    a local binding, a bare name in relation position, a private renderer or a field every in-module caller fills
+    from a helper's parameter, a nested helper call on it), if literal-table SQL in a helper body passes, if a private
+    renderer some other function reaches passes, or if a call site keying a helper by no key (``holds_any`` by a
+    non-key column, ``update_from`` joined on one or reading a data table as its source) passes."""
+    found = _symbols(
+        _config(
+            tmp_path,
+            {"threetears/core/keyed/rows.py": _HELPER_BODIES, "app.py": _HELPER_BODY_CALLERS},
+        )
+    )
+    functions = {function for function, _ in found}
+    covered = {"read_keyed", "holds_any", "read_past_marks", "_render", "keyset_page"}
+    covered |= {"_Statement.render", "read_keyed_arrow", "read_joined", "counts_by_relations", "by_id", "from_chunk"}
+    assert not functions & covered, found
+    assert {"any_rows", "_shared", "by_note", "from_chunk_by_note", "from_the_table"} <= functions, found
+
+
 _STAGE_TEMPLATE = """
     from threetears.core.collections.schema_backed import TableSchema
     from threetears.core.keyed import apply_stage
