@@ -27,6 +27,7 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,10 +71,11 @@ case "$1 $2" in
 esac
 """
 
-#: a probe answers from probe.json/probe.code; the Nth run from runN.json/runN.code
+#: a probe answers from probe.json/probe.code, or never with probe.hang; the Nth run from runN.json/runN.code
 _TESTAMENT = """#!/bin/sh
 printf '%s\\n' "$*" >> "$STAGE/testament.calls"
 if [ "$2" = "--probe" ]; then
+    [ -f "$STAGE/probe.hang" ] && exec sleep 30
     cat "$STAGE/probe.json"
     exit "$(cat "$STAGE/probe.code")"
 fi
@@ -201,6 +203,14 @@ class _Stage:
         """
         (self.stage / "probe.json").write_text(json.dumps(envelope))
         (self.stage / "probe.code").write_text(str(code))
+
+    def hanging_probe(self) -> None:
+        """``testament run --probe`` takes the connection and never answers.
+
+        :return: nothing
+        :rtype: None
+        """
+        (self.stage / "probe.hang").write_text("")
 
     def runs(self, *answers: tuple[int, dict[str, object] | None]) -> None:
         """What each ``testament run`` answers, in order.
@@ -630,6 +640,28 @@ class TestTheRoute:
         assert run.outputs["why"].startswith(f"pool unavailable at probe: {error or 'no answer'}:")
         assert "::warning title=unit route::pool unavailable at probe" in run.stdout
         assert "running the GitHub shards" in run.stdout
+
+    def test_a_probe_that_never_answers_routes_to_the_shards_in_time(self, stage: _Stage) -> None:
+        """a pool that accepts the connection and never answers is stopped at the bound: the shards, with a warning.
+
+        Unbounded, the probe would hold ``route`` to its job timeout, and ``check`` would fail rather than
+        fall back.
+
+        :param stage: the staged script
+        :ptype stage: _Stage
+        :return: nothing
+        :rtype: None
+        """
+        stage.hanging_probe()
+        began = time.monotonic()
+        run = stage.go("route", TESTAMENT_PROBE_TIMEOUT="1")
+        assert time.monotonic() - began < 20, "the probe was not stopped at its bound"
+        assert run.returncode == 0, run.stdout
+        assert run.outputs["pool"] == "false"
+        assert run.outputs["why"] == "pool unavailable at probe: no answer within 1s (exit 124)"
+        assert "::warning title=unit route::pool unavailable at probe: no answer within 1s" in run.stdout
+        assert "unit route: the GitHub shards" in run.summary
+        assert "no answer within 1s" in run.summary
 
     def test_a_console_that_is_down_routes_to_the_shards(self, stage: _Stage) -> None:
         """no client, no probe: the shards.

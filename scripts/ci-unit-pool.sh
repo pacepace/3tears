@@ -18,7 +18,10 @@
 #   - no TESTAMENT_COORDINATOR variable;
 #   - the client cannot be had: TESTAMENT_CONSOLE is not https (the key is never sent to it), the
 #     download fails or fails its integrity check, or uv cannot install it;
-#   - `testament run --probe` says no run is possible (coordinator_unreachable, no_runner, ...).
+#   - `testament run --probe` says no run is possible (coordinator_unreachable, no_runner, ...), or
+#     gives no answer within TESTAMENT_PROBE_TIMEOUT seconds (60): a pool that takes the connection
+#     and never answers would otherwise hold `route` to its job timeout, and `check` would fail
+#     instead of falling back.
 # The probe needs the client, so `route` installs it: the probe is the one check that a runner is
 # connected and can take this project, which reaching the port would not say. A fallback is never
 # silent: the reason goes to $GITHUB_OUTPUT, the step summary and an annotation.
@@ -44,8 +47,9 @@
 #                exit, exit 5 (nothing collected), or exit 2 with any other error code
 #                (forbidden, revoked, upgrade_required, ...): CI is red
 #   unreachable  exit 2 with error.code coordinator_unreachable, connection_lost, batches_lost or
-#                no_runner, and no test failed: the pool is down or was lost, not the code.
-#                ci.yml then runs the GitHub shards, and their verdict is the check's.
+#                no_runner, and no test failed: the pool is down or was lost, not the code. Or the
+#                client could not be had (the console's download or uv's install failed), so
+#                nothing ran. ci.yml then runs the GitHub shards, and their verdict is the check's.
 # A retryable ending (error.retryable: coordinator_unreachable, connection_lost, batches_lost) runs
 # once more before it counts. `run` exits 0 for passed and unreachable (the shards decide then; an
 # annotation says so) and 1 for failed.
@@ -58,6 +62,7 @@
 #   TESTAMENT_CONSOLE      the console's https URL, where the client is downloaded from
 #   TESTAMENT_BRANCH       `run`: the branch the run is for (a pull request checks out a merge commit)
 #   TESTAMENT_CI           `route`: "off" sends CI to the shards
+#   TESTAMENT_PROBE_TIMEOUT  `route`: seconds the probe may take before it counts as no answer (default 60)
 #   EVENT_NAME HEAD_REPO REPO   `route`: the event, the pull request's head repo, and this repo
 #   OUT                    `run`: where the envelope and JUnit report go (default: a new temporary directory)
 #
@@ -176,7 +181,7 @@ print(str(error.get("code") or "no answer") + ": " + str(error.get("message") or
 
 # --- route: the pool, or the shards and why
 route() {
-    local pool=false probe code
+    local pool=false probe code probe_timeout="${TESTAMENT_PROBE_TIMEOUT:-60}"
     level=notice
     export TESTAMENT_KEY="${TESTAMENT_KEY:-}" TESTAMENT_COORDINATOR="${TESTAMENT_COORDINATOR:-}"
     if [ "$(printf '%s' "${TESTAMENT_CI:-}" | tr '[:upper:]' '[:lower:]')" = off ]; then
@@ -192,10 +197,16 @@ route() {
         why="pool unavailable at probe: ${why}"
     else
         code=0
-        probe="$(testament run --probe --json)" || code=$?
+        # to a file, not a command substitution, so the wait ends when `timeout` does; 124 is its
+        # exit after stopping the probe, 137 after killing one that ignored the stop
+        timeout -k 10 "$probe_timeout" testament run --probe --json >"$wheels/probe.json" || code=$?
+        probe="$(cat "$wheels/probe.json")"
         if [ "$code" = 0 ]; then
             pool=true
             why="the pool answered the probe"
+        elif [ "$code" = 124 ] || [ "$code" = 137 ]; then
+            why="pool unavailable at probe: no answer within ${probe_timeout}s (exit ${code})"
+            level=warning
         else
             why="pool unavailable at probe: $(printf '%s' "$probe" | said) (exit ${code})"
             level=warning

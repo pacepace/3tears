@@ -100,7 +100,8 @@ request from a branch of this repo (ci.yml withholds the key then too, whatever 
 policy does); or when no `TESTAMENT_COORDINATOR` variable names the pool. Otherwise it installs
 the client and runs `testament run --probe`, which asks the coordinator whether a run is possible:
 the project allowed, a runner connected that can take it, disk to record it. A probe that says no,
-or a client it cannot get, routes to the shards too.
+one with no answer within 60 seconds (`TESTAMENT_PROBE_TIMEOUT`), or a client it cannot get, routes
+to the shards too.
 
 **When the pool is down or lost, CI falls back to the shards**, never to testament's own local
 fallback (`--no-fallback`), which would run the whole suite in one session on one runner: that
@@ -109,10 +110,10 @@ OOMs its xdist workers (`ci-unit-tests.sh`'s header) and takes about two hours.
 | The probe | The pool's run | What runs | `check` |
 |---|---|---|---|
 | not asked: `TESTAMENT_CI=off`, no key, a fork's PR, no coordinator | | the shards | the shards' verdict |
-| fails, or the client can't be had | | the shards | the shards' verdict |
+| fails, gives no answer within 60 s, or the client can't be had | | the shards | the shards' verdict |
 | passes | passed | the pool | green |
 | passes | failed: a test failed or errored, nothing collected, or any other refusal (`forbidden`, `upgrade_required`, ...) | the pool only | red |
-| passes | unreachable: `coordinator_unreachable`, `connection_lost`, `batches_lost` or `no_runner`, and no test failed | the pool, then the shards | the shards' verdict |
+| passes | unreachable: `coordinator_unreachable`, `connection_lost`, `batches_lost` or `no_runner`, and no test failed; or the client could not be had, so nothing ran | the pool, then the shards | the shards' verdict |
 | passes | the job broke, timed out (75 min) or was cancelled | the pool only | red |
 | `route` itself broke | | nothing | red |
 
