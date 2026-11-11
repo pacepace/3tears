@@ -13,6 +13,7 @@ suite run everything it can, and how test fakes declare what they stand in for. 
 ./scripts/test.sh core -k lease   # one package, narrowed; pytest's options pass through
 ./scripts/test.sh evals packages/evals/tests/test_fastmcp_transport.py   # one file, not all of evals
 ./scripts/test.sh evals packages/evals/tests/test_fastmcp_transport.py::test_name   # one test
+./scripts/test.sh --not-area evals   # everything but evals, on the pool
 ./scripts/test.sh                 # everything
 ```
 
@@ -20,8 +21,19 @@ suite run everything it can, and how test fakes declare what they stand in for. 
 unless you name it (`./scripts/test.sh evals`). Name test files or `file.py::name` node ids after
 the package and only those run, on the pool as locally, so a one-file run takes seconds rather
 than the whole package's minutes. A bare `./scripts/test.sh` runs every package and
-the repo-level `tests/`, and evals is most of that test time (roughly four fifths, by testament's per-test
-medians from a full run on 2026-11-03; its duration totals are unreliable, see below).
+the repo-level `tests/`, and evals is most of that test time (roughly four fifths of a full run;
+see "Where the unit suite's time goes" below).
+
+To run everything but evals, select by testament area: `./scripts/test.sh --not-area evals` (or
+`testament run --not-area evals`). Areas are named slices of the one unit suite, declared in
+`.testament.toml`'s `[areas]`: `evals`, `enforcement` (`packages/enforcement/` and
+`tests/enforcement/`), `core`, `agent` and `platform` (every other package and the repo-level
+`tests/test_*.py`). `--area NAME` runs one; both repeat. `test.sh` passes them to testament ahead of
+the pytest selection, and they combine with a package or test paths. Only the pool knows the
+areas, so a run that would go local (`TESTAMENT=off`, `-m`, an environment gate, CI, no testament)
+refuses them and exits 2. On the pool an area costs what its folder does: `--area core` collected
+the same 5,223 tests as `packages/core/tests/` in about the same time (31 s against 30 s), so a
+package run stays a path, which also works locally.
 
 Run everything at the gates: before you open a PR (`./scripts/check-all.sh`, which runs
 `./scripts/test.sh` and the suites below that it does not), and on the integration branch before it
@@ -56,7 +68,8 @@ so the job was killed with no summary. Each session starts fresh workers, and to
 collect exactly the tests one session would.
 
 Where `testament` is installed (outside CI), `test.sh` hands the run to its
-runners instead, and none of the above applies: testament distributes the tests itself, `-n`,
+runners instead (testament 0.44.0 or later: an older client refuses the manifest's `[areas]` and
+runs nothing), and none of the above applies: testament distributes the tests itself, `-n`,
 `-x`, `--maxfail` or `--lf` make it run locally, and a package run there skips its integration
 tests (`.testament.toml` selects `-m "not integration"`). Two kinds of run never go to the pool:
 one gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`, `THREETEARS_EVALS_PAID*`),
@@ -66,23 +79,34 @@ goes local only with `TESTAMENT=off` and a stated reason, `TESTAMENT_OFF_REASON=
 
 ### Where the unit suite's time goes
 
-testament records every test it runs, so it can say which area is slow, large or sparse:
+testament records every test it runs, so it can say which area is slow, large or sparse. The
+unit suite is one testament suite (`default`), divided into the areas above:
 
 ```bash
-testament time --by folder --depth 3 --project 3tears --since 7d     # share of test time per package
-testament trend --project 3tears                                     # the suite day by day: size, cost, full runs
+testament time --by area --project 3tears --since 7d                 # share of recorded test time per area
+testament trend --by area --project 3tears                           # each area day by day: size, cost of one full run
+testament time --by folder --area evals --depth 4 --project 3tears   # inside one area, file by file
 testament tests slowest --project 3tears --since 7d                  # the slowest tests, mean, median and p90
 testament run --json -- packages/scrape/tests/                       # report.items[]: each test's outcome and duration
+testament areas check --strict                                       # tests in no area, in two, and globs matching none
 ```
 
-Without `--project` they cover every project on the pool. The unit suite is one testament suite
-(`default`), so a per-area view is a folder view; testament's own per-area reporting is pending
-(brookstalley/testament#549).
+Without `--project` they cover every project on the pool. A run's summary breaks its time down by
+area, and history is re-sliced by the map in your checkout, so a changed `[areas]` needs no rerun.
+`time` shares are of recorded time, so an area that runs more often weighs more. `trend`'s "cost s"
+counts each test once (its inventory times its typical duration), so it is the figure for one full
+run, and the one behind "evals is about four fifths": 13,904 s of 16,887 s (82%) on 2026-11-10.
 
-**Totals and means are wrong under freezegun.** A test that freezes time records the frozen clock
-as its duration (one test showed 1.78e9 s), so a folder holding one reads as billions of seconds:
-`packages/core` showed 88.9% of the suite for that reason alone. Read the median, or leave such a
-folder out, until testament fixes it (brookstalley/testament#553).
+`platform` names its packages one by one rather than ending in a catch-all `packages/**`: a
+catch-all overlaps every area above it, and `areas check --strict` reports each overlap. A new
+package therefore needs its glob in `[areas]`; `tests/enforcement/test_testament_areas_cover_the_tree.py`
+fails until it has one. `areas check` reads the tests recorded in the last 14 days, branches
+included, so a package removed recently can show as unassigned until it ages out (`--since 3d`).
+
+**Totals recorded before 2026-11-09 can be wrong under freezegun.** A test that froze time
+recorded the frozen clock as its duration (one test showed 1.78e9 s, and `packages/core` read as
+88.9% of the suite). testament now times with a monotonic clock (brookstalley/testament#553); if a
+folder reads as billions of seconds, narrow the window with `--since` or read the median.
 
 Two things break under a parallel run that a serial one hides. A fixed `asyncio.sleep` that
 waits for background work loses the race on a loaded machine: wait for the event itself. And a

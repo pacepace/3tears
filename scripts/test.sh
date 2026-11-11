@@ -14,6 +14,7 @@ cd "$REPO_ROOT"
 #   ./scripts/test.sh -v           # all packages, verbose
 #   ./scripts/test.sh evals packages/evals/tests/test_x.py       # that file only, not all of evals
 #   ./scripts/test.sh evals packages/evals/tests/test_x.py::test_y -q   # one test
+#   ./scripts/test.sh --not-area evals    # everything but evals, on the pool (areas: .testament.toml)
 #
 # Test paths (`.py` files, `file.py::name` node ids or directories, under packages/ or tests/) run
 # instead of the package's whole tests/, on the pool or locally alike. A package name with only
@@ -32,6 +33,30 @@ if [ $# -gt 0 ] && [[ "$1" != -* ]] && [ -d "packages/$1" ]; then
 fi
 
 EXTRA_ARGS=("$@")
+
+# `--area NAME` and `--not-area NAME` (repeatable; see .testament.toml's [areas]) are testament's,
+# not pytest's: they go to `testament run` ahead of the pytest selection. Only the pool knows the
+# areas, so a run that would go local refuses them below rather than running more than was asked.
+AREA_ARGS=()
+PYTEST_ARGS=()
+area_flag=""
+for arg in ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}; do
+    if [ -n "$area_flag" ]; then
+        AREA_ARGS+=("$area_flag" "$arg")
+        area_flag=""
+        continue
+    fi
+    case "$arg" in
+        --area | --not-area) area_flag="$arg" ;;
+        --area=* | --not-area=*) AREA_ARGS+=("$arg") ;;
+        *) PYTEST_ARGS+=("$arg") ;;
+    esac
+done
+if [ -n "$area_flag" ]; then
+    echo "test.sh: ${area_flag} needs an area name (see [areas] in .testament.toml)" >&2
+    exit 2
+fi
+EXTRA_ARGS=(${PYTEST_ARGS+"${PYTEST_ARGS[@]}"})
 
 # the arguments that name tests. One counts only when all three hold, so an option's value is
 # not mistaken for a test path and the run widened past the package's tests/ (`--log-file
@@ -120,9 +145,14 @@ fi
 if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}" != "off" ] && [ -z "$local_only" ]; then
     echo "test.sh: via testament (integration tests run only locally; TESTAMENT=off with TESTAMENT_OFF_REASON runs it here)" >&2
     if [ -n "$PACKAGE" ] && [ ${#TEST_PATHS[@]} -eq 0 ]; then
-        exec testament run -- "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+        exec testament run ${AREA_ARGS+"${AREA_ARGS[@]}"} -- "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
     fi
-    exec testament run -- ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+    exec testament run ${AREA_ARGS+"${AREA_ARGS[@]}"} -- ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+fi
+
+if [ ${#AREA_ARGS[@]} -gt 0 ]; then
+    echo "test.sh: --area and --not-area select on the testament pool, and this run is local; name a package or test paths instead (\`--not-area evals\` is roughly \`--ignore=packages/evals\`)" >&2
+    exit 2
 fi
 
 if [ ${#TEST_PATHS[@]} -gt 0 ]; then

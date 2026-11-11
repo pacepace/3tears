@@ -5,6 +5,8 @@ whole evals package beside the file, so a one-file run took minutes and people s
 the script with a raw ``pytest`` or ``TESTAMENT=off``. And ``TESTAMENT=off`` went local without
 saying why. These tests pin both: named test paths run alone on either route, and
 ``TESTAMENT=off`` demands ``TESTAMENT_OFF_REASON`` unless the run was going local anyway.
+Testament's ``--area`` and ``--not-area`` reach ``testament run`` ahead of the pytest selection,
+and a local run, which knows no areas, refuses them.
 
 Self-contained: the script is staged in a miniature repo under ``tmp_path`` (it derives
 REPO_ROOT from its own location), and ``testament`` and ``uv`` are stand-in executables on PATH
@@ -363,3 +365,89 @@ class TestTestamentOffNeedsAReason:
         run = _run(repo, args, testament=testament, env={"TESTAMENT": "off", **env})
         assert run.returncode == 0, run.stderr
         assert run.argv[:3] == ["uv", "run", "pytest"]
+
+
+class TestAreasGoToTestament:
+    """``--area`` and ``--not-area`` are testament's flags: they go ahead of the pytest selection."""
+
+    @pytest.mark.parametrize(
+        ("args", "argv"),
+        [
+            pytest.param(["--not-area", "evals"], ["testament", "run", "--not-area", "evals", "--"], id="not-area"),
+            pytest.param(["--area=core", "-q"], ["testament", "run", "--area=core", "--", "-q"], id="joined-value"),
+            pytest.param(
+                ["--not-area", "evals", "--not-area", "enforcement", "-q"],
+                ["testament", "run", "--not-area", "evals", "--not-area", "enforcement", "--", "-q"],
+                id="repeated",
+            ),
+            pytest.param(
+                ["core", "--area", "core"],
+                ["testament", "run", "--area", "core", "--", "packages/core/tests/"],
+                id="with-a-package",
+            ),
+            pytest.param(
+                ["evals", _EVALS_FILE, "--area", "evals"],
+                ["testament", "run", "--area", "evals", "--", _EVALS_FILE],
+                id="with-a-test-path",
+            ),
+        ],
+    )
+    def test_they_reach_testament_not_pytest(self, repo: Path, args: list[str], argv: list[str]) -> None:
+        """the area flags and their values come before ``--``; everything else after it, as before.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param args: the script's arguments
+        :ptype args: list[str]
+        :param argv: what testament is called with
+        :ptype argv: list[str]
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, args)
+        assert run.returncode == 0, run.stderr
+        assert run.argv == argv
+
+    def test_a_flag_without_its_name_runs_nothing(self, repo: Path) -> None:
+        """``--area`` last on the line names no area, so nothing runs.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["-q", "--area"])
+        assert run.returncode == 2
+        assert run.argv == []
+        assert "--area needs an area name" in run.stderr
+
+    @pytest.mark.parametrize(
+        ("args", "env", "testament"),
+        [
+            pytest.param(["--not-area", "evals"], {}, False, id="no-testament"),
+            pytest.param(["--not-area", "evals"], {"CI": "true"}, True, id="ci"),
+            pytest.param(["--not-area", "evals"], {"RECORD": "1"}, True, id="env-gate"),
+            pytest.param(["--not-area", "evals", "-m", "slow"], {}, True, id="dash-m"),
+            pytest.param(
+                ["--not-area", "evals"], {"TESTAMENT": "off", "TESTAMENT_OFF_REASON": "debugging"}, True, id="off"
+            ),
+        ],
+    )
+    def test_a_local_run_refuses_them(self, repo: Path, args: list[str], env: dict[str, str], testament: bool) -> None:
+        """only the pool knows the areas, so a local run refuses rather than run the whole suite.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param args: the script's arguments
+        :ptype args: list[str]
+        :param env: extra environment for the run
+        :ptype env: dict[str, str]
+        :param testament: whether a ``testament`` is on PATH
+        :ptype testament: bool
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, args, testament=testament, env=env)
+        assert run.returncode == 2
+        assert run.argv == []
+        assert "--area and --not-area select on the testament pool" in run.stderr

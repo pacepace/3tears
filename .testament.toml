@@ -26,3 +26,38 @@ steps = [["uv", "sync", "--frozen", "--extra", "vision", "--quiet"]]
 [git]
 # Release tags (and the trees they point at) go with the tree, so tests that read a release from git run on the pool.
 tags = ["v[0-9]*"]
+
+# Areas divide the one suite for reporting and selection without splitting it: `testament run
+# --area core` or `--not-area evals`, `testament time --by area`, `trend --by area`. They join no
+# cache or environment key and change no batching. Order matters: a test belongs to the FIRST area
+# whose glob matches its path (fnmatch, where `*` crosses `/`). `platform` names its packages rather
+# than ending in a catch-all `packages/**`, which would overlap every area above it and fail
+# `testament areas check --strict`; a new package needs its glob here, and
+# tests/enforcement/test_testament_areas_cover_the_tree.py says so. Needs testament 0.44.0 or later.
+[areas]
+evals = ["packages/evals/**"]
+enforcement = ["packages/enforcement/**", "tests/enforcement/**"]
+core = ["packages/core/**"]
+agent = ["packages/agent/**"]
+platform = [
+    "packages/backup/**",
+    "packages/channels/**",
+    "packages/conversations/**",
+    "packages/datasources/**",
+    "packages/epoch/**",
+    "packages/geo/**",
+    "packages/iam/**",
+    "packages/interfaces/**",
+    "packages/langgraph/**",
+    "packages/mcp/**",
+    "packages/models/**",
+    "packages/nats/**",
+    "packages/object-store/**",
+    "packages/observe/**",
+    "packages/registry/**",
+    "packages/scheduled-jobs/**",
+    "packages/scrape/**",
+    "packages/search/**",
+    "packages/tool-schema/**",
+    "tests/test_*.py",
+]
