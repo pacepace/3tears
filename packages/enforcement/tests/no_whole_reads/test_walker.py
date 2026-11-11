@@ -4371,3 +4371,55 @@ def test_a_collection_s_own_schema_name_and_a_schema_qualified_table_read_as_the
         "by_status",
         "page_status",
     }, found
+
+
+_CONSUMER_PURPOSE = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+
+    CONVERSATIONS = TableSchema(
+        name="conversations",
+        primary_key=("agent_id", "conversation_id"),
+        columns=[],
+        indexes=(
+            Index(
+                "idx_conv_agent_status",
+                ("agent_id", "status", "conversation_id"),
+                purpose="src/aibots/hub/admin/conversations.py::_fetch_paginated_rows",
+                plan_test="tests/test_plans.py::test_page_uses_idx_conv_agent_status",
+            ),
+            Index(
+                "idx_conv_agent_title",
+                ("agent_id", "title"),
+                purpose="src/aibots/hub/admin/gone.py::nothing; src/elsewhere.py::nothing",
+                plan_test="tests/test_plans.py::test_page_uses_idx_conv_agent_status",
+            ),
+        ),
+    )
+"""
+
+_CONSUMER_PLANS = """
+    from threetears.core.testing.plans import explain_statement, plan_uses_index
+
+    async def test_page_uses_idx_conv_agent_status(conn):
+        sql = "SELECT * FROM conversations WHERE agent_id = $1 AND status = $2 ORDER BY conversation_id LIMIT 20"
+        assert plan_uses_index(await explain_statement(conn, sql, "pg"), "idx_conv_agent_status")
+        assert plan_uses_index(await explain_statement(conn, sql, "pg"), "idx_conv_agent_title")
+"""
+
+
+def test_a_purpose_may_name_a_consumer_repo_s_read_under_a_declared_consumer_path(tmp_path: Path) -> None:
+    """Flips if, with ``consumer_purposes``, an index purpose naming a read under a consumer's path (the hub's admin
+    listing) is still unknown here, or one outside every consumer path stops being unknown; and if without the
+    option the consumer entry passes."""
+    for side in ("on", "off"):
+        (tmp_path / side).mkdir()
+        _plans(tmp_path / side, _CONSUMER_PLANS)
+    on = no_whole_reads_findings(
+        _config(tmp_path / "on", {"schema.py": _CONSUMER_PURPOSE}, consumer_purposes=("src/aibots/hub/",))
+    )
+    off = no_whole_reads_findings(_config(tmp_path / "off", {"schema.py": _CONSUMER_PURPOSE}))
+    consumer = "purpose 'src/aibots/hub/admin/conversations.py::_fetch_paginated_rows'"
+    assert not any(consumer in finding for finding in on), on
+    assert not any("idx_conv_agent_status" in finding for finding in on), on
+    assert any("purpose 'src/elsewhere.py::nothing'" in finding for finding in on), on
+    assert any(consumer in finding and "index-purpose-unknown" in finding for finding in off), off

@@ -1700,7 +1700,13 @@ def _names_a_match(repo_root: Path, test: str, pattern: str) -> bool:
     return re.search(rf"\b{pattern}\b", body) is not None
 
 
-def index_findings(catalog: SchemaCatalog, repo_root: Path, definitions: set[str]) -> list[str]:
+def index_findings(
+    catalog: SchemaCatalog,
+    repo_root: Path,
+    definitions: set[str],
+    *,
+    consumer_purposes: tuple[str, ...] = (),
+) -> list[str]:
     """every declared index of the repo that names no purpose, no plan test, no reason it needs, or a purpose no
     keyed read uses.
 
@@ -1710,10 +1716,15 @@ def index_findings(catalog: SchemaCatalog, repo_root: Path, definitions: set[str
     :ptype repo_root: Path
     :param definitions: ``<path>::<qualified name>`` of every function, class and SQL constant the walk found
     :ptype definitions: set[str]
+    :param consumer_purposes: path prefixes of consumer repos a purpose may name (judged in the consumer's gate)
+    :ptype consumer_purposes: tuple[str, ...]
     :return: findings
     :rtype: list[str]
     """
     findings: list[str] = []
+    # a purpose naming a consumer's read (``src/aibots/hub/...``) is the consumer's gate to hold to that read
+    consumer = _consumer_entries(catalog, consumer_purposes)
+    definitions = definitions | consumer
     # an index a dependency declares too (3tears' own, rendered into the repo's table list) is the dependency's; one
     # (table, index) declared twice (a TableSchema and its migration) is one index, with the notes either carries
     owned: dict[tuple[str, str] | int, _DeclaredIndex] = {}
@@ -1726,9 +1737,34 @@ def index_findings(catalog: SchemaCatalog, repo_root: Path, definitions: set[str
         purpose = site.purpose or (merged.purpose if merged is not None else "")
         plan_test = site.plan_test or (merged.plan_test if merged is not None else "")
         reason = site.reason or (merged.reason if merged is not None else "")
-        findings.extend(_index_site_findings(catalog, repo_root, definitions, site, (purpose, plan_test, reason)))
+        findings.extend(
+            _index_site_findings(catalog, repo_root, definitions, site, (purpose, plan_test, reason), consumer)
+        )
     findings.extend(_template_index_findings(catalog, definitions))
     return findings
+
+
+def _consumer_entries(catalog: SchemaCatalog, consumer_purposes: tuple[str, ...]) -> set[str]:
+    """the purpose entries of the catalog's indexes that name a consumer repo's read (a path under one of
+    ``consumer_purposes``), each counted as found here.
+
+    :param catalog: the catalog
+    :ptype catalog: SchemaCatalog
+    :param consumer_purposes: the consumer path prefixes
+    :ptype consumer_purposes: tuple[str, ...]
+    :return: the entries
+    :rtype: set[str]
+    """
+    if not consumer_purposes:
+        return set()
+    entries = {entry for site in catalog.sites for entry in purposes(site.purpose)}
+    entries |= {
+        entry
+        for table in catalog.tables.values()
+        for index in table.indexes.values()
+        for entry in purposes(index.purpose)
+    }
+    return {entry for entry in entries if "::" in entry and entry.startswith(consumer_purposes)}
 
 
 def _template_index_findings(catalog: SchemaCatalog, definitions: set[str]) -> list[str]:
@@ -1766,6 +1802,7 @@ def _index_site_findings(
     definitions: set[str],
     site: _DeclaredIndex,
     notes: tuple[str, str, str],
+    consumer_entries: set[str] | None = None,
 ) -> list[str]:
     """what is wrong with one declared index.
 
@@ -1779,6 +1816,8 @@ def _index_site_findings(
     :ptype site: _DeclaredIndex
     :param notes: its purpose, plan test and reason, from any declaration of it
     :ptype notes: tuple[str, str, str]
+    :param consumer_entries: purpose entries naming a consumer repo's read (judged in that repo's gate)
+    :ptype consumer_entries: set[str] | None
     :return: findings
     :rtype: list[str]
     """
@@ -1804,7 +1843,12 @@ def _index_site_findings(
                 f"{where}: index-purpose-unknown -- purpose {entry!r} names no function the walk found; give "
                 "<path>::<qualified function>"
             )
-        elif site.table and not site.pattern and (site.table, site.name, entry) not in catalog.used:
+        elif (
+            site.table
+            and not site.pattern
+            and (site.table, site.name, entry) not in catalog.used
+            and entry not in (consumer_entries or set())
+        ):
             findings.append(
                 f"{where}: index-purpose-unused -- {entry} holds no read of {site.table} keyed by its leading "
                 f"column {site.columns[0] if site.columns else '?'}: each purpose names a read that uses it"

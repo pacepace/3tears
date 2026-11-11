@@ -182,6 +182,10 @@ class NoWholeReadsConfig:
         a table only a SQLAlchemy ``Table`` or the repo's own migration DDL declares is no data table, and a relation
         named at run time counts only when it resolves to a 3tears one. For a repo that keeps a side database of its
         own, unchecked; off by default, every declared or written relation a data table
+    :ivar consumer_purposes: path prefixes of the repos that read this repo's tables through its declarations (the
+        hub's ``src/aibots/hub/``): an index purpose under one names a consumer's read, which keys that read in the
+        consumer's own gate (its indexes are the dependency's there); here such an entry is neither unknown nor unused.
+        The plan test, in this repo, still proves the index serves the consumer's statement
     """
 
     repo_root: Path
@@ -205,6 +209,7 @@ class NoWholeReadsConfig:
     relation_producers: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
     public_forwarders: bool = False
     threetears_tables_only: bool = False
+    consumer_purposes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -547,7 +552,14 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
             line = f"no_whole_reads accepts source-gap {exemption.path} :: {exemption.function}: {exemption.reason}"
             sys.stderr.write(f"{line}\n")
             warnings.warn(line, _WholeReadAccepted, stacklevel=2)
-    findings.extend(index_findings(scan.schema, config.repo_root, scan.definitions | scan.constants))
+    findings.extend(
+        index_findings(
+            scan.schema,
+            config.repo_root,
+            scan.definitions | scan.constants,
+            consumer_purposes=config.consumer_purposes,
+        )
+    )
     for hit in hits:
         if _marked(hit, scan.operators, scan.schema):
             continue
