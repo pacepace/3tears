@@ -27,6 +27,13 @@ Run everything at the gates: before you open a PR (`./scripts/test.sh`, or `./sc
 which runs it), and on the integration branch before it merges into `develop`. CI runs everything on
 every PR as well.
 
+`check-all.sh` also runs the two suites CI's `check` job runs beside the unit suite:
+`./scripts/test-mcp-v1.sh` (the MCP packages on mcp 1.x, overlaid on the locked 2.x) and
+`./scripts/test-otel-floor.sh` (observe's OpenTelemetry tests at its declared floors, in an isolated
+environment). Both set their own dependency versions, so they run locally, never on the pool, and
+`test.sh` alone does not cover them: PR #1087 went red in CI on `test-mcp-v1.sh` after every local
+gate was green, because none of them ran it.
+
 ## The sidecar suite
 
 `./scripts/test-sidecar.sh` runs the nodriver sidecar's own tests. nodriver is AGPL-3.0 and never

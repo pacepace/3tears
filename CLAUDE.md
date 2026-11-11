@@ -148,7 +148,7 @@ uv sync                    # install all packages in dev mode
 | `./scripts/test-live-claude-cli.sh` | Run the live Claude CLI batch -- structured output and the session pool -- and record the result (needs `CLAUDE_CODE_OAUTH_TOKEN`; before tagging a `packages/models` release) |
 | `./scripts/lint.sh` | ruff check plus format check. `--fix` to auto-fix |
 | `./scripts/typecheck.sh` | mypy on all packages, or one: `./scripts/typecheck.sh evals` |
-| `./scripts/check-all.sh` | lint plus typecheck plus tests |
+| `./scripts/check-all.sh` | lint plus typecheck plus tests, including CI's mcp-1.x and OpenTelemetry-floor suites |
 
 Extra args pass through: `./scripts/test.sh core -v -x`
 
