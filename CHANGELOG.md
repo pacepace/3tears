@@ -50,6 +50,13 @@ landed against its cap. `Eval.max_cost_usd`'s docstring says the examples draw o
 judge completion that breaks the protocol) is contained and stated on the reading ("not graded, since the grading
 failed ..."), and the eval files its campaign and returns its result, where the arms' spent results were lost.
 
+### evals: a shutdown lets an expiry already running finish
+
+**Fixed:** a graceful shutdown cancelled a lease expiry partway through: its record, already let go, was skipped by the
+shutdown's pass, its job never stopped and its fault never written, so it later read lost by lapse with no cause. An
+expiry now runs in a task of its own, shielded from the renewal that found the lease lapsed, and `JobLeases.shut_down`
+waits for every one still running, within the expiry's own bound (two leases), so the record reads lost with its cause.
+
 ### evals: an unnamed comparison is refused
 
 **Changed:** a quick-path `Eval` with several arms and neither `name=` nor a cases file is refused when it is written

@@ -775,6 +775,9 @@ class JobLeases:
         # this process's own count — whose jobs have not yet ended. See fenced.
         self._let_go: set[str] = set()
         self._renewer: asyncio.Task[None] | None = None
+        #: Every expiry still writing why its record stopped, each in a task of its own (:meth:`_expiring`), so a
+        #: renewer cancelled at shutdown leaves it to finish and :meth:`shut_down` waits for it, within its bound.
+        self._expiries: set[asyncio.Task[None]] = set()
         # The loop the leases are held on (:meth:`hold`), where an own write's bookkeeping is done (:meth:`write_own`).
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -1197,7 +1200,7 @@ class JobLeases:
                 # Not renewed — failed, hung, or every write lost its race — for a whole lease. A hung call's deadline
                 # was the lease as it stood when the call began; the job's own writes may have extended it since
                 # (write_own), and then the lease is not lost, and the next interval renews it again.
-                await self._expire(held)
+                await self._expiring(held)
                 return
             wait = 0.0
             if verdict == "contended" and round_ < CONTENDED_RENEWAL_RETRIES:
@@ -1224,7 +1227,7 @@ class JobLeases:
         )
         if now - held.renewed_at >= self._lease_s:
             held.last_failure = f"{type(stuck).__name__}: {stuck}"
-            await self._expire(held)
+            await self._expiring(held)
             return
         # NOSILENT: the job's own writes are keeping the lease (write_own); this line names the call still stuck.
         contain(
@@ -1261,6 +1264,20 @@ class JobLeases:
             started - issued,
             landed - started,
         )
+
+    async def _expiring(self, held: _Held) -> None:
+        """Expire ``held`` (:meth:`_expire`) in a task of its own, shielded from the renewal that found it lapsed.
+
+        An expiry lets go of its record first, then writes why and stops the job. A renewal cancelled partway through
+        one (the renewer cancelled at shutdown, which cancels every renewal it started) would leave the record let go
+        and so skipped by :meth:`shut_down`'s pass, its fault unwritten and its job never stopped, to read lost later
+        by lapse with no cause. Shielded, the expiry runs on to its end, which is bounded (each of its two writes by a
+        lease), and :meth:`shut_down` waits for every one still running.
+        """
+        expiry = asyncio.create_task(self._expire(held), name=f"eval-job-lease-expiry-{held.record_id}")
+        self._expiries.add(expiry)
+        expiry.add_done_callback(self._expiries.discard)
+        await asyncio.shield(expiry)
 
     async def _expire(self, held: _Held) -> None:
         """Stop a job whose renewals have failed for a whole lease: its lease has lapsed by this process's own count.
@@ -1441,7 +1458,16 @@ class JobLeases:
 
         :param cause: The loss's cause.
         :ptype cause: str
-        :return: The records written lost; one already ended, or whose write failed (logged), is not among them.
+        **An expiry already running is let finish** (:meth:`_expiring`): its record, let go when the expiry began, is
+        not this process's to write lost, and the expiry writes why it stopped and stops its job, so the record reads
+        lost with its true cause beside it rather than by lapse with none. Each expiry is bounded (each of its two
+        writes by a lease), and the wait is bounded by that too, so a shutdown never hangs on one: an expiry still
+        running past it is logged and left.
+
+        :param cause: The loss's cause.
+        :ptype cause: str
+        :return: The records written lost; one already ended, one an expiry was stopping, or one whose write failed
+            (logged), is not among them.
         :rtype: list[str]
         """
         if self._renewer is not None:
@@ -1466,6 +1492,15 @@ class JobLeases:
                         f"scope={one.scope_id} lost — it reads lost once its lease lapses"
                     ),
                     level="error",
+                )
+        if expiring := set(self._expiries):
+            # Two writes, each bounded by a lease, and one renewal interval of slack for the loop to schedule them.
+            _, unfinished = await asyncio.wait(expiring, timeout=2 * self._lease_s + self.renew_every_s)
+            for expiry in unfinished:
+                log.error(
+                    "eval.job_lease shutdown: the expiry %s was still running past its bound of two leases; left to "
+                    "finish on its own, its record reads lost once its lease lapses",
+                    expiry.get_name(),
                 )
         self._close_pool()
         return ended
