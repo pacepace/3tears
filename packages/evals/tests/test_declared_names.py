@@ -297,7 +297,7 @@ def documents() -> dict[str, str]:
 
 #: Every identity and digest of the fixture, as the tree at ``00107a5b7`` computed them (:func:`identities`), but for
 #: those the bundle shape reaches: the shape itself, and each aspect's and the campaign's fingerprint and evidence
-#: digest, re-pinned at shape 65 (see :data:`PINNED_DOCUMENTS`). No run, cell, pool or pairing key moved.
+#: digest, re-pinned at shapes 65 and 66 (see :data:`PINNED_DOCUMENTS`). No run, cell, pool or pairing key moved.
 PINNED: dict[str, str] = {
     "CELL_MODEL_VERSION": "14",
     "IDENTITY_VERSION": "25",
@@ -307,10 +307,10 @@ PINNED: dict[str, str] = {
         "c8030ab220f21fa1422945cfff2cfa7e62ca5159aa595e5b93112d321c9"
     ),
     "Queue discipline under a full queue evidence_digest": (
-        "v2:ae08e872539934d92f712c731a269e019eb911f6ea7215b095f3c8ca3655d46c"
+        "v2:b7463b061085a09aafd925e9d4d8afbe835ed46641f4e6b3f9ebf419e61d4054"
     ),
     "Queue discipline under a full queue fingerprint": (
-        "v2:ae08e872539934d92f712c731a269e019eb911f6ea7215b095f3c8ca3655d46c"
+        "v2:b7463b061085a09aafd925e9d4d8afbe835ed46641f4e6b3f9ebf419e61d4054"
     ),
     "Queue discipline under a full queue measure_catalog": (
         "be7db1240bcd8149ba17c91f78963c8632823d88d0f99674952fa7eb408d3141"
@@ -321,19 +321,19 @@ PINNED: dict[str, str] = {
         "c8030ab220f21fa1422945cfff2cfa7e62ca5159aa595e5b93112d321c9"
     ),
     "Queue discipline under an empty queue evidence_digest": (
-        "v2:cbd5ca58814d12968a0907c5617cef112ff65c7335205a2d57926c9dd52d4c47"
+        "v2:414ea2044e50b78ff63d6feffaf5f7d58b0ef7f13dd7e48dedc4f00610bd4098"
     ),
     "Queue discipline under an empty queue fingerprint": (
-        "v2:cbd5ca58814d12968a0907c5617cef112ff65c7335205a2d57926c9dd52d4c47"
+        "v2:414ea2044e50b78ff63d6feffaf5f7d58b0ef7f13dd7e48dedc4f00610bd4098"
     ),
     "Queue discipline under an empty queue measure_catalog": (
         "be7db1240bcd8149ba17c91f78963c8632823d88d0f99674952fa7eb408d3141"
     ),
-    "bundle schema_version": "65",
-    "campaign fingerprint": "v2:2b80af43835a82314c267998aa876931b91fd5260c500ce88a39b62d9289235d",
-    "campaign document fingerprint": "v2:2b80af43835a82314c267998aa876931b91fd5260c500ce88a39b62d9289235d",
-    "campaign fingerprint v3": "v3:9708743c9b0a267dee330b57cf812934d63e3cb80d49fd3e6ebdda8f7c4c91a8",
-    "campaign document fingerprint v3": "v3:9708743c9b0a267dee330b57cf812934d63e3cb80d49fd3e6ebdda8f7c4c91a8",
+    "bundle schema_version": "66",
+    "campaign fingerprint": "v2:42666b72fe557a82e1c8524e1ea310cbd71e341f913fdae82749c74497a0e95e",
+    "campaign document fingerprint": "v2:42666b72fe557a82e1c8524e1ea310cbd71e341f913fdae82749c74497a0e95e",
+    "campaign fingerprint v3": "v3:4c78a439d821c64d413dcb02816b2fe3336684d083f4900cade44b4636461aac",
+    "campaign document fingerprint v3": "v3:4c78a439d821c64d413dcb02816b2fe3336684d083f4900cade44b4636461aac",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
     # The one entry that moves with the durable version: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
     # arm names 16.4, stratum names 16.5, plan reporter cases 16.6, the analyst's gap notes 16.7, a design's measure
@@ -370,9 +370,13 @@ PINNED: dict[str, str] = {
 #: by building this fixture on this tree: the shape-64 bundles, moved to 65 by
 #: ``fixtures/report_inputs/migrate_bundle_shape_65.py`` (the shape, each rate contrast's interval and each corrected
 #: comparison's interval basis, and nothing else), are these bundles leaf for leaf, so the names still move nothing.
+#: They were re-pinned at shape 66 the same way: the shape-65 bundles, moved by
+#: ``fixtures/report_inputs/migrate_bundle_shape_66.py`` (the shape, the factor-pair scan's completeness and each
+#: trial's failed check held as its measure key, and nothing else), are these bundles leaf for leaf, less
+#: ``lever_names``.
 PINNED_DOCUMENTS: dict[str, str] = {
-    "Queue discipline under a full queue bundle": "a9b41f1e36f3b4d67bc92132849081a1fa6636ab647b3200fe90f241fc4eb7e4",
-    "Queue discipline under an empty queue bundle": "7f7c71067e3b43231ef35c53cf3774f95c30e2612ed2344353e39c03af8ef3ab",
+    "Queue discipline under a full queue bundle": "6cecb73f534b2ab4eef7ecca16c67eca958d2df381557f7a339021b3b9b162d4",
+    "Queue discipline under an empty queue bundle": "1674792720401ffdeef819b8e0f5e5aa6f70218bd3adfbf85e82ee8ea63b4a72",
     "campaign": "6c2b383b36fc2664a2457021aac7d61d330ed17119760d15694105bb2a99c215",
     "template": "ebdd07699d7ce094a952d8f66505439368260a790589e08f69ae10ad3c10c755",
 }

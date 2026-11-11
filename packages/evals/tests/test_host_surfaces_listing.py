@@ -262,13 +262,16 @@ def _analysed(host: EvalHost, campaign_id: str) -> CampaignLine:
 
 
 #: What the build before render-time naming (0d801dcc0) froze for :func:`_prompt_host`'s campaign: its arms' labels
-#: and its fingerprint, taken on that build. Render-time naming leaves both as they were.
+#: and its fingerprint, taken on that build. Render-time naming leaves both as they were. The fingerprint was re-pinned
+#: at bundle shape 66: the shape-65 bundle the old pin was taken over, moved by
+#: ``fixtures/report_inputs/migrate_bundle_shape_66.py``, computes this one and is this build's bundle leaf for leaf,
+#: less ``lever_names``.
 _FROZEN_LABELS = [
     "Read every invoice line twice an…endor's own wo…",
     "Read every invoice line once and…ndor's own wor…",
     "(none)",
 ]
-_FROZEN_FINGERPRINT = "v3:2742f149003a50d9f5bfb1af67dff6fdd763a4ec893af71a5aa0e1b5960649f7"
+_FROZEN_FINGERPRINT = "v3:0dca7e140038c85642d082f07df9093da3b6e54505ef967f1b6d3fc4845bc9ae"
 
 
 def test_the_bundle_freezes_the_labels_and_fingerprint_it_froze_before() -> None:
