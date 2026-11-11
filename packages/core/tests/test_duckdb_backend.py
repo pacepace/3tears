@@ -1136,3 +1136,23 @@ class TestAKeylessScopeIsCheckedForRepeats:
             f"adding 2,000 rows took {beside_six_million * 1000:.1f} ms beside 6,000,000 rows, "
             f"{beside_six_million / beside_one_million:.1f}x the {beside_one_million * 1000:.1f} ms beside 1,000,000"
         )
+
+
+def test_a_published_version_s_mark_is_read_from_its_view_as_from_the_table() -> None:
+    """A copy that publishes each version as views over shared files publishes its mark the same way, a view named as
+    the table :meth:`DuckDBBackend.apply_staged` writes: :meth:`DuckDBBackend.staged_mark` reads the mark from either,
+    and None where neither is."""
+    pa = pytest.importorskip("pyarrow")
+    conn = duckdb.connect()
+    try:
+        assert DuckDBBackend.staged_mark(conn) is None
+        conn.register("_published_mark", pa.table({"mark": pa.array([42], pa.int64())}))
+        conn.execute('CREATE VIEW "__staged_mark__" AS SELECT * FROM _published_mark')
+        assert DuckDBBackend.staged_mark(conn) == 42
+        conn.execute('DROP VIEW "__staged_mark__"')
+        conn.execute('CREATE TABLE "__staged_mark__" (mark BIGINT)')
+        assert DuckDBBackend.staged_mark(conn) is None
+        conn.execute('INSERT INTO "__staged_mark__" VALUES (7)')
+        assert DuckDBBackend.staged_mark(conn) == 7
+    finally:
+        conn.close()
