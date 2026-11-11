@@ -130,6 +130,11 @@ _QUOTING_CALLS: Final = frozenset({"quoted_table", "quote_identifier"})
 #: where 3tears' keyed helpers live: a helper there may declare its own parameter a change relation
 _KEYED_PACKAGE: Final = "threetears/core/keyed/"
 
+#: the modules holding a keyed helper in :data:`KEYED_HELPER_CALLS`: ``threetears/core/keyed`` and the one the
+#: caller's grants filter (``visible_rows``, :mod:`threetears.agent.acl.visible_customers`); a statement over a
+#: helper's relation parameter there is judged at the helper's call sites (:func:`_helper_relations`)
+_KEYED_HELPER_MODULES: Final = (_KEYED_PACKAGE, "threetears/agent/acl/visible_customers.py")
+
 #: what an expression reads as when it names a relation no statement is judged by where it is written (a declared
 #: transient producer's return, :data:`TRANSIENT_PRODUCED`; a keyed helper's relation parameter,
 #: :data:`HELPER_RELATION`), None for any other; None when the module has neither
@@ -713,7 +718,7 @@ def _bound_argument(call: ast.Call, name: str, position: int | None) -> ast.expr
 
 
 def _helper_relations(tree: ast.Module) -> tuple[dict[int, frozenset[str]], dict[int, frozenset[str]]]:
-    """the parameters (per function) and fields (per class) of a ``threetears/core/keyed`` module that hold a keyed
+    """the parameters (per function) and fields (per class) of a :data:`_KEYED_HELPER_MODULES` module that hold a keyed
     helper's relation parameter: every parameter of a helper in :data:`KEYED_HELPER_CALLS` or :data:`STEP_CALLS`
     (its call sites judge the relation each hands it); a parameter of a private function or method, or a field of a
     private class, only where it has in-module callers (constructions) and every one hands it straight (a bare name)
@@ -974,10 +979,10 @@ class _ModuleWalk(ast.NodeVisitor):
             and isinstance(statement.target, ast.Name)
             and statement.value is not None
         }
-        #: in a module of ``threetears/core/keyed``, the parameters and fields that hold a keyed helper's relation
+        #: in a module of :data:`_KEYED_HELPER_MODULES`, the parameters and fields that hold a keyed helper's relation
         #: parameter (:func:`_helper_relations`): a statement over one is judged at the helper's call sites
         self._helper_parameters, self._helper_fields = (
-            _helper_relations(tree) if _KEYED_PACKAGE in str(path) else ({}, {})
+            _helper_relations(tree) if any(module in str(path) for module in _KEYED_HELPER_MODULES) else ({}, {})
         )
         self._envs[0].update(imported or {})
         self._envs[0].update(_module_strings(tree))

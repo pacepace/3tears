@@ -79,6 +79,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "update_before",
         "apply_stage",
         "update_from",
+        "visible_rows",
     }
 )
 
@@ -668,6 +669,9 @@ _SYNTHESIZERS: Final = {
     "any_rows": _any_rows,
     "keyset_page": _keyset_page,
     "keyset_rows": _keyset_page,
+    #: :func:`threetears.agent.acl.visible_rows`: keyset_rows' pages over ``table`` in ``order``, its ``where``
+    #: beside, the caller's customers filtering them
+    "visible_rows": _keyset_page,
     "copy_keyed": _keyset_page,
     "read_changed": _read_changed,
     "counts_by": _counts_by,
