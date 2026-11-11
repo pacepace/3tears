@@ -55,10 +55,11 @@ def _execute(conn: Any, query: str, params: Sequence[Any]) -> str:
         cursor.close()
 
 
-def duckdb_arrow(conn: Any, query: str, params: Sequence[Any], types: Mapping[str, Any]) -> Any:
+def duckdb_arrow(conn: Any, query: str, params: Sequence[Any], types: Mapping[str, Any] | None) -> Any:
     """a DuckDB SELECT's rows as one Arrow table typed by ``types``, never one Python object a row: DuckDB's own
     Arrow answer, its columns taken in ``types``' order and cast to theirs (the table
-    :func:`~threetears.core.backends.arrow_reply.l3_fetch_arrow` answers for any other L3).
+    :func:`~threetears.core.backends.arrow_reply.l3_fetch_arrow` answers for any other L3); with no ``types``,
+    DuckDB's own answer as it is, its columns and types the statement's.
 
     :param conn: the DuckDB connection or cursor the statement runs on
     :ptype conn: duckdb.DuckDBPyConnection
@@ -66,8 +67,8 @@ def duckdb_arrow(conn: Any, query: str, params: Sequence[Any], types: Mapping[st
     :ptype query: str
     :param params: its parameters
     :ptype params: Sequence[Any]
-    :param types: column name -> its Arrow type, every column selected, in order
-    :ptype types: Mapping[str, pyarrow.DataType]
+    :param types: column name -> its Arrow type, every column selected, in order; None for DuckDB's own
+    :ptype types: Mapping[str, pyarrow.DataType] | None
     :return: the rows
     :rtype: pyarrow.Table
     :raises ImportError: without pyarrow
@@ -76,12 +77,14 @@ def duckdb_arrow(conn: Any, query: str, params: Sequence[Any], types: Mapping[st
     if not _PYARROW:
         raise ImportError("a DuckDB read as Arrow needs pyarrow: install 3tears[snapshot]")
     answered = conn.execute(query, list(params)).fetch_arrow_table()
+    if types is None:
+        return answered
     if sorted(answered.column_names) != sorted(types):
         raise ValueError(f"the statement selects {answered.column_names}, the types name {list(types)}")
     return answered.select(list(types)).cast(pa.schema([pa.field(name, kind) for name, kind in types.items()]))
 
 
-def _cursor_arrow(conn: Any, query: str, params: Sequence[Any], types: Mapping[str, Any]) -> Any:
+def _cursor_arrow(conn: Any, query: str, params: Sequence[Any], types: Mapping[str, Any] | None) -> Any:
     cursor = conn.cursor()
     try:
         return duckdb_arrow(cursor, query, params, types)
@@ -111,15 +114,15 @@ class ThreadedDuckDB:
         """
         return await asyncio.to_thread(_fetch, self._conn, query, params)
 
-    async def fetch_arrow(self, query: str, /, *params: Any, types: Mapping[str, Any]) -> Any:
+    async def fetch_arrow(self, query: str, /, *params: Any, types: Mapping[str, Any] | None) -> Any:
         """the statement's rows as one Arrow table typed by ``types`` (:func:`duckdb_arrow`), on a thread.
 
         :param query: the SELECT, ``$n`` placeholders
         :ptype query: str
         :param params: its parameters
         :ptype params: Any
-        :param types: column name -> its Arrow type, every column selected, in order
-        :ptype types: Mapping[str, pyarrow.DataType]
+        :param types: column name -> its Arrow type, every column selected, in order; None for DuckDB's own
+        :ptype types: Mapping[str, pyarrow.DataType] | None
         :return: the rows
         :rtype: pyarrow.Table
         """

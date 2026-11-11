@@ -7,6 +7,7 @@ the step. ``changed`` is the change relation (its keys hold a NULL office, match
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from datetime import datetime, timedelta
 from typing import Any
@@ -18,6 +19,7 @@ import pytest
 from threetears.core.keyed import (
     Fragment,
     InlineDuckDB,
+    ThreadedDuckDB,
     Match,
     Selected,
     Sort,
@@ -246,6 +248,34 @@ def test_a_step_reads_into_arrow_typed_as_asked(conn: duckdb.DuckDBPyConnection)
         {"run_id": 2, "office": "o0"},
         {"run_id": 3, "office": "o1"},
     ]
+
+
+def test_a_step_read_into_arrow_on_duckdb_with_no_types_is_duckdbs_own_answer(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if read_step_arrow on DuckDB (inline or on a thread) without ``types`` answers other rows, columns or
+    Arrow types than DuckDB's own answer to the step's statement, in the order asked; or if a reader that is no
+    DuckDB is read without them (its rows carry no types to make the table of)."""
+    conn.execute(
+        "INSERT INTO held VALUES ('S0', 'o0', 2, NULL, 20), ('S0', NULL, 1, NULL, 10), ('S1', 'o1', 3, NULL, 3)"
+    )
+    step = semi("held", _CHANGED, on=_KEY, columns=["run_id", "office", "instant"])
+    own = conn.execute(
+        f"SELECT o.* FROM ({step.sql}) AS o ORDER BY o.run_id ASC", list(step.params)
+    ).fetch_arrow_table()
+    inline = run_inline(read_step_arrow(InlineDuckDB(conn), step, order=[Sort("run_id")]))
+    threaded = asyncio.run(read_step_arrow(ThreadedDuckDB(conn), step, order=[Sort("run_id")]))
+    for table in (inline, threaded):
+        assert table.schema == own.schema
+        assert table.to_pylist() == own.to_pylist()
+    assert [row["run_id"] for row in inline.to_pylist()] == [1, 2, 3]
+    whole = run_inline(read_step_arrow(InlineDuckDB(conn), "held"))
+    assert whole.schema == conn.execute("SELECT * FROM held").fetch_arrow_table().schema
+
+    class _Rows:
+        async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+            return []
+
+    with pytest.raises(TypeError, match="types"):
+        asyncio.run(read_step_arrow(_Rows(), step))
 
 
 def test_a_delete_by_a_change_relation_s_keys_deletes_what_the_exists_delete_does(

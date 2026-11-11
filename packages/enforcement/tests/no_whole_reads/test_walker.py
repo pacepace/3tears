@@ -3040,3 +3040,30 @@ def test_a_delete_matching_on_built_by_a_function_over_a_copy_table_named_at_run
     functions = {function for function, _ in found}
     assert "apply_settled" not in functions, found
     assert "drops_by_run" in functions, found
+
+
+_UNTYPED_ARROW = """
+    from threetears.core import keyed
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import InlineDuckDB, run_inline
+
+    RESULTS = TableSchema(name="results", primary_key=("state", "run_id"), columns=[])
+    _CHANGED = keyed.change_relation("changed")
+
+
+    def changed_rows(conn):
+        return run_inline(keyed.read_step_arrow(InlineDuckDB(conn), keyed.distinct(_CHANGED, ["state"])))
+
+
+    def every_result(conn):
+        return run_inline(keyed.read_step_arrow(InlineDuckDB(conn), "results"))
+"""
+
+
+def test_a_step_read_into_arrow_with_duckdbs_own_types_is_judged_by_its_step(tmp_path: Path) -> None:
+    """Flips if ``read_step_arrow`` on DuckDB with no ``types=`` is not judged by the relation it reads: a change
+    relation's rows pass, a table read whole is the whole read it is."""
+    found = _symbols(_config(tmp_path, {"untyped.py": _UNTYPED_ARROW}))
+    functions = {function for function, _ in found}
+    assert "changed_rows" not in functions, found
+    assert "every_result" in functions, found

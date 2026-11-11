@@ -43,7 +43,9 @@ from threetears.core.keyed._filters import (
     renumbered,
     selected_column,
 )
+from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.page import Sort
+from threetears.core.keyed.threaded import ThreadedDuckDB
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
@@ -501,23 +503,32 @@ async def read_step(conn: Any, step: Rel, *, order: Sequence[Sort] = ()) -> list
     return [dict(row) for row in await conn.fetch(sql, *params)]
 
 
-async def read_step_arrow(conn: Any, step: Rel, *, types: Mapping[str, Any], order: Sequence[Sort] = ()) -> Any:
+async def read_step_arrow(
+    conn: Any, step: Rel, *, types: Mapping[str, Any] | None = None, order: Sequence[Sort] = ()
+) -> Any:
     """the step's rows as one Arrow table typed by ``types`` (DuckDB's own Arrow answer through
     :meth:`~threetears.core.keyed.InlineDuckDB.fetch_arrow`; any other reader's rows made the table on a thread).
+    On DuckDB (:class:`~threetears.core.keyed.InlineDuckDB`, :class:`~threetears.core.keyed.ThreadedDuckDB`) ``types``
+    may be left out: the table is DuckDB's own answer, its columns and types the statement's.
 
     :param conn: an :class:`~threetears.core.keyed.InlineDuckDB` / :class:`~threetears.core.keyed.ThreadedDuckDB`,
         or anything with ``fetch``
     :ptype conn: Any
     :param step: the step, or a relation read whole
     :ptype step: str | Derived | Step
-    :param types: column name -> its Arrow type, every column the step selects, in order
-    :ptype types: Mapping[str, pyarrow.DataType]
+    :param types: column name -> its Arrow type, every column the step selects, in order; None on DuckDB for its own
+    :ptype types: Mapping[str, pyarrow.DataType] | None
     :param order: the rows' order; none promised when empty
     :ptype order: Sequence[Sort]
     :return: the rows
     :rtype: pyarrow.Table
+    :raises TypeError: without ``types`` on a reader that is no DuckDB (its rows carry no Arrow types)
     """
     sql, params = _ordered(_as_step(step), order)
+    if types is None:
+        if not isinstance(conn, (InlineDuckDB, ThreadedDuckDB)):
+            raise TypeError("read_step_arrow needs types= off DuckDB: its rows carry no Arrow types")
+        return await conn.fetch_arrow(sql, *params, types=None)
     return await l3_fetch_arrow(conn, sql, *params, types=types)
 
 

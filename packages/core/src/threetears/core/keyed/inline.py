@@ -103,7 +103,7 @@ class InlineDuckDB:
         """
         return _rows(self._conn.execute(query, list(params)))
 
-    async def fetch_arrow(self, query: str, /, *params: Any, types: Mapping[str, Any]) -> Any:
+    async def fetch_arrow(self, query: str, /, *params: Any, types: Mapping[str, Any] | None) -> Any:
         """the statement's rows as one Arrow table typed by ``types``, never a Python object a row
         (:func:`~threetears.core.keyed.threaded.duckdb_arrow`): what :func:`~threetears.core.keyed.read_keyed_arrow`
         reads through, so a keyed read into Arrow runs inline, in the caller's transaction.
@@ -112,8 +112,8 @@ class InlineDuckDB:
         :ptype query: str
         :param params: its parameters
         :ptype params: Any
-        :param types: column name -> its Arrow type, every column selected, in order
-        :ptype types: Mapping[str, pyarrow.DataType]
+        :param types: column name -> its Arrow type, every column selected, in order; None for DuckDB's own
+        :ptype types: Mapping[str, pyarrow.DataType] | None
         :return: the rows
         :rtype: pyarrow.Table
         """
