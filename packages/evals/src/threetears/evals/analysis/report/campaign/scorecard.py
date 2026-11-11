@@ -50,6 +50,8 @@ from threetears.evals.analysis.campaign_readings import (
     CampaignReadings,
     MeasureReading,
     PairReading,
+    PASSED_READING,
+    reading_name,
     reading_reason,
 )
 from threetears.evals.analysis.quantities import PERCENT, POINTS, is_money
@@ -1787,13 +1789,10 @@ def _measure_words(reading: MeasureReading, reports: Mapping[str, Report]) -> st
     (:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`): a goal check by its name on the aspect
     (declared, else what it tests), any other measure by its reader name; the pass rate as a name, capitalised as the
     others are (``Pass rate``)."""
-    if reading.measure == _PASS_RATE:
-        return reading.name[:1].upper() + reading.name[1:]
+    if reading.measure == PASSED_READING:
+        name = reading_name(reports[reading.aspect].bundle, reading.measure)
+        return name[:1].upper() + name[1:]
     return measure_name_of(reports[reading.aspect].bundle, reading.measure)
-
-
-#: The key the readings give an arm's own pass rate, every grader's reading together.
-_PASS_RATE = "passed"
 
 
 def _measure_header(key: str, readings: CampaignReadings, reports: Mapping[str, Report]) -> str:

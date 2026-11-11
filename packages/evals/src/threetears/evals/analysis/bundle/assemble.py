@@ -591,6 +591,9 @@ def assemble_context_bundle(
         runs, results_by_run, apparatus_classes, scope_id=scope_id, profile=profile
     )
     variant_index = _name_arms(variant_index, observations, folds, run_ids)
+    # Each arm as the host displays its levels, which orders the decision surface's arms below: never by a name the
+    # declaration gives a level, which is presentation (LEVEL_PRESENTATION_FIELDS) and so moves no fingerprinted order.
+    displayed = arm_names(variant_index)
     variant_index = _declared_level_names(variant_index, declared_design)
     cells, refused_merges, next_experiments = pool_observations(
         observations, {c.apparatus_class_id: c for c in apparatus_classes.values()}
@@ -809,7 +812,7 @@ def assemble_context_bundle(
     # catalog has to describe their names too. Laid out in the surface's one row order (the control as
     # the reference, then the arms by name), which the writer reads and the frozen surface keeps.
     control = design.control_arm.variant_key if design.control_arm is not None else None
-    names = arm_names(bundle.variant_index)
+    names = displayed
     case_facts = storage.load_case_strata(sorted({result.test_case_id for result in results}), scope_id)
     case_strata = {case.id: case.stratum for case in case_facts}
     case_names = {case.id: case.name for case in case_facts if case.name}

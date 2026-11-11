@@ -28,6 +28,7 @@ from threetears.evals.analysis import (
     campaign_report_markdown,
     serialize_report,
 )
+from threetears.evals.analysis.campaign_readings import reading_name
 from threetears.evals.analysis.campaign_bundle import (
     CAMPAIGN_BUNDLE_SHAPE,
     CampaignBundle,
@@ -394,7 +395,8 @@ def test_every_line_the_aggregate_writes_keeps_the_style_rules(name: str) -> Non
     shape = SHAPES[name]()
     markdown = campaign_report_markdown(shape.page())
     labels = [arm.label for arm in shape.arms]
-    names = [*labels, *(f"▸ {label}" for label in labels), *{reading.name for reading in shape.readings.measures}]
+    measures = {reading_name(shape.bundles[reading.aspect], reading.measure) for reading in shape.readings.measures}
+    names = [*labels, *(f"▸ {label}" for label in labels), *measures]
     said = [line for line in markdown.splitlines() if "left off the chart" in line or "across aspects" in line]
     assert lint_page("\n\n".join(said), names=names) == []
     withheld = _priced_on_two(missing_on="tone").page()

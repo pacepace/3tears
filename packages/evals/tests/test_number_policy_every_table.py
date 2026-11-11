@@ -277,7 +277,6 @@ def _readings_only(**described: MetricDescriptor) -> ReportInput:
             arm=arm.variant_key,
             arm_label=arm.label or arm.variant_key,
             measure=name,
-            name=name,
             value=0.3,
             interval=(0.0, 0.7),
             cases=12,

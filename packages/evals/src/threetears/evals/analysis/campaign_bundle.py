@@ -452,9 +452,11 @@ def _aspects_like(like: str | None) -> str | None:
 
 def _campaign_digest(frame: Mapping[str, Any], *, like: str | None) -> str:
     """A campaign bundle frame's fingerprint in ``like``'s version: version 3 over its evidence without the campaign's
-    name, or, ``like`` a version 2 or 1 fingerprint, that version's digest with the name, as it was taken."""
-    evidence = _evidence_of(frame)
-    if like is None or like.startswith(_CAMPAIGN_FINGERPRINT_PREFIX):
+    name, or, ``like`` a version 2 or 1 fingerprint, that version's digest with the name, and each declared level's
+    display, as it was taken."""
+    current = like is None or like.startswith(_CAMPAIGN_FINGERPRINT_PREFIX)
+    evidence = _evidence_of(frame, levels=current)
+    if current:
         unnamed = {key: value for key, value in evidence.items() if key not in CAMPAIGN_PRESENTATION_FIELDS}
         return _CAMPAIGN_FINGERPRINT_PREFIX + identity_digest(unnamed)
     return fingerprint_digest(evidence, like=like)
@@ -472,7 +474,7 @@ def _as_this_shape(document: Mapping[str, Any], bundles: Sequence[AnalysisContex
     return {**held, "schema_version": CAMPAIGN_BUNDLE_SHAPE, "readings": readings}
 
 
-def _evidence_of(frame: Mapping[str, Any]) -> dict[str, Any]:
+def _evidence_of(frame: Mapping[str, Any], *, levels: bool) -> dict[str, Any]:
     """A campaign bundle's frame as its fingerprint reads it: at :data:`_EVIDENCE_SHAPE`, without the figures derived
     from its readings (:data:`_DERIVED_READINGS`), and without how a page prints each aspect and each arm
     (:data:`~threetears.evals.kernel.declaration.ASPECT_PRESENTATION_FIELDS`,
@@ -481,9 +483,18 @@ def _evidence_of(frame: Mapping[str, Any]) -> dict[str, Any]:
     The figures across aspects are read off the readings and the aspects' bundles the fingerprint already reads, so a
     bundle of this shape and one frozen at the shape before it fingerprint alike over the same evidence. A short name
     is presentation, as an aspect bundle's own is (left out of its fingerprint), and so is what a page calls a declared
-    lever (:data:`~threetears.evals.kernel.declaration.AXIS_PRESENTATION_FIELDS`), so naming an aspect, an arm or a lever leaves
-    every analysis and reporter case of the campaign reproducing. One naming none carries no key to drop. The campaign's
-    own name stays here: version 3 of :meth:`CampaignBundle.fingerprint` leaves it out, and earlier versions read it.
+    lever and each of its declared levels (:data:`~threetears.evals.kernel.declaration.AXIS_PRESENTATION_FIELDS`,
+    :data:`~threetears.evals.kernel.declaration.LEVEL_PRESENTATION_FIELDS`), so naming an aspect, an arm, a lever or a
+    level leaves every analysis and reporter case of the campaign reproducing. One naming none carries no key to drop. The campaign's
+    own name stays here: version 3 of :meth:`CampaignBundle.fingerprint` leaves it out, and earlier versions read it,
+    as they read each declared level's display (``levels`` False).
+
+    :param frame: The frame.
+    :ptype frame: Mapping[str, Any]
+    :param levels: Leave each declared level's display out: True for the current version.
+    :ptype levels: bool
+    :return: The frame's evidence.
+    :rtype: dict[str, Any]
     """
     frame = dict(frame)
     if frame.get("schema_version") == CAMPAIGN_BUNDLE_SHAPE:
@@ -498,7 +509,7 @@ def _evidence_of(frame: Mapping[str, Any]) -> dict[str, Any]:
     declaration = dict(declaration)
     if isinstance(declaration.get("aspects"), list):
         declaration["aspects"] = [
-            {**aspect, "design": unnamed_axes(aspect["design"])}
+            {**aspect, "design": unnamed_axes(aspect["design"], levels=levels)}
             if isinstance(aspect, Mapping) and isinstance(aspect.get("design"), Mapping)
             else aspect
             for aspect in _unpresented(declaration["aspects"], ASPECT_PRESENTATION_FIELDS)

@@ -153,6 +153,7 @@ from threetears.evals.analysis.report.words import (
     judged_heading,
     judged_name,
     one_figure_each,
+    trial_dimension,
     stratum_name,
     stratum_names,
     reading_verb,
@@ -3437,8 +3438,8 @@ _SAYS_CHECK = re.compile(r"\bcheck\b", re.IGNORECASE)
 def _trial_why(trial: TrialRow, check_names: Mapping[str, str], check_failures: Mapping[str, str]) -> str | None:
     """Which check or judged dimension failed a trial, or why it was lost, on one line; None for a passed trial. A
     goal check by its name in ``check_names`` (``AnalysisContextBundle.named_checks``), never its expression; any
-    other check by the value that failed it, as its pass rule words it (``check_failures``, by the check's reader
-    name: ``Never topped up is true``)."""
+    other check by the value that failed it, as its pass rule words it (``check_failures``, by the check's measure
+    key, which a trial's failed check holds: ``Never topped up is true``)."""
     if trial.state == "passed":
         return None
     if trial.state == "lost":
@@ -3547,10 +3548,10 @@ def _trial_blocks(
     statuses = arm_run_statuses(bundle)
     case_name = _case_namer(bundle)
     checks = bundle.named_checks()
-    # Each check that is no goal check, by the reader name a trial's failed check carries, worded at its failing value
+    # Each check that is no goal check, by the measure key a trial's failed check carries, worded at its failing value
     # as the pass rule words its passing one.
     failures = {
-        (descriptor.reader_name or name): check_held(name, descriptor, failed=True)
+        name: check_held(name, descriptor, failed=True)
         for name, descriptor in bundle.measure_catalog.items()
         if goal_check_of(name) is None and (name == MATCH_MEASURE or descriptor.is_check)
     }
@@ -3602,12 +3603,20 @@ def _trial_blocks(
                 why=why,
                 **_asked_and_world(trial.first_input),
                 excerpt=trial.excerpt,
-                # The trial's own record keeps the rate name; the page prints the check's name beside the expression.
+                # The trial's own record keeps the check's measure key; the page prints the check's name beside the
+                # expression: a goal check's as the aspect names it, any other's as the catalog does.
                 failed_checks=[
-                    check.model_copy(update={"name": checks[check.expression]}) if check.expression in checks else check
+                    check.model_copy(
+                        update={
+                            "name": checks[check.expression]
+                            if check.expression in checks
+                            else bundle.catalog_name(check.name)
+                        }
+                    )
                     for check in trial.failed_checks
                 ],
-                judge=list(trial.judge),
+                # And each judged dimension by its id; the page prints a reserved axis by its word.
+                judge=[entry.model_copy(update={"dim": trial_dimension(entry.dim)}) for entry in trial.judge],
                 error_words=trial.error_words,
                 result_id=trial.result_id,
                 open=position < _OPEN_TRIALS,
@@ -4131,7 +4140,12 @@ def _design_disclosures(
     if bundle.declared_crossing is not None:
         say("comparisons", bundle.declared_crossing.sentence)
         for state, lead in (("not_run", "Declared arms never run"), ("skipped_by_design", "Arms skipped by design")):
-            cells = [" × ".join(cell.levels.values()) for cell in bundle.declared_crossing.cells if cell.state == state]
+            # Each level by the name the declaration gives it, read here: the bundle keeps each by its content hash.
+            cells = [
+                " × ".join(bundle.level_name(axis, level) for axis, level in cell.levels.items())
+                for cell in bundle.declared_crossing.cells
+                if cell.state == state
+            ]
             if cells:
                 say("comparisons", f"{lead}: {'; '.join(cells)}.")
     for row in bundle.coverage:

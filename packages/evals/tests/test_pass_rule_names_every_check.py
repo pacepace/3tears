@@ -58,7 +58,8 @@ def _bundle() -> CampaignBundle:
     first = aspect.scoreboard[0].variant_key
     flipped = [trial.trial_id for trial in aspect.trials if trial.arm == first and trial.state == "passed"][1:]
     assert flipped, "the control: the first arm keeps passed trials to fail"
-    failed = TrialCheck(name=DESCRIPTOR.reader_name or CHECK, expression=f"{CHECK} is True")
+    # A bundle's trial holds the check by its measure's key (bundle shape 66); a page names it.
+    failed = TrialCheck(name=CHECK, expression=f"{CHECK} is True")
     trials = [
         trial.model_copy(update={"state": "failed", "cause": "check", "failed_checks": [failed]})
         if trial.trial_id in flipped

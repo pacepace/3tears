@@ -430,6 +430,7 @@ def _bar(aspect: str, key: str, label: str) -> BarStatus:
         value=0.1,
         interval=None,
         margin=None,
+        decision="missed",
     )
 
 
@@ -439,7 +440,6 @@ def _measure(aspect: str, key: str, label: str) -> MeasureReading:
         arm=key,
         arm_label=label,
         measure="passed",
-        name="pass rate",
         value=0.5,
         interval=None,
         cases=1,

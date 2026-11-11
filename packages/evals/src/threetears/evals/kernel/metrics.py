@@ -93,7 +93,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic import Field, model_validator
 
@@ -406,6 +406,13 @@ ENGINE_FAMILIES: Mapping[MetricFamily, MeasureFamily] = {
 }
 
 
+#: The fields of a measure's descriptor that say only how a page prints it: what a reader calls the measure
+#: (``reader_name``) and the phrase prose uses for it (``reader_prose``). An aspect bundle carries them in its measure
+#: catalog and leaves them out of its fingerprint, so naming or renaming a measure stales no analysis and moves no
+#: reporter case (owner ruling, 2026-11-11: names are presentation, never evidence).
+MEASURE_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"reader_name", "reader_prose"})
+
+
 class MetricDescriptor(EvalBaseModel):
     """What a single measure is, independent of any particular value of it."""
 
@@ -418,7 +425,8 @@ class MetricDescriptor(EvalBaseModel):
             "place of the key ('Output speed', not 'candidate_output_tokens_per_s'). REQUIRED of every measure a "
             "host registers (`MeasureRegistry` refuses one without it) and supplied by the engine for every core "
             "measure and every one it describes by construction. None only on a name nothing describes; a surface "
-            "then prints the key, which is all it has."
+            "then prints the key, which is all it has. Presentation only (`MEASURE_PRESENTATION_FIELDS`): no part of "
+            "any bundle's fingerprint, so renaming a measure stales no analysis."
         ),
     )
     data_type: MetricDataType | None = Field(
@@ -482,7 +490,8 @@ class MetricDescriptor(EvalBaseModel):
         default=None,
         description=(
             "The reader-facing sentence rendered prose prefers to the measure's key. None when the measure's "
-            "'description' already reads as that sentence, which rendered prose then uses."
+            "'description' already reads as that sentence, which rendered prose then uses. Presentation only "
+            "(`MEASURE_PRESENTATION_FIELDS`): no part of any bundle's fingerprint."
         ),
     )
     merit_axis: MeritAxis | None = Field(

@@ -12,8 +12,23 @@ So renaming a lever, by the name a campaign stores on its declared axis or the o
 bundle fingerprint, no evidence digest and no campaign bundle fingerprint, and the page, built now or rebuilt from a
 stored analysis, prints the name.
 
+The same holds for a measure and for a level:
+
+- a measure's ``reader_name`` and ``reader_prose`` sit in the measure catalog, left out of every fingerprint; a trial's
+  failed check holds the check's measure key and each judged dimension its id; a campaign's readings hold each measure
+  by its key, and each bar's decision for the reason a page words;
+- a level's declared ``display`` is left out of every fingerprint wherever the bundle carries the level (its variant
+  index, its coverage, its declared design and the campaign's declaration), a declared crossing's cell holds each level
+  by its content hash, and nothing the bundle orders is ordered by a declared name.
+
+A page rebuilt from a stored analysis prints the names it was frozen with, and a rename stales no analysis (owner
+ruling): the stored fingerprint still matches the evidence assembled under the new names.
+
 Mutations that turn this file red: a derived arm labelled with its levers' reader names; a page printing a derived
-arm's frozen label instead of naming its levers; a factor sentence stored in the bundle, or worded with lever ids.
+arm's frozen label instead of naming its levers; a factor sentence stored in the bundle, or worded with lever ids; a
+measure's reader name, or a level's declared display, read into any fingerprint; a trial's check, a reading's measure
+or a bar's reason frozen under a measure's reader name; a crossing cell frozen under its levels' names; a decision
+surface ordered by a declared level name; a stored page naming a measure or a level by the live declaration.
 """
 
 from __future__ import annotations
@@ -27,16 +42,26 @@ import pytest
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import evidence_digest
+from threetears.evals.analysis.bundle.trials import read_trial
+from threetears.evals.analysis.campaign_readings import reading_name
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaigns import set_campaign_control
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.words import printed_arm_labels
 from threetears.evals.analysis.service import analysis_report, assemble_campaign_bundle, campaign_report
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalCampaign
-from threetears.evals.kernel.host import EvalHost, HostProfile, SweepableRegistry
+from threetears.evals.kernel import MetricDescriptor
+from threetears.evals.kernel.host import EvalHost, HostProfile, MeasureRegistry, SweepableRegistry
+from threetears.evals.schema import IntervalScale, SweepableValue
 from threetears.evals.kernel.storage import EvalStorage
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from packages.evals.tests.factories import analysed_aspect, make_analysis, make_campaign, memory_storage
+from packages.evals.tests.factories import (
+    analysed_aspect,
+    make_analysis,
+    make_campaign,
+    make_eval_result,
+    memory_storage,
+)
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_aspect_design, toyhost_campaign_of_one_aspect
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_SCOPE,
@@ -319,3 +344,189 @@ def test_the_factor_sentences_name_each_lever_by_its_reader_name_and_move_no_fin
         # Never by its id, as the bundle worded these before names left the evidence.
         assert "chunk_tokens and retriever_top_k co-vary" not in page
         assert "chunk_tokens, extraction_schema" not in page
+
+
+# --- a measure's reader name is presentation -------------------------------------------------------------------------
+
+#: The measure renamed, the name its host declares for it, and the one it is renamed to.
+_MEASURE, _OLD_MEASURE_NAME, _NEW_MEASURE_NAME = "field_accuracy", "Field accuracy", "Exact fields"
+
+
+def _measure_renaming(profile: HostProfile, measure: str, name: str) -> HostProfile:
+    """``profile`` with its host declaring ``name`` (and a phrase of its own) for ``measure``, and nothing else moved."""
+    registry = profile.measures
+    declared = [described for each in registry.names if (described := registry.get(each)) is not None]
+    renamed = [
+        descriptor.model_copy(update={"reader_name": name, "reader_prose": f"how {name.lower()} read"})
+        if descriptor.name == measure
+        else descriptor
+        for descriptor in declared
+    ]
+    return replace(profile, measures=MeasureRegistry(renamed, families=registry.families))
+
+
+def _stored(host: EvalHost, campaign: EvalCampaign, bundle: CampaignBundle) -> str:
+    """The id of an analysis frozen over ``bundle``, stored in ``host``'s store."""
+    analysis = make_analysis(
+        campaign_id=campaign.id,
+        scope_id=campaign.scope_id,
+        behavior=bundle.behavior,
+        aspects=[analysed_aspect(aspect) for aspect in bundle.aspects],
+        campaign_bundle=bundle.frame(),
+        design_snapshot=CampaignDeclaration.of(campaign),
+    )
+    host.storage.save_analysis(analysis)
+    return analysis.id
+
+
+def test_renaming_a_measure_moves_no_fingerprint_or_digest_and_the_page_prints_the_new_name() -> None:
+    host, campaign = _armed_campaign()
+    before = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+    renamed = replace(host, profile=_measure_renaming(host.profile, _MEASURE, _NEW_MEASURE_NAME))
+
+    after = assemble_campaign_bundle(renamed, campaign.id, campaign.scope_id)
+
+    (aspect,) = after.aspects
+    assert aspect.measure_catalog[_MEASURE].reader_name == _NEW_MEASURE_NAME, "the control: the catalog moved"
+    assert before.aspects[0].measure_catalog[_MEASURE].reader_name == _OLD_MEASURE_NAME
+    assert _identities(after) == _identities(before)
+    # The readings hold the measure by its key and each bar's decision, never a name or a sentence naming one.
+    readings = after.readings.model_dump()
+    assert all("name" not in reading for reading in readings["measures"])
+    assert all("reason" not in bar for bar in readings["bars"])
+    assert {bar.measure for bar in after.readings.bars} >= {_MEASURE}
+    assert reading_name(aspect, _MEASURE) == _NEW_MEASURE_NAME
+    page = campaign_report_markdown(campaign_report(renamed, campaign.id, campaign.scope_id))
+    assert f"| {_NEW_MEASURE_NAME} |" in page
+    assert f"| {_OLD_MEASURE_NAME} |" not in page
+
+
+def test_a_trial_holds_its_failed_check_by_its_measure_key_whatever_the_measure_is_called() -> None:
+    check = MetricDescriptor(
+        name="never_topped_up",
+        data_type="boolean",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="end_to_end",
+        description="Whether the candidate never topped the customer up.",
+        reader_name="Never topped up",
+        higher_is_better=False,
+    )
+    failing = make_eval_result(host_measures={check.name: True})
+
+    held = [
+        read_trial(failing, rubric_threshold=3, catalog={check.name: described}).failed_checks
+        for described in (check, check.model_copy(update={"reader_name": "Left the balance alone"}))
+    ]
+
+    assert held[0] == held[1]
+    assert [failed.name for failed in held[0]] == [check.name]
+
+
+def test_a_page_rebuilt_from_a_stored_analysis_keeps_the_measure_name_it_was_frozen_with() -> None:
+    host, campaign = _armed_campaign()
+    frozen = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+    analysis_id = _stored(host, campaign, frozen)
+    renamed = replace(host, profile=_measure_renaming(host.profile, _MEASURE, _NEW_MEASURE_NAME))
+
+    fresh = assemble_campaign_bundle(renamed, campaign.id, campaign.scope_id)
+    page = campaign_report_markdown(analysis_report(host.storage, analysis_id, campaign.scope_id))
+
+    # The rename stales nothing: the evidence the analysis was frozen over fingerprints as it does now.
+    assert fresh.fingerprint() == frozen.fingerprint()
+    # And its page keeps the name it was written with until it is regenerated.
+    assert f"| {_OLD_MEASURE_NAME} |" in page
+    assert _NEW_MEASURE_NAME not in page
+
+
+# --- a level's declared display is presentation ----------------------------------------------------------------------
+
+#: A level the design declares and no run sat at: the page names it in the coverage it reads off the declaration.
+_UNRUN = 2048
+
+
+def _with_unrun_level(host: EvalHost, campaign: EvalCampaign, *, names: Mapping[int, str] | None = None) -> None:
+    """Store ``campaign`` with its chunk axis declaring a third level no run sat at, each level named as ``names``
+    says (its interval's own display where it names none)."""
+    names = names or {}
+    aspects = []
+    for aspect in campaign.aspects:
+        assert aspect.design is not None
+        axes = []
+        for axis in aspect.design.axes:
+            if axis.axis_id != "chunk_tokens":
+                axes.append(axis)
+                continue
+            values = [
+                SweepableValue.of(level, scale=IntervalScale(value=level, unit="tok"), keep_raw=True)
+                for level in (256, 1024, _UNRUN)
+            ]
+            named = [
+                value.model_copy(update={"display": names[int(value.raw)]}) if int(value.raw) in names else value
+                for value in values
+            ]
+            axes.append(axis.model_copy(update={"values": named}))
+        aspects.append(aspect.model_copy(update={"design": aspect.design.model_copy(update={"axes": axes})}))
+    host.storage.save_campaign(campaign.model_copy(update={"aspects": aspects}))
+
+
+#: What the campaign renames its levels to.
+_LEVEL_NAMES = {256: "narrow chunks", 1024: "wide chunks", _UNRUN: "widest chunks"}
+
+
+def test_renaming_a_level_moves_no_fingerprint_or_digest_and_the_page_prints_the_new_name() -> None:
+    host, campaign = _armed_campaign()
+    _with_unrun_level(host, campaign)
+    before = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+    _with_unrun_level(host, campaign, names=_LEVEL_NAMES)
+
+    after = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+
+    (aspect,) = after.aspects
+    assert {entry.levers["chunk_tokens"].display for entry in aspect.variant_index} == {"narrow chunks", "wide chunks"}
+    assert {entry.levers["chunk_tokens"].display for entry in before.aspects[0].variant_index} == {"256tok", "1024tok"}
+    assert _identities(after) == _identities(before)
+    # A derived arm is labelled by what its runs recorded, never by a name the declaration gives a level.
+    assert [arm.label for arm in after.arms] == [arm.label for arm in before.arms]
+    # The decision surface is ordered as it was, whatever the levels are called.
+    assert [cell.variant_key for cell in aspect.cell_measures] == [
+        cell.variant_key for cell in before.aspects[0].cell_measures
+    ]
+    page = campaign_report_markdown(campaign_report(host, campaign.id, campaign.scope_id))
+    assert "never run: widest chunks." in page
+    assert "2048tok" not in page
+
+
+def test_a_declared_crossing_holds_each_level_by_its_content_hash_and_a_page_names_it() -> None:
+    host, campaign = _armed_campaign()
+    _with_unrun_level(host, campaign, names=_LEVEL_NAMES)
+    stored = host.storage.load_campaign(campaign.id, campaign.scope_id)
+    assert stored is not None and stored.aspects[0].design is not None
+    (aspect,) = stored.aspects
+    crossed = aspect.model_copy(update={"design": aspect.design.model_copy(update={"crossing": "full"})})
+    host.storage.save_campaign(stored.model_copy(update={"aspects": [crossed]}))
+
+    (bundle,) = assemble_campaign_bundle(host, campaign.id, campaign.scope_id).aspects
+
+    assert bundle.declared_crossing is not None and bundle.declared is not None
+    declared = {value.content_hash for axis in bundle.declared.design.axes for value in axis.values}
+    assert all(set(cell.levels.values()) <= declared for cell in bundle.declared_crossing.cells)
+    named = {
+        bundle.level_name(axis, level) for cell in bundle.declared_crossing.cells for axis, level in cell.levels.items()
+    }
+    assert {"narrow chunks", "wide chunks", "widest chunks"} <= named
+
+
+def test_a_page_rebuilt_from_a_stored_analysis_keeps_the_level_names_it_was_frozen_with() -> None:
+    host, campaign = _armed_campaign()
+    _with_unrun_level(host, campaign)
+    frozen = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+    analysis_id = _stored(host, campaign, frozen)
+    _with_unrun_level(host, campaign, names=_LEVEL_NAMES)
+
+    fresh = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+    page = campaign_report_markdown(analysis_report(host.storage, analysis_id, campaign.scope_id))
+
+    assert fresh.fingerprint() == frozen.fingerprint()
+    assert "never run: 2048tok." in page
+    assert "widest chunks" not in page

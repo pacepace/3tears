@@ -10,7 +10,7 @@ imports none of them.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Final, Literal
@@ -59,6 +59,7 @@ from threetears.evals.kernel.declaration import (
     ARM_PRESENTATION_FIELDS,
     ASPECT_PRESENTATION_FIELDS,
     AXIS_PRESENTATION_FIELDS,
+    LEVEL_PRESENTATION_FIELDS,
     RateDrop,
 )
 from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
@@ -68,6 +69,7 @@ from threetears.evals.schema.hashing import canonical_digest, identity_digest
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.values import PooledProductionFooting, ProductionFooting
 from threetears.evals.kernel.metrics import (
+    MEASURE_PRESENTATION_FIELDS,
     AttributionScope,
     goal_check_of,
     MeasureScale,
@@ -1314,7 +1316,13 @@ class RunSummary(EvalDocumentModel):
 class DeclaredLevelCoverage(EvalDocumentModel):
     """Whether one level the campaign DECLARED for an axis was run — the declaration's delta, by name."""
 
-    display: str = Field(min_length=1, description="The declared level, as the declaration renders it.")
+    display: str = Field(
+        min_length=1,
+        description=(
+            "The declared level, as the declaration renders it. Presentation only (`LEVEL_PRESENTATION_FIELDS`): no "
+            "part of the bundle's fingerprint, which reads the level by its `content_hash`."
+        ),
+    )
     content_hash: str = Field(min_length=1, description="The declared level's identity, which runs are joined on.")
     state: Literal["ran", "not_run", "undetermined"] = Field(
         description=(
@@ -1331,7 +1339,11 @@ class DeclaredCellCoverage(EvalDocumentModel):
     """One combination of declared levels (a cell), and whether it ran, was skipped on purpose, or is missing."""
 
     levels: dict[str, str] = Field(
-        description="Each declared axis's level in this cell, as the declaration renders it."
+        description=(
+            "Each declared axis's level in this cell, by its content hash: the level's identity, never how the "
+            "declaration renders it, which a page reads off the declared design when it is rendered "
+            "(`AnalysisContextBundle.level_name`), so renaming a level moves nothing here."
+        )
     )
     state: Literal["ran", "not_run", "skipped_by_design", "undetermined"] = Field(
         description=(
@@ -2260,15 +2272,17 @@ ASPECT_BUNDLE_SHAPE = 59
 _READ_AS_STORED: Final[Mapping[int, str]] = {}
 
 #: The first bundle shape whose evidence carries no name (owner ruling, 2026-11-11): every bundle of an earlier shape
-#: holds sentences worded with lever ids, and its campaign's derived arms labelled with lever names, that a page now
-#: words and names at render time, so none is read as stored, and a stored analysis frozen over one is regenerated once.
+#: holds sentences worded with lever ids, its campaign's derived arms labelled with lever names, its trials' checks and
+#: its readings' measures named by their reader names, and its declared crossing's cells by their levels' names, that a
+#: page now words and names at render time, so none is read as stored, and a stored analysis frozen over one is
+#: regenerated once.
 _NAMES_LEFT_THE_EVIDENCE: Final[int] = 66
 
 #: Why a bundle frozen before :data:`_NAMES_LEFT_THE_EVIDENCE` is refused, in a reader's words.
 _FROZEN_WITH_NAMES = (
     "{what} holds an evidence bundle of shape {shape}, frozen before names left the evidence: it carries arm labels and "
     "sentences worded when it was frozen, and this build (shape {current}) freezes ids and facts only and names every "
-    "lever and arm when a page is rendered, so it cannot read it"
+    "measure, lever, level and arm when a page is rendered, so it cannot read it"
 )
 
 #: The one line a page read from evidence of an earlier shape this build reads as stored says first, and the analysis
@@ -2556,16 +2570,32 @@ TrialState = Literal["passed", "failed", "lost"]
 
 
 class TrialCheck(EvalDocumentModel):
-    """A check a trial failed: its reader name, and the expression it evaluates."""
+    """A check a trial failed: its measure, and the expression it evaluates.
 
-    name: str = Field(min_length=1, description="The check as a reader names it.")
+    In the bundle, by id: ``name`` is the check's measure key (``MetricDescriptor.name``), never what a reader calls it,
+    so renaming a measure moves nothing here; a page names it when it is rendered (a goal check by its declared name, any
+    other by the catalog's reader name), and the page's own trial block carries that name.
+    """
+
+    name: str = Field(
+        min_length=1,
+        description=(
+            "The check: in a bundle, its measure's key; on a page's trial block, the name the page prints for it."
+        ),
+    )
     expression: str = Field(min_length=1, description="What it evaluates, as written.")
 
 
 class TrialJudgement(EvalDocumentModel):
     """What the judge said of one dimension on one trial."""
 
-    dim: str = Field(min_length=1, description="The judged dimension, by its reader name.")
+    dim: str = Field(
+        min_length=1,
+        description=(
+            "The judged dimension: in a bundle, by its id (`RubricDim.name`, `__outcome__`); on a page's trial block, "
+            "by the name the page prints for it (a reserved axis by its word, `outcome`)."
+        ),
+    )
     criterion: str | None = Field(
         default=None, description="The rubric criterion the judge was asked; None when the template is not to hand."
     )
@@ -2595,7 +2625,9 @@ class TrialRow(EvalDocumentModel):
         description="Why it failed (`FailCause`) or was lost (`LossCause`); None for a passed trial.",
     )
     failed_checks: list[TrialCheck] = Field(default_factory=list, description="Each check it failed.")
-    judged: dict[str, int] = Field(default_factory=dict, description="Each judged dimension's score, by reader name.")
+    judged: dict[str, int] = Field(
+        default_factory=dict, description="Each judged dimension's score, by its id (`RubricDim.name`, `__outcome__`)."
+    )
     judge: list[TrialJudgement] = Field(
         default_factory=list, description="What the judge said, dimension by dimension."
     )
@@ -2886,11 +2918,18 @@ class AnalysisContextBundle(EvalDocumentModel):
     # ids and structured facts only, and every name is applied when a page is rendered: `aliased_factors[].sentence`
     # and `factor_pairs.completeness` are gone, a page wording each group and the pair scan from their facts with every
     # factor by its reader name, and a campaign bundle's derived arm is labelled by its levers' ids read as words, a
-    # page printing it with their stored names. Nothing read moves, but no bundle of an earlier shape is read as stored:
-    # every stored analysis is regenerated once (`_NAMES_LEFT_THE_EVIDENCE`).
+    # page printing it with their stored names. A trial's failed check holds its measure's key and each judged
+    # dimension its id (`trials[].failed_checks[].name`, `trials[].judge[].dim`, `trials[].judged`), a declared
+    # crossing's cell each level's content hash (`declared_crossing.cells[].levels`), and a campaign bundle's readings
+    # hold each measure by its key alone (`readings.measures[].name` is gone) and each bar's decision for its reason
+    # (`readings.bars[].reason` became `.decision`), a page naming each when it is rendered. Nothing read moves, but no
+    # bundle of an earlier shape is read as stored: every stored analysis is regenerated once
+    # (`_NAMES_LEFT_THE_EVIDENCE`).
     # Unmoved by declared names: `short_name`, `goal_check_names`, `stratum_names` and `lever_names` are written only when declared and
-    # are no part of the fingerprint, and neither is a declared axis's `reader_name` (`AXIS_PRESENTATION_FIELDS`), so a
-    # bundle naming nothing is this shape byte for byte and naming or renaming a lever moves no fingerprint.
+    # are no part of the fingerprint, and neither is a declared axis's `reader_name` (`AXIS_PRESENTATION_FIELDS`), a
+    # catalogued measure's `reader_name` and `reader_prose` (`MEASURE_PRESENTATION_FIELDS`), nor any level's `display`
+    # in the variant index, the coverage or the declared design (`LEVEL_PRESENTATION_FIELDS`): a bundle naming nothing
+    # is this shape byte for byte, and naming or renaming a measure, a lever or a level moves no fingerprint.
     # Unmoved by the run apparatus and the unanswered calls: each run summary's `apparatus` and each arm's
     # `scoreboard[].unanswered` are written only when the run recorded one or a usage row counted them, so a bundle over
     # runs that recorded neither is this shape byte for byte and its fingerprint stays put. A run recording either moves
@@ -3608,7 +3647,9 @@ class AnalysisContextBundle(EvalDocumentModel):
             "resolved surface as a lever and that surface's movement is explained by the swept members "
             "alone, an entry names the surface in `folded` and the members it swept in `swept`: name and "
             "compare the arm by `swept`, never by the folded surface's hash, which is the same change seen "
-            "twice."
+            "twice. Each level's `display` is the name the aspect's declaration gives it where it gives one, else the "
+            "host's: presentation only (`LEVEL_PRESENTATION_FIELDS`), no part of the fingerprint, which reads each "
+            "level by its content hash, so naming or renaming a level stales no analysis."
         ),
     )
     refused_merges: list[RefusedMerge] = Field(
@@ -3659,7 +3700,10 @@ class AnalysisContextBundle(EvalDocumentModel):
             "than repeated on every run's summary. Covers every name in a MeasureCollection here (the run "
             "summaries', the telemetry rollup's and each cell's in cell_measures), which is exactly the "
             "RANKING surface. It does not cover the frontier lens's own fields, and it deliberately omits "
-            "every judged dimension: absence from this catalog means 'not rankable', never 'not measured' — see judged_measures."
+            "every judged dimension: absence from this catalog means 'not rankable', never 'not measured' — see judged_measures. "
+            "Each descriptor's `reader_name` and `reader_prose` are presentation only (`MEASURE_PRESENTATION_FIELDS`): "
+            "no part of the fingerprint, so renaming a measure stales no analysis, and a page built from a stored "
+            "analysis prints the names it was frozen with."
         ),
     )
     judged_measures: list[JudgedMeasure] = Field(
@@ -3790,6 +3834,40 @@ class AnalysisContextBundle(EvalDocumentModel):
         ]
         return check_names(read, self.goal_check_names)
 
+    def catalog_name(self, measure: str) -> str:
+        """What the measure catalog calls a measure: its reader name, else its key. What a trial's failed check is
+        printed as where it is no goal check a page names (a :class:`TrialCheck` holds the key), read at render time
+        from the catalog the bundle froze, never from fingerprinted evidence.
+
+        :param measure: The measure's key.
+        :ptype measure: str
+        :return: Its reader name, else the key.
+        :rtype: str
+        """
+        descriptor = self.measure_catalog.get(measure)
+        return (descriptor.reader_name if descriptor is not None else None) or measure
+
+    def level_name(self, axis_id: str, content_hash: str) -> str:
+        """What a page calls a declared level: its display as the aspect's declared design renders it, the first one
+        declaring the hash on the axis, as the variant index names it (``_declared_level_names``). A name read at
+        render time from the declaration the bundle froze, never from fingerprinted evidence, so a stored analysis
+        prints the names it was frozen with and renaming a level moves no fingerprint.
+
+        :param axis_id: The declared axis.
+        :ptype axis_id: str
+        :param content_hash: The level's identity.
+        :ptype content_hash: str
+        :return: The level's declared display; the hash's first twelve characters where the design declares no such
+            level, which a bundle holding the level never lacks.
+        :rtype: str
+        """
+        for axis in self.declared.design.axes if self.declared is not None else []:
+            if axis.axis_id == axis_id:
+                for value in axis.values:
+                    if value.content_hash == content_hash:
+                        return value.display
+        return content_hash[:12]
+
     def check_name(self, measure: str) -> str | None:
         """What a page calls the goal check ``measure`` reads (:meth:`named_checks`), for
         :func:`~threetears.evals.analysis.style.measure_name`'s ``declared``.
@@ -3885,9 +3963,18 @@ def fingerprint_digest(payload: Any, *, like: str | None = None) -> str:
 
 def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> str:
     """A bundle document's fingerprint: the digest of every field but what built it (``package_version``), how a page
-    prints it (:data:`_NOT_EVIDENCE`, and the declared control's
-    :data:`~threetears.evals.kernel.declaration.ARM_PRESENTATION_FIELDS`), and how each arm's cost was priced
+    prints it (:data:`_NOT_EVIDENCE`, the declared control's
+    :data:`~threetears.evals.kernel.declaration.ARM_PRESENTATION_FIELDS`, each catalogued measure's
+    :data:`~threetears.evals.kernel.metrics.MEASURE_PRESENTATION_FIELDS` and each level's
+    :data:`~threetears.evals.kernel.declaration.LEVEL_PRESENTATION_FIELDS`), and how each arm's cost was priced
     (:data:`_NOT_ARM_EVIDENCE`).
+
+    **Names are presentation, never evidence** (owner ruling, 2026-11-11). What a reader calls a measure, a lever or a
+    level is carried where a page reads it and left out here, so naming or renaming one moves no fingerprint and stales
+    no analysis; a page built from a stored analysis prints the names it was frozen with until it is regenerated. A
+    level is identified by its ``content_hash``, a measure by its key. A version 1 (unprefixed) fingerprint is computed
+    as it was taken, every measure's and level's name in it; a version 2 one taken before bundle shape 66 read them
+    too, and is never compared, since no bundle of an earlier shape is read.
 
     **Two bundles may share a fingerprint with different pricing** (owner ruling, 2026-10-28: "I recognize the
     implications, but it's ok"). The same runs priced by another source, or served by another provider, fingerprint
@@ -3908,46 +3995,104 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
     evidence = {key: value for key, value in document.items() if key not in _NOT_EVIDENCE}
     if isinstance(scoreboard := evidence.get("scoreboard"), list):
         # How an arm's cost was priced (_NOT_ARM_EVIDENCE) is no part of what the bundle read.
-        evidence["scoreboard"] = [
-            {key: value for key, value in row.items() if key not in _NOT_ARM_EVIDENCE}
-            if isinstance(row, Mapping)
+        evidence["scoreboard"] = _unpresented(scoreboard, _NOT_ARM_EVIDENCE)
+    # A version 1 fingerprint read every measure's and level's name: computed as it was taken.
+    unnamed = like is None or like.startswith(FINGERPRINT_PREFIX)
+    if unnamed and isinstance(catalog := evidence.get("measure_catalog"), Mapping):
+        # What a reader calls a measure (MEASURE_PRESENTATION_FIELDS) is no part of what the bundle read: its key is.
+        evidence["measure_catalog"] = {
+            name: _unpresented([descriptor], MEASURE_PRESENTATION_FIELDS)[0] for name, descriptor in catalog.items()
+        }
+    if unnamed and isinstance(index := evidence.get("variant_index"), list):
+        # How a page shows each level (LEVEL_PRESENTATION_FIELDS), the host's display or the name the declaration gives
+        # it, is no part of what the bundle read: its content hash is, and the variant key digests nothing else.
+        evidence["variant_index"] = [
+            {
+                **entry,
+                **{
+                    field: _unnamed_levels(entry[field])
+                    for field in ("levers", "swept")
+                    if isinstance(entry.get(field), Mapping)
+                },
+            }
+            if isinstance(entry, Mapping)
+            else entry
+            for entry in index
+        ]
+    if unnamed and isinstance(coverage := evidence.get("coverage"), list):
+        # A declared level's coverage is read by its content hash; how the declaration renders it is presentation.
+        evidence["coverage"] = [
+            {**row, "declared_levels": _unpresented(row["declared_levels"], LEVEL_PRESENTATION_FIELDS)}
+            if isinstance(row, Mapping) and isinstance(row.get("declared_levels"), list)
             else row
-            for row in scoreboard
+            for row in coverage
         ]
     declared = evidence.get("declared")
     if isinstance(declared, Mapping) and isinstance(control := declared.get("control"), Mapping):
         # How a page prints the control (ARM_PRESENTATION_FIELDS) is no part of what the bundle read; a control naming
         # none carries no key to drop.
-        unnamed = {key: value for key, value in control.items() if key not in ARM_PRESENTATION_FIELDS}
-        evidence["declared"] = declared = {**declared, "control": unnamed}
+        control = {key: value for key, value in control.items() if key not in ARM_PRESENTATION_FIELDS}
+        evidence["declared"] = declared = {**declared, "control": control}
     if isinstance(declared, Mapping) and isinstance(design := declared.get("design"), Mapping):
-        # What a page calls a declared lever (AXIS_PRESENTATION_FIELDS) is no part of what the bundle read either.
-        evidence["declared"] = {**declared, "design": unnamed_axes(design)}
+        # What a page calls a declared lever and each of its levels (AXIS_PRESENTATION_FIELDS,
+        # LEVEL_PRESENTATION_FIELDS) is no part of what the bundle read either.
+        evidence["declared"] = {**declared, "design": unnamed_axes(design, levels=unnamed)}
     return fingerprint_digest(evidence, like=like)
 
 
-def unnamed_axes(design: Mapping[str, Any]) -> dict[str, Any]:
+def _unpresented(items: Sequence[Any], fields: frozenset[str]) -> list[Any]:
+    """``items`` with each mapping's ``fields`` left out; anything else as it is."""
+    return [
+        {key: value for key, value in item.items() if key not in fields} if isinstance(item, Mapping) else item
+        for item in items
+    ]
+
+
+def _unnamed_levels(levels: Mapping[str, Any]) -> dict[str, Any]:
+    """A stored lever map (lever id to level) as a fingerprint reads it: each level without how a page shows it
+    (:data:`~threetears.evals.kernel.declaration.LEVEL_PRESENTATION_FIELDS`), by its content hash alone, so naming or
+    renaming a level moves no bundle's or campaign bundle's fingerprint.
+
+    :param levels: Lever id to the level, as its stored dict.
+    :ptype levels: Mapping[str, Any]
+    :return: The map, each level unnamed.
+    :rtype: dict[str, Any]
+    """
+    return {
+        lever: {key: value for key, value in level.items() if key not in LEVEL_PRESENTATION_FIELDS}
+        if isinstance(level, Mapping)
+        else level
+        for lever, level in levels.items()
+    }
+
+
+def unnamed_axes(design: Mapping[str, Any], *, levels: bool = True) -> dict[str, Any]:
     """A stored design as a fingerprint reads it: each declared axis without how a page names its lever
-    (:data:`~threetears.evals.kernel.declaration.AXIS_PRESENTATION_FIELDS`), so naming or renaming a lever moves no
-    bundle's or campaign bundle's fingerprint. A design whose axes carry no name is returned as it is.
+    (:data:`~threetears.evals.kernel.declaration.AXIS_PRESENTATION_FIELDS`) and each of its levels without how a page
+    shows it (:data:`~threetears.evals.kernel.declaration.LEVEL_PRESENTATION_FIELDS`), so naming or renaming a lever
+    or a level moves no bundle's or campaign bundle's fingerprint. A design whose axes carry no name is returned as
+    it is.
 
     :param design: An aspect's design, as its stored dict.
     :ptype design: Mapping[str, Any]
-    :return: The design, its axes unnamed.
+    :param levels: Leave each level's display out too; False for a fingerprint of a version taken with them in it.
+    :ptype levels: bool
+    :return: The design, its axes and their levels unnamed.
     :rtype: dict[str, Any]
     """
     axes = design.get("axes")
     if not isinstance(axes, list):
         return dict(design)
-    return {
-        **design,
-        "axes": [
-            {key: value for key, value in axis.items() if key not in AXIS_PRESENTATION_FIELDS}
-            if isinstance(axis, Mapping)
-            else axis
-            for axis in axes
-        ],
-    }
+    unnamed = []
+    for axis in axes:
+        if not isinstance(axis, Mapping):
+            unnamed.append(axis)
+            continue
+        held = {key: value for key, value in axis.items() if key not in AXIS_PRESENTATION_FIELDS}
+        if levels and isinstance(values := held.get("values"), list):
+            held["values"] = _unpresented(values, LEVEL_PRESENTATION_FIELDS)
+        unnamed.append(held)
+    return {**design, "axes": unnamed}
 
 
 class BundleInspection(EvalDocumentModel):

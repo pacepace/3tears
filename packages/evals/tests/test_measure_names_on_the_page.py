@@ -33,6 +33,7 @@ from threetears.evals.analysis import (
     report_html,
     report_markdown,
 )
+from threetears.evals.analysis.campaign_readings import BarStatus, MeasureReading
 from threetears.evals.analysis.report.md_parts import code_span
 from threetears.evals.analysis.report.html_parts import check_header_links, grid_html
 from threetears.evals.analysis.report.model import (
@@ -218,11 +219,16 @@ def test_a_lead_s_name_links_its_glossary_entry_and_no_attribute_carries_the_exp
     assert not [value for value in re.findall(r'="([^"]*)"', said) if "call_count(" in html.unescape(value)]
 
 
-def test_the_readings_a_campaign_freezes_keep_the_check_s_expression() -> None:
-    # The readings are fingerprinted with the campaign's bundle, so no name a page gives a check moves them.
+def test_the_readings_a_campaign_freezes_keep_the_check_by_its_measure_and_no_name() -> None:
+    # The readings are fingerprinted with the campaign's bundle, so they hold every measure, a check's among them, by
+    # its key and no name at all, and each bar by its decision, never a reason naming its measure: a page names each
+    # when it is rendered (bundle shape 66).
+    assert "name" not in MeasureReading.model_fields and "measure" in MeasureReading.model_fields
+    assert "reason" not in BarStatus.model_fields and "decision" in BarStatus.model_fields
     shape = _shape()
-    named = {reading.name for reading in shape.readings.measures if reading.measure == goal_check_measure(LONG)}
-    assert named <= {f"`{LONG}`"}
+    readings = shape.readings.model_dump()
+    assert all("name" not in reading for reading in readings["measures"])
+    assert all("reason" not in bar for bar in readings["bars"])
 
 
 @pytest.mark.parametrize(

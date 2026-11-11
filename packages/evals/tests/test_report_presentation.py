@@ -712,7 +712,8 @@ async def test_a_failed_check_reads_as_its_name_in_the_trials_table_its_expressi
     trials[first] = trials[first].model_copy(
         update={
             "cause": "check",
-            "failed_checks": [TrialCheck(name=f"Pass rate of {expression}", expression=expression)],
+            # A bundle's trial holds the check by its measure's key, never a name (bundle shape 66).
+            "failed_checks": [TrialCheck(name=goal_check_measure(expression), expression=expression)],
         }
     )
     # A goal check a trial fails is one the aspect reads: its catalog describes it.
@@ -748,13 +749,13 @@ async def test_what_a_trial_quotes_leaves_the_document_s_structure_intact(g2_rul
     first = next(index for index, trial in enumerate(trials) if trial.state == "failed")
     trials[first] = trials[first].model_copy(
         update={
-            "failed_checks": [TrialCheck(name="the *label* check", expression=expression)],
+            "failed_checks": [TrialCheck(name=goal_check_measure(expression), expression=expression)],
             "judge": [
                 TrialJudgement(dim="tone", criterion="Is it <b>kind</b>?", score=1, scale="ordinal", reason=reason)
             ],
         }
     )
-    # The name reaches the page as its template declares it: a trial's stored name gives way to the aspect's.
+    # The name reaches the page as its template declares it: a trial holds the check's key, and the page names it.
     named = coded.bundle.model_copy(update={"trials": trials, "goal_check_names": {expression: "the *label* check"}})
     report = build_code_only_report(named, assembled_at="2026-10-14T00:00Z")
     markdown = report_markdown(report)

@@ -36,6 +36,8 @@ from threetears.evals.analysis import (
     get_campaign,
 )
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.campaign_readings import BarStatus
+from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.doc_analysis import aspect_analysis
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.service import analysis_report
@@ -493,6 +495,13 @@ async def test_two_aspects_that_regress_and_improve_are_both_in_the_scorecard_th
     assert markdown.index(f"# {page.title}") < markdown.index("## Scorecard") < markdown.index("**By aspect**")
 
 
+def _said(page: CampaignReport, bar: BarStatus) -> str:
+    """Why an arm misses a bar, as the page words it: the readings hold the bar's measure by its key, and the page names
+    it as its aspect's page does."""
+    (fold,) = [fold for fold in page.aspects if fold.aspect == bar.aspect]
+    return bar.reason(measure_name_of(fold.report.bundle, bar.measure))
+
+
 def _record(held: Store, two: EvalCampaign, **call: Any) -> Any:
     return off_loop(campaign_record, held.host, two.id, SCOPE, called_by="brooks", **call)
 
@@ -519,7 +528,7 @@ async def test_a_call_on_the_candidate_is_refused_until_it_overrides_its_broken_
     first = _first_screen(off_loop(campaign_report, held.host, two.id, SCOPE))
     assert f"Called: adopt {candidate.arm_label}, by brooks on " in first
     assert "The call overrides a broken floor: no pass rate drops by more than 10 points on billing." in first
-    assert f"The call overrides a missed bar on tone: {bar.reason}." in first
+    assert f"The call overrides a missed bar on tone: {_said(page, bar)}." in first
 
 
 async def test_a_call_naming_a_warning_its_arm_did_not_raise_or_an_arm_the_campaign_lacks_is_refused() -> None:
@@ -835,7 +844,8 @@ async def test_a_control_stored_under_an_older_identity_predicate_is_kept_and_it
     source = off_loop(_stored_v15, held, "billing", asked_at=DECLARED_AT, bars=[tight], stale_control=True)
     campaign = off_loop(get_campaign, held.host.storage, source, SCOPE)
     assert campaign.control is not None and campaign.control.identity_version < IDENTITY_VERSION
-    readings = off_loop(campaign_report, held.host, source, SCOPE).readings
+    page = off_loop(campaign_report, held.host, source, SCOPE)
+    readings = page.readings
     stale, rekeyed = campaign.control.variant_key, compute_variant_key(campaign.control.levers or {})
     assert rekeyed != stale
     # The bundle reads the control's runs under the key this build stamps, never the one stored.
@@ -854,7 +864,7 @@ async def test_a_control_stored_under_an_older_identity_predicate_is_kept_and_it
     assert recorded.call.variant_key == campaign.control.variant_key
     first = _first_screen(off_loop(campaign_report, held.host, source, SCOPE))
     assert "Called: keep control, by brooks on " in first
-    assert f"The call overrides a missed bar on billing: {bar.reason}." in first
+    assert f"The call overrides a missed bar on billing: {_said(page, bar)}." in first
 
 
 async def test_a_choice_s_call_on_an_arm_shown_behind_is_recorded_and_the_page_warns_of_the_pair() -> None:

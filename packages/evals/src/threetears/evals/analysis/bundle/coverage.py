@@ -336,7 +336,8 @@ def _declared_crossing(
             state = "undetermined" if unestablished else "not_run"
         cells.append(
             DeclaredCellCoverage(
-                levels={axis.axis_id: level.display for axis, level in zip(design.axes, combination, strict=True)},
+                # By identity: a page names each level off the declared design when it is rendered.
+                levels={axis.axis_id: level.content_hash for axis, level in zip(design.axes, combination, strict=True)},
                 state=state,
             )
         )

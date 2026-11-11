@@ -21,6 +21,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, Trial
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report_input import Example, ReportInput
 from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS, report_input
+from threetears.evals.analysis.report.words import trial_dimension
 
 SNAPSHOT = "report-snapshot:" + "0" * 32
 
@@ -68,7 +69,8 @@ def test_every_judged_dimensions_reason_rides_on_the_example_the_primarys_among_
     assert held.examples
     for example in held.examples:
         trial = _trial_of(bundle, example)
-        given = {judged.dim: judged.reason.strip() for judged in trial.judge if judged.reason.strip()}
+        # The trial holds each dimension by its id; the example names it as a trial's record prints it.
+        given = {trial_dimension(judged.dim): judged.reason.strip() for judged in trial.judge if judged.reason.strip()}
         assert example.reasons == given, example.trial
         assert len(given) > 1, "Kairo's trials are judged on several dimensions"
         assert example.reason in given.values(), "reason stays the primary dimension's"
