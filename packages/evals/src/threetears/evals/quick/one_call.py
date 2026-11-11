@@ -85,7 +85,7 @@ from threetears.evals.schema import (
     WorldSeed,
     canonical_digest,
 )
-from threetears.evals.schema.models import stored_variation
+from threetears.evals.schema.models import PASS_FAIL_SCORES, RubricScale, stored_variation
 from threetears.evals.kernel.host import (
     SHARED_CORE,
     ApparatusError,
@@ -103,7 +103,7 @@ from threetears.evals.kernel.host import (
 from threetears.evals.schema import NominalScale, SubjectSnapshot, SweepableValue, TraceSink
 from threetears.evals.schema import WorldPlacement
 from threetears.evals.kernel.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
-from threetears.evals.analysis.summary import CaseResult, EvalSummary, summarize_run
+from threetears.evals.analysis.summary import CaseResult, EvalSummary, RoleSpend, summarize_run
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.run import (
     CellContext,
@@ -118,6 +118,7 @@ from threetears.evals.run import (
     RunJudge,
     TemplateField,
     UnknownSubject,
+    build_judge_context,
     build_judge_service,
     freeze_judge_cases,
     get_result_trace,
@@ -127,12 +128,13 @@ from threetears.evals.run import (
     start_run,
 )
 from threetears.evals.run.authoring import active_judge_config_in, refuse_undeclared_judges, refuse_unsupplied_world
+from threetears.evals.run.runner import judge_dims
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.runner_spend import cell_spend, spent
 from threetears.evals.kernel.usage_capture import blended_cost
 from threetears.evals.quick.answer import Answer, unwrap_answer
 from threetears.evals.quick.guardrails import Guardrail
-from threetears.evals.quick.judged import Judge, judge_evidence
+from threetears.evals.quick.judged import ExampleGrade, Judge, JudgeExamples, judge_evidence
 from threetears.evals.quick.levers import CallableLevers, levers_model
 from threetears.evals.quick.logged import Log
 from threetears.evals.quick.measures import Measure
@@ -1354,6 +1356,139 @@ def _seed_judge_examples(host: EvalHost, template: EvalTemplate, judge: Judge) -
     )
 
 
+#: Why the grading of a judge's examples stopped short, where the eval's cost cap stopped it.
+EXAMPLES_CAPPED = "the eval's cost cap"
+
+#: A repeat's verdict where the judge answered that it could not tell.
+_CANNOT_TELL = "can't tell"
+
+
+async def grade_judge_examples(
+    host: EvalHost,
+    judge: Judge,
+    template_id: str,
+    scope_id: str,
+    *,
+    k: int,
+    max_cost_usd: float | None = None,
+    landed_usd: float | None = 0.0,
+) -> JudgeExamples:
+    """Grade each of ``judge``'s examples ``k`` times through the call the run's answers are graded by.
+
+    The judge service is built as each arm's launcher builds it (:func:`~threetears.evals.run.build_judge_service` over
+    the run's template, on the judge's lent client), and each example is asked through the runner's own judge phase
+    (``judge_dims``, its one dimension) under a context built as a cell's is: the template's intent, the example's case
+    as a case's variation, and its answer rendered against its case's material as a runner's answer is. So the prompt,
+    the criterion's wording, its scale and the settings it is sent at are the run's: the reading is of the judge as the
+    run used it. A call that fails or will not parse is a repeat with no verdict, and the rest go on.
+
+    **Spend.** Every call is the judge's, tallied under the ``judge`` role on the reading, apart from every arm's
+    results. Under a cost cap it is held to what the arms left: before each call the arms' landed spend and the
+    examples' own so far are read against the cap, as a run's cap reads landed spend before each cell, and once they
+    are over it, or once either holds spend nobody priced, no further call is made and the reading says the cap
+    stopped it.
+
+    :param host: The host the run ran in, whose store holds its template.
+    :ptype host: EvalHost
+    :param judge: The judge, with at least one example.
+    :ptype judge: Judge
+    :param template_id: The template every arm ran, whose intent and rubric the judge read.
+    :ptype template_id: str
+    :param scope_id: Its scope.
+    :ptype scope_id: str
+    :param k: How many times each example is graded: the eval's repeats.
+    :ptype k: int
+    :param max_cost_usd: The eval's cost cap, over every arm and these calls; ``None`` for none.
+    :ptype max_cost_usd: float | None
+    :param landed_usd: What the arms' results cost, summed; ``None`` where any went unpriced.
+    :ptype landed_usd: float | None
+    :return: Each example's grades, in order, and what the calls cost.
+    :rtype: JudgeExamples
+    :raises ValueError: The template is not in the store.
+    :raises CompletionProtocolDefect: A judge completion breaks the protocol: the host's defect, as in a run.
+    """
+    template = await run_blocking(host.blocking_executor, host.storage.load_template, template_id, scope_id)
+    if template is None:
+        raise ValueError(
+            f"template {template_id!r} is not in scope {scope_id!r}, so the judge's examples have no rubric"
+        )
+    run_judge = await run_blocking(
+        host.blocking_executor,
+        partial(
+            build_judge_service,
+            replace(host, clients=judge.clients()),
+            template,
+            judge.model,
+            judged_artifact=JudgedArtifact.DOCUMENT,
+        ),
+    )
+    scales = {dim.name: dim.scale for dim in template.rubric}
+    calls = unpriced = 0
+    priced: list[float] = []
+    stopped: str | None = None
+    grades: list[ExampleGrade] = []
+    for index, (example, authored) in enumerate(
+        zip(judge.examples, judge.authored_cases(intent=template.intent), strict=True)
+    ):
+        dim = authored.criterion.name
+        case = {key: value for key, value in example.case.items() if key not in RESERVED_CASE_KEYS}
+        context = build_judge_context(
+            template=template,
+            test_case=EvalTestCase(
+                id=f"{template.id}-example-{index}",
+                scope_id=scope_id,
+                template_id=template.id,
+                variation_params=stored_variation(case),
+            ),
+            goal_outcomes=[],
+            judged_artifact=JudgedArtifact.DOCUMENT,
+            judge_evidence=judge_evidence(judge, case, example.answer),
+        )
+        verdicts: list[str] = []
+        errors: list[str] = []
+        for _repeat in range(k):
+            if max_cost_usd is not None and (
+                landed_usd is None or unpriced or landed_usd + math.fsum(priced) > max_cost_usd
+            ):
+                stopped = EXAMPLES_CAPPED
+                break
+            ((_dim, outcome),) = await judge_dims(
+                template=template, judge_service=run_judge.service, context=context, only=frozenset({dim})
+            )
+            if outcome.usage is not None:
+                calls += outcome.usage.calls
+                if outcome.usage.cost_usd is None:
+                    unpriced += outcome.usage.calls
+                else:
+                    priced.append(outcome.usage.cost_usd)
+            if outcome.score is not None:
+                verdicts.append(_verdict_word(scales[dim], outcome.score.score))
+            elif outcome.cannot_tell is not None:
+                verdicts.append(_CANNOT_TELL)
+            else:
+                errors.append(outcome.error or "the judge's call returned nothing")
+        grades.append(
+            ExampleGrade(
+                example=example,
+                dimension=dim,
+                expected=_verdict_word(scales[dim], authored.expected_score),
+                verdicts=tuple(verdicts),
+                errors=tuple(errors),
+            )
+        )
+    spend = RoleSpend(
+        role="judge", calls=calls, cost_usd=math.fsum(priced) if priced else None, unpriced_calls=unpriced
+    )
+    return JudgeExamples(grades=tuple(grades), repeats=k, spend=spend, stopped=stopped)
+
+
+def _verdict_word(scale: RubricScale, score: int) -> str:
+    """A judge's score as a verdict is written: ``pass`` or ``fail`` on a pass/fail scale, the score on another."""
+    if scale == "pass_fail":
+        return next(word for word, value in PASS_FAIL_SCORES.items() if value == score)
+    return str(score)
+
+
 def _case_payload(case: dict[str, Any], label: str | None, seed: dict[str, Any] | None = None) -> dict[str, Any]:
     """The ``host_payload`` a case's stored test case carries: the case, verbatim, a classifier's expected label, and a world case's starting state."""
     labelled = {} if label is None else {_EXPECTED_KEY: label}
@@ -2044,6 +2179,7 @@ __all__ = [
     "CALLABLE_KIND",
     "CALLABLE_KIND_CONTRACT",
     "CALLABLE_UNSEATED",
+    "EXAMPLES_CAPPED",
     "JUDGED_CALLABLE_KIND",
     "JUDGED_CALLABLE_KIND_CONTRACT",
     "JUDGED_CALLABLE_UNSEATED",
@@ -2059,6 +2195,7 @@ __all__ = [
     "callable_host",
     "callable_kind",
     "callable_kind_contracts",
+    "grade_judge_examples",
     "refuse_an_unusable_cap",
     "refuse_unusable_guardrails",
     "refuse_unusable_margins",

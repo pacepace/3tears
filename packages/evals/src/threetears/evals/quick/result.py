@@ -91,6 +91,7 @@ from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report.figures import report_rulers
 from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.blocks import DisclosureBlock
 from threetears.evals.analysis.report.build import (
     aspect_verdict,
     build_code_only_report_in_forms,
@@ -101,7 +102,7 @@ from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.verdict import VerdictLine
 from threetears.evals.analysis.report.words import campaign_arm_tags, judged_heading, stratum_names
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, predicted_label
-from threetears.evals.quick.judged import Judge
+from threetears.evals.quick.judged import Judge, JudgeExamples
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
 from threetears.evals.run import get_result_trace, list_results
 
@@ -231,6 +232,9 @@ class Result:
         made, a logged runner's file.
     :ivar calibrations: How the judge agrees with the labels ``Judge(labels=...)`` names, per dimension
         (:func:`calibrate`); empty with no judge, no labels, or no label that pairs.
+    :ivar judge_examples: How the judge graded its examples (``Judge(examples=...)``) in the run, each on every
+        repeat, beside its agreement with the labels and never pooled into it; ``None`` with no judge, or a judge
+        with no examples.
     :ivar to_label: Every judged answer on every dimension, as a row of :data:`TO_LABEL`, the verdict withheld.
     :ivar contrast_arms: The arm each row of the report's contrasts table tests, by name, row for row; ``None`` for a
         row no arm's variant matches.
@@ -255,6 +259,7 @@ class Result:
     judge: Judge | None = field(default=None, repr=False, compare=False)
     disclosures: tuple[str, ...] = ()
     calibrations: tuple[JudgeCalibration, ...] = ()
+    judge_examples: JudgeExamples | None = None
     to_label: tuple[dict[str, str], ...] = field(default=(), repr=False, compare=False)
     contrast_arms: tuple[str | None, ...] = field(default=(), repr=False, compare=False)
     contrast_measures: tuple[str | None, ...] = field(default=(), repr=False, compare=False)
@@ -444,9 +449,11 @@ class Result:
             )
         one_arm = len(self.arms) == 1
         lines = [self._verdict_line()]
+        # How far its judge can be trusted is read with the verdict: against people's labels, then on its examples.
+        judged = self.calibration_lines() + (self.judge_examples.lines() if self.judge_examples is not None else [])
         if one_arm:
             # One arm's verdict is how its cases came out, and how far its judge can be trusted is read with it.
-            lines += self.calibration_lines()
+            lines += judged
         for arm, summary in self.arms.items():
             label = "" if len(self.arms) == 1 else f"{arm}{' (control)' if arm == self.control else ''}: "
             lines.append(f"{label}{summary.results_text}")
@@ -469,7 +476,7 @@ class Result:
             lines += [f"  error: {one_line(error)}" for error in summary.errors]
             lines += [f"  excluded: {cause}" for cause in _exclusion_causes(summary)]
         if not one_arm:
-            lines += self.calibration_lines()
+            lines += judged
         order = self._page_order()
         misses = sorted(
             ((arm, miss) for arm, summary in self.arms.items() for miss in summary.misses()),
@@ -948,14 +955,17 @@ class Result:
                 margin=held,
                 measure_order=self.grader_readings,
             )
-            return replace(
-                again,
-                store=self.store,
-                fields=self.fields,
-                judge=self.judge,
-                disclosures=self.disclosures,
-                calibrations=self.calibrations,
-                to_label=self.to_label,
+            return with_judge_examples(
+                replace(
+                    again,
+                    store=self.store,
+                    fields=self.fields,
+                    judge=self.judge,
+                    disclosures=self.disclosures,
+                    calibrations=self.calibrations,
+                    to_label=self.to_label,
+                ),
+                self.judge_examples,
             )
 
         # It reads this result's campaign and files a new one, so it runs off the loop.
@@ -1279,6 +1289,35 @@ def calibrate(
     return calibrations
 
 
+#: The id the page's line on how the judge graded its examples carries.
+JUDGE_EXAMPLES_ANCHOR = "judge-examples"
+
+
+def with_judge_examples(result: Result, examples: JudgeExamples | None) -> Result:
+    """``result`` carrying how its judge graded its examples, its page saying so; ``result`` itself for ``None``.
+
+    The page says it in Design & provenance, where it states how far the judge's scores can be read (the judge's
+    calibration against people's labels), after that table: one sentence, then the misses. It is the eval's reading,
+    taken in its call and not stored with the runs, so the line is set on this result's page; a page read again from
+    the store has none, as it has no ``to_label.csv``.
+
+    :param result: The result.
+    :ptype result: Result
+    :param examples: How the judge graded its examples, or ``None`` where it has none.
+    :ptype examples: JudgeExamples | None
+    :return: The result, its page with the line.
+    :rtype: Result
+    """
+    if examples is None:
+        return result
+    line = DisclosureBlock(
+        section="provenance", source="calibration", text=examples.sentence(), anchor=JUDGE_EXAMPLES_ANCHOR
+    )
+    return replace(
+        result, judge_examples=examples, page=result.page.model_copy(update={"blocks": [*result.page.blocks, line]})
+    )
+
+
 def judged_rows(
     host: EvalHost, arms: Mapping[str, EvalSummary], scope_id: str, case_names: Mapping[str, str]
 ) -> list[dict[str, str]]:
@@ -1495,6 +1534,7 @@ def declare(
 
 __all__ = [
     "CREATED_BY",
+    "JUDGE_EXAMPLES_ANCHOR",
     "LABEL_COLUMNS",
     "QUIET_MISSES",
     "TO_LABEL",
@@ -1505,4 +1545,5 @@ __all__ = [
     "declare",
     "judged_rows",
     "refuse_an_unusable_margin",
+    "with_judge_examples",
 ]
