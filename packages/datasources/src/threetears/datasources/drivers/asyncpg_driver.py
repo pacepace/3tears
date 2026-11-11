@@ -210,6 +210,7 @@ __all__ = [
     "AsyncpgDriver",
     "DriverCancellationError",
     "DriverQueryError",
+    "bind_as_declared",
 ]
 
 log = get_logger(__name__)
@@ -563,13 +564,18 @@ def _note_typed_retry(sql: str) -> None:
     )
 
 
-async def _bound_as_declared(
+async def bind_as_declared(
     conn: Any,
     sql: str,
     params: Sequence[Any],
     run: Callable[[Sequence[Any]], Awaitable[_BoundT]],
 ) -> _BoundT:
     """run a statement; when asyncpg refuses a text parameter, once more with each cast to its declared type.
+
+    The one place a text value meets a typed placeholder on asyncpg: every :class:`AsyncpgDriver` path binds through
+    it, and so may a caller holding a raw connection (a test's rail, say) that hands a page's last key back as text --
+    ``2026-11-04 05:33:12`` for a timestamp, ``7`` for an integer -- rather than rewriting placeholders to ``::text``.
+    The statement's own declared parameter types decide (``prepare().get_parameters()``), never the caller.
 
     Only asyncpg's own bind refusal is retried (:func:`_refused_bind`): it is raised before the statement is
     sent, so a transaction it runs in is unharmed and the statement has not run. A server's error is raised
@@ -1148,7 +1154,7 @@ class AsyncpgDriver(Driver):
         # consistent across drivers.
         translated = translate_placeholders(sql, "asyncpg")
         records = await self._acquire_and_run(
-            lambda conn: _bound_as_declared(conn, translated, params, lambda bound: conn.fetch(translated, *bound)),
+            lambda conn: bind_as_declared(conn, translated, params, lambda bound: conn.fetch(translated, *bound)),
             timeout_seconds=timeout_seconds,
         )
         result: list[dict[str, Any]] = [dict(r) for r in records]
@@ -1187,7 +1193,7 @@ class AsyncpgDriver(Driver):
         async def _bounded(conn: Any) -> Any:
             # a cursor lives in a transaction; nested in the timeout's own one, this is a savepoint
             async with conn.transaction():
-                cursor = await _bound_as_declared(
+                cursor = await bind_as_declared(
                     conn, translated, params, lambda bound: conn.cursor(translated, *bound)
                 )
                 return await cursor.fetch(max_rows)
@@ -1243,7 +1249,7 @@ class AsyncpgDriver(Driver):
 
         async def _paged(conn: Any) -> None:
             async with conn.transaction():
-                cursor = await _bound_as_declared(
+                cursor = await bind_as_declared(
                     conn, translated, params, lambda bound: conn.cursor(translated, *bound)
                 )
                 going = True
@@ -1281,7 +1287,7 @@ class AsyncpgDriver(Driver):
             build_set_local_statement_timeout_sql(timeout_seconds)
         translated = translate_placeholders(sql, "asyncpg")
         status = await self._acquire_and_run(
-            lambda conn: _bound_as_declared(conn, translated, params, lambda bound: conn.execute(translated, *bound)),
+            lambda conn: bind_as_declared(conn, translated, params, lambda bound: conn.execute(translated, *bound)),
             timeout_seconds=timeout_seconds,
         )
         return rows_from_command_tag(status)
@@ -1358,7 +1364,7 @@ class AsyncpgDriver(Driver):
         translated = translate_placeholders(sql, "asyncpg")
         await self._apply_transaction_timeout(checkout, timeout_seconds)
         records = await self._with_cancellation(
-            lambda: _bound_as_declared(
+            lambda: bind_as_declared(
                 checkout.conn, translated, params, lambda bound: checkout.conn.fetch(translated, *bound)
             ),
             cancel_callback=self._observe_cancellation,
@@ -1392,7 +1398,7 @@ class AsyncpgDriver(Driver):
         translated = translate_placeholders(sql, "asyncpg")
         await self._apply_transaction_timeout(checkout, timeout_seconds)
         status = await self._with_cancellation(
-            lambda: _bound_as_declared(
+            lambda: bind_as_declared(
                 checkout.conn, translated, params, lambda bound: checkout.conn.execute(translated, *bound)
             ),
             cancel_callback=self._observe_cancellation,
