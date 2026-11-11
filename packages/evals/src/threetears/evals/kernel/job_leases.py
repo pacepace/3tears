@@ -37,7 +37,8 @@ did not start a job read a live one as lost, and a cancel there was refused. Her
   (:func:`request_job_cancel`); the holder reads it at its next renewal and ends the job ``cancelled``, so a cancel
   lands within one renewal interval from anywhere.
 - **A graceful shutdown ends every job the process holds as lost** (:meth:`JobLeases.shut_down`), its cause the
-  shutdown, releasing the lease, before the work is cancelled.
+  shutdown, releasing the lease, before the work is cancelled — or, on a store that has not taken those writes
+  within half the shutdown's bound, with the work cancelled anyway. Nothing a shutdown waits for outlasts its bound.
 
 **Time** is the store's when it keeps a clock (:class:`~threetears.evals.schema.StoreClock`), else each process's
 own (:meth:`~threetears.evals.kernel.EvalStorage.store_time`); processes sharing a store without a clock must keep
@@ -718,6 +719,14 @@ class _Held:
     stuck_since: float = field(default=0.0)
 
 
+@dataclass(frozen=True, kw_only=True)
+class _ShuttingDown:
+    """A shutdown under way: the loss it writes, and when its bound ends on this process's monotonic clock."""
+
+    cause: str
+    deadline: float
+
+
 class JobLeases:
     """The leases one process holds on its jobs' records, and the task that renews them.
 
@@ -778,6 +787,12 @@ class JobLeases:
         #: Every expiry still writing why its record stopped, each in a task of its own (:meth:`_expiring`), so a
         #: renewer cancelled at shutdown leaves it to finish and :meth:`shut_down` waits for it, within its bound.
         self._expiries: set[asyncio.Task[None]] = set()
+        #: The shutdown under way (:meth:`shut_down`), from its first step until a lease is held again: an expiry
+        #: running meanwhile bounds its writes by the shutdown's deadline and writes its record lost with its cause.
+        self._shutting: _ShuttingDown | None = None
+        #: Whether a shutdown has ended and closed the pool, until a lease is held again: an expiry still running
+        #: then makes no store call, and so no new pool nothing would close (:meth:`_expiry_write`).
+        self._down = False
         # The loop the leases are held on (:meth:`hold`), where an own write's bookkeeping is done (:meth:`write_own`).
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -1041,6 +1056,7 @@ class JobLeases:
         self._held[record_id] = _Held(
             kind=kind, record_id=record_id, scope_id=scope_id, cancel=cancel, stop=stop, epoch=epoch
         )
+        self._shutting, self._down = None, False  # held again: the leases live on past a shutdown that ended
         self._loop = asyncio.get_running_loop()
         if self._renewer is None or self._renewer.done():
             self._renewer = asyncio.create_task(self._renew_while_held(), name="eval-job-leases")
@@ -1272,12 +1288,54 @@ class JobLeases:
         one (the renewer cancelled at shutdown, which cancels every renewal it started) would leave the record let go
         and so skipped by :meth:`shut_down`'s pass, its fault unwritten and its job never stopped, to read lost later
         by lapse with no cause. Shielded, the expiry runs on to its end, which is bounded (each of its two writes by a
-        lease), and :meth:`shut_down` waits for every one still running.
+        lease, and by a shutdown's deadline once one is under way), and :meth:`shut_down` waits for every one still
+        running, within its own bound.
         """
         expiry = asyncio.create_task(self._expire(held), name=f"eval-job-lease-expiry-{held.record_id}")
         self._expiries.add(expiry)
-        expiry.add_done_callback(self._expiries.discard)
+        expiry.add_done_callback(self._expiry_done)
         await asyncio.shield(expiry)
+
+    def _expiry_done(self, expiry: asyncio.Task[None]) -> None:
+        """Forget an expiry that ended, and retrieve what it raised: the renewal that started it may have been
+        cancelled since (a shutdown cancels every renewal), so nothing else would, and its failure would surface only
+        as an unretrieved-exception warning at collection, if ever."""
+        self._expiries.discard(expiry)
+        if expiry.cancelled():
+            return
+        raised = expiry.exception()
+        if raised is None:
+            return
+        if not isinstance(raised, Exception):
+            # Not a failure this boundary may absorb (a KeyboardInterrupt, a SystemExit): stated, never contained.
+            log.critical("eval.job_lease expiry %s raised %r", expiry.get_name(), raised, exc_info=raised)
+            return
+        # NOSILENT: an expiry's writes contain their own failures, so this is what stopping its job raised; the job
+        # is fenced off its record regardless (let go when the expiry began), and the record reads lost by its lease.
+        contain(
+            raised,
+            log=log,
+            what=f"eval.job_lease expiry {expiry.get_name()} raised; its record stays let go and reads lost by its lease",
+            level="error",
+        )
+
+    async def _expiry_write[T](self, call: Callable[..., T], *args: object) -> T:
+        """One of an expiry's store writes (:meth:`_expire`), bounded by a lease, and once a shutdown is under way also
+        by what is left of the shutdown's bound, so an expiry never holds a shutdown past it.
+
+        :raises TimeoutError: The bound passed before the write returned, or had passed before it was made — the
+            shutdown had ended its wait and closed the pool, which an expiry never re-opens (nothing would close it).
+        """
+        bound = self._lease_s
+        if (shutting := self._shutting) is not None:
+            bound = min(bound, shutting.deadline - time.monotonic())
+        if self._down or bound <= 0:
+            raise TimeoutError(
+                "the process's shutdown had ended its wait for this expiry before the write was made, and closed the "
+                "lease pool; no store call is made after it"
+            )
+        async with asyncio.timeout(bound):  # a hung store must not keep the job from stopping
+            return await run_blocking(self._pool(), call, *args)
 
     async def _expire(self, held: _Held) -> None:
         """Stop a job whose renewals have failed for a whole lease: its lease has lapsed by this process's own count.
@@ -1294,6 +1352,10 @@ class JobLeases:
         ending (a run's ``error_details`` included), because the loss writes a sweep's ``detail`` or an attempt's
         ``error`` over, and a run's own faults are its work's, not its lease's. A write that fails is logged with
         both errors.
+
+        **During a shutdown** (:meth:`shut_down`) the loss written is the shutdown's, with its cause, so the record
+        ends at once with both its cause and why; each write is bounded by what is left of the shutdown's bound, and
+        the job is stopped however the expiry ends, a cancelled one included.
         """
         self.let_go(held.record_id)
         why = (
@@ -1314,13 +1376,19 @@ class JobLeases:
             f"whole lease, and stopped the job — {why}"
         )
         try:
-            async with asyncio.timeout(self._lease_s):  # a hung store must not keep the job from stopping
-                await run_blocking(
-                    self._pool(), _note_fault, self._store, held.kind, held.record_id, held.scope_id, entry
-                )
+            await self._write_why_and_loss(held, why, entry)
+        finally:
+            held.stop()  # a cancelled expiry (a shutdown's bound passed) still stops its job
+
+    async def _write_why_and_loss(self, held: _Held, why: str, entry: str) -> None:
+        """An expiry's two writes (:meth:`_expire`): the fault saying why, then the loss — the lapse a reader would
+        write, or, while a shutdown is under way, the shutdown's own loss, so the record ends at once with a stated
+        cause rather than reading ``running`` until its lease lapses by the store's clock."""
+        try:
+            await self._expiry_write(_note_fault, self._store, held.kind, held.record_id, held.scope_id, entry)
         # prawduct:ok-broad-except — the store may be what failed; logged with the renewal failure it was to record
         except Exception as unwritten:
-            # NOSILENT: the job is still fenced and stopped below and its record still reads lost; only the cause it
+            # NOSILENT: the job is still fenced and stopped, and its record still reads lost; only the cause it
             # was to carry is missing, because the store that would hold it is what failed, so it is logged whole.
             contain(
                 unwritten,
@@ -1332,13 +1400,13 @@ class JobLeases:
                 level="error",
             )
         try:
-            async with asyncio.timeout(self._lease_s):  # likewise: the stop below never waits on the store
-                await run_blocking(
-                    self._pool(), settle_job_record, self._store, held.kind, held.record_id, held.scope_id
-                )
+            if (shutting := self._shutting) is not None:
+                await self._expiry_write(self._end_lost, held, shutting.cause)
+            else:
+                await self._expiry_write(settle_job_record, self._store, held.kind, held.record_id, held.scope_id)
         # prawduct:ok-broad-except — the store may be what failed; the record reads lost to the next reader regardless
         except Exception as unsettled:
-            # NOSILENT: the job is fenced and stopped below regardless, and its lapsed lease reads lost to every
+            # NOSILENT: the job is fenced and stopped regardless, and its lapsed lease reads lost to every
             # reader, the first of which writes the loss this write could not.
             contain(
                 unsettled,
@@ -1349,7 +1417,6 @@ class JobLeases:
                 ),
                 level="error",
             )
-        held.stop()
 
     async def end_lost(self, record_id: str, cause: str) -> bool:
         """Stop renewing a held record and write it lost with ``cause``, unless it has already ended.
@@ -1449,61 +1516,120 @@ class JobLeases:
             return ("cancel", leased.cancel_request_reason) if asked else ("renewed", None)
         return "contended", None
 
-    async def shut_down(self, cause: str = SHUTDOWN_CAUSE) -> list[str]:
-        """End every job this process holds as lost, releasing each lease, and stop renewing.
+    async def shut_down(
+        self,
+        cause: str = SHUTDOWN_CAUSE,
+        *,
+        within: float | None = None,
+        then: Callable[[], object] | None = None,
+    ) -> list[str]:
+        """End every job this process holds as lost, releasing each lease, and stop renewing — all within ``within``.
 
         Called by a graceful shutdown BEFORE the jobs are cancelled: each record then reads lost with ``cause`` at
         once, in every process, rather than ``running`` until its lease lapses, and the jobs' own endings, written
-        as they unwind, are refused.
+        as they unwind, are refused. **The losses are written together and get half the bound**: once every one has
+        landed, or once half of ``within`` has passed, ``then`` is called — the caller cancels its jobs there — so a
+        store that hangs never keeps a job spending past that. A loss the store has not taken by then is logged and
+        left out of what this returns; its job, not fenced, writes its own ending as it unwinds when the store takes
+        it, and otherwise reads lost once its lease lapses.
+
+        **An expiry already running is let finish, within what is left of the bound** (:meth:`_expiring`): its
+        record, let go when the expiry began, is not this pass's to write, and the expiry writes why it stopped (a
+        fault naming its true cause) and then the record lost with ``cause``, so it ends at once with both. Each of
+        its writes is bounded by the shutdown's deadline as well as by a lease, and an expiry still running at the
+        deadline is cancelled, its job stopped, its cause logged; its record then reads lost once its lease lapses.
+        Nothing here waits past ``within``, and after it no expiry makes a store call (the pool is closed and
+        stays closed until a lease is held again).
 
         :param cause: The loss's cause.
         :ptype cause: str
-        **An expiry already running is let finish** (:meth:`_expiring`): its record, let go when the expiry began, is
-        not this process's to write lost, and the expiry writes why it stopped and stops its job, so the record reads
-        lost with its true cause beside it rather than by lapse with none. Each expiry is bounded (each of its two
-        writes by a lease), and the wait is bounded by that too, so a shutdown never hangs on one: an expiry still
-        running past it is logged and left.
-
-        :param cause: The loss's cause.
-        :ptype cause: str
+        :param within: The bound on the whole shutdown, in seconds: the caller's shutdown timeout. ``None`` for two
+            leases and a renewal interval, an expiry's own bound.
+        :ptype within: float | None
+        :param then: Called once, when the losses have been written or half the bound has passed (and however this
+            ends): where the caller cancels its jobs. ``None`` for a caller with nothing to cancel.
+        :ptype then: Callable[[], object] | None
         :return: The records written lost; one already ended, one an expiry was stopping, or one whose write failed
-            (logged), is not among them.
+            or outlasted its half of the bound (logged), is not among them.
         :rtype: list[str]
         """
-        if self._renewer is not None:
-            self._renewer.cancel()
-            self._renewer = None
-        held, self._held = list(self._held.values()), {}
-        ended: list[str] = []
-        for one in held:
-            try:
-                if await run_blocking(self._pool(), self._end_lost, one, cause):
-                    ended.append(one.record_id)
-            # prawduct:ok-broad-except — one record's failed write must not keep the rest of a shutdown from ending theirs
-            except Exception as unwritten_loss:
-                # NOSILENT: the record is left out of the records this returns as written lost, which is true; the
-                # failed write IS the write of this record, so nothing is left to carry the error, and its job, not
-                # fenced, writes its own ending as it unwinds — or it reads lost once its lease lapses.
-                contain(
-                    unwritten_loss,
-                    log=log,
-                    what=(
-                        f"eval.job_lease shutdown could not write {one.kind.name}={one.record_id} "
-                        f"scope={one.scope_id} lost — it reads lost once its lease lapses"
-                    ),
-                    level="error",
-                )
-        if expiring := set(self._expiries):
-            # Two writes, each bounded by a lease, and one renewal interval of slack for the loop to schedule them.
-            _, unfinished = await asyncio.wait(expiring, timeout=2 * self._lease_s + self.renew_every_s)
-            for expiry in unfinished:
-                log.error(
-                    "eval.job_lease shutdown: the expiry %s was still running past its bound of two leases; left to "
-                    "finish on its own, its record reads lost once its lease lapses",
-                    expiry.get_name(),
-                )
+        bound = within if within is not None else 2 * self._lease_s + self.renew_every_s
+        deadline = time.monotonic() + bound
+        self._shutting = _ShuttingDown(cause=cause, deadline=deadline)
+        try:
+            if (renewer := self._renewer) is not None:
+                self._renewer = None
+                renewer.cancel()
+                await asyncio.wait({renewer})  # its own teardown cancels its renewals and awaits nothing
+            held, self._held = list(self._held.values()), {}
+            ended = await self._write_losses(held, cause, bound / 2)
+        finally:
+            if then is not None:
+                then()
+        await self._let_expiries_finish(deadline)
+        self._down = True
         self._close_pool()
         return ended
+
+    async def _write_losses(self, held: Sequence[_Held], cause: str, bound: float) -> list[str]:
+        """Write every record in ``held`` lost with ``cause``, together, within ``bound`` seconds; those written.
+
+        One record's failed write never keeps the rest from theirs, and one the store has not taken within the bound
+        is left to its job's own ending: both are logged, and neither is among those returned.
+        """
+
+        async def lose(one: _Held) -> bool:
+            # The pool is asked for as the write is made: the renewer's teardown may have retired the one before it.
+            return await run_blocking(self._pool(), self._end_lost, one, cause)
+
+        writes = [asyncio.ensure_future(lose(one)) for one in held]
+        if not writes:
+            return []
+        _, late = await asyncio.wait(writes, timeout=bound)
+        for write in late:
+            write.cancel()  # its store call runs on in its thread; nothing awaits what it returns
+        ended: list[str] = []
+        for one, write in zip(held, writes, strict=True):
+            if write in late:
+                failed: BaseException | None = TimeoutError(
+                    f"the store had not taken the write within {spell_declared(bound)}s, half the "
+                    "shutdown's bound, and the job is cancelled without waiting longer"
+                )
+            else:
+                failed = write.exception()
+            if failed is None:
+                if write.result():
+                    ended.append(one.record_id)
+                continue
+            if not isinstance(failed, Exception):
+                raise failed
+            # NOSILENT: the record is left out of the records this returns as written lost, which is true; the
+            # failed write IS the write of this record, so nothing is left to carry the error, and its job, not
+            # fenced, writes its own ending as it unwinds — or it reads lost once its lease lapses.
+            contain(
+                failed,
+                log=log,
+                what=(
+                    f"eval.job_lease shutdown could not write {one.kind.name}={one.record_id} "
+                    f"scope={one.scope_id} lost — it reads lost once its lease lapses"
+                ),
+                level="error",
+            )
+        return ended
+
+    async def _let_expiries_finish(self, deadline: float) -> None:
+        """Wait for every expiry still running, an expiry a renewal started meanwhile included, until ``deadline``
+        (monotonic); cancel any still running then, which stops its job, and log it with what its record lacks."""
+        while self._expiries and (left := deadline - time.monotonic()) > 0:
+            await asyncio.wait(set(self._expiries), timeout=left)
+        for expiry in set(self._expiries):
+            expiry.cancel()
+            log.error(
+                "eval.job_lease shutdown: the expiry %s was still running when the shutdown's bound ended; cancelled, "
+                "which stops its job. Its cause is in the line it logged as it began, and its record, without the "
+                "writes it had not made, reads lost once its lease lapses",
+                expiry.get_name(),
+            )
 
     def _end_lost(self, held: _Held, cause: str) -> bool:
         """Write one held record lost with ``cause`` and no lease, unless it has ended or its lease has passed to another

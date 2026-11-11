@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -60,7 +61,7 @@ from threetears.evals.kernel import job_leases
 from threetears.evals.ops import OpsHost, analyses_list, job_cancel, job_poll, run_job_id, run_launch
 from threetears.evals.ops import LaunchArguments, SweepArguments, generation_key, sweep_launch
 from threetears.evals.ops import sweeps
-from threetears.evals.run import sweep_abandoned_runs
+from threetears.evals.run import EvalJobManager, sweep_abandoned_runs
 from threetears.evals.schema import EvalResult, EvalRun, JobLease, StoreConflict
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_run
@@ -1565,6 +1566,131 @@ async def test_a_shutdown_lets_an_expiry_already_running_write_why_and_stop_its_
         run, _ = off_loop(_stored_run, storage, "run-lapsing")
         (fault,) = run.faults
         assert "could not renew it for 1.2s, its whole lease" in fault and "the store refuses renewals" in fault
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
+class HangingStore(InMemoryDocumentStore):
+    """A store whose writes of the records named in :attr:`hanging` hang until :attr:`release` is set — a degraded
+    store a process meets at SIGTERM — noting in :attr:`fault_hung` that a write of a record's faults is hanging."""
+
+    def __init__(self) -> None:
+        """Hang nothing yet."""
+        super().__init__()
+        self.hanging: set[str] = set()
+        self.fault_hung = threading.Event()
+        self.release = threading.Event()
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Hang a write of a record named in :attr:`hanging`; write anything else."""
+        if str(document.get("id")) in self.hanging:
+            stored = self.get(str(document["id"]), str(document["scope_id"]))
+            if stored is not None and stored.get("faults") != document.get("faults"):
+                self.fault_hung.set()
+            self.release.wait(timeout=30.0)
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def test_a_shutdown_over_a_store_whose_writes_hang_cancels_every_job_and_returns_within_its_timeout() -> None:
+    """SIGTERM on a degraded store: a held job's loss write hangs, and another job's lease expiry hangs writing why.
+    The shutdown waited on both — the loss with no bound, the expiry for two leases — before it cancelled a job, so
+    live runs went on making model calls until the pod was killed. Now the jobs are cancelled once half the timeout
+    has passed, the expiry is let run only until the timeout, and the shutdown returns within it."""
+    store = HangingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)  # renewed every 0.4 s
+    manager = EvalJobManager(storage, leases=leases)
+    stopped: dict[str, bool] = {}
+
+    def work(job_id: str) -> Any:
+        async def forever() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                stopped[job_id] = True
+                raise
+
+        return forever
+
+    try:
+        for job_id in ("run-lapsing", "run-live"):
+            _seeded_run(storage, job_id, off_loop(leases.grant))
+            manager.start_task(job_id, work(job_id), budget_s=None, record=(RUN_JOB, TOYHOST_SCOPE))
+        store.hanging.add("run-lapsing")  # its renewal hangs past its lease, so its expiry begins, and hangs too
+        await until(store.fault_hung.is_set, timeout=5.0)
+        assert leases.fenced("run-lapsing") and not leases.fenced("run-live")
+        store.hanging.add("run-live")  # and now the shutdown's write of the held job's loss hangs as well
+
+        began = time.monotonic()
+        unsettled = await manager.shutdown(timeout=0.6)
+        took = time.monotonic() - began
+
+        assert took < 1.0, f"the shutdown took {took:.2f}s past its 0.6s timeout"
+        assert unsettled == [] and stopped == {"run-lapsing": True, "run-live": True}, "every job was cancelled"
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
+def _lease_threads() -> set[threading.Thread]:
+    """The lease pools' threads alive now."""
+    return {thread for thread in threading.enumerate() if thread.name.startswith("eval-lease")}
+
+
+async def test_an_expiry_cut_short_by_a_shutdown_makes_no_store_call_after_it() -> None:
+    """An expiry still running when a shutdown's wait ended went on to its next write, which made a new lease pool
+    after the shutdown had closed the last one — a pool, and a thread, nothing would ever close. It is cancelled at
+    the shutdown's bound now, its job stopped, and no store call is made after the shutdown returns."""
+    store = HangingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)
+    stopped: list[str] = []
+    try:
+        _seeded_run(storage, "run-lapsing", off_loop(leases.grant))
+        leases.hold(
+            RUN_JOB, "run-lapsing", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: stopped.append("x")
+        )
+        store.hanging.add("run-lapsing")
+        await until(store.fault_hung.is_set, timeout=5.0)  # the expiry is writing why, and the store hangs
+
+        await leases.shut_down(within=0.3)
+        after = _lease_threads()
+        await asyncio.sleep(1.5)  # past the lease that bounded the fault write: the expiry's next write was due
+
+        assert stopped == ["x"], "the cancelled expiry stopped its job"
+        assert _lease_threads() <= after, "no lease thread was started after the shutdown returned"
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
+async def test_what_an_expiry_raises_after_its_renewal_was_cancelled_is_retrieved_and_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A shutdown cancels the renewal awaiting an expiry, so nothing awaited the expiry any more: what it raised
+    went unretrieved. Its own done-callback retrieves it now, and logs it with the expiry it came from."""
+    store = FaultHoldingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)
+
+    def stop() -> None:
+        raise RuntimeError("the job's stop broke")
+
+    try:
+        _seeded_run(storage, "run-lapsing", off_loop(leases.grant))
+        leases.hold(RUN_JOB, "run-lapsing", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=stop)
+        await until(store.fault_held.is_set, timeout=5.0)
+        threading.Timer(0.2, store.release.set).start()
+        with caplog.at_level(logging.ERROR, logger="threetears.evals.kernel.job_leases"):
+            await leases.shut_down()
+
+        (line,) = [
+            r
+            for r in caplog.records
+            if "eval.job_lease expiry eval-job-lease-expiry-run-lapsing raised" in r.getMessage()
+        ]
+        assert line.exc_info is not None and "the job's stop broke" in str(line.exc_info[1])
     finally:
         store.release.set()
         await leases.shut_down()
