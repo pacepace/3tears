@@ -301,8 +301,9 @@ class TestSaveFetchRoundTrip:
 
     async def test_round_trip(self) -> None:
         row = _job_row()
-        # the pool returns the same row on fetchrow so the round-trip is real
-        pool = _RecordingPool(fetchrow_row=row)
+        # the pool returns the same row on the store read (a keyed point read, sent through fetch) so the round-trip
+        # is real
+        pool = _RecordingPool(fetch_rows=[row])
         coll = _make_schedule_collection(pool)
 
         # save: the entity's data projects to the upsert params + executes

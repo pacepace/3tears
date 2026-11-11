@@ -49,8 +49,8 @@ class _ScriptedPool:
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         if sql.lstrip().startswith("UPDATE"):
             return [self.row]
-        if sql.startswith("SELECT ") and ' FROM "scheduled_jobs" AS t WHERE ' in sql:
-            # a keyed point read of the job (threetears.core.keyed.read_row), sent through fetch: its one row
+        if sql.startswith("SELECT t."):
+            # a keyed point read of a job or a fire (threetears.core.keyed.read_row), sent through fetch: its one row
             return [dict(self.row)]
         return list(self.cascaded) if "FROM job_fires WHERE job_id" in sql else []
 

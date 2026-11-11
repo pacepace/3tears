@@ -17,9 +17,10 @@ class _Reads:
     def __init__(self) -> None:
         self.reads: list[tuple[str, tuple[Any, ...]]] = []
 
-    async def fetchrow(self, query: str, *params: Any) -> dict[str, Any]:
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        # the store read is a keyed point read (threetears.core.keyed.read_row), sent through fetch
         self.reads.append((query, params))
-        return {"partition_key": params[0], "id": params[1]}
+        return [{"partition_key": params[0], "id": params[1]}]
 
 
 @pytest.mark.parametrize("cls", [ScheduledJobCollection, JobFireCollection])

@@ -114,19 +114,7 @@ _SCHEDULED_JOBS_SELECT_COLUMNS = ", ".join(column.name for column in _SCHEDULED_
 _JOB_FIRES_SELECT_COLUMNS = ", ".join(column.name for column in _JOB_FIRES_SCHEMA.columns)
 
 
-_SCHEDULED_JOBS_FETCH_SQL = (
-    f"SELECT {_SCHEDULED_JOBS_SELECT_COLUMNS} "  # noqa: S608 - declared column names, no user input
-    "FROM scheduled_jobs WHERE partition_key = $1 AND job_id = $2"
-)
-
-
 _SCHEDULED_JOBS_DELETE_SQL = "DELETE FROM scheduled_jobs WHERE partition_key = $1 AND job_id = $2"
-
-
-_JOB_FIRES_FETCH_SQL = (
-    f"SELECT {_JOB_FIRES_SELECT_COLUMNS} "  # noqa: S608 - declared column names, no user input
-    "FROM job_fires WHERE partition_key = $1 AND fire_id = $2"
-)
 
 
 _JOB_FIRES_DELETE_SQL = "DELETE FROM job_fires WHERE partition_key = $1 AND fire_id = $2"
@@ -201,7 +189,27 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
         :rtype: dict[str, Any] | None
         """
         partition_key, job_id = self.normalize_pk(entity_id)
-        row = await target.fetchrow(_SCHEDULED_JOBS_FETCH_SQL, partition_key, job_id)
+        row = await read_row(
+            target,
+            "scheduled_jobs",
+            by={"partition_key": partition_key, "job_id": job_id},
+            columns=(
+                "partition_key",
+                "job_id",
+                "kind",
+                "payload",
+                "schedule_type",
+                "schedule_config",
+                "status",
+                "next_fire_at",
+                "last_fired_at",
+                "missed_fire_policy",
+                "name",
+                "date_created",
+                "date_updated",
+            ),
+            records=True,
+        )
         if row is None:
             return None
         return dict(row)
@@ -841,7 +849,24 @@ class JobFireCollection(DeclaredTableCollection[JobFireEntity]):
         :rtype: dict[str, Any] | None
         """
         partition_key, fire_id = self.normalize_pk(entity_id)
-        row = await target.fetchrow(_JOB_FIRES_FETCH_SQL, partition_key, fire_id)
+        row = await read_row(
+            target,
+            "job_fires",
+            by={"partition_key": partition_key, "fire_id": fire_id},
+            columns=(
+                "partition_key",
+                "fire_id",
+                "job_id",
+                "scheduled_fire_at",
+                "actual_fired_at",
+                "status",
+                "output",
+                "latency_ms",
+                "error",
+                "date_created",
+            ),
+            records=True,
+        )
         if row is None:
             return None
         return dict(row)

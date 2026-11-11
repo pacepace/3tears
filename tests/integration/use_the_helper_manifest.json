@@ -597,5 +597,154 @@
    }
   ],
   "table": "scheduled_jobs"
+ },
+ {
+  "args": [
+   "partition_key",
+   "job_id"
+  ],
+  "columns": [
+   "partition_key",
+   "job_id",
+   "kind",
+   "payload",
+   "schedule_type",
+   "schedule_config",
+   "status",
+   "next_fire_at",
+   "last_fired_at",
+   "missed_fire_policy",
+   "name",
+   "date_created",
+   "date_updated"
+  ],
+  "function": "ScheduledJobCollection._select_row",
+  "helper": "read_row",
+  "line": 192,
+  "method": "fetchrow",
+  "new_call": "read_row(target, 'scheduled_jobs', by={'partition_key': partition_key, 'job_id': job_id}, columns=('partition_key', 'job_id', 'kind', 'payload', 'schedule_type', 'schedule_config', 'status', 'next_fire_at', 'last_fired_at', 'missed_fire_policy', 'name', 'date_created', 'date_updated'), records=True)",
+  "old_sql": "SELECT partition_key, job_id, kind, payload, schedule_type, schedule_config, status, next_fire_at, last_fired_at, missed_fire_policy, name, date_created, date_updated FROM scheduled_jobs WHERE partition_key = $1 AND job_id = $2",
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "column": "partition_key",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "job_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "table": "scheduled_jobs"
+ },
+ {
+  "args": [
+   "partition_key",
+   "fire_id"
+  ],
+  "columns": [
+   "partition_key",
+   "fire_id",
+   "job_id",
+   "scheduled_fire_at",
+   "actual_fired_at",
+   "status",
+   "output",
+   "latency_ms",
+   "error",
+   "date_created"
+  ],
+  "function": "JobFireCollection._select_row",
+  "helper": "read_row",
+  "line": 852,
+  "method": "fetchrow",
+  "new_call": "read_row(target, 'job_fires', by={'partition_key': partition_key, 'fire_id': fire_id}, columns=('partition_key', 'fire_id', 'job_id', 'scheduled_fire_at', 'actual_fired_at', 'status', 'output', 'latency_ms', 'error', 'date_created'), records=True)",
+  "old_sql": "SELECT partition_key, fire_id, job_id, scheduled_fire_at, actual_fired_at, status, output, latency_ms, error, date_created FROM job_fires WHERE partition_key = $1 AND fire_id = $2",
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "column": "partition_key",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "fire_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "table": "job_fires"
+ },
+ {
+  "args": [
+   "workspace.id",
+   "rel"
+  ],
+  "columns": [
+   "content",
+   "sha256",
+   "version"
+  ],
+  "function": "_handle_watch_batch",
+  "helper": "read_row",
+  "line": 1042,
+  "method": "fetchrow",
+  "new_call": "read_row(conn, 'workspace_files', by={'workspace_id': workspace.id, 'relative_path': rel}, columns=('content', 'sha256', 'version'), records=True)",
+  "old_sql": "SELECT content, sha256, version FROM workspace_files WHERE workspace_id = $1 AND relative_path = $2",
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/materialize.py",
+  "pins": [
+   {
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "relative_path",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "table": "workspace_files"
+ },
+ {
+  "args": [
+   "workspace.id",
+   "relative_path"
+  ],
+  "columns": [
+   "content",
+   "sha256",
+   "version"
+  ],
+  "function": "write_file_atomic",
+  "helper": "read_row",
+  "line": 690,
+  "method": "fetchrow",
+  "new_call": "read_row(conn, 'workspace_files', by={'workspace_id': workspace.id, 'relative_path': relative_path}, columns=('content', 'sha256', 'version'), records=True)",
+  "old_sql": "SELECT content, sha256, version FROM workspace_files WHERE workspace_id = $1 AND relative_path = $2",
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/tools/helpers.py",
+  "pins": [
+   {
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "relative_path",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "table": "workspace_files"
  }
 ]

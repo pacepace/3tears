@@ -33,6 +33,7 @@ from uuid import UUID, uuid7
 
 from threetears.agent.acl import AclCache
 from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
+from threetears.core.keyed import read_row
 from threetears.core.namespaces import PLATFORM_RBAC_READ_NAMESPACE
 
 __all__ = [
@@ -521,8 +522,6 @@ async def resolve_workspace(
     return result
 
 
-_SELECT_HEAD_SQL = "SELECT content, sha256, version FROM workspace_files WHERE workspace_id = $1 AND relative_path = $2"
-
 _SELECT_JOURNAL_MAX_VERSION_SQL = (
     "SELECT COALESCE(MAX(version), 0) AS max_version "
     "FROM workspace_file_versions "
@@ -688,7 +687,13 @@ async def write_file_atomic(
     # NatsProxyL3Backend honors it.
     async with db_pool.acquire() as conn:
         async with conn.transaction(namespace=workspace.namespace_name):
-            head = await conn.fetchrow(_SELECT_HEAD_SQL, workspace.id, relative_path)
+            head = await read_row(
+                conn,
+                "workspace_files",
+                by={"workspace_id": workspace.id, "relative_path": relative_path},
+                columns=("content", "sha256", "version"),
+                records=True,
+            )
             current_sha: str | None = None if head is None else head["sha256"]
             if expected_sha256 is not None and current_sha != expected_sha256:
                 raise Sha256Mismatch(expected=expected_sha256, current=current_sha)

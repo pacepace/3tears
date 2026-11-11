@@ -232,6 +232,12 @@ class _FakeConnection(FakeAsyncpgConnection):
         self.executions.append((query, args, self.transaction_open))
         return "INSERT 0 1"
 
+    async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        """the head read is a keyed point read (``threetears.core.keyed.read_row``): one statement sent through
+        ``fetch``, its first row taken. Answered here as :meth:`fetchrow` answers the same statement."""
+        row = await self.fetchrow(query, *args)
+        return [] if row is None else [row]
+
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         """dispatch by SQL shape: head SELECT returns head_row; journal-max
         SELECT returns a row with ``max_version``; all other queries return
@@ -479,6 +485,12 @@ class _RefQueryConnection:
     def __init__(self, row: dict[str, Any] | None) -> None:
         self._row = row
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        """the head read is a keyed point read (``threetears.core.keyed.read_row``): one statement sent through
+        ``fetch``, its first row taken. Answered here as :meth:`fetchrow` answers the same statement."""
+        row = await self.fetchrow(query, *args)
+        return [] if row is None else [row]
 
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         self.calls.append((query, args))

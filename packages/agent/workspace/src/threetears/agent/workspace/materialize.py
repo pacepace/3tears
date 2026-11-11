@@ -84,6 +84,7 @@ from watchfiles import Change, awatch
 
 from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.call_scope import current_scope
+from threetears.core.keyed import read_row
 from threetears.core.utils.atomic_write import atomic_write
 from threetears.observe import contain, counter, get_logger
 
@@ -1038,10 +1039,12 @@ async def _handle_watch_batch(
                             continue
                         # DISK_WINS delete-path: skip when nothing was
                         # there; otherwise emit a delete row.
-                        head = await conn.fetchrow(
-                            _SELECT_HEAD_SQL,
-                            workspace.id,
-                            rel,
+                        head = await read_row(
+                            conn,
+                            "workspace_files",
+                            by={"workspace_id": workspace.id, "relative_path": rel},
+                            columns=("content", "sha256", "version"),
+                            records=True,
                         )
                         if head is None:
                             continue
@@ -1085,10 +1088,12 @@ async def _handle_watch_batch(
                         sha = _sha256_bytes(content)
                         if (rel, sha) in just_wrote:
                             continue
-                        head = await conn.fetchrow(
-                            _SELECT_HEAD_SQL,
-                            workspace.id,
-                            rel,
+                        head = await read_row(
+                            conn,
+                            "workspace_files",
+                            by={"workspace_id": workspace.id, "relative_path": rel},
+                            columns=("content", "sha256", "version"),
+                            records=True,
                         )
                         current_sha = None if head is None else head["sha256"]
                         if current_sha == sha:
@@ -1182,9 +1187,6 @@ async def _handle_watch_batch(
                         workspace.agent_id,
                     )
     return changed
-
-
-_SELECT_HEAD_SQL = "SELECT content, sha256, version FROM workspace_files WHERE workspace_id = $1 AND relative_path = $2"
 
 
 async def _watch_loop(

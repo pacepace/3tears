@@ -153,6 +153,12 @@ class _FakeConnection(FakeAsyncpgConnection):
             self.captured_writes.append(args[4])
         return "INSERT 0 1"
 
+    async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        """the head read is a keyed point read (``threetears.core.keyed.read_row``): one statement sent through
+        ``fetch``, its first row taken. Answered here as :meth:`fetchrow` answers the same statement."""
+        row = await self.fetchrow(query, *args)
+        return [] if row is None else [row]
+
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         """dispatch by SQL shape: journal-max SELECT returns a row with
         ``max_version``; head SELECT (and any fallback) returns ``head_row``.
