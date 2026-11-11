@@ -529,6 +529,22 @@ class TestCounts:
         assert counted == {1: 1, 11: 1}
         assert [len(params[-1]) for _, params in reader.statements] == [2, 2]
 
+    async def test_counting_every_value_of_a_not_null_column_sends_no_null_group_count(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a paged count of a column declared NOT NULL (``nullable=False``) still sends the NULL group's
+        count (one wasted statement a read), or if a nullable column's count stops counting its NULL group."""
+        declared = _Recording(db)
+        counted = await counts_by(declared, "t", column="b", by={"a": "k1"}, batch=4, cast="bigint", nullable=False)
+        assert counted == {b: 1 for b in range(1, 100, 10)}
+        assert len(declared.statements) == 3  # 10 groups, 4 a page
+        assert not any("IS NULL" in sql for sql, _ in declared.statements)
+        db.execute("CREATE TABLE n (a VARCHAR, b BIGINT)")
+        db.execute("INSERT INTO n VALUES ('k1', 1), ('k1', NULL), ('k1', NULL)")
+        nullable = _Recording(db)
+        assert await counts_by(nullable, "n", column="b", by={"a": "k1"}, batch=4, cast="bigint") == {1: 1, None: 2}
+        assert len(nullable.statements) == 2 and "IS NULL" in nullable.statements[-1][0]
+
     async def test_estimated_rows_is_the_catalog_s_estimate(self, db: duckdb.DuckDBPyConnection) -> None:
         assert await estimated_rows(ThreadedDuckDB(db), "t", dialect=Dialect.DUCKDB) == 100
         assert await estimated_rows(ThreadedDuckDB(db), "absent", dialect=Dialect.DUCKDB) is None

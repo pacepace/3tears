@@ -210,6 +210,7 @@ async def counts_by(
     by: Mapping[str, Any] | None = None,
     batch: int = 999,
     cast: str | None = "text",
+    nullable: bool = True,
 ) -> dict[Any, int]:
     """how many rows of ``table`` each value of ``column`` holds (within ``by``), ``batch`` values a statement.
 
@@ -240,13 +241,19 @@ async def counts_by(
     :param cast: the column's SQL type, binding the last value of a page when every value is counted; None binds it
         as it is (SQLite)
     :ptype cast: str | None
+    :param nullable: False when ``column`` is declared NOT NULL (a key column, a ``Column(nullable=False)``):
+        counting every value, no statement counts the NULL group (it holds no row); True counts it apart, one keyed
+        statement after the pages
+    :ptype nullable: bool
     :return: value -> its rows; a value holding none is absent
     :rtype: dict[Any, int]
     :raises ValueError: when ``batch`` is under one, ``by`` names ``column`` too, or neither ``values``, ``where``
         nor a prefix ``by`` names the rows
     """
     if values is None and not where:
-        return await _counts_paged(conn, table, column=column, by=dict(by or {}), batch=batch, cast=cast)
+        return await _counts_paged(
+            conn, table, column=column, by=dict(by or {}), batch=batch, cast=cast, nullable=nullable
+        )
     counted = await counts_by_relations(
         conn, {"": table}, column=column, values=values, where=where, by=by, batch=batch
     )
@@ -254,7 +261,7 @@ async def counts_by(
 
 
 async def _counts_paged(
-    conn: Any, table: str | Derived, *, column: str, by: dict[str, Any], batch: int, cast: str | None
+    conn: Any, table: str | Derived, *, column: str, by: dict[str, Any], batch: int, cast: str | None, nullable: bool
 ) -> dict[Any, int]:
     """every value of ``column`` within the prefix ``by`` counted, ``batch`` groups a statement in its order.
 
@@ -290,6 +297,9 @@ async def _counts_paged(
         if len(rows) < batch:
             break
         last = rows[-1]["counted"]
+    if not nullable:
+        # a column declared NOT NULL has no NULL group to count
+        return counted
     # the NULL group, which no "> last" reaches: one keyed count of its own
     conditions, params = by_conditions({**by, column: None})
     rows = await conn.fetch(
