@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -85,8 +86,13 @@ _DEFAULT_RATIO: Final = 0.5
 #: the most rows one part of a checkpoint holds: what a writer or a loader holds of it at a time
 _DEFAULT_PART_ROWS: Final = 250_000
 
-#: how long a writer's claim and lock last unrenewed; renewed at every part
+#: how long a writer's claim and lock last unrenewed
 _CLAIM_TTL: Final = timedelta(minutes=2)
+
+#: how often a write renews its claim and lock: a quarter of their life, so a stalled part still leaves three
+#: quarters before either lapses (each renewal is two round trips to L2 a key; at every part a cold start's fifty
+#: scopes cost two hundred)
+_RENEW_EVERY_SECONDS: Final = _CLAIM_TTL.total_seconds() / 4
 
 #: the manifest's format; a pointer of another is not read
 _FORMAT: Final = 2
@@ -155,6 +161,24 @@ def _encode_part(table: Any) -> bytes:
     with ipc.new_stream(sink, table.schema, options=ipc.IpcWriteOptions(compression="zstd")) as writer:
         writer.write_table(table)
     return bytes(sink.getvalue().to_pybytes())
+
+
+def _next_part(batches: Iterator[tuple[str | None, Any]]) -> tuple[str | None, int, bytes] | None:
+    """the next (scope, batch) with rows, encoded as a part: its scope, its rows and its bytes; None when none is left.
+
+    :param batches: each scope and its rows
+    :ptype batches: Iterator[tuple[str | None, pyarrow.RecordBatch | pyarrow.Table]]
+    :return: the part, or None
+    :rtype: tuple[str | None, int, bytes] | None
+    """
+    for scope, batch in batches:
+        if batch.num_rows:
+            return (
+                scope,
+                batch.num_rows,
+                _encode_part(batch if isinstance(batch, pa.Table) else pa.Table.from_batches([batch])),
+            )
+    return None
 
 
 def _decode_part(data: bytes) -> Any:
@@ -636,11 +660,8 @@ class CopyCheckpoints:
             await asyncio.to_thread(self._backend.stage_rows, stage, table.name, pa.table({}), table.key)
             for object_name, _, rows in source.tables[table.name].parts:
                 data = await self._store.get(object_name)
-                part = await asyncio.to_thread(_decode_part, data)
-                if part.num_rows != rows:
-                    raise ValueError(f"part {object_name} holds {part.num_rows} rows, its manifest says {rows}")
-                await asyncio.to_thread(self._backend.stage_rows, stage, table.name, part, table.key)
-                del part, data
+                await asyncio.to_thread(self._stage_part, stage, table, object_name, data, rows)
+                del data
         except Exception as exc:  # noqa: BLE001 - the table loads from the previous checkpoint or is read whole, said
             contain(
                 exc,
@@ -651,6 +672,16 @@ class CopyCheckpoints:
             await asyncio.to_thread(self._backend.drop_stage, stage)
             return False
         return True
+
+    def _stage_part(self, stage: str, table: FollowedTable, object_name: str, data: bytes, rows: int) -> None:
+        """one part decoded and staged, on the caller's worker thread: one hop a part.
+
+        :raises ValueError: when the part holds other than the rows its manifest says
+        """
+        part = _decode_part(data)
+        if part.num_rows != rows:
+            raise ValueError(f"part {object_name} holds {part.num_rows} rows, its manifest says {rows}")
+        self._backend.stage_rows(stage, table.name, part, table.key)
 
     # --- writing ---------------------------------------------------------------------------------
 
@@ -1009,31 +1040,30 @@ class CopyCheckpoints:
         written: list[str],
         keys: tuple[str, str],
     ) -> list[tuple[str, str | None, int]]:
-        """store each (scope, batch) as one part of that scope, renewing the lock and claim at each.
+        """store each (scope, batch) as one part of that scope, renewing the lock and claim every :data:`_RENEW_EVERY_SECONDS`.
 
         :return: the parts
         :rtype: list[tuple[str, str | None, int]]
         """
         parts: list[tuple[str, str | None, int]] = []
         counts: dict[str | None, int] = {}
+        renewed = time.monotonic()
         while True:
-            item = await asyncio.to_thread(next, batches, None)
+            # the next part read and encoded in one hop off the loop
+            item = await asyncio.to_thread(_next_part, batches)
             if item is None:
                 break
-            scope, batch = item
-            if batch.num_rows == 0:
-                continue
-            data = await asyncio.to_thread(
-                _encode_part, batch if isinstance(batch, pa.Table) else pa.Table.from_batches([batch])
-            )
+            scope, rows, data = item
             n = counts.get(scope, 0)
             counts[scope] = n + 1
             name = f"{self.base}/{seq}/{self._owner}/{table}/{_scope_segment(scope)}/{n}"
             await self._store.put(name, data)
             written.append(name)
-            parts.append((name, scope, batch.num_rows))
-            for key in keys:
-                await self._renew(key)
+            parts.append((name, scope, rows))
+            if time.monotonic() - renewed >= _RENEW_EVERY_SECONDS:
+                for key in keys:
+                    await self._renew(key)
+                renewed = time.monotonic()
         return parts
 
     async def _renew(self, key: str) -> None:
@@ -1121,14 +1151,47 @@ def _split_by_scope(reader: Any, table: FollowedTable) -> Iterator[tuple[str | N
         if table.scope is None:
             yield None, batch
             continue
-        column = batch.column(batch.schema.get_field_index(table.scope[0]))
-        values = column.unique().to_pylist()
-        if len(values) == 1:
-            yield table.scope_of(values[0]), batch
-            continue
-        for value in values:
-            mask = pc.is_null(column) if value is None else pc.fill_null(pc.equal(column, value), False)
-            yield table.scope_of(value), batch.filter(mask)
+        for value, rows in _scope_runs(batch, table.scope[0]):
+            yield table.scope_of(value), rows
+
+
+def _scope_runs(batch: Any, column: str) -> Iterator[tuple[Any, Any]]:
+    """each value of a batch's scope column with the rows holding it, in the order the values first appear: the batch
+    cut where the value changes (slices, no copy) when each value's rows run together, as a copy's rows of one scope
+    do; else cut the same way after one stable sort by value. One pass over the column, never one per value.
+
+    :param batch: the rows
+    :ptype batch: pyarrow.RecordBatch
+    :param column: the scope column
+    :ptype column: str
+    :return: each value and its rows
+    :rtype: Iterator[tuple[Any, pyarrow.RecordBatch]]
+    """
+    if batch.num_rows == 0:
+        return
+    encoded = batch.column(batch.schema.get_field_index(column)).dictionary_encode(null_encoding="encode")
+    values = encoded.dictionary.to_pylist()
+    codes = encoded.indices
+    starts = _run_starts(codes)
+    if len(starts) != len(values):
+        order = pc.sort_indices(codes)
+        batch, codes = batch.take(order), codes.take(order)
+        starts = _run_starts(codes)
+    for start, end in zip(starts, [*starts[1:], batch.num_rows], strict=True):
+        yield values[codes[start].as_py()], batch.slice(start, end - start)
+
+
+def _run_starts(codes: Any) -> list[int]:
+    """where each run of equal codes starts.
+
+    :param codes: the codes, none null
+    :ptype codes: pyarrow.Array
+    :return: the first row of each run, in order
+    :rtype: list[int]
+    """
+    rows = len(codes)
+    changed = pc.not_equal(codes.slice(1), codes.slice(0, rows - 1))
+    return [0, *(int(index) + 1 for index in pc.indices_nonzero(changed).to_pylist())]
 
 
 def _scope_batches(cursor: Any, table: str, column: str, cast: str, value: str, rows: int) -> Any:

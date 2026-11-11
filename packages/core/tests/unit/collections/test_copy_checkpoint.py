@@ -27,6 +27,7 @@ from sqlalchemy import BigInteger, Column as SaColumn, MetaData, String, Table
 
 pa = pytest.importorskip("pyarrow")
 pytest.importorskip("duckdb")
+ipc = pytest.importorskip("pyarrow.ipc")
 
 from prometheus_client import REGISTRY  # noqa: E402
 
@@ -288,6 +289,23 @@ def _writes(kind: str, outcome: str) -> float:
     return REGISTRY.get_sample_value("copy_checkpoint_writes_total", {"kind": kind, "outcome": outcome}) or 0.0
 
 
+async def test_a_cold_start_write_of_rows_whose_scopes_interleave_stores_each_scope_apart_and_loads_them_all() -> None:
+    """Flips if a whole write's cut by scope puts two scopes' rows in one part, or loses or repeats a row, when the
+    copy's rows of a scope do not run together."""
+    store, pointers = _Store(), _Pointers()
+    copy = _Copy()
+    interleaved = [row for pair in zip(_state("VA", 30), _state("IL", 30), strict=True) for row in pair]
+    copy.put(_VOTES, _votes(interleaved + _state("TX", 5)), "v1", 1)
+    copy.put(_RACES, _races([(1, "gov")]), "r1", 1)
+    assert await _checkpoints(copy, store, pointers, "a", part_rows=50).write(copy.read) is not None
+    for name in _part_names(store, _VOTES):
+        states = set(ipc.open_stream(store.objects[name]).read_all().column("state").to_pylist())
+        assert len(states) == 1, (name, states)
+    loaded, _, staged = await _stage_fresh(store, pointers)
+    assert staged.missing == {}
+    assert loaded.held(_VOTES) == copy.held(_VOTES)
+
+
 # --- loading ---------------------------------------------------------------------------------------
 
 
@@ -530,8 +548,8 @@ async def test_a_one_key_change_to_a_table_with_no_scope_patches_its_part_by_tha
     second = await checkpoints.write(copy.read)
     assert second is not None
     (old_name, _, _), (new_name, _, _) = first.tables[_RACES].parts[0], second.tables[_RACES].parts[0]
-    old = pa.ipc.open_stream(store.objects[old_name]).read_all()
-    new = pa.ipc.open_stream(store.objects[new_name]).read_all()
+    old = ipc.open_stream(store.objects[old_name]).read_all()
+    new = ipc.open_stream(store.objects[new_name]).read_all()
     old_rows, new_rows = set(zip(*old.to_pydict().values())), set(zip(*new.to_pydict().values()))
     assert old_rows - new_rows == {(2, "sen")} and new_rows - old_rows == {(2, "senate")}
     # the copy was read by the one key alone; nothing of it whole
