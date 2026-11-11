@@ -69,6 +69,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "keyset_rows",
         "copy_keyed",
         "read_changed",
+        "group_hashes",
         "counts_by",
         "count_at_most",
         "holds_any",
@@ -424,6 +425,23 @@ def _read_changed(call: ast.Call) -> list[str]:
     return _keyset_page(page)
 
 
+def _group_hashes(call: ast.Call) -> list[str]:
+    """every scope's group hashes (``group_hashes``): the scopes' rows read to hash them, bound by ``scope = ANY``
+    (``scopes``) and the pins and filters every scope shares, so keyed only where the scope column leads a key (or the
+    pins before it do)."""
+    relation, own = _relation(_argument(call, "relation", 1), "relation")
+    scope = _argument(call, "scope", None)
+    if isinstance(scope, ast.Call) and _name(scope) == "Sort":
+        scope = _argument(scope, "column", 0)
+    column = _text(scope, "scope")
+    if _argument(call, "scopes", None) is None:
+        raise _Unseen("scopes")
+    pinned, place = _conditions(_by(_argument(call, "by", None)), alias="t")
+    conditions = [*pinned, f"t.{_quoted(column)} = ANY(${place})"]
+    filtered, _ = _filters(call, place + 1)
+    return [f"SELECT * FROM {relation} AS t{_where([*conditions, *filtered])}", *own]
+
+
 def _read_joined(call: ast.Call) -> list[str]:
     table = _named(_argument(call, "table", 2), "table")
     on = _by(_argument(call, "on", None), "on")
@@ -684,6 +702,7 @@ _SYNTHESIZERS: Final = {
     "keyset_rows": _keyset_page,
     "copy_keyed": _keyset_page,
     "read_changed": _read_changed,
+    "group_hashes": _group_hashes,
     "counts_by": _counts_by,
     "count_at_most": _probe,
     "holds_any": _probe,

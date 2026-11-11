@@ -312,7 +312,8 @@ async def test_every_scope_s_group_hashes_in_one_statement_match_each_scope_s_ow
         (row["state"], row["county"], row["id"]): row["h"]
         for row in await conn.fetch(f"SELECT state, county, id, {row_hash_sql(hashed, dialect)} AS h FROM scoped AS t")
     }
-    await conn.execute("UPDATE scoped SET votes = -1 WHERE state = 'PA' AND id IN (4, 5)")
+    # two rows of two counties (a key holding a NULL county is no key a phase-2 read can bind)
+    await conn.execute("UPDATE scoped SET votes = -1 WHERE state = 'PA' AND id IN (5, 6)")
     sliced = await group_hashes(
         conn, "scoped", scope="state", scopes=["PA", "OH", "WV", "XX"], group="county", hash_columns=hashed
     )
@@ -334,4 +335,4 @@ async def test_every_scope_s_group_hashes_in_one_statement_match_each_scope_s_ow
         own = await read_changed(conn, "scoped", **options)
         handed = await read_changed(conn, "scoped", groups=sliced[state], **options)
         assert (handed.rows, handed.gone_keys, handed.changed_keys) == (own.rows, own.gone_keys, own.changed_keys)
-        assert sorted(row["id"] for row in handed.rows) == ([4, 5] if state == "PA" else [])
+        assert sorted(row["id"] for row in handed.rows) == ([5, 6] if state == "PA" else [])
