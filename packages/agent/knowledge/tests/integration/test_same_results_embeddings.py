@@ -117,10 +117,11 @@ async def test_the_vector_read_reads_what_the_statement_it_replaced_read(
 
     async def helper(c: asyncpg.Connection) -> list[dict[str, Any]]:
         proxy = _Proxy(c)
-        registry = CollectionRegistry()
-        registry.configure(l3_pool=proxy)
         config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
-        await collection(registry=registry, config=config).fetch_embeddings(list(_NAMED), customer_scope=scope)
+        reading = collection(registry=CollectionRegistry(), config=config)
+        # the rbac-read proxy pool itself, as an agent pod's collection holds it (not wrapped as a plain L3 backend)
+        reading.l3_pool = proxy
+        await reading.fetch_embeddings(list(_NAMED), customer_scope=scope)
         assert proxy.scopes and set(proxy.scopes) == {scope}
         return proxy.rows
 
