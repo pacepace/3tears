@@ -965,6 +965,10 @@ def _key_hit(
             if serves and table is not None:
                 reader.schema.use(table, name, reader.names)
         return True
+    # every purposed index the bound columns key, the one the read uses credited: the longest bound prefix, then of
+    # those the index whose bound prefix is followed by the column the read orders or ranges by (of several
+    # ``(kind, <sort>, id)`` pages, each its own sort's), then the first declared
+    serving: list[tuple[tuple[int, bool], str, tuple[str, ...], int, bool]] = []
     for name, columns in purposed:
         prefix = 0
         while prefix < len(columns) and columns[prefix] in eq | contained:
@@ -977,15 +981,23 @@ def _key_hit(
             and (level.order is None or level.order[1] == columns[prefix])
         )
         if _covers(columns, eq | contained, tenants) or ranged_next:
-            if table is not None and ranged_next and prefix == 0 and not _local(reader, table):
-                # a range on the index's first column, nothing bound before it: a hashed first column cannot seek it
-                reader.schema.use_from_lead(table, name, reader.names)
-            elif table is not None:
-                reader.schema.use(table, name, reader.names)
-            elif reader.template is not None:
-                # a table its module builds from a template (``FROM {table}``): the template's index is used
-                reader.schema.use(reader.template.name, name, reader.names)
-            return True
+            following = columns[prefix] if prefix < len(columns) else None
+            ordered_next = following is not None and (
+                following in ranged or (level.order is not None and following == level.order[1])
+            )
+            serving.append(((prefix, ordered_next), name, columns, prefix, ranged_next))
+    if serving:
+        best = max(rank for rank, *_ in serving)
+        _, name, columns, prefix, ranged_next = next(entry for entry in serving if entry[0] == best)
+        if table is not None and ranged_next and prefix == 0 and not _local(reader, table):
+            # a range on the index's first column, nothing bound before it: a hashed first column cannot seek it
+            reader.schema.use_from_lead(table, name, reader.names)
+        elif table is not None:
+            reader.schema.use(table, name, reader.names)
+        elif reader.template is not None:
+            # a table its module builds from a template (``FROM {table}``): the template's index is used
+            reader.schema.use(reader.template.name, name, reader.names)
+        return True
     order = level.order
     if level.limited and order is not None and index in _owner(level, order[0]) and not filters:
         for key, name in [*((key, "") for key in primary), *((columns, name) for name, columns in purposed)]:

@@ -1853,6 +1853,38 @@ def test_a_helper_s_order_picked_from_a_module_mapping_is_judged_entry_by_entry(
     assert flagged == {"page_of", "page_by"}, found
 
 
+_ORDERS_AFTER_A_PIN = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import Sort, keyset_page
+
+    DATASOURCES = TableSchema(
+        name="datasources",
+        primary_key="id",
+        columns=[],
+        indexes=(
+            Index("page_by_name", "kind", "name", "id", purpose="src/listing.py::page_of"),
+            Index("page_by_status", "kind", "status", "id", purpose="src/listing.py::page_of"),
+        ),
+    )
+    DATASOURCE_ORDERS = {
+        "name": [Sort("name"), Sort("id")],
+        "status": [Sort("status"), Sort("id")],
+    }
+
+    async def page_of(pool, kind, field, cols):
+        return await keyset_page(pool, "datasources", columns=cols, by={"kind": kind}, order=DATASOURCE_ORDERS[field], limit=50)
+"""
+
+
+def test_each_mapped_order_after_a_pinned_prefix_credits_its_own_index(tmp_path: Path) -> None:
+    """Flips if the entries of a mapped order after a pinned ``by=`` column all credit the first index the pin leads
+    (``page_by_name``) rather than each the index of the pin followed by its own sort (``page_by_status``)."""
+    found = _symbols(_config(tmp_path, {"listing.py": _ORDERS_AFTER_A_PIN}))
+    assert not any(function == "page_of" for function, _ in found), found
+    findings = no_whole_reads_findings(_config(tmp_path, {"listing.py": _ORDERS_AFTER_A_PIN}))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
+
+
 _PRODUCED = """
     class Stages:
         def __init__(self, db):
