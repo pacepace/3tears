@@ -813,7 +813,7 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.harness.AnalystSkill",
         "threetears.evals.harness.Writer",
         "threetears.evals.harness.WriterEval",
-        # Rung 4 serves its runs with one call over as_host(...) (examples/4-booking/serve.py).
+        # Rung 4b serves its runs with one call over as_host(...) (examples/4-booking/serve.py).
         "threetears.evals.transports.fastmcp.mount_fastmcp",
         # A judge's rubric dimension, which states a scale other than pass/fail.
         "threetears.evals.schema.RubricDim",
@@ -960,8 +960,8 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.schema.RubricScore",
         "threetears.evals.schema.SecondJudge",
         "threetears.evals.schema.label_key_of",
-        # Rung 3: comparing arms and reading the outcome. A campaign's design, its report bundle and frontier, the gate
-        # a CI step reads, and the classifier measures `docs/building-an-inventory.md` builds on.
+        # Rung 3 (3a to 3e): comparing arms and reading the outcome. A campaign's design, its bundle and frontier, the
+        # gate a CI step reads, and the classifier measures `docs/building-an-inventory.md` builds on.
         "threetears.evals.analysis.GateResult",
         "threetears.evals.analysis.assemble_context_bundle",
         "threetears.evals.analysis.campaign_report",
@@ -981,7 +981,7 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.run.get_run",
         "threetears.evals.run.list_runs",
         "threetears.evals.schema.LatencyMetrics",
-        # Rung 4: a world, a log and a host of one's own. What a kind, a launcher and a world are built from beyond
+        # Rung 4a: a world, a log and a host of one's own. What a kind, a launcher and a world are built from beyond
         # the host contract, as the agent guide and the example hosts under `tests/fixtures/` build them.
         "threetears.evals.kernel.MeasureFamily",
         "threetears.evals.kernel.host.ActsOn",

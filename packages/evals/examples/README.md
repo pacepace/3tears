@@ -2,7 +2,8 @@
 
 The ladder comes first: one directory per rung, each in its own domain. Rungs 1 to 4 are recorded on cheap models
 through OpenRouter and rung 5 on Claude Sonnet, and each runs offline and free from the recordings beside it. Climb
-it in order; each rung adds one idea to the one before.
+it in order; each file adds one idea to the one before, so rungs 3 and 4 are steps of a file each (3a to 3f, 4a
+and 4b).
 
 ## The ladder
 
@@ -11,8 +12,14 @@ it in order; each rung adds one idea to the one before.
 | 0 | [`1-triage/triage.toml`](1-triage/triage.toml), after [Building an inventory](../docs/building-an-inventory.md) | Write down what your app must never get wrong, then run it with one TOML file. |
 | 1 | [`1-triage/triage.py`](1-triage/triage.py) | Point it at your own function: 15 lines of Python. |
 | 2 | [`2-replies/replies.py`](2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check the judge against a person. |
-| 3 | [`3-invoices/extract.py`](3-invoices/extract.py) | Changing a prompt? Compare it against the current one, get a report you can hand to a reviewer, and have a model write the analysis over it. |
-| 4 | [`4-booking/agent.py`](4-booking/agent.py), then [`serve.py`](4-booking/serve.py) | Is your agent doing the right thing to the world, not only saying it? Then serve your evals, and the reports over them, to the team. |
+| 3a | [`3-invoices/compare.py`](3-invoices/compare.py) | Changing a prompt? Compare it against the current one, and read the verdict. |
+| 3b | [`3-invoices/margin.py`](3-invoices/margin.py) | Is it good enough? Declare a margin, so a reading can come out equivalent. |
+| 3c | [`3-invoices/guardrail.py`](3-invoices/guardrail.py) | Must it not get worse somewhere? A guardrail, decided on its own. |
+| 3d | [`3-invoices/ci.py`](3-invoices/ci.py) | Gate CI on it, with a report you can hand to a reviewer. |
+| 3e | [`3-invoices/grid.py`](3-invoices/grid.py) | Two levers at once? A grid of factors, read by one lever. |
+| 3f | `--write-report` over [`compare.py`](3-invoices/compare.py) | Have a model write the analysis. |
+| 4a | [`4-booking/agent.py`](4-booking/agent.py) | Is your agent doing the right thing to the world, not only saying it? |
+| 4b | [`4-booking/serve.py`](4-booking/serve.py) | Serve your evals, and the reports over them, to the team. |
 | 5 | [`5-writer/writer.py`](5-writer/writer.py) | Is the model that writes your reports writing them well? A writer is a model too: compare two of its skills on frozen campaigns, and let the engine read the promotion. Its Sonnet recording replays offline, free. |
 
 One door runs every rung: `python -m threetears.evals <file>`, from any directory. It runs every eval the file
@@ -20,19 +27,24 @@ defines (an `Eval`, or rung 5's `WriterEval`). The paths a rung names (its cases
 are read beside its file; the store (`.evals/evals.sqlite`) and the report (`.evals/reports/<name>/report.html`) are
 written under the directory you run from. That report is code's, built from the readings with no model called. A
 second door, `python -m threetears.evals.harness <file> --write-report MODEL`, also has the report writer write one
-(rung 3). In a checkout, from
+(rung 3f). In a checkout, from
 `packages/evals/`, after `uv sync`:
 
 ```bash
 uv run python -m threetears.evals examples/1-triage/triage.toml    # rung 0
 uv run python -m threetears.evals examples/1-triage/triage.py      # rung 1
 uv run python -m threetears.evals examples/2-replies/replies.py    # rung 2
-uv run python -m threetears.evals examples/3-invoices/extract.py   # rung 3
-uv run python -m threetears.evals examples/4-booking/agent.py      # rung 4
+uv run python -m threetears.evals examples/3-invoices/compare.py   # rung 3a
+uv run python -m threetears.evals examples/3-invoices/margin.py    # rung 3b
+uv run python -m threetears.evals examples/3-invoices/guardrail.py # rung 3c
+uv run python -m threetears.evals examples/3-invoices/grid.py      # rung 3e
+uv run python -m threetears.evals examples/4-booking/agent.py      # rung 4a
 uv run python -m threetears.evals examples/5-writer/writer.py      # rung 5
 ```
 
-The one exception is rung 4's [`serve.py`](4-booking/serve.py), which runs from `examples/4-booking/` because it imports `agent.py` as a module.
+Two files run from their own directory instead, because each imports a sibling as a module: rung 3d's
+[`ci.py`](3-invoices/ci.py) (`cd examples/3-invoices && python ci.py`, which imports `guardrail.py`) and rung 4b's
+[`serve.py`](4-booking/serve.py) (from `examples/4-booking/`, which imports `agent.py`).
 
 A recording that exists is replayed: no key, no network, no cost. `RECORD=1` with `OPENROUTER_API_KEY` set records it
 again, live (`RECORD=1 uv run python -m threetears.evals examples/1-triage/triage.py`). A recording holds one model at one
@@ -117,20 +129,46 @@ Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017) and 120 judge
 `google/gemini-2.5-flash-lite` ($0.0151), the runner's and the judge's in recordings of their own
 (`recordings/replies.jsonl`, `recordings/judge.jsonl`).
 
-### Rung 3: two prompts compared, `3-invoices/`
+### Rung 3a: two prompts compared, `3-invoices/compare.py`
 
-[`extract.py`](3-invoices/extract.py) reads 30 invoices ([`invoices.jsonl`](3-invoices/invoices.jsonl)) in three
-strata (clean, multi-currency, noisy OCR) with two prompts, as `runner={"v1": model.prompt(V1, Invoice), "v2": ...}`;
+Rung 3 is one directory and six steps, five of them a file each, over 30 invoices ([`invoices.jsonl`](3-invoices/invoices.jsonl))
+in three strata (clean, multi-currency, noisy OCR) and two prompts. What every file reads an invoice into, and the two
+prompts, are in [`invoice.py`](3-invoices/invoice.py), which declares no eval; each file builds its own `Model`, since a
+replay serves each recorded call once per model.
+
+[`compare.py`](3-invoices/compare.py) compares the prompts, as `runner={"v1": model.prompt(V1, Invoice), "v2": ...}`;
 the first is the control, and v2 is read against it on every reading: the delta, its interval and a verdict.
 `question="Does v2 read the currency an invoice charges in right more often than v1?"` is the one sentence it
-answers, asked before any reading is seen: its measure is the first grader, `currency`, and the page quotes it. A field
-grader per field, `grader("total", margin=0.05)` declaring a margin for equivalence (a case whose `total` is `null`
-expects none stated), and `@grader(guard=0.02) no_invented_total`, a guardrail: a pass/fail check that fails each
-trial it fails, with its own held/breached reading against v1 on top. `result.write("report")` writes the HTML report for a reviewer, and `gate()`
-fails the run in CI on a regression or a guardrail not shown held. Its docstring points on to a grid of factors: arms named
-as `k=v` pairs, read against another control with `result.against()`.
+answers, asked before any reading is seen: its measure is the first grader, `currency`, and the page quotes it. What
+the recorded run said: accuracy did not separate v2 from v1, and nothing else did.
 
-What the recorded run said: accuracy did not separate v2 from v1, nothing else did, and the guardrail is undecided for v2, so it exits 4, its last line saying why in the report's words
+```text
+compare: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better.
+```
+
+One v2 trial failed, its recorded error `the candidate raised ValidationError: 1 validation error for Invoice` on
+`Invalid JSON`: malformed JSON from the model, counted against v2.
+
+Recorded on `deepseek/deepseek-v4-flash` at `max_tokens=8192`: 180 calls, $0.0105 (`recordings/invoices.jsonl`),
+which 3b, 3c, 3d and the grid's low-effort cells replay too.
+
+### Rung 3b: a margin, `3-invoices/margin.py`
+
+[`margin.py`](3-invoices/margin.py) is 3a with `grader("total", margin=0.20)`: a difference under 20 points on `total`
+is too small to act on, and only with a margin can a reading come out equivalent, the one verdict that says "good
+enough". 30 invoices narrow the interval on `total` to 19 points either side, so 20 is the tightest margin they can
+show it inside:
+
+```text
+| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -19 to +19 pts | v2 and v1 equivalent, within the measure's margin (margin ±20 pts) | 30 paired |
+```
+
+### Rung 3c: a guardrail, `3-invoices/guardrail.py`
+
+[`guardrail.py`](3-invoices/guardrail.py) adds `@grader(guard=0.02) no_invented_total`, a guardrail: a pass/fail check
+that fails each trial it fails, with its own held/breached reading against v1 on top, decided apart from the contrasts.
+(It keeps a 5-point margin on `total`, tighter than 30 invoices can show.) The guardrail is undecided for v2, so it
+exits 4, its last line saying why in the report's words
 (`exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. ... The gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
 screen quotes the question and leads on its measure, the classifier's accuracy, with the guardrail's warning beside
 it, and reads v2 against v1 in one row
@@ -150,43 +188,69 @@ v1 vs v2
 
 with the guardrail's row saying why, on the row's ruler beside its interval of `-13 to +13 pts`: `undecided: v2
 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the
-arm is shown neither within it nor beyond it)`. That is the lesson: rather than declare a winner, the report names the question it could not
-answer, and what would answer it is more hard-negative cases, invoices that print no amount due (7 of the 30). One
-v2 trial failed (`a model the candidate runs failed or refused`), its recorded error `the candidate raised
-ValidationError: 1 validation error for Invoice` on `Invalid JSON`: malformed JSON from the model, counted against v2.
-[The ladder](../docs/ladder.md#rung-3-two-prompts-compared) quotes the rest.
+arm is shown neither within it nor beyond it)`. That is the lesson: rather than declare a winner, the report names the
+question it could not answer, and what would answer it is more hard-negative cases, invoices that print no amount due
+(7 of the 30). [The ladder](../docs/ladder.md#rung-3c-a-guardrail-decided-on-its-own) quotes the rest.
 
-Recorded on `deepseek/deepseek-v4-flash` at `max_tokens=8192`: 180 calls, $0.0105 (`recordings/invoices.jsonl`).
+### Rung 3d: the gate in CI, `3-invoices/ci.py`
 
-**A model writes the analysis.** The harness door runs the same file, then the report writer (an analyst model and
-its editor) writes the campaign's report over its frozen evidence:
+[`ci.py`](3-invoices/ci.py) is the step a pipeline runs, from `3-invoices/`: `python ci.py` runs guardrail.py's eval,
+`result.write("report")` writes the HTML report for a reviewer under `report/`, and `gate()` fails the step, exit 4,
+on a regression, a breach or a guardrail not shown held, as guardrail.py's is.
+
+### Rung 3e: two levers at once, `3-invoices/grid.py`
+
+[`grid.py`](3-invoices/grid.py) crosses the prompts with two reasoning efforts, four arms named as `k=v` pairs
+(`"prompt=v2, effort=high"`), so each pair is a factor of the design. Its low-effort cells replay
+`recordings/invoices.jsonl`; its high-effort cells replay `recordings/invoices-high.jsonl`. Every arm is read against
+the control, `prompt=v1, effort=low`; `python grid.py` also reads the same runs against `prompt=v1, effort=high` with
+`result.against(...)`, the prompt's effect at high effort, with no run repeated. What the recorded run said: v2 at high
+effort is the one cell shown better than the control, a lead, and both high-effort cells cost more per reply, which
+fails the gate:
+
+```text
+prompt=v2, effort=high: 90 result(s): 90 scored
+...
+exit 4: ... The gate failed on Production cost: Callable effort high, callable prompt v1 worse than Callable effort low, callable prompt v1 (lower is better); Production cost: Callable effort high, callable prompt v2 worse than Callable effort low, callable prompt v1 (lower is better).
+```
+
+Recorded on `deepseek/deepseek-v4-flash` at high effort: 180 calls, $0.0188 (`recordings/invoices-high.jsonl`).
+
+### Rung 3f: a model writes the analysis, `--write-report`
+
+The harness door runs a file, then the report writer (an analyst model and its editor) writes the campaign's report
+over its frozen evidence:
 
 ```bash
-ANTHROPIC_API_KEY=... uv run python -m threetears.evals.harness examples/3-invoices/extract.py --write-report claude-sonnet-5-5
+ANTHROPIC_API_KEY=... uv run python -m threetears.evals.harness examples/3-invoices/compare.py --write-report claude-sonnet-5-5
 ```
 
 It is live on every run, at most `--budget-usd` a report ($3 unless you name another amount), and writes
-`.evals/reports/invoices/analysis.html`, its turns under `3-invoices/recordings/report/`. The report is stored as the
+`.evals/reports/compare/analysis.html`, its turns under `3-invoices/recordings/report/`. The report is stored as the
 campaign's analysis, so `report` and `report_read` serve it. Each run is a new campaign, so no recording is ever
 replayed here; rung 5 is the writer offline.
 
-### Rung 4: an agent graded on the world it leaves, `4-booking/`
+### Rung 4a: an agent graded on the world it leaves, `4-booking/agent.py`
 
 [`agent.py`](4-booking/agent.py) books meetings: each request ([`requests.jsonl`](4-booking/requests.jsonl)) seeds one
 day's calendar, `World(Day, tools=[find_free, book])` hands the agent two tools in a JSON tool loop over
 `model.json`, and the graders are goal checks on the day it left, beside the did-nothing control that only the first
-check beats. [`serve.py`](4-booking/serve.py) serves the eval's runs to the team: `as_host`, an MCP server in one
+check beats.
+
+Recorded on `deepseek/deepseek-v4-flash`: 100 calls, $0.0080 (`recordings/agent.jsonl`).
+
+### Rung 4b: serve it to the team, `4-booking/serve.py`
+
+[`serve.py`](4-booking/serve.py) serves the eval's runs to the team: `as_host`, an MCP server in one
 call (`mount_fastmcp(host(), scope="booking").run()`, the `[fastmcp]` extra, read-only;
 [Serving](../docs/serving.md#serving-the-runs-to-the-team)) and
 [the command line](../docs/serving.md#the-host-commands) (`python -m threetears.evals ls --host serve:host --scope booking`),
 both from `4-booking/`, where `agent.py`'s runs are stored when it is run there. `report CAMPAIGN` and `report_read`
 read a campaign's page there: the report the harness door wrote, once it has written one, and code's page until then.
 
-Recorded on `deepseek/deepseek-v4-flash`: 100 calls, $0.0080 (`recordings/agent.jsonl`).
-
 ### Rung 5: the report writer evaluated, `5-writer/`
 
-[`writer.py`](5-writer/writer.py) evaluates the report writer, the analyst model and its editor behind rung 3's
+[`writer.py`](5-writer/writer.py) evaluates the report writer, the analyst model and its editor behind rung 3f's
 harness door, as the thing under test. Its two arms are two versions of the analyst's skill: a frozen copy of the
 shipped one ([`skills/control/`](5-writer/skills/control/), frozen because every recording is keyed by the skill's
 digest; [`skills/README.md`](5-writer/skills/README.md) says which) and [`skills/lead-first.md`](5-writer/skills/lead-first.md),
@@ -198,7 +262,7 @@ Its eleven cases ([`cases/`](5-writer/cases/), one `.json.gz` each) are frozen c
 | Stratum | Cases | Side |
 |---|---|---|
 | `support-triage` | rung 1's campaign | held-out |
-| `support-replies`, `invoices`, `booking` | rungs 2, 3 and 4's | dev |
+| `support-replies`, `invoices`, `booking` | rung 2's, rung 3's from before it split (the one `guardrail.py` declares), and rung 4a's | dev |
 | `kairo` | a larger campaign the package ships as a fixture | held-out |
 | `misfit` | five of the package's report inputs reshaped to fit no exemplar | held-out |
 | `misfit` | one more, in the r3 group | dev |
@@ -310,13 +374,18 @@ A recording is made once, live, with `OPENROUTER_API_KEY` set, and replaces the 
 RECORD=1 python -m threetears.evals 1-triage/triage.toml   # 1-triage/recordings/triage-toml.jsonl
 RECORD=1 python -m threetears.evals 1-triage/triage.py     # 1-triage/recordings/triage.jsonl
 RECORD=1 python -m threetears.evals 2-replies/replies.py   # 2-replies/recordings/replies.jsonl and judge.jsonl
-RECORD=1 python -m threetears.evals 3-invoices/extract.py  # 3-invoices/recordings/invoices.jsonl
+RECORD=1 python -m threetears.evals 3-invoices/compare.py  # 3-invoices/recordings/invoices.jsonl, which 3a to 3e replay
+python -m threetears.evals 3-invoices/grid.py              # 3-invoices/recordings/invoices-high.jsonl, once deleted
 RECORD=1 python -m threetears.evals 4-booking/agent.py     # 4-booking/recordings/agent.jsonl
 ```
 
+The grid's high-effort recording is made without `RECORD=1`: delete `invoices-high.jsonl` and run `grid.py` with the
+key set, and only the missing file is recorded live while the low-effort cells replay. `RECORD=1` would record
+`invoices.jsonl` afresh too, and pay for it again.
+
 Rung 5 records differently: with `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY` set, and no `RECORD=1`, it
 records whatever is missing and replays the rest ([`5-writer/recordings/README.md`](5-writer/recordings/README.md)).
-Rung 3's harness door needs `ANTHROPIC_API_KEY` alone, and records every run, since each is a new campaign.
+Rung 3f's harness door needs `ANTHROPIC_API_KEY` alone, and records every run, since each is a new campaign.
 
 `RECORD=1` with no key is refused: a recording is of a live run. Record again whenever a rung's prompt, cases or
 request settings change: the rung's test checks the recording still covers every prompt the rung sends before it

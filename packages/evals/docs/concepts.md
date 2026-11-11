@@ -8,7 +8,7 @@ reports use. Nothing here assumes you have built an eval before. Why the pieces 
 ## Six concepts
 
 An eval is three slots, `Eval(cases, runner, grader)`. Run it, and it gives you a result you read; give it two
-runners, and it is a comparison. That is the whole of it: [World](ladder.md#rung-4-an-agent-graded-on-the-world-it-leaves)
+runners, and it is a comparison. That is the whole of it: [World](ladder.md#rung-4a-an-agent-graded-on-the-world-it-leaves)
 and `Log` are shapes of runner, `Model` is a client you may ignore, and `grader(...)` and `Answer` are optional
 modifiers.
 
@@ -64,9 +64,10 @@ against people.
 | miss | a result the runner got wrong, with why; read them before the means | [rung 1](ladder.md#rung-1-your-own-function) |
 | stratum | a case's kind, so each reading is split by kind | [rung 1](ladder.md#rung-1-your-own-function) |
 | labels, κ, evidence tier | a person's ratings of judged answers, the judge's agreement with them, and how far its scores can be leaned on | [rung 2](ladder.md#rung-2-a-judge-checked-against-a-person) |
-| arm, control, verdict | one version; the version the others are tested against; what the evidence supports | [rung 3](ladder.md#rung-3-two-prompts-compared) |
-| margin, guardrail, gate | the difference too small to matter; a reading no arm may get worse on; the CI check over the verdicts | [rung 3](ladder.md#rung-3-two-prompts-compared) |
-| world, goal check, did-nothing control | the state an agent acts on; a check of the state it left; the proof that a check can fail | [rung 4](ladder.md#rung-4-an-agent-graded-on-the-world-it-leaves) |
+| arm, control, verdict | one version; the version the others are tested against; what the evidence supports | [rung 3a](ladder.md#rung-3a-two-prompts-compared) |
+| margin, guardrail, gate | the difference too small to matter; a reading no arm may get worse on; the CI check over the verdicts | rungs [3b](ladder.md#rung-3b-a-margin-so-a-reading-can-be-equivalent), [3c](ladder.md#rung-3c-a-guardrail-decided-on-its-own) and [3d](ladder.md#rung-3d-the-gate-in-ci) |
+| factor | one lever of a grid, its arms named as `k=v` pairs | [rung 3e](ladder.md#rung-3e-two-levers-at-once) |
+| world, goal check, did-nothing control | the state an agent acts on; a check of the state it left; the proof that a check can fail | [rung 4a](ladder.md#rung-4a-an-agent-graded-on-the-world-it-leaves) |
 | store, scope, host | where runs are kept; the name they are found by; the value that serves them | [serving](serving.md#keep-your-runs-and-read-them-back) |
 | campaign, aspect, floor | one question asked of the arms; where it is measured; a line a candidate is warned for crossing | [measuring soundly](measuring-soundly.md#declare-the-campaign-its-question-arms-and-aspects) |
 
@@ -198,8 +199,7 @@ itself, the candidate model (`model`) and the candidate kind (`candidate_kind`);
 more. *Example:* `model` and `ticket_router.prompt_version`.
 With no host of your own, an arm named as `k=v` pairs (`{"prompt=v2": runner}`) states one beside the model, as
 `callable.prompt` (`callable-judged.prompt` on a judged run), and arms named `"model=m1, prompt=v2"` are keyed by
-their level of both (`examples/3-invoices/extract.py`'s docstring crosses the prompt with a reasoning
-effort).
+their level of both (`examples/3-invoices/grid.py` crosses the prompt with a reasoning effort).
 
 #### Label (sweepable role)
 A sweepable that identifies a run without determining its score (role `label`), so a difference in it is

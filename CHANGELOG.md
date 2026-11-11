@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals examples: rung 3 is one idea a file
+
+**Changed:** `examples/3-invoices/extract.py` taught six ideas at once; it is now a file each, numbered as steps of
+rung 3: `compare.py` (3a: two arms, a control and a verdict), `margin.py` (3b: a margin, so a reading can come out
+equivalent), `guardrail.py` (3c: a guardrail decided on its own; the old file's eval, unchanged and still named
+`invoices`), `ci.py` (3d: the gate in CI) and `grid.py` (3e: two levers at once, read by one lever with
+`Result.against`); 3f is `--write-report` over `compare.py`. The answer's shape and the two prompts move to
+`invoice.py`, which declares no eval, and each file builds its own `Model`. Rung 4's `agent.py` and `serve.py` are 4a
+and 4b. The grid's high-effort cells replay a new recording, `recordings/invoices-high.jsonl` (180 calls, $0.0188).
+Rung 5's frozen `3-invoices` case is the pre-split campaign and is not refrozen. No package code moves.
+
+**Readers:** a link to `extract.py`, or to the ladder's `#rung-3-two-prompts-compared` or
+`#rung-4-an-agent-graded-on-the-world-it-leaves`, is dead: link `guardrail.py` (the same eval),
+`#rung-3a-two-prompts-compared` or `#rung-4a-an-agent-graded-on-the-world-it-leaves` instead.
+
 ### evals: the retired per-1,000 money mark is removed
 
 **Removed:** the per-1,000 money mark (`$8/1000` for $0.008), retired on 2026-11-07, which the package kept only so a
