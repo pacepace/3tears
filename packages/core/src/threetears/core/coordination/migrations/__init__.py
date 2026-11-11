@@ -74,6 +74,5 @@ __all__ = [
     "add_l2_order_columns",
     "create_collection_write_marks",
     "create_coordination_tables",
-    "range_expiry_indexes",
     "register",
 ]
