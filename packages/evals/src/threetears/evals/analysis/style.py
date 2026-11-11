@@ -29,6 +29,7 @@ from datetime import datetime
 from typing import Literal
 
 from threetears.evals.kernel.metrics import MATCH_MEASURE, MetricDescriptor, goal_check_of
+from threetears.evals.schema.lever_words import lever_id_words
 from threetears.evals.schema.goal_grammar import (
     ACTION_BUILTINS,
     FIRE_PREDICATES,
@@ -211,6 +212,12 @@ _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 #: The most subjects a check's name joins (``Send message or reply check``); a check reading more is a goal check.
 _MOST_SUBJECTS = 2
 
+#: How many goal checks' subjects :func:`_check_subject` keeps read, the most recently asked first. A page names each
+#: of its checks several times, so the reading is kept; a long-running host reads checks without end (every template
+#: it seeds, every page it renders), so what is kept is bounded: a few hundred checks a page, many pages' worth held,
+#: each entry a short expression and its few words.
+_CHECK_SUBJECTS_HELD = 1024
+
 
 @dataclass(frozen=True)
 class _Subject:
@@ -324,7 +331,7 @@ def _top_bool(node: ast.AST) -> ast.boolop | None:
     return None
 
 
-@functools.cache
+@functools.lru_cache(maxsize=_CHECK_SUBJECTS_HELD)
 def _check_subject(expression: str) -> str | None:
     """What a goal check tests, in a reader's words, read off its expression alone: ``Refund amount`` for
     ``state.refund.amount <= state.order.total`` (and for it guarded by ``state.order.total > 0 and ...``, named by
@@ -448,6 +455,9 @@ class ArmName:
     #: The levers whose reader names spell ``label``, where code computed it from them (``fanout 2, retry 1``); empty
     #: for a label given, or a level value read as written (``careful``, a model's name).
     levers: tuple[str, ...] = ()
+    #: Each of ``levers``' level as ``label`` spells it, in their order (the last carrying the digest that tells the
+    #: arm from another named alike, where it has one); empty where ``levers`` is.
+    levels: tuple[str, ...] = ()
 
     def first(self) -> str:
         """The first mention: ``deepseek-v4.1-flash (production, control)``, ``v1 (control)``, or the label."""
@@ -476,9 +486,25 @@ def arm_name(display: str, *, control: bool = False, declared: Mapping[str, str]
         named: list[re.Match[str] | None] = [match for match in pairs if match and match["axis"] != "candidate_kind"]
         pairs = named if len(named) == 1 else pairs
     if len(pairs) > 1 and all(pairs):
-        label = ", ".join(f"{lever_reader_name(match['axis'], declared)} {match['level']}" for match in pairs if match)
-        return ArmName(label=label, control=control, levers=tuple(match["axis"] for match in pairs if match))
-    level = pairs[0]["level"] if len(pairs) == 1 and pairs[0] else display
+        levers = tuple(match["axis"] for match in pairs if match)
+        levels = tuple(match["level"] for match in pairs if match)
+        return ArmName(label=lever_spelled(levers, levels, declared), control=control, levers=levers, levels=levels)
+    return level_arm_name(pairs[0]["level"] if len(pairs) == 1 and pairs[0] else display, control=control)
+
+
+def level_arm_name(level: str, *, control: bool = False) -> ArmName:
+    """An arm named by one level, read as a reader reads it: a labelled model (``deepseek-v4.1-flash (production)``)
+    by its label, a model's path by its name, any other level as written. The one rule :func:`arm_name` reads a
+    single level by, and a derived arm is labelled by from its level as data
+    (:func:`~threetears.evals.analysis.campaigns.campaign_arms_spelled`), so a level holding ``, `` is read whole.
+
+    :param level: The level, as a name spells it (cut as a name cuts it).
+    :ptype level: str
+    :param control: Whether it is the control.
+    :ptype control: bool
+    :return: The arm's name.
+    :rtype: ArmName
+    """
     if labelled := _LABELLED.match(level):
         return ArmName(label=labelled["label"], model=labelled["model"], control=control)
     if "/" in level and " " not in level:
@@ -486,13 +512,36 @@ def arm_name(display: str, *, control: bool = False, declared: Mapping[str, str]
     return ArmName(label=level, control=control)
 
 
+def lever_spelled(levers: Sequence[str], levels: Sequence[str], declared: Mapping[str, str] | None = None) -> str:
+    """An arm's name spelled from several levers, each by its reader name then its level (``prompt v2, effort low``):
+    the one rule, which an arm's frozen label is spelled by (``declared`` none, each lever by its id read as words) and
+    a page prints it by (each lever by its stored name), from the levers and levels the arm carries, never from text.
+
+    :param levers: The levers, by id, in the name's order.
+    :ptype levers: Sequence[str]
+    :param levels: Each lever's level as the name spells it, in the same order.
+    :ptype levels: Sequence[str]
+    :param declared: Each lever's stored reader name, by id (:func:`lever_reader_name`); None names each by its id.
+    :ptype declared: Mapping[str, str] | None
+    :return: The name.
+    :rtype: str
+    :raises ValueError: ``levers`` and ``levels`` differ in length.
+    """
+    if len(levers) != len(levels):
+        raise ValueError(f"an arm spelled from {len(levers)} lever(s) names {len(levels)} level(s); one level each")
+    return ", ".join(
+        f"{lever_reader_name(lever, declared)} {level}" for lever, level in zip(levers, levels, strict=True)
+    )
+
+
 def lever_reader_name(lever: str, declared: Mapping[str, str] | None = None) -> str:
     """The one name a reader is shown for a lever, everywhere a page names one: an arm name computed from it, a
     configuration's setting, a factor of a grid, the production check and a lever-effect row. The name stored for it
     (``declared``: the campaign's axis and the host's lever declaration, as a bundle's ``lever_names`` or a report
-    input's carry them, ``prompt``, ``Reasoning budget``). Its id read as words (:func:`humanize`, ``max output
-    tokens``) only where no declaration of it exists at all: a lever of an analysis frozen before levers were named,
-    or one its host no longer declares.
+    input's carry them, ``prompt``, ``Reasoning budget``). Its id read as words
+    (:func:`~threetears.evals.schema.lever_words.lever_id_words`, the one rule that reads a lever's id as words: ``max
+    output tokens``) only where no declaration of it exists at all: a lever of an analysis frozen before levers were
+    named, or one its host no longer declares.
 
     :param lever: The lever, by id.
     :ptype lever: str
@@ -501,7 +550,7 @@ def lever_reader_name(lever: str, declared: Mapping[str, str] | None = None) -> 
     :return: Its reader name.
     :rtype: str
     """
-    return (declared or {}).get(lever) or humanize("dimension", lever)
+    return (declared or {}).get(lever) or lever_id_words(lever)
 
 
 def arm_display_name(name: str, levers: Iterable[str], declared: Mapping[str, str] | None = None) -> str:
@@ -768,6 +817,8 @@ __all__ = [
     "humanize",
     "is_dump",
     "lever_reader_name",
+    "lever_spelled",
+    "level_arm_name",
     "lint_prose",
     "measure_name",
     "page_date",

@@ -45,6 +45,7 @@ from threetears.evals.analysis.report.decision import (
     aspect_pass_rate,
     evaluate_floor,
     floor_readings,
+    floor_subject,
     project_rate,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_difference_interval, difference_interval
@@ -130,6 +131,11 @@ def _statuses(bundle: AnalysisContextBundle, control: str, candidate: str) -> li
     ]
 
 
+def _said(status: FloorStatus, bundle: AnalysisContextBundle) -> str:
+    """A status's reason as a page words it, the rate named off the bundle it was read from."""
+    return status.reason(floor_subject(status.decision, bundle), control="production")
+
+
 def _page(bundle: AnalysisContextBundle) -> Report:
     return build_code_only_report(bundle, assembled_at="2026-10-18T00:00:00+00:00", campaign_name="floors")
 
@@ -165,13 +171,13 @@ async def test_fourteen_cases_failed_breaks_the_rate_floor_on_its_whole_interval
     assert rate.status == "broken"
     assert rate.interval is not None and rate.interval[1] < -10.0, "the whole interval past the margin, in points"
     assert rate.reading is None, "the trials' own pass rate broke it, which no clause names"
-    assert rate.reason.startswith(
+    assert _said(rate, bundle).startswith(
         "candidate passed 18 of 60 to production's 48, a drop that exceeds the margin of 10 points on its whole interval"
     )
     # The candidate costs less per reply, but a cost alike on every case has no interval to show it: unclear, never
     # held, and it says why.
     assert (cost.floor, cost.status, cost.reading) == (f"{aspect}/cost_lower/*", "unclear", None)
-    assert cost.reason == "every case cost alike on both arms, so no interval on the cost difference exists"
+    assert _said(cost, bundle) == "every case cost alike on both arms, so no interval on the cost difference exists"
 
 
 async def test_a_candidate_failing_no_case_holds_the_rate_floor() -> None:
@@ -179,7 +185,7 @@ async def test_a_candidate_failing_no_case_holds_the_rate_floor() -> None:
     rate, _ = _statuses(bundle, control, candidate)
     assert rate.status == "held"
     assert rate.interval is not None and rate.interval[0] >= -10.0
-    assert rate.reason.startswith("candidate's drop is shown to stay within 10 points")
+    assert _said(rate, bundle).startswith("candidate's drop is shown to stay within 10 points")
 
 
 async def test_a_drop_past_the_margin_on_its_point_estimate_alone_is_unclear_on_the_broken_side() -> None:
@@ -187,9 +193,9 @@ async def test_a_drop_past_the_margin_on_its_point_estimate_alone_is_unclear_on_
     rate, _ = _statuses(bundle, control, candidate)
     assert rate.status == "unclear"
     assert rate.interval is not None and rate.interval[0] < -10.0 < rate.interval[1]
-    assert rate.reason.startswith(
+    assert _said(rate, bundle).startswith(
         "candidate's drop is past 10 points on the point estimate alone, not on its interval (from "
-    ), rate.reason
+    ), _said(rate, bundle)
 
 
 async def test_a_drop_within_the_margin_whose_interval_reaches_past_it_is_unclear_on_the_held_side() -> None:
@@ -197,14 +203,16 @@ async def test_a_drop_within_the_margin_whose_interval_reaches_past_it_is_unclea
     rate, _ = _statuses(bundle, control, candidate)
     assert rate.status == "unclear"
     assert rate.interval is not None and rate.interval[0] < -10.0
-    assert rate.reason.startswith("candidate's drop is not shown to stay within 10 points (it could be as much as ")
+    assert _said(rate, bundle).startswith(
+        "candidate's drop is not shown to stay within 10 points (it could be as much as "
+    )
 
 
 async def test_a_candidate_costing_more_on_its_whole_interval_breaks_the_cost_floor() -> None:
     """Read as a rate is: on the t interval on the per-case cost difference, at the nominal level, uncorrected."""
     bundle, control, candidate = await _shape(0, candidate_cost=0.0041, spread=0.0001)
     _, cost = _statuses(bundle, control, candidate)
-    assert (cost.status, cost.reason) == (
+    assert (cost.status, _said(cost, bundle)) == (
         "broken",
         "candidate costs more per reply than production on the whole interval",
     )

@@ -6,7 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: names leave the evidence (bundle shape 66; every stored analysis is regenerated once)
+### evals: names leave the evidence (bundle shape 66, campaign bundle shape 4; every stored analysis is regenerated once)
 
 **Changed:** names are presentation, never evidence (owner ruling, 2026-11-11). The bundle an analysis is frozen over,
 and every fingerprint and digest taken over it, carries ids and structured facts only, and a page applies every name
@@ -25,23 +25,35 @@ catalog, outside every fingerprint (`MEASURE_PRESENTATION_FIELDS`); a trial's fa
 (`TrialCheck.name`) and each judged dimension its id (`TrialJudgement.dim`, `TrialRow.judged`, `__outcome__` where it
 held `outcome`); a campaign's readings hold each measure by its key alone (`MeasureReading.name` is removed) and each
 bar's decision (`BarStatus.decision`, from the bundle's verdict) where they held a reason naming the measure
-(`BarStatus.reason` is now a method a page words with the measure's name; `missed_reason` is gone). A level's
+(`BarStatus.reason` is now a method a page words with the measure's name; `missed_reason` is gone), and each floor's
+decision as facts (`FloorStatus.decision`, a `FloorDecision`: which reason applies, the rate by its key, the counts and
+figures) where it held a reason quoting the measure's reader name (`FloorStatus.reason` is now a method a page words
+with the rate's name, `floor_subject`). A derived arm spelled from several levers carries its spelling in the campaign
+bundle (`CampaignBundle.arm_spellings`, an `ArmSpelling`: each lever by id and its level), which a page prints it by,
+never by reading its frozen label's text back; a spelling that does not spell its label is refused. A page's trial
+record prints its checks and judged dimensions in types of its own (`PrintedCheck`, `PrintedJudgement` on
+`TrialBlock`), so a bundle's key where a page's name belongs is a type error. A level's
 `display`, the name a campaign's declaration gives it or the host's, stays where a page reads it and is outside every
 fingerprint wherever the bundle carries the level (`LEVEL_PRESENTATION_FIELDS`: the variant index, the coverage, the
 declared design and the campaign's declaration); a declared crossing's cell holds each level's content hash
 (`DeclaredCellCoverage.levels`, named on the page through `AnalysisContextBundle.level_name`); and the decision surface,
 the scoreboard and the time axis order their arms by the host's display, never a declared name. A test case's label, the
-name its author gave it, rides on each trial (`TrialRow.case_label`) outside every fingerprint
-(`TRIAL_PRESENTATION_FIELDS`), the bundle holding and ordering the case by its id. So renaming a measure, a level or a
+name its author gave it, rides on each trial (`TrialRow.case_label`) outside every fingerprint,
+the bundle holding and ordering the case by its id. So renaming a measure, a level or a
 test case moves no fingerprint or digest and stales no analysis; a page built now prints the new name, and a stored
 analysis's page the names it was frozen with. Every page reads as it did. A judge's identity is untouched: a rubric
 criterion's wording keys its judge profile (`criterion_digest`) as before, and the trial keeps the criterion the judge
 was asked.
 
-**Regenerate once:** the bundle shape moves from 65 to 66, and no earlier shape is read as stored (64 was): every
-stored analysis is listed as needing regeneration, its report reads code-only, and every door says why (`holds an
-evidence bundle of shape 65, frozen before names left the evidence: ...`). Generate each again with
-`analysis_generate`; nothing is migrated. The regenerable version stays 13.
+**Regenerate once:** the bundle shape moves from 65 to 66 and the campaign bundle shape from 3 to 4, and no earlier
+shape of either is read, as stored or otherwise (bundle 64 and campaign bundle 2 were): every stored analysis is listed
+as needing regeneration, its report reads code-only, and every door says why (`holds an evidence bundle of shape 65,
+frozen before names left the evidence: ...`, or `holds evidence of shape 3 ... frozen before names left the readings`).
+Generate each again with `analysis_generate`; nothing is migrated. The code that read older evidence is removed: a
+fingerprint of an earlier version is never computed again (`fingerprint(like=...)`, `evidence_digest(like=...)` and
+`fingerprint_digest(like=...)` are gone), so one stored under it reads as not reproducing, and the page line for
+evidence read as stored (`stored_shape_line`, `DocPage.stored_shape`) is gone with the set of shapes it named. The
+regenerable version stays 13.
 
 ### evals: every lever carries a declared, stored reader name (durable v17)
 

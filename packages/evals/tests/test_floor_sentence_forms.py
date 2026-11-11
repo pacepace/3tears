@@ -17,7 +17,13 @@ from typing import Literal
 import pytest
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
-from threetears.evals.analysis.report.decision import FloorReadings, RateReading, floor_readings, read_floor
+from threetears.evals.analysis.report.decision import (
+    FloorReadings,
+    RateReading,
+    floor_readings,
+    floor_subject,
+    read_floor,
+)
 from threetears.evals.analysis.report.forms import MeasureForm, PageForms
 from threetears.evals.analysis.report.said import Said, SaidFigure
 from threetears.evals.kernel.declaration import Floor, RateDrop
@@ -47,7 +53,7 @@ def _v2_on_billing(shape: Shape) -> tuple[Said, str]:
     )
     (status,) = [status for status in shape.readings.floors if status.aspect == "billing" and status.arm_label == "v2"]
     assert verdict.outcome == "broken"
-    return verdict.reason, status.reason
+    return verdict.reason, status.reason(floor_subject(status.decision, bundle), control=shape.readings.control_label)
 
 
 def _code_page_at(places: int) -> PageForms:

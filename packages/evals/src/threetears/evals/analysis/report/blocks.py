@@ -17,7 +17,7 @@ from typing import Annotated, Any, Literal, Self, get_args
 
 from pydantic import ConfigDict, Field, JsonValue, ModelWrapValidatorHandler, ValidationError, model_validator
 
-from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement, TrialState
+from threetears.evals.analysis.bundle.schema import TrialState
 from threetears.evals.analysis.quantities import (
     PERCENT,
     is_money,
@@ -1317,6 +1317,37 @@ def interval_text(low: float, high: float, unit: str = "") -> str:
     return interval_beside(number_in(low, unit), number_in(high, unit))
 
 
+class PrintedCheck(EvalDocumentModel):
+    """A check a trial failed, as a page prints it: the name the page gives it, and its expression.
+
+    A page's own type, apart from the bundle's :class:`~threetears.evals.analysis.bundle.schema.TrialCheck`, which holds
+    the check by its measure's key: a page names the check when it is rendered (a goal check by its declared name, any
+    other by the catalog's reader name), so a key where a name belongs, or a name where a key does, is a type error,
+    never a silent non-match.
+    """
+
+    name: str = Field(min_length=1, description="What the page calls the check.")
+    expression: str = Field(min_length=1, description="What it evaluates, as written.")
+
+
+class PrintedJudgement(EvalDocumentModel):
+    """What the judge said of one dimension on one trial, as a page prints it: the dimension by the name the page
+    gives it.
+
+    A page's own type, apart from the bundle's :class:`~threetears.evals.analysis.bundle.schema.TrialJudgement`, which
+    holds the dimension by its id (``dim``: ``RubricDim.name``, ``__outcome__``): a page names it when it is rendered
+    (a reserved axis by its word, ``outcome``).
+    """
+
+    name: str = Field(min_length=1, description="What the page calls the judged dimension.")
+    criterion: str | None = Field(
+        default=None, description="The rubric criterion the judge was asked; None when the template is not to hand."
+    )
+    score: int | None = Field(default=None, description="The score, on the dimension's scale; None for can't tell.")
+    scale: str = Field(min_length=1, description="`ordinal` (1 to 5) or `pass_fail` (1 pass, 0 fail).")
+    reason: str = Field(description="The judge's reasoning, or why it could not tell; capped.")
+
+
 class TrialBlock(_Block):
     """One trial to drill into: what the case asked, what the judge saw and said, and why it ended as it did."""
 
@@ -1344,8 +1375,12 @@ class TrialBlock(_Block):
         default_factory=list, description="The names of the world state's parts, in its order: what a page counts."
     )
     excerpt: str = Field(default="", description="The tail of what the judge was handed.")
-    failed_checks: list[TrialCheck] = Field(default_factory=list, description="Each check it failed.")
-    judge: list[TrialJudgement] = Field(default_factory=list, description="What the judge said, per dimension.")
+    failed_checks: list[PrintedCheck] = Field(
+        default_factory=list, description="Each check it failed, by the name the page prints for it."
+    )
+    judge: list[PrintedJudgement] = Field(
+        default_factory=list, description="What the judge said, per dimension, each by the name the page prints for it."
+    )
     error_words: str | None = Field(default=None, description="The recorded error, for a lost or failed trial.")
     result_id: str = Field(min_length=1, description="The stored result's id.")
     open: bool = Field(
@@ -1513,6 +1548,8 @@ __all__ = [
     "OutcomeSegment",
     "ReportBasis",
     "ReportBlock",
+    "PrintedCheck",
+    "PrintedJudgement",
     "ReportSection",
     "TableBlock",
     "TableCell",

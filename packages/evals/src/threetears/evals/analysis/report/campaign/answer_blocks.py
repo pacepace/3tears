@@ -9,9 +9,8 @@ call adopting an arm past a broken floor says which floor it overrides (:func:`c
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 
-from threetears.evals.analysis.bundle.schema import stored_shape_line
 from threetears.evals.analysis.campaign_readings import CampaignReadings, FloorStatus
 from threetears.evals.analysis.report.campaign.common import floor_of
 from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
@@ -28,7 +27,6 @@ __all__ = [
     "call_blocks",
     "report_doc_blocks",
     "retired_generation",
-    "stored_shape_blocks",
     "unread_analysis_blocks",
 ]
 
@@ -77,19 +75,6 @@ def report_doc_blocks(report_doc_id: str | None) -> list[ReportBlock]:
     if report_doc_id is None:
         return []
     return [DisclosureBlock(section="answer", source="memo", text=DOC_WRITTEN.format(report_doc_id=report_doc_id))]
-
-
-def stored_shape_blocks(shapes: Iterable[int]) -> list[ReportBlock]:
-    """The one line saying the page is read from evidence of an earlier shape this build reads as stored
-    (:func:`~threetears.evals.analysis.bundle.schema.stored_shape_line`); nothing where every bundle is this build's.
-
-    :param shapes: Each aspect bundle's ``schema_version``, as read.
-    :ptype shapes: Iterable[int]
-    :return: The line, or nothing.
-    :rtype: list[ReportBlock]
-    """
-    line = stored_shape_line(shapes)
-    return [] if line is None else [DisclosureBlock(section="answer", source="basis", text=line)]
 
 
 def retired_generation(basis: str) -> str | None:

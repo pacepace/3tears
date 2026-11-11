@@ -302,11 +302,6 @@ def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] 
         '<div class="page">',
         '<article data-page="doc">',
         _masthead(page.masthead, page.title),
-        *(
-            [f'<p class="callout" data-part="stored-shape">{escape(page.stored_shape)}</p>']
-            if page.stored_shape
-            else []
-        ),
         *([f'<p class="callout warn" data-part="draft">{escape(draft_line(page))}</p>'] if page.draft else []),
         *(
             [f'<p class="callout" data-part="open"><a href="#findings">{escape(opened)}</a></p>']

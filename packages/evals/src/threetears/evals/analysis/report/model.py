@@ -67,6 +67,8 @@ from threetears.evals.analysis.report.blocks import (
     IntervalRow,
     OutcomeBar,
     OutcomeSegment,
+    PrintedCheck,
+    PrintedJudgement,
     ReportBasis,
     ReportBlock,
     ReportSection,
@@ -303,8 +305,8 @@ class Report(EvalDocumentModel):
         ``report.html`` needs nothing beside it — no script file, no stylesheet file, no image; its one script, the kit's
         chart drawing, is inlined in it; it loads nothing, its faces a local stack ending in a generic family — and
         ``bundle.json`` is the bundle with its ``schema_version``, so the fingerprint the page names is the one a reader
-        computes from the file (``AnalysisContextBundle.from_json(...).fingerprint(like=named)``, in the named one's version: an
-        unprefixed one was taken before ``v2:``). ``report.md`` is the same page as Markdown.
+        computes from the file (``AnalysisContextBundle.from_json(...).fingerprint()``). ``report.md`` is the same page as
+        Markdown.
 
         :param out_dir: The directory; created when missing.
         :ptype out_dir: Path | str
@@ -699,6 +701,8 @@ __all__ = [
     "IntervalRow",
     "OutcomeBar",
     "OutcomeSegment",
+    "PrintedCheck",
+    "PrintedJudgement",
     "Report",
     "ReportBasis",
     "ReportBlock",

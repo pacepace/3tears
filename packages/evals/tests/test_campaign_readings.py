@@ -16,7 +16,13 @@ import pytest
 
 from threetears.evals.analysis import AnalysisContextBundle, CampaignReadings, campaign_kind, campaign_readings
 from threetears.evals.analysis.campaign_readings import reading_name
-from threetears.evals.analysis.report.decision import evaluate_floor, floor_projection, floor_readings, read_floor
+from threetears.evals.analysis.report.decision import (
+    evaluate_floor,
+    floor_projection,
+    floor_readings,
+    floor_subject,
+    read_floor,
+)
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
     SIGNIFICANCE_ALPHA,
@@ -427,8 +433,9 @@ async def test_only_an_unclear_row_with_a_margin_carries_the_cases_that_would_se
 async def test_a_row_no_worse_than_the_margin_reads_as_its_floor_does_and_has_nothing_to_settle() -> None:
     # Both arms pass every trial on every aspect: at 95% the drop is at most 19 points, within a 20-point margin on
     # each, so the row reads no worse than the margin on the floor's own interval, uncorrected across the aspects.
+    base = await _base()
     read = _read(
-        await _base(),
+        base,
         {"tone": _dropped(0), "speed": _dropped(0), "billing": _dropped(0)},
         margins={"tone": 20.0, "speed": 20.0, "billing": 20.0},
         floors=(("tone", 20.0), ("speed", 20.0), ("billing", 20.0)),
@@ -439,7 +446,8 @@ async def test_a_row_no_worse_than_the_margin_reads_as_its_floor_does_and_has_no
         assert row.reading == "within_margin" and status.status == "held"
         assert row.within_interval is not None and status.interval == pytest.approx(row.within_interval)
         assert row.within_interval[0] > -20.0 and row.within_interval[0] < -15.0
-        assert row.reason == status.reason == "v2's drop is shown to stay within 20 points (it is at most 19)"
+        said = status.reason(floor_subject(status.decision, base.bundle), control=read.control_label)
+        assert row.reason == said == "v2's drop is shown to stay within 20 points (it is at most 19)"
         assert row.projection is None
         # Not shown better: the gain family read it at the family's level, where the interval reaches zero.
         assert row.gain_confidence == pytest.approx(_level(3))
@@ -459,7 +467,9 @@ async def test_an_unclear_row_s_cases_to_settle_are_its_floor_s_own_count() -> N
     assert row.reason == (
         "its interval reaches zero, and v2's drop is not shown to stay within 15 points (it could be as much as 28.4)"
     )
-    assert status.reason == "v2's drop is not shown to stay within 15 points (it could be as much as 28.4)"
+    assert status.reason(floor_subject(status.decision, base.bundle), control=read.control_label) == (
+        "v2's drop is not shown to stay within 15 points (it could be as much as 28.4)"
+    )
     bundle = varied(base.bundle, aspect="billing", control=_dropped(1)[0], candidate=_dropped(1)[1])
     verdict = read_floor(
         Floor(aspect="billing", clause=RateDrop(max_points=15.0)),

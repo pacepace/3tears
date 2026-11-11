@@ -101,7 +101,7 @@ from threetears.evals.analysis.bundle.schema import (
     host_declarations_digest,
 )
 from threetears.evals.analysis.aspects import AspectDeclaration, AspectView, aspect_view, aspect_views
-from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.campaign_bundle import ArmSpelling, CampaignBundle
 from threetears.evals.analysis.campaign_readings import (
     AggregateFigure,
     AggregateWeighting,
@@ -117,6 +117,7 @@ from threetears.evals.analysis.campaign_readings import (
     campaign_aggregate,
     campaign_kind,
     FloorState,
+    FloorDecision,
     FloorStatus,
     ShownReading,
     campaign_readings,
@@ -253,6 +254,8 @@ from threetears.evals.analysis.report import (
     TableColumn,
     TrialBlock,
     TrialDetail,
+    PrintedCheck,
+    PrintedJudgement,
     BarOutcome,
     ContrastOutcome,
     GuardrailOutcome,
@@ -454,12 +457,14 @@ __all__ = [
     "campaign_aggregate",
     "campaign_kind",
     "FloorState",
+    "FloorDecision",
     "FloorStatus",
     "ShownReading",
     "aspect_view",
     "aspect_views",
     "campaign_readings",
     # A campaign's whole evidence: every aspect's evidence, the floors and code's readings.
+    "ArmSpelling",
     "CampaignBundle",
     "CellAddress",
     "assemble_campaign_bundle",
@@ -578,6 +583,8 @@ __all__ = [
     "OutcomeSegment",
     "ReportFile",
     "TrialBlock",
+    "PrintedCheck",
+    "PrintedJudgement",
     "TrialDetail",
     "DisclosureBlock",
     "DisclosureSource",

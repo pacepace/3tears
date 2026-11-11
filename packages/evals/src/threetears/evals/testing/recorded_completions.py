@@ -27,14 +27,17 @@ Where no recorded call names the asking cell, repeat ``i`` is served the call of
 cell (a format-2 line, or a call made outside every cell) when it is left, and otherwise the first of those left,
 which is deterministic only while each repeat asks such a prompt once. A cell the recording names nowhere (its arm,
 case or eval renamed since) and left no such call stands for the one recorded cell line (a subject, arm and case)
-that asked the prompt at its repeat as often and shares its subject, arm or case: it is bound to that line for the
-rest of the replay and served its calls, so a renamed arm replays as it was recorded, on every replay. Where none
-fits it is refused, saying so; where several fit, which is its own cannot be told, and it is refused rather than
+that asked the prompt at its repeat as often and shares the most of its subject, arm and case: it is bound to that line
+for the rest of the replay and served its calls, so a renamed arm replays as it was recorded, and so does a case whose
+id a fresh store minted anew (each arm's cell stands for its own arm's line, which shares its subject and arm), on
+every replay. Where none fits it is refused, saying so; where several fit as well, which is its own cannot be told, and it is refused rather than
 handed one of them, in whatever order the cells ask; so is a call outside every cell when only calls made in cells are left. Where the one line that
 fits has asked as itself, or another cell already stands for it, it is refused too. So no cell is ever served a call
-recorded for a cell that has asked as itself, and only two cells fitting one recorded line alone (the recorded cell
-and an arm added beside it that shares its every prompt, which cannot be told from a rename) turn on order: the
-second of them to ask is refused, naming the first. The
+recorded for a cell that has asked as itself, and only cells whose best fit is one same recorded line turn on order:
+the recorded cell itself and a cell named nowhere that fits it best, or two cells named nowhere that fit it best (an
+arm added beside a recorded one whose every prompt it shares, which cannot be told from a rename; two cases of one
+arm where the recording held one), where whichever asks first takes the line and every later one is refused,
+naming it. The
 settings never reach ``generate``, so :meth:`RecordedCompletions.record` and
 :meth:`RecordedCompletions.replay` are told them. They are matched because they change the answer, so one file can
 hold one model under two settings (two efforts), each client replaying its own, and a replay asked under settings a
@@ -194,6 +197,11 @@ _CellCoordinates = tuple[str, str | None, str, int | None]
 
 #: A cell less its repeat — its subject, arm and case: every repeat of one case by one arm.
 _CellLine = tuple[str, str | None, str]
+
+
+def _shared(recorded: _CellLine, asking: _CellLine) -> int:
+    """How many of a cell line's subject, arm and case a recorded line shares: what a renamed cell is bound by."""
+    return sum(1 for held, asked in zip(recorded, asking, strict=True) if held == asked)
 
 
 def _coordinates(cell: CellIdentity) -> _CellCoordinates:
@@ -607,15 +615,17 @@ class RecordedCompletions:
            call of index ``i`` when it names none and is left, and otherwise the first such call left.
         4. **Otherwise the one recorded line it can be**: a cell named nowhere in the recording (its arm, its case or
            its eval renamed since) is bound, for the rest of the replay, to the one recorded line under the key that
-           asked at its repeat as often, and shares its subject, its arm or its case. With none it is refused, saying
-           so; with several, as ambiguous, whatever order they ask in; and where that one line has asked as
+           asked at its repeat as often and shares the most of its subject, its arm and its case (so a case reminted
+           in a fresh store binds each arm to its own recorded arm). With none sharing any it is refused, saying so;
+           with several sharing as many, as ambiguous, whatever order they ask in; and where that one line has asked as
            itself, or is already stood for by another cell, as not its own. A call outside every cell, when only
            calls made inside cells are left, is refused as ambiguous too.
 
         So a cell is never served a call recorded for a cell that has asked as itself, and which call a cell is
-        served turns on no order but in one case: two cells that fit one recorded line and no other, the recorded
-        cell itself or a second stand-in (an arm added beside a recorded arm whose every prompt it shares, rather than
-        one renamed), where the second to ask is refused, naming the first.
+        served turns on no order but in one case: several cells whose best fit is one same recorded line (the recorded
+        cell itself and a stand-in, or two stand-ins: an arm added beside a recorded arm whose every prompt it shares,
+        rather than one renamed, or two cases of one arm where the recording held one), where the first to ask takes
+        it and each later one is refused, naming who did.
         """
         tags = self._cells[key]
         taken = self._taken.get(key, {})
@@ -658,17 +668,15 @@ class RecordedCompletions:
                 self._remedy,
             )
         line = coordinates[:3]
-        candidates = sorted(
-            {
-                tag[:3]
-                for tag in tags
-                if tag is not None
-                and tag.repeat == repeat
-                and (tag.subject == line[0] or tag.variant == line[1] or tag.case == line[2])
-                and len(_ranked(tags, tag[:4])) > ask
-            },
-            key=repr,
-        )
+        fitting = {
+            tag[:3]: _shared(tag[:3], line)
+            for tag in tags
+            if tag is not None and tag.repeat == repeat and _shared(tag[:3], line) and len(_ranked(tags, tag[:4])) > ask
+        }
+        # The lines sharing the most of its subject, arm and case: a case reminted in a fresh store leaves each arm's
+        # cell its own recorded arm's line, never another arm's that shares only the subject.
+        most = max(fitting.values(), default=0)
+        candidates = sorted((fits for fits, shared in fitting.items() if shared == most), key=repr)
         if len(candidates) > 1:
             raise RecordingRefused(
                 self.path,

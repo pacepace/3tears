@@ -592,7 +592,7 @@ def _trial(block: TrialBlock) -> str:
         parts.append(f"<dt>Failed checks</dt><dd><ul>{checks}</ul></dd>")
     if block.judge:
         judged = "".join(
-            f"<li><strong>{escape(entry.dim)}</strong>: "
+            f"<li><strong>{escape(entry.name)}</strong>: "
             + ("could not tell" if entry.score is None else f"{entry.score} ({escape(entry.scale)})")
             + (f'<br><span class="facts">Asked: {escape(entry.criterion)}</span>' if entry.criterion else "")
             + (f"<br>{escape(entry.reason)}" if entry.reason else "")

@@ -363,6 +363,24 @@ async def test_a_cell_matching_no_recorded_cell_never_takes_a_call_a_matching_ce
     assert await grade("a") == "a0 grade"
 
 
+@pytest.mark.parametrize("order", [["a", "b"], ["b", "a"]])
+async def test_a_case_reminted_in_a_fresh_store_replays_each_arm_its_own_calls_of_a_prompt_every_arm_shares(
+    tmp_path: Path, order: list[str]
+) -> None:
+    """A case seeded into a fresh store is minted a new id, so no recorded cell names the replay's cells; two arms
+    sending the judge one prompt each fit both recorded lines by their shared subject, and were refused as ambiguous.
+    A renamed cell now stands for the recorded line sharing the most of its subject, arm and case: its own arm's."""
+    path = tmp_path / "rec.jsonl"
+    await _record_arms(path, ["a", "b"], own_prompt=False)
+    replay = RecordedCompletions.replay(path, settings=BUDGETED)
+    got = {}
+    for arm in order:
+        for repeat in (0, 1):
+            with bind_cell_identity(_arm(arm, repeat, case="t-reminted")):
+                got[(arm, repeat)] = (await replay.generate(system=SYSTEM, user="Grade it.")).content
+    assert got == {(arm, repeat): f"{arm}{repeat} grade" for arm in ("a", "b") for repeat in (0, 1)}
+
+
 async def test_a_cell_matching_none_is_refused_the_one_recorded_cell_it_fits_once_that_cell_asked(
     tmp_path: Path,
 ) -> None:

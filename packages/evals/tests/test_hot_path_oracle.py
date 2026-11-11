@@ -40,8 +40,9 @@ written, and the presentation and pricing fields are what the page prints, so al
 **Goldens move only when a change to a page is intended** (owner ruling, 2026-11-06): regenerate with
 ``HOT_PATH_ORACLE_REGEN=1``, review the golden diff line by line, state the reason in the commit and the chunk report,
 and never regenerate to make a red go away: a red here means a change moved what a host reads. A regeneration writes
-every golden instead of comparing it (run it locally, on one process: ``TESTAMENT=off HOT_PATH_ORACLE_REGEN=1
-./scripts/test.sh evals -k hot_path_oracle``), and each regenerating test fails naming the entries it moved, with their
+every golden instead of comparing it (run it locally, on one process: ``TESTAMENT=off
+TESTAMENT_OFF_REASON="regenerating the hot-path goldens" HOT_PATH_ORACLE_REGEN=1 ./scripts/test.sh evals -k
+hot_path_oracle``, the reason ``test.sh`` asks of every local run), and each regenerating test fails naming the entries it moved, with their
 sizes before and after, and how many it left as they were. A capture under ``inputs/`` is written only when it is
 missing; it is the campaign read, not an output, so it is never rewritten by a regeneration.
 
@@ -295,14 +296,22 @@ def printed_build(version: str) -> tuple[str, str]:
     return f"3tears-evals {version},", f"3tears-evals</span> {version},"
 
 
+#: The ``TESTAMENT_`` variables a person sets to run one file locally (``TESTAMENT=off`` takes a stated reason): a
+#: regeneration's own, never a runner's.
+_LOCAL_RUN = frozenset({"TESTAMENT_OFF", "TESTAMENT_OFF_REASON"})
+
+
 def refuse_unattended_regeneration() -> None:
     """Refuse to write goldens anywhere but one local process: never in CI, on an xdist worker or a testament runner.
 
     Parallel writers would race on each campaign's one file, and goldens written where nobody reviews the diff are a
-    silent re-baseline.
+    silent re-baseline. A testament runner is told by any ``TESTAMENT_`` variable but the two a person sets to run
+    locally (:data:`_LOCAL_RUN`), which ``test.sh`` requires of every local run.
     """
     unattended = sorted(
-        name for name in os.environ if name in ("CI", "PYTEST_XDIST_WORKER") or name.startswith("TESTAMENT_")
+        name
+        for name in os.environ
+        if name in ("CI", "PYTEST_XDIST_WORKER") or (name.startswith("TESTAMENT_") and name not in _LOCAL_RUN)
     )
     if unattended:
         pytest.fail(

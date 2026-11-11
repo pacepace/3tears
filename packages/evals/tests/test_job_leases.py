@@ -1665,6 +1665,133 @@ async def test_an_expiry_cut_short_by_a_shutdown_makes_no_store_call_after_it() 
         await leases.shut_down()
 
 
+async def _a_shutdown_under_way(store: HangingStore, storage: EvalStorage, leases: JobLeases) -> asyncio.Future[Any]:
+    """A shutdown of ``leases`` that has taken the one lease it holds and hangs writing its loss: under way until the
+    store is released or its 1-second bound ends."""
+    _seeded_run(storage, "run-held", off_loop(leases.grant))
+    leases.hold(RUN_JOB, "run-held", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+    store.hanging.add("run-held")
+    shutting = asyncio.ensure_future(leases.shut_down(within=1.0))
+    await until(lambda: not leases.holds("run-held"), timeout=5.0)
+    assert not shutting.done(), "the shutdown is still writing its loss"
+    return shutting
+
+
+async def test_a_lease_asked_for_during_a_shutdown_is_refused_naming_it_and_held_again_once_it_ends() -> None:
+    """A hold during a shutdown reset the shutdown's state: its deadline was cleared (an expiry then wrote unbounded by
+    it), its loss pass had already passed the new lease over, and the shutdown then marked the process down with that
+    lease still held and renewing, its job never written lost. A hold is refused while a shutdown runs now, naming it,
+    and the next one after it ends opens the leases again."""
+    store = HangingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)
+    try:
+        shutting = await _a_shutdown_under_way(store, storage, leases)
+        _seeded_run(storage, "run-late", off_loop(leases.grant))
+
+        with pytest.raises(ConflictError, match="shutting down") as refused:
+            leases.hold(RUN_JOB, "run-late", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+
+        assert f"({SHUTDOWN_CAUSE})" in refused.value.message and "run-late" in refused.value.message
+        assert not leases.holds("run-late"), "nothing was held"
+        assert await shutting == [], "the hung loss is not among those written"
+        assert not leases.holds("run-late"), "the shutdown ended holding nothing"
+
+        store.release.set()
+        _seeded_run(storage, "run-after", off_loop(leases.grant))
+        leases.hold(RUN_JOB, "run-after", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+        assert leases.holds("run-after"), "a hold once the shutdown ended opens the leases again"
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
+@pytest.mark.parametrize("ends", ["raises", "is cancelled", "is cancelled waiting for its renewer"])
+async def test_a_shutdown_cut_short_leaves_the_leases_down_and_the_next_hold_opens_them(
+    ends: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A shutdown that raised, or was cancelled, left the leases shutting down for the life of the process: every
+    later hold was refused. It ends down however it ends, the cut logged, and the next hold opens the leases again."""
+    store = HangingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)
+
+    def broke() -> None:
+        raise RuntimeError("the caller's cancel broke")
+
+    try:
+        with caplog.at_level(logging.ERROR, logger="threetears.evals.kernel.job_leases"):
+            if ends == "raises":
+                _seeded_run(storage, "run-held", off_loop(leases.grant))
+                leases.hold(RUN_JOB, "run-held", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+                with pytest.raises(RuntimeError, match="cancel broke"):
+                    await leases.shut_down(then=broke)
+            elif ends == "is cancelled":
+                shutting = await _a_shutdown_under_way(store, storage, leases)
+                shutting.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await shutting
+            else:
+                # Cut short at its first await, the wait for its renewer: the lease it took is not held after it.
+                _seeded_run(storage, "run-held", off_loop(leases.grant))
+                leases.hold(RUN_JOB, "run-held", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+                shutting = asyncio.ensure_future(leases.shut_down())
+                await asyncio.sleep(0)
+                shutting.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await shutting
+        assert any("was cut short" in record.getMessage() for record in caplog.records)
+        assert not leases.holds("run-held"), "no lease the shutdown took is held after it, for a renewer to renew"
+
+        store.release.set()
+        _seeded_run(storage, "run-after", off_loop(leases.grant))
+        leases.hold(RUN_JOB, "run-after", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+        assert leases.holds("run-after"), "a hold after the cut-short shutdown opens the leases again"
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
+async def test_a_task_or_a_launch_started_during_a_shutdown_is_refused_and_starts_nothing() -> None:
+    """The job manager held a task's lease after it had made the task, so a hold refused would leave a task running
+    with no lease; it holds first now, and a refused hold starts no task. A launch group refused while it saved its
+    runs settles every one ``cancelled`` with the shutdown's cause, rather than leave them pending for a slot."""
+    store = HangingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)
+    manager = EvalJobManager(storage, leases=leases)
+    began: list[str] = []
+
+    async def work() -> None:
+        began.append("ran")
+
+    async def run_work(_progress: Any) -> None:
+        began.append("ran")
+
+    try:
+        shutting = await _a_shutdown_under_way(store, storage, leases)
+        _seeded_run(storage, "task-late", off_loop(leases.grant))
+
+        with pytest.raises(ConflictError, match="shutting down"):
+            manager.start_task("task-late", work, budget_s=None, record=(RUN_JOB, TOYHOST_SCOPE))
+        assert not manager.is_task_active("task-late") and not leases.holds("task-late")
+
+        late = make_eval_run(id="run-group-late", scope_id=TOYHOST_SCOPE)
+        with pytest.raises(ConflictError, match="shutting down"):
+            await manager.start_group([(late, run_work, None)])
+        settled_run, _ = off_loop(_stored_run, storage, "run-group-late")
+        assert settled_run.status == "cancelled"
+        assert settled_run.cancellation_reason is not None and "shutting down" in settled_run.cancellation_reason
+        assert not leases.holds("run-group-late")
+
+        await shutting
+        await asyncio.sleep(0.05)
+        assert began == [], "no refused work ran"
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
 async def test_what_an_expiry_raises_after_its_renewal_was_cancelled_is_retrieved_and_logged(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

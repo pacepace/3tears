@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import pytest
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
@@ -19,6 +20,7 @@ from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.decision import control_cannot_show
 from threetears.evals.analysis.report.model import CampaignReport, TableBlock
 from threetears.evals.kernel.declaration import Floor, RateDrop
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.metrics import goal_check_measure
 from packages.evals.tests.report_shapes_support import (
     CHECKS,
@@ -218,10 +220,11 @@ def test_a_floor_on_a_judged_dimension_goes_by_the_name_the_page_s_to_settle_tab
 # --- a bundle frozen at an earlier shape --------------------------------------------------------------------------
 
 
-def test_a_campaign_bundle_frozen_at_shape_2_reads_back_the_same_readings() -> None:
+def test_a_campaign_bundle_frozen_at_shape_2_is_refused_and_regenerated_not_read_as_this_shape() -> None:
+    # A deliberate change (owner ruling, 2026-11-11, no back compat): shape 2 was read back as 3, its figures across
+    # aspects read off its readings; names leaving the readings (shape 4) ended reading any earlier shape.
     bundle = _bundle(s1_change())
     document = bundle.to_dict()
     readings = {key: value for key, value in document["readings"].items() if key != "aggregate"}
-    frozen = CampaignBundle.from_dict({**document, "schema_version": 2, "readings": readings})
-    assert frozen.readings.to_dict() == bundle.readings.to_dict()
-    assert frozen.readings.aggregate is not None and frozen.readings.aggregate.arms
+    with pytest.raises(RefusedInput, match="frozen before names left the readings"):
+        CampaignBundle.from_dict({**document, "schema_version": 2, "readings": readings})

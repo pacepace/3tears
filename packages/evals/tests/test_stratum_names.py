@@ -155,7 +155,8 @@ class TestNamingAStratumMovesNoIdentity:
         assert named == unnamed
 
     def test_the_campaign_bundle_shape_does_not_move(self) -> None:
-        assert CAMPAIGN_BUNDLE_SHAPE == 3
+        # Naming strata moved it not at all; names leaving the readings did, from 3 to 4 (owner ruling, 2026-11-11).
+        assert CAMPAIGN_BUNDLE_SHAPE == 4
 
     def test_two_templates_naming_a_stratum_alike_name_it_and_apart_print_it_by_id(
         self, caplog: pytest.LogCaptureFixture

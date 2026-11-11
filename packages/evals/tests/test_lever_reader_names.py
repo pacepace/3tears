@@ -41,7 +41,10 @@ from threetears.evals.kernel.declaration import (
 from threetears.evals.kernel.host import RegistrationError, Sweepable, SweepableRegistry
 from threetears.evals.kernel.identity import derive_context_identity, derive_variant_identity
 from threetears.evals.quick.one_call import callable_host
+from threetears.evals.analysis.style import lever_reader_name
 from threetears.evals.schema import SweepableValue
+from threetears.evals.schema.campaign_upgrade import upgrade_campaign_v16
+from threetears.evals.schema.lever_words import lever_id_words
 from threetears.evals.storage import SqliteDocumentStore
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -227,6 +230,16 @@ def test_a_title_and_a_listing_spell_a_code_made_arm_with_its_levers_stored_name
     assert declared_title("grid", [arm], [("label", None)], given=(), declared=declared).startswith(
         "Prompt v2, model b"
     )
+
+
+@pytest.mark.parametrize("lever", ["max_output_tokens", "extractor.prompt_style", "callable.prompt", "model"])
+def test_one_rule_reads_a_lever_s_id_as_words_for_a_page_and_for_the_v16_step(lever: str) -> None:
+    """Two rules turned a lever's id into words, a page's and the v16 step's, each claiming to be the one place. One
+    function owns it now; the step only drops the quick path's kind namespace before it."""
+    assert lever_reader_name(lever) == lever_id_words(lever)
+    stored = {"aspects": [{"design": {"axes": [{"axis_id": lever}]}}]}
+    (axis,) = upgrade_campaign_v16(stored)["aspects"][0]["design"]["axes"]
+    assert axis["reader_name"] == lever_id_words(lever.removeprefix("callable."))
 
 
 # --- the name is no identity -----------------------------------------------------------------------------------------

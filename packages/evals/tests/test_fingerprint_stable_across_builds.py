@@ -385,30 +385,22 @@ def test_a_statistic_changed_in_its_tenth_figure_is_another_fingerprint() -> Non
 # =============================================================================
 
 
-def test_an_unprefixed_fingerprint_is_compared_as_it_was_taken() -> None:
+def test_a_fingerprint_stored_in_an_earlier_version_never_matches_and_names_no_bundle() -> None:
+    """A version 1 (unprefixed) fingerprint was taken over a bundle of a shape no build reads, so none computes one
+    again (no back compat, owner ruling 2026-11-11): recorded on an analysis it reads as not reproducing, and a frame
+    naming its aspects by one is refused, so what holds either is regenerated."""
     bundle = toyhost_bundle()
     v1 = _v1_aspect(bundle.to_dict())
 
-    assert bundle.fingerprint(like=v1) == v1
-    assert evidence_digest(bundle.to_dict(), like=v1) == v1
-    assert bundle.fingerprint(like=bundle.fingerprint()) == bundle.fingerprint() != v1
     inspected = BundleInspection.over(bundle, analysis_id="a", recorded_fingerprint=v1)
-    assert (inspected.reproduces_generation, inspected.fingerprint) == (True, bundle.fingerprint())
-
-
-def test_a_frame_stored_with_unprefixed_fingerprints_still_names_its_bundles() -> None:
-    _, _, bundle = _toy_campaign()
-    frame = bundle.frame()
-    assert all(entry["fingerprint"].startswith("v2:") for entry in frame["aspects"])
+    assert (inspected.reproduces_generation, inspected.mismatch_cause) == (False, "package_shape")
+    _, _, campaign = _toy_campaign()
     stored = {
-        **frame,
-        "aspects": [{"aspect": a.aspect, "fingerprint": _v1_aspect(a.to_dict())} for a in bundle.aspects],
+        **campaign.frame(),
+        "aspects": [{"aspect": a.aspect, "fingerprint": _v1_aspect(a.to_dict())} for a in campaign.aspects],
     }
-
-    assert CampaignBundle.from_frame(stored, bundle.aspects).fingerprint() == bundle.fingerprint()
-    v1 = _v1_campaign(bundle.to_dict())
-    assert bundle.fingerprint(like=v1) == v1
-    assert bundle.fingerprint(like=_another(v1)) != _another(v1), "another bundle's v1 fingerprint does not match"
+    with pytest.raises(ValueError, match="names aspects"):
+        CampaignBundle.from_frame(stored, campaign.aspects)
 
 
 def _another(fingerprint: str) -> str:

@@ -626,8 +626,8 @@ DURABLE_BASELINE_VERSION: Final[int] = 15
 #:   a host must now declare: its registry refuses a lever without one), and the quick path names it by the factor its
 #:   author wrote. The step (``upgrade_campaign_v16``) names each stored axis that has none from its id, once: the id read
 #:   as words, as pages printed it before (``extractor.prompt_style`` to ``extractor prompt style``), less the quick
-#:   path's ``callable.`` or ``callable-judged.`` prefix (``callable.prompt`` to ``prompt``) — the one place a lever's
-#:   name is derived. An axis that stores one keeps it. The name is presentation: in no variant key, measurement
+#:   path's ``callable.`` or ``callable-judged.`` prefix (``callable.prompt`` to ``prompt``), read by ``lever_id_words``,
+#:   the one rule that reads a lever's id as words, which a page prints a lever no declaration names by too. An axis that stores one keeps it. The name is presentation: in no variant key, measurement
 #:   context, digest or fingerprint (``AXIS_PRESENTATION_FIELDS``; a bundle's and a campaign bundle's fingerprints
 #:   leave it out of their declared axes), so the step moves no key, reading or analysis, and a later rename splits no
 #:   history. Every other durable type passes through unchanged but for its number. Costs, as v16's: a build before

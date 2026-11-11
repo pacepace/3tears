@@ -37,8 +37,10 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 from pydantic import Field, ValidationError, field_validator
 
-from threetears.evals.analysis.arms import arm_names
-from threetears.evals.analysis.style import arm_name
+from threetears.evals.analysis.arms import arm_names, distinguishing_axes, elide_level, naming_levels, short_digest
+from threetears.evals.analysis.campaign_bundle import ArmSpelling
+from threetears.evals.analysis.style import arm_name, level_arm_name
+from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.analysis.revisions import refuse_pooled_revisions
 from threetears.evals.kernel.authoring_fields import edited_core_document, reject_unknown_authoring_fields
@@ -1812,7 +1814,27 @@ def _refuse_frozen_declaration(
 
 
 def campaign_arms(storage: CampaignStore, campaign: EvalCampaign, *, profile: HostProfile) -> list[CampaignArm]:
-    """The campaign's arms as a reader reads them: those a person named, then one per other variant its runs carry.
+    """The campaign's arms as a reader reads them: :func:`campaign_arms_spelled`'s arms, without how each was spelled.
+
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign: The campaign.
+    :ptype campaign: EvalCampaign
+    :param profile: The host whose variant map a run assembled without the launch is read through.
+    :ptype profile: HostProfile
+    :return: The named arms, the control first, then the derived candidates.
+    :rtype: list[CampaignArm]
+    :raises LeverCoordinateError: A member run recorded no lever map, and the host's variant map disagrees with its
+        own registry.
+    """
+    return campaign_arms_spelled(storage, campaign, profile=profile)[0]
+
+
+def campaign_arms_spelled(
+    storage: CampaignStore, campaign: EvalCampaign, *, profile: HostProfile
+) -> tuple[list[CampaignArm], dict[str, ArmSpelling]]:
+    """The campaign's arms as a reader reads them: those a person named, then one per other variant its runs carry;
+    and how code spelled each derived arm it spelled from several levers, by its variant key.
 
     A campaign stored before arms existed names its control alone, and a campaign named from a sweep names none, so
     every variant among an aspect's runs that no named arm resolves to is read as a candidate of its own, in aspect
@@ -1821,9 +1843,11 @@ def campaign_arms(storage: CampaignStore, campaign: EvalCampaign, *, profile: Ho
     (:func:`~threetears.evals.analysis.style.arm_name`: ``careful``, never ``candidate=careful``; several levers each by
     its id read as words, never by its reader name), its digest beside the label where two would read alike, and a
     ``(2)``, ``(3)`` … where a label is still taken. Derived on every read and never stored, so a person naming the arms
-    later replaces them whole. A page prints it with each lever's stored name
+    later replaces them whole. An arm spelled from several levers comes with its spelling
+    (:class:`~threetears.evals.analysis.campaign_bundle.ArmSpelling`: each lever by id and its level), which the
+    campaign bundle carries and a page prints the arm by, each lever by its stored name
     (:func:`~threetears.evals.analysis.report.words.printed_arm_labels`), so renaming a lever moves no label and no
-    fingerprint.
+    fingerprint, and no page reads a label's text back.
 
     **A derived label is not an identity.** It is read over the variants the runs carry now, so a variant joining
     the campaign can change the levers the variants differ on, and with them every derived label. Whatever names a
@@ -1836,8 +1860,9 @@ def campaign_arms(storage: CampaignStore, campaign: EvalCampaign, *, profile: Ho
     :ptype campaign: EvalCampaign
     :param profile: The host whose variant map a run assembled without the launch is read through.
     :ptype profile: HostProfile
-    :return: The named arms, the control first, then the derived candidates.
-    :rtype: list[CampaignArm]
+    :return: The named arms, the control first, then the derived candidates; and each derived arm's spelling, where
+        code spelled it from several levers, by variant key.
+    :rtype: tuple[list[CampaignArm], dict[str, ArmSpelling]]
     :raises LeverCoordinateError: A member run recorded no lever map, and the host's variant map disagrees with its
         own registry.
     """
@@ -1852,19 +1877,26 @@ def campaign_arms(storage: CampaignStore, campaign: EvalCampaign, *, profile: Ho
             if addressed.key not in known and addressed.key not in derived:
                 derived[addressed.key] = addressed
     if not derived:
-        return named
-    names = arm_names([_index_entry(arm) for arm in [*map(_addressed, named), *derived.values()]])
+        return named, {}
+    entries = [_index_entry(arm) for arm in [*map(_addressed, named), *derived.values()]]
+    names = arm_names(entries)
+    distinguishing = distinguishing_axes(entries)
+    by_key = {entry.variant_key: entry for entry in entries}
     taken = {arm.label for arm in named}
     arms = list(named)
+    spellings: dict[str, ArmSpelling] = {}
     for key, addressed in derived.items():
         # The arm's word (`careful`, not `candidate=careful`), an arm spelled by several levers naming each by its id
         # read as words (`prompt style v2, effort low`), never by a reader name: the label is frozen with the evidence
-        # and fingerprinted, and a page prints it with the levers' stored names (`printed_arm_labels`).
-        word = arm_name(names[key]).label
-        label, suffix = word, 2
+        # and fingerprinted, and a page prints it from its spelling, with the levers' stored names
+        # (`printed_arm_labels`).
+        word, spelling = _derived_name(by_key[key], distinguishing, names[key])
+        label, number, held = word, 2, None
         while label in taken:
-            label, suffix = f"{word} ({suffix})", suffix + 1
+            label, number, held = f"{word} ({number})", number + 1, number
         taken.add(label)
+        if spelling is not None:
+            spellings[key] = spelling.model_copy(update={"taken": held})
         arms.append(
             CampaignArm(
                 label=label,
@@ -1874,7 +1906,53 @@ def campaign_arms(storage: CampaignStore, campaign: EvalCampaign, *, profile: Ho
                 identity_version=addressed.identity_version,
             )
         )
-    return arms
+    return arms, spellings
+
+
+def _derived_name(
+    entry: VariantIndexEntry, distinguishing: frozenset[str], name: str
+) -> tuple[str, ArmSpelling | None]:
+    """A derived arm's word, read from its index entry's levels as data, never from its name's text; and its spelling
+    where it is spelled from several levers. The levels are the ones its name is spelled from
+    (:func:`~threetears.evals.analysis.arms.naming_levels`, each cut as a name cuts it), the candidate's kind dropped
+    where one other lever names it; several levers spell it (each lever by its id read as words), one names it by its
+    level (:func:`~threetears.evals.analysis.style.level_arm_name`), so a level holding ``, `` (a prompt) is read
+    whole. The digest :func:`~threetears.evals.analysis.arms.arm_names` gave a name two arms would share follows the
+    levels. An arm whose levels are unavailable, or that moved no lever, is named as ``name`` says.
+
+    :param entry: The arm's index entry.
+    :ptype entry: VariantIndexEntry
+    :param distinguishing: The levers the arms differ on (:func:`~threetears.evals.analysis.arms.distinguishing_axes`).
+    :ptype distinguishing: frozenset[str]
+    :param name: Its name as :func:`~threetears.evals.analysis.arms.arm_names` spells it, read only for its digest.
+    :ptype name: str
+    :return: The word, and the spelling where several levers spell it.
+    :rtype: tuple[str, ArmSpelling | None]
+    """
+    shown = next(
+        (
+            digest
+            for digest in (short_digest(entry.variant_key), entry.variant_key)
+            if name.endswith(f" (arm {digest})")
+        ),
+        None,
+    )
+    told = f" (arm {shown})" if shown else ""
+    levels = naming_levels(entry, distinguishing) if entry.levels_unavailable is None else []
+    if not levels:
+        return arm_name(name).label, None
+    if len(levels) > 1:
+        # The candidate's kind is no name: an arm named by its kind and one other lever is named by that lever.
+        others = [level for level in levels if level.axis_id != CANDIDATE_KIND_LEVER]
+        levels = others if len(others) == 1 else levels
+    if len(levels) == 1:
+        return level_arm_name(elide_level(levels[0].display) + told).label, None
+    spelling = ArmSpelling(
+        levers=[level.axis_id for level in levels],
+        levels=[elide_level(level.display) for level in levels],
+        digest=shown,
+    )
+    return spelling.label(), spelling
 
 
 def _addressed(arm: CampaignArm) -> _AddressedArm:
@@ -1970,6 +2048,7 @@ __all__ = [
     "OpenAxisFamily",
     "add_runs_to_campaign",
     "campaign_arms",
+    "campaign_arms_spelled",
     "create_campaign",
     "declarable_axes",
     "get_campaign",

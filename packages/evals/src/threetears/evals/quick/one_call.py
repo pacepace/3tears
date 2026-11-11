@@ -1398,7 +1398,7 @@ def _examples_as_judged(judge: Judge, expected: ExpectedLabel | None) -> list[tu
 
 #: Why the grading of a judge's examples stopped short, where the eval's cost cap stopped it on priced spend: a clause
 #: that follows "since", completed by what the eval landed against its cap.
-EXAMPLES_CAPPED = "the eval's cost cap stopped the grading"
+_EXAMPLES_CAPPED = "the eval's cost cap stopped the grading"
 
 #: A repeat's verdict where the judge answered that it could not tell.
 _CANNOT_TELL = "can't tell"
@@ -1536,7 +1536,7 @@ async def grade_judge_examples(
                         )
                     elif (landed := landed_usd + math.fsum(priced)) > max_cost_usd:
                         stopped = (
-                            f"{EXAMPLES_CAPPED}, the eval having landed {forms.money_total(landed).text}, over its "
+                            f"{_EXAMPLES_CAPPED}, the eval having landed {forms.money_total(landed).text}, over its "
                             f"{forms.money_total(max_cost_usd).text} cap"
                         )
                     if stopped is not None:
@@ -2316,7 +2316,6 @@ __all__ = [
     "CALLABLE_KIND",
     "CALLABLE_KIND_CONTRACT",
     "CALLABLE_UNSEATED",
-    "EXAMPLES_CAPPED",
     "JUDGED_CALLABLE_KIND",
     "JUDGED_CALLABLE_KIND_CONTRACT",
     "JUDGED_CALLABLE_UNSEATED",

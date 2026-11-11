@@ -33,9 +33,9 @@ from threetears.evals.analysis.campaign_bundle import (
     build_campaign_bundle,
 )
 from threetears.evals.analysis.campaign_readings import campaign_readings
-from threetears.evals.analysis.campaigns import campaign_arms
+from threetears.evals.analysis.campaigns import campaign_arms_spelled
 from threetears.evals.analysis.generation_tally import GenerationTally
-from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection, stored_shape_line
+from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection
 from threetears.evals.analysis.report import CampaignReport, Verdict
 from threetears.evals.analysis.report.figure_keys import input_check_name
 from threetears.evals.analysis.report_input_build import report_input
@@ -860,12 +860,12 @@ def _assembled_campaign_bundle(
             )
             for aspect in campaign.aspects
         ]
-        arms = campaign_arms(storage, campaign, profile=profile)
+        arms, spellings = campaign_arms_spelled(storage, campaign, profile=profile)
         readings = campaign_readings(campaign, {bundle.aspect: bundle for bundle in bundles}, arms=arms)
         # A run belongs to one aspect at most (the campaign refuses one held twice), so the aspects' counts add.
         summaries = [summary for bundle in bundles for summary in bundle.run_summaries]
         took_in(runs=len(summaries), results=sum(summary.n_results for summary in summaries))
-        return build_campaign_bundle(campaign, bundles, arms=arms, readings=readings)
+        return build_campaign_bundle(campaign, bundles, arms=arms, readings=readings, spellings=spellings)
 
 
 def assemble_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignBundle:
@@ -1411,8 +1411,7 @@ def _doc_page(
     """A stored report document's page, its readings and folds off its snapshot's bundle laid out over the campaign as
     that bundle declared it (what the document was written against, which its analysis's ``design_snapshot`` copies);
     the code-only page of ``campaign`` with the one regenerate line where the snapshot holds no bundle or its bundle
-    no longer lays out. A bundle of an earlier shape this build reads as stored lays out whole, and the page's first
-    line under its masthead says so (:func:`~threetears.evals.analysis.bundle.schema.stored_shape_line`). With
+    no longer lays out (a bundle of any shape but this build's among them: it is refused, and regenerated). With
     ``trials="all"`` the folds follow the document, each failed or lost trial's record in them, as the code-only page
     draws them. A caller's ``lead`` shows only on the code-only page standing in: the document's page holds no blocks
     of its own."""
@@ -1439,15 +1438,13 @@ def _doc_page(
                 host, campaign, unread.fault, trials=trials, unread_report_doc_id=read.record.id, lead=lead
             )
         return _stands_in(host, campaign, unread.fault, trials=trials, unread_analysis_id=analysis_id, lead=lead)
-    # Evidence of an earlier shape this build reads as stored renders whole, the page's first line saying so.
-    stored = stored_shape_line(aspect.schema_version for aspect in bundle.aspects)
     return CampaignReport.model_validate(
         {
             **dict(page),
             "basis": "analysis",
             "analysis_id": analysis_id,
             "blocks": [],
-            "doc_page": read.page if stored is None else read.page.model_copy(update={"stored_shape": stored}),
+            "doc_page": read.page,
             "report_doc": read.summary(),
             "doc_trials": trials == "all",
         }
