@@ -8084,6 +8084,7 @@
      "variant_key": "8e0032bccaca6a9cb6693607cc862ae8ad732ea02fc993fc8d3d82c39707fee6"
     }
    ],
+   "arm_spellings": {},
    "aspects": [
     {
      "aliased_factors": [],
@@ -12826,13 +12827,13 @@
     ],
     "readings": []
    },
-   "schema_version": 3,
+   "schema_version": 4,
    "scope_id": "toyhost-scope",
    "subject_id": "extractor-config-7",
    "subject_kind": "extractor_config"
   },
   "bundle_assembled_at": "2026-11-09T23:45:12.772212+00:00",
-  "bundle_fingerprint": "v3:4baf81b725ada01518146e45866c312df6e60ec84984390b56bf65da71d7e68e",
+  "bundle_fingerprint": "v3:a8b7d039d67693bc1133b04baa0efc47b7c81c3ace2e613b33921259065ee5de",
   "campaign_id": "2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03",
   "created_at": "2026-11-09T23:45:12.840349+00:00",
   "created_by": "agent:test",
@@ -19297,6 +19298,7 @@
      "variant_key": "8e0032bccaca6a9cb6693607cc862ae8ad732ea02fc993fc8d3d82c39707fee6"
     }
    ],
+   "arm_spellings": {},
    "aspects": [
     {
      "aspect": "extract_invoice_fields",
@@ -19568,7 +19570,7 @@
     ],
     "readings": []
    },
-   "schema_version": 3,
+   "schema_version": 4,
    "scope_id": "toyhost-scope",
    "subject_id": "extractor-config-7",
    "subject_kind": "extractor_config"
@@ -19650,7 +19652,7 @@
   "document": null,
   "generation": {
    "bundle_assembled_at": "2026-11-09T23:45:12.772212+00:00",
-   "bundle_fingerprint": "v3:4baf81b725ada01518146e45866c312df6e60ec84984390b56bf65da71d7e68e",
+   "bundle_fingerprint": "v3:a8b7d039d67693bc1133b04baa0efc47b7c81c3ace2e613b33921259065ee5de",
    "bundle_schema_version": 66,
    "cell_model_version": 14,
    "generated_at": "2026-11-09T23:45:12.898523+00:00",
