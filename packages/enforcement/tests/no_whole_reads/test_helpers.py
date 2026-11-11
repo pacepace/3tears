@@ -41,6 +41,13 @@ CREATE INDEX relations_by_customer ON relations (customer_id, name, id);
 -- purpose: src/app.py::reader
 -- plan_test: tests/test_app.py::test_relations_plan
 CREATE INDEX relations_by_lower_name ON relations (lower(name), id);
+CREATE TABLE nodes (id UUID PRIMARY KEY, kind TEXT, metadata JSONB);
+-- purpose: src/app.py::reader
+-- plan_test: tests/test_app.py::test_nodes_plan
+CREATE INDEX nodes_by_kind_pod ON nodes (kind, (metadata->>'pod'));
+-- purpose: src/app.py::reader
+-- plan_test: tests/test_app.py::test_nodes_plan
+CREATE INDEX nodes_by_pod ON nodes ((metadata->>'pod'));
 """
 
 
@@ -315,3 +322,13 @@ def test_a_derived_relation_reading_whole_is_named(schema: SchemaCatalog) -> Non
     """Flips if a derived relation is trusted without its own text being judged."""
     judged = _judged('holds_any(c, Derived("SELECT state FROM results WHERE kind = \'x\'"), order=["state"])', schema)
     assert any(findings for findings in judged), judged
+
+
+def test_a_pinned_expression_is_judged_against_the_expression_index_holding_it(schema: SchemaCatalog) -> None:
+    """Flips if a read_by pinning an expression (Pin.expr) is not keyed by the purposed index on that expression, or
+    is keyed outside the read its purpose names, or an expression of another shape passes."""
+    pinned = 'read_by(c, "nodes", by={Pin.expr("metadata->>\'pod\'"): pod})'
+    assert _judged(pinned, schema) == [[]]
+    assert _judged('read_by(c, "nodes", by={Pin.expr("t.\\"metadata\\"->>\'pod\'"): pod, "kind": k})', schema) == [[]]
+    assert _judged(pinned, schema, "src/app.py::elsewhere") == [[("non-key-where", "nodes")]]
+    assert _judged('read_by(c, "nodes", by={Pin.expr("lower(kind)"): v})', schema) == [[("non-key-where", "nodes")]]

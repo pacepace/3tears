@@ -62,6 +62,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
 )
 from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.keyed import AnyOf, KeyPage, Pin, Selected, Sort, counts_by, keyset_page, read_by
 from threetears.core.namespaces import namespace_contains
 from threetears.observe import get_logger
 
@@ -135,6 +136,14 @@ __all__ = [
     "RoleAssignmentCollection",
     "RoleCollection",
 ]
+
+
+#: a tool provider's node: its namespace type, and the one partition every node is written in
+_PROVIDER_NODE_TYPE: Final[str] = "tool_provider"
+_PROVIDER_NODE_SCOPE: Final[str] = "platform"
+
+#: the partitions :meth:`NamespaceCollection.page_ids` walks, in order
+_PAGED_SCOPES: Final[tuple[str, ...]] = ("platform", "customer")
 
 
 def _coerce_uuid(raw: Any) -> UUID | None:
@@ -687,6 +696,9 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
             # rationale: the evaluator's parent walk reads every row naming a level of child
             # groups as a MEMBER; the parents those rows name are the answer, not a key
             "load_for_groups",
+            # rationale: a set of groups' members, each group its own partition, read in one statement by the
+            # partition column itself (group_id = ANY)
+            "members_of_groups",
             "delete_from_store",
             "save_entity",
         }
@@ -831,6 +843,38 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         :rtype: list[GroupMembership]
         """
         return await self._load_naming("group", list(group_ids))
+
+    async def members_of_groups(self, group_ids: Sequence[UUID]) -> list[GroupMembership]:
+        """every membership any of ``group_ids`` holds, of every member type, in one read through
+        ``idx_group_members_group_id`` (group_id).
+
+        the downward counterpart of :meth:`load_for_groups`: the members a whole level of groups holds (a reverse
+        access query's walk down from the granting groups, a dry run's fan-out of one group). empty input reads
+        nothing.
+
+        :param group_ids: the groups
+        :ptype group_ids: Sequence[UUID]
+        :return: their memberships, in no promised order
+        :rtype: list[GroupMembership]
+        """
+        result: list[GroupMembership] = []
+        if self.l3_pool is not None and len(group_ids) > 0:
+            rows = await read_by(
+                self.l3_pool,
+                "group_members",
+                by={"group_id": AnyOf(list(group_ids), cast="uuid")},
+                columns=("group_id", "member_type", "member_id", "customer_id"),
+            )
+            result = [
+                GroupMembership(
+                    group_id=_coerce_uuid(row["group_id"]),  # type: ignore[arg-type]
+                    member_type=MemberType(row["member_type"]),
+                    member_id=_coerce_uuid(row["member_id"]),  # type: ignore[arg-type]
+                    customer_id=_coerce_uuid(row["customer_id"]),
+                )
+                for row in rows
+            ]
+        return result
 
     async def membership_would_cycle(
         self,
@@ -1148,6 +1192,15 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
     partition_exempt_methods = frozenset(
         {
             "load_for_groups",
+            # a group's, a role's, a namespace's or a scope's assignments sit in both partitions (a platform 'all'
+            # grant beside a customer's), so each keyed read names both; its own index keys it
+            "list_by_group",
+            "count_by_group",
+            "list_by_role",
+            "count_by_role",
+            "list_scoped_to_namespace",
+            "list_of_type_customer",
+            "list_by_scope_type",
             "ensure_group_role_assignment",
             "delete_by_group_and_scope",
             "delete_from_store",
@@ -1335,6 +1388,165 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 )
                 for row in rows
             ]
+        return result
+
+    def _promoted(self, rows: Sequence[dict[str, Any]], read_ticket: Any) -> list[RoleAssignmentEntity]:
+        """rows read by key, as entities, each promoted into L1/L2 as :meth:`find_by_id` promotes one.
+
+        :param rows: the rows
+        :ptype rows: Sequence[dict[str, Any]]
+        :param read_ticket: the scan ticket taken before the read
+        :ptype read_ticket: Any
+        :return: the entities
+        :rtype: list[RoleAssignmentEntity]
+        """
+        result: list[RoleAssignmentEntity] = []
+        for row in rows:
+            data = self._coerce_row(dict(row))
+            self.write_to_cache_sync(data, read_since=read_ticket)
+            result.append(self.entity_class(data, is_new=False, collection=self))
+        return result
+
+    async def list_by_group(self, group_id: UUID) -> list[RoleAssignmentEntity]:
+        """every assignment ``group_id`` holds, platform- and customer-scope alike, through
+        ``idx_role_assignments_group_scope`` (group_id, scope_type).
+
+        the entity form of :meth:`load_for_groups`, for a caller that needs a grant's provenance
+        (``managed_by``, ``granted_by``) as well as its scope.
+
+        :param group_id: the group
+        :ptype group_id: UUID
+        :return: its assignments, promoted into L1/L2, in no promised order
+        :rtype: list[RoleAssignmentEntity]
+        """
+        read_ticket = self.scan_ticket()  # before the first await
+        result: list[RoleAssignmentEntity] = []
+        if self.l3_pool is not None:
+            rows = await read_by(
+                self.l3_pool,
+                "role_assignments",
+                by={"group_id": group_id},
+            )
+            result = self._promoted(rows, read_ticket)
+        return result
+
+    async def count_by_group(self, group_id: UUID) -> int:
+        """how many assignments ``group_id`` holds, counted through ``idx_role_assignments_group_scope``.
+
+        :param group_id: the group
+        :ptype group_id: UUID
+        :return: the count, zero when none
+        :rtype: int
+        """
+        result = 0
+        if self.l3_pool is not None:
+            counted = await counts_by(
+                self.l3_pool, "role_assignments", column="group_id", values=AnyOf([group_id], cast="uuid")
+            )
+            result = sum(counted.values())
+        return result
+
+    async def list_by_role(self, role_id: UUID) -> list[RoleAssignmentEntity]:
+        """every assignment of ``role_id``, both partitions, through ``idx_role_assignments_role`` (role_id,
+        assignment_id): who a role's change reaches.
+
+        :param role_id: the role
+        :ptype role_id: UUID
+        :return: its assignments, promoted into L1/L2, in no promised order
+        :rtype: list[RoleAssignmentEntity]
+        """
+        read_ticket = self.scan_ticket()  # before the first await
+        result: list[RoleAssignmentEntity] = []
+        if self.l3_pool is not None:
+            rows = await read_by(
+                self.l3_pool,
+                "role_assignments",
+                by={"role_id": role_id},
+            )
+            result = self._promoted(rows, read_ticket)
+        return result
+
+    async def count_by_role(self, role_id: UUID) -> int:
+        """how many assignments name ``role_id``, counted through ``idx_role_assignments_role``.
+
+        :param role_id: the role
+        :ptype role_id: UUID
+        :return: the count, zero when none
+        :rtype: int
+        """
+        result = 0
+        if self.l3_pool is not None:
+            counted = await counts_by(
+                self.l3_pool, "role_assignments", column="role_id", values=AnyOf([role_id], cast="uuid")
+            )
+            result = sum(counted.values())
+        return result
+
+    async def list_scoped_to_namespace(self, namespace_id: UUID) -> list[RoleAssignmentEntity]:
+        """every ``scope_type='namespace'`` assignment on ``namespace_id``, through
+        ``idx_role_assignments_scope_namespace`` (scope_namespace_id) WHERE scope_namespace_id IS NOT NULL.
+
+        :param namespace_id: the namespace
+        :ptype namespace_id: UUID
+        :return: its namespace-scope assignments, promoted into L1/L2, in no promised order
+        :rtype: list[RoleAssignmentEntity]
+        """
+        read_ticket = self.scan_ticket()  # before the first await
+        result: list[RoleAssignmentEntity] = []
+        if self.l3_pool is not None:
+            rows = await read_by(
+                self.l3_pool,
+                "role_assignments",
+                by={"scope_namespace_id": namespace_id, "scope_type": ScopeType.NAMESPACE.value},
+            )
+            result = self._promoted(rows, read_ticket)
+        return result
+
+    async def list_of_type_customer(self, customer_id: UUID, namespace_type: str) -> list[RoleAssignmentEntity]:
+        """every ``scope_type='type_customer'`` assignment on a customer's namespaces of one type, through
+        ``idx_role_assignments_scope_type_customer`` (scope_customer_id, scope_namespace_type) WHERE
+        scope_type = 'type_customer'.
+
+        :param customer_id: the customer
+        :ptype customer_id: UUID
+        :param namespace_type: the namespace type
+        :ptype namespace_type: str
+        :return: the assignments, promoted into L1/L2, in no promised order
+        :rtype: list[RoleAssignmentEntity]
+        """
+        read_ticket = self.scan_ticket()  # before the first await
+        result: list[RoleAssignmentEntity] = []
+        if self.l3_pool is not None:
+            rows = await read_by(
+                self.l3_pool,
+                "role_assignments",
+                by={
+                    "scope_customer_id": customer_id,
+                    "scope_namespace_type": namespace_type,
+                    "scope_type": ScopeType.TYPE_CUSTOMER.value,
+                },
+            )
+            result = self._promoted(rows, read_ticket)
+        return result
+
+    async def list_by_scope_type(self, scope_type: ScopeType) -> list[RoleAssignmentEntity]:
+        """every assignment of one scope type, through ``idx_role_assignments_scope_type`` (scope_type,
+        assignment_id): the ``subtree`` and ``all`` grants a reverse access query weighs against any namespace.
+
+        :param scope_type: the scope type
+        :ptype scope_type: ScopeType
+        :return: the assignments, promoted into L1/L2, in no promised order
+        :rtype: list[RoleAssignmentEntity]
+        """
+        read_ticket = self.scan_ticket()  # before the first await
+        result: list[RoleAssignmentEntity] = []
+        if self.l3_pool is not None:
+            rows = await read_by(
+                self.l3_pool,
+                "role_assignments",
+                by={"scope_type": scope_type.value},
+            )
+            result = self._promoted(rows, read_ticket)
         return result
 
     async def ensure_group_role_assignment(
@@ -1731,6 +1943,16 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             "list_ids_by_customer_and_type",
             "list_all_ids",
             "list_ids_under_name",
+            # a type's rows may sit in both partitions ('tool' rows are platform and customer alike), so the
+            # by-type read names both; idx_namespaces_type keys it
+            "type_rows",
+            "list_by_type",
+            # the ids of both partitions a page at a time, each page bound to one partition (the cursor names it)
+            "page_ids",
+            # a tool provider's nodes are written in the platform partition alone (each read pins it)
+            "tool_provider_nodes",
+            "tool_provider_ownership",
+            "tool_provider_names",
             # an owner's rows sit in both partitions (a customer-scoped channel
             # beside a platform-scoped tool), so the by-owner walk names both.
             "list_owned_by",
@@ -2451,6 +2673,141 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             result = [row["namespace_id"] for row in rows if row["namespace_id"] is not None]
         return result
+
+    async def type_rows(self, namespace_type: str, *, row_scope: str | None = None) -> list[dict[str, Any]]:
+        """every namespace row of one type, as read, through ``idx_namespaces_type`` (namespace_type): for a caller
+        that caches the rows themselves (a scan cache) and builds no entity.
+
+        :param namespace_type: the type
+        :ptype namespace_type: str
+        :param row_scope: the one partition read (a tool provider's nodes are all ``platform``); both when None
+        :ptype row_scope: str | None
+        :return: the rows, in no promised order; empty without an L3 pool
+        :rtype: list[dict[str, Any]]
+        """
+        result: list[dict[str, Any]] = []
+        if self.l3_pool is not None and row_scope is None:
+            result = await read_by(self.l3_pool, "namespaces", by={"namespace_type": namespace_type})
+        elif self.l3_pool is not None:
+            result = await read_by(
+                self.l3_pool, "namespaces", by={"row_scope": row_scope, "namespace_type": namespace_type}
+            )
+        return result
+
+    async def list_by_type(self, namespace_type: str) -> list[NamespaceEntity]:
+        """every namespace of one type, both partitions, through ``idx_namespaces_type`` (namespace_type), each
+        promoted into L1/L2 as :meth:`find_by_id` promotes one.
+
+        :param namespace_type: the type (``model``, ``tool``, ``workspace`` ...)
+        :ptype namespace_type: str
+        :return: its namespaces, in no promised order
+        :rtype: list[NamespaceEntity]
+        """
+        read_ticket = self.scan_ticket()  # before the first await
+        result: list[NamespaceEntity] = []
+        for row in await self.type_rows(namespace_type):
+            data = self._coerce_row(dict(row))
+            self.write_to_cache_sync(data, read_since=read_ticket)
+            result.append(self.entity_class(data, is_new=False, collection=self))
+        return result
+
+    async def tool_provider_nodes(self, tool_pod_id: str) -> list[dict[str, Any]]:
+        """the ``tool_provider`` nodes one tool pod is recorded as owning (``metadata.tool_pod_id``), as read, through
+        ``idx_namespaces_tool_provider_pod`` (namespace_type, row_scope, (metadata->>'tool_pod_id')).
+
+        Bounded to the ``platform`` partition, where every provider node is written; a customer-scoped one gets no
+        grant, the fail-closed side.
+
+        :param tool_pod_id: the pod, matched against the row's ``metadata.tool_pod_id`` (a bind, never text of the
+            statement)
+        :ptype tool_pod_id: str
+        :return: the nodes' rows, in no promised order; empty without an L3 pool
+        :rtype: list[dict[str, Any]]
+        """
+        result: list[dict[str, Any]] = []
+        if self.l3_pool is not None:
+            result = await read_by(
+                self.l3_pool,
+                "namespaces",
+                by={
+                    Pin.expr("metadata->>'tool_pod_id'"): tool_pod_id,
+                    "row_scope": _PROVIDER_NODE_SCOPE,
+                    "namespace_type": _PROVIDER_NODE_TYPE,
+                },
+            )
+        return result
+
+    async def tool_provider_ownership(self) -> list[dict[str, Any]]:
+        """every ``tool_provider`` node's ``name`` and owning pod (``tool_pod_id``, None when unstamped), in one read
+        through ``idx_namespaces_tool_provider_pod``.
+
+        :return: ``{"name", "tool_pod_id"}`` per node, in no promised order; empty without an L3 pool
+        :rtype: list[dict[str, Any]]
+        """
+        result: list[dict[str, Any]] = []
+        if self.l3_pool is not None:
+            result = await read_by(
+                self.l3_pool,
+                "namespaces",
+                by={"row_scope": _PROVIDER_NODE_SCOPE, "namespace_type": _PROVIDER_NODE_TYPE},
+                columns=("name", Selected("metadata->>'tool_pod_id'", "tool_pod_id")),
+            )
+        return result
+
+    async def tool_provider_names(self) -> list[dict[str, Any]]:
+        """every ``tool_provider`` node's ``name`` and nothing else, through ``idx_namespaces_tool_provider_pod``.
+
+        :return: ``{"name"}`` per node, in no promised order; empty without an L3 pool
+        :rtype: list[dict[str, Any]]
+        """
+        result: list[dict[str, Any]] = []
+        if self.l3_pool is not None:
+            result = await read_by(
+                self.l3_pool,
+                "namespaces",
+                by={"row_scope": _PROVIDER_NODE_SCOPE, "namespace_type": _PROVIDER_NODE_TYPE},
+                columns=("name",),
+            )
+        return result
+
+    async def page_ids(self, *, limit: int, cursor: str | None = None) -> KeyPage:
+        """one page of every namespace id, a partition at a time (``platform``, then ``customer``), each by its
+        primary key (row_scope, namespace_id): the bounded form of :meth:`list_all_ids`.
+
+        The cursor names the partition it stopped in (``<row_scope>:<the page's own cursor>``); a page that ends
+        a partition answers the next partition's start, so a walk reads every id once. A page holds at most
+        ``limit`` rows, fewer where a partition ends.
+
+        :param limit: the most ids a page holds, at least one
+        :ptype limit: int
+        :param cursor: the cursor a previous page answered; the first page when None
+        :ptype cursor: str | None
+        :return: the page, each row ``{"namespace_id": ...}``; ``next_cursor`` None on the last
+        :rtype: KeyPage
+        :raises ValueError: when ``cursor`` names no partition
+        """
+        scope, _, inner = (cursor or f"{_PAGED_SCOPES[0]}:").partition(":")
+        if scope not in _PAGED_SCOPES:
+            raise ValueError(f"namespace id cursor names no partition: {cursor!r}")
+        page = KeyPage(rows=[], next_cursor=None)
+        if self.l3_pool is not None:
+            found = await keyset_page(
+                self.l3_pool,
+                "namespaces",
+                columns=("namespace_id",),
+                by={"row_scope": scope},
+                order=(Sort("namespace_id", cast="uuid"),),
+                limit=limit,
+                cursor=inner or None,
+            )
+            following = _PAGED_SCOPES.index(scope) + 1
+            next_cursor = (
+                f"{scope}:{found.next_cursor}"
+                if found.next_cursor is not None
+                else (f"{_PAGED_SCOPES[following]}:" if following < len(_PAGED_SCOPES) else None)
+            )
+            page = KeyPage(rows=found.rows, next_cursor=next_cursor)
+        return page
 
     async def list_ids_under_name(self, node: str) -> list[UUID]:
         """return every namespace id at or beneath the name ``node``.

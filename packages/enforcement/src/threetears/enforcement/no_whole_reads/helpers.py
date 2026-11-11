@@ -214,7 +214,7 @@ def _by(node: ast.expr | None, argument: str = "by") -> list[tuple[str, str]]:
         raise _Unseen(argument)
     pinned = []
     for key, value in zip(node.keys, node.values, strict=True):
-        column = _text(key, argument)
+        column = _pinned_expression(key, argument) if isinstance(key, ast.Call) else _text(key, argument)
         if isinstance(value, ast.Call) and _name(value) == "AnyOf":
             pinned.append((column, "any"))
         elif isinstance(value, ast.Constant) and value.value is None:
@@ -222,6 +222,19 @@ def _by(node: ast.expr | None, argument: str = "by") -> list[tuple[str, str]]:
         else:
             pinned.append((column, "eq"))
     return pinned
+
+
+#: what marks a pinned column as a ``Pin.expr`` expression, spelled as written rather than quoted
+_EXPRESSION: str = "\x00"
+
+
+def _pinned_expression(key: ast.Call, argument: str) -> str:
+    """a ``Pin.expr("<expression>")`` key, as the statement spells it: the expression of the row's columns with its
+    ``t.`` and quotes dropped, as an expression index reads it (a :class:`Sort` expression's form)."""
+    if not (isinstance(key.func, ast.Attribute) and key.func.attr == "expr" and _name(key) == "expr"):
+        raise _Unseen(argument)
+    written = re.sub(r'\bt\.(?="|\w)', "", _text(_argument(key, "expression", 0), argument))
+    return _EXPRESSION + re.sub(r'"(\w+)"', r"\1", written)
 
 
 def _quoted(column: str) -> str:
@@ -233,12 +246,11 @@ def _conditions(pinned: Sequence[tuple[str, str]], *, first: int = 1, alias: str
     conditions = []
     place = first
     for column, how in pinned:
+        spelled = column.removeprefix(_EXPRESSION) if column.startswith(_EXPRESSION) else f"{prefix}{_quoted(column)}"
         if how == "null":
-            conditions.append(f"{prefix}{_quoted(column)} IS NULL")
+            conditions.append(f"{spelled} IS NULL")
             continue
-        conditions.append(
-            f"{prefix}{_quoted(column)} = ANY(${place})" if how == "any" else f"{prefix}{_quoted(column)} = ${place}"
-        )
+        conditions.append(f"{spelled} = ANY(${place})" if how == "any" else f"{spelled} = ${place}")
         place += 1
     return conditions, place
 

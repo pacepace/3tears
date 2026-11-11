@@ -180,6 +180,8 @@ _COMPARISON: Final[re.Pattern[str]] = re.compile(
     r"\bI?LIKE\b|\bSIMILAR\b|~",
     re.IGNORECASE,
 )
+#: the json operators that read a field of a column: an operand of a comparison, never the comparison
+_JSON_FIELD_OPERATORS: Final[frozenset[str]] = frozenset({"->", "->>", "#>", "#>>"})
 _COLUMN: Final[re.Pattern[str]] = re.compile(r"^(?:(\"[^\"]+\"|\w+)\s*\.\s*)?(\"[^\"]+\"|[A-Za-z_]\w*|\{pk\}|\{\})$")
 _CAST: Final[re.Pattern[str]] = re.compile(r"::\s*[\w ]+(?:\(\d+(?:,\s*\d+)?\))?(?:\[\])*\s*$")
 _VALUE_WORDS: Final[frozenset[str]] = frozenset({"TRUE", "FALSE", "NULL", "CURRENT_DATE", "CURRENT_TIMESTAMP"})
@@ -521,6 +523,19 @@ class _Atom:
     bound: bool = False
 
 
+def _row_expression(text: str) -> bool:
+    """whether ``text`` is an expression of the row's columns an expression index can hold: a function of them
+    (``lower(name)``) or a json field of one (``metadata->>'pod'``), with no bound value of its own.
+
+    :param text: one side of a comparison
+    :ptype text: str
+    :return: whether it is
+    :rtype: bool
+    """
+    shaped = re.search(r"[A-Za-z_]\w*\s*\(", text) is not None or re.search(r"[A-Za-z_\"]\s*#?->>?", text) is not None
+    return shaped and not _bound_value(text)
+
+
 def _atoms(predicate: str) -> list[_Atom]:
     """what one predicate binds.
 
@@ -548,7 +563,11 @@ def _atoms(predicate: str) -> list[_Atom]:
         return [_Atom("filter", bound=bound)]
     if re.match(r"\s*(?:NOT\b|EXISTS\b)", masked, re.IGNORECASE):
         return [_Atom("filter", bound=bound)]
-    operator = _COMPARISON.search(masked)
+    # a json field of a column (``metadata->>'pod'``) is an operand, not the comparison: the comparison is the first
+    # operator after it
+    operator = next(
+        (found for found in _COMPARISON.finditer(masked) if found.group(0) not in _JSON_FIELD_OPERATORS), None
+    )
     if operator is None:
         return [_Atom("filter", bound=bound)]
     left, right = text[: operator.start()].strip(), text[operator.end() :].strip()
@@ -567,8 +586,9 @@ def _atoms(predicate: str) -> list[_Atom]:
             atoms.append(_Atom("eq", rcol, bound=True))
         elif lrow and _bound_value(right):
             atoms.extend(_Atom("eq", column, bound=True) for column in lrow)
-        elif _bound_value(right) and re.search(r"[A-Za-z_]\w*\s*\(", left) and not _bound_value(left):
-            # an expression of the row (``replace(name, '.', '-') = ANY($1)``): an index on that expression keys it
+        elif _bound_value(right) and _row_expression(left):
+            # an expression of the row (``replace(name, '.', '-') = ANY($1)``, ``metadata->>'pod' = $1``): an index on
+            # that expression keys it
             atoms.append(_Atom("eq", ("", expression_key(left)), bound=True))
         elif lrow and _row(right):
             atoms.extend(_Atom("join", a, b, bound) for a, b in zip(lrow, _row(right) or [], strict=False))
@@ -599,7 +619,7 @@ def _atoms(predicate: str) -> list[_Atom]:
             atoms.append(_Atom("range", rcol, bound=True))
         elif lrow and _bound_value(right):
             atoms.append(_Atom("range", lrow[0], bound=True))
-        elif _bound_value(right) and re.search(r"[A-Za-z_]\w*\s*\(", left) and not _bound_value(left):
+        elif _bound_value(right) and _row_expression(left):
             # a page past a sort expression's value (``lower(name) > $1``): an index on that expression ranges it
             atoms.append(_Atom("range", ("", expression_key(left)), bound=True))
     elif op == "BETWEEN":

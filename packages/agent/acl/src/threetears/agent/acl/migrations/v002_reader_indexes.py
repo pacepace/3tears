@@ -28,7 +28,9 @@ _ACL_READER_INDEXES_DDL: tuple[str, ...] = (
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::MEMBERS_NAMING_SQL\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_members_reverse\n"
     "CREATE INDEX IF NOT EXISTS idx_group_members_reverse ON group_members (member_type, member_id)",
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::ASSIGNMENTS_OF_GROUPS_SQL\n"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::ASSIGNMENTS_OF_GROUPS_SQL;"
+    " packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.list_by_group;"
+    " packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.count_by_group\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_assignments_group_scope\n"
     "CREATE INDEX IF NOT EXISTS idx_role_assignments_group_scope ON role_assignments (group_id, scope_type)",
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACE_BY_NAME_SQL\n"

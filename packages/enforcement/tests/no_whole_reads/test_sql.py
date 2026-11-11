@@ -16,6 +16,7 @@ _DIGEST = "src/hub/schema_digest.py::SchemaDigest.refresh_active"
 _TAGGED = "src/hub/namespaces.py::tagged"
 _PLATFORM = "src/hub/namespaces.py::platform_rows"
 _LOWER = "src/hub/namespaces.py::by_lower_kind"
+_POD = "src/hub/namespaces.py::by_pod"
 _BY_NAME = "src/hub/providers.py::ProviderCollection.get_by_name"
 _PAGED = "src/hub/grants.py::page_by_state"
 _NEWEST = "src/hub/results.py::newest_in_state"
@@ -54,6 +55,8 @@ CREATE TABLE singles (customer_id UUID PRIMARY KEY, n INT);
 CREATE UNIQUE INDEX namespaces_segment ON namespaces ((replace(name, '.', '-')));
 -- purpose: {_LOWER}
 CREATE INDEX namespaces_lower_kind ON namespaces ((lower(kind)));
+-- purpose: {_POD}
+CREATE INDEX namespaces_by_pod ON namespaces ((tags->>'pod'));
 CREATE TABLE providers (id UUID PRIMARY KEY, name TEXT);
 -- purpose: {_BY_NAME}
 CREATE UNIQUE INDEX providers_by_name ON providers (name);
@@ -363,6 +366,16 @@ def test_an_expression_index_keys_a_read_of_the_same_expression(schema: SchemaCa
     assert _kinds("SELECT * FROM namespaces WHERE lower(kind) = $1", schema, _LOWER) == []
     assert _kinds("SELECT * FROM namespaces WHERE lower(kind) = $1", schema) == [("non-key-where", "namespaces")]
     assert _kinds("SELECT * FROM namespaces WHERE upper(name) = $1", schema) == [("non-key-where", "namespaces")]
+
+
+def test_a_json_field_index_keys_a_read_of_the_same_field(schema: SchemaCatalog) -> None:
+    """Flips if a read bound on the json field a purposed expression index holds is called whole in the function it
+    names, or passes elsewhere, or a json operator is taken for the comparison. (A field's name is a quoted literal,
+    which the judge reads as ``'_'`` as it reads every literal: the purpose names the one read.)"""
+    assert _kinds("SELECT * FROM namespaces WHERE tags->>'pod' = $1", schema, _POD) == []
+    assert _kinds("SELECT * FROM namespaces WHERE tags ->> 'pod' = $1", schema, _POD) == []
+    assert _kinds("SELECT * FROM namespaces WHERE tags->>'pod' = $1", schema) == [("non-key-where", "namespaces")]
+    assert _kinds("SELECT * FROM namespaces WHERE tags->'pod' = $1", schema, _POD) == [("non-key-where", "namespaces")]
 
 
 def test_a_unique_index_keying_a_read_is_used_only_by_the_read_its_purpose_names(schema: SchemaCatalog) -> None:
