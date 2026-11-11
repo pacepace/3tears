@@ -379,7 +379,7 @@ _NUMBER_CASES = Path(__file__).resolve().parent / "fixtures" / "number-format-ca
 @pytest.mark.integration
 def test_the_kit_draws_each_kit_money_case_as_the_package_spells_it(tmp_path: Path) -> None:
     """The kit's own formats (``namedFmt``), read in the browser, write each ``kit_money`` case as the package's
-    money form does (test_money_forms reads the same cases): ``usdpk:2`` draws a total of $0.008 as ``$8.00/1000``."""
+    money form does (test_money_forms reads the same cases): ``usd:4`` draws a total of $0.008 as ``$0.0080``."""
     reason = chromium_unavailable()
     if reason is not None:
         pytest.skip(f"headless Chromium cannot launch: {reason}")

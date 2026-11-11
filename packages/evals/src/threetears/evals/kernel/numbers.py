@@ -203,12 +203,6 @@ RECONCILED_WITHIN = 0.005
 #: reads ``$120``). A total reads to cents whatever its size (owner ruling).
 RATE_WHOLE_FROM = 10.0
 
-#: How many times its amount a per-1,000 spelling writes, and the mark it carries: ``$8/1000`` is $0.008. Retired
-#: (2026-11-07): no set is spelled per 1,000 with the mark any more, the count goes in the header or the axis instead
-#: ("Cost per 1,000 replies"). A cell a report stored with the mark still reads as it was stored.
-PER_THOUSAND = 1000
-PER_THOUSAND_MARK = "/1000"
-
 
 @dataclass(frozen=True)
 class MoneyForm:
@@ -232,14 +226,11 @@ class MoneyForm:
     - ``reconciles``: whether a total computed from each member is printed beside it (a cost per 1,000 at a declared
       monthly volume): a member that two figures round by more than :data:`RECONCILED_WITHIN` of itself takes one
       more, so ``$0.302 per 1,000 calls`` sits beside ``$1,208.00 a month``, never ``$0.30``.
-    - ``per_thousand``: whether the set reads per 1,000 with the mark (``$8/1000`` for $0.008). Nothing chooses it
-      any more (the mark retired, 2026-11-07); a form a report stored with it still spells as stored.
 
     An exact zero reads ``$0`` in every form: it is no measurement of a precision. ``None`` reads :data:`UNPRICED`,
     never ``$0``. A non-finite amount reads :data:`ABSENT`. Thousands are grouped (``$1,208.00``) and a negative
     amount's sign goes before the dollar sign.
 
-    :ivar per_thousand: Whether the set reads per 1,000 with the mark (a stored form only).
     :ivar decimals: Every member's decimals without ``figures``; with them, the set's largest member's.
     :ivar figures: The significant figures each member is written to; ``None`` for every member at ``decimals``.
     :ivar at_most: The most decimals any member is written to; ``None`` for no bound.
@@ -247,7 +238,6 @@ class MoneyForm:
     :ivar reconciles: Whether a total computed from each member is printed beside it.
     """
 
-    per_thousand: bool = False
     decimals: int = 2
     figures: int | None = None
     at_most: int | None = None
@@ -267,10 +257,10 @@ class MoneyForm:
         """
         if self.figures is None or amount == 0 or not math.isfinite(amount):
             return self.decimals
-        scaled = abs(amount) * (PER_THOUSAND if self.per_thousand else 1)
-        places = _member_decimals(scaled, self.figures, rate=self.rate)
-        if self.reconciles and abs(round(scaled, places) - scaled) > RECONCILED_WITHIN * scaled:
-            places = _member_decimals(scaled, self.figures + 1, rate=self.rate)
+        magnitude = abs(amount)
+        places = _member_decimals(magnitude, self.figures, rate=self.rate)
+        if self.reconciles and abs(round(magnitude, places) - magnitude) > RECONCILED_WITHIN * magnitude:
+            places = _member_decimals(magnitude, self.figures + 1, rate=self.rate)
         return places if self.at_most is None else min(places, self.at_most)
 
     def places_of(
@@ -292,7 +282,7 @@ class MoneyForm:
         if not stated:
             return self.decimals
         places = max(self.places(amount) for amount in stated)
-        if self.figures is not None and _alike(ends, places, self.per_thousand):
+        if self.figures is not None and _alike(ends, places):
             finer = replace(self, figures=self.figures + 1)
             places = max(places, max(finer.places(amount) for amount in stated))
         return places
@@ -336,11 +326,11 @@ class MoneyForm:
     def _at(self, amount: float, places: int, *, signed: bool) -> str:
         if amount == 0:
             return "$0"
-        scaled = abs(amount) * (PER_THOUSAND if self.per_thousand else 1)
-        digits = _money_digits(scaled, places)
+        magnitude = abs(amount)
+        digits = _money_digits(magnitude, places)
         zero = float(digits) == 0
         sign = "-" if amount < 0 and not zero else "+" if signed and amount > 0 and not zero else ""
-        return f"{sign}${group_thousands(digits)}{PER_THOUSAND_MARK if self.per_thousand else ''}"
+        return f"{sign}${group_thousands(digits)}"
 
     def for_changes(self, changes: Iterable[float | None], widths: Iterable[float | None] = ()) -> MoneyForm:
         """The form changes between members of the set read in: the set's own scale, figures and kind (a rate or a
@@ -360,17 +350,15 @@ class MoneyForm:
         :return: The changes' form.
         :rtype: MoneyForm
         """
-        factor = PER_THOUSAND if self.per_thousand else 1
         figures = self.figures or MONEY_FIGURES
-        stated = [abs(change) * factor for change in changes if change is not None and math.isfinite(change)]
+        stated = [abs(change) for change in changes if change is not None and math.isfinite(change)]
         own = _coarsest(stated, figures, rate=self.rate)
         spans = [width for width in widths if width is not None and math.isfinite(width) and width > 0]
         if not spans:
-            return MoneyForm(per_thousand=self.per_thousand, decimals=own, figures=figures, rate=self.rate)
-        supported = max(0, 1 - math.floor(math.log10(max(spans) * factor)))
+            return MoneyForm(decimals=own, figures=figures, rate=self.rate)
+        supported = max(0, 1 - math.floor(math.log10(max(spans))))
         supported = 2 if supported == 1 else supported
         return MoneyForm(
-            per_thousand=self.per_thousand,
             decimals=min(own, supported),
             figures=figures,
             at_most=supported,
@@ -434,17 +422,14 @@ def _money_digits(magnitude: float, places: int) -> str:
     return f"{round(magnitude, places):.0f}"
 
 
-def _alike(ends: tuple[float | None, float | None] | None, places: int, per_thousand: bool) -> bool:
+def _alike(ends: tuple[float | None, float | None] | None, places: int) -> bool:
     """Whether an interval's two ends, which differ, read alike at ``places`` decimals."""
     if ends is None:
         return False
     low, high = ends
     if low is None or high is None or not (math.isfinite(low) and math.isfinite(high)) or low == high:
         return False
-    factor = PER_THOUSAND if per_thousand else 1
-    return _money_digits(abs(low) * factor, places) == _money_digits(abs(high) * factor, places) and (low < 0) == (
-        high < 0
-    )
+    return _money_digits(abs(low), places) == _money_digits(abs(high), places) and (low < 0) == (high < 0)
 
 
 #: The multiple from which a multiple is written whole: ``21 times``, never ``21.05 times``.

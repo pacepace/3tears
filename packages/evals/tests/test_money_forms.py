@@ -3,7 +3,7 @@
 Owner ruling of 2026-10-27: within a figure type every value is spelled in one form, so successive rows never alternate
 between ``$0.008`` and ``$0.11``. Owner defaults of 2026-11-07, ruled 2026-11-07: two significant figures, one
 more only where two would print an interval's ends alike, totals at or over $1 to cents whatever their size; the
-per-1,000 mark (``$8/1000``) is retired, the count goes in the header or the axis instead. The form is one rule for the
+per-1,000 mark (``$8/1000``) is retired, the count goes in the header or the axis instead, and removed (2026-11-11). The form is one rule for the
 set, never padding: ``$0.008`` and ``$0.11`` read ``$0.0080`` and ``$0.11``, never ``$0.1100``. Contracts held here:
 
 - :func:`~threetears.evals.kernel.numbers.money_form` chooses the form from the whole set: plain dollars, each member to
@@ -25,8 +25,8 @@ set, never padding: ``$0.008`` and ``$0.11`` read ``$0.0080`` and ``$0.11``, nev
   totals under a cent reads plain dollars on its ticks (the kit's ``usd``), its notes and its values table alike, as a
   key and a table write it; a change chart scales by the amounts it compares;
 - the kit's money formats and the package's money form spell each kit money case alike (``kit_money`` in the number
-  format cases, which the kit's own reading in headless Chromium pins too; ``usdpk`` stays readable for a chart
-  stored with it).
+  format cases, which the kit's own reading in headless Chromium pins too); a chart naming the removed per-1,000
+  format (``usdpk``) is refused, and no money form carries the mark.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ from typing import Any, get_args
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_snapshots
 from threetears.evals.analysis import ABSENT, UNPRICED, dollars_text, format_number
@@ -193,12 +194,12 @@ def test_each_member_reads_two_figures_and_only_a_tight_interval_takes_a_third()
 
 def test_each_member_reads_to_two_figures_and_never_fewer_than_cents() -> None:
     form = money_form([0.03, 3.477])
-    assert form == MoneyForm(per_thousand=False, decimals=2, figures=2), "the largest member's decimals: the ticks'"
+    assert form == MoneyForm(decimals=2, figures=2), "the largest member's decimals: the ticks'"
     assert [form.spell(amount) for amount in (0.03, 3.477)] == ["$0.030", "$3.48"]
-    assert money_form([1.892, 2.427]) == MoneyForm(per_thousand=False, decimals=2, figures=2)
-    assert money_form([75.05, 6.014]) == MoneyForm(per_thousand=False, decimals=2, figures=2)
+    assert money_form([1.892, 2.427]) == MoneyForm(decimals=2, figures=2)
+    assert money_form([75.05, 6.014]) == MoneyForm(decimals=2, figures=2)
     form = money_form([0.0013, 0.61])
-    assert form == MoneyForm(per_thousand=False, decimals=2, figures=2)
+    assert form == MoneyForm(decimals=2, figures=2)
     assert [form.spell(amount) for amount in (0.0013, 0.61)] == ["$0.0013", "$0.61"]
 
 
@@ -217,9 +218,9 @@ def test_a_set_whose_least_amount_is_ten_dollars_or_more_reads_cents_on_every_su
     """r4's monthly costs read alike on a chart, in a key and in a table: one rule, money_form's, and a total of ten
     dollars or more reads to cents (owner ruling, 2026-11-07), never whole dollars."""
     form = money_form([14.5, 120.0])
-    assert form == MoneyForm(per_thousand=False, decimals=2, figures=2)
+    assert form == MoneyForm(decimals=2, figures=2)
     assert [form.spell(amount) for amount in (14.5, 120.0, 1208.0)] == ["$14.50", "$120.00", "$1,208.00"]
-    assert money_form([9.5, 120.0]) == MoneyForm(per_thousand=False, decimals=2, figures=2)
+    assert money_form([9.5, 120.0]) == MoneyForm(decimals=2, figures=2)
     # From $1 to under $10 a rate reads in cents, as a total does: dollars and cents is how a reader expects money of
     # that size, never "$1.9" (coordinator ruling on Discodon's host pass, 2026-11-07).
     one_to_ten = money_form([1.9, 5.12, 0.02], rate=True)
@@ -508,7 +509,7 @@ def test_a_charts_notes_and_ticks_read_in_one_form(name: str) -> None:
     drawn = quantity("usd_per_1k", costs)
     notes = [figure_text(cost * drawn.factor, drawn) for cost in costs]
     assert _one_form(notes), notes
-    assert drawn.money is not None and not drawn.money.per_thousand
+    assert drawn.money is not None
     assert drawn.fmt == f"usd:{drawn.money.decimals}"
     # The ticks are written as the notes beside them are: to the largest note's decimals ("$1.00", never "$1.000"),
     # and no note carries fewer decimals than the ticks.
@@ -1543,10 +1544,10 @@ def test_a_counted_set_at_the_cap_never_carries_the_mark_and_a_total_carries_one
     the mark beside it; a total reads plain dollars and no count (the mark retired). Neither amount carries two
     scales."""
     counted = money_ruler([0.0000000012, 0.0000000030], per=1, start=1000)
-    assert (counted.counted, counted.form.per_thousand) == (1_000_000, False)
+    assert counted.counted == 1_000_000
     assert "/1000" not in counted.spell(0.0000000012)
     total = money_ruler([0.0004, 0.008], per=0)
-    assert (total.counted, total.form.per_thousand, total.words("replies")) == (0, False, "")
+    assert (total.counted, total.words("replies")) == (0, "")
     assert total.spell(0.008) == "$0.0080"
 
 
@@ -1554,13 +1555,26 @@ def test_the_kit_money_cases_read_as_the_package_spells_them() -> None:
     """Each ``kit_money`` case of the number format cases: the package writes in a chart's notes and values table
     what the kit draws on its ticks (the same cases, read by the kit in headless Chromium)."""
     cases = json.loads(_CASES.read_text(encoding="utf-8"))["kit_money"]["cases"]
-    assert {case["fmt"].lstrip("+").split(":")[0] for case in cases} >= {"usdpk", "usd"}
+    assert {case["fmt"].lstrip("+").split(":")[0] for case in cases} == {"usd"}
     for case in cases:
-        name, _, digits = case["fmt"].lstrip("+").partition(":")
-        form = MoneyForm(per_thousand=name == "usdpk", decimals=int(digits))
+        _, _, digits = case["fmt"].lstrip("+").partition(":")
+        form = MoneyForm(decimals=int(digits))
         assert form.spell(case["value"], signed=case["fmt"].startswith("+")) == case["expected"], case["why"]
         drawn = BarsChart(rows=[BarRow(label="a", value=case["value"])], domain=(0, 1), fmt=case["fmt"])
         assert drawn.table([])[1][0][1] == case["expected"], case["why"]
+
+
+@pytest.mark.parametrize("fmt", ["usdpk", "usdpk:2", "+usdpk:3"])
+def test_a_stored_chart_naming_the_removed_per_thousand_format_is_refused_on_read(fmt: str) -> None:
+    """The per-1,000 mark is removed, no shim (2026-11-11): a chart a report stored with ``usdpk`` in a format field is
+    refused on read, as any format the kit does not name is, and no money form can be asked for the mark."""
+    stored = {"rows": [{"label": "a", "value": 0.008}], "domain": [0, 0.01], "fmt": fmt}
+    with pytest.raises(ValidationError, match="fmt"):
+        BarsChart.model_validate(stored)
+    with pytest.raises(ValidationError, match="tick_fmt"):
+        BarsChart.model_validate({**stored, "fmt": "usd:4", "tick_fmt": fmt})
+    with pytest.raises(TypeError, match="per_thousand"):
+        MoneyForm(per_thousand=True, decimals=2)  # type: ignore[call-arg]
 
 
 def test_a_change_chart_scales_by_its_amounts_never_by_an_interval_end_near_zero() -> None:

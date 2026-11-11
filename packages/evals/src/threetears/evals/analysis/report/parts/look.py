@@ -398,10 +398,6 @@ _REPLY = "reply"
 #: Money's format: each amount by its size (this module's money).
 _MONEY_FORMAT = "usd"
 
-#: Money per 1,000 with its mark (``$8.00/1000``): retired (2026-11-07), written only for a form a report stored with
-#: it; no form the package chooses carries it.
-_PER_THOUSAND_FORMAT = "usdpk"
-
 
 #: The most decimals the kit's format names (``usd:<digit>``).
 _MOST_KIT_DECIMALS = 9
@@ -409,12 +405,10 @@ _MOST_KIT_DECIMALS = 9
 
 def _money_fmt(sign: str, form: MoneyForm | None) -> str:
     """The kit's format for a chart's money: to the form's decimals (``usd:2``), so its ticks read as its notes; by the
-    kit's sizes (``usd``) where the chart's money has no form. A stored form with the retired per-1,000 mark keeps
-    ``usdpk``."""
+    kit's sizes (``usd``) where the chart's money has no form."""
     if form is None:
         return f"{sign}{_MONEY_FORMAT}"
-    name = _PER_THOUSAND_FORMAT if form.per_thousand else _MONEY_FORMAT
-    return f"{sign}{name}:{min(form.decimals, _MOST_KIT_DECIMALS)}"
+    return f"{sign}{_MONEY_FORMAT}:{min(form.decimals, _MOST_KIT_DECIMALS)}"
 
 
 def _money_text(value: float, drawn: Quantity) -> str:

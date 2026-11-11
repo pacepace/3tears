@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the retired per-1,000 money mark is removed
+
+**Removed:** the per-1,000 money mark (`$8/1000` for $0.008), retired on 2026-11-07, which the package kept only so a
+chart or form a report stored with it still drew: the chart kit's `usdpk` format, `MoneyForm.per_thousand`, and
+`PER_THOUSAND` and `PER_THOUSAND_MARK` in `threetears.evals.kernel.numbers`. Money per 1,000 replies is unchanged: the
+count is said in the header or the axis title, never on the amount.
+
+**Hosts:** a stored chart that names `usdpk` in a format field is refused on read, and the kit throws on it; write
+`usd` and say the count in the axis title. No page the package writes moves but for the kit's text it embeds.
+
 ### evals: a broken floor caps an option's standing, and an uncalibrated judge's gain raises nothing
 
 **Changed:** code's dominance read (`options_dominance`, `decision_at`, `asked_standing`) gave a candidate the standing
@@ -760,8 +770,8 @@ by its file name, never its path, and spells each arm's total spend as the page'
 
 **Hosts:** a reader of a host's code page, aspect page and quick print sees every amount above in its new form, and no
 `/1000` anywhere a page writes; a host matching `$…/1000`, `mean 0.…` or `top misses (n of m)` in a page or a print
-updates its match. The report JSON's money cells carry `decimals` as before and never `per_thousand` (a cell stored with
-it still reads as stored, and the kit still draws a stored `usdpk` format). `ChartBlock` gains an optional `level`
+updates its match. The report JSON's money cells never carry `per_thousand` (the entries above remove it, with the
+kit's `usdpk` format and the cells' `decimals`, outright). `ChartBlock` gains an optional `level`
 (the cost/quality chart's interval level), and the kit's chart data gains `zero_label` and the scatter points'
 interval ends; nothing stored changes shape. An arm's letter tag and colour now follow the campaign's declared arm
 order on every page, so a page rendered after this change can tag and colour an arm differently from one rendered before

@@ -70,11 +70,8 @@ Token = Annotated[str, Field(pattern=r"^--[a-z][a-z0-9-]*$", description='A kit 
 Fmt = Annotated[
     str,
     Field(
-        pattern=r"^\+?(num|int|pct|pts|usd|usdk|usdpk|ms|s|dur|x|k)(:\d)?$",
-        description=(
-            "A kit format: num, int, pct, pts, usd, usdk, usdpk (dollars per 1,000, the mark written: `$8.00/1000`), "
-            "ms, s, dur, x or k, as `name` or `name:digits`."
-        ),
+        pattern=r"^\+?(num|int|pct|pts|usd|usdk|ms|s|dur|x|k)(:\d)?$",
+        description=("A kit format: num, int, pct, pts, usd, usdk, ms, s, dur, x or k, as `name` or `name:digits`."),
     ),
 ]
 
@@ -113,15 +110,11 @@ _FORMAT_UNITS: dict[str, str] = {
     "pts": POINTS,
     "usd": MONEY,
     "usdk": MONEY,
-    "usdpk": MONEY,
     "ms": "ms",
     "dur": "ms",
     "s": "s",
     "x": "×",
 }
-
-#: The kit's format for money per 1,000 with its mark (``$8.00/1000``): the one a chart of totals under a cent reads in.
-_PER_THOUSAND_FORMAT = "usdpk"
 
 #: A format spec's parts: the sign flag, the name and the digits. The digits are the axis's, not the table's, but for
 #: money's: a chart chooses money's one form from every amount it draws (#993), and its table writes it too.
@@ -162,10 +155,6 @@ def _formatted(spec: str, value: float, read_at: str = "", *, finer: bool = Fals
     if match is None or match[2] not in _FORMAT_UNITS:
         raise ValueError(f"fmt {spec!r} is not one of {', '.join(_FORMAT_UNITS)}")
     unit = _FORMAT_UNITS[match[2]]
-    if match[2] == _PER_THOUSAND_FORMAT:
-        # Dollars per 1,000, the mark written, as the kit's ticks write them (a set of totals under a cent, #993).
-        form = MoneyForm(per_thousand=True, decimals=int(match[3]) if match[3] is not None else 2)
-        return form.spell(value, signed=bool(match[1]))
     if unit == MONEY and match[3] is not None:
         # The chart's money form (money_form): each amount to its own two significant figures, cents at least.
         decimals = int(match[3])
@@ -435,9 +424,9 @@ _MOST_PADDED = 3
 #: :data:`~threetears.evals.kernel.numbers.WHOLE_FROM`, where it starts writing numbers whole.
 _SIGNIFICANT = len(str(int(WHOLE_FROM)))
 
-#: An amount of money in a table cell: its sign, its digits with any thousands separators and decimals, and the
-#: per-1,000 mark where it carries one; never a bound (``< $0.000001``), which states no amount.
-_CELL_MONEY = re.compile(r"(?<![<>] )(?<![<>\w.,+\-−])([+\-−]?)\$(\d[\d,]*(?:\.\d+)?)(/1000)?(?![\d])")
+#: An amount of money in a table cell: its sign and its digits with any thousands separators and decimals; never a
+#: bound (``< $0.000001``), which states no amount.
+_CELL_MONEY = re.compile(r"(?<![<>] )(?<![<>\w.,+\-−])([+\-−]?)\$(\d[\d,]*(?:\.\d+)?)(?![\d])")
 
 
 def _even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
@@ -479,8 +468,7 @@ def _even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
 
 def _money_by_column(table: list[list[str]]) -> list[list[str]]:
     """Every amount of money in a table's text with its whole dollars grouped by thousands (``$1,239``), as the figure
-    keys write money; a bound (``< $0.000001``) is left as it is. The per-1,000 mark retired (2026-11-07): an amount is
-    never moved per 1,000 here, and one already written with the mark (a stored chart's) keeps it.
+    keys write money; a bound (``< $0.000001``) is left as it is.
 
     :param table: The table's rows of cell texts; changed in place.
     :ptype table: list[list[str]]
@@ -494,9 +482,9 @@ def _money_by_column(table: list[list[str]]) -> list[list[str]]:
 
 
 def _respelled(found: re.Match[str]) -> str:
-    """One amount with its thousands grouped, any mark it was written with kept."""
-    sign, digits, mark = found.group(1), found.group(2).replace(",", ""), found.group(3) or ""
-    return f"{sign}${group_thousands(digits)}{mark}"
+    """One amount with its thousands grouped."""
+    sign, digits = found.group(1), found.group(2).replace(",", "")
+    return f"{sign}${group_thousands(digits)}"
 
 
 def _own_decimals(whole: str) -> int:

@@ -238,48 +238,36 @@
     ]
   },
   "kit_money": {
-    "$comment": "The chart kit's money formats beside the package's one money form (#993), as cases: each case's `fmt` is a kit format (`analysis/report/charts.py` `Fmt`, `kit.js` `K_FMTS`) and `value` an amount in dollars as stored; `expected` is what the kit draws on a tick and what the package writes in the chart's notes and values table (`MoneyForm.spell`). `usdpk` is dollars per 1,000 with the mark written, the format a chart of totals under a cent reads in: a total counts nothing, so its ruler cannot move, and its ticks carry the mark as its keys and tables do. Readers: tests/test_money_forms.py, tests/test_report_kit_charts.py in headless Chromium, and tests/test_report_chart_svg.py for the static page's server-drawn charts.",
+    "$comment": "The chart kit's money format beside the package's one money form (#993), as cases: each case's `fmt` is a kit format (`analysis/report/charts.py` `Fmt`, `kit.js` `K_FMTS`) and `value` an amount in dollars as stored; `expected` is what the kit draws on a tick and what the package writes in the chart's notes and values table (`MoneyForm.spell`). A chart of totals under a cent reads plain dollars (`usd`) to its amounts' two significant figures: a total counts nothing, so its ruler cannot move. The per-1,000 mark (`usdpk`, `$8.00/1000`) is removed (2026-11-11), and a chart naming it is refused. Readers: tests/test_money_forms.py, tests/test_report_kit_charts.py in headless Chromium, and tests/test_report_chart_svg.py for the static page's server-drawn charts.",
     "cases": [
       {
-        "fmt": "usdpk:2",
+        "fmt": "usd:4",
         "value": 0.008,
-        "expected": "$8.00/1000",
-        "why": "a total under a cent, per 1,000 with its mark"
+        "expected": "$0.0080",
+        "why": "a total under a cent, to its two significant figures"
       },
       {
-        "fmt": "usdpk:2",
+        "fmt": "usd:5",
         "value": 0.00048,
-        "expected": "$0.48/1000",
+        "expected": "$0.00048",
         "why": "two figures of a smaller total"
       },
       {
-        "fmt": "usdpk:3",
-        "value": 0.0001743,
-        "expected": "$0.174/1000",
-        "why": "three decimals where the least total needs them"
-      },
-      {
-        "fmt": "+usdpk:2",
+        "fmt": "+usd:5",
         "value": 0.0004,
-        "expected": "+$0.40/1000",
+        "expected": "+$0.00040",
         "why": "a signed change between totals"
       },
       {
-        "fmt": "usdpk:2",
+        "fmt": "usd:4",
         "value": -0.003,
-        "expected": "-$3.00/1000",
+        "expected": "-$0.0030",
         "why": "the sign before the dollar sign"
       },
       {
-        "fmt": "usdpk:2",
-        "value": 0,
-        "expected": "$0",
-        "why": "an exact zero is no measurement of a scale: no mark"
-      },
-      {
-        "fmt": "usdpk:2",
-        "value": 1.2391,
-        "expected": "$1,239.10/1000",
+        "fmt": "usd:2",
+        "value": 1239.1,
+        "expected": "$1,239.10",
         "why": "a larger total in the set, grouped"
       },
       {

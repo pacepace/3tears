@@ -896,7 +896,7 @@ class PageForms:
         places = self._set_places(places, measure, kind)
         if ruler.money is not None and is_money(ruler.unit):
             money = ruler.money
-            text = MoneyForm(per_thousand=money.per_thousand, decimals=money.places_of([drawn])).spell(drawn)
+            text = MoneyForm(decimals=money.places_of([drawn])).spell(drawn)
             return self._ruled_cell(measure, kind, "level", value, drawn, ruler.unit, text)
         if places is not None and places.level is not None:
             text = _ruled_level_text(ruler, drawn, places)
@@ -967,7 +967,7 @@ class PageForms:
         money: MoneyForm | None = None
         if form is not None:
             decided = form.places_of([float(drawn), *(ends or (None, None))], ends=ends or (None, None))
-            money = MoneyForm(per_thousand=form.per_thousand, decimals=decided)
+            money = MoneyForm(decimals=decided)
             text = _signed_text(money.spell(drawn), drawn)
         elif places is None:
             text = _signed_text(with_unit(drawn, unit), drawn)
@@ -2421,7 +2421,7 @@ class PageForms:
             text = _placed_text(value, drawn, places, change=False)
         elif drawn.unit == MONEY and form is not None and form.figures is not None and value != 0:
             places = max(form.places(value), form.decimals)
-            text = MoneyForm(per_thousand=form.per_thousand, decimals=places).spell(value)
+            text = MoneyForm(decimals=places).spell(value)
         else:
             text = figure_text(value, replace(drawn, change=False))
         return self._chart_issue(measure, kind, "level", value, text, drawn.unit)
@@ -2603,7 +2603,7 @@ class PageForms:
         :rtype: TableCell
         """
         places = form.places_of([value, *(ends or ())], ends=ends)
-        money = MoneyForm(per_thousand=form.per_thousand, decimals=places)
+        money = MoneyForm(decimals=places)
         text = money.spell(value)
         self._issued.append(_Issued("", "", "money", value, text))
         if ends is None:

@@ -178,10 +178,6 @@ def _usdk(value: float) -> str:
     return "$" + f"{_rounded(value):,}"
 
 
-def _usdpk(value: float, digits: int | None) -> str:
-    return "$0" if value == 0 else _usd_at(value * 1000, 2 if digits is None else digits) + "/1000"
-
-
 def _ms(value: float, digits: int | None) -> str:
     return (str(_rounded(value)) if digits is None else _fixed(value, digits)) + " ms"
 
@@ -198,7 +194,6 @@ _FORMATS: dict[str, Callable[[float, int | None], str]] = {
     "pts": lambda value, digits: _short(value, digits) + " pts",
     "usd": _usd_at,
     "usdk": lambda value, _digits: _usdk(value),
-    "usdpk": _usdpk,
     "ms": _ms,
     "s": lambda value, digits: _short(value, digits) + " s",
     "dur": lambda value, _digits: _dur(value),
