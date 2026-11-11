@@ -1862,13 +1862,17 @@ class NotedRows:
     :ivar rows: each distinct row the notes name that no whole-table note covers, with its invalidation columns and
         its tenant
     :ivar whole_table: a note of the whole table (a truncate, a file load) is among them
-    :ivar whole_tenants: each such note's tenant, ``None`` for ``_all``: it covers that tenant's rows (``_all``'s,
-        every tenant's), never another schema's
+    :ivar whole_tenants: each such note's tenant, ``None`` for ``_all``
+    :ivar whole: each tenant's whole-table notes folded into one change, keeping the reach they name (a load's key
+        prefixes, an operator's reset), as a restore folds them (:func:`_whole_change`). A plain or reset change covers
+        its tenant's rows (``_all``'s, every tenant's), never another schema's; a load's names only its prefixes, so
+        a row beside them is still named
     """
 
     rows: tuple[ChangedRow, ...] = ()
     whole_table: bool = False
     whole_tenants: tuple[str | None, ...] = ()
+    whole: tuple[NotedChange, ...] = ()
 
 
 def _noted_rows_sql(owner: str) -> str:
@@ -1929,6 +1933,7 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     :return: the rows; or ``"notes_unavailable"`` (no ring), ``"not_covered"`` (the coverage starts after
         ``since``), ``"no_notes"`` (no note of the table since), ``"too_many_rows"``
     :rtype: NotedRows | str
+    :raises GenerationUnavailableError: when a whole-table note names a reach this module never writes
     """
     owner = quote_identifier(notes_schema)
     try:
@@ -1949,17 +1954,24 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
         return "no_notes"
     if len(notes) > cap:
         return "too_many_rows"
-    # the ring holds every schema's notes of the table: a whole-table note covers its own tenant's rows (or every
-    # tenant's, when it is _all's), never another schema's, whose rows are still named
-    whole = dict.fromkeys(None if note[7] is None else str(note[7]) for note in notes if note[4] is None)
+    # the ring holds every schema's notes of the table: each tenant's whole-table notes fold into one change with the
+    # reach they name (a whole-table note keeps it as its columns), as a restore folds them
+    reaches: dict[str | None, list[Any]] = {}
+    for note in notes:
+        if note[4] is None:
+            reaches.setdefault(None if note[7] is None else str(note[7]), []).append(note[6])
+    whole = tuple(_whole_change(table, tenant, reached) for tenant, reached in reaches.items())
+    # a plain or reset change covers its own tenant's rows (or every tenant's, when it is _all's), never another
+    # schema's; a load's names only its prefixes, so a row beside them is still named
+    covering = {change.tenant for change in whole if not change.prefixes}
     rows: list[ChangedRow] = []
-    if None not in whole:
+    if None not in covering:
         # the statement answers each (key, columns, tenant) once (its DISTINCT), so each note is one row
         for note in notes:
             if note[4] is None:
                 continue
             token = None if note[7] is None else str(note[7])
-            if token in whole:
+            if token in covering:
                 continue
             columns = note[6]
             rows.append(
@@ -1969,7 +1981,7 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
                     tenant=token,
                 )
             )
-    return NotedRows(rows=tuple(rows), whole_table=bool(whole), whole_tenants=tuple(whole))
+    return NotedRows(rows=tuple(rows), whole_table=bool(whole), whole_tenants=tuple(reaches), whole=whole)
 
 
 #: a note's ``noted_at`` as whole microseconds since the epoch: a page compares its notes' times (where an instant

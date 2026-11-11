@@ -54,7 +54,7 @@ from typing import Any, Final, Protocol
 from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter, gauge
 
-from threetears.core.collections.change_notes import NotedRows, noted_rows_since
+from threetears.core.collections.change_notes import NotedChange, NotedRows, noted_rows_since
 from threetears.core.collections.epoch_change import ChangedRow, advance_recording
 from threetears.core.collections.generation import GenerationSource, tables_written_l2_first, tenancy_of_table
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
@@ -582,7 +582,9 @@ class WriteMarkReconciler:
             )
         return MarkPass(applied=applied, advanced=tuple(sorted(advanced)), failed=tuple(sorted(failed)), behind=behind)
 
-    async def _changes_of(self, table: str, since: Any) -> list[tuple[list[ChangedRow] | None, str | None, bool]]:
+    async def _changes_of(
+        self, table: str, since: Any
+    ) -> list[tuple[list[ChangedRow] | None, str | None, bool, NotedChange | None]]:
         """what the marked writes changed, from the change notes they left: each advance to record.
 
         A mark names its table, not its rows, but every committed write to a noted table also left a note of
@@ -598,18 +600,19 @@ class WriteMarkReconciler:
         :ptype table: str
         :param since: the oldest mark's time
         :ptype since: Any
-        :return: ``(rows, tenant, keys_unknown)`` per advance: rows (``None`` for a rowless record), the rowless
-            record's tenant, and whether its keys are unknown
-        :rtype: list[tuple[list[ChangedRow] | None, str | None, bool]]
+        :return: ``(rows, tenant, keys_unknown, whole)`` per advance: rows (``None`` for a rowless record), the
+            rowless record's tenant, whether its keys are unknown, and a whole-table record's change with the reach its
+            notes named (a load's key prefixes, a reset's reason), recorded with it as a restore records it
+        :rtype: list[tuple[list[ChangedRow] | None, str | None, bool, NotedChange | None]]
         """
         noted = await noted_rows_since(
             self._pool, notes_schema=self._notes_schema, table=table, since=since, cap=_MAX_NOTED_ROWS
         )
         if isinstance(noted, NotedRows):
-            advances: list[tuple[list[ChangedRow] | None, str | None, bool]] = []
+            advances: list[tuple[list[ChangedRow] | None, str | None, bool, NotedChange | None]] = []
             if noted.rows:
-                advances.append((list(noted.rows), None, False))
-            advances.extend((None, tenant, False) for tenant in noted.whole_tenants)
+                advances.append((list(noted.rows), None, False, None))
+            advances.extend((None, change.tenant, False, change) for change in noted.whole)
             return advances
         _KEYS_UNKNOWN.labels(table=table, reason=noted).inc()
         log.warning(
@@ -617,7 +620,7 @@ class WriteMarkReconciler:
             "so every follower is behind on the table until its next start",
             extra={"extra_data": {"table": table, "reason": noted}},
         )
-        return [(None, tenant, True) for tenant in await self._schema_tenants(table)]
+        return [(None, tenant, True, None) for tenant in await self._schema_tenants(table)]
 
     async def _schema_tenants(self, table: str) -> tuple[str | None, ...]:
         """the tenants a rowless advance of ``table`` the notes could not name goes under.
@@ -665,8 +668,16 @@ class WriteMarkReconciler:
                 continue
             try:
                 since = min(row["date_created"] for row in page if str(row["table_name"]) == table)
-                for rows, tenant, keys_unknown in await self._changes_of(table, since):
-                    await advance_recording(self._source, table, rows, keys_unknown=keys_unknown, tenant=tenant)
+                for rows, tenant, keys_unknown, whole in await self._changes_of(table, since):
+                    await advance_recording(
+                        self._source,
+                        table,
+                        rows,
+                        keys_unknown=keys_unknown,
+                        tenant=tenant,
+                        prefixes=list(whole.prefixes) or None if whole is not None else None,
+                        reason=whole.reason if whole is not None else None,
+                    )
             # prawduct:allow prawduct/broad-except -- a table that cannot be advanced keeps its marks for the next pass, is counted, and the pass drains around it
             except Exception as exc:
                 failed.add(table)
