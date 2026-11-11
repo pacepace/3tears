@@ -18,8 +18,8 @@ with the fix that removes it, pinned by count; ``_epoch_waivers.txt`` lists the 
 matches that are not what the rule forbids, each with its reason. A new site fails, and so does a
 line whose site shrank or went, so both lists only shrink.
 
-The sanctioned whole-table-epoch apply site, ``CollectionRegistry.apply_epoch_change``, joins
-:data:`_PRIMITIVES` under ``whole-drop`` with the change that adds it.
+The sanctioned whole-table-epoch apply site, ``CollectionRegistry.apply_epoch_change``, is in
+:data:`_PRIMITIVES` under ``whole-drop``.
 """
 
 from __future__ import annotations
@@ -45,6 +45,8 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
         {
             # the drop itself; every caller is what the rule holds
             f"{_CORE}/collections/registry.py::CollectionRegistry.drop_table",
+            # the sanctioned whole-table-epoch apply: a record naming the whole table drops it, as its write did
+            f"{_CORE}/collections/registry.py::CollectionRegistry.apply_epoch_change",
             # the L3 backend's truncate; its callers announce or are listed
             f"{_CORE}/backends/sql.py::SqlL3Backend.truncate",
             # the DuckDB L1 backend: its replace_all and partition swaps are the primitives callers reach
@@ -73,6 +75,8 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             f"{_CORE}/data/migrations/runner.py::MigrationRunner",
             # the epoch client's own counter table, config_epochs: it IS the epoch
             "packages/epoch/src/threetears/epoch/client.py::EpochClient",
+            # the L3 epoch log an L2-first table's epochs are saved to: its rows ARE the epochs
+            f"{_CORE}/collections/l2_first.py::SqlEpochLogStore",
         }
     ),
     "whole-reread": frozenset(
