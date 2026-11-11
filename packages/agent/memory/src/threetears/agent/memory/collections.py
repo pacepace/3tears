@@ -1730,12 +1730,32 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         vec_salience_idx = len(vec_params)
 
         def _nearest(older_than: datetime | None = None) -> Any:
-            # ``older_than`` narrows the scan to the history: see the history pool below.
+            # ``older_than`` narrows the scan to the history (see the history pool below): its own
+            # statement, the date bound written out, so the read of one user's memories older than
+            # the window is the one ix_memories_user_date names.
             args = list(vec_params)
-            history_clause = ""
-            if older_than is not None:
-                args.append(older_than)
-                history_clause = f" AND date_created < ${len(args)}"
+            if older_than is None:
+                allowed = filter_clause(self.read_filter, "memories.tags", args)
+                return self.l3_pool.fetch(  # type: ignore[union-attr]
+                    f"""
+                    SELECT memory_id, content, summary, type_memory, date_created,
+                           embedding::text AS embedding,
+                           1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
+                    FROM memories
+                    WHERE {_OWNER_SCOPE}
+                      AND embedding IS NOT NULL{vec_date_clause}
+                      AND (superseded_by IS NULL OR NOT EXISTS (
+                            SELECT 1 FROM memories g
+                            WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
+                      AND {_NOT_RETRACTED}
+                      AND salience >= ${vec_salience_idx}{allowed}
+                    ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
+                    LIMIT {limit_param}
+                    """,
+                    *args,
+                )
+            args.append(older_than)
+            history_idx = len(args)
             allowed = filter_clause(self.read_filter, "memories.tags", args)
             return self.l3_pool.fetch(  # type: ignore[union-attr]
                 f"""
@@ -1749,7 +1769,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                         SELECT 1 FROM memories g
                         WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
                   AND {_NOT_RETRACTED}
-                  AND salience >= ${vec_salience_idx}{history_clause}{allowed}
+                  AND salience >= ${vec_salience_idx} AND date_created < ${history_idx}{allowed}
                 ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
                 LIMIT {limit_param}
                 """,
