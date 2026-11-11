@@ -80,6 +80,38 @@ def test_an_append_runs_inline_and_writes_what_the_insert_it_replaces_writes(con
     )
 
 
+def test_a_distinct_difference_writes_what_the_except_it_replaces_writes(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if apply_stage(mode=difference, distinct=True) writes a row staged twice twice, or leaves the table
+    other than the set difference it replaces (``INSERT INTO t SELECT ... FROM stage EXCEPT SELECT ... FROM t``),
+    over every seed: new keys, each staged twice, one of them identical."""
+    conn.execute("CREATE TABLE seen (a VARCHAR, b BIGINT, v INTEGER)")
+    conn.execute("CREATE TABLE stage (a VARCHAR, b BIGINT, v INTEGER)")
+    conn.execute(
+        "INSERT INTO stage SELECT 'k' || (i % 2), 1000 + i, i FROM range(20) r(i) "
+        "UNION ALL SELECT 'k' || (i % 2), 1000 + i, i FROM range(20) r(i) WHERE i % 3 = 0"
+    )
+
+    def row(seed: Seeded) -> dict[str, object]:
+        return {"a": f"k{seed.tenant}", "b": seed.index, "v": None if seed.null else seed.tie}
+
+    async def helper(c: Any) -> Any:
+        written = await c.fetch("SELECT DISTINCT a, b, v FROM stage")
+        await apply_stage(c, "seen", "stage", key=["a", "b"], columns=["a", "b", "v"], mode="difference", distinct=True)
+        return written
+
+    run_inline(
+        assert_same_results(
+            InlineDuckDB(conn),
+            table="seen",
+            row=row,
+            old_sql="INSERT INTO seen (a, b, v) SELECT a, b, v FROM stage EXCEPT SELECT a, b, v FROM seen RETURNING a, b, v",
+            helper=helper,
+            ordered=False,
+            state_sql="SELECT a, b, v FROM seen",
+        )
+    )
+
+
 def test_its_transaction_commits_on_a_clean_exit_and_rolls_back_on_an_error(conn: duckdb.DuckDBPyConnection) -> None:
     """Flips if ``async with db.transaction()`` keeps a failed block's writes or drops a clean one's."""
     db = InlineDuckDB(conn)

@@ -43,6 +43,7 @@ from datetime import date, datetime, time
 from typing import Any
 
 from threetears.core.backends.dialect import known_on_yugabyte
+from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
 from threetears.core.keyed._filters import (
@@ -50,10 +51,12 @@ from threetears.core.keyed._filters import (
     Derived,
     Fragment,
     Lock,
+    Selected,
     by_conditions,
     quoted_table,
     relation,
     renumbered,
+    selected_column,
 )
 from threetears.core.pagination import CursorError
 from threetears.core.sql_fragments import quote_identifier
@@ -200,9 +203,9 @@ def _past(
     expanded = after(order[-1], marks[-1])
     for sort, mark in zip(reversed(order[:-1]), reversed(marks[:-1]), strict=True):
         expanded = f"{after(sort, mark)} OR ({same(sort, mark)} AND ({expanded}))"
-    lead, lead_mark = order[0], marks[0]
-    if lead_mark is not None and not lead.nullable:
-        bound = f"{lead.sorted_by} {'<=' if lead.descending else '>='} {lead_mark}"
+    head, head_mark = order[0], marks[0]
+    if head_mark is not None and not head.nullable:
+        bound = f"{head.sorted_by} {'<=' if head.descending else '>='} {head_mark}"
         return f"{bound} AND ({expanded})", params
     return f"({expanded})", params
 
@@ -244,7 +247,7 @@ async def keyset_page(
     conn: Any,
     table: str | Derived,
     *,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     by: Mapping[str, Any],
     order: Sequence[Sort],
     limit: int,
@@ -259,9 +262,10 @@ async def keyset_page(
     :ptype conn: Any
     :param table: the table (``schema.table``), or a derived relation
     :ptype table: str | Derived
-    :param columns: the columns read, TRUSTED identifiers; each sort column among them (a sort expression's name
-        not: it is selected under it)
-    :ptype columns: Sequence[str]
+    :param columns: the columns read, TRUSTED identifiers or :class:`~threetears.core.keyed.Selected` expressions
+        under their own names (a row's hash); each sort column among them (a sort expression's name not: it is
+        selected under it)
+    :ptype columns: Sequence[str | Selected]
     :param by: the bound prefix (a tenant, a parent), each a value or an ``AnyOf``; empty pages across every row
         in the sort's index
     :ptype by: Mapping[str, Any]
@@ -304,10 +308,15 @@ async def _steps_by_row(conn: Any, order: Sequence[Sort]) -> bool:
         return False
     if isinstance(conn, ThreadedDuckDB | ThreadedSQLite | InlineDuckDB):
         return True
+    # a reader naming its dialect (a datasource's engine) is not asked: a warehouse (Redshift) is read by the
+    # expansion, plain SQL every engine takes
+    named = getattr(conn, SQL_DIALECT_ATTRIBUTE, None)
+    if isinstance(named, Dialect):
+        return named in {Dialect.POSTGRES, Dialect.DUCKDB}
     return not await known_on_yugabyte(conn)
 
 
-def _check(table: str | Derived, columns: Sequence[str], order: Sequence[Sort], limit: int) -> None:
+def _check(table: str | Derived, columns: Sequence[str | Selected], order: Sequence[Sort], limit: int) -> None:
     if not order:
         raise ValueError(f"a page of {table} names its sort")
     if limit < 1:
@@ -339,7 +348,7 @@ def _pinned(by: Mapping[str, Any], order: Sequence[Sort]) -> list[tuple[str, str
 
 def _statement(
     table: str | Derived,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     by: Mapping[str, Any],
     order: Sequence[Sort],
     rows: int,
@@ -365,7 +374,7 @@ def _statement(
         params += list(fragment.params)
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     selected = ", ".join(
-        [f"t.{quote_identifier(column)}" for column in columns]
+        [selected_column(column) for column in columns]
         + [
             f"{sort.expression} AS {quote_identifier(sort.column)}"
             for sort in order
@@ -385,7 +394,7 @@ async def keyset_rows(
     conn: Any,
     table: str | Derived,
     *,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     by: Mapping[str, Any],
     order: Sequence[Sort],
     page: int = 500,
@@ -406,9 +415,10 @@ async def keyset_rows(
     :ptype conn: Any
     :param table: the table (``schema.table``), or a derived relation
     :ptype table: str | Derived
-    :param columns: the columns read, TRUSTED identifiers; each sort column among them (a sort expression's name
-        not: it is selected under it)
-    :ptype columns: Sequence[str]
+    :param columns: the columns read, TRUSTED identifiers or :class:`~threetears.core.keyed.Selected` expressions
+        under their own names (a row's hash); each sort column among them (a sort expression's name not: it is
+        selected under it)
+    :ptype columns: Sequence[str | Selected]
     :param by: the bound prefix, as :func:`keyset_page` takes it
     :ptype by: Mapping[str, Any]
     :param order: the sort, its last column unique among the rows ``by`` names

@@ -76,6 +76,7 @@ from threetears.core.security.door_request import (
     datasource_query_op,
     omit_absent_proof,
 )
+from threetears.core.keyed import Fragment, Selected, renumbered, selected_column
 from threetears.core.sql_fragments import FilterValue, as_written, filter_conditions
 from threetears.core.wire import TolerantWireModel
 from threetears.datasources.bounded_rows import json_with_rows
@@ -119,6 +120,7 @@ __all__ = [
     "RelationFingerprintRequest",
     "RelationFingerprintResult",
     "read_all",
+    "read_scope_pages",
     "read_counted",
 ]
 
@@ -1872,6 +1874,59 @@ async def read_all(
     raise AssertionError("unreachable: the last attempt returns or raises")  # pragma: no cover
 
 
+async def read_scope_pages(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    *,
+    columns: Sequence[str | Selected],
+    relation: str,
+    key: Sequence[str],
+    conditions: Sequence[Fragment] = (),
+    user_identity_token: str | None = None,
+    page_size: int = _DEFAULT_PAGE_SIZE,
+    max_pages: int = 10_000,
+) -> list[dict[str, Any]]:
+    """every row the trusted ``conditions`` name, in ``key``'s order, by :func:`read_all`'s pages: sized from the reply
+    cap the hub announces, reading on past a reply it cut, the sentinel row and the key group held back alike. For a
+    keyed helper's scope (``t."col" = $1`` fragments; the relation is read as ``t``), where :func:`read_all` takes
+    equality and set filters.
+
+    :param client: the query client
+    :ptype client: DatasourceQueryClient
+    :param datasource_name: the datasource
+    :ptype datasource_name: str
+    :param columns: the columns as written, or :class:`~threetears.core.keyed.Selected` expressions under their names
+    :ptype columns: Sequence[str | Selected]
+    :param relation: the relation, TRUSTED; read as ``t``
+    :ptype relation: str
+    :param key: the ordering columns, TRUSTED identifiers among ``columns``
+    :ptype key: Sequence[str]
+    :param conditions: the scope, each fragment written from ``$1`` with its own parameters
+    :ptype conditions: Sequence[Fragment]
+    :param user_identity_token: the user's assertion when a human is in the loop
+    :ptype user_identity_token: str | None
+    :param page_size: the rows a page asks for before the hub's cap is known
+    :ptype page_size: int
+    :param max_pages: the pages read before refusing to go on
+    :ptype max_pages: int
+    :return: the rows
+    :rtype: list[dict[str, Any]]
+    :raises IncompleteReadError: when paging cannot step past every row
+    """
+    _check_read([column if isinstance(column, str) else column.alias for column in columns], key, page_size)
+    return await _pages(
+        client,
+        datasource_name,
+        columns=columns,
+        relation=f"{relation} AS t",
+        key=key,
+        filters=_Filters(where={}, where_in={}, fragments=tuple(conditions)),
+        page_size=page_size,
+        max_pages=max_pages,
+        user_identity_token=user_identity_token,
+    )
+
+
 async def read_counted(
     client: DatasourceQueryClient,
     datasource_name: str,
@@ -2069,16 +2124,23 @@ def _rows_a_reply_carries(rows: list[dict[str, Any]], max_reply_bytes: int) -> i
     return max(1, int(_CAP_FILL * max_reply_bytes / per_row))
 
 
+def _selected(columns: Sequence[str | Selected]) -> str:
+    """the select list: each column as written (unquoted, as the relation and key are), each
+    :class:`~threetears.core.keyed.Selected` expression under its quoted name (a row's hash beside the columns)."""
+    return ", ".join(column if isinstance(column, str) else selected_column(column) for column in columns)
+
+
 async def _pages(
     client: DatasourceQueryClient,
     datasource_name: str,
     *,
-    columns: Sequence[str],
+    columns: Sequence[str | Selected],
     relation: str,
     key: Sequence[str],
     filters: _Filters,
     page_size: int,
     max_pages: int,
+    user_identity_token: str | None = None,
 ) -> list[dict[str, Any]]:
     """every row of the filtered part, page after page in key order: the one paging loop.
 
@@ -2090,8 +2152,10 @@ async def _pages(
     :rtype: list[dict[str, Any]]
     :raises IncompleteReadError: when paging cannot step past every row
     """
-    selected = ", ".join(columns)
+    selected = _selected(columns)
     ordering = ", ".join(key)
+    # the user's assertion when a human is in the loop; the principal's own grants (nothing passed) otherwise
+    asserted: dict[str, Any] = {} if user_identity_token is None else {"user_identity_token": user_identity_token}
 
     rows: list[dict[str, Any]] = []
     cursor: tuple[Any, ...] | None = None
@@ -2124,7 +2188,7 @@ async def _pages(
         # question the hub is not being asked.
         sql = f"SELECT {selected} FROM {relation}{predicate} ORDER BY {ordering} LIMIT {int(size) + 1}"
         try:
-            page = await client.query(datasource_name, sql, params=params)
+            page = await client.query(datasource_name, sql, params=params, **asserted)
         except DatasourceQueryError as exc:
             # more bytes than one reply may carry: the same rows in smaller pages. Row counts
             # cannot bound bytes when one row can be a thousand times another (a polygon)
@@ -2177,6 +2241,7 @@ async def _pages(
                     datasource_name,
                     f"SELECT count(*) AS n FROM {relation} WHERE {where_sql}",  # noqa: S608 - trusted identifiers
                     params=[*values, *cut_key],
+                    **asserted,
                 )
                 if not counted.rows or int(counted.rows[0]["n"]) != len(page.rows):
                     raise IncompleteReadError(
@@ -2358,6 +2423,9 @@ class _Filters:
     where: Mapping[str, FilterValue]
     where_in: Mapping[str, tuple[FilterValue, ...]]
     not_null: tuple[str, ...] = ()
+    #: trusted conditions written from ``$1`` with their own parameters (a keyed helper's scope: its ``by`` and
+    #: ``where``), after the filters
+    fragments: tuple[Fragment, ...] = ()
 
     @classmethod
     def of(
@@ -2411,7 +2479,15 @@ class _Filters:
         :return: the conditions (empty without filters) and their values in order
         :rtype: tuple[str, list[FilterValue]]
         """
-        return filter_conditions(self.where, self.where_in, self.not_null, first=first, quote=as_written)
+        conditions, values = filter_conditions(self.where, self.where_in, self.not_null, first=first, quote=as_written)
+        if not self.fragments:
+            return conditions, values
+        parts = [conditions] if conditions else []
+        bound: list[Any] = list(values)
+        for fragment in self.fragments:
+            parts.append(f"({renumbered(fragment, first - 1 + len(bound))})")
+            bound += list(fragment.params)
+        return " AND ".join(parts), bound
 
 
 @dataclass(frozen=True)

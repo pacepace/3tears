@@ -6,9 +6,27 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+import duckdb
+import pydantic_core
 import pytest
 
-from threetears.core.keyed import AnyOf, KeyBatch, Selected, counts_by, read_keyed, read_past_marks
+from threetears.core.keyed import (
+    ROW_HASH_COLUMN,
+    AnyOf,
+    Dialect,
+    HashColumn,
+    HashKind,
+    KeyBatch,
+    Selected,
+    Sort,
+    counts_by,
+    dialect_of,
+    read_changed,
+    read_keyed,
+    read_past_marks,
+    row_hash_sql,
+)
+from threetears.datasources.entities import DataSourceType
 from threetears.datasources.keyed_reader import DatasourceAnswerCut, DatasourceReader
 from threetears.datasources.query_client import DatasourceQueryResult
 
@@ -95,3 +113,134 @@ async def test_a_selected_expression_reaches_the_warehouse_as_written() -> None:
     assert rows == [{"run_id": 7, "copied_at": "2026-11-03 20:00:00.123"}]
     ((_, query, _),) = client.asked
     assert 'SELECT t."run_id", CAST(t.copied_at AS VARCHAR) AS "copied_at" FROM' in query
+
+
+class _Scripted(_Client):
+    """a query client answering each query with the next canned answer."""
+
+    def __init__(self, answers: list[list[dict[str, Any]]]) -> None:
+        super().__init__([])
+        self._answers = answers
+
+    async def query(
+        self, datasource: str, query: str, params: list[Any] | None = None, *, user_identity_token: str | None = None
+    ) -> DatasourceQueryResult:
+        self._rows = self._answers[len(self.asked)]
+        return await super().query(datasource, query, params, user_identity_token=user_identity_token)
+
+
+async def test_the_reader_names_its_engine_s_dialect_and_refuses_an_unnamed_one() -> None:
+    """Flips if a datasource's engine does not decide the hash's spelling (a Redshift reader spelled as
+    PostgreSQL's, or asked over the rail), or a reader naming no engine, or one no hash is spelled for, is taken."""
+    client = _Client([])
+    assert await dialect_of(DatasourceReader(client, "r", engine=DataSourceType.REDSHIFT)) is Dialect.REDSHIFT  # type: ignore[arg-type]
+    assert await dialect_of(DatasourceReader(client, "p", engine=DataSourceType.POSTGRES)) is Dialect.POSTGRES  # type: ignore[arg-type]
+    for reader in (DatasourceReader(client, "s", engine=DataSourceType.SNOWFLAKE), DatasourceReader(client, "u")):  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="no row hash is spelled for"):
+            await dialect_of(reader)
+    assert client.asked == []
+
+
+async def test_a_changed_rows_read_runs_on_the_warehouse_through_the_rail() -> None:
+    """Flips if read_changed over a Redshift datasource spells its hash other than Redshift's, binds its keys as
+    arrays, asks the rail for the engine, or reads in full a row whose hash the caller holds."""
+    hashed = [HashColumn("name"), HashColumn("votes", HashKind.INTEGER)]
+    client = _Scripted(
+        [
+            [
+                {"state": "PA", "geo": 1, ROW_HASH_COLUMN: "a" * 32},
+                {"state": "PA", "geo": 2, ROW_HASH_COLUMN: "c" * 32},
+            ],
+            [{"state": "PA", "geo": 2, "name": "n2", "votes": 7, ROW_HASH_COLUMN: "c" * 32}],
+        ]
+    )
+    reader = DatasourceReader(client, "redshift", engine=DataSourceType.REDSHIFT)  # type: ignore[arg-type]
+    changed = await read_changed(
+        reader,
+        "enr.results",
+        key=["state", Sort("geo", cast="bigint")],
+        columns=["state", "geo", "name", "votes"],
+        held={("PA", 1): "a" * 32, ("PA", 2): "b" * 32, ("PA", 3): "d" * 32},
+        hash_columns=hashed,
+        by={"state": "PA"},
+    )
+    assert [row["geo"] for row in changed.rows] == [2] and changed.gone_keys == [("PA", 3)]
+    (_, scope, _), (_, keyed, params) = client.asked
+    assert row_hash_sql(hashed, Dialect.REDSHIFT) in scope and " LIMIT " in scope
+    assert '(t."state", t."geo") IN (($1, $2))' in keyed and "unnest" not in keyed
+    assert params[:2] == ["PA", 2]
+
+
+class _ByteCappedHub:
+    """a stand-in hub over an in-process DuckDB: it runs each query and cuts its reply at ``cap`` bytes of compact
+    JSON (saying so, ``truncated``), announcing the cap on every reply, as the hub's broker does."""
+
+    def __init__(self, db: duckdb.DuckDBPyConnection, cap: int) -> None:
+        self._db = db
+        self._cap = cap
+        self.asked: list[str] = []
+        self.cuts = 0
+
+    async def query(
+        self, datasource: str, query: str, params: list[Any] | None = None, *, user_identity_token: str | None = None
+    ) -> DatasourceQueryResult:
+        self.asked.append(query)
+        cursor = self._db.execute(query, list(params or []))
+        names = [column[0] for column in cursor.description or []]
+        rows = [dict(zip(names, found, strict=True)) for found in cursor.fetchall()]
+        kept: list[dict[str, Any]] = []
+        size = 2
+        for row in rows:
+            size += len(pydantic_core.to_json(row)) + 1
+            if size > self._cap:
+                self.cuts += 1
+                break
+            kept.append(row)
+        return DatasourceQueryResult(
+            rows=kept,
+            row_count=len(kept),
+            truncated=len(kept) < len(rows),
+            correlation_id=uuid4(),
+            max_reply_bytes=self._cap,
+        )
+
+
+class _DuckReader(DatasourceReader):
+    """a datasource reader whose stand-in hub answers in DuckDB's dialect."""
+
+    @property
+    def sql_dialect(self) -> Dialect | str:
+        return Dialect.DUCKDB
+
+
+async def test_a_changed_rows_read_reads_on_past_replies_the_hub_cut_by_bytes() -> None:
+    """Flips if phase 1 over a datasource raises on (or stops at) a reply the hub cut by its bytes, or loses a key
+    at a cut: every key of 5,000 comes back, so only the changed rows are read and only the gone keys named."""
+    db = duckdb.connect()
+    db.execute("CREATE TABLE results (state VARCHAR, geo BIGINT, name VARCHAR, PRIMARY KEY (state, geo))")
+    db.execute("INSERT INTO results SELECT 'PA', i, 'n' || i FROM range(5000) r(i)")
+    db.execute("INSERT INTO results SELECT 'OH', i, 'n' || i FROM range(100) r(i)")
+    hashed = [HashColumn("name")]
+    held: dict[tuple[Any, ...], str | None] = {
+        ("PA", geo): found
+        for geo, found in db.execute(
+            f"SELECT geo, {row_hash_sql(hashed, Dialect.DUCKDB)} FROM results AS t WHERE state = 'PA'"
+        ).fetchall()
+    }
+    db.execute("UPDATE results SET name = 'moved' WHERE state = 'PA' AND geo % 100 = 7")
+    db.execute("DELETE FROM results WHERE state = 'PA' AND geo IN (11, 4999)")
+    hub = _ByteCappedHub(db, cap=16_000)
+    reader = _DuckReader(hub, "stand-in")  # type: ignore[arg-type]
+    changed = await read_changed(
+        reader,
+        "results",
+        key=["state", Sort("geo", cast="bigint")],
+        columns=["state", "geo", "name"],
+        held=held,
+        hash_columns=hashed,
+        by={"state": "PA"},
+    )
+    assert hub.cuts > 0
+    assert sorted(row["geo"] for row in changed.rows) == list(range(7, 5000, 100))
+    assert all(row["name"] == "moved" for row in changed.rows)
+    assert sorted(changed.gone_keys) == [("PA", 11), ("PA", 4999)]
