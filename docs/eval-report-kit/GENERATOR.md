@@ -116,7 +116,7 @@ check(arm, stratum, criteria) -> {status, fails[], borders[]}
   - A margin that no plausible result could fail (larger than twice the worst observed drop) gets flagged as uninformative.
 - **Status color follows the direction of the change, not the margin.** Worse is ✕ fail-red even when it is within the margin ("Worse, within margin"); cannot tell apart is neutral gray; better is ✓ green. The margin verdict goes in the words. A green pill on a regression reads as approval.
 - **Gate the asked aspect on its readings** (`aspects[].readings`). If a floor `speaks_for` a different measure than its reading (a judged dimension instead of the pass rate), show that floor separately and name the mismatch in Method. Never merge the two.
-- **"Pass" is whatever the bundle defines.** If the input doesn't say which checks and judged dimensions make a trial pass, Method says so plainly ("a trial passes when its checks and judged dimensions pass; the bundle doesn't list which") instead of guessing.
+- **"Pass" is whatever the bundle defines.** Method states each aspect's pass rule as the input gives it (`aspects.<aspect>.pass_rule`: every goal check, each other check by the value it must hold, the counted judged dimensions at the threshold). An aspect whose input gives no rule says so plainly instead of guessing.
 - **Routing.** For each routable task, the cheapest passing candidate (among those that also pass every cross-cutting aspect). Blended cost uses declared traffic shares only.
 - **A chart's floor or budget line is a criterion's own threshold** (§5.2): the one criterion that reads the chart's measure, so the line a chart draws and the status the gate function gives come from the same declared rule.
 
@@ -215,7 +215,7 @@ Grammar: `{path|filter|filter}`, in single braces; a double brace is refused. `{
 | `meta.<field>` | campaign, question, behavior, kind, kind_means, design_shape, run_date, provenance, volume_per_month |
 | `control.<field>` | the control's id, name, served_model, description |
 | `n_candidates`, `cases`, `repeats` | candidates; the asked aspect's cases and repeats per case |
-| `aspect.<field>`, `aspects.<aspect>.<field>` | the one asked aspect, or any aspect: id, name, margin, description |
+| `aspect.<field>`, `aspects.<aspect>.<field>` | the one asked aspect, or any aspect: id, name, margin, description, graded_by, pass_rule, pass_threshold, no_criterion |
 | `reading.<arm>.<statistic>`, `aspects.<aspect>.reading.<arm>.<statistic>` | change, interval, low, high, margin, level, verdict, control_passed, arm_passed, why |
 | `contrast.<arm>.<measure>.<statistic>` | delta, interval, low, high, verdict, p_adjusted |
 | `judged.<dim>.<arm>` | the arm's mean on a judged dimension |

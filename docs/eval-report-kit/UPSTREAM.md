@@ -7,6 +7,7 @@ Building the Kairo round 2 reference from `kairo-round2-writer-input.json` worke
 **Seen:** `bundle.arms[].label` is `null` for all three arms. The names a reader knows ("September", "1017") exist only in the writer message's `arms.arms[].arm`, with `levels.model` set to the alias, not the served model. The adapter has to join alias → `disclosures.arm_served_models` → `levers.model.display` → `variant_key`.
 **Need:** for each arm, a display name, a role, the served model, and the levers that differ from the control (`display` values). The page derives short names and the arms key from these (GENERATOR.md §6.1).
 **Proposal:** populate `label`; add `differs_from_control: {lever: display}` per candidate arm, computed from `levers` content hashes.
+**Status:** met in the report input, not the bundle: each `Arm` carries `name`, `short_name`, `role`, `served_model` and the `settings` that differ from the control.
 
 ### U2. One interval system per comparison, and consistent point estimates
 
@@ -61,11 +62,13 @@ Building the Kairo round 2 reference from `kairo-round2-writer-input.json` worke
 **Seen:** stratum ids (`off_lane`, `assistant_shape`) and measure keys (`production_replicating_cost`, `goal_state:call_count(...)`) reach the writer as-is.
 **Need:** reader names ("Off-lane asks", "Cost per 1,000 replies", "Sent a message or voice line").
 **Proposal:** extend #956 chunk 01's declared short names to strata and measures.
+**Status:** met: a template declares `stratum_names`, and a measure's reader name reaches the writer.
 
 ### U11. Structured judge verdicts on trials
 
 **Seen:** `trials[].judge` arrives sometimes as a list of dicts and sometimes as a truncated repr string, so pulling one dimension's reason needs a regex.
 **Need:** `judge: [{dim, score, scale, reason}]` always, with `reason` truncated only at its own end.
+**Status:** met: `trials[].judge` is a list of `{dim, criterion, score, scale, reason}`.
 
 ### U12. Floors that speak for a different measure than their reading
 
@@ -78,11 +81,13 @@ Building the Kairo round 2 reference from `kairo-round2-writer-input.json` worke
 **Seen:** the scoreboard splits failures into `judged`, `check` and `model_failed`, but nothing lists which judged dimensions a trial must pass. September's pass rate (85.3%) is below its in-character rate (91.5%), so other dimensions count, but the page can't say which.
 **Need:** the pass rule per aspect: which checks and which judged dimensions, at what threshold.
 **Proposal:** `aspects[].pass_rule: {checks: [...], judged: [{dim, at_least}]}`.
+**Status:** met: each aspect's `pass_rule` lists its checks (each that is no goal check named with the value it must hold), the judged dimensions that count and the threshold.
 
 ### U14. Short runs mapped to arms
 
 **Seen:** `disclosures.short_runs` is keyed by run id only. The adapter maps run ids to arms through `design.contrasts[].run_ids`.
 **Proposal:** include `arm` on each short-run entry.
+**Status:** met in the report input: each short run carries its `arm`.
 
 ### U15. Prior insights checked against the new data
 
