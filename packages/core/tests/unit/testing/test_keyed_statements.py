@@ -24,7 +24,7 @@ from threetears.core.keyed import (
     read_keyed,
     update_keyed,
 )
-from threetears.core.testing.keyed_statements import decode
+from threetears.core.testing.keyed_statements import decode, keyed_fetch
 
 _T0 = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
 _NOW = datetime(2026, 11, 10, 13, 0, tzinfo=UTC)
@@ -176,3 +176,35 @@ def test_a_statement_the_helpers_do_not_write_is_refused() -> None:
         decode('SELECT t."n" FROM "items" AS t WHERE t."n" LIKE $1', ["x%"])
     with pytest.raises(ValueError, match="SET value"):
         decode('UPDATE "items" SET "n" = n + 1 WHERE "item" = $1', [1]).update([{"item": 1, "n": 0}])
+
+
+async def test_keyed_fetch_answers_each_read_by_key_in_turn_and_hands_every_other_statement_on() -> None:
+    """Flips if keyed_fetch answers a keyed page, another table's read or a hand-written statement from its queue,
+    or answers the reads by key out of turn."""
+    first, second = {"id": uuid.UUID(int=1), "name": "a"}, {"id": uuid.UUID(int=2), "name": "b"}
+    handed: list[str] = []
+
+    async def rest(sql: str, *_args: Any) -> list[dict[str, Any]]:
+        handed.append(sql)
+        return []
+
+    fetch = keyed_fetch(first, None, second, tables={"widgets"}, rest=rest)
+
+    # parity-with: asyncpg.Pool (fetch -- the seam the keyed helpers drive)
+    class _Pool:
+        async def fetch(self, sql: str, *args: Any) -> Any:
+            return await fetch(sql, *args)
+
+    pool = _Pool()
+    keys = KeyBatch(columns=("id",), values=[(first["id"],)], casts=("uuid",))
+    assert await read_keyed(pool, "widgets", keys=keys, columns=("id", "name")) == [first]
+    await keyset_page(pool, "widgets", columns=("id", "name"), by={"tenant": 1}, order=(Sort("name"),), limit=5)
+    assert await read_keyed(pool, "gadgets", keys=keys, columns=("id",)) == []
+    assert await pool.fetch("SELECT 1") == []
+    assert await read_keyed(pool, "widgets", keys=keys, columns=("id", "name")) == []
+    assert await read_keyed(pool, "widgets", keys=keys, columns=("id", "name")) == [second]
+    assert [sql.split(" FROM ")[-1][:10] for sql in handed[:2]] == ['"widgets" ', '"gadgets" '], handed
+    assert handed[2] == "SELECT 1"
+    with pytest.raises(AssertionError, match="past the queued answers"):
+        await read_keyed(pool, "widgets", keys=keys, columns=("id", "name"))
+    assert fetch.await_count == 7
