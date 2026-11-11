@@ -135,7 +135,12 @@ install_client() {
     headers="$(tr -d '\r' <"$wheels/headers")"
     wheel="$(printf '%s\n' "$headers" | sed -En 's/^[Cc]ontent-[Dd]isposition:.*filename="?([^";/]+)"?.*/\1/p' | tail -n 1)"
     want="$(printf '%s\n' "$headers" | sed -En 's/^[Xx]-[Tt]estament-[Ww]heel-[Ss][Hh][Aa]256: *([0-9a-f]+).*/\1/p' | tail -n 1)"
-    got="$(sha256sum "$wheels/wheel.bin" | cut -d' ' -f1)"
+    # sha256sum on Linux (the runners); macOS keeps it in /sbin, off a plain PATH, and has shasum in /usr/bin
+    if command -v sha256sum >/dev/null 2>&1; then
+        got="$(sha256sum "$wheels/wheel.bin" | cut -d' ' -f1)"
+    else
+        got="$(shasum -a 256 "$wheels/wheel.bin" | cut -d' ' -f1)"
+    fi
     case "$wheel" in
         testament-*.whl) ;;
         *)

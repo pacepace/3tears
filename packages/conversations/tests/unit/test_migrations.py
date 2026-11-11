@@ -14,8 +14,8 @@ from typing import Any
 import pytest
 from threetears.core.testing.migrations import uncontended_ddl_lock_rows
 
+from threetears.conversations.migrations.v012_conversation_sort_indexes import add_conversation_sort_indexes
 from threetears.conversations.migrations import (
-    add_conversation_sort_indexes,
     PACKAGE_NAME,
     add_conversation_language_column,
     add_conversation_parent,

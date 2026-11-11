@@ -34,7 +34,7 @@ from __future__ import annotations
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
-__all__ = ["SORT_INDEX_NAMES", "add_conversation_sort_indexes"]
+__all__ = ["add_conversation_sort_indexes"]
 
 log = get_logger(__name__)
 
@@ -48,16 +48,6 @@ _SORT_INDEXES_SQL: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_conv_agent_status_created"
     " ON conversations (agent_id, status, date_created, conversation_id)",
     "CREATE INDEX IF NOT EXISTS idx_conv_agent_updated ON conversations (agent_id, date_updated, conversation_id)",
-)
-
-#: the indexes v012 builds
-SORT_INDEX_NAMES: tuple[str, ...] = (
-    "idx_conv_agent_created",
-    "idx_conv_agent_status",
-    "idx_conv_agent_user_created",
-    "idx_conv_agent_user_status",
-    "idx_conv_agent_status_created",
-    "idx_conv_agent_updated",
 )
 
 

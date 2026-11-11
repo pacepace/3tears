@@ -164,7 +164,6 @@ __all__ = [
     "add_conversation_parent",
     "add_folder_referential_integrity",
     "add_conversation_search_vector",
-    "add_conversation_sort_indexes",
     "add_message_count",
     "add_name_column",
     "create_conversations_table",
