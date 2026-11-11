@@ -27,4 +27,7 @@ NO_WHOLE_READS_CONFIG = NoWholeReadsConfig(
     # scanning what the epoch already said
     verify_prefixes=(f"{_CORE}/collections/", f"{_CORE}/cache/"),
     minimum_files_scanned=900,
+    # the hub reads 3tears' per-agent tables through their declarations (the admin conversations listing): an index
+    # purpose may name its read, which the hub's own gate keys by that index
+    consumer_purposes=("src/aibots/hub/",),
 )

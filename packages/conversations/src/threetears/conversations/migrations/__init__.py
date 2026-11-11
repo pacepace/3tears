@@ -72,6 +72,10 @@ version history:
   ``idx_conv_parent (parent_type, parent_id)`` index. every statement
   names only those, so it applies to a consumer's differently shaped
   ``conversations`` table too.
+- v012 -- the conversations listing's sort indexes (Pace's ruling B):
+  status and date_created under the agent, agent+user and agent+status
+  pins (five indexes), plus one (agent_id, date_updated, conversation_id)
+  for "last updated"; message_count's sort is deprecated and gets none.
 """
 
 from __future__ import annotations
@@ -108,6 +112,9 @@ from threetears.conversations.migrations.v010_drop_search_vector_gin_index impor
 )
 from threetears.conversations.migrations.v011_conversation_parent import (
     add_conversation_parent,
+)
+from threetears.conversations.migrations.v012_conversation_sort_indexes import (
+    add_conversation_sort_indexes,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -146,6 +153,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(9)(add_folder_referential_integrity)
     pkg.version(10)(drop_search_vector_gin_index)
     pkg.version(11)(add_conversation_parent)
+    pkg.version(12)(add_conversation_sort_indexes)
     runner.register(pkg)
     return pkg
 
@@ -156,6 +164,7 @@ __all__ = [
     "add_conversation_parent",
     "add_folder_referential_integrity",
     "add_conversation_search_vector",
+    "add_conversation_sort_indexes",
     "add_message_count",
     "add_name_column",
     "create_conversations_table",

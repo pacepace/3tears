@@ -132,7 +132,7 @@ class TestOnThePackageSchema:
             before = await _columns(conn, schema)
             assert "parent_type" not in before and "parent_id" not in before
 
-            assert await runner.apply_for_agent_schema(store) == 1  # type: ignore[arg-type]
+            assert await runner.apply_for_agent_schema(store, target=11) == 1  # type: ignore[arg-type]
             after = await _columns(conn, schema)
             assert after["parent_type"] == ("text", "YES")
             assert after["parent_id"] == ("uuid", "YES")
@@ -141,7 +141,7 @@ class TestOnThePackageSchema:
 
             constraints_once = await _constraints(conn, schema)
             indexes_once = await _indexes(conn, schema)
-            assert await runner.apply_for_agent_schema(store) == 0  # type: ignore[arg-type]
+            assert await runner.apply_for_agent_schema(store, target=11) == 0  # type: ignore[arg-type]
             await add_conversation_parent(store)  # type: ignore[arg-type]
             assert await _columns(conn, schema) == after
             assert await _constraints(conn, schema) == constraints_once

@@ -157,13 +157,15 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         ],
         cas_column="date_updated",
         indexes=(
-            # one user's conversations, newest first; a user merge's repoint of them under the schema's agent
+            # one person's conversations by owner alone: the hub's person erasure (OWNED_CONVERSATIONS_SQL). A user
+            # merge's repoint under the schema's agent reads v012's agent-led idx_conv_agent_user_* instead
             SchemaIndex(
                 "idx_conv_user",
                 "user_id",
                 "date_created",
-                purpose="packages/core/src/threetears/core/collections/merge.py::repoint_agent_user_rows",
+                purpose="src/aibots/hub/customers/person_erasure.py::_anonymize_checkpoints",
                 plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_user",
+                reason="conversations carries ten indexes: one person's conversations by owner, for an erasure",
             ),
             SchemaIndex(
                 "idx_conv_customer",
@@ -173,6 +175,73 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             SchemaIndex("idx_conv_status", "status"),
             # v011: "every conversation this thing started" in one scan.
             SchemaIndex("idx_conv_parent", "parent_type", "parent_id"),
+            # v012: the listing's sorts (Pace's ruling B). status and date_created under the agent, agent+user and
+            # agent+status pins; date_updated under the agent only (a user / status filter walks it and filters);
+            # message_count's sort is deprecated and has none. Each ends in the page's tie-break.
+            SchemaIndex(
+                "idx_conv_agent_created",
+                "agent_id",
+                "date_created",
+                "conversation_id",
+                purpose="src/aibots/hub/admin/conversations.py::_fetch_paginated_rows",
+                plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_created",
+                reason="conversations carries ten indexes: one agent's conversations by creation date",
+            ),
+            SchemaIndex(
+                "idx_conv_agent_status",
+                "agent_id",
+                "status",
+                "conversation_id",
+                purpose="src/aibots/hub/admin/conversations.py::_fetch_paginated_rows",
+                plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_status",
+                reason="conversations carries ten indexes: one agent's conversations by status, or of one status",
+            ),
+            SchemaIndex(
+                "idx_conv_agent_user_created",
+                "agent_id",
+                "user_id",
+                "date_created",
+                "conversation_id",
+                purpose=(
+                    "src/aibots/hub/admin/conversations.py::_fetch_paginated_rows; "
+                    "packages/core/src/threetears/core/collections/merge.py::repoint_agent_user_rows"
+                ),
+                plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_user_created",
+                reason="conversations carries ten indexes: one user's conversations by creation date",
+            ),
+            SchemaIndex(
+                "idx_conv_agent_user_status",
+                "agent_id",
+                "user_id",
+                "status",
+                "conversation_id",
+                purpose=(
+                    "src/aibots/hub/admin/conversations.py::_fetch_paginated_rows; "
+                    "packages/core/src/threetears/core/collections/merge.py::repoint_agent_user_rows"
+                ),
+                plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_user_status",
+                reason="conversations carries ten indexes: one user's conversations by status",
+            ),
+            SchemaIndex(
+                "idx_conv_agent_status_created",
+                "agent_id",
+                "status",
+                "date_created",
+                "conversation_id",
+                purpose="src/aibots/hub/admin/conversations.py::_fetch_paginated_rows",
+                plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_status_created",
+                reason="conversations carries ten indexes: one status's conversations by creation date",
+            ),
+            SchemaIndex(
+                "idx_conv_agent_updated",
+                "agent_id",
+                "date_updated",
+                "conversation_id",
+                purpose="src/aibots/hub/admin/conversations.py::_fetch_paginated_rows",
+                plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_updated",
+                reason="conversations carries ten indexes: one agent's conversations by last update, the one "
+                "index the per-message date_updated write pays for",
+            ),
         ),
     )
 

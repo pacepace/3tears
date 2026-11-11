@@ -15,6 +15,7 @@ import pytest
 from threetears.core.testing.migrations import uncontended_ddl_lock_rows
 
 from threetears.conversations.migrations import (
+    add_conversation_sort_indexes,
     PACKAGE_NAME,
     add_conversation_language_column,
     add_conversation_parent,
@@ -146,7 +147,7 @@ class TestRegisterConversationsMigrations:
         pkg = register(runner)
         assert pkg.depends_on == ()
 
-    async def test_register_populates_versions_one_through_eleven(self) -> None:
+    async def test_register_populates_versions_one_through_twelve(self) -> None:
         """register wires v001 (create), v002 (message_count), v003
         (name), v004 (datetimetz), v005 (search_vector + trigger),
         v006 (language column + trigger update), v007 (rename id
@@ -154,20 +155,21 @@ class TestRegisterConversationsMigrations:
         folder_id), v009 (folder referential integrity: folder_id
         unique + conversation->folder FK ON DELETE SET NULL), v010
         (drop the search_vector GIN index), v011 (the conversation's
-        parent: type + id, both-or-neither check, index)."""
+        parent: type + id, both-or-neither check, index), v012 (the
+        listing's six sort indexes)."""
         runner = MigrationRunner()
         pkg = register(runner)
-        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 
-    async def test_apply_runs_eleven_versions_then_idempotent(self) -> None:
-        """apply records v1..v11 and re-running is a no-op."""
+    async def test_apply_runs_twelve_versions_then_idempotent(self) -> None:
+        """apply records v1..v12 and re-running is a no-op."""
         runner = MigrationRunner()
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_for_agent_schema(store)
-        assert first_count == 11
+        assert first_count == 12
         assert store.migrations_table_created is True
-        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         second_count = await runner.apply_for_agent_schema(store)
         assert second_count == 0
 
@@ -705,6 +707,33 @@ class TestAddConversationParentMigration:
         await add_conversation_parent(store)  # type: ignore[arg-type]
         assert store.migrations_table_created is False
         assert store.migrations_rows == []
+
+
+class TestAddConversationSortIndexesMigration:
+    """tests for v012: the listing's six sort indexes, each led by the agent."""
+
+    async def test_direct_call_builds_exactly_the_six_indexes(self) -> None:
+        """one CREATE INDEX IF NOT EXISTS per index, agent-led, each ending in the page's tie-break."""
+        store = _FakeDataStore()
+        await add_conversation_sort_indexes(store)  # type: ignore[arg-type]
+        statements = [" ".join(sql.split()) for sql, _params in store.executed]
+        assert statements == [
+            "CREATE INDEX IF NOT EXISTS idx_conv_agent_created ON conversations (agent_id, date_created, conversation_id)",
+            "CREATE INDEX IF NOT EXISTS idx_conv_agent_status ON conversations (agent_id, status, conversation_id)",
+            "CREATE INDEX IF NOT EXISTS idx_conv_agent_user_created"
+            " ON conversations (agent_id, user_id, date_created, conversation_id)",
+            "CREATE INDEX IF NOT EXISTS idx_conv_agent_user_status"
+            " ON conversations (agent_id, user_id, status, conversation_id)",
+            "CREATE INDEX IF NOT EXISTS idx_conv_agent_status_created"
+            " ON conversations (agent_id, status, date_created, conversation_id)",
+            "CREATE INDEX IF NOT EXISTS idx_conv_agent_updated ON conversations (agent_id, date_updated, conversation_id)",
+        ]
+
+    async def test_message_count_gets_no_index(self) -> None:
+        """the deprecated message_count sort is answered by date_updated: no index pays for it."""
+        store = _FakeDataStore()
+        await add_conversation_sort_indexes(store)  # type: ignore[arg-type]
+        assert "message_count" not in _joined_executed_sql(store)
 
 
 class TestDuplicateVersionGuard:
