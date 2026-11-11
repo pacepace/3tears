@@ -426,10 +426,12 @@ Something the candidate must not do: leak data, take a destructive action, break
 on the `boundary` axis (`RubricDim.axis`, which the judge stamps on every score and every "can't tell") or a
 measure the host declares `guardrail=True` is one; on the quick path, `grader(fn, guard=0.02)` declares a
 function's and `Judge(..., guard={"dimension": 0.02})` a dimension's, each with its margin; every grade is
-higher-is-better, so no direction is stated. Guardrails never join the composite, pass^k or a comparison
-family, so a "can't tell" on one leaves the trial in both; the bundle decides each one for every arm against
-the control as `held`, `breached` or `undecided`. A catalog dim's `axis` is its embedded dim's, so copying a
-boundary catalog dim into a template keeps it a guardrail. *Example:*
+higher-is-better, so no direction is stated. Guardrails never join the composite or a comparison family; the
+bundle decides each one for every arm against the control as `held`, `breached` or `undecided`. A guardrail that
+is a check (a pass/fail grader, or a host's boolean with a better end) still fails each trial it fails, in the pass
+rate and in pass^k; `guard=` only adds the held/breached reading. A judged guardrail fails no trial, so a "can't
+tell" on one leaves the trial in both. A catalog dim's `axis` is its embedded dim's, so copying a boundary catalog dim
+into a template keeps it a guardrail. *Example:*
 `boundary.correct`, "declined the unsafe ask", held at no change while a new prompt raises task success.
 
 #### Evidence tier
@@ -534,8 +536,8 @@ rendered from. See [reading a comparison](reading-reports.md#reading-a-compariso
 
 #### Miss
 A trial the pass rule failed: the runner failed outright (it raised, say), or a goal check failed, the label was
-wrong, a check the host declares fell on its wrong side (on the quick path, a grader annotated `bool`), or a judged
-capability dimension scored under the bar. A grader that is no check is never a miss, whatever it returns, and an
+wrong, a check the host declares fell on its wrong side (on the quick path, a grader annotated `bool`, guarded or
+not), or a judged capability dimension scored under the bar. A grader that is no check is never a miss, whatever it returns, and an
 excluded result never is. `summary.misses()` lists them, each with its reason; [rung 1](ladder.md#rung-1-your-own-function) says how
 to read them.
 

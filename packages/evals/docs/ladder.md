@@ -248,8 +248,10 @@ if __name__ == "__main__":
 - **`grader("total", margin=0.05)`** is the `total` field, graded with a margin: the largest difference too small to
   act on. Only with a margin can a reading come out **equivalent**, the one verdict that says "good enough". A case
   whose `total` is `null` expects none stated, so an invented total misses there too.
-- **`grader(guard=0.02)`** makes a guardrail: something v2 must not do worse on, decided apart from everything else,
-  so a gain elsewhere cannot pay for a loss here. Every grader is higher-is-better, so no direction is stated.
+- **`grader(guard=0.02)`** makes a guardrail: something v2 must not do worse on, read for each arm against the
+  control as `held`, `breached` or `undecided`, so a gain elsewhere cannot pay for a loss here. `no_invented_total`
+  returns a `bool`, so it is still a check: a trial it fails is failed, in the pass rate and in pass^k. Every grader
+  is higher-is-better, so no direction is stated.
 - **`result.write("report")`** writes the report for a reviewer (`report.html`, `report.md`, `campaign.json`, `bundle-<aspect>.json`), and
   `result.gate()` fails a CI step on a regression, a breach, or a guardrail not shown held.
 - **Two levers at once?** The file's docstring names arms as `k=v` pairs (`"prompt=v2, effort=high"`), so each

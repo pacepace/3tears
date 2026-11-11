@@ -565,8 +565,10 @@ measure the host declared `guardrail`. On the quick path, `grader(fn, guard=marg
 `Judge(guard={dimension: margin})` one on a judged dimension, every grade higher-is-better
 ([rung 3](ladder.md#rung-3-two-prompts-compared)). The Guardrails table
 (`guardrails` in the bundle, under the contrasts on every report, `Result.guardrails()` in code) decides each one
-for each arm, on its own 95% interval on `arm − control`. Guardrails are never in the contrasts table, the composite or pass^k, so a gain there
-cannot hide a loss here.
+for each arm, on its own 95% interval on `arm − control`. A guardrail has no row in the contrasts table and joins no
+composite, so a gain there cannot hide a loss here. A guardrail that is a check (a pass/fail grader, or a host's
+boolean with a better end) still fails each trial it fails, in the pass rate and in pass^k, and its row here is read on
+top. A judged guardrail fails no trial.
 
 | Decision | Means | Do |
 |---|---|---|

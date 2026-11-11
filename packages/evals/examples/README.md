@@ -125,7 +125,8 @@ the first is the control, and v2 is read against it on every reading: the delta,
 `question="Does v2 read the currency an invoice charges in right more often than v1?"` is the one sentence it
 answers, asked before any reading is seen: its measure is the first grader, `currency`, and the page quotes it. A field
 grader per field, `grader("total", margin=0.05)` declaring a margin for equivalence (a case whose `total` is `null`
-expects none stated), and `@grader(guard=0.02) no_invented_total`, a guardrail decided apart from the rest. `result.write("report")` writes the HTML report for a reviewer, and `gate()`
+expects none stated), and `@grader(guard=0.02) no_invented_total`, a guardrail: a pass/fail check that fails each
+trial it fails, with its own held/breached reading against v1 on top. `result.write("report")` writes the HTML report for a reviewer, and `gate()`
 fails the run in CI on a regression or a guardrail not shown held. Its docstring points on to a grid of factors: arms named
 as `k=v` pairs, read against another control with `result.against()`.
 

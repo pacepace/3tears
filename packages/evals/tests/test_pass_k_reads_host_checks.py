@@ -11,7 +11,9 @@ scoreboard):
 - a judge that could not tell on a dimension does not lift such a trial out of pass^k: the check has decided it;
 - an arm held by such a check alone, no goal check and no judge, has a measured pass^k: the census's pass rate;
 - a boolean with no better end, and a numeric measure that is no pass/fail scorer, fail nothing in either;
-- a trial the check failed says so on the page in the words its pass rule uses, at the value that failed it.
+- a trial the check failed says so on the page in the words its pass rule uses, at the value that failed it;
+- a check the host also declares a guardrail is still a check: a trial it fails is failed in the census and in pass^k,
+  and the guardrail is read beside them, ``breached`` here, in no comparison family.
 
 Every expectation is read off the census or counted from the fixture, never typed, but the check's name.
 """
@@ -87,8 +89,8 @@ THRESHOLD = 3
 FAILING = {(0, 1), (0, 2), (0, 3), (1, 2), (2, 1), (2, 3)}
 
 
-def _results(run: EvalRun, *, failing: set[tuple[int, int]], prefix: str) -> list[EvalResult]:
-    """Every case run ``K`` times, each passing its goal check and its judged dimension; the check reads its failing
+def _results(run: EvalRun, *, failing: set[tuple[int, int]], prefix: str, cases: int = CASES) -> list[EvalResult]:
+    """Every one of ``cases`` cases run ``K`` times, each passing its goal check and its judged dimension; the check reads its failing
     value on ``failing``, and the two measures that are no check read their worse end on every trial."""
     return [
         make_eval_result(
@@ -101,7 +103,7 @@ def _results(run: EvalRun, *, failing: set[tuple[int, int]], prefix: str) -> lis
             host_measures={CHECK: (case, k) in failing, UNDIRECTED.name: True, COUNT.name: 4.0},
             usage=[RoleUsage(role="candidate", cost_usd=0.01)],
         )
-        for case in range(CASES)
+        for case in range(cases)
         for k in range(1, K + 1)
     ]
 
@@ -113,10 +115,10 @@ def _census_rate(results: list[EvalResult]) -> Fraction:
     return Fraction(states.count("passed"), len(states))
 
 
-def _profile() -> HostProfile:
+def _profile(catalog: dict[str, MetricDescriptor] = CATALOG) -> HostProfile:
     """The toy host, declaring the check and the two measures that are no check."""
     profile = toyhost_profile()
-    measures = MeasureRegistry((*TOYHOST_MEASURES, *CATALOG.values()), families=profile.measures.families)
+    measures = MeasureRegistry((*TOYHOST_MEASURES, *catalog.values()), families=profile.measures.families)
     return replace(profile, measures=measures)
 
 
@@ -231,15 +233,20 @@ def test_two_runs_compared_read_the_check_and_name_it() -> None:
     assert arm["pass_checks_b"] == ["Never topped up is false"]
 
 
-def _bundle() -> AnalysisContextBundle:
-    """A control the check never fails beside an arm it fails on ``FAILING``, assembled under the declaring host."""
+def _bundle(
+    *,
+    catalog: dict[str, MetricDescriptor] = CATALOG,
+    failing_trials: set[tuple[int, int]] = FAILING,
+    cases: int = CASES,
+) -> AnalysisContextBundle:
+    """A control the check never fails beside an arm it fails on ``failing_trials``, assembled under the declaring host."""
     held = make_eval_run(status="completed", candidate_model="held", k_runs=K)
     failing = make_eval_run(
         status="completed", candidate_model="failing", k_runs=K, subject_snapshot=held.subject_snapshot
     )
     results = {
-        held.id: _results(held, failing=set(), prefix="h"),
-        failing.id: _results(failing, failing=FAILING, prefix="f"),
+        held.id: _results(held, failing=set(), prefix="h", cases=cases),
+        failing.id: _results(failing, failing=failing_trials, prefix="f", cases=cases),
     }
     campaign = make_campaign(
         scope_id=held.scope_id,
@@ -251,7 +258,9 @@ def _bundle() -> AnalysisContextBundle:
         declared_design=minimal_declaration(control=fixture_variant_key("held")),
         created_by="test:fixture",
     )
-    return assemble_context_bundle(campaign, storage=ToyhostStorage([held, failing], results), profile=_profile())
+    return assemble_context_bundle(
+        campaign, storage=ToyhostStorage([held, failing], results), profile=_profile(catalog)
+    )
 
 
 def test_the_bundle_s_frontier_and_scoreboard_agree_on_the_check() -> None:
@@ -274,3 +283,36 @@ def test_a_trial_the_check_failed_says_why_in_the_words_its_pass_rule_uses() -> 
 
     assert len(table.rows) == len(FAILING)
     assert whys == {"check: Never topped up is true"}, "the failing value, named as the rule names the passing one"
+
+
+#: The same check declared a guardrail too, with a 5-point margin, as ``grader(fn, guard=0.05)`` declares one.
+GUARDED = MetricDescriptor.model_validate({**DIRECTED.model_dump(), "guardrail": True, "materiality_threshold": 0.05})
+
+#: Enough cases for the guardrail to be decided: the check fails two of three repeats on 10 of 12 cases.
+GUARDED_CASES = 12
+GUARDED_FAILING = {(case, k) for case in range(10) for k in (1, 2)}
+
+
+def test_a_check_declared_a_guardrail_fails_its_trials_and_is_read_as_a_guardrail_too() -> None:
+    catalog = {**CATALOG, CHECK: GUARDED}
+    bundle = _bundle(catalog=catalog, failing_trials=GUARDED_FAILING, cases=GUARDED_CASES)
+    failing = fixture_variant_key("failing")
+
+    board = {board.variant_key: board for board in bundle.scoreboard}[failing]
+    assert board.failed == {"check": len(GUARDED_FAILING)}, "the census fails every trial the guardrail check failed"
+    assert board.passed == GUARDED_CASES * K - len(GUARDED_FAILING)
+
+    (point,) = [p for subject in bundle.frontier.subjects for p in subject.points if p.variant_key == failing]
+    assert pass_hat_k_at(point.pass_hat_k_curve, 1)["pass_hat_k"] == board.passed / board.usable
+    untouched = {
+        case for case in range(GUARDED_CASES) if not any((case, k) in GUARDED_FAILING for k in range(1, K + 1))
+    }
+    assert pass_hat_k_at(point.pass_hat_k_curve, K)["pass_hat_k"] == len(untouched) / GUARDED_CASES, (
+        "pass^k holds a trial to the guardrail check as the pass rate does"
+    )
+
+    (check,) = bundle.guardrails.checks
+    assert (check.name, check.contrast.variant_key, check.decision) == (CHECK, failing, "breached")
+    assert not any(c.name == CHECK for f in bundle.multiple_comparisons.families for c in f.comparisons), (
+        "a guardrail joins no comparison family"
+    )
