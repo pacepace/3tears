@@ -981,6 +981,33 @@ class TestKeylessTables:
         with pytest.raises(ValueError, match="key-less table 'results'"):
             backend.load_parquet("results", tmp_path / "none.parquet")
 
+    def test_load_parquet_fills_a_keyless_table_fresh(self, tmp_path: Any) -> None:
+        """a key-less table is filled by a plain INSERT (replace=False): every row of the file, no index built."""
+        import duckdb
+
+        backend = _keyless_backend()
+        duckdb.sql(
+            "COPY (SELECT * FROM (VALUES ('gov', '001', 'TX', 3), ('gov', '002', 'TX', 4)) AS t(race, county, state, "
+            f"votes)) TO '{tmp_path / 'r.parquet'}' (FORMAT parquet)"
+        )
+        try:
+            assert backend.load_parquet("results", tmp_path / "r.parquet", replace=False) == 2
+            rows = backend.execute_query("SELECT race, county, votes FROM results ORDER BY county")
+            assert rows == [
+                {"race": "gov", "county": "001", "votes": 3},
+                {"race": "gov", "county": "002", "votes": 4},
+            ]
+            indexes = (
+                backend.get_connection()
+                .execute(
+                    "SELECT count(*) FROM duckdb_constraints() WHERE table_name = 'results' AND constraint_type = 'PRIMARY KEY'"
+                )
+                .fetchone()
+            )
+            assert indexes == (0,)
+        finally:
+            backend.reset()
+
 
 def _scoped_keyless_backend() -> DuckDBBackend:
     """a key-less table whose key leads with its scope column, as the reports pod's projections are kept."""
