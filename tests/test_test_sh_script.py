@@ -67,6 +67,11 @@ def repo(tmp_path: Path) -> Path:
         (root / "packages" / package / "tests").mkdir(parents=True)
     (root / _EVALS_FILE).write_text("def test_y() -> None:\n    pass\n")
     (root / "pyproject.toml").write_text("[project]\nname = 'fixture'\n")
+    # files and a directory that options name as their values, all existing
+    (root / "packages" / "core" / "src").mkdir()
+    for name in ("out.log", "report.jsonl", "report.html", ".coveragerc"):
+        (root / name).write_text("")
+    (root / "packages" / "core" / "tests" / "out.log").write_text("")
     return root
 
 
@@ -192,6 +197,99 @@ class TestAPackageWithOnlyFlagsRunsTheWholePackage:
         """
         run = _run(repo, ["core", "-k", "lease", "nonexistent_test.py"])
         assert run.argv[:4] == ["testament", "run", "--", "packages/core/tests/"]
+
+
+class TestAnOptionsValueIsNotATestPath:
+    """An existing file or directory given as an option's value leaves the package's ``tests/`` in place.
+
+    Taking one for a test path would drop ``packages/<package>/tests/`` and hand the pool every test
+    the run's other arguments reach, or none, with the package name silently ignored.
+    """
+
+    @pytest.mark.parametrize(
+        "options",
+        [
+            pytest.param(["--log-file", "out.log"], id="log-file"),
+            pytest.param(["--report-log", "report.jsonl"], id="report-log"),
+            pytest.param(["--html", "report.html"], id="html"),
+            pytest.param(["--cov", "packages/core/src"], id="cov-dir-under-packages"),
+            pytest.param(["--cov-config", ".coveragerc"], id="cov-config"),
+            pytest.param(["--log-file", "packages/core/tests/out.log"], id="log-file-under-tests"),
+            pytest.param(["--an-unlisted-option", "report.html"], id="unlisted-option"),
+        ],
+    )
+    def test_the_package_still_runs_whole(self, repo: Path, options: list[str]) -> None:
+        """each value names something that exists, and none is a test path.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param options: an option and its value, written apart
+        :ptype options: list[str]
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core", *options, "-q"])
+        assert run.argv == ["testament", "run", "--", "packages/core/tests/", *options, "-q"]
+
+    def test_the_same_on_the_local_route(self, repo: Path) -> None:
+        """without testament, ``--cov <dir>`` still runs the package's tests.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core", "--cov", "packages/core/src"], testament=False)
+        assert run.argv == ["uv", "run", "pytest", "packages/core/tests/", "--cov", "packages/core/src"]
+
+    def test_an_option_after_cov_is_not_its_value(self, repo: Path) -> None:
+        """``--cov``'s value is optional: ``--cov -q <file>`` still names the file.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["evals", "--cov", "-q", _EVALS_FILE])
+        assert run.argv == ["testament", "run", "--", "--cov", "-q", _EVALS_FILE]
+
+
+class TestWhatCountsAsATestPath:
+    """A ``.py`` file, a node id or a directory, under ``packages/`` or ``tests/``, however it is spelled."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param(f"./{_EVALS_FILE}", id="dot-slash"),
+            pytest.param("packages/evals/tests", id="directory"),
+            pytest.param("ABSOLUTE", id="absolute"),
+        ],
+    )
+    def test_it_runs_alone(self, repo: Path, path: str) -> None:
+        """each spelling replaces the package's ``tests/``.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param path: the test path as given, ``ABSOLUTE`` for the file's absolute path
+        :ptype path: str
+        :return: nothing
+        :rtype: None
+        """
+        if path == "ABSOLUTE":
+            path = str(repo / _EVALS_FILE)
+        run = _run(repo, ["evals", path])
+        assert run.argv == ["testament", "run", "--", path]
+
+    def test_a_non_python_file_outside_the_test_trees_is_not_one(self, repo: Path) -> None:
+        """``pyproject.toml`` exists, but it names no tests.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core", "pyproject.toml"])
+        assert run.argv == ["testament", "run", "--", "packages/core/tests/", "pyproject.toml"]
 
 
 class TestTestamentOffNeedsAReason:

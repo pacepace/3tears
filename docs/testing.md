@@ -23,9 +23,9 @@ than the whole package's minutes. A bare `./scripts/test.sh` runs every package 
 the repo-level `tests/`, and evals is most of that test time (roughly four fifths, by testament's per-test
 medians from a full run on 2026-11-03; its duration totals are unreliable, see below).
 
-Run everything at the gates: before you open a PR (`./scripts/test.sh`, or `./scripts/check-all.sh`,
-which runs it), and on the integration branch before it merges into `develop`. CI runs everything on
-every PR as well.
+Run everything at the gates: before you open a PR (`./scripts/check-all.sh`, which runs
+`./scripts/test.sh` and the suites below that it does not), and on the integration branch before it
+merges into `develop`. CI runs everything on every PR as well.
 
 `check-all.sh` also runs the two suites CI's `check` job runs beside the unit suite:
 `./scripts/test-mcp-v1.sh` (the MCP packages on mcp 1.x, overlaid on the locked 2.x) and

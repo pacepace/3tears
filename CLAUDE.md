@@ -142,7 +142,7 @@ uv sync                    # install all packages in dev mode
 
 | Script | Purpose |
 |---|---|
-| `./scripts/test.sh` | Run tests. One package while you work (`./scripts/test.sh core`, `agent/memory`), which leaves evals out unless you name it; all packages, with no argument, before a PR |
+| `./scripts/test.sh` | Run tests. One package while you work (`./scripts/test.sh core`, `agent/memory`), which leaves evals out unless you name it; all packages with no argument. Before a PR, `./scripts/check-all.sh`, which runs it and CI's other suites |
 | `./scripts/test-sidecar.sh` | Run the nodriver sidecar's own tests |
 | `./scripts/test-integration.sh` | Run the integration tests |
 | `./scripts/test-live-claude-cli.sh` | Run the live Claude CLI batch -- structured output and the session pool -- and record the result (needs `CLAUDE_CODE_OAUTH_TOKEN`; before tagging a `packages/models` release) |

@@ -15,9 +15,9 @@ cd "$REPO_ROOT"
 #   ./scripts/test.sh evals packages/evals/tests/test_x.py       # that file only, not all of evals
 #   ./scripts/test.sh evals packages/evals/tests/test_x.py::test_y -q   # one test
 #
-# Test paths (existing files or directories, or `file.py::name` node ids) run instead of the
-# package's whole tests/, on the pool or locally alike. A package name with only flags runs the
-# whole package.
+# Test paths (`.py` files, `file.py::name` node ids or directories, under packages/ or tests/) run
+# instead of the package's whole tests/, on the pool or locally alike. A package name with only
+# flags runs the whole package.
 #
 # Runs go to the testament pool where testament is installed (see below). To run locally anyway,
 # say why: TESTAMENT=off TESTAMENT_OFF_REASON="debugging under pdb" ./scripts/test.sh core
@@ -33,25 +33,49 @@ fi
 
 EXTRA_ARGS=("$@")
 
-# the arguments that name tests: existing paths, or `file.py::name` node ids whose file exists.
-# The value of an option that takes one (`-c pyproject.toml`, `--ignore dir`) is not a test path.
+# the arguments that name tests. One counts only when all three hold, so an option's value is
+# not mistaken for a test path and the run widened past the package's tests/ (`--log-file
+# out.log`, `--cov packages/core/src`):
+#   - it is not an option, nor the value of an option below written apart from it (`-c x`, not
+#     `-c=x`). The list need not be complete: an unlisted option's value still has to pass both
+#     rules after it, and a log, report or config file does not;
+#   - it lies under packages/ or tests/ (relative to the repo root, `./` or absolute);
+#   - it is a `.py` file, a `file.py::name` node id whose file exists, or a directory.
+is_test_path() {
+    local path="${1%%::*}"
+    path="${path#"$REPO_ROOT"/}"
+    path="${path#./}"
+    case "$path" in
+        packages/* | tests | tests/*) ;;
+        *) return 1 ;;
+    esac
+    if [[ "$1" == *::* ]] || [[ "$path" == *.py ]]; then
+        [[ "$path" == *.py ]] && [ -f "$path" ]
+        return
+    fi
+    [ -d "$path" ]
+}
 TEST_PATHS=()
 takes_value=""
 for arg in ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}; do
     if [ -n "$takes_value" ]; then
         takes_value=""
-        continue
+        # `--cov -q`: --cov's value is optional, and an option is never one
+        [[ "$arg" == -* ]] || continue
     fi
     case "$arg" in
         -k | -m | -p | -c | -o | -W | -n | --ignore | --ignore-glob | --deselect | --rootdir | --confcutdir | \
-            --basetemp | --junit-xml | --junitxml | --override-ini | --maxfail | --dist | --tb | --durations | \
-            --log-level | --import-mode)
+            --basetemp | --junit-xml | --junitxml | --junit-prefix | --override-ini | --maxfail | --dist | \
+            --tb | --durations | --import-mode | --capture | --color | --timeout | --doctest-glob | \
+            --log-level | --log-format | --log-date-format | --log-file | --log-file-level | \
+            --log-file-format | --log-cli-level | --log-cli-format | --report-log | --html | --css | \
+            --cov | --cov-config | --cov-report | --cov-fail-under)
             takes_value=1
             continue
             ;;
         -*) continue ;;
     esac
-    if [ -e "$arg" ] || { [[ "$arg" == *::* ]] && [ -f "${arg%%::*}" ]; }; then
+    if is_test_path "$arg"; then
         TEST_PATHS+=("$arg")
     fi
 done
