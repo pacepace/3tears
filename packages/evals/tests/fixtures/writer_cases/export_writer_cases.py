@@ -22,6 +22,11 @@ and a judge's wall-clock time among its readings. Its snapshot id, which every w
 by, would move with every export, so a ladder case is frozen once and kept: the export writes one only when its file
 is missing, or when ``--refreeze`` says to freeze every rung again (which strands every recording made over the old
 ones). A directory holding a case file this export does not write is refused, naming the file.
+
+**The ``3-invoices`` case is the pre-split campaign.** It was frozen from the single file rung 3 was before it split
+into one concept a file (``extract.py``, 2026-11-03). ``guardrail.py`` declares that same eval and replays it byte for
+byte, so it is the file named below; but the case was never frozen from it, and ``--refreeze`` would strand the $7.53
+of rung-5 writer recordings made over the frozen one. Never refreeze it.
 """
 
 from __future__ import annotations
@@ -91,7 +96,7 @@ class Rung:
 LADDER: Final = (
     Rung("1-triage", "triage.py", "support-triage"),
     Rung("2-replies", "replies.py", "support-replies"),
-    Rung("3-invoices", "extract.py", "invoices"),
+    Rung("3-invoices", "guardrail.py", "invoices"),  # the pre-split campaign, replayed byte for byte (see above)
     Rung("4-booking", "agent.py", "booking"),
 )
 

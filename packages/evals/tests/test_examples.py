@@ -1,9 +1,10 @@
 """What every example under ``examples/`` holds to, read across all of them.
 
-The examples are the ladder: one directory per rung, each run from inside itself against the recordings beside it.
-Each rung's own test (``test_rung_one_triage.py``, ``test_rung_two_replies.py``, ``test_invoices_rung.py``,
-``test_booking_rung.py``, ``test_rung_five_writer.py``) replays it; what is read here holds across all five. No test
-here calls a model.
+The examples are the ladder: one directory per rung, each run from inside itself against the recordings beside it. A
+rung may hold several files, one concept each (rung 3's ``compare.py`` to ``grid.py``, rung 4's ``agent.py`` and
+``serve.py``). Each rung's own test (``test_rung_one_triage.py``, ``test_rung_two_replies.py``,
+``test_invoices_rung.py``, ``test_booking_rung.py``, ``test_rung_five_writer.py``) replays it; what is read here holds
+across all five. No test here calls a model.
 """
 
 from __future__ import annotations

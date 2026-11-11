@@ -75,7 +75,7 @@ from packages.evals.tests.report_shapes_support import ArmTrials, AspectTrials, 
 _RUNGS: dict[str, tuple[str, str, str | None]] = {
     "rung0": ("1-triage", "triage.toml", None),
     "rung2": ("2-replies", "replies.py", "replies_eval"),
-    "rung3": ("3-invoices", "extract.py", "invoices"),
+    "rung3": ("3-invoices", "guardrail.py", "invoices"),
 }
 
 #: An amount of money as a page writes it, its digits after the point captured: ``$0.046``, ``-$1,400.00``.
