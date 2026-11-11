@@ -149,8 +149,8 @@ of spread between cases. **Model-based pass^k** appears only when the host asks 
 every rate its clause names at 95%, the cell the pass rate alone, so v4 above breaks tone's floor on a check while
 its pass rate is unclear. A control that cannot move says so: at or below the margin no drop past it can show, and
 at 100% no gain can. Where an arm ran a case more than once, its passes are counted as trials (`20 of 40 trials`),
-never beside the cases as if they were cases. Where `equal_weight_cells` gives a figure across every aspect, it is
-the matrix's last row, `All aspects (equal weight)`.
+never beside the cases as if they were cases. Where the page gives a figure across every aspect, it is the
+matrix's last row, `All aspects (equal weight)`.
 
 **The readings.** A change reads each candidate on each aspect as **shown better** (its gain's interval lies wholly
 above zero), **shown worse** (its drop's interval lies wholly past the aspect's margin), **no worse than the margin**
@@ -269,9 +269,10 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   ordered time, latency read under concurrency, request settings not confirmed. Its detail is in the Methods, once:
   when each criterion was set (**Criteria set late**), and the test setup's own sentence.
 - **Scoreboard**: a bare table of counts and the cost per 1,000 replies (per 1,000,000 when that is under a cent), the ruler every table of the campaign states the cost on.
-  A trial passed when every check passed (a goal check, and on the quick path a `bool` grader or a field grader) and
-  every judged dimension cleared its bar, and a case passed when every trial of it did, on the console as on the
-  page. A failure cause beside checks and the judge heads its own column (`Model failed`) where it is the only one;
+  A trial passed when every check passed (a goal check, the label and a check the host declares; on the quick path a
+  field grader is the label and a `bool` grader a check) and every judged dimension cleared its bar, and a case
+  passed when every trial of it did, on the console as on the page. A failure cause beside checks and the judge
+  heads its own column (`Model failed`) where it is the only one;
   the outcome bar under the table names each where there are several (in Markdown, its table only where it splits a
   cause the scoreboard lumps together). Under it, in normal weight, never bold, never first, the facts that change
   how the verdict is read and nothing else, in this order: the case floor; an arm whose every trial failed. A "too few" line says what is withheld and why, in the

@@ -26,7 +26,8 @@ Two more terms, and a rule:
 - **Shape:** what the engine derives from what ran (`bundle.design.shape`). `one_factor_at_a_time` means each
   arm moves at most one lever off the control. `multi_factor` means some arm moves more than one.
   `undesignated` means no control resolved, so nothing is known to be controlled.
-- Only goal-state checks and judged dimensions decide a pass for pass^k; guardrails take no part.
+- pass^k holds a trial to the pass rate's checks: every goal-state check, the label, each check the host declares
+  and every capability judged dimension. Guardrails take no part.
 
 ## Choose which levers to sweep
 
@@ -384,8 +385,9 @@ lens tools (`runs_compare`, comparison sets) state when two runs' spans did not 
 
 ## Metrics that mislead
 
-**Keep the pass^k conjunction small and reliable.** A trial passes only when every goal-state check passes
-and every judged capability dimension reaches the pass threshold (`compute_pass_hat_k`): 3 of 5 unless the
+**Keep the pass^k conjunction small and reliable.** A trial passes only when every goal-state check passes, its
+label matches, every check the host declares holds and every judged capability dimension reaches the pass threshold
+(`compute_pass_hat_k`): 3 of 5 unless the
 host declares another for the behavior (`PassThreshold`, registered with its `BarRegistry`), and every pass^k
 records the threshold it was computed at (`rubric_threshold`). So pass^k collapses to its weakest member, and
 judge noise counts as candidate unreliability. Conjoin checks a competent candidate clears and dimensions
