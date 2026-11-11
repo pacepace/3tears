@@ -44,6 +44,7 @@ from threetears.enforcement.common import dotted, iter_python_files, parse_pytho
 
 __all__ = [
     "COPY_PREFIX",
+    "NEAREST_METHODS",
     "TENANT_COLUMNS",
     "SchemaCatalog",
     "bare_table",
@@ -59,6 +60,10 @@ COPY_PREFIX: Final[str] = "copy."
 
 #: the columns that name a tenant on every table: a key prefix of only these reads a whole tenant
 TENANT_COLUMNS: Final[frozenset[str]] = frozenset({"row_scope", "customer_id"})
+
+#: the approximate-nearest-neighbour access methods (pgvector's, YugabyteDB's): such an index serves a read ordered by
+#: a distance from its column, bounded by a LIMIT -- the k nearest -- and no equality or range of it
+NEAREST_METHODS: Final[frozenset[str]] = frozenset({"hnsw", "ivfflat", "ybhnsw"})
 
 #: more indexes than this on one table needs a written reason on each
 MAX_PLAIN_INDEXES: Final[int] = 3
@@ -87,7 +92,7 @@ _CREATE_TABLE: Final[re.Pattern[str]] = re.compile(
 )
 _CREATE_INDEX: Final[re.Pattern[str]] = re.compile(
     rf"\bCREATE\s+(UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(?:{_QNAME}\s+)?ON\s+(?:ONLY\s+)?"
-    rf"{_QNAME}\s*(?:USING\s+\w+\s*)?\(",
+    rf"{_QNAME}\s*(?:USING\s+(?P<method>\w+)\s*)?\(",
     re.IGNORECASE,
 )
 _DROP_INDEX: Final[re.Pattern[str]] = re.compile(
@@ -225,6 +230,9 @@ class _DeclaredIndex:
     :ivar where: a partial index's predicate, as written
     :ivar ranged: whether its first column is declared ``ASC`` or ``DESC`` (``IndexDef(asc=...)``/``desc``, or the item
         in its ``CREATE INDEX``), so YugabyteDB range-shards it; a first column not so declared is hashed there
+    :ivar method: its access method as declared (``using="hnsw"``, ``USING gin``), lower-cased; empty for the default
+        (btree, or lsm on YugabyteDB). An approximate-nearest-neighbour method (:data:`NEAREST_METHODS`) serves a read
+        ordered by a distance from its column, and a GIN index a containment or existence test of its column
     """
 
     table: str
@@ -241,6 +249,7 @@ class _DeclaredIndex:
     partial: bool = False
     where: str = ""
     ranged: bool = False
+    method: str = ""
 
 
 @dataclass
@@ -424,6 +433,7 @@ class SchemaCatalog:
             known.plan_test = known.plan_test or index.plan_test
             known.reason = known.reason or index.reason
             known.include = known.include or index.include
+            known.method = known.method or index.method
 
     def drop_index(self, name: str) -> None:
         """forget an index a later migration drops.
@@ -649,7 +659,7 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
                     match.group(3),
                     columns,
                     include,
-                    (bool(match.group(1)), partial, where_text, ranged),
+                    (bool(match.group(1)), partial, where_text, ranged, (match.group("method") or "").lower()),
                     notes,
                 ),
             )
@@ -719,7 +729,7 @@ def _apply_ddl(catalog: SchemaCatalog, text: str, origin: str, *, local: bool) -
             elif table is not None:
                 catalog.add_unique(table, payload[1], origin)
         elif kind == "index":
-            name, table_written, columns, include, (unique, partial, where_text, ranged), notes = payload
+            name, table_written, columns, include, (unique, partial, where_text, ranged, method), notes = payload
             table = bare_table(table_written)
             index_name = bare_table(name) if name else None
             if table is None or index_name is None:
@@ -738,6 +748,7 @@ def _apply_ddl(catalog: SchemaCatalog, text: str, origin: str, *, local: bool) -
                 partial=partial,
                 where=where_text,
                 ranged=ranged,
+                method=method,
             )
             catalog.add_index(index)
             if not local:
@@ -1089,6 +1100,7 @@ def _index_from_call(call: ast.Call, values: _Values, table: str, origin: str, *
         unique=getattr(_keyword(call, "unique"), "value", False) is True,
         partial=_keyword(call, "where") is not None or _keyword(call, "postgresql_where") is not None,
         where=values.text(_keyword(call, "where")) or "",
+        method=(values.text(_keyword(call, "using")) or "").lower(),
         ranged=bool(columns)
         and columns[0].lower()
         in {
@@ -1347,6 +1359,7 @@ def _apply_yaml(catalog: SchemaCatalog, path: Path, relative: str, *, local: boo
                                 local,
                                 unique=index.get("unique") is True,
                                 partial=bool(index.get("where")),
+                                method=str(index.get("using") or "").lower(),
                                 ranged=bool(index.get("columns"))
                                 and str(index["columns"][0]).lower()
                                 in {str(c).lower() for o in ("asc", "desc") for c in _listed(index.get(o))},

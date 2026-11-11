@@ -1122,6 +1122,80 @@ def test_an_index_whose_next_column_the_read_neither_binds_ranges_nor_orders_is_
     assert not any("index by_owner" in finding or "index by_user_date" in finding for finding in unused), unused
 
 
+_NEAREST = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+
+    NOTES = TableSchema(
+        name="notes",
+        primary_key="note_id",
+        columns=[],
+        indexes=(
+            Index("by_owner", "agent_id", "user_id", purpose="src/notes.py::owned_nearest", plan_test="tests/test_plans.py::test_owner"),
+            Index(
+                "by_embedding",
+                "embedding",
+                using="hnsw",
+                purpose="src/notes.py::nearest; src/notes.py::owned_nearest",
+                plan_test="tests/test_plans.py::test_embedding",
+            ),
+            Index("by_tags", "tags", using="gin", purpose="src/notes.py::tagged", plan_test="tests/test_plans.py::test_tags"),
+        ),
+    )
+
+    async def nearest(conn, vector):
+        return await conn.fetch("SELECT note_id FROM notes ORDER BY embedding <=> $1 LIMIT 5", vector)
+
+    async def owned_nearest(conn, vector, agent_id, user_id):
+        return await conn.fetch(
+            "SELECT note_id FROM notes WHERE agent_id = $2 AND user_id = $3 AND embedding IS NOT NULL"
+            " ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector LIMIT 10",
+            vector,
+            agent_id,
+            user_id,
+        )
+
+    async def tagged(conn, tags):
+        return await conn.fetch("SELECT note_id FROM notes WHERE tags @> $1::jsonb", tags)
+"""
+
+_NEAREST_PLANS = (
+    "def test_owner(plan):\n    assert plan_uses_index(plan, 'by_owner')\n"
+    "def test_embedding(plan):\n    assert plan_uses_index(plan, 'by_embedding')\n"
+    "def test_tags(plan):\n    assert plan_uses_index(plan, 'by_tags')\n"
+)
+
+
+def test_the_k_nearest_and_a_containment_are_read_through_their_purposed_hnsw_and_gin_indexes(tmp_path: Path) -> None:
+    """Flips if the k nearest rows by a distance from a column (``ORDER BY embedding <=> $1 LIMIT k``, bare or as
+    ``OPERATOR(public.<=>)``) are not judged index-served through a purposed HNSW index of that column, or a
+    containment test (``tags @> $1``) through a purposed GIN index of it; or if either index is reported unused."""
+    _plans(tmp_path, _NEAREST_PLANS)
+    findings = no_whole_reads_findings(_config(tmp_path, {"notes.py": _NEAREST}))
+    assert findings == [], findings
+
+
+def test_the_k_nearest_or_a_containment_without_its_index_is_a_whole_read(tmp_path: Path) -> None:
+    """Flips if the k nearest rows pass with no approximate-nearest-neighbour index of the column (none at all, or a
+    plain btree one: it holds no distance order), or a containment test passes with no index of its column."""
+    _plans(tmp_path, _NEAREST_PLANS)
+    unserved = (
+        _NEAREST.replace('using="hnsw",', "")
+        .replace(
+            'purpose="src/notes.py::nearest; src/notes.py::owned_nearest"', 'purpose="src/notes.py::owned_nearest"'
+        )
+        .replace(
+            'Index("by_tags", "tags", using="gin", purpose="src/notes.py::tagged", plan_test="tests/test_plans.py::test_tags"),',
+            "",
+        )
+    )
+    findings = no_whole_reads_findings(_config(tmp_path, {"notes.py": unserved}))
+    assert any("in nearest:" in finding for finding in findings), findings
+    assert any("in tagged:" in finding for finding in findings), findings
+    # owned_nearest is still keyed by the owner pair; the plain index of embedding is not what serves its order
+    assert not any("in owned_nearest:" in finding for finding in findings), findings
+    assert any("index by_embedding" in finding and "index-purpose-unused" in finding for finding in findings), findings
+
+
 def test_a_purpose_may_be_a_tuple_of_the_reads_it_serves(tmp_path: Path) -> None:
     """Flips if purpose=("<path>::<fn>", ...) is not read as the reads it names: both found and using the index
     pass; neither using it is named, each one."""
