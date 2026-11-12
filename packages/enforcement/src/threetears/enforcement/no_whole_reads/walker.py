@@ -872,6 +872,41 @@ def _definitions(tree: ast.Module) -> list[tuple[ast.FunctionDef | ast.AsyncFunc
     return found
 
 
+def _relation_wrappers(tree: ast.Module) -> frozenset[str]:
+    """the module's top-level functions of one parameter that hand a step that parameter as its relation: every
+    ``return`` is ``Quoted(<the parameter>)`` or a ``Derived(...)`` over nothing but it (a snapshot's relation, or the
+    parenthesized select a limited snapshot reads it through, made a step's relation). A call of one reads as
+    ``Quoted(<its argument>)``: the relation named, never the narrower derived select trusted.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :return: the functions' names
+    :rtype: frozenset[str]
+    """
+    found: set[str] = set()
+    for function in tree.body:
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        arguments = function.args
+        if len(arguments.args) != 1 or arguments.posonlyargs or arguments.kwonlyargs or arguments.vararg:
+            continue
+        parameter = arguments.args[0].arg
+        returns = [node for node in ast.walk(function) if isinstance(node, ast.Return)]
+        quoted = False
+        for returned in returns:
+            value = returned.value
+            if not (isinstance(value, ast.Call) and _final(value) in {"Quoted", "Derived"} and len(value.args) == 1):
+                break
+            names = {node.id for node in ast.walk(value.args[0]) if isinstance(node, ast.Name)}
+            if names != {parameter} or value.keywords:
+                break
+            quoted = quoted or _final(value) == "Quoted"
+        else:
+            if returns and quoted:
+                found.add(function.name)
+    return frozenset(found)
+
+
 def _bound_argument(call: ast.Call, name: str, position: int | None) -> ast.expr | None:
     """the argument a call binds a parameter to: by its keyword, else at its position (none past a ``*args``).
 
@@ -1196,6 +1231,8 @@ class _ModuleWalk(ast.NodeVisitor):
         self._helper_parameters, self._helper_fields = (
             _helper_relations(tree) if any(module in str(path) for module in _KEYED_HELPER_MODULES) else ({}, {})
         )
+        #: the module's functions that hand a step their one parameter as its relation (:func:`_relation_wrappers`)
+        self._relation_wrappers = _relation_wrappers(tree)
         #: where each relation a step names comes from (:mod:`~threetears.enforcement.no_whole_reads.flow`): a change
         #: relation through a name, an attribute or a container; a forwarder's parameter, judged at its call sites
         self._flow = RelationFlow(
@@ -2205,6 +2242,16 @@ class _ModuleWalk(ast.NodeVisitor):
                 text = _placeholder(value.args[0], self._envs[-1], self._produced_by)
                 if text.startswith(COPY_PREFIX) or not re.fullmatch(r"\{[^}]*\}", text):
                     return ast.Call(func=ast.Name("Quoted", ast.Load()), args=[ast.Constant(text)], keywords=[])
+            # a module function handing a step its one parameter as its relation (``_step_relation(snapshot.relation(t))``
+            # returning ``Quoted(relation)`` or ``Derived(...)`` of it): the name quoted, the stricter reading of the two
+            if (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id in self._relation_wrappers
+                and len(value.args) == 1
+                and not value.keywords
+            ):
+                return literal(ast.Call(func=ast.Name("Quoted", ast.Load()), args=[value.args[0]], keywords=[]))
             # a relation a declared producer yields at run time (``source.relation``, ``derived(part.relation)``):
             # the name its declaration is judged as; a mapping every value of which is one, that one relation
             produced = self._relation_produced(value)

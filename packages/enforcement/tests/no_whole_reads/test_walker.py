@@ -5038,3 +5038,51 @@ def test_a_dependency_s_later_drop_of_an_index_on_its_own_table_drops_the_repo_s
     findings = index_findings(catalog, tmp_path, set())
     assert not any("idx_refs_conv_created" in finding for finding in findings), findings
     assert any("idx_by_at on own: index-no-purpose" in finding for finding in findings), findings
+
+
+_RELATION_WRAPPER = """
+    from threetears.core import keyed
+
+    STATE_COLUMN = "join_state_code"
+
+
+    def _step_relation(relation):
+        if relation.startswith("(") and relation.endswith(")"):
+            return keyed.Derived(relation[1:-1])
+        return keyed.Quoted(relation)
+
+
+    def _not_a_wrapper(relation, other):
+        return keyed.Quoted(other)
+
+
+    def by_state(snapshot, table, states):
+        return keyed.scan(_step_relation(snapshot.relation(table)), ["a"], where=[keyed.Fragment(f"t.{STATE_COLUMN} IN ({states})")])
+
+
+    def by_kind(snapshot, table, kinds):
+        return keyed.scan(_step_relation(snapshot.relation(table)), ["a"], where=[keyed.Fragment(f"t.kind IN ({kinds})")])
+
+
+    def static_by_state(snapshot, states):
+        return keyed.scan(_step_relation(snapshot.relation("benchmarks")), ["a"], where=[keyed.Fragment(f"t.{STATE_COLUMN} IN ({states})")])
+
+
+    def unwrapped(snapshot, table, states):
+        return keyed.scan(_not_a_wrapper(table, snapshot.relation(table)), ["a"], where=[keyed.Fragment(f"t.{STATE_COLUMN} IN ({states})")])
+"""
+
+
+def test_a_module_function_wrapping_its_parameter_as_a_step_relation_reads_as_the_relation_quoted(
+    tmp_path: Path,
+) -> None:
+    """Flips if a step's relation built by a module function returning ``Quoted(<its parameter>)`` or a ``Derived``
+    of it stays unknown (``by_state``: the copy's run-time relation by its state key), if the wrapper's relation is
+    trusted rather than judged (``by_kind`` off the key, ``static_by_state`` on a copy keyed otherwise), or if a
+    function returning ``Quoted`` of something else is read as a wrapper (``unwrapped``)."""
+    keys = {"*": (("join_state_code",),), "benchmarks": (("benchmark",),)}
+    found = _symbols(_config(tmp_path, {"copy/evaluate.py": _RELATION_WRAPPER}, local_relations=keys))
+    assert not any(function == "by_state" for function, _ in found), found
+    assert ("by_kind", "non-key-where copy.{}") in found, found
+    assert ("static_by_state", "non-key-where copy.benchmarks") in found, found
+    assert ("unwrapped", "unknown-predicate scan(rel)") in found, found
