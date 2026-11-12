@@ -41,7 +41,7 @@ async def test_a_host_pool_writes_a_vector_to_null_and_to_a_value(db_container: 
     """Flips if a pool set up by ``init_connection`` cannot clear a vector through ``update_keyed``, cannot write one
     (from its components or its text) through ``update_keyed`` or a hand-written INSERT, or reads one back as other
     than its text."""
-    table = f'"{schema}".items'
+    table = f"{schema}.items"
     pool = await asyncpg.create_pool(db_container, init=init_connection, min_size=1, max_size=1)
     try:
         cleared = await update_keyed(pool, table, values={"embedding": None}, by={"id": 1})
@@ -57,7 +57,7 @@ async def test_a_host_pool_writes_a_vector_to_null_and_to_a_value(db_container: 
 async def test_a_bare_connection_clears_a_vector(db_container: str, schema: str) -> None:
     """Flips if ``update_keyed`` setting a vector to None binds the None: a connection with no vector codec (a host
     pool not set up by ``init_connection``) is refused on YugabyteDB when the statement is prepared."""
-    table = f'"{schema}".items'
+    table = f"{schema}.items"
     conn = await asyncpg.connect(db_container)
     try:
         cleared = await update_keyed(conn, table, values={"embedding": None}, by={"id": 1})
