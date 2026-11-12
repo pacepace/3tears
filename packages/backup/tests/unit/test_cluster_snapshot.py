@@ -18,6 +18,8 @@ The dump subprocess is the only thing faked. Both modules that launch one are pa
 
 from __future__ import annotations
 
+import ast
+import inspect
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
 from typing import Any
@@ -373,3 +375,40 @@ class TestANaiveTimestampIsRefusedBeforeAnythingIsDumped:
             await backup.create_backup("postgresql://u@h/postgres", when=datetime(2026, 7, 1, 3, 0))
 
         assert dump_argv == []
+
+
+def _callers(module: Any, method: str) -> set[str]:
+    """the functions of ``module``'s source that call ``self.<method>(...)``.
+
+    :param module: the module
+    :ptype module: Any
+    :param method: the method's name
+    :ptype method: str
+    :return: the calling functions' names
+    :rtype: set[str]
+    """
+    tree = ast.parse(inspect.getsource(module))
+    found: set[str] = set()
+    for function in ast.walk(tree):
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for node in ast.walk(function):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == method:
+                    found.add(function.name)
+    return found
+
+
+async def test_count_tables_is_reached_only_inside_the_inventory_snapshot(
+    tmp_path: Any, dump_argv: list[list[str]]
+) -> None:
+    """the proof of ClusterBackup._count_tables' declared whole read (backup_verification, Pace 2026-11-12): nothing
+    but _inventory_snapshot calls it, and each count it takes runs inside the snapshot's transaction, after the
+    snapshot is exported and before the rollback that ends it -- a backup's own inventory, never a load path."""
+    assert _callers(cluster_module, "_count_tables") == {"_inventory_snapshot"}
+    connection = _RecordingConnection()
+    await _run_backup(tmp_path, connection)
+    counts = [index for index, sql in enumerate(connection.log) if sql.startswith("SELECT count(*)")]
+    assert counts
+    begin = connection.log.index("BEGIN ISOLATION LEVEL REPEATABLE READ")
+    export = connection.log.index("SELECT pg_export_snapshot()")
+    rollback = len(connection.log) - 1 - connection.log[::-1].index("ROLLBACK")
+    assert all(begin < export < count < rollback for count in counts)

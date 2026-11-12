@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
+from threetears.core.declared import whole_read
 from threetears.observe import get_logger
 
 __all__ = [
@@ -252,8 +253,22 @@ class DriftComparator:
         self, restored: _Connection, live: _Connection, schema: str, table: str, as_of: datetime
     ) -> TableComparison:
         predicate, param, cutoff = await self._cutoff_for(restored, schema, table, as_of)
-        b_count, b_sum = await self._count_and_checksum(restored, schema, table, predicate, param)
-        l_count, l_sum = await self._count_and_checksum(live, schema, table, predicate, param)
+        b_count, b_sum = await whole_read(
+            self._count_and_checksum(restored, schema, table, predicate, param),
+            kind="backup_verification",
+            reason="a restored copy's count and row checksum of one table, compared with the live database's",
+            ruling="Pace 2026-11-12: a backup's own count and checksum may read whole",
+            proof="packages/backup/tests/unit/test_compare_unit.py::test_the_checksums_are_reached_only_from_the_drift_comparison",
+            speed="packages/backup/tests/integration/test_backup_counts_speed.py::test_drift_checksums_speed_at_real_size",
+        )
+        l_count, l_sum = await whole_read(
+            self._count_and_checksum(live, schema, table, predicate, param),
+            kind="backup_verification",
+            reason="the live database's count and row checksum of one table, compared with the restored copy's",
+            ruling="Pace 2026-11-12: a backup's own count and checksum may read whole",
+            proof="packages/backup/tests/unit/test_compare_unit.py::test_the_checksums_are_reached_only_from_the_drift_comparison",
+            speed="packages/backup/tests/integration/test_backup_counts_speed.py::test_drift_checksums_speed_at_real_size",
+        )
         checksums_match = b_sum == l_sum
         drift = abs(b_count - l_count)
         allowed = max(self._tolerance_rows, int(b_count * self._tolerance_fraction))
@@ -296,7 +311,14 @@ class DriftComparator:
     async def _count(
         self, conn: _Connection, schema: str, table: str, predicate: str | None, param: object | None
     ) -> int:
-        count, _ = await self._count_and_checksum(conn, schema, table, predicate, param)
+        count, _ = await whole_read(
+            self._count_and_checksum(conn, schema, table, predicate, param),
+            kind="backup_verification",
+            reason="the count of a table only one side of the comparison holds, reported as missing or extra",
+            ruling="Pace 2026-11-12: a backup's own count and checksum may read whole",
+            proof="packages/backup/tests/unit/test_compare_unit.py::test_the_checksums_are_reached_only_from_the_drift_comparison",
+            speed="packages/backup/tests/integration/test_backup_counts_speed.py::test_drift_checksums_speed_at_real_size",
+        )
         return count
 
     async def _count_and_checksum(
@@ -305,5 +327,12 @@ class DriftComparator:
         where = f"WHERE {predicate}" if predicate else ""
         # sum-of-row-hashes: order-independent, so a restore's different physical order reads equal.
         sql = f'SELECT count(*) AS n, coalesce(sum(hashtext(t::text)::bigint), 0) AS s FROM "{schema}"."{table}" t {where}'
-        row = await (conn.fetchrow(sql, param) if param is not None else conn.fetchrow(sql))
+        row = await whole_read(
+            conn.fetchrow(sql, param) if param is not None else conn.fetchrow(sql),
+            kind="backup_verification",
+            reason="a drift check's count and order-free checksum of one table, every row up to the backup's instant",
+            ruling="Pace 2026-11-12: a backup's own count and checksum may read whole",
+            proof="packages/backup/tests/unit/test_compare_unit.py::test_the_checksums_are_reached_only_from_the_drift_comparison",
+            speed="packages/backup/tests/integration/test_backup_counts_speed.py::test_drift_checksums_speed_at_real_size",
+        )
         return int(row["n"]), int(row["s"])

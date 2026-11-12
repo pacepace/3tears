@@ -50,6 +50,7 @@ from typing import Any, Protocol, cast, runtime_checkable
 from urllib.parse import urlparse, urlunparse
 from uuid import UUID, uuid7
 
+from threetears.core.declared import whole_read
 from threetears.interfaces.media import ObjectStore
 from threetears.object_store import EncryptedObjectStore
 from threetears.observe import contain, get_logger
@@ -641,7 +642,13 @@ class ClusterBackup:
         counts: list[TableCount] = []
         for row in tables:
             schema, table = row["table_schema"], row["table_name"]
-            count = await conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"')
+            count = await whole_read(
+                conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"'),
+                kind="backup_verification",
+                reason="the manifest's exact counts, taken inside the dump's own snapshot; an estimate would poison every later restore check",
+                ruling="Pace 2026-11-12: a backup's own count and checksum may read whole",
+                proof="packages/backup/tests/unit/test_cluster_snapshot.py::test_count_tables_is_reached_only_inside_the_inventory_snapshot",
+            )
             counts.append(TableCount(schema=schema, table=table, row_count=int(cast(int, count))))
         return tuple(counts)
 
@@ -726,7 +733,13 @@ class ClusterBackup:
                 # `snapshot` is still None here, which is what stops the post-yield teardown
                 # issuing a second ROLLBACK outside any transaction.
                 await self._end_transaction_quietly(conn)
-            counts = await self._count_tables(conn)
+            counts = await whole_read(
+                self._count_tables(conn),
+                kind="backup_verification",
+                reason="the inventory of every table, counted in the snapshot the dump then reads, so the manifest matches its bytes",
+                ruling="Pace 2026-11-12: a backup's own count and checksum may read whole",
+                proof="packages/backup/tests/unit/test_cluster_snapshot.py::test_count_tables_is_reached_only_inside_the_inventory_snapshot",
+            )
             try:
                 yield counts, snapshot
             finally:

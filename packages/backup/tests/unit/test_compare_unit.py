@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
+from pathlib import Path
+
 from pydantic import SecretStr
 
 from threetears.backup.config import BackupConfig
@@ -11,6 +15,7 @@ from uuid import uuid7
 
 import pytest
 
+from threetears.backup import compare as compare_module
 from threetears.backup.compare import DriftComparator, uuid7_upper_bound
 from threetears.backup.drivers import PostgresDriver, YugabyteDriver, driver_by_name
 
@@ -134,3 +139,29 @@ class TestTheCutoffMatchesItsColumn:
         as_of = datetime(2026, 10, 27, 0, 27, 5, tzinfo=UTC)
         bound, _ = await self._bound("timestamp with time zone", as_of)
         assert bound == [as_of, as_of]
+
+
+def _compare_callers(method: str) -> set[str]:
+    """the functions of the compare module that call ``self.<method>(...)``."""
+    tree = ast.parse(inspect.getsource(compare_module))
+    return {
+        function.name
+        for function in ast.walk(tree)
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == method
+    }
+
+
+def test_the_checksums_are_reached_only_from_the_drift_comparison() -> None:
+    """the proof of DriftComparator's declared whole reads (backup_verification, Pace 2026-11-12):
+    _count_and_checksum is called only by _compare_table and _count, and those only by compare -- the operator's
+    check of a restored backup against the live database, never a load path."""
+    assert _compare_callers("_count_and_checksum") == {"_compare_table", "_count"}
+    assert _compare_callers("_compare_table") == {"compare"}
+    assert _compare_callers("_count") == {"compare"}
+    assert not any(
+        "DriftComparator" in path.read_text(encoding="utf-8")
+        for path in Path(compare_module.__file__).parent.glob("*.py")
+        if path.name not in {"compare.py", "__init__.py"}
+    )
