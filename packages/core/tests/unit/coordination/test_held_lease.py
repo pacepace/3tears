@@ -9,7 +9,7 @@ holder identity and expiry are the genuine article.
 **Every test runs in VIRTUAL time.** ``HeldLease`` times everything on the event loop's clock --
 renewals every 50ms against a one-second TTL, an expiry timer, bounded waits -- so on the wall clock
 these tests measured the host: under a loaded CI runner a renewal scheduled at 50ms ran late enough
-to cross the TTL and the lease was reported lost. :class:`_VirtualTimeLoop` is a stock selector loop
+to cross the TTL and the lease was reported lost. :class:`~.virtual_time.VirtualTimeLoop` is a stock selector loop
 whose clock stands still while work is ready and jumps straight to the next timer when nothing is:
 the production code runs unchanged, and every interleaving is a function of the schedule alone.
 """
@@ -17,10 +17,7 @@ the production code runs unchanged, and every interleaving is a function of the 
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
-import selectors
-from collections.abc import Callable, Coroutine
 from datetime import timedelta
 from typing import Any
 
@@ -36,90 +33,11 @@ from threetears.core.coordination.lease import (
 from threetears.nats.kv import KvTimings
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 
+from .virtual_time import in_virtual_time
+
 _BUCKET = "held"
 _TTL = timedelta(seconds=1)
 _RENEW = timedelta(seconds=0.05)
-
-#: how long, on the REAL clock, the virtual loop waits for I/O when nothing at all is scheduled
-#: before calling the test deadlocked -- rather than hanging the run.
-_IDLE_REAL_SECONDS = 5.0
-
-
-class _VirtualClock:
-    """the one clock a :class:`_VirtualTimeLoop` and its selector share."""
-
-    def __init__(self) -> None:
-        self.now = 0.0
-
-
-# parity-exempt: a selector that delegates every registration to the platform's default selector and only changes how long select() waits
-class _AdvancingSelector(selectors.BaseSelector):
-    """polls the real selector without blocking, and advances virtual time instead of waiting.
-
-    The loop asks ``select(timeout)`` with ``timeout`` the time until its next timer (``0`` when
-    work is ready). Nothing arriving on a real file descriptor means nothing could happen before that
-    timer, so the clock moves to it at once.
-    """
-
-    def __init__(self, clock: _VirtualClock) -> None:
-        self._inner = selectors.DefaultSelector()
-        self._clock = clock
-
-    def register(self, fileobj: Any, events: int, data: Any = None) -> selectors.SelectorKey:
-        return self._inner.register(fileobj, events, data)
-
-    def unregister(self, fileobj: Any) -> selectors.SelectorKey:
-        return self._inner.unregister(fileobj)
-
-    def modify(self, fileobj: Any, events: int, data: Any = None) -> selectors.SelectorKey:
-        return self._inner.modify(fileobj, events, data)
-
-    def select(self, timeout: float | None = None) -> list[tuple[selectors.SelectorKey, int]]:
-        ready = self._inner.select(0)
-        if not ready and timeout is not None and timeout > 0:
-            self._clock.now += timeout
-        elif not ready and timeout is None:
-            # nothing scheduled and nothing ready: only another thread could wake the loop now.
-            ready = self._inner.select(_IDLE_REAL_SECONDS)
-            if not ready:
-                raise RuntimeError("virtual-time loop is idle with nothing scheduled: the test deadlocked")
-        return ready
-
-    def close(self) -> None:
-        self._inner.close()
-
-    def get_key(self, fileobj: Any) -> selectors.SelectorKey:
-        return self._inner.get_key(fileobj)
-
-    def get_map(self) -> Any:
-        return self._inner.get_map()
-
-
-class _VirtualTimeLoop(asyncio.SelectorEventLoop):
-    """a selector event loop whose ``time()`` is virtual and skips every idle wait."""
-
-    def __init__(self) -> None:
-        self.virtual_clock = _VirtualClock()
-        super().__init__(selector=_AdvancingSelector(self.virtual_clock))
-
-    def time(self) -> float:
-        return self.virtual_clock.now
-
-
-def _in_virtual_time(test: Callable[..., Coroutine[Any, Any, None]]) -> Callable[..., None]:
-    """run an async test body to completion on a fresh :class:`_VirtualTimeLoop`.
-
-    :param test: the async test function
-    :ptype test: Callable[..., Coroutine[Any, Any, None]]
-    :return: a synchronous test pytest collects with the same fixtures
-    :rtype: Callable[..., None]
-    """
-
-    @functools.wraps(test)
-    def run(*args: Any, **kwargs: Any) -> None:
-        asyncio.run(test(*args, **kwargs), loop_factory=_VirtualTimeLoop)
-
-    return run
 
 
 def _lease(client: FakeNatsClient, pod: str) -> KVLease:
@@ -144,7 +62,7 @@ def _outage() -> ConnectionError:
     return ConnectionError("kv is unreachable")
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_held_lease_is_renewed_past_several_ttls() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
@@ -157,7 +75,7 @@ async def test_a_held_lease_is_renewed_past_several_ttls() -> None:
         await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_takeover_is_noticed_on_the_next_renewal() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
@@ -170,7 +88,7 @@ async def test_a_takeover_is_noticed_on_the_next_renewal() -> None:
         await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_releasing_a_lost_lease_leaves_the_new_owners_entry() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
@@ -181,7 +99,7 @@ async def test_releasing_a_lost_lease_leaves_the_new_owners_entry() -> None:
     assert surviving is not None and b"pod-b" in surviving[0]
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_brief_transport_failure_is_not_a_lost_lease() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
@@ -197,7 +115,7 @@ async def test_a_brief_transport_failure_is_not_a_lost_lease() -> None:
         await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_failure_lasting_past_the_ttl_gives_the_lease_up() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
@@ -209,7 +127,7 @@ async def test_a_failure_lasting_past_the_ttl_gives_the_lease_up() -> None:
         await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_release_frees_the_key_and_is_idempotent() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
@@ -220,7 +138,7 @@ async def test_release_frees_the_key_and_is_idempotent() -> None:
     await other.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_release_stops_renewal() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
@@ -229,7 +147,7 @@ async def test_release_stops_renewal() -> None:
     assert await (await _bucket(client)).get_entry(key="job") is None, "a renewal after release put the entry back"
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_as_a_context_manager_it_releases_on_exit_even_when_the_body_fails() -> None:
     client = FakeNatsClient()
     with pytest.raises(RuntimeError, match="body"):
@@ -239,7 +157,7 @@ async def test_as_a_context_manager_it_releases_on_exit_even_when_the_body_fails
     assert await (await _bucket(client)).get_entry(key="job") is None
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_release_that_cannot_reach_the_bucket_does_not_raise() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
@@ -247,7 +165,7 @@ async def test_a_release_that_cannot_reach_the_bucket_does_not_raise() -> None:
     await held.release()  # the TTL frees the entry; a cleanup error must not replace the caller's outcome
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_wait_bound_is_honoured() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
@@ -266,13 +184,13 @@ async def test_wait_bound_is_honoured() -> None:
         (timedelta(seconds=1), timedelta(0), "renew_every must be positive"),
     ],
 )
-@_in_virtual_time
+@in_virtual_time
 async def test_configuration_that_cannot_hold_is_refused(ttl: timedelta, renew_every: timedelta, match: str) -> None:
     with pytest.raises(ValueError, match=match):
         await _lease(FakeNatsClient(), "pod-a").hold("job", ttl=ttl, renew_every=renew_every)
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_loss_is_reported_no_later_than_the_entry_could_expire() -> None:
     """Another pod may take the key the moment the entry expires, so ``lost`` must be set by then --
     not up to a renewal interval later."""
@@ -289,7 +207,7 @@ async def test_loss_is_reported_no_later_than_the_entry_could_expire() -> None:
         await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_hanging_renewal_does_not_delay_the_loss(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeNatsClient()
     loop = asyncio.get_running_loop()
@@ -310,7 +228,7 @@ async def test_a_hanging_renewal_does_not_delay_the_loss(monkeypatch: pytest.Mon
         await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_release_during_an_in_flight_renewal_still_frees_the_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     """Cancelling a renewal between the server applying it and the handle recording the new revision
     would leave the delete keyed on a stale revision -- and the entry held for a full TTL."""
@@ -332,7 +250,7 @@ async def test_release_during_an_in_flight_renewal_still_frees_the_entry(monkeyp
     assert await bucket.get_entry(key="job") is None
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_until_lost_returns_once_the_lease_is_released() -> None:
     """A caller racing work against the lease must not hang after it lets the lease go."""
     client = FakeNatsClient()
@@ -353,7 +271,7 @@ class _Records(logging.Handler):
         self.records.append(record)
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_the_callers_log_context_rides_every_lease_log() -> None:
     # A handler on the lease's own logger, not caplog: another test configuring logging can stop the
     # records propagating to the root, which made a caplog version pass alone and fail in the full run.
@@ -376,7 +294,7 @@ async def test_the_callers_log_context_rides_every_lease_log() -> None:
         lease_log.setLevel(previous)
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_lease_won_after_waiting_is_not_reported_lost_on_arrival() -> None:
     """Its life counts from the write that won it, not from when the caller started waiting."""
     client = FakeNatsClient()
@@ -413,7 +331,7 @@ async def _advance_with_the_bucket(bucket: FakeKvBucket, seconds: float, *, step
         bucket.advance_clock(timedelta(seconds=step))
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_lease_handed_a_bucket_keys_exactly_as_told_and_opens_none() -> None:
     client = FakeNatsClient()
     pointers = await client.kv_bucket(name="pointers")
@@ -434,7 +352,7 @@ def test_a_lease_takes_a_client_or_a_bucket_never_both_nor_neither() -> None:
         KVLease(FakeNatsClient(), bucket=bucket)  # type: ignore[arg-type]
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_an_expiring_entry_lives_while_renewed() -> None:
     pointers = await FakeNatsClient().kv_bucket(name="pointers")
     held = await _claims_lease(pointers).hold("enr.w.3.writer", ttl=_TTL, renew_every=_RENEW)
@@ -447,7 +365,7 @@ async def test_an_expiring_entry_lives_while_renewed() -> None:
 
 
 @pytest.mark.parametrize("expire_entries", [True, False])
-@_in_virtual_time
+@in_virtual_time
 async def test_a_holder_that_stops_renewing_loses_its_key_only_when_entries_expire(expire_entries: bool) -> None:
     pointers = await FakeNatsClient().kv_bucket(name="pointers")
     held = await _claims_lease(pointers, expire_entries=expire_entries).hold(
@@ -465,7 +383,7 @@ async def test_a_holder_that_stops_renewing_loses_its_key_only_when_entries_expi
     await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_retaking_lease_takes_back_an_entry_its_bucket_lost() -> None:
     pointers = await FakeNatsClient().kv_bucket(name="pointers")
     held = await _claims_lease(pointers).hold("enr.w.3.writer", ttl=_TTL, renew_every=_RENEW, retake=True)
@@ -481,7 +399,7 @@ async def test_a_retaking_lease_takes_back_an_entry_its_bucket_lost() -> None:
     assert await pointers.list_keys() == []
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_retaking_lease_rides_out_an_outage_that_lapsed_its_key() -> None:
     pointers = await FakeNatsClient().kv_bucket(name="pointers")
     held = await _claims_lease(pointers).hold("enr.w.3.writer", ttl=_TTL, renew_every=_RENEW, retake=True)
@@ -498,7 +416,7 @@ async def test_a_retaking_lease_rides_out_an_outage_that_lapsed_its_key() -> Non
         await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_without_retake_an_entry_its_bucket_lost_is_a_lost_lease() -> None:
     pointers = await FakeNatsClient().kv_bucket(name="pointers")
     held = await _claims_lease(pointers).hold("enr.w.3.writer", ttl=_TTL, renew_every=_RENEW)
@@ -508,7 +426,7 @@ async def test_without_retake_an_entry_its_bucket_lost_is_a_lost_lease() -> None
     await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_retaking_lease_still_yields_to_another_holder() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW, retake=True)
@@ -519,7 +437,7 @@ async def test_a_retaking_lease_still_yields_to_another_holder() -> None:
     assert surviving is not None and b"pod-b" in surviving[0], "a lease that retakes took another holder's entry"
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_retaking_lease_whose_own_renewal_landed_unseen_keeps_its_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -547,7 +465,7 @@ async def test_a_retaking_lease_whose_own_renewal_landed_unseen_keeps_its_entry(
         await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_closing_a_lease_ends_every_hold_it_handed_out() -> None:
     pointers = await FakeNatsClient().kv_bucket(name="pointers")
     lease = _claims_lease(pointers)
@@ -568,7 +486,7 @@ async def test_closing_a_lease_ends_every_hold_it_handed_out() -> None:
             await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_an_entry_the_lease_cannot_read_is_anothers_never_an_error() -> None:
     """A key written in another format (an older holder's raw id) is held by somebody: the lease neither
     fails on it nor reclaims it."""
@@ -579,7 +497,7 @@ async def test_an_entry_the_lease_cannot_read_is_anothers_never_an_error() -> No
     assert await pointers.get(key="enr.rebuild") == b"another replica"
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_release_cancelled_while_it_waits_still_frees_the_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     """An owner stopping cancels the task that is releasing: the entry must still go, or every other
     pod waits out its TTL."""
@@ -608,7 +526,7 @@ async def test_a_release_cancelled_while_it_waits_still_frees_the_entry(monkeypa
 # ---------------------------------------------------------------------------
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_takeover_is_reported_as_taken() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
@@ -621,7 +539,7 @@ async def test_a_takeover_is_reported_as_taken() -> None:
         await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_an_entry_that_went_away_is_reported_as_expired() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
@@ -633,7 +551,7 @@ async def test_an_entry_that_went_away_is_reported_as_expired() -> None:
         await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_renewals_failing_past_the_ttl_are_reported_as_renewal_failed() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
@@ -645,7 +563,7 @@ async def test_renewals_failing_past_the_ttl_are_reported_as_renewal_failed() ->
         await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_release_is_not_a_loss() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
@@ -654,7 +572,7 @@ async def test_a_release_is_not_a_loss() -> None:
     assert not held.lost.is_set()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_past_its_maximum_hold_a_lease_stops_renewing_and_says_so() -> None:
     """A holder whose work wedges keeps a healthy renewal going; the maximum hold is what stops it.
 
@@ -679,7 +597,7 @@ async def test_past_its_maximum_hold_a_lease_stops_renewing_and_says_so() -> Non
         await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_lease_inside_its_maximum_hold_keeps_renewing() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW, max_hold=timedelta(hours=6))
@@ -691,7 +609,7 @@ async def test_a_lease_inside_its_maximum_hold_keeps_renewing() -> None:
         await held.release()
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_negative_maximum_hold_is_refused() -> None:
     with pytest.raises(ValueError, match="max_hold"):
         await _lease(FakeNatsClient(), "pod-a").hold(
@@ -699,7 +617,7 @@ async def test_a_negative_maximum_hold_is_refused() -> None:
         )
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_the_loss_callback_hears_the_reason_once_the_moment_it_is_lost() -> None:
     client = FakeNatsClient()
     heard: list[tuple[LeaseLossReason, bool]] = []
@@ -720,7 +638,7 @@ async def test_the_loss_callback_hears_the_reason_once_the_moment_it_is_lost() -
     assert heard == [(LeaseLossReason.TAKEN, True)], "a release after the loss was reported as another loss"
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_release_never_calls_the_loss_callback() -> None:
     client = FakeNatsClient()
     heard: list[LeaseLossReason] = []
@@ -730,7 +648,7 @@ async def test_a_release_never_calls_the_loss_callback() -> None:
     assert heard == []
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_renewal_whose_answer_never_comes_does_not_keep_the_entry_past_the_release(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -761,7 +679,7 @@ async def test_a_renewal_whose_answer_never_comes_does_not_keep_the_entry_past_t
     assert await bucket.get_entry(key="job") is None, "the release left its own renewed entry behind"
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_the_release_still_never_deletes_a_successors_entry_after_an_unanswered_renewal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -787,7 +705,7 @@ async def test_the_release_still_never_deletes_a_successors_entry_after_an_unans
     assert surviving is not None and b"pod-b" in surviving[0]
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_release_waits_for_an_unanswered_renewal_only_briefly_never_a_ttl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -814,7 +732,7 @@ async def test_a_release_waits_for_an_unanswered_renewal_only_briefly_never_a_tt
     assert await bucket.get_entry(key="job") is None
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_slow_renewal_interval_still_waits_no_longer_than_one_kv_operation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -861,7 +779,7 @@ def _applied_then(bucket: FakeKvBucket, outcome: BaseException, *, times: int = 
     return applied
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_renewal_applied_but_never_answered_does_not_cost_a_healthy_lease() -> None:
     """The write landed; only its answer was lost. The handle is a revision behind its own entry, and
     a swap at the revision it recorded would be refused -- which read as "taken" though nobody took
@@ -881,7 +799,7 @@ async def test_a_renewal_applied_but_never_answered_does_not_cost_a_healthy_leas
     assert await bucket.get_entry(key="job") is None, "the release left the entry behind"
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_an_unanswered_renewal_then_a_release_still_frees_the_entry() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
@@ -893,7 +811,7 @@ async def test_an_unanswered_renewal_then_a_release_still_frees_the_entry() -> N
     assert await bucket.get_entry(key="job") is None, "an entry of the holder's own was left for a TTL"
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_an_unanswered_renewal_never_excuses_another_holders_entry() -> None:
     """Recognising its own write must not widen into taking any entry: a takeover is still a loss."""
     client = FakeNatsClient()
@@ -912,7 +830,7 @@ async def test_an_unanswered_renewal_never_excuses_another_holders_entry() -> No
     assert surviving is not None and b"pod-b" in surviving[0]
 
 
-@_in_virtual_time
+@in_virtual_time
 async def test_a_release_cancelled_while_it_waits_stops_the_renewal_it_was_waiting_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
