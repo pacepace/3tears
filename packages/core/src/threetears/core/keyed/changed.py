@@ -38,7 +38,7 @@ from decimal import Decimal
 from typing import Any, Final
 
 from threetears.core.backends.dialect import known_on_yugabyte
-from threetears.core.keyed._held import Held, HeldArrow, HeldMapping, hash_bytes as _hash_bytes
+from threetears.core.keyed.held import Held, HeldArrow, HeldMapping, hash_bytes as _hash_bytes
 from threetears.core.keyed._filters import Derived, Fragment, Selected, by_conditions, relation as _relation, narrowing
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.inline import InlineDuckDB

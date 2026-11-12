@@ -60,7 +60,9 @@ _ORDERS: dict[str, Sequence[Sort]] = {
 }
 
 
-def _page(conn: duckdb.DuckDBPyConnection, order: Sequence[Sort], past: list[Any] | None, legs: bool) -> list[tuple[Any, ...]]:
+def _page(
+    conn: duckdb.DuckDBPyConnection, order: Sequence[Sort], past: list[Any] | None, legs: bool
+) -> list[tuple[Any, ...]]:
     sql, params = page_statement(
         "r", ["stamp", "label", "id"], {"tenant": 1}, order, _LIMIT + 1, past, False, (), (), None, seek_legs=legs
     )

@@ -33,7 +33,7 @@ from threetears.core.keyed import (
     row_hash_sql,
     run_inline,
 )
-from threetears.core.keyed._held import HeldArrow, HeldMapping
+from threetears.core.keyed.held import HeldArrow, HeldMapping
 
 _HASHED = (HashColumn("name"), HashColumn("votes", HashKind.INTEGER))
 

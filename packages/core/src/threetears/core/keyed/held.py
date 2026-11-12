@@ -31,12 +31,8 @@ __all__ = [
     "Held",
     "HeldArrow",
     "HeldMapping",
-    "KeyText",
-    "arrow_key_texts",
     "encoded_key",
-    "group_hash",
     "hash_bytes",
-    "same_hash",
 ]
 
 #: the separator between a key's parts, and the marks of a NULL part and a present one, in one key's text
@@ -98,7 +94,7 @@ def hash_bytes(hashed: str) -> bytes:
     raise ValueError(f"a hash is 32 hex digits or 22 of unpadded base64, got {hashed!r}")
 
 
-def same_hash(held: str | None, answered: Any) -> bool:
+def _same_hash(held: str | None, answered: Any) -> bool:
     """True when a held hash spells the same bytes as an answered one; False for none, or a held text no hash."""
     if held is None or answered is None:
         return False
@@ -110,7 +106,7 @@ def same_hash(held: str | None, answered: Any) -> bool:
         return False
 
 
-def group_hash(hashes: Sequence[str | None] | None, lanes: Sequence[int], modulus: int) -> GroupHash | None:
+def _group_hash(hashes: Sequence[str | None] | None, lanes: Sequence[int], modulus: int) -> GroupHash | None:
     """the group hash of a held group's stored hashes: each lane the sum of one 4-byte slice of every hash; None (the
     group always moved) for a group not held, or holding a row with no hash or one that is no row hash."""
     if hashes is None or any(hashed is None for hashed in hashes):
@@ -171,7 +167,7 @@ class HeldMapping:
         grouped: dict[str | None, list[str | None]] = {}
         for text, (_, hashed) in self._by_text.items():
             grouped.setdefault(text[at], []).append(hashed)
-        return {text: group_hash(hashes, self._lanes, self._modulus) for text, hashes in grouped.items()}
+        return {text: _group_hash(hashes, self._lanes, self._modulus) for text, hashes in grouped.items()}
 
     def outside(self, at: int, answered: set[str | None]) -> tuple[list[tuple[Any, ...]], dict[str | None, Any]]:
         vanished = [key for text, (key, _) in self._by_text.items() if text[at] not in answered]
@@ -189,23 +185,23 @@ class HeldMapping:
         same = []
         for text, hashed in zip(answered, hashes, strict=True):
             holding = self._by_text.get(text)
-            same.append(holding is not None and same_hash(holding[1], hashed))
+            same.append(holding is not None and _same_hash(holding[1], hashed))
         seen = set(answered)
         return same, [key for text, (key, _) in self._by_text.items() if text not in seen]
 
 
 #: one value's canonical text (:func:`~threetears.core.keyed.changed.key_text`)
-KeyText = Callable[[Any, HashKind, int | None], str | None]
+_KeyText = Callable[[Any, HashKind, int | None], str | None]
 
 
-def _texts_by_value(column: pa.Array, kind: HashKind, scale: int | None, key_text: KeyText) -> pa.Array:
+def _texts_by_value(column: pa.Array, kind: HashKind, scale: int | None, key_text: _KeyText) -> pa.Array:
     """a column's canonical texts, one distinct value at a time (a type no kernel reads as ``kind`` does)."""
     encoded = pc.dictionary_encode(column)
     texts = pa.array([key_text(value, kind, scale) for value in encoded.dictionary.to_pylist()], pa.string())
     return texts.take(encoded.indices)
 
 
-def arrow_key_texts(column: pa.Array, kind: HashKind, scale: int | None, key_text: KeyText) -> pa.Array:
+def _arrow_key_texts(column: pa.Array, kind: HashKind, scale: int | None, key_text: _KeyText) -> pa.Array:
     """a held key column's canonical texts (NULL for NULL), as :func:`~threetears.core.keyed.changed.key_text`
     gives each value.
 
@@ -216,7 +212,7 @@ def arrow_key_texts(column: pa.Array, kind: HashKind, scale: int | None, key_tex
     :param scale: a NUMERIC's fractional digits
     :ptype scale: int | None
     :param key_text: one value's canonical text, for a type no kernel reads as ``kind`` does
-    :ptype key_text: KeyText
+    :ptype key_text: _KeyText
     :return: the texts
     :rtype: pa.Array
     :raises ValueError: for a value that is no value of its kind
@@ -298,7 +294,7 @@ class HeldArrow:
         kinds: Sequence[HashColumn],
         lanes: Sequence[int],
         modulus: int,
-        key_text: KeyText,
+        key_text: _KeyText,
         *,
         texts: list[pa.Array] | None = None,
     ) -> None:
@@ -315,7 +311,7 @@ class HeldArrow:
             texts
             if texts is not None
             else [
-                arrow_key_texts(table.column(name).combine_chunks(), kind.kind, kind.scale, key_text)
+                _arrow_key_texts(table.column(name).combine_chunks(), kind.kind, kind.scale, key_text)
                 for name, kind in zip(key_columns, kinds, strict=True)
             ]
         )
