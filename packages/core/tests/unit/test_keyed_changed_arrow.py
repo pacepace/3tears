@@ -116,8 +116,12 @@ def test_the_arrow_form_answers_as_the_mapping_hex_base64_null_and_broken_hashes
     changed = _both(_grouped(grouped, **grouping), held, _table(held, ("state", "county", "id"), _GROUPED_TYPES))
     if not grouping.get("group_rows_at_most"):
         assert {row["id"] for row in changed.rows} >= {3, 12, 25, 900}
-        # a changed row under a NULL key part is named changed (phase 2 binds keys by equality, never IS NULL)
+        # a changed row under a NULL key part is read in full too (its NULL part pinned IS NULL), never only named
         assert ("PA", None, 61) in changed.changed_keys
+        assert [row["name"] for row in changed.rows if row["id"] == 61] == ["moved"]
+        assert {tuple(key) for key in changed.changed_keys} == {
+            (row["state"], row["county"], row["id"]) for row in changed.rows
+        }
         assert ("PA", "c3", 44) in changed.gone_keys or ("PA", "c4", 44) in changed.gone_keys
     else:
         assert changed.capped

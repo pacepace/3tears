@@ -576,24 +576,40 @@ async def read_changed(
             moved_groups=moved_groups,
             moved_group_rows=moved_group_rows,
         )
-    keys = KeyBatch(
-        columns=key_columns,
-        values=wanted,
-        casts=tuple(sort.cast or "text" for sort in order),
-        as_list=dialect is Dialect.REDSHIFT,
-    )
     named = {column.alias if isinstance(column, Selected) else column for column in columns}
-    rows = await read_keyed(
-        conn,
-        relation,
-        keys=keys,
-        # the key read beside the columns asked, to stamp each row with its phase-1 hash
-        columns=[*columns, *(column for column in key_columns if column not in named)],
-        by=by,
-        batch=batch,
-        row_cap=getattr(conn, "rows_per_statement", None) if row_cap is None else row_cap,
-        where=where,
-    )
+    # the key read beside the columns asked, to stamp each row with its phase-1 hash
+    read_columns = [*columns, *(column for column in key_columns if column not in named)]
+    cap = getattr(conn, "rows_per_statement", None) if row_cap is None else row_cap
+    # a key with a NULL part is never named by equality: the keys are read a NULL pattern at a time, each NULL part
+    # pinned IS NULL beside the batch of the rest (as a keyset page's NULL leg), so no changed row is left unread
+    patterns: dict[tuple[bool, ...], list[tuple[Any, ...]]] = {}
+    for wanted_key in wanted:
+        patterns.setdefault(tuple(value is None for value in wanted_key), []).append(wanted_key)
+    rows: list[Mapping[str, Any]] = []
+    for nulls, pattern_keys in patterns.items():
+        present = [at for at, null in enumerate(nulls) if not null]
+        pinned = {**(by or {}), **{key_columns[at]: None for at, null in enumerate(nulls) if null}}
+        if not present:
+            rows.extend(await keyset_rows(conn, relation, columns=read_columns, by=pinned, order=order, where=where))
+            continue
+        keys = KeyBatch(
+            columns=tuple(key_columns[at] for at in present),
+            values=[tuple(key[at] for at in present) for key in pattern_keys],
+            casts=tuple(order[at].cast or "text" for at in present),
+            as_list=dialect is Dialect.REDSHIFT,
+        )
+        rows.extend(
+            await read_keyed(
+                conn,
+                relation,
+                keys=keys,
+                columns=read_columns,
+                by=pinned,
+                batch=batch,
+                row_cap=cap,
+                where=where,
+            )
+        )
     stamped = [
         {
             **{name: value for name, value in row.items() if name in named},
