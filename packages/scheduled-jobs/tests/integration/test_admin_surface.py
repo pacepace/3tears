@@ -27,6 +27,7 @@ Verifies:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -51,7 +52,7 @@ async def _seed_job(
     name: str | None = None,
     status: str = "active",
     schedule_type: str = "interval",
-    schedule_config: dict | None = None,
+    schedule_config: dict[str, Any] | None = None,
     next_fire_at: datetime | None = None,
 ) -> tuple[UUID, UUID]:
     """Seed one job in its OWN partition, as every real seeder does.

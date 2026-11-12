@@ -480,6 +480,11 @@ mypy_path = [
     "packages/tool-schema/src",
     "packages/geo/src",
     "packages/iam/src",
+    # scheduled-jobs' test modules import their conftest relatively (``from .conftest import apply_schema``). With
+    # explicit package bases a file's module is its path from a base, and from the repo root that path holds
+    # ``scheduled-jobs``, no valid package name, so mypy could not resolve the import. From this base the tests are
+    # ``integration.*`` / ``unit.*`` and the relative import resolves; no other package's tests sit under it.
+    "packages/scheduled-jobs/tests",
 ]
 # default scope when invoked with no arguments; avoids duplicate-module errors
 # from the per-package tests/ trees (each has an enforcement/ package).

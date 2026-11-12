@@ -102,7 +102,7 @@ async def apply_schema(url: str, schema: str) -> asyncpg.Pool:
         runner = MigrationRunner()
         register_scheduled_jobs(runner)
         store = AsyncpgStore(setup_conn)
-        await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
+        await runner.apply_for_platform_schema(store)
     finally:
         await setup_conn.close()
     pool = await asyncpg.create_pool(
