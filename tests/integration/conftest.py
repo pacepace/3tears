@@ -144,6 +144,14 @@ def _rewrites_schema(db_container: str) -> Iterator[tuple[str, str, bool]]:
 async def _connect(url: str, schema: str) -> asyncpg.Connection:
     conn = await asyncpg.connect(url)
     await conn.execute(f'SET search_path TO "{schema}", public')
+    # a vector column (pgvector's, or YugabyteDB's built-in one) has no asyncpg codec: the proof seeds and compares
+    # it as its text, the form the memory code reads it in (``embedding::text``)
+    vector = await conn.fetchval(
+        "SELECT n.nspname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.typname = 'vector'"
+        " ORDER BY n.nspname = 'pg_catalog' DESC LIMIT 1"
+    )
+    if vector is not None:
+        await conn.set_type_codec("vector", schema=vector, encoder=str, decoder=str, format="text")
     return conn
 
 
