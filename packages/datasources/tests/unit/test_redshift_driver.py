@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import logging
 import socket
 import threading
 from typing import Any
@@ -250,6 +251,32 @@ async def _assert_next_query_logs_in_afresh(driver: RedshiftDriver, evicted: Mag
     assert not any(
         c.args and c.args[0] == "SELECT 'after eviction'" for c in evicted.recorded_cursor.execute.call_args_list
     )
+
+
+class _SetOnWarning(logging.Handler):
+    """a log handler that sets an event when a WARNING whose message contains a phrase is logged."""
+
+    def __init__(self, event: threading.Event, *, containing: str) -> None:
+        """
+        :param event: the event to set
+        :ptype event: threading.Event
+        :param containing: the phrase, matched case-insensitively
+        :ptype containing: str
+        """
+        super().__init__(level=logging.WARNING)
+        self._event = event
+        self._containing = containing.lower()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """set the event when ``record`` is the awaited WARNING.
+
+        :param record: the record logged
+        :ptype record: logging.LogRecord
+        :return: None
+        :rtype: None
+        """
+        if record.levelno == logging.WARNING and self._containing in record.getMessage().lower():
+            self._event.set()
 
 
 # ---------------------------------------------------------------------------
@@ -1616,12 +1643,14 @@ class TestCancellation:
 
         # make the cursor.execute block forever to simulate a slow query
         execute_blocked = asyncio.Event()
+        loop = asyncio.get_running_loop()
 
         def _blocking_execute(*args: Any, **kwargs: Any) -> None:
             if args and _is_open_setup_stmt(args[0]):
                 return
             # signal that the slow path is engaged, then block.
-            execute_blocked.set()
+            # set from the worker thread: only call_soon_threadsafe wakes the loop waiting on it
+            loop.call_soon_threadsafe(execute_blocked.set)
             # in the real thread this blocks indefinitely; mock by
             # spinning until the connection is closed (cancel cb).
             import time
@@ -1660,20 +1689,25 @@ class TestCancellation:
     ) -> None:
         """if conn.close hangs past the timeout, WARNING is logged + cancellation.failed.
 
-        we make conn.close raise after a delay simulating a hung
-        terminate; the wait_for guard should fire and log a WARNING. the driver
-        is built with a short cancel bound so the close outlasts it quickly.
+        we make conn.close hang, simulating a hung terminate; the wait_for guard should
+        fire and log a WARNING. the driver is built with a short cancel bound so the close
+        outlasts it quickly. a close off the event loop's thread hangs until that WARNING is
+        logged, so it outlasts the guard by construction; the bridge's own cancel callback
+        closes on the loop's thread, where a hang would stall the loop itself, and returns.
         """
         cancel_timeout = 0.2
         conn = _build_mock_connection()
 
         # make execute block so cancel actually has something to cancel
         execute_blocked = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.current_thread()
 
         def _blocking_execute(*args: Any, **kwargs: Any) -> None:
             if args and _is_open_setup_stmt(args[0]):
                 return
-            execute_blocked.set()
+            # set from the worker thread: only call_soon_threadsafe wakes the loop waiting on it
+            loop.call_soon_threadsafe(execute_blocked.set)
             import time
 
             for _ in range(200):
@@ -1682,33 +1716,37 @@ class TestCancellation:
                 time.sleep(0.05)
 
         close_started = asyncio.Event()
-        loop = asyncio.get_event_loop()
+        close_released = threading.Event()
 
         def _hanging_close() -> None:
             # signal that close started, then hang
             loop.call_soon_threadsafe(close_started.set)
-            import time
-
-            time.sleep(cancel_timeout + 1)
-            # release after the wait_for has already fired
+            if threading.current_thread() is not loop_thread:
+                close_released.wait(timeout=30)
 
         conn.recorded_cursor.execute.side_effect = _blocking_execute
         conn.close.side_effect = _hanging_close
+        release_on_warning = _SetOnWarning(close_released, containing="cancel")
+        logging.getLogger().addHandler(release_on_warning)
 
-        with patch(
-            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
-            return_value=conn,
-        ):
-            driver = RedshiftDriver(redshift_config, cancel_timeout_seconds=cancel_timeout)
-            task = asyncio.create_task(driver.fetch("SELECT slow"))
-            await asyncio.wait_for(execute_blocked.wait(), timeout=2.0)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-            # the WARNING log carries the "cancel ... failed" marker.
-            warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-            assert any("cancel" in r.getMessage().lower() for r in warnings)
-            await driver.close()
+        try:
+            with patch(
+                "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+                return_value=conn,
+            ):
+                driver = RedshiftDriver(redshift_config, cancel_timeout_seconds=cancel_timeout)
+                task = asyncio.create_task(driver.fetch("SELECT slow"))
+                await asyncio.wait_for(execute_blocked.wait(), timeout=2.0)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                # the WARNING log carries the "cancel ... failed" marker.
+                warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+                assert any("cancel" in r.getMessage().lower() for r in warnings)
+                await driver.close()
+        finally:
+            logging.getLogger().removeHandler(release_on_warning)
+            close_released.set()
 
 
 # ---------------------------------------------------------------------------
@@ -1764,6 +1802,7 @@ class TestBackendPidCancel:
         main_conn = _build_mock_connection(fetchone_row=(4242,))
 
         execute_blocked = asyncio.Event()
+        loop = asyncio.get_running_loop()
 
         def _blocking_execute(*args: Any, **kwargs: Any) -> None:
             # SET statement_timeout / SET search_path / pg_backend_pid
@@ -1772,7 +1811,8 @@ class TestBackendPidCancel:
                 return
             if args and "pg_backend_pid" in args[0]:
                 return
-            execute_blocked.set()
+            # set from the worker thread: only call_soon_threadsafe wakes the loop waiting on it
+            loop.call_soon_threadsafe(execute_blocked.set)
             import time
 
             for _ in range(100):
@@ -1818,13 +1858,15 @@ class TestBackendPidCancel:
         main_conn = _build_mock_connection(fetchone_row=(4242,))
 
         execute_blocked = asyncio.Event()
+        loop = asyncio.get_running_loop()
 
         def _blocking_execute(*args: Any, **kwargs: Any) -> None:
             if args and _is_set_stmt_timeout(args[0]):
                 return
             if args and "pg_backend_pid" in args[0]:
                 return
-            execute_blocked.set()
+            # set from the worker thread: only call_soon_threadsafe wakes the loop waiting on it
+            loop.call_soon_threadsafe(execute_blocked.set)
             import time
 
             for _ in range(100):
