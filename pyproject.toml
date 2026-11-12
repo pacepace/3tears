@@ -600,7 +600,7 @@ module = [
     # and a DuckDB read answered as Arrow (ThreadedDuckDB / InlineDuckDB fetch_arrow)
     "threetears.core.keyed.threaded",
     # and a changed-rows read's held keys as an Arrow table (matched in pyarrow.compute and numpy)
-    "threetears.core.keyed._held",
+    "threetears.core.keyed.held",
     "threetears.core.keyed.changed",
     "threetears.datasources.export_read",
     "threetears.datasources.partitioned_export",
