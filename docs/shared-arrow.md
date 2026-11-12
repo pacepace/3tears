@@ -166,6 +166,42 @@ segment.close()  # the version holds its own link to the file
 - The tiering policy (which groups merge, how many levels, rewriting only the merged part that holds a dropped run)
   is the caller's. These two calls are the only primitive it needs.
 
+## Know which columns a write moved
+
+A memo over a version (reuse a query's answer while what it read did not move) needs to know which columns of a part
+a write changed. Stamp each part as the worker writes it: a column keeps the token of the base version's same part
+only when that part holds as many rows and the column is equal to it position by position (values, nulls, type);
+every other column, and every column of a part with no base, takes a fresh token. A reader then prints a read from
+the files' footers alone, no row read again.
+
+```python
+from threetears.core.shared_arrow import column_print, stamping, version_files
+
+# worker process (the job holds a lease on v1): a step's name "races.GA" is v1's file races@GA.arrow
+base = version_files(root, "v1")
+
+def base_of(name: str):
+    held = base.get(name.replace(".", "@", 1) + ".arrow")
+    return held.path if held else None
+
+with slot.writing() as write:
+    stamping(write, base_of)({"races.GA": ga_rows})    # a pa.Table is stamped; a reader or an opener is not
+
+# serving process, on a thread: link the claimed file as the part, then print what a query reads of it
+segment = store.claim(slot)
+store.publish("v2", {"races": Parts(schema, {"GA": segment.files["races.GA"]})}, base="v1")
+segment.close()
+with store.lease("v2"):
+    printed = column_print(version_files(store.root, "v2")["races@GA.arrow"].path, ["state", "votes"])
+```
+
+- A print is `"<row token>|column=token;..."`. A file holding no tokens (a cold start's publish, a merge, a file
+  written before tokens) prints as its identity: any write moves it.
+- Two reads whose parts' row tokens and tokens of the columns read are equal read the same rows of those columns, in
+  the same order.
+- `file_tokens(path)` reads a file's footer once per process (kept by path, inode, size and modified time). It
+  blocks: call it off the loop. Stamping compares in Arrow's C++ over the mapped base: run it in the worker.
+
 ## Read the current version in the serving process
 
 The process that owns the store reads the current version in place through a reader: the same pages its workers map,

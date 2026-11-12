@@ -73,6 +73,7 @@ import contextlib
 import fcntl
 import functools
 import hashlib
+import json
 import mmap
 import multiprocessing
 import os
@@ -81,7 +82,7 @@ import resource
 import threading
 import uuid
 import weakref
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, replace
@@ -114,6 +115,8 @@ except ImportError as exc:  # NOSILENT: DuckDB over shared Arrow is optional; th
     _DUCKDB_EXTRA = exc
 
 __all__ = [
+    "COLUMN_TOKENS_KEY",
+    "FileTokens",
     "HandedTables",
     "JobContext",
     "JobResult",
@@ -130,13 +133,17 @@ __all__ = [
     "SharedRead",
     "SharedVersion",
     "VersionFile",
+    "column_print",
     "epochs_version",
+    "file_tokens",
     "merge_parts",
     "merged_rows",
     "plain_name",
     "private_bytes",
     "query_batches",
     "read_version",
+    "stamped",
+    "stamping",
     "version_files",
 ]
 
@@ -926,6 +933,236 @@ def version_files(root: Path | str, version: str) -> dict[str, VersionFile]:
     :raises FileNotFoundError: when the version is gone
     """
     return _files_of(Path(root) / _VERSIONS_DIR / _valid_name(version, "version"))
+
+
+#: the schema metadata key a file's column tokens are held under (:func:`stamped`)
+COLUMN_TOKENS_KEY: Final = b"threetears.column_tokens"
+
+#: the most files whose tokens a process keeps (:func:`file_tokens`), the least recently read let go first
+_TOKENED_FILES: Final = 65_536
+
+
+@dataclass(frozen=True)
+class FileTokens:
+    """a file's column tokens (:func:`stamped`): which columns a write moved, known without reading a row.
+
+    Every column holding a token holds exactly the content the token was minted for: a token is minted fresh, or kept
+    only from a column equal to it position by position in a file of as many rows. So two reads whose files' (file,
+    row token, tokens of the columns read) are equal read the same relation over those columns, in the same order.
+
+    :ivar rows: moves whenever the file's row count moves
+    :ivar columns: column -> its token
+    """
+
+    rows: str
+    columns: Mapping[str, str]
+
+
+def _fresh_token() -> str:
+    """a token equal to no other.
+
+    :return: the token
+    :rtype: str
+    """
+    return uuid.uuid7().hex
+
+
+def _tokens_of(schema: Any) -> FileTokens | None:
+    """the tokens a schema's metadata holds.
+
+    :param schema: the schema
+    :ptype schema: pa.Schema
+    :return: the tokens; None for none, or for metadata not in the shape :func:`stamped` writes
+    :rtype: FileTokens | None
+    """
+    raw = (schema.metadata or {}).get(COLUMN_TOKENS_KEY)
+    held: Any = None
+    if raw is not None:
+        try:
+            held = json.loads(raw)
+        except ValueError:
+            # NOSILENT: tokens not in the shape written here: the file prints as its identity (column_print)
+            held = None
+    tokens: FileTokens | None = None
+    if isinstance(held, dict) and isinstance(held.get("rows"), str) and isinstance(held.get("columns"), dict):
+        tokens = FileTokens(held["rows"], MappingProxyType({str(k): str(v) for k, v in held["columns"].items()}))
+    return tokens
+
+
+def stamped(table: Any, base: Path | None) -> Any:
+    """``table`` with its column tokens in its schema's metadata (:data:`COLUMN_TOKENS_KEY`, JSON
+    ``{"rows": token, "columns": {column: token}}``): a column takes the token of ``base``'s same-named column only
+    when ``base`` holds tokens, as many rows, and that column equal to it (``ChunkedArray.equals``: values and nulls
+    position by position, the same type); the row token is kept when the row count is. Every other token is fresh, and
+    every token is fresh when ``base`` is None, holds no tokens, or cannot be read. Other metadata is kept.
+
+    The compare is Arrow's own over the memory-mapped base: no Python per value. Run it where the file is written (a
+    worker, :func:`stamping`), never on a serving process's loop.
+
+    :param table: the rows as they are written
+    :ptype table: pa.Table
+    :param base: the file holding the same rows in the version this one is made from; None when there is none
+    :ptype base: Path | None
+    :return: the rows, stamped
+    :rtype: pa.Table
+    """
+    _require_arrow()
+    rows = _fresh_token()
+    columns = {name: _fresh_token() for name in table.column_names}
+    if base is not None:
+        try:
+            with pa.memory_map(str(base), "r") as source:
+                reader = ipc.open_file(source)
+                held = _tokens_of(reader.schema)
+                if held is not None:
+                    before = reader.read_all()
+                    if before.num_rows == table.num_rows:
+                        rows = held.rows
+                        for name in table.column_names:
+                            token = held.columns.get(name)
+                            if (
+                                token is not None
+                                and name in before.column_names
+                                and before.column(name).equals(table.column(name))
+                            ):
+                                columns[name] = token
+        except OSError, pa.ArrowInvalid:
+            # NOSILENT: a base gone with its version (or not an Arrow file) keeps nothing: every token is fresh
+            log.debug(
+                "a base file could not be read; its column tokens are fresh", extra={"extra_data": {"base": str(base)}}
+            )
+    metadata = dict(table.schema.metadata or {})
+    metadata[COLUMN_TOKENS_KEY] = json.dumps({"rows": rows, "columns": columns}, sort_keys=True).encode()
+    return table.replace_schema_metadata(metadata)
+
+
+def stamping(
+    write: Callable[[Mapping[str, Any]], int], base_of: Callable[[str], Path | None]
+) -> Callable[[Mapping[str, Any]], int]:
+    """a slot's write step (:meth:`SegmentSlot.writing`) that stamps every table it is given whole (:func:`stamped`,
+    against ``base_of(name)``), where the write runs (the worker). Anything else -- a reader, an opener, a file, parts
+    -- is written with no tokens: a reader's schema, and what an opener opens, are cleared of any tokens they carry
+    from the file they were read from; a ``Path`` (linked, its tokens its own) and :class:`Parts` pass as given.
+
+    :param write: the step
+    :ptype write: Callable[[Mapping[str, Any]], int]
+    :param base_of: a written name's file in the base version, or None
+    :ptype base_of: Callable[[str], Path | None]
+    :return: the stamping step
+    :rtype: Callable[[Mapping[str, Any]], int]
+    """
+
+    def step(tables: Mapping[str, Any]) -> int:
+        return write(
+            {
+                name: stamped(rows, base_of(name)) if isinstance(rows, pa.Table) else _unstamped(rows)
+                for name, rows in tables.items()
+            }
+        )
+
+    return step
+
+
+def _without_tokens(schema: Any) -> Any:
+    """``schema`` without column tokens.
+
+    :param schema: the schema
+    :ptype schema: pa.Schema
+    :return: the schema, its other metadata kept
+    :rtype: pa.Schema
+    """
+    metadata = {k: v for k, v in (schema.metadata or {}).items() if k != COLUMN_TOKENS_KEY}
+    return schema.with_metadata(metadata) if metadata else schema.remove_metadata()
+
+
+def _unstamped(rows: Any) -> Any:
+    """rows given otherwise than as a table, carrying no column tokens (:func:`stamping`).
+
+    :param rows: what a write step was given for one name
+    :ptype rows: Any
+    :return: the same rows, carrying no tokens
+    :rtype: Any
+    """
+    made: Any = rows
+    if isinstance(rows, pa.RecordBatchReader):
+        made = pa.RecordBatchReader.from_batches(_without_tokens(rows.schema), rows)
+    elif isinstance(rows, pa.Table):
+        made = rows.replace_schema_metadata(_without_tokens(rows.schema).metadata)
+    elif callable(rows):
+        made = functools.partial(_opened_unstamped, rows)
+    return made
+
+
+def _opened_unstamped(opener: Callable[[], Any]) -> Any:
+    """what ``opener`` opens, carrying no column tokens.
+
+    :param opener: what opens a table or a reader
+    :ptype opener: Callable[[], pa.Table | pa.RecordBatchReader]
+    :return: the table or reader
+    :rtype: pa.Table | pa.RecordBatchReader
+    """
+    return _unstamped(opener())
+
+
+def _file_identity(path: Path) -> tuple[str, int, int, int]:
+    """a file's identity: where it is, its inode, size and modification time (a store's files are never written
+    again: a new file at the same name is another inode).
+
+    :param path: the file
+    :ptype path: Path
+    :return: (path, inode, bytes, modified ns)
+    :rtype: tuple[str, int, int, int]
+    """
+    status = os.stat(path, follow_symlinks=False)
+    return (str(path), status.st_ino, status.st_size, status.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize=_TOKENED_FILES)
+def _tokens_at(identity: tuple[str, int, int, int]) -> FileTokens | None:
+    """the tokens of the file ``identity`` names, read from its footer once per process (:func:`file_tokens`).
+
+    :param identity: the file's identity (:func:`_file_identity`)
+    :ptype identity: tuple[str, int, int, int]
+    :return: its tokens, or None
+    :rtype: FileTokens | None
+    """
+    with pa.memory_map(identity[0], "r") as source:
+        return _tokens_of(ipc.open_file(source).schema)
+
+
+def file_tokens(path: Path) -> FileTokens | None:
+    """the column tokens a file's footer holds (its schema, memory-mapped: no page of rows read); None for none.
+    Kept per process by the file's identity (path, inode, bytes, modified), the least recently read of
+    65,536 let go first. Blocking (a stat, a footer read): off the loop.
+
+    :param path: the file
+    :ptype path: Path
+    :return: its tokens, or None
+    :rtype: FileTokens | None
+    """
+    _require_arrow()
+    return _tokens_at(_file_identity(path))
+
+
+def column_print(path: Path, columns: Collection[str]) -> str:
+    """the print of ``columns`` of one file: ``"<rows token>|column=token;..."`` (columns sorted; a column the file
+    holds no token for prints empty). A file holding no tokens prints as its identity
+    (``"file:<path>:<inode>:<bytes>:<modified ns>"``): any write moves it.
+
+    :param path: the file
+    :ptype path: Path
+    :param columns: the columns read
+    :ptype columns: Collection[str]
+    :return: the print
+    :rtype: str
+    """
+    tokens = file_tokens(path)
+    if tokens is None:
+        name, inode, size, modified = _file_identity(path)
+        printed = f"file:{name}:{inode}:{size}:{modified}"
+    else:
+        printed = tokens.rows + "|" + ";".join(f"{c}={tokens.columns.get(c, '')}" for c in sorted(columns))
+    return printed
 
 
 def _write_parts(

@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: shared Arrow column tokens -- which columns a write moved, from a file's footer
+
+**Added:** `threetears.core.shared_arrow.stamped(table, base)` puts a token per column and one for the row count in a
+table's schema metadata (`COLUMN_TOKENS_KEY`): a column keeps the token of `base`'s same-named column only when `base`
+holds tokens, as many rows, and the column equal to it position by position with the same type; every other token is
+fresh. `stamping(write, base_of)` stamps every table a slot's write step is given (readers, openers, files and `Parts`
+are written without tokens). `file_tokens(path)` reads a file's tokens from its footer once per process (kept by path,
+inode, size and modified time, 65,536 files), and `column_print(path, columns)` prints the columns a read takes (a file
+without tokens prints as its identity). A memo over a version reruns a query only when a column it reads moved, with no
+row read again. Guide: docs/shared-arrow.md, "Know which columns a write moved".
+
 ### evals: names leave the evidence (bundle shape 66, campaign bundle shape 4; every stored analysis is regenerated once)
 
 **Changed:** names are presentation, never evidence (owner ruling, 2026-11-11). The bundle an analysis is frozen over,
