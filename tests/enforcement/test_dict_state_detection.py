@@ -113,6 +113,16 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/copy_checkpoint.py",
         class_name="CopyCheckpoints",
+        attr_name="_whole_kinds",
+        rationale=(
+            "each table the follower read whole since the last checkpoint, onto the situation it read it in (cold "
+            "start, schema change, rolling upgrade): which declared whole write the next checkpoint makes of it; "
+            "cleared by that write, and a restart loads the newest checkpoint and starts empty"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_checkpoint.py",
+        class_name="CopyCheckpoints",
         attr_name="_missing",
         rationale=(
             "each table the last load left out and why (cold start, schema change): read off the pointer's manifest "
