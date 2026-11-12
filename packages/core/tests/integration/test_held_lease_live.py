@@ -20,6 +20,10 @@ from threetears.nats import NatsClient, set_default_namespace
 
 pytestmark = pytest.mark.integration
 
+#: the shortest TTL a lease takes (whole seconds, at least one), renewed at a quarter of it
+_TTL = timedelta(seconds=1)
+_RENEW = timedelta(seconds=0.25)
+
 
 async def test_two_pods_contend_for_one_held_lease(nats_container: str) -> None:
     namespace = f"held{uuid.uuid4().hex[:8]}"
@@ -29,17 +33,15 @@ async def test_two_pods_contend_for_one_held_lease(nats_container: str) -> None:
         await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=namespace, client_name="pod-a") as a,
         await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=namespace, client_name="pod-b") as b,
     ):
-        first = await KVLease(a, pod_id="pod-a").hold(key, ttl=timedelta(seconds=2), renew_every=timedelta(seconds=0.5))
+        first = await KVLease(a, pod_id="pod-a").hold(key, ttl=_TTL, renew_every=_RENEW)
         try:
-            await asyncio.sleep(3)  # longer than the TTL: only renewal keeps it
+            await asyncio.sleep(_TTL.total_seconds() * 2)  # past the TTL by as much again: only renewal keeps it
             assert first.held
             with pytest.raises(LeaseUnavailable):
-                await KVLease(b, pod_id="pod-b").hold(key, ttl=timedelta(seconds=2), renew_every=timedelta(seconds=0.5))
+                await KVLease(b, pod_id="pod-b").hold(key, ttl=_TTL, renew_every=_RENEW)
         finally:
             await first.release()
 
-        second = await KVLease(b, pod_id="pod-b").hold(
-            key, ttl=timedelta(seconds=2), renew_every=timedelta(seconds=0.5)
-        )
+        second = await KVLease(b, pod_id="pod-b").hold(key, ttl=_TTL, renew_every=_RENEW)
         assert second.held
         await second.release()

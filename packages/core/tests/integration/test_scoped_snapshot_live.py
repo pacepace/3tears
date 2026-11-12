@@ -69,6 +69,9 @@ _TABLES = (
 )
 _STATES = ("CA", "DE", "TX")
 _WAIT = 30.0
+#: how often a waiting replica looks again: production's 2s made each wait for a write or a claim to end
+#: last up to 2s after it ended
+_RECHECK = timedelta(milliseconds=250)
 
 
 def _new_backend() -> DuckDBBackend:
@@ -163,7 +166,7 @@ class _Platform:
             ensure_buckets=self.declare,
             retire=self.retire,
             pointer_watch_heartbeat=timedelta(seconds=0.5),
-            **options,
+            **({"recheck": _RECHECK} | options),
         )
         return snapshot, counting
 
@@ -188,10 +191,15 @@ async def platform(db_container: str, nats_container: str) -> AsyncIterator[_Pla
         )
         await pool.execute("CREATE TABLE counties (county TEXT PRIMARY KEY, state TEXT NOT NULL, total BIGINT)")
         for state in _STATES:
-            for index in range(1500 if state == "TX" else 40):
-                county = f"{state}-{index:04d}"
-                await pool.execute("INSERT INTO counties VALUES ($1, $2, $3)", county, state, 1000)
-                await pool.execute("INSERT INTO results VALUES ($1, $2, $3, $4)", f"{state}-gov", county, state, 1000)
+            counties = [f"{state}-{index:04d}" for index in range(1500 if state == "TX" else 40)]
+            # one pipelined batch per table: a round trip per row was most of this fixture's time
+            await pool.executemany(
+                "INSERT INTO counties VALUES ($1, $2, $3)", [(county, state, 1000) for county in counties]
+            )
+            await pool.executemany(
+                "INSERT INTO results VALUES ($1, $2, $3, $4)",
+                [(f"{state}-gov", county, state, 1000) for county in counties],
+            )
             platform.epochs[state] = 1
         await platform.declare()
         yield platform
