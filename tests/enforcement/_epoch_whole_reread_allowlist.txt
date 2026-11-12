@@ -1,5 +1,3 @@
 # epoch-discipline allowlist, rule whole-reread: today's violations, each with the fix that removes it.
 # <path> :: <function> :: <symbol> :: <count> :: <fix>. Counts are pinned: the list only shrinks.
 # Grammar and rules: threetears.enforcement.epoch_discipline; gate: test_epoch_discipline.py.
-packages/mcp/src/threetears/mcp/rbac.py :: McpToolGrantCollection.load_all_grants :: SELECT mcp_tool_grants :: 1 :: serve grants from McpToolGrantCollection keyed reads, kept current by epochs, not a whole reload
-packages/mcp/src/threetears/mcp/rbac.py :: McpToolGrantCollection.load_all_grants :: recovery read fetch :: 1 :: serve grants from McpToolGrantCollection keyed reads, kept current by epochs, not a whole reload

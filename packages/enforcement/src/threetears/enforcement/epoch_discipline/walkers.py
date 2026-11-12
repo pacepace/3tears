@@ -27,6 +27,12 @@ from pathlib import Path
 from typing import Final
 
 from threetears.enforcement.common import dotted, iter_python_files, parse_python_path, relative_posix_path
+from threetears.enforcement.no_whole_reads.walker import (
+    DECLARATION_CALL,
+    DECLARED_KINDS,
+    DeclaredWhole,
+    declared_whole_read,
+)
 from threetears.observe import BuildOnce
 from threetears.enforcement.epoch_discipline.config import (
     RULE_EPOCH_BYPASS,
@@ -267,6 +273,9 @@ class EpochHit:
     :ivar line: line of the site
     :ivar function: qualified name of the enclosing function or class, or ``<module>``
     :ivar symbol: what the site did, as the ledgers key it
+    :ivar declared: the ``whole_read`` declaration wrapping the site whose kind lets this read through (a whole select
+        under a kind letting ``whole-select``, a recovery read under one letting ``calls-whole-read``), or None; it
+        lets the hit go only when the declaration is sound (``no_whole_reads.declaration_defects``)
     """
 
     rule: str
@@ -274,6 +283,7 @@ class EpochHit:
     line: int
     function: str
     symbol: str
+    declared: DeclaredWhole | None = field(default=None, compare=False)
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -528,6 +538,8 @@ class _ModuleWalk(ast.NodeVisitor):
         self._announcing: list[bool] = [False]
         self._bypassing: int = 0
         self._attributes: dict[str, str] = {}
+        #: the ``whole_read`` declarations whose wrapped read the walk is inside, innermost last
+        self._declared: list[DeclaredWhole] = []
         #: the module's private top-level functions, judged at their callers for epoch-bypass
         self._private: frozenset[str] = frozenset(
             node.name
@@ -564,7 +576,7 @@ class _ModuleWalk(ast.NodeVisitor):
         """
         return any(isinstance(node, ast.Call) and _final_name(node) in names for node in _own_nodes(body))
 
-    def _hit(self, rule: str, node: ast.AST, symbol: str) -> None:
+    def _hit(self, rule: str, node: ast.AST, symbol: str, *, read: str = "") -> None:
         """record one hit at ``node``.
 
         :param rule: the rule
@@ -573,10 +585,17 @@ class _ModuleWalk(ast.NodeVisitor):
         :ptype node: ast.AST
         :param symbol: what it did
         :ptype symbol: str
+        :param read: for a whole read, its kind as a ``whole_read`` declaration's kind names what it lets through
+            (``whole-select``, ``calls-whole-read``): the innermost declaration wrapping the site is kept with the hit
+            when its kind lets it; empty for any other hit
+        :ptype read: str
         :return: nothing
         :rtype: None
         """
-        self.hits.append(EpochHit(rule, self.path, getattr(node, "lineno", 0), self._function, symbol))
+        declared = self._declared[-1] if read and self._declared else None
+        if declared is not None and read not in DECLARED_KINDS.get(declared.kind, frozenset()):
+            declared = None
+        self.hits.append(EpochHit(rule, self.path, getattr(node, "lineno", 0), self._function, symbol, declared))
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         """walk a class body, reading its expiry attributes.
@@ -760,7 +779,15 @@ class _ModuleWalk(ast.NodeVisitor):
             self._bypass_call(node, name)
             self._sql_call(node, name)
             self._recovery_read(node, name)
-        self.generic_visit(node)
+        if name == DECLARATION_CALL and node.args:
+            # the read it wraps is walked inside the declaration; its other arguments are literals
+            self._declared.append(declared_whole_read(self.path, self._function, node))
+            self.visit(node.args[0])
+            self._declared.pop()
+            for child in (node.func, *node.args[1:], *node.keywords):
+                self.visit(child)
+        else:
+            self.generic_visit(node)
 
     def _whole_drop_call(self, node: ast.Call, name: str) -> None:
         """a call that drops a whole table, scope or cache.
@@ -870,7 +897,7 @@ class _ModuleWalk(ast.NodeVisitor):
                 self._hit(RULE_EPOCH_BYPASS, node, f"{verb} {table}")
         whole = _whole_select(sql)
         if whole is not None:
-            self._hit(RULE_WHOLE_REREAD, node, f"SELECT {whole}")
+            self._hit(RULE_WHOLE_REREAD, node, f"SELECT {whole}", read="whole-select")
 
     def _recovery_read(self, node: ast.Call, name: str) -> None:
         """an L3 read inside a function whose name says it rebuilds, recovers or warms.
@@ -889,7 +916,7 @@ class _ModuleWalk(ast.NodeVisitor):
             name in _L3_DISTINCT_READS or any(_L3_SEGMENT.search(segment) for segment in segments)
         )
         if reads or _WHOLE_READ_HELPER.match(name):
-            self._hit(RULE_WHOLE_REREAD, node, f"recovery read {name}")
+            self._hit(RULE_WHOLE_REREAD, node, f"recovery read {name}", read="calls-whole-read")
 
     def judged_at_callers(self) -> None:
         """move each epoch-bypass hit in a private top-level function to its module's calls of it, under each

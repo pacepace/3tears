@@ -117,6 +117,7 @@ from threetears.enforcement.no_whole_reads.walker import (
 __all__ = [
     "BoundBy",
     "NoWholeReadsConfig",
+    "declaration_defects",
     "no_whole_reads_findings",
     "use_the_helper_counts",
     "use_the_helper_findings",
@@ -648,6 +649,40 @@ def _until_defects(repo_root: Path, declared: DeclaredWhole) -> list[str]:
     return []
 
 
+def declaration_defects(repo_root: Path, declared: DeclaredWhole) -> list[str]:
+    """what is wrong with a whole-read declaration's own arguments: its kind, reason, ruling, proof, speed test and
+    ``until=``. Every gate letting a declared read through judges the declaration by this (no_whole_reads;
+    epoch_discipline's whole-reread), so a declaration one gate refuses lets nothing through in another.
+
+    :param repo_root: the repo root (proof and speed tests are read under it)
+    :ptype repo_root: Path
+    :param declared: the declaration
+    :ptype declared: DeclaredWhole
+    :return: its defects; empty when it is sound
+    :rtype: list[str]
+    """
+    defects: list[str] = []
+    if declared.kind not in DECLARED_KINDS:
+        return [f"kind must be one of {sorted(DECLARED_KINDS)}, as a literal"]
+    if len(declared.reason) < _MIN_REASON:
+        defects.append(f"the reason must say which situation reads whole ({_MIN_REASON}+ characters, a literal)")
+    if _RULING.search(declared.ruling) is None:
+        defects.append('the ruling must cite Pace\'s ruling with its date ("Pace 2026-11-12: ..."), a literal')
+    line = _Exemption(
+        declared.line, declared.path, declared.function, 1, declared.kind, declared.proof, declared.reason
+    )
+    proof = _proving_test_defect(repo_root, line)
+    if proof is not None:
+        defects.append(f"the proof {proof}")
+    defects.extend(_until_defects(repo_root, declared))
+    if declared.kind in DECLARED_SPEED_KINDS and not (declared.kind == "backup_verification" and not declared.speed):
+        # a backup_verification with no speed test is judged once its statements are known (_bare_only)
+        speed = _proving_test_defect(repo_root, line, test=declared.speed, calls="budget_problem")
+        if speed is not None:
+            defects.append(f"the speed test {speed}")
+    return defects
+
+
 class _Declared:
     """the repo's declarations judged: which are sound, and which hits each covers."""
 
@@ -666,7 +701,7 @@ class _Declared:
         self.covered: set[WholeReadHit] = set()
         sound: list[DeclaredWhole] = []
         for declared in scan.declarations:
-            defects = self._defects(config, declared)
+            defects = declaration_defects(config.repo_root, declared)
             where = f"{declared.path}:{declared.line} {declared.function} whole_read(kind={declared.kind!r})"
             self.findings.extend(f"{where}: {defect}" for defect in defects)
             if not defects:
@@ -768,40 +803,6 @@ class _Declared:
         if declared.kind in DECLARED_OUTSIDE_KINDS and hit.kind != "calls-whole-read":
             return _declared_relation_outside(hit, schema)
         return True
-
-    @staticmethod
-    def _defects(config: NoWholeReadsConfig, declared: DeclaredWhole) -> list[str]:
-        """what is wrong with a declaration's own arguments.
-
-        :param config: the repo's config
-        :ptype config: NoWholeReadsConfig
-        :param declared: the declaration
-        :ptype declared: DeclaredWhole
-        :return: its defects
-        :rtype: list[str]
-        """
-        defects: list[str] = []
-        if declared.kind not in DECLARED_KINDS:
-            return [f"kind must be one of {sorted(DECLARED_KINDS)}, as a literal"]
-        if len(declared.reason) < _MIN_REASON:
-            defects.append(f"the reason must say which situation reads whole ({_MIN_REASON}+ characters, a literal)")
-        if _RULING.search(declared.ruling) is None:
-            defects.append('the ruling must cite Pace\'s ruling with its date ("Pace 2026-11-12: ..."), a literal')
-        line = _Exemption(
-            declared.line, declared.path, declared.function, 1, declared.kind, declared.proof, declared.reason
-        )
-        proof = _proving_test_defect(config.repo_root, line)
-        if proof is not None:
-            defects.append(f"the proof {proof}")
-        defects.extend(_until_defects(config.repo_root, declared))
-        if declared.kind in DECLARED_SPEED_KINDS and not (
-            declared.kind == "backup_verification" and not declared.speed
-        ):
-            # a backup_verification with no speed test is judged once its statements are known (_bare_only)
-            speed = _proving_test_defect(config.repo_root, line, test=declared.speed, calls="budget_problem")
-            if speed is not None:
-                defects.append(f"the speed test {speed}")
-        return defects
 
 
 def _announce_declared(accepted: list[DeclaredWhole]) -> list[str]:

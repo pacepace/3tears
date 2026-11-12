@@ -286,3 +286,101 @@ def test_counts_measure_an_unadopted_repo_and_ignore_its_ledgers(tmp_path: Path)
     """a consumer measures every rule before it adopts the gates; a ledger does not hide a hit from the count."""
     config = _config(tmp_path, _TWO_DROPS, allowlists={RULE_WHOLE_DROP: f"{_LINE} :: 2 :: {_FIX}\n"})
     assert epoch_violation_counts(config) == {rule: (2 if rule == RULE_WHOLE_DROP else 0) for rule in RULES}
+
+
+# ---- a read declared whole by nature (whole_read), judged as no_whole_reads judges it -----------
+
+_RULING = "Pace 2026-11-12: the one full load is a true no-data cold start"
+
+_DECLARED = """from threetears.core.declared import whole_read
+
+
+async def fill(pool):
+    return await whole_read(
+        pool.fetch('SELECT id, body FROM items'),
+        kind="KIND",
+        reason="an empty copy is filled once at its cold start, nothing in L2",
+        ruling="RULING",
+        proof="tests/test_proof.py::test_fill_only_when_empty",
+        speed="tests/test_proof.py::test_fill_speed",
+    )
+
+
+class Coll:
+    async def refill_l2(self):
+        return await whole_read(
+            self.l3_pages(500),
+            kind="KIND",
+            reason="an empty copy is filled once at its cold start, nothing in L2",
+            ruling="RULING",
+            proof="tests/test_proof.py::test_fill_only_when_empty",
+            speed="tests/test_proof.py::test_fill_speed",
+        )
+"""
+
+_PROOF = """from threetears.core.testing.calibrate import budget_problem
+
+
+def test_fill_only_when_empty():
+    assert fill and refill_l2
+
+
+def test_fill_speed():
+    assert fill and refill_l2
+    budget_problem()
+"""
+
+
+def _declared_findings(tmp_path: Path, source: str, proof: str = _PROOF) -> list[str]:
+    """whole-reread findings over a module holding declared reads, with its proof tests written beside it.
+
+    :return: the findings
+    :rtype: list[str]
+    """
+    config = _config(tmp_path, source.replace("RULING", _RULING))
+    (tmp_path / "tests" / "test_proof.py").write_text(proof, encoding="utf-8")
+    return epoch_discipline_findings(config, RULE_WHOLE_REREAD)
+
+
+def test_a_sound_declaration_lets_its_whole_select_and_recovery_read_through(tmp_path: Path) -> None:
+    """Flips if a whole select or a recovery read wrapped in a sound whole_read of a kind letting it through is
+    still a finding (the copy_checkpoint per-reason reads, an L2 refill at a cold start)."""
+    assert _declared_findings(tmp_path, _DECLARED.replace("KIND", "cold_start")) == []
+
+
+def test_a_kind_lets_through_only_its_own_whole_reads(tmp_path: Path) -> None:
+    """Flips if an operator reset (which lets through a truncate, never a select or a call reading whole) lets the
+    reads it wraps through."""
+    findings = _declared_findings(tmp_path, _DECLARED.replace("KIND", "operator_reset"))
+    assert len(findings) == 2, findings
+    assert any("in fill: SELECT items" in finding for finding in findings)
+    assert any("in Coll.refill_l2: recovery read l3_pages" in finding for finding in findings)
+
+
+@pytest.mark.parametrize(
+    ("change", "proof"),
+    [
+        (("cold_start", "not_a_kind"), _PROOF),
+        (("Pace 2026-11-12: ", ""), _PROOF),
+        (("cold_start", "cold_start"), _PROOF.replace("test_fill_only_when_empty", "test_elsewhere")),
+        (("cold_start", "cold_start"), _PROOF.replace("budget_problem()", "pass")),
+    ],
+    ids=["unknown kind", "no Pace ruling", "proof names no test", "speed test never calls budget_problem"],
+)
+def test_an_unsound_declaration_lets_nothing_through(tmp_path: Path, change: tuple[str, str], proof: str) -> None:
+    """Flips if a declaration no_whole_reads refuses (its kind, ruling, proof or speed test) lets a read through
+    here: both gates judge it by one function."""
+    source = _DECLARED.replace("KIND", "cold_start").replace("RULING", _RULING).replace(*change)
+    findings = _declared_findings(tmp_path, source, proof)
+    assert len(findings) == 2, findings
+
+
+def test_a_whole_select_beside_the_declared_one_is_still_a_finding(tmp_path: Path) -> None:
+    """Flips if a declaration covers more than the read it wraps: a second whole select in the same function, outside
+    the wrapped expression, stays a finding."""
+    source = _DECLARED.replace("KIND", "cold_start").replace(
+        "    return await whole_read(\n        pool.fetch(",
+        "    await pool.fetch('SELECT * FROM others')\n    return await whole_read(\n        pool.fetch(",
+    )
+    findings = _declared_findings(tmp_path, source)
+    assert len(findings) == 1 and "in fill: SELECT others" in findings[0], findings

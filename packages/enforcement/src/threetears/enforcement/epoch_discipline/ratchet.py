@@ -30,6 +30,7 @@ from threetears.enforcement.epoch_discipline.config import (
     allowlist_path_for,
 )
 from threetears.enforcement.epoch_discipline.walkers import EpochHit, EpochScan, scan_epoch_discipline
+from threetears.enforcement.no_whole_reads import declaration_defects
 
 __all__ = [
     "epoch_discipline_findings",
@@ -142,12 +143,25 @@ def _unsanctioned_hits(config: EpochDisciplineConfig, rule: str) -> tuple[list[E
         for entry in sorted(primitives)
         if entry not in scan.definitions
     )
+    sound: dict[tuple[str, int], bool] = {}
+
+    def declared(hit: EpochHit) -> bool:
+        # a read declared whole by nature where it is written, judged as no_whole_reads judges it: a declaration
+        # it refuses lets nothing through here either
+        if hit.declared is None:
+            return False
+        where = (hit.declared.path, hit.declared.line)
+        if where not in sound:
+            sound[where] = not declaration_defects(config.repo_root, hit.declared)
+        return sound[where]
+
     hits = [
         hit
         for hit in scan.hits
         if hit.rule == rule
         and not _sanctioned(hit, primitives)
         and not (rule == RULE_EPOCH_BYPASS and hit.function.rsplit(".", 1)[-1] in config.write_path_hooks)
+        and not declared(hit)
     ]
     return hits, defects
 

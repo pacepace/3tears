@@ -42,7 +42,7 @@ import ast
 import itertools
 import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Final
 
@@ -98,11 +98,13 @@ __all__ = [
     "DECLARED_SPEED_KINDS",
     "DEFAULT_NARROWING_KEYWORDS",
     "DEFAULT_PAGER_CALLS",
+    "DECLARATION_CALL",
     "DeclaredWhole",
     "OperatorMark",
     "WholeReadHit",
     "WholeReadScan",
     "WrittenStatement",
+    "declared_whole_read",
     "scan_whole_reads",
 ]
 
@@ -411,7 +413,7 @@ _NO_SOURCE: Final[tuple[frozenset[str], frozenset[str], bool]] = (frozenset(), f
 _ENTRY_ONLY_MARKS: Final[frozenset[str]] = frozenset({"operator_reset", "operator_command"})
 
 #: the call declaring a read whole by nature (:func:`threetears.core.declared.whole_read`)
-_DECLARATION_CALL: Final[str] = "whole_read"
+DECLARATION_CALL: Final[str] = "whole_read"
 
 #: each kind a read may be declared whole in (Pace, 2026-11-12) onto the hit kinds it lets through inside the wrapped
 #: expression; anything else there is still reported. A new kind is a rule change Pace approves.
@@ -804,6 +806,42 @@ class DeclaredWhole:
         ):
             return True
         return function == "<module>" and any(first <= line <= last for _, first, last in self.constants)
+
+
+def declared_whole_read(path: str, function: str, node: ast.Call) -> DeclaredWhole:
+    """a ``whole_read(<read>, kind=..., ...)`` declaration as written: the wrapped expression's lines and the literal
+    arguments (one not a literal reads empty, and the gate refuses it). The one reading every gate judging a declared
+    read uses (no_whole_reads; epoch_discipline's whole-reread). Spans of a module constant or a local the wrapped
+    expression names are the caller's to add.
+
+    :param path: repo-relative posix path of the module
+    :ptype path: str
+    :param function: qualified name of the enclosing function
+    :ptype function: str
+    :param node: the ``whole_read`` call
+    :ptype node: ast.Call
+    :return: the declaration
+    :rtype: DeclaredWhole
+    """
+    wrapped = node.args[0] if node.args else None
+    literal = {
+        k.arg: k.value.value
+        for k in node.keywords
+        if k.arg and isinstance(k.value, ast.Constant) and isinstance(k.value.value, str)
+    }
+    return DeclaredWhole(
+        path,
+        function,
+        node.lineno,
+        wrapped.lineno if wrapped is not None else node.lineno,
+        (wrapped.end_lineno or wrapped.lineno) if wrapped is not None else node.lineno,
+        literal.get("kind", ""),
+        literal.get("reason", ""),
+        literal.get("ruling", ""),
+        literal.get("proof", ""),
+        literal.get("speed", ""),
+        until=literal.get("until", ""),
+    )
 
 
 @dataclass(frozen=True)
@@ -2496,7 +2534,7 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: None
         """
         name = _final(node)
-        if name == _DECLARATION_CALL:
+        if name == DECLARATION_CALL:
             self._declare(node)
         if name is not None:
             self._judge_call(node, name)
@@ -2515,11 +2553,6 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: None
         """
         wrapped = node.args[0] if node.args else None
-        literal = {
-            k.arg: k.value.value
-            for k in node.keywords
-            if k.arg and isinstance(k.value, ast.Constant) and isinstance(k.value.value, str)
-        }
         if self._string_constants is None:
             self._string_constants = module_constant_spans(self._tree)
         constants: list[tuple[str, int, int]] = []
@@ -2533,21 +2566,7 @@ class _ModuleWalk(ast.NodeVisitor):
                     constants.append((name, *span))
         own = self._declared_locals(node, wrapped) if wrapped is not None else ()
         self.declarations.append(
-            DeclaredWhole(
-                self.path,
-                self._function,
-                node.lineno,
-                wrapped.lineno if wrapped is not None else node.lineno,
-                (wrapped.end_lineno or wrapped.lineno) if wrapped is not None else node.lineno,
-                literal.get("kind", ""),
-                literal.get("reason", ""),
-                literal.get("ruling", ""),
-                literal.get("proof", ""),
-                literal.get("speed", ""),
-                tuple(constants),
-                own,
-                literal.get("until", ""),
-            )
+            replace(declared_whole_read(self.path, self._function, node), constants=tuple(constants), locals=own)
         )
 
     def _declared_locals(self, node: ast.Call, wrapped: ast.expr) -> tuple[tuple[str, int, int], ...]:
@@ -3917,7 +3936,7 @@ class _ModuleWalk(ast.NodeVisitor):
             for value in [*node.args[1:], *(k.value for k in node.keywords)]
         )
         whole_named = (
-            name != _DECLARATION_CALL
+            name != DECLARATION_CALL
             and name not in self._pagers
             and name not in self._always_whole
             and _WHOLE_CALL.search(name.lower()) is not None
