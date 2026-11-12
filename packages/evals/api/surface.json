@@ -6131,6 +6131,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.NegativeValues": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.NextExperiment": {
       "kind": "model",
       "signature": "",

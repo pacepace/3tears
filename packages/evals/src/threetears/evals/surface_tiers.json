@@ -1227,6 +1227,7 @@
 "threetears.evals.analysis.multi_rig_variants": "provisional",
 "threetears.evals.analysis.MultipleComparisons": "provisional",
 "threetears.evals.analysis.NeedKind": "provisional",
+"threetears.evals.analysis.NegativeValues": "provisional",
 "threetears.evals.analysis.NextExperiment": "provisional",
 "threetears.evals.analysis.NO_ANALYSIS": "provisional",
 "threetears.evals.analysis.OpenAxisFamily": "provisional",
