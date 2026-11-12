@@ -3,7 +3,8 @@
 Proves the thing actually works against a live PostgreSQL (testcontainer) with the real
 ``pg_dump``/``pg_restore`` tools — the assertion a mock can't fake. Seeds a source database, backs
 it up through the engine (encrypted on disk), restores into a throwaway temp database, and asserts
-every row survived. Skips loudly when Docker or the pg client tools are absent.
+every row survived. Without a server or the pg client tools it skips loudly, and on the testament
+pool, where both are in the image, it fails instead.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from uuid import uuid4
 import asyncpg
 import pytest
 from pydantic import SecretStr
-from threetears.core.testing.containers import check_docker_available
+from threetears.core.testing.services import require_services, running_postgres
 
 from threetears.backup.config import BackupConfig
 from threetears.backup.drivers import PostgresDriver, detect_driver
@@ -34,11 +35,19 @@ from threetears.object_store.filesystem import FilesystemObjectStore
 
 _TOOLS_PRESENT = all(shutil.which(tool) for tool in ("pg_dump", "pg_restore"))
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.docker,
-    pytest.mark.skipif(not _TOOLS_PRESENT, reason="pg_dump/pg_restore not on PATH"),
-]
+pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _client_tools() -> None:
+    """stop the module unless the Postgres client tools it shells out to are on PATH (a failure on the pool).
+
+    :return: None
+    :rtype: None
+    """
+    if not _TOOLS_PRESENT:
+        require_services("pg_dump/pg_restore not on PATH")
+
 
 _ROW_COUNT = 50
 
@@ -56,6 +65,17 @@ def _client_tool_major() -> int | None:
         if match is not None:
             found = int(match.group(1))
     return found
+
+
+@pytest.fixture
+def psql_on_path() -> None:
+    """stop a test that runs ``psql`` unless it is on PATH (a failure on the pool).
+
+    :return: None
+    :rtype: None
+    """
+    if not shutil.which("psql"):
+        require_services("psql not on PATH")
 
 
 @pytest.fixture(scope="module")
@@ -87,19 +107,13 @@ def backup_container() -> Iterator[str]:
     :yield: DSN of a module-private postgres container
     :rtype: Iterator[str]
     """
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     major = _client_tool_major()
     if major is None:
-        pytest.skip("could not determine the local pg_dump major version")
+        require_services("could not determine the local pg_dump major version")
 
-    from testcontainers.community.postgres import PostgresContainer  # noqa: PLC0415
-
-    with PostgresContainer(f"postgres:{major}") as container:
-        # testcontainers hands back a SQLAlchemy-style URL; asyncpg wants a
-        # plain postgresql:// DSN.
-        yield container.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
+    # a server of its own, of the client's major: a child process on the pool, a container elsewhere
+    with running_postgres(f"postgres:{major}") as url:
+        yield url
 
 
 @pytest.fixture(scope="module")
@@ -210,7 +224,7 @@ async def test_detect_driver_identifies_postgres(backup_database: str) -> None:
     assert driver.name == "postgres"
 
 
-@pytest.mark.skipif(not shutil.which("psql"), reason="psql not on PATH")
+@pytest.mark.usefixtures("psql_on_path")
 @pytest.mark.asyncio
 async def test_default_table_count_assertion_and_subprocess_hook(backup_database: str, tmp_path: Path) -> None:
     await _seed_source(backup_database)
@@ -236,7 +250,7 @@ async def test_default_table_count_assertion_and_subprocess_hook(backup_database
     assert hook_output.read_text().strip() == str(_ROW_COUNT)  # the hook ran against the restored db
 
 
-@pytest.mark.skipif(not shutil.which("psql"), reason="psql not on PATH")
+@pytest.mark.usefixtures("psql_on_path")
 @pytest.mark.asyncio
 async def test_a_role_that_does_not_own_an_extension_can_restore_a_database_holding_it(
     backup_container: str, tmp_path: Path

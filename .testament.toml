@@ -97,10 +97,11 @@ platform = [
 
 # The integration suite: the tests marked `integration` that need only Postgres, NATS or S3, with those
 # services started inside the pool's container as child processes (threetears.core.testing.services),
-# since the container has no Docker daemon. scripts/test-integration.sh runs it, for the directories
-# listed in `default_selection`; the ones not moved yet are its LOCAL_DIRS, run on the laptop through
-# testcontainers. tests/enforcement/test_integration_suite_selection.py holds the two lists to every
-# integration test in the tree. `docker` and `secrets` are deselected as in the unit suite.
+# since the container has no Docker daemon. scripts/test-integration.sh runs it, for the paths (directories
+# or files) listed in `default_selection`. Its LOCAL_DIRS hold the rest, run on the laptop through
+# testcontainers: the files that drive Docker themselves or read a credential (the `docker` and `secrets`
+# markers, deselected here as in the unit suite, which never move) and any not on the pool yet.
+# tests/enforcement/test_integration_suite_selection.py holds the two lists to every integration test in the tree.
 #
 # A suite's `env` replaces the project's whole, so the uv cache is repeated; Chromium's two are left
 # out, since no integration test drives a browser (the image's ENV still names Chromium's path).
@@ -113,11 +114,17 @@ command = ["uv", "run", "--frozen", "pytest", "-m", "integration and not docker 
 default_selection = [
     "packages/agent/acl/tests/integration",
     "packages/agent/audit/tests/integration",
+    "packages/agent/identity/tests/integration",
+    "packages/agent/intention/tests/integration",
+    "packages/agent/memory/tests/integration",
+    "packages/agent/skills/tests/integration",
     "packages/agent/tools/tests/integration",
+    "packages/agent/wake/tests/integration",
     "packages/agent/workspace/tests/integration",
+    "packages/backup/tests/integration",
     "packages/channels/tests/integration",
     "packages/conversations/tests/integration",
-    "packages/core/tests/integration/test_process_services.py",
+    "packages/core/tests/integration",
     # datasources' Postgres modules; its Redshift ones read a credential and stay local
     "packages/datasources/tests/integration/test_asyncpg_driver_live.py",
     "packages/datasources/tests/integration/test_asyncpg_driver_pool_start_live.py",
@@ -126,7 +133,7 @@ default_selection = [
     "packages/datasources/tests/integration/test_capability_source_collection_live.py",
     "packages/datasources/tests/integration/test_collection_schema_parity_live.py",
     "packages/datasources/tests/integration/test_transaction_live.py",
-    # epoch's modules on the shared services; test_generation_grants_live starts its own NATS per test (W3)
+    # epoch's modules on the shared services; test_generation_grants_live starts its own configured NATS per test
     "packages/epoch/tests/integration/test_change_log_live.py",
     "packages/epoch/tests/integration/test_denylists_live.py",
     "packages/epoch/tests/integration/test_generation_follow_live.py",
@@ -136,7 +143,7 @@ default_selection = [
     "packages/geo/tests/integration",
     "packages/langgraph/tests/integration",
     "packages/mcp/tests/integration",
-    # nats' modules on the shared server; the rest start a configured NATS per test (W3), or two in Docker (lame duck)
+    # nats' modules on the shared server; the rest start a configured NATS per test, or two in Docker (lame duck)
     "packages/nats/tests/integration/test_a_lost_file_stream_comes_back_live.py",
     "packages/nats/tests/integration/test_a_persisted_copy_is_refilled_live.py",
     "packages/nats/tests/integration/test_a_restart_wiped_stream_comes_back_live.py",
@@ -160,6 +167,7 @@ default_selection = [
     "packages/nats/tests/integration/test_object_store_round_trip.py",
     "packages/nats/tests/integration/test_oplog_round_trip.py",
     "packages/nats/tests/integration/test_pipe_round_trip.py",
+    "packages/object-store/tests/integration",
     "packages/registry/tests/integration",
     "packages/scheduled-jobs/tests/integration",
     # scrape's Postgres and NATS modules; the sidecar pipe drives Docker

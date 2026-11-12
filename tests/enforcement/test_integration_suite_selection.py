@@ -14,14 +14,16 @@ the pool and the laptop both go green without it. So:
   holds it, not the other way round).
 
 A test counts as marked when ``pytest.mark.<name>`` appears in a decorator or a ``pytestmark`` assignment, at module
-or class level. AST-based and side-effect-free.
+or class level, as ``scripts/integration_marks.py`` reads it; the script reads marks through the same module.
+AST-based and side-effect-free.
 """
 
 from __future__ import annotations
 
-import ast
+import importlib.util
 import tomllib
 from pathlib import Path
+from types import ModuleType
 
 from threetears.enforcement.common import parse_python_path
 
@@ -50,29 +52,23 @@ def _test_files() -> list[Path]:
     return sorted(path for path in found if "__pycache__" not in path.parts)
 
 
-def _marks(tree: ast.Module) -> set[str]:
-    """The ``pytest.mark.<name>`` names a module's decorators and ``pytestmark`` assignments apply."""
-    applied: list[ast.expr] = []
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            applied.extend(node.decorator_list)
-        elif isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "pytestmark" for target in node.targets
-        ):
-            applied.append(node.value)
-    names: set[str] = set()
-    for expr in applied:
-        for sub in ast.walk(expr):
-            if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Attribute) and sub.value.attr == "mark":
-                names.add(sub.attr)
-    return names
+def _mark_reader() -> ModuleType:
+    """``scripts/integration_marks.py``, the mark reader ``scripts/test-integration.sh`` runs too, so both agree."""
+    spec = importlib.util.spec_from_file_location("integration_marks", _REPO_ROOT / "scripts" / "integration_marks.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_MARK_READER = _mark_reader()
 
 
 def _integration_files() -> dict[str, set[str]]:
     """Each test file marking a test ``integration``, repo-relative, with every mark it applies."""
     found: dict[str, set[str]] = {}
     for path in _test_files():
-        marks = _marks(parse_python_path(path))
+        marks = _MARK_READER.marks(parse_python_path(path))
         if "integration" in marks:
             found[str(path.relative_to(_REPO_ROOT))] = marks
     return found

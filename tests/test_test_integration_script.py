@@ -16,6 +16,7 @@ here runs a test or reaches the pool.
 
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -108,15 +109,25 @@ class _Run:
         return found[0] if found else None
 
 
-def _local_dirs() -> list[str]:
-    """the script's own ``LOCAL_DIRS``, as written.
+#: the miniature repo's own LOCAL_DIRS, written into its copy of the script: the repo's list shrinks as packages
+#: move to the pool, and these tests are about the routing, not about which packages have moved
+_LOCAL_DIRS = [_CORE_DIR, _NATS_DIR, "packages/search/tests/test_searxng_live_scoring.py"]
 
-    :return: the paths
-    :rtype: list[str]
+
+def _with_local_dirs(script: str, local_dirs: list[str]) -> str:
+    """``script`` with its ``LOCAL_DIRS`` replaced by ``local_dirs``.
+
+    :param script: the script's text
+    :ptype script: str
+    :param local_dirs: the paths
+    :ptype local_dirs: list[str]
+    :return: the edited text
+    :rtype: str
     """
-    text = (_REPO_ROOT / "scripts" / "test-integration.sh").read_text()
-    block = text.split("LOCAL_DIRS=(\n", 1)[1].split("\n)\n", 1)[0]
-    return [line.strip() for line in block.splitlines() if line.strip()]
+    head, rest = script.split("\nLOCAL_DIRS=(\n", 1)
+    tail = rest.split("\n)\n", 1)[1]
+    listed = "".join(f"    {path}\n" for path in local_dirs)
+    return f"{head}\nLOCAL_DIRS=(\n{listed})\n{tail}"
 
 
 @pytest.fixture
@@ -133,13 +144,16 @@ def repo(tmp_path: Path) -> Path:
     for name in ("test.sh", "test-integration.sh"):
         shutil.copy(_REPO_ROOT / "scripts" / name, root / "scripts" / name)
         (root / "scripts" / name).chmod(0o755)
+    staged = root / "scripts" / "test-integration.sh"
+    staged.write_text(_with_local_dirs(staged.read_text(), _LOCAL_DIRS))
+    shutil.copy(_REPO_ROOT / "scripts" / "integration_marks.py", root / "scripts" / "integration_marks.py")
     (root / ".testament.toml").write_text(_MANIFEST)
     for directory in (_CORE_DIR, _SUITE_DIR, _NATS_DIR, "packages/models/tests"):
         (root / directory).mkdir(parents=True)
     for path in (_SUITE_FILE, f"{_CORE_DIR}/test_other.py", f"{_SUITE_DIR}/test_jobs.py", f"{_NATS_DIR}/test_bus.py"):
         (root / path).write_text(_MARKED)
     # every local path the script lists holds an integration test, as in the repo
-    for local in _local_dirs():
+    for local in _LOCAL_DIRS:
         target = root / local if local.endswith(".py") else root / local / "test_local.py"
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists():
@@ -307,6 +321,21 @@ class TestWhatCountsAsAnIntegrationTest:
         assert run.call("testament") is None
         assert run.call("uv") == ["run", "pytest", "packages/newpkg", "-m", "integration", "-q"]
 
+    def test_a_file_python_cannot_parse_is_kept_not_a_crash(self, repo: Path) -> None:
+        """the mark reader may run on an older ``python3`` than the tree's: a file it cannot parse stays in the
+        run (pytest reports it), and the script goes on.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        (repo / "packages" / "broken" / "tests").mkdir(parents=True)
+        (repo / "packages" / "broken" / "tests" / "test_new_syntax.py").write_text("def test_y(:\n    pass\n")
+        run = _run(repo, ["broken"])
+        assert run.returncode == 0, run.stderr
+        assert run.call("uv") == ["run", "pytest", "packages/broken", "-m", "integration"]
+
     def test_the_words_in_a_docstring_are_no_mark(self, repo: Path) -> None:
         """a module that only mentions ``pytest.mark.integration`` holds no integration test: nothing runs.
 
@@ -341,7 +370,47 @@ class TestTheDryRun:
         assert run.calls == []
         assert run.stdout.splitlines() == [
             f"on the pool: ./scripts/test.sh --suite integration {_SUITE_FILE} {_SUITE_DIR} -rs",
-            f"here: uv run pytest {' '.join(_local_dirs())} -m integration --ignore={_SUITE_FILE} -rs",
+            f"here: uv run pytest {' '.join(_LOCAL_DIRS)} -m integration --ignore={_SUITE_FILE} -rs",
+        ]
+
+    def test_the_flag_counts_anywhere_among_the_arguments(self, repo: Path) -> None:
+        """``core --dry-run`` is a dry run too, not a real one with an unknown flag.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core", "--dry-run"])
+        assert run.returncode == 0, run.stderr
+        assert run.calls == []
+        assert run.stdout.splitlines() == [
+            f"on the pool: ./scripts/test.sh --suite integration {_SUITE_FILE}",
+            f"here: uv run pytest {_CORE_DIR} -m integration --ignore={_SUITE_FILE}",
+        ]
+
+    def test_it_prints_the_real_command_quoted_with_the_gates_it_clears(self, repo: Path) -> None:
+        """the pool line carries the ``env -u`` of a set gate, and an argument with a space comes back as one word.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["--dry-run", "scheduled-jobs", "-k", "a or b"], env={"TAVILY_API_KEY": "a-key"})
+        assert run.returncode == 0, run.stderr
+        (line,) = run.stdout.splitlines()
+        assert line.startswith("on the pool: ")
+        assert shlex.split(line.removeprefix("on the pool: ")) == [
+            "env",
+            "-u",
+            "TAVILY_API_KEY",
+            "./scripts/test.sh",
+            "--suite",
+            "integration",
+            _SUITE_DIR,
+            "-k",
+            "a or b",
         ]
 
     def test_a_pool_only_package_prints_one_line(self, repo: Path) -> None:
@@ -373,7 +442,7 @@ class TestAWholeRun:
         assert run.call("uv") == [
             "run",
             "pytest",
-            *_local_dirs(),
+            *_LOCAL_DIRS,
             "-m",
             "integration",
             f"--ignore={_SUITE_FILE}",
@@ -574,6 +643,8 @@ class TestEnvironmentGates:
         """
         alone = _run(repo, [f"{_SUITE_DIR}/test_jobs.py"], env={name: "1"}, script="test.sh")
         kept_local = alone.call("testament") is None
+        # kept local means it ran here, not that it was refused
+        assert (alone.call("uv") is not None) == kept_local, alone.stderr
         through = _run(repo, ["scheduled-jobs"], env={name: "1"})
         assert through.returncode == 0, through.stderr
         cleared = name not in through.gates_seen("testament")

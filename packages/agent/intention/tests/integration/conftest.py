@@ -108,7 +108,7 @@ async def pg_schema(pg_url: str) -> AsyncIterator[tuple[str, str]]:
     :return: tuple of (pg url, fresh schema name)
     :rtype: tuple[str, str]
     """
-    schema = f"int_it_{id(object())}".lower().replace("-", "_")
+    schema = f"int_it_{uuid.uuid4().hex}".lower().replace("-", "_")
     conn = await asyncpg.connect(pg_url)
     try:
         await conn.execute('CREATE EXTENSION IF NOT EXISTS "vector"')

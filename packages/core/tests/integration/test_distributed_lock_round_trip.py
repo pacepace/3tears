@@ -5,7 +5,7 @@ expiry that the in-process unit tests cannot validate (the fake KV
 ignores TTL). Uses the canonical session-scoped ``nats_container``
 fixture from :mod:`threetears.core.testing.fixtures` -- a fresh
 checkout without docker skips cleanly via the fixture's
-``check_docker_available`` gate.
+``require_services`` gate, which fails the pool's integration suite instead.
 """
 
 from __future__ import annotations

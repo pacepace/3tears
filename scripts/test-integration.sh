@@ -39,27 +39,25 @@ cd "$REPO_ROOT"
 # Where the pool route is not taken -- no `testament` on PATH, CI, or TESTAMENT=off with a stated
 # TESTAMENT_OFF_REASON -- everything selected runs here, as before the pool.
 LOCAL_DIRS=(
-    packages/agent/identity/tests/integration
-    packages/agent/intention/tests/integration
-    packages/agent/memory/tests/integration
-    packages/agent/skills/tests/integration
-    packages/agent/wake/tests/integration
-    packages/backup/tests/integration
-    packages/core/tests/integration
     packages/datasources/tests/integration/test_redshift_driver_live.py
     packages/datasources/tests/integration/test_transaction_redshift_live.py
     packages/epoch/tests/integration/test_generation_grants_live.py
     packages/nats/tests/integration
-    packages/object-store/tests/integration
     packages/scrape/tests/integration/test_operator_pipe_sidecar.py
     packages/search/tests/test_searxng_live_scoring.py
 )
 
+# `--dry-run`, anywhere among the arguments: print the commands each route would run, exactly, and run neither
 DRY_RUN=""
-if [ "${1:-}" = "--dry-run" ]; then
-    DRY_RUN=1
-    shift
-fi
+ARGS=()
+for arg in "$@"; do
+    if [ "$arg" = "--dry-run" ]; then
+        DRY_RUN=1
+    else
+        ARGS+=("$arg")
+    fi
+done
+set -- ${ARGS+"${ARGS[@]}"}
 PACKAGE=""
 if [ $# -gt 0 ] && [[ "$1" != -* ]] && [ -d "packages/$1" ]; then
     PACKAGE="$1"
@@ -178,40 +176,10 @@ if [ -z "$pool_route" ] && [ ${#POOL[@]} -gt 0 ]; then
     POOL=()
 fi
 
-# every test_*.py under the given paths that marks a test `integration`, read as
-# tests/enforcement/test_integration_suite_selection.py reads it: `pytest.mark.integration` in a decorator or a
-# `pytestmark` assignment, at module or class level (the word in a docstring or a string is no mark)
+# every test_*.py under the given paths that marks a test `integration` (scripts/integration_marks.py, which the
+# selection enforcement reads too), or that this machine's python3 cannot parse
 integration_files() {
-    python3 -I - "$@" <<'PY'
-import ast
-import sys
-from pathlib import Path
-
-
-def marks(tree):
-    applied = []
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            applied.extend(node.decorator_list)
-        elif isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "pytestmark" for target in node.targets
-        ):
-            applied.append(node.value)
-    return {
-        sub.attr
-        for expr in applied
-        for sub in ast.walk(expr)
-        if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Attribute) and sub.value.attr == "mark"
-    }
-
-
-for arg in sys.argv[1:]:
-    root = Path(arg)
-    found = [root] if root.is_file() else sorted(root.glob("**/test_*.py")) if root.is_dir() else []
-    for path in found:
-        if "__pycache__" not in path.parts and "integration" in marks(ast.parse(path.read_text(encoding="utf-8"))):
-            print(path)
-PY
+    python3 -I scripts/integration_marks.py "$@"
 }
 # a local path holding no integration test once the suite's paths are left out (a package root whose only
 # integration directory is the suite's) is not run: pytest would collect nothing and exit 5. A named file stays.
@@ -264,27 +232,38 @@ if [ -n "$pool_route" ]; then
     done
 fi
 
+# the two commands, built once, so a dry run prints exactly what a run runs
+POOL_CMD=()
+if [ ${#POOL[@]} -gt 0 ]; then
+    [ ${#GATES[@]} -eq 0 ] || POOL_CMD+=(env "${GATES[@]}")
+    POOL_CMD+=(./scripts/test.sh --suite integration "${POOL[@]}" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"})
+fi
+LOCAL_CMD=()
+if [ ${#LOCAL[@]} -gt 0 ]; then
+    LOCAL_CMD=(uv run pytest "${LOCAL[@]}" -m integration ${IGNORES+"${IGNORES[@]}"} ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"})
+fi
+
+# a command as a shell would take it back: each word quoted where it needs to be
+shell_words() {
+    local words
+    printf -v words '%q ' "$@"
+    printf '%s\n' "${words% }"
+}
 if [ -n "$DRY_RUN" ]; then
-    if [ ${#POOL[@]} -gt 0 ]; then
-        echo "on the pool: ./scripts/test.sh --suite integration ${POOL[*]}${EXTRA_ARGS[*]+ ${EXTRA_ARGS[*]}}"
-    fi
-    if [ ${#LOCAL[@]} -gt 0 ]; then
-        echo "here: uv run pytest ${LOCAL[*]} -m integration${IGNORES[*]+ ${IGNORES[*]}}${EXTRA_ARGS[*]+ ${EXTRA_ARGS[*]}}"
-    fi
+    [ ${#POOL_CMD[@]} -eq 0 ] || echo "on the pool: $(shell_words "${POOL_CMD[@]}")"
+    [ ${#LOCAL_CMD[@]} -eq 0 ] || echo "here: $(shell_words "${LOCAL_CMD[@]}")"
     exit 0
 fi
 
 pool_status=0
-if [ ${#POOL[@]} -gt 0 ]; then
-    env ${GATES+"${GATES[@]}"} ./scripts/test.sh --suite integration "${POOL[@]}" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} ||
-        pool_status=$?
+if [ ${#POOL_CMD[@]} -gt 0 ]; then
+    "${POOL_CMD[@]}" || pool_status=$?
 fi
 
 local_status=0
-if [ ${#LOCAL[@]} -gt 0 ]; then
+if [ ${#LOCAL_CMD[@]} -gt 0 ]; then
     echo "test-integration.sh: running here, through testcontainers: ${LOCAL[*]}" >&2
-    uv run pytest "${LOCAL[@]}" -m integration ${IGNORES+"${IGNORES[@]}"} ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} ||
-        local_status=$?
+    "${LOCAL_CMD[@]}" || local_status=$?
 fi
 
 if [ ${#POOL[@]} -gt 0 ] && [ ${#LOCAL[@]} -gt 0 ]; then

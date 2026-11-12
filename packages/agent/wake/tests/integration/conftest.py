@@ -14,6 +14,7 @@ The wake package does not exercise pgvector, so the default
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -65,7 +66,7 @@ async def pg_schema(pg_url: str) -> AsyncIterator[tuple[str, str]]:
     :return: tuple of (pg url, fresh schema name)
     :rtype: tuple[str, str]
     """
-    schema = f"wk_it_{id(object())}".lower().replace("-", "_")
+    schema = f"wk_it_{uuid.uuid4().hex}".lower().replace("-", "_")
     conn = await asyncpg.connect(pg_url)
     try:
         await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
