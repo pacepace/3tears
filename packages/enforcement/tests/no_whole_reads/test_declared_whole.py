@@ -210,6 +210,51 @@ def test_a_call_into_a_declared_read_is_declared_there_with_the_same_kind(tmp_pa
     assert not any("in same:" in finding or " same whole_read" in finding for finding in findings), findings
 
 
+def test_a_call_into_a_declared_drain_is_declared_there_with_the_same_kind(tmp_path: Path) -> None:
+    """Flips if a drain cannot be declared at a call into the function holding it (flush_pending's call of
+    WriteBuffer.drain), if an undeclared call into it passes, or if a call declared with another kind passes."""
+    reason = "the process's own buffer (never L3): every pending write is taken whole to flush"
+    held = f"""
+    from threetears.core.declared import whole_read
+
+    async def held(conn):
+        return await whole_read(
+            conn.fetch("SELECT * FROM write_buffer"),
+            kind="drain",
+            reason="{reason}",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_held_entry",
+        )
+"""
+    caller = """
+    from threetears.core.declared import whole_read
+    from held import held
+
+    async def plain(conn):
+        return await held(conn)
+""" + "".join(
+        f"""
+    async def {name}(conn):
+        return await whole_read(
+            held(conn),
+            kind="{kind}",
+            reason="{reason}",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_{name}_entry",
+        )
+"""
+        for name, kind in (("same", "drain"), ("other", "cold_start"))
+    )
+    proofs = _PROOFS + textwrap.indent(
+        "".join(f"\ndef test_{name}_entry():\n    assert {name}\n" for name in ("held", "same", "other")), "    "
+    )
+    findings = _findings(tmp_path, {"held.py": held, "caller.py": caller}, proofs)
+    assert any("in plain: calls-whole-read held" in finding for finding in findings), findings
+    assert any("in other: calls-whole-read held" in finding for finding in findings), findings
+    assert not any("in same:" in finding or " same whole_read" in finding for finding in findings), findings
+    assert not any(" held whole_read" in finding or "in held:" in finding for finding in findings), findings
+
+
 def test_a_declared_statement_is_not_a_use_the_helper_finding(tmp_path: Path) -> None:
     """Flips if the use-the-helper rule counts a declared whole read (no keyed helper answers it), or stops counting
     the same statement undeclared."""

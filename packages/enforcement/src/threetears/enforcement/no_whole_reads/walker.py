@@ -472,8 +472,8 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
     "schema_change": frozenset(
         {"whole-select", "whole-aggregate", "whole-maintenance", "whole-update", "unkeyed-pager", "calls-whole-read"}
     ),
-    # the drain of a process-local buffer (never an L3 table)
-    "drain": frozenset({"whole-select", "whole-delete"}),
+    # the drain of a process-local buffer (never an L3 table), and a call into a function declared the same
+    "drain": frozenset({"whole-select", "whole-delete", "calls-whole-read"}),
     # an operator's reset
     "operator_reset": frozenset({"truncate", "truncate-call", "whole-delete"}),
     # a read serving writers older than a rolling upgrade, until the release it names (``until=``): the gate refuses it
