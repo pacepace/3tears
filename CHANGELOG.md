@@ -18,6 +18,17 @@ clamp is unchanged: a negative value is still drawn at 0, and nothing is refused
 The bundle shape stays 66 and the campaign bundle's 4. A bundle with no such result is byte for byte what it was, so no
 stored analysis is staled; one with such a result fingerprints differently, since the count is evidence it read.
 
+### evals: one arm states one cost on a page
+
+**Changed:** an arm whose cost measure holds no figure but whose scoreboard row holds a cost per reply now states that
+cost in the full results' arms-by-measure table, in the writer's `cost_per_1k.<arm>` key and in every figure that reads
+the page's cost, as the options table already did; before, the full results table showed a dash and the key did not
+exist for that arm. One function in `figure_keys` now owns the rule, and both tables read it. The money form still
+differs on purpose: full results prints a partly priced arm's priced share beside its cost. The writer's cost tally sums
+turn costs with `math.fsum`, as the ledger does. Only an input with such an arm renders differently.
+
+**Added:** `figure_keys.cost_in_measure_unit`.
+
 ### tests wait for events, not fixed sleeps; four production changes came with it
 
 **Added:**

@@ -40,7 +40,6 @@ from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
 from threetears.evals.analysis.report.cost_unit import (
     PRICED_SHARE_TEMPLATE,
-    REPLIES,
     MoneyRuler,
     money_ruler,
     per_one,
@@ -236,27 +235,20 @@ def _costs(
     times as many (and again), which the header says, so the cells are written without the mark. A partly priced arm
     is left out of the choice and states its priced share in place of a cost.
     """
-    noun = cost_basis(report_input).noun
     costs: dict[tuple[str | None, str], float] = {}
     for aspect in aspects:
-        board = aspect_board(report_input, aspect)
         held = aspect_costs_per_thousand(report_input, aspect)
         for arm in (arm.id for arm in report_input.arms):
-            row = board.get(arm)
             if priced_in_part(report_input, arm, aspect) is not None:
                 continue
             if arm in held:
                 costs[aspect, arm] = held[arm] * per / 1000
-            elif noun == REPLIES and row is not None and row.reply_cost_usd is not None:
-                # The cost source the page reads may lack an arm another source holds: the scoreboard's cost per reply
-                # is the same cost over the same count, so an arm it states is not left blank beside arms that carry a
-                # dollar figure.
-                costs[aspect, arm] = row.reply_cost_usd * per
     # The one owner of money's scale states the column: per ``per``, or per 1,000 (1,000,000) times as many where a
     # cost is under a cent there.
     ruler = money_ruler(
         costs.values(), per=per, start=per, reconciles=report_input.meta.volume_per_month is not None
     )
+    noun = cost_basis(report_input).noun
     return COST_HEADER.format(per=per_one(noun) if ruler.counted == 1 else ruler.words(noun)), costs, ruler
 
 

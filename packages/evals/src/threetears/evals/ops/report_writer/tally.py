@@ -393,12 +393,14 @@ def _sum_count(counts: Iterable[int | None]) -> int | None:
 
 def _sum_cost(turns: Iterable[TurnCost]) -> float | None:
     """What the turns cost together, or ``None`` when any of them is unpriced."""
-    total = 0.0
+    costs: list[float] = []
     for turn in turns:
         if turn.cost_usd is None:
             return None
-        total += turn.cost_usd
-    return total
+        costs.append(turn.cost_usd)
+    # The one summation the ledger and the analysis' token cost use, so a total never differs from them in the last
+    # place.
+    return math.fsum(costs)
 
 
 class ReportBudget:

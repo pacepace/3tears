@@ -1220,7 +1220,29 @@ def _costs_per_thousand(report_input: ReportInput) -> dict[str, float]:
     order blended over the tasks by traffic share (:func:`_blended_cost`). What the count counts is
     :func:`cost_basis`'s.
     """
-    return _cost_source(report_input)[1]
+    source, costs = _cost_source(report_input)
+    return _with_reply_costs(report_input, source, costs, report_input.scoreboard)
+
+
+def _with_reply_costs(
+    report_input: ReportInput, source: str, costs: dict[str, float], board: Mapping[str, ScoreboardRow]
+) -> dict[str, float]:
+    """``costs`` (a source's figures, per 1,000) with each arm the source lacks and a scoreboard's cost per reply
+    states, in that figure times 1,000.
+
+    A source can leave an arm out that the scoreboard states: the cost per reply is the same cost over the same count
+    where the source counts replies, so the arm is not left without a cost beside arms that carry one. Every table and
+    key reads an arm's cost here, so one arm states one cost. A source counting anything else takes no fallback.
+    """
+    if source == _SCOREBOARD_COST:
+        return costs
+    measure = report_input.measures.get(source)
+    if measure is None or per_noun(measure) != REPLIES:
+        return costs
+    return {
+        **{arm: row.reply_cost_usd * 1000 for arm, row in board.items() if row.reply_cost_usd is not None},
+        **costs,
+    }
 
 
 def cost_basis(report_input: ReportInput) -> CostBasis:
@@ -1307,9 +1329,27 @@ def aspect_costs_per_thousand(report_input: ReportInput, aspect_id: str | None) 
     if measure is None:
         return {}
     factor = _PER_THOUSAND_FACTORS[measure.unit or ""]
-    return {
+    held = {
         arm: stat.mean * factor for arm, stat in measure.by_aspect.get(aspect_id, {}).items() if stat.mean is not None
     }
+    return _with_reply_costs(report_input, source, held, aspect_board(report_input, aspect_id))
+
+
+def cost_in_measure_unit(report_input: ReportInput, measure_key: str, per_thousand: float) -> float:
+    """A cost per 1,000 (the page's cost rule's figure) in the unit a dollar measure states its means in, so an arm the
+    measure holds no figure for can be read in the measure's own column.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param measure_key: The dollar measure, by key.
+    :ptype measure_key: str
+    :param per_thousand: A cost per 1,000.
+    :ptype per_thousand: float
+    :return: The cost as a mean of that measure.
+    :rtype: float
+    :raises KeyError: The key names no dollar measure.
+    """
+    return per_thousand / _PER_THOUSAND_FACTORS[report_input.measures[measure_key].unit or ""]
 
 
 def _money_per(report_input: ReportInput, values: tuple[str, ...]) -> str:
@@ -8157,6 +8197,7 @@ def figure_key_pages(*, forms_of: Callable[[ReportInput], PageForms]) -> dict[st
 
 __all__ = [
     "aspect_costs_per_thousand",
+    "cost_in_measure_unit",
     "held_figure",
     "cost_arms",
     "cost_ruler",
