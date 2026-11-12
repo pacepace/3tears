@@ -680,6 +680,21 @@ class TestWhenThePoolGivesNoVerdict:
         assert 'docs/testing.md, "When the pool is down"' in last
         assert "An agent stops here and tells the person" in last
 
+    def test_testament_s_exit_75_is_this_script_s_exit_2(self, repo: Path) -> None:
+        """testament 0.46 exits 75 when the pool can't serve a run; the script still answers 2, with the runbook.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core"], testament_exit=75)
+        assert run.returncode == 2
+        assert "testament exit 75" in run.stderr
+        last = run.stderr.strip().splitlines()[-1]
+        assert 'docs/testing.md, "When the pool is down"' in last
+        assert "An agent stops here and tells the person" in last
+
     def test_a_test_failure_passes_through_without_it(self, repo: Path) -> None:
         """a failing test (exit 1) is the code's, not the pool's: no runbook line.
 
