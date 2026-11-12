@@ -78,7 +78,6 @@ __all__ = [
     "entry_id",
     "load_manifest",
     "row_factory",
-    "set_value",
 ]
 
 #: per table, column -> its value for a seed, where the catalog's row does not fit

@@ -21,12 +21,9 @@ from __future__ import annotations
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
-__all__ = ["FIRE_SCHEDULE_CONVERSATION_FK", "add_fire_schedule_conversation_fk"]
+__all__ = ["add_fire_schedule_conversation_fk"]
 
 log = get_logger(__name__)
-
-#: the foreign key tying a schedule's fire to its schedule's conversation
-FIRE_SCHEDULE_CONVERSATION_FK = "wake_fires_schedule_conversation_fk"
 
 _ADD_FK_SQL = """
 DO $$

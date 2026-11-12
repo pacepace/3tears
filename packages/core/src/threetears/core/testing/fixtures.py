@@ -49,7 +49,6 @@ __all__ = [
     "SEARXNG_FIXTURE_ENGINES",
     "SEARXNG_IMAGE",
     "SEARXNG_STATIC_DIR",
-    "check_engine",
     "require_searxng_static_dir",
     "db_container",
     "db_image",
@@ -60,7 +59,6 @@ __all__ = [
     "nats_system_account",
     "s3_container",
     "s3_credentials",
-    "server_engine",
     "searxng_container",
 ]
 

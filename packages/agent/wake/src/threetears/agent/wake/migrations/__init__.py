@@ -132,7 +132,6 @@ from threetears.agent.wake.migrations.v013_active_schedules_index import (
     add_active_schedules_index,
 )
 from threetears.agent.wake.migrations.v014_fire_schedule_conversation_fk import (
-    FIRE_SCHEDULE_CONVERSATION_FK,
     add_fire_schedule_conversation_fk,
 )
 from threetears.core.data.migrations import (
@@ -181,13 +180,11 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 
 
 __all__ = [
-    "FIRE_SCHEDULE_CONVERSATION_FK",
     "PACKAGE_NAME",
     "PROTECTED_GATE_SETTING",
     "add_checked_quiet_status",
     "add_dispatching_fires_index",
     "add_dispatching_status",
-    "add_fire_schedule_conversation_fk",
     "add_fire_source_and_manual_fires",
     "add_include_conversation_history",
     "agent_scope_protection_and_fire_links",
