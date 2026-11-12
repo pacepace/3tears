@@ -343,14 +343,17 @@ async def _held_among_many(pool: asyncpg.Pool) -> tuple[ScopeEpochs, ScopeEpochs
 
 async def _read_again_by_key(pool: asyncpg.Pool, reader: ScopeEpochs, l3: _CountingL3) -> None:
     """the reader's next snapshot is a whole read's answer, read without the table: the change's statement, then one
-    keyed read of the scopes it could not merge; no whole read counted under any why."""
-    before = {why: _whole_reads(why) for why in _WHYS}
+    keyed read of the scopes it could not merge; no whole read counted under any why, the retired whys included.
+    The count is taken before the comparison's own whole read (a fresh reader's first)."""
+    whys = (*_WHYS, "epoch_backwards", "pending_lost")
+    before = {why: _whole_reads(why) for why in whys}
     l3.reset()
 
     snapshot = await reader.snapshot()
 
+    after = {why: _whole_reads(why) for why in whys}
     assert snapshot == await _whole(pool)
-    assert {why: _whole_reads(why) for why in _WHYS} == before, "the table was read whole"
+    assert after == before, "the table was read whole"
     assert l3.statements == 2 and l3.rows < 10, f"read {l3.rows} rows in {l3.statements} statements, not by key"
 
 
