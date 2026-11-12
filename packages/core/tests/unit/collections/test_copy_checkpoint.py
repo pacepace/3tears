@@ -55,7 +55,7 @@ _KEYS = {_VOTES: _VOTES_KEY, _RACES: _RACES_KEY, _NEEDLES: _VOTES_KEY, _TOTALS: 
 
 def _metadata(*, share: bool = False) -> MetaData:
     metadata = MetaData()
-    columns = [
+    columns: list[SaColumn[Any]] = [
         SaColumn("state", String(8), primary_key=True),
         SaColumn("geo_id", BigInteger, primary_key=True),
         SaColumn("votes", BigInteger),
@@ -523,7 +523,7 @@ async def test_a_writer_keeps_the_entry_of_a_table_it_does_not_follow() -> None:
     copy.put(_RACES, _races([(9, "mayor")]), "r2", 2)
     only_races.applied(1, {_RACES: frozenset()}, {_RACES: [("1",), ("2",), ("3",), ("9",)]})
     written = await only_races.write(copy.read)
-    assert written is not None
+    assert written is not None and written.previous is not None
     assert written.tables[_VOTES] == written.previous.tables[_VOTES]
 
 
