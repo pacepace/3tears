@@ -25,39 +25,11 @@ from threetears.agent.memory.collections import (
     ConsolidationCycleError,
     MemoryConsolidationsCollection,
 )
-from threetears.agent.memory.migrations import register as register_memory
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
-
-from .conftest import AsyncpgStore
 
 
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture
-async def applied_schema(pg_schema: tuple[str, str]) -> tuple[str, str]:
-    """apply conversations + memory migrations into the per-test schema.
-
-    :param pg_schema: ``(url, schema)`` tuple from the shared fixture
-    :ptype pg_schema: tuple[str, str]
-    :return: same tuple with migrations applied
-    :rtype: tuple[str, str]
-    """
-    url, schema = pg_schema
-    runner = MigrationRunner()
-    register_conversations(runner)
-    register_memory(runner)
-    conn = await asyncpg.connect(url)
-    try:
-        await conn.execute(f'SET search_path TO "{schema}", public')
-        store = AsyncpgStore(conn)
-        await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
-    finally:
-        await conn.close()
-    return url, schema
 
 
 async def _make_pool(url: str, schema: str) -> asyncpg.Pool:

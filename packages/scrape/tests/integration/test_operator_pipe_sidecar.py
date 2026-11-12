@@ -21,7 +21,7 @@ that is recorded in ``.prawduct/operator-verification.md`` rather than asserted 
 Guarded by ``@pytest.mark.integration``, so the workspace sweep (``-m "not integration"``)
 deselects it. Run it explicitly::
 
-    uv run pytest packages/scrape/tests/integration/test_operator_pipe_sidecar.py -m integration -s
+    ./scripts/test-integration.sh --here -k operator_pipe -s -rs
 
 It skips when docker is absent or when the sidecar image has not been built, and names the build
 command in the skip rather than passing quietly.

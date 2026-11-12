@@ -122,6 +122,9 @@ _STORE_DIR = re.compile(r"""(?<![\w."'$-])(?:store_dir|storedir|store)(?:\s*[:=]
 def _code_of(line: str) -> str:
     """the part of a nats-server configuration line before its comment (``#`` or ``//``, outside quotes).
 
+    ``//`` starts a comment only at the start of the line or after whitespace, so the ``//`` of an
+    unquoted URL (``nats-route://host:6222``) is not one.
+
     :param line: one line
     :ptype line: str
     :return: the line up to its comment
@@ -133,7 +136,7 @@ def _code_of(line: str) -> str:
             quote = "" if char == quote else quote
         elif char in "\"'":
             quote = char
-        elif char == "#" or line.startswith("//", index):
+        elif char == "#" or (line.startswith("//", index) and (index == 0 or line[index - 1].isspace())):
             return line[:index]
     return line
 

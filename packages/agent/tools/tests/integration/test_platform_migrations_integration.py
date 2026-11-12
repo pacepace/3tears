@@ -12,7 +12,7 @@ Postgres via testcontainers to prove:
 - pre-existing rows pick up the DB-side defaults without a
   backfill (backwards compatibility for TE-08).
 
-requires docker; gated by ``pytest.mark.integration``.
+needs Postgres/NATS (the pool's child processes, or testcontainers off the pool); gated by ``pytest.mark.integration``.
 """
 
 from __future__ import annotations

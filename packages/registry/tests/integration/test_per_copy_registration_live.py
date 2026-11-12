@@ -16,7 +16,7 @@ What each test pins:
 * an agent's signed in-process copy is shown to that agent and to nobody else;
 * an agent registering under another agent's pod id is refused ``POD_ID_MISMATCH``.
 
-requires docker; marked integration. run with::
+needs a NATS server (the pool's child process, or a testcontainer); marked integration. run with::
 
     ./scripts/test-integration.sh registry -rs
 """

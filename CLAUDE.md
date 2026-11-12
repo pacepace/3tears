@@ -144,7 +144,7 @@ uv sync                    # install all packages in dev mode
 |---|---|
 | `./scripts/test.sh` | Run tests. One package while you work (`./scripts/test.sh core`, `agent/memory`), which leaves evals out unless you name it; all packages with no argument. Before a PR, `./scripts/check-all.sh`, which runs it and CI's other suites |
 | `./scripts/test-sidecar.sh` | Run the nodriver sidecar's own tests |
-| `./scripts/test-integration.sh` | Run the integration tests |
+| `./scripts/test-integration.sh` | Run the integration suite on the testament pool; `--here` runs the docker and credentialed tests on this machine |
 | `./scripts/test-live-claude-cli.sh` | Run the live Claude CLI batch -- structured output and the session pool -- and record the result (needs `CLAUDE_CODE_OAUTH_TOKEN`; before tagging a `packages/models` release) |
 | `./scripts/lint.sh` | ruff check plus format check. `--fix` to auto-fix |
 | `./scripts/typecheck.sh` | mypy on all packages, or one: `./scripts/typecheck.sh evals` |
@@ -156,10 +156,10 @@ Where `testament` is installed, `test.sh` hands the run to testament's runners (
 
 **When the pool can't take a run** (`test.sh` exits 2, "testament gave no verdict"), stop and tell the person. Never rerun a package or the whole suite with `TESTAMENT=off`, never run `ci-unit-tests.sh` or raw `pytest` to get past it, and never edit `.testament.toml`. Named test files under `TESTAMENT=off` are fine. What gates a PR meanwhile: [docs/testing.md](docs/testing.md), "When the pool is down".
 
-`test-sidecar.sh` and `test-integration.sh` sit outside `test.sh` on purpose (an AGPL dependency, and Docker). Neither is optional:
+`test-sidecar.sh` and `test-integration.sh` sit outside `test.sh` on purpose (an AGPL dependency, and the pool's integration suite). Neither is optional:
 
-- **Run the integration suite before any PR, as `./scripts/test-integration.sh -rs`, and account for every skip.** CI runs a partial integration set: its `integration` job covers core, nats, epoch, scheduled-jobs and agent/acl against Postgres and NATS. Everything else (the sidecar, S3/minio, SearXNG, Redshift and the remaining packages) never runs in CI, so nothing but you runs it, and a skip reads exactly like a pass. When reporting, give the pass count AND each remaining skip with its reason. The evals render tests are not in it: they need headless Chromium, carry the `browser` marker and run in the unit suite, on the testament pool and CI's evals shards.
-- **Build the sidecar image first, for the Docker host's own architecture**, or its tests skip (or fail under emulation).
+- **Run the integration suite before any PR, as `./scripts/test-integration.sh -rs`** (`check-all.sh` runs it where the pool is reachable, and fails saying so where it isn't). It runs on the testament pool, where Postgres, NATS and S3 run as processes and a skip fails. When a change touches scrape, search, the nats lame-duck handover or a credentialed package, also run `./scripts/test-integration.sh --here -rs` on this machine: it runs the `docker` and `secrets` tests, which never reach the pool. CI's `integration` job covers only core, nats, epoch, scheduled-jobs and agent/acl. When reporting, give the pass count AND each skip with its reason. The evals render tests are not in it: they need headless Chromium, carry the `browser` marker and run in the unit suite, on the testament pool and CI's evals shards.
+- **Before `--here`, build the sidecar image for the Docker host's own architecture**, or its sidecar test skips (or fails under emulation).
 
 The command, the incident behind each rule, and the list of legitimate dev-box skips: [docs/testing.md](docs/testing.md).
 

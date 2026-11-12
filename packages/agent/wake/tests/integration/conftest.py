@@ -21,6 +21,13 @@ from typing import Any
 import asyncpg
 import pytest
 
+from threetears.agent.skills.migrations import register as register_skills
+from threetears.agent.wake.migrations import register as register_wake
+from threetears.conversations.migrations import register as register_conversations
+from threetears.core.data.migrations import MigrationRunner
+
+from tests.pg_template import migrated_copy
+
 
 @pytest.fixture(scope="module")
 def pg_url(db_container: str) -> str:
@@ -78,3 +85,36 @@ async def pg_schema(pg_url: str) -> AsyncIterator[tuple[str, str]]:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
     finally:
         await conn.close()
+
+
+async def _migrate_wake(conn: asyncpg.Connection, _schema: str) -> None:
+    """apply conversations + skills + wake migrations into the schema ``conn``'s search path names.
+
+    :param conn: a connection whose ``search_path`` is the schema
+    :ptype conn: asyncpg.Connection
+    :param _schema: the schema's name (the search path already says it)
+    :ptype _schema: str
+    :return: None
+    :rtype: None
+    """
+    runner = MigrationRunner()
+    register_conversations(runner)
+    register_skills(runner)
+    register_wake(runner)
+    await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+
+
+@pytest.fixture
+async def applied_schema(pg_url: str) -> AsyncIterator[tuple[str, str]]:
+    """a database of the test's own with conversations + skills + wake migrated; yields ``(url, schema)``.
+
+    the migrations run once per session, into a template database the test's database is copied from
+    (:mod:`tests.pg_template`). tests about migrating take ``pg_schema`` and migrate it themselves.
+
+    :param pg_url: the session's Postgres
+    :ptype pg_url: str
+    :yield: the test's database URL and the migrated schema's name
+    :rtype: AsyncIterator[tuple[str, str]]
+    """
+    async with migrated_copy(pg_url, key="wake", migrate=_migrate_wake) as copied:
+        yield copied

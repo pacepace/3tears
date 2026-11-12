@@ -23,6 +23,12 @@ from typing import Any
 import asyncpg
 import pytest
 
+from threetears.agent.memory.migrations import register as register_memory
+from threetears.conversations.migrations import register as register_conversations
+from threetears.core.data.migrations import MigrationRunner
+
+from tests.pg_template import migrated_copy
+
 # canonical testcontainer fixtures from the central harness;
 # a single ``pytest_plugins`` line pulls in ``db_container`` /
 # ``db_image`` / ``nats_container`` / ``nats_jetstream`` -- this
@@ -138,3 +144,36 @@ async def pg_schema(pg_url: str) -> AsyncIterator[tuple[str, str]]:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
     finally:
         await conn.close()
+
+
+async def _migrate_memory(conn: asyncpg.Connection, _schema: str) -> None:
+    """apply conversations + memory migrations into the schema ``conn``'s search path names.
+
+    :param conn: a connection whose ``search_path`` is the schema
+    :ptype conn: asyncpg.Connection
+    :param _schema: the schema's name (the search path already says it)
+    :ptype _schema: str
+    :return: None
+    :rtype: None
+    """
+    runner = MigrationRunner()
+    register_conversations(runner)
+    register_memory(runner)
+    await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+
+
+@pytest.fixture
+async def applied_schema(pg_url: str) -> AsyncIterator[tuple[str, str]]:
+    """a database of the test's own with conversations + memory migrated; yields ``(url, schema)``.
+
+    the migrations run once per session, into a template database the test's database is copied from
+    (:mod:`tests.pg_template`). tests about migrating (the chain, the declarations, the embedding width)
+    take ``pg_schema`` and migrate it themselves.
+
+    :param pg_url: the session's Postgres
+    :ptype pg_url: str
+    :yield: the test's database URL and the migrated schema's name
+    :rtype: AsyncIterator[tuple[str, str]]
+    """
+    async with migrated_copy(pg_url, key="memory", migrate=_migrate_memory) as copied:
+        yield copied

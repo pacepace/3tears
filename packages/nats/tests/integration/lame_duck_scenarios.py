@@ -113,14 +113,16 @@ async def wait_for_route(first: Node, second: Node) -> None:
     :rtype: None
     :raises AssertionError: no message crossed within :data:`ROUTE_TIMEOUT_SECONDS`
     """
-    listener = await connect(second.uri, "route-check-b")
-    talker = await connect(first.uri, "route-check-a")
     arrived = asyncio.Event()
 
     async def _arrive(_msg: IncomingMessage) -> None:
         arrived.set()
 
-    try:
+    async with contextlib.AsyncExitStack() as clients:
+        listener = await connect(second.uri, "route-check-b")
+        clients.push_async_callback(listener.shutdown, drain_timeout=timedelta(seconds=2))
+        talker = await connect(first.uri, "route-check-a")
+        clients.push_async_callback(talker.shutdown, drain_timeout=timedelta(seconds=2))
         await listener.subscribe(Subject.raw("route.check"), cb=_arrive)
         await listener.flush()
         deadline = time.monotonic() + ROUTE_TIMEOUT_SECONDS
@@ -130,9 +132,6 @@ async def wait_for_route(first: Node, second: Node) -> None:
             await talker.flush()
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(arrived.wait(), timeout=0.1)
-    finally:
-        await talker.shutdown(drain_timeout=timedelta(seconds=2))
-        await listener.shutdown(drain_timeout=timedelta(seconds=2))
 
 
 @contextlib.asynccontextmanager

@@ -141,9 +141,9 @@ fi
 # like a pass. TAVILY_API_KEY is the `secrets` test the pool deselects and no other script runs
 # (packages/search/tests/test_embedded_smoke.py's live tier): `TAVILY_API_KEY=... ./scripts/test.sh
 # search packages/search/tests/test_embedded_smoke.py` runs it here. The other credentials the
-# `secrets` walker knows have their own scripts (test-integration.sh for Redshift,
-# test-live-claude-cli.sh), and CLAUDE_CODE_OAUTH_TOKEN is often set for other reasons, which would
-# send every run local.
+# `secrets` walker knows have their own scripts (`test-integration.sh --here` runs every `secrets`
+# test, test-live-claude-cli.sh records the Claude CLI batch), and CLAUDE_CODE_OAUTH_TOKEN is often set
+# for other reasons, which would send every run local.
 local_only=""
 # scripts/test-integration.sh clears the same names for its pool call (tests/test_test_integration_script.py
 # holds the two lists to each other).

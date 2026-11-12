@@ -139,6 +139,8 @@ async def test_two_nats_servers_at_once_keep_separate_stores() -> None:
         pytest.param('jetstream {\n  storedir = "/tmp/js-store"\n}\n', id="storedir"),
         pytest.param("jetstream { store: /tmp/js-store, max_file_store: 1G }\n", id="store"),
         pytest.param("# store_dir: /tmp/js-store\njetstream {}\n", id="commented-out"),
+        # an unquoted `//` inside the value is part of the path, not a comment
+        pytest.param("jetstream { store_dir: /tmp//js-store }\nport: 4222\n", id="double-slash-in-path"),
     ],
 )
 async def test_two_servers_configured_with_one_store_keep_separate_stores(config: str) -> None:

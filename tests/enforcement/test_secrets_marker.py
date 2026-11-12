@@ -2,8 +2,8 @@
 
 The testament pool ships no credentials to its runners, and ``.testament.toml``'s suites deselect ``secrets``.
 A test that needs the Redshift warehouse password, the Claude CLI's subscription token or a Tavily API key can only
-run where that credential is, on the laptop: the Redshift tests through ``scripts/test-integration.sh``, the Claude
-CLI's through ``scripts/test-live-claude-cli.sh``, and the Tavily one through ``scripts/test.sh`` with
+run where that credential is, on the laptop: every one through ``scripts/test-integration.sh --here``; the Claude
+CLI's, recorded, through ``scripts/test-live-claude-cli.sh``; and the Tavily one alone through ``scripts/test.sh`` with
 ``TAVILY_API_KEY`` set, which keeps that run local (``TAVILY_API_KEY=... ./scripts/test.sh search
 packages/search/tests/test_embedded_smoke.py``). Without the marker the pool would collect it and skip it for the
 missing key, and a skip reads like a pass.

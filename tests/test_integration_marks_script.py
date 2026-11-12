@@ -46,3 +46,26 @@ def test_it_runs_under_every_older_python_on_this_machine(tmp_path: Path) -> Non
         )
         assert ran.returncode == 0, f"{interpreter}: {ran.stderr}"
         assert ran.stdout.splitlines() == [str(tmp_path / "test_live.py")], interpreter
+
+
+def test_a_file_it_cannot_read_is_kept_and_a_docstring_is_no_mark(tmp_path: Path) -> None:
+    """unparseable or undecodable: listed (kept, never dropped); the word in a docstring: not listed; and the
+    ``--process-only`` listing names only modules that mark it."""
+    (tmp_path / "test_new_syntax.py").write_text("def test_y(:\n    pass\n")
+    (tmp_path / "test_bytes.py").write_bytes(b"# caf\xe9\ndef test_y():\n    pass\n")
+    (tmp_path / "test_words.py").write_text('"""the live ones carry ``pytest.mark.integration``."""\n')
+    (tmp_path / "test_two_nodes.py").write_text(
+        "import pytest\n\npytestmark = [pytest.mark.integration, pytest.mark.process_only]\n"
+    )
+    python = shutil.which("python3")
+    assert python is not None
+    listed = subprocess.run([python, "-I", str(_SCRIPT), str(tmp_path)], capture_output=True, text=True, check=True)
+    assert sorted(Path(line).name for line in listed.stdout.splitlines()) == [
+        "test_bytes.py",
+        "test_new_syntax.py",
+        "test_two_nodes.py",
+    ]
+    process_only = subprocess.run(
+        [python, "-I", str(_SCRIPT), "--process-only", str(tmp_path)], capture_output=True, text=True, check=True
+    )
+    assert [Path(line).name for line in process_only.stdout.splitlines()] == ["test_two_nodes.py"]

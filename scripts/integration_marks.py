@@ -45,6 +45,58 @@ def marks(tree: ast.Module) -> set[str]:
     return names
 
 
+def _applied(exprs: list[ast.expr]) -> set[str]:
+    """The ``pytest.mark.<name>`` names a list of decorators or ``pytestmark`` values applies.
+
+    :param exprs: the expressions
+    :ptype exprs: list[ast.expr]
+    :return: the mark names
+    :rtype: set[str]
+    """
+    names: set[str] = set()
+    for expr in exprs:
+        for sub in ast.walk(expr):
+            if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Attribute) and sub.value.attr == "mark":
+                names.add(sub.attr)
+    return names
+
+
+def _pytestmark(body: list[ast.stmt]) -> list[ast.expr]:
+    """The values a module's or class's body assigns to ``pytestmark``.
+
+    :param body: the body
+    :ptype body: list[ast.stmt]
+    :return: the values
+    :rtype: list[ast.expr]
+    """
+    return [
+        node.value
+        for node in body
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in node.targets)
+    ]
+
+
+def marks_by_test(tree: ast.Module) -> dict[str, set[str]]:
+    """Each test's marks, its module's and class's included: ``{"test_x": {...}, "TestY::test_z": {...}}``.
+
+    :param tree: the parsed module
+    :ptype tree: ast.Module
+    :return: the marks per test
+    :rtype: dict[str, set[str]]
+    """
+    module = _applied(_pytestmark(tree.body))
+    found: dict[str, set[str]] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
+            found[node.name] = module | _applied(node.decorator_list)
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            held = module | _applied(node.decorator_list) | _applied(_pytestmark(node.body))
+            for member in node.body:
+                if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) and member.name.startswith("test"):
+                    found[f"{node.name}::{member.name}"] = held | _applied(member.decorator_list)
+    return found
+
+
 def file_marks(path: Path) -> set[str] | None:
     """The marks ``path`` applies, or None when this interpreter cannot parse it.
 

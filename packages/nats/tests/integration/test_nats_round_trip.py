@@ -1,6 +1,6 @@
 """integration test: NatsClient round-trip against a NATS testcontainer.
 
-requires docker; mark integration. covers connect / publish_typed /
+needs a NATS server (the pool's child process, or a testcontainer); mark integration. covers connect / publish_typed /
 subscribe_typed / request / kv_bucket round-trips against a real
 JetStream-enabled NATS server.
 
@@ -16,7 +16,7 @@ run with:
 
 ::
 
-    uv run pytest -m integration packages/nats/tests/integration/
+    ./scripts/test-integration.sh nats
 """
 
 from __future__ import annotations

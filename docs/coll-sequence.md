@@ -300,4 +300,5 @@ Successive rounds of independent review over this set have each found bypasses
 of the same class as the one the work started from, plus claims whose cited
 evidence did not hold -- including counts stated with confidence and no source. Reasoning over a partial read is the recurring failure mode here. Running
 the thing is what catches it, and a probe that is collected but skipped is not a
-probe -- the 3tears integration suite does not run under `check-all.sh`.
+probe -- and the 3tears integration suite runs only on the testament pool (`check-all.sh` runs it there and says
+so where it can't), while its `docker` and `secrets` tests run only through `test-integration.sh --here`.

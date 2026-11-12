@@ -22,11 +22,9 @@ import asyncpg
 import pytest
 from uuid_utils import uuid7
 
-from threetears.agent.skills.migrations import register as register_skills
 from threetears.agent.wake.collections import WakeFireCollection, WakeScheduleCollection
 from threetears.agent.wake.dispatch import dispatch_wake
 from threetears.agent.wake.manual import ManualFireRefused, claim_manual_fire, run_manual_fire
-from threetears.agent.wake.migrations import register as register_wake
 from threetears.agent.wake.migrations.v009_fire_source_and_manual_fires import add_fire_source_and_manual_fires
 from threetears.agent.wake.protected import update_protected
 from threetears.agent.wake.tick import wake_tick_job
@@ -37,11 +35,9 @@ from threetears.agent.wake.types import (
     WakeDispatchResult,
     WakeTrigger,
 )
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.asyncpg_init import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
 
 from .conftest import AsyncpgStore
 
@@ -54,17 +50,7 @@ def _new_uuid() -> UUID:
     return UUID(str(uuid7()))
 
 
-async def _apply_schema(url: str, schema: str) -> asyncpg.Pool:
-    setup_conn = await asyncpg.connect(url)
-    try:
-        await setup_conn.execute(f'SET search_path TO "{schema}", public')
-        runner = MigrationRunner()
-        register_conversations(runner)
-        register_skills(runner)
-        register_wake(runner)
-        await runner.apply_for_agent_schema(AsyncpgStore(setup_conn))  # type: ignore[arg-type]
-    finally:
-        await setup_conn.close()
+async def _schema_pool(url: str, schema: str) -> asyncpg.Pool:
     pool = await asyncpg.create_pool(
         url,
         min_size=2,
@@ -140,10 +126,10 @@ class TestTheManualFireLimit:
     """The limit is one statement, so it holds however many callers arrive together."""
 
     async def test_a_manual_fire_is_recorded_as_run_by_hand_and_leaves_the_schedule_where_it_was(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, fires = _collections(pool)
             agent = _new_uuid()
@@ -187,9 +173,9 @@ class TestTheManualFireLimit:
         finally:
             await pool.close()
 
-    async def test_of_two_callers_at_once_exactly_one_runs(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_of_two_callers_at_once_exactly_one_runs(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, _fires = _collections(pool)
             agent = _new_uuid()
@@ -212,10 +198,10 @@ class TestTheManualFireLimit:
             await pool.close()
 
     async def test_a_second_run_inside_the_gap_is_refused_and_one_after_it_goes_through(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, fires = _collections(pool)
             agent = _new_uuid()
@@ -245,10 +231,10 @@ class TestTheManualFireLimit:
             await pool.close()
 
     async def test_it_is_refused_while_a_fire_of_the_wake_is_dispatching_and_runs_once_that_fire_ends(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, fires = _collections(pool)
             agent = _new_uuid()
@@ -284,10 +270,10 @@ class TestTheManualFireLimit:
             await pool.close()
 
     async def test_a_callback_that_raises_leaves_a_failed_fire_and_no_fire_in_flight(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, fires = _collections(pool)
             agent = _new_uuid()
@@ -304,9 +290,11 @@ class TestTheManualFireLimit:
         finally:
             await pool.close()
 
-    async def test_a_gap_of_nothing_is_refused_before_anything_is_written(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_a_gap_of_nothing_is_refused_before_anything_is_written(
+        self, applied_schema: tuple[str, str]
+    ) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, _fires = _collections(pool)
             agent = _new_uuid()
@@ -363,9 +351,9 @@ class TestAManualFireAndTheFireLimits:
             requested_by="user:a" if source == "manual" else None,
         )
 
-    async def test_a_manual_fire_spends_the_wakes_limit(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_a_manual_fire_spends_the_wakes_limit(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             agent = _new_uuid()
             conv, sid = await self._one_manual_fire_run(pool, agent)
@@ -383,10 +371,10 @@ class TestAManualFireAndTheFireLimits:
             await pool.close()
 
     async def test_limits_that_leave_manual_fires_out_neither_count_one_nor_refuse_one(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             agent = _new_uuid()
             conv, sid = await self._one_manual_fire_run(pool, agent)
@@ -426,9 +414,9 @@ class TestAManualFireAndTheFireLimits:
 
 
 class TestTheTickStillRecordsItsSource:
-    async def test_a_scheduled_fire_is_recorded_as_scheduled(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_a_scheduled_fire_is_recorded_as_scheduled(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, fires = _collections(pool)
             _conv, sid = await _seed_schedule(
@@ -448,9 +436,9 @@ class TestTheTickStillRecordsItsSource:
 class TestTheGridOfAProtectedWake:
     """An interval edit keeps the anchor the wake had, and the same interval writes nothing."""
 
-    async def test_sixty_then_ninety_then_sixty_is_due_where_it_was(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_sixty_then_ninety_then_sixty_is_due_where_it_was(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, _fires = _collections(pool)
             agent = _new_uuid()
@@ -478,10 +466,10 @@ class TestTheGridOfAProtectedWake:
             await pool.close()
 
     async def test_a_shorter_interval_takes_the_first_slot_of_the_kept_grid_after_now(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, _fires = _collections(pool)
             agent = _new_uuid()
@@ -497,9 +485,9 @@ class TestTheGridOfAProtectedWake:
         finally:
             await pool.close()
 
-    async def test_the_interval_it_already_has_writes_nothing(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_the_interval_it_already_has_writes_nothing(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, _fires = _collections(pool)
             agent = _new_uuid()
@@ -526,10 +514,10 @@ class TestTheGridOfAProtectedWake:
 
 class TestV009Backfill:
     async def test_rows_written_before_it_say_what_started_them_and_a_second_run_changes_nothing(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             agent = _new_uuid()
             conv, sid = await _seed_schedule(pool, agent_id=agent)

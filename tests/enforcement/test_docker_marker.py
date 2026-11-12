@@ -3,7 +3,7 @@
 The testament pool runs the tests in a container with no Docker daemon, and ``.testament.toml``'s suites
 deselect ``docker``. A test that starts its own container (``DockerContainer(...)``, ``PostgresContainer(...)``),
 runs ``docker exec``, or requests ``searxng_container`` (a SearXNG container that has no process form) can only run
-where a daemon answers: the laptop, through ``scripts/test-integration.sh``. The marker is what keeps it off the pool.
+where a daemon answers: the laptop, through ``scripts/test-integration.sh --here``. The marker is what keeps it off the pool.
 Without it, the pool would run the test and fail it, or a skip would hide that it never ran.
 
 This walker pins the contract: any ``test_*.py`` under a package's ``tests`` tree or the repo's ``tests/`` that does
@@ -183,10 +183,10 @@ def test_a_module_pytestmark_list_holding_docker_counts() -> None:
 
 
 def test_every_docker_module_is_also_an_integration_module() -> None:
-    """A ``docker`` module runs only through ``scripts/test-integration.sh``, which selects ``-m integration``.
+    """A ``docker`` module runs only through ``scripts/test-integration.sh --here``, and belongs to the integration tests.
 
-    The pool deselects ``docker``, and the integration route selects ``integration``: a module marked ``docker`` and
-    not ``integration`` would run on neither, only on CI's fallback shards. So the one implies the other.
+    The pool deselects ``docker``, and CI's unit shards deselect ``integration``: a module marked ``docker`` and not
+    ``integration`` would land on those shards instead, which have no Docker to give it. So the one implies the other.
     """
     offenders = [
         str(path.relative_to(_REPO_ROOT))

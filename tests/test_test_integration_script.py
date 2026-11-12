@@ -1,11 +1,11 @@
-"""behavioural tests for ``scripts/test-integration.sh``'s routing: which integration tests run on the pool, which here.
+"""behavioural tests for ``scripts/test-integration.sh``: the suite on the pool, ``--here`` on this machine.
 
-The integration suite moves to the testament pool one package at a time. Its paths are the manifest's
-``[suites.integration] default_selection``, and they go to the pool through ``scripts/test.sh --suite
-integration``; the script's ``LOCAL_DIRS`` run here through testcontainers, as every integration test once
-did. These tests pin the split: a package goes to one route or the other, a package with paths on both
-goes to both without running anything twice, named paths follow the path they lie in, and where the pool
-route is not taken (no testament, CI, ``TESTAMENT=off`` with a reason) everything runs here.
+The integration suite runs on the testament pool: the manifest's ``[suites.integration] default_selection``,
+through ``scripts/test.sh --suite integration``, and nothing on this machine. ``--here`` runs the tests marked
+``docker`` or ``secrets`` (the script's ``HERE_FILES``) locally. Where the pool route is not taken (no testament,
+CI, ``TESTAMENT=off`` with a reason) the suite's paths run here through testcontainers, less the ``process_only``
+modules. These tests pin each route, what a package or a named path selects, the dry run, the environment gates
+the pool call clears, and test.sh's rules the pool call inherits.
 
 Self-contained: both scripts are staged in a miniature repo under ``tmp_path`` beside a manifest of its
 own, and ``testament`` and ``uv`` are stand-in executables on PATH that record their argv, so nothing
@@ -109,25 +109,15 @@ class _Run:
         return found[0] if found else None
 
 
-#: the miniature repo's own LOCAL_DIRS, written into its copy of the script: the repo's list shrinks as packages
-#: move to the pool, and these tests are about the routing, not about which packages have moved
-_LOCAL_DIRS = [_CORE_DIR, _NATS_DIR, "packages/search/tests/test_searxng_live_scoring.py"]
+def _here_files() -> list[str]:
+    """the script's ``HERE_FILES``, as written.
 
-
-def _with_local_dirs(script: str, local_dirs: list[str]) -> str:
-    """``script`` with its ``LOCAL_DIRS`` replaced by ``local_dirs``.
-
-    :param script: the script's text
-    :ptype script: str
-    :param local_dirs: the paths
-    :ptype local_dirs: list[str]
-    :return: the edited text
-    :rtype: str
+    :return: the paths
+    :rtype: list[str]
     """
-    head, rest = script.split("\nLOCAL_DIRS=(\n", 1)
-    tail = rest.split("\n)\n", 1)[1]
-    listed = "".join(f"    {path}\n" for path in local_dirs)
-    return f"{head}\nLOCAL_DIRS=(\n{listed})\n{tail}"
+    text = (_REPO_ROOT / "scripts" / "test-integration.sh").read_text()
+    block = text.split("\nHERE_FILES=(\n", 1)[1].split("\n)\n", 1)[0]
+    return [line.strip() for line in block.splitlines() if line.strip()]
 
 
 @pytest.fixture
@@ -144,20 +134,12 @@ def repo(tmp_path: Path) -> Path:
     for name in ("test.sh", "test-integration.sh"):
         shutil.copy(_REPO_ROOT / "scripts" / name, root / "scripts" / name)
         (root / "scripts" / name).chmod(0o755)
-    staged = root / "scripts" / "test-integration.sh"
-    staged.write_text(_with_local_dirs(staged.read_text(), _LOCAL_DIRS))
     shutil.copy(_REPO_ROOT / "scripts" / "integration_marks.py", root / "scripts" / "integration_marks.py")
     (root / ".testament.toml").write_text(_MANIFEST)
     for directory in (_CORE_DIR, _SUITE_DIR, _NATS_DIR, "packages/models/tests"):
         (root / directory).mkdir(parents=True)
     for path in (_SUITE_FILE, f"{_CORE_DIR}/test_other.py", f"{_SUITE_DIR}/test_jobs.py", f"{_NATS_DIR}/test_bus.py"):
         (root / path).write_text(_MARKED)
-    # every local path the script lists holds an integration test, as in the repo
-    for local in _LOCAL_DIRS:
-        target = root / local if local.endswith(".py") else root / local / "test_local.py"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if not target.exists():
-            target.write_text(_MARKED)
     # a package's own unit tests, beside its integration directory
     (root / "packages" / "scheduled-jobs" / "tests" / "test_unit.py").write_text("def test_u() -> None:\n    pass\n")
     return root
@@ -237,233 +219,15 @@ def _run(
 _POOL = ["run", "--suite", "integration", "--"]
 
 
-class TestAPackageGoesWhereItsTestsAre:
-    """a package in the suite runs on the pool, one in ``LOCAL_DIRS`` runs here, and one in both runs in both."""
-
-    def test_a_package_in_the_suite_runs_on_the_pool_only(self, repo: Path) -> None:
-        """scheduled-jobs' integration directory is the suite's: the pool runs it, nothing runs here.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        run = _run(repo, ["scheduled-jobs", "-rs"])
-        assert run.returncode == 0, run.stderr
-        assert run.call("testament") == [*_POOL, _SUITE_DIR, "-rs"]
-        assert run.call("uv") is None
-
-    def test_a_package_not_moved_runs_here_only(self, repo: Path) -> None:
-        """nats is in ``LOCAL_DIRS``: it runs here through testcontainers, as before.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        run = _run(repo, ["nats"])
-        assert run.returncode == 0, run.stderr
-        assert run.call("testament") is None
-        assert run.call("uv") == ["run", "pytest", _NATS_DIR, "-m", "integration"]
-
-    def test_a_package_on_both_runs_each_part_once(self, repo: Path) -> None:
-        """core's suite file runs on the pool and is left out of core's local run.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        run = _run(repo, ["core", "-v"])
-        assert run.returncode == 0, run.stderr
-        assert run.call("testament") == [*_POOL, _SUITE_FILE, "-v"]
-        assert run.call("uv") == ["run", "pytest", _CORE_DIR, "-m", "integration", f"--ignore={_SUITE_FILE}", "-v"]
-
-    def test_a_package_with_no_integration_tests_runs_nothing(self, repo: Path) -> None:
-        """models has no integration test: nothing runs, and the exit is pytest's "no tests" 5.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        run = _run(repo, ["models"])
-        assert run.returncode == 5
-        assert run.calls == []
-        assert "no integration tests in what was selected" in run.stderr
-
-    def test_a_package_root_whose_integration_tests_are_the_suite_s_runs_on_the_pool_only(self, repo: Path) -> None:
-        """``packages/scheduled-jobs`` named as a path: its integration directory goes to the pool, and the rest of
-        the package holds no integration test, so nothing runs here (no local run exiting 5 after a green pool).
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        run = _run(repo, ["packages/scheduled-jobs"])
-        assert run.returncode == 0, run.stderr
-        assert run.call("testament") == [*_POOL, _SUITE_DIR]
-        assert run.call("uv") is None
+#: the off-pool command's marker expression: the pool suite's
+_LOCAL_MARKS = ["-m", "integration and not docker and not secrets"]
 
 
-class TestWhatCountsAsAnIntegrationTest:
-    """the script reads marks as the selection enforcement does: a ``pytest.mark.integration`` applied, not the words."""
+class TestThePoolRunsTheSuite:
+    """the suite's paths go to the pool, and nothing runs on this machine."""
 
-    def test_a_package_in_neither_list_runs_here_whole(self, repo: Path) -> None:
-        """a package whose integration test is in neither list runs here whole, as before the pool; its mark sits
-        on a class, which counts.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        (repo / "packages" / "newpkg" / "tests").mkdir(parents=True)
-        (repo / "packages" / "newpkg" / "tests" / "test_live.py").write_text(
-            "import pytest\n\n\n@pytest.mark.integration\nclass TestLive:\n    def test_y(self) -> None:\n        pass\n"
-        )
-        run = _run(repo, ["newpkg", "-q"])
-        assert run.returncode == 0, run.stderr
-        assert run.call("testament") is None
-        assert run.call("uv") == ["run", "pytest", "packages/newpkg", "-m", "integration", "-q"]
-
-    def test_a_file_python_cannot_parse_is_kept_not_a_crash(self, repo: Path) -> None:
-        """the mark reader may run on an older ``python3`` than the tree's: a file it cannot parse stays in the
-        run (pytest reports it), and the script goes on.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        (repo / "packages" / "broken" / "tests").mkdir(parents=True)
-        (repo / "packages" / "broken" / "tests" / "test_new_syntax.py").write_text("def test_y(:\n    pass\n")
-        run = _run(repo, ["broken"])
-        assert run.returncode == 0, run.stderr
-        assert run.call("uv") == ["run", "pytest", "packages/broken", "-m", "integration"]
-
-    def test_a_file_that_is_not_utf8_is_kept_not_a_crash(self, repo: Path) -> None:
-        """a file whose bytes don't decode is kept too.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        (repo / "packages" / "latin" / "tests").mkdir(parents=True)
-        (repo / "packages" / "latin" / "tests" / "test_bytes.py").write_bytes(b"# caf\xe9\ndef test_y():\n    pass\n")
-        run = _run(repo, ["latin"])
-        assert run.returncode == 0, run.stderr
-        assert run.call("uv") == ["run", "pytest", "packages/latin", "-m", "integration"]
-
-    def test_a_python_older_than_3_11_is_refused(self, repo: Path) -> None:
-        """the manifest is read with tomllib: an older ``python3`` stops the run, naming the floor.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        run = _run(repo, ["scheduled-jobs"], old_python=True)
-        assert run.returncode == 2
-        assert run.calls == []
-        assert "python3 3.11 or later" in run.stderr
-
-    def test_the_words_in_a_docstring_are_no_mark(self, repo: Path) -> None:
-        """a module that only mentions ``pytest.mark.integration`` holds no integration test: nothing runs.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        (repo / "packages" / "prose" / "tests").mkdir(parents=True)
-        (repo / "packages" / "prose" / "tests" / "test_words.py").write_text(
-            '"""these are unit tests; the live ones carry ``pytest.mark.integration``."""\n\n\n'
-            "def test_y() -> None:\n    pass\n"
-        )
-        run = _run(repo, ["prose"])
-        assert run.returncode == 5
-        assert run.calls == []
-
-
-class TestTheDryRun:
-    """``--dry-run`` prints what each route would run, and runs nothing."""
-
-    def test_both_commands_and_nothing_run(self, repo: Path) -> None:
-        """the pool's command and the local one, with the options on each.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        run = _run(repo, ["--dry-run", "-rs"])
-        assert run.returncode == 0, run.stderr
-        assert run.calls == []
-        assert run.stdout.splitlines() == [
-            f"on the pool: ./scripts/test.sh --suite integration {_SUITE_FILE} {_SUITE_DIR} -rs",
-            f"here: uv run pytest {' '.join(_LOCAL_DIRS)} -m integration --ignore={_SUITE_FILE} -rs",
-        ]
-
-    def test_the_flag_counts_anywhere_among_the_arguments(self, repo: Path) -> None:
-        """``core --dry-run`` is a dry run too, not a real one with an unknown flag.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        run = _run(repo, ["core", "--dry-run"])
-        assert run.returncode == 0, run.stderr
-        assert run.calls == []
-        assert run.stdout.splitlines() == [
-            f"on the pool: ./scripts/test.sh --suite integration {_SUITE_FILE}",
-            f"here: uv run pytest {_CORE_DIR} -m integration --ignore={_SUITE_FILE}",
-        ]
-
-    def test_it_prints_the_real_command_quoted_with_the_gates_it_clears(self, repo: Path) -> None:
-        """the pool line carries the ``env -u`` of a set gate, and an argument with a space comes back as one word.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        run = _run(repo, ["--dry-run", "scheduled-jobs", "-k", "a or b"], env={"TAVILY_API_KEY": "a-key"})
-        assert run.returncode == 0, run.stderr
-        (line,) = run.stdout.splitlines()
-        assert line.startswith("on the pool: ")
-        assert shlex.split(line.removeprefix("on the pool: ")) == [
-            "env",
-            "-u",
-            "TAVILY_API_KEY",
-            "./scripts/test.sh",
-            "--suite",
-            "integration",
-            _SUITE_DIR,
-            "-k",
-            "a or b",
-        ]
-
-    def test_a_pool_only_package_prints_one_line(self, repo: Path) -> None:
-        """scheduled-jobs has nothing local.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        run = _run(repo, ["--dry-run", "scheduled-jobs"])
-        assert run.stdout.splitlines() == [f"on the pool: ./scripts/test.sh --suite integration {_SUITE_DIR}"]
-
-
-class TestAWholeRun:
-    """no package: the suite's paths on the pool, then every local directory here."""
-
-    def test_both_routes_with_the_options_on_each(self, repo: Path) -> None:
-        """the pool takes the manifest's paths; here, every ``LOCAL_DIRS`` entry, less the suite's file.
+    def test_a_whole_run_is_the_whole_suite_on_the_pool(self, repo: Path) -> None:
+        """no package: every suite path, with the options; ``uv`` never runs here.
 
         :param repo: the miniature repo root
         :ptype repo: Path
@@ -473,44 +237,56 @@ class TestAWholeRun:
         run = _run(repo, ["-rs"])
         assert run.returncode == 0, run.stderr
         assert run.call("testament") == [*_POOL, _SUITE_FILE, _SUITE_DIR, "-rs"]
-        assert run.call("uv") == [
-            "run",
-            "pytest",
-            *_LOCAL_DIRS,
-            "-m",
-            "integration",
-            f"--ignore={_SUITE_FILE}",
-            "-rs",
-        ]
-        assert "pool exit 0, local exit 0" in run.stderr
+        assert run.call("uv") is None
 
-    @pytest.mark.parametrize(("pool", "local", "status"), [(1, 0, 1), (0, 1, 1), (2, 0, 2), (2, 1, 2)])
-    def test_either_route_failing_fails_the_run_and_no_verdict_wins(
-        self, repo: Path, pool: int, local: int, status: int
-    ) -> None:
-        """a red on either route is a red; the pool's exit 2 (no verdict) is what the run reports.
+    def test_a_package_runs_its_part_of_the_suite(self, repo: Path) -> None:
+        """scheduled-jobs: its suite directory alone.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["scheduled-jobs", "-v"])
+        assert run.call("testament") == [*_POOL, _SUITE_DIR, "-v"]
+        assert run.call("uv") is None
+
+    def test_a_package_with_nothing_in_the_suite_runs_nothing_and_says_where_to_look(self, repo: Path) -> None:
+        """models has no suite path: exit 5, nothing run, and the message names ``--here``.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["models"])
+        assert run.returncode == 5
+        assert run.calls == []
+        assert "--here" in run.stderr
+
+    @pytest.mark.parametrize(("pool", "status"), [(0, 0), (1, 1), (2, 2)])
+    def test_the_pool_s_status_is_the_run_s(self, repo: Path, pool: int, status: int) -> None:
+        """a red is a red, and the pool's exit 2 (no verdict) passes through with test.sh's runbook line.
 
         :param repo: the miniature repo root
         :ptype repo: Path
         :param pool: the pool's exit status
         :ptype pool: int
-        :param local: the local run's exit status
-        :ptype local: int
         :param status: the script's expected exit status
         :ptype status: int
         :return: nothing
         :rtype: None
         """
-        run = _run(repo, [], testament_exit=pool, uv_exit=local)
+        run = _run(repo, [], testament_exit=pool)
         assert run.returncode == status
-        assert run.call("uv") is not None, "the local part runs whatever the pool said"
+        assert ("testament gave no verdict" in run.stderr) == (pool == 2)
 
 
 class TestNamedPaths:
-    """test paths follow the route of the path they lie in."""
+    """named paths select within the suite; one outside it is refused, naming ``--here``."""
 
-    def test_a_file_in_a_suite_directory_runs_on_the_pool_alone(self, repo: Path) -> None:
-        """one scheduled-jobs file: the pool, that file only.
+    def test_a_file_in_a_suite_directory_runs_alone(self, repo: Path) -> None:
+        """one scheduled-jobs file: that file only.
 
         :param repo: the miniature repo root
         :ptype repo: Path
@@ -520,7 +296,17 @@ class TestNamedPaths:
         path = f"{_SUITE_DIR}/test_jobs.py"
         run = _run(repo, ["scheduled-jobs", path, "-q"])
         assert run.call("testament") == [*_POOL, path, "-q"]
-        assert run.call("uv") is None
+
+    def test_a_directory_holding_a_suite_file_runs_that_file(self, repo: Path) -> None:
+        """core's integration directory holds one suite file: that file runs.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, [_CORE_DIR])
+        assert run.call("testament") == [*_POOL, _SUITE_FILE]
 
     def test_a_suite_path_named_itself_runs_once(self, repo: Path) -> None:
         """naming the suite's file directly sends it once.
@@ -532,32 +318,19 @@ class TestNamedPaths:
         """
         run = _run(repo, [_SUITE_FILE])
         assert run.call("testament") == [*_POOL, _SUITE_FILE]
-        assert run.call("uv") is None
 
-    def test_a_local_file_runs_here_alone(self, repo: Path) -> None:
-        """a nats file runs here, alone.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        path = f"{_NATS_DIR}/test_bus.py"
-        run = _run(repo, [path])
-        assert run.call("testament") is None
-        assert run.call("uv") == ["run", "pytest", path, "-m", "integration"]
-
-    def test_a_directory_holding_a_suite_file_splits(self, repo: Path) -> None:
-        """core's integration directory, named: its suite file on the pool, the rest here.
+    def test_a_path_outside_the_suite_is_refused_naming_here(self, repo: Path) -> None:
+        """a nats file is in no suite path: refused, nothing run.
 
         :param repo: the miniature repo root
         :ptype repo: Path
         :return: nothing
         :rtype: None
         """
-        run = _run(repo, [_CORE_DIR])
-        assert run.call("testament") == [*_POOL, _SUITE_FILE]
-        assert run.call("uv") == ["run", "pytest", _CORE_DIR, "-m", "integration", f"--ignore={_SUITE_FILE}"]
+        run = _run(repo, [f"{_NATS_DIR}/test_bus.py"])
+        assert run.returncode == 2
+        assert run.calls == []
+        assert "--here" in run.stderr
 
     @pytest.mark.parametrize("path", ["README.md", "packages/core/tests/integration/test_missing.py"])
     def test_a_path_that_is_not_a_test_path_is_refused(self, repo: Path, path: str) -> None:
@@ -575,8 +348,102 @@ class TestNamedPaths:
         assert run.calls == []
 
 
+class TestHere:
+    """``--here`` runs exactly the docker and secrets tests on this machine."""
+
+    def test_it_runs_the_here_files_with_their_marks_and_keeps_the_environment(self, repo: Path) -> None:
+        """HERE_FILES, ``-m "docker or secrets"``, the options; a credential reaches the run.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["--here", "-rs"], env={"TAVILY_API_KEY": "a-key"})
+        assert run.returncode == 0, run.stderr
+        assert run.call("uv") == ["run", "pytest", *_here_files(), "-m", "docker or secrets", "-rs"]
+        assert run.call("testament") is None
+        assert run.gates_seen("uv") == ["TAVILY_API_KEY"]
+
+    def test_its_dry_run_prints_the_command_and_runs_nothing(self, repo: Path) -> None:
+        """``-rs --here --dry-run``, in any order.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["-rs", "--dry-run", "--here"])
+        assert run.returncode == 0, run.stderr
+        assert run.calls == []
+        (line,) = run.stdout.splitlines()
+        assert shlex.split(line.removeprefix("here: ")) == [
+            "uv",
+            "run",
+            "pytest",
+            *_here_files(),
+            "-m",
+            "docker or secrets",
+            "-rs",
+        ]
+
+
+class TestTheDryRun:
+    """``--dry-run``, anywhere among the arguments, prints the command a run would run, quoted, and runs nothing."""
+
+    def test_the_pool_command_and_nothing_run(self, repo: Path) -> None:
+        """the pool's command, with the options.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["-rs", "--dry-run"])
+        assert run.returncode == 0, run.stderr
+        assert run.calls == []
+        assert run.stdout.splitlines() == [
+            f"on the pool: ./scripts/test.sh --suite integration {_SUITE_FILE} {_SUITE_DIR} -rs"
+        ]
+
+    def test_the_flag_counts_after_a_package(self, repo: Path) -> None:
+        """``core --dry-run`` is a dry run too.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core", "--dry-run"])
+        assert run.calls == []
+        assert run.stdout.splitlines() == [f"on the pool: ./scripts/test.sh --suite integration {_SUITE_FILE}"]
+
+    def test_it_prints_the_real_command_quoted_with_the_gates_it_clears(self, repo: Path) -> None:
+        """the pool line carries the ``env -u`` of a set gate, and an argument with a space comes back as one word.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["--dry-run", "scheduled-jobs", "-k", "a or b"], env={"TAVILY_API_KEY": "a-key"})
+        assert run.returncode == 0, run.stderr
+        (line,) = run.stdout.splitlines()
+        assert shlex.split(line.removeprefix("on the pool: ")) == [
+            "env",
+            "-u",
+            "TAVILY_API_KEY",
+            "./scripts/test.sh",
+            "--suite",
+            "integration",
+            _SUITE_DIR,
+            "-k",
+            "a or b",
+        ]
+
+
 class TestWhenThePoolRouteIsNotTaken:
-    """no testament, CI, or TESTAMENT=off with a reason: everything selected runs here, as before the pool."""
+    """no testament, CI, or TESTAMENT=off with a reason: the suite's paths run here, through testcontainers."""
 
     @pytest.mark.parametrize(
         ("env", "testament"),
@@ -586,8 +453,10 @@ class TestWhenThePoolRouteIsNotTaken:
             pytest.param({}, False, id="no-testament"),
         ],
     )
-    def test_the_suite_s_paths_run_here(self, repo: Path, env: dict[str, str], testament: bool) -> None:
-        """scheduled-jobs runs here through testcontainers.
+    def test_the_suite_s_paths_run_here_with_the_suite_s_marks(
+        self, repo: Path, env: dict[str, str], testament: bool
+    ) -> None:
+        """scheduled-jobs runs here with the pool suite's marker expression.
 
         :param repo: the miniature repo root
         :ptype repo: Path
@@ -601,58 +470,39 @@ class TestWhenThePoolRouteIsNotTaken:
         run = _run(repo, ["scheduled-jobs"], testament=testament, env=env)
         assert run.returncode == 0, run.stderr
         assert run.call("testament") is None
-        assert run.call("uv") == ["run", "pytest", _SUITE_DIR, "-m", "integration"]
+        assert run.call("uv") == ["run", "pytest", _SUITE_DIR, *_LOCAL_MARKS]
 
-    def test_a_suite_file_inside_a_local_directory_is_not_named_on_its_own(self, repo: Path) -> None:
-        """off the pool, core's directory runs whole and its conftest decides about the suite's file there; named
-        on its own, pytest would collect it whatever the conftest says.
+    def test_a_process_only_module_is_left_out_here_and_kept_on_the_pool(self, repo: Path) -> None:
+        """a suite module marked ``process_only`` checks child processes, which testcontainers can't stand in for.
 
         :param repo: the miniature repo root
         :ptype repo: Path
         :return: nothing
         :rtype: None
         """
-        run = _run(repo, ["core"], testament=False)
-        assert run.returncode == 0, run.stderr
-        assert run.call("uv") == ["run", "pytest", _CORE_DIR, "-m", "integration"]
-
-    @pytest.mark.parametrize(
-        ("env", "testament"),
-        [
-            pytest.param({"TESTAMENT": "off", "TESTAMENT_OFF_REASON": "the pool is down"}, True, id="off-with-reason"),
-            pytest.param({}, False, id="no-testament"),
-        ],
-    )
-    def test_a_process_only_module_is_left_out_here_and_kept_on_the_pool(
-        self, repo: Path, env: dict[str, str], testament: bool
-    ) -> None:
-        """a suite module marked ``process_only`` checks child processes, which testcontainers can't stand in for:
-        a run taken off the pool does not name it; the pool still runs it.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :param env: extra environment for the run
-        :ptype env: dict[str, str]
-        :param testament: whether a ``testament`` is on PATH
-        :ptype testament: bool
-        :return: nothing
-        :rtype: None
-        """
-        module = "packages/nats/tests/process/test_two_nodes_process_live.py"
-        (repo / module).parent.mkdir(parents=True)
-        (repo / module).write_text(
+        (repo / _SUITE_FILE).write_text(
             "import pytest\n\npytestmark = [pytest.mark.integration, pytest.mark.process_only]\n\n\n"
             "def test_y() -> None:\n    pass\n"
         )
-        manifest = repo / ".testament.toml"
-        manifest.write_text(manifest.read_text().replace(f'"{_SUITE_DIR}/"]', f'"{_SUITE_DIR}/", "{module}"]'))
-        off = _run(repo, ["-rs"], testament=testament, env=env)
-        assert off.returncode == 0, off.stderr
-        local = off.call("uv")
-        assert local is not None and _SUITE_DIR in local
-        assert module not in local
+        off = _run(repo, ["-rs"], testament=False)
+        assert off.call("uv") == ["run", "pytest", _SUITE_DIR, *_LOCAL_MARKS, "-rs"]
         on = _run(repo, ["-rs"])
-        assert on.call("testament") == [*_POOL, _SUITE_FILE, _SUITE_DIR, module, "-rs"]
+        assert on.call("testament") == [*_POOL, _SUITE_FILE, _SUITE_DIR, "-rs"]
+
+    def test_a_selection_that_is_all_process_only_runs_nothing_here(self, repo: Path) -> None:
+        """only the process-mode module selected, off the pool: nothing to run, exit 5.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        (repo / _SUITE_FILE).write_text(
+            "import pytest\n\npytestmark = [pytest.mark.integration, pytest.mark.process_only]\n"
+        )
+        run = _run(repo, ["core"], testament=False)
+        assert run.returncode == 5
+        assert run.calls == []
 
     def test_off_without_a_reason_is_refused(self, repo: Path) -> None:
         """TESTAMENT=off needs a stated reason, as test.sh's does.
@@ -667,15 +517,27 @@ class TestWhenThePoolRouteIsNotTaken:
         assert run.calls == []
         assert "TESTAMENT=off needs a reason" in run.stderr
 
+    def test_a_python_older_than_3_11_is_refused(self, repo: Path) -> None:
+        """the manifest is read with tomllib: an older ``python3`` stops the run, naming the floor.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["scheduled-jobs"], old_python=True)
+        assert run.returncode == 2
+        assert run.calls == []
+        assert "python3 3.11 or later" in run.stderr
+
 
 class TestEnvironmentGates:
-    """test.sh keeps a run local under an environment gate; the integration suite's pool part must not be kept."""
+    """test.sh keeps a run local under an environment gate; the integration suite's pool call must not be kept."""
 
     _GATES = {"RECORD": "1", "TAVILY_API_KEY": "a-key", "THREETEARS_LIVE_CLAUDE_CLI": "1"}
 
-    def test_the_pool_part_runs_without_the_gates_and_the_local_part_keeps_them(self, repo: Path) -> None:
-        """with every kind of gate set, the suite still goes to the pool, which sees none of them; the local
-        directories run here with all of them.
+    def test_the_pool_call_runs_without_the_gates(self, repo: Path) -> None:
+        """with every kind of gate set, the suite still goes to the pool, which sees none of them.
 
         :param repo: the miniature repo root
         :ptype repo: Path
@@ -686,7 +548,7 @@ class TestEnvironmentGates:
         assert run.returncode == 0, run.stderr
         assert run.call("testament") == [*_POOL, _SUITE_FILE, _SUITE_DIR, "-rs"]
         assert run.gates_seen("testament") == []
-        assert run.gates_seen("uv") == sorted(self._GATES)
+        assert run.call("uv") is None
 
     @pytest.mark.parametrize(
         ("name", "is_a_gate"),
@@ -722,22 +584,9 @@ class TestEnvironmentGates:
         cleared = name not in through.gates_seen("testament")
         assert kept_local == cleared == is_a_gate
 
-    def test_a_package_on_the_pool_is_never_sent_local_by_a_gate(self, repo: Path) -> None:
-        """scheduled-jobs moved to the pool; a gate does not bring it back to the laptop.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        run = _run(repo, ["scheduled-jobs"], env={"TAVILY_API_KEY": "a-key"})
-        assert run.returncode == 0, run.stderr
-        assert run.call("testament") == [*_POOL, _SUITE_DIR]
-        assert run.call("uv") is None
-
 
 class TestTestShRulesHold:
-    """the pool part goes through test.sh, so its rules hold."""
+    """the pool call goes through test.sh, so its rules hold."""
 
     def test_a_local_only_flag_on_a_pool_directory_is_refused(self, repo: Path) -> None:
         """``-x`` needs one local process, and a directory is wider than named files: test.sh refuses.
@@ -750,15 +599,3 @@ class TestTestShRulesHold:
         run = _run(repo, ["scheduled-jobs", "-x"])
         assert run.returncode == 2
         assert run.calls == []
-
-    def test_no_verdict_ends_with_the_runbook(self, repo: Path) -> None:
-        """the pool's exit 2 passes through with test.sh's closing line.
-
-        :param repo: the miniature repo root
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        run = _run(repo, ["scheduled-jobs"], testament_exit=2)
-        assert run.returncode == 2
-        assert 'docs/testing.md, "When the pool is down"' in run.stderr

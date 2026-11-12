@@ -1,17 +1,18 @@
-"""Enforcement: every integration test is in the pool's integration suite or in the laptop's list, and runs.
+"""Enforcement: every integration test runs on the pool, or in ``--here``, and the two lists say exactly which.
 
-``scripts/test-integration.sh`` runs the integration tests on two routes while they move to the testament pool
-one package at a time: the paths in ``.testament.toml``'s ``[suites.integration] default_selection`` on the pool,
-and the script's ``LOCAL_DIRS`` here, through testcontainers. A test in neither runs nowhere, and nothing says so:
-the pool and the laptop both go green without it. So:
+``scripts/test-integration.sh`` runs the integration suite on the testament pool: the paths in ``.testament.toml``'s
+``[suites.integration] default_selection``, whose command deselects ``docker`` and ``secrets``. Its ``--here`` runs the
+rest on the laptop: ``HERE_FILES``, with ``-m "docker or secrets"``. A test in neither runs nowhere, and nothing says
+so: the pool and the laptop both go green without it. So:
 
-- every ``test_*.py`` that marks a test ``integration`` lies under a suite path or a ``LOCAL_DIRS`` path;
-- one that also marks a test ``docker`` or ``secrets`` lies under a ``LOCAL_DIRS`` path and under no suite path:
-  the suite's command deselects both, and the local run leaves out every suite path, so such a file under a suite
-  path would run nowhere;
-- every listed path exists and holds an integration test, so a moved or deleted directory leaves no dead entry;
-- no ``LOCAL_DIRS`` path is, or lies inside, a suite path (the script leaves a suite path out of a local run that
-  holds it, not the other way round).
+- every ``test_*.py`` that marks a test ``integration`` lies under a suite path or is one of ``HERE_FILES``;
+- ``HERE_FILES`` is exactly the test files that mark a test ``docker`` or ``secrets`` (integration or not: the live
+  Claude CLI and Tavily tests are ``secrets`` too), and none of them lies under a suite path, where it would be
+  deselected;
+- every listed path exists, and every suite path holds an integration test, so a moved or deleted directory leaves
+  no dead entry;
+- ``process_only`` marks only integration tests (it is deselected outside the pool's process mode, which only the
+  integration suite runs in).
 
 A test counts as marked when ``pytest.mark.<name>`` appears in a decorator or a ``pytestmark`` assignment, at module
 or class level, as ``scripts/integration_marks.py`` reads it; the script reads marks through the same module.
@@ -38,12 +39,12 @@ def _suite_paths() -> list[str]:
     return [path.rstrip("/") for path in selection if not path.startswith("-")]
 
 
-def _local_dirs() -> list[str]:
-    """``scripts/test-integration.sh``'s ``LOCAL_DIRS``, one path per line between ``LOCAL_DIRS=(`` and ``)``."""
+def _here_files() -> list[str]:
+    """``scripts/test-integration.sh``'s ``HERE_FILES``, one path per line between ``HERE_FILES=(`` and ``)``."""
     text = _SCRIPT.read_text(encoding="utf-8")
-    assert "\nLOCAL_DIRS=(\n" in text, "scripts/test-integration.sh no longer declares LOCAL_DIRS=( one path per line )"
-    block = text.split("\nLOCAL_DIRS=(\n", 1)[1].split("\n)\n", 1)[0]
-    return [line.strip().rstrip("/") for line in block.splitlines() if line.strip()]
+    assert "\nHERE_FILES=(\n" in text, "scripts/test-integration.sh no longer declares HERE_FILES=( one path per line )"
+    block = text.split("\nHERE_FILES=(\n", 1)[1].split("\n)\n", 1)[0]
+    return [line.strip() for line in block.splitlines() if line.strip()]
 
 
 def _test_files() -> list[Path]:
@@ -87,61 +88,81 @@ def test_the_walk_finds_the_integration_tests_it_must() -> None:
 
 
 def test_every_integration_test_runs_on_the_pool_or_here() -> None:
-    suite, local = _suite_paths(), _local_dirs()
+    suite, here = _suite_paths(), set(_here_files())
     nowhere = sorted(
-        path
-        for path in _integration_files()
-        if not any(_under(path, prefix) for prefix in suite) and not any(_under(path, prefix) for prefix in local)
+        path for path in _integration_files() if path not in here and not any(_under(path, prefix) for prefix in suite)
     )
     assert not nowhere, (
         "integration test files in neither .testament.toml's [suites.integration] default_selection nor "
-        f"scripts/test-integration.sh's LOCAL_DIRS, so nothing runs them: {nowhere}. Add the directory to the suite "
-        "when it runs on the pool (0 skips), else to LOCAL_DIRS."
+        f"scripts/test-integration.sh's HERE_FILES, so nothing runs them: {nowhere}. Add the path to the suite; a file "
+        "marked `docker` or `secrets` goes in HERE_FILES."
     )
 
 
-def test_docker_and_secrets_tests_run_here() -> None:
-    local = _local_dirs()
-    off_the_laptop = sorted(
-        path
-        for path, marks in _integration_files().items()
-        if marks & {"docker", "secrets"} and not any(_under(path, prefix) for prefix in local)
+def test_here_is_exactly_the_docker_and_secrets_files() -> None:
+    marked = sorted(
+        str(path.relative_to(_REPO_ROOT))
+        for path in _test_files()
+        if _MARK_READER.marks(parse_python_path(path)) & {"docker", "secrets"}
     )
-    assert not off_the_laptop, (
-        "integration test files marking a test `docker` or `secrets` outside scripts/test-integration.sh's "
-        f"LOCAL_DIRS: {off_the_laptop}. The pool's integration suite deselects both, so only the local run can "
-        "run them; list the file in LOCAL_DIRS."
+    assert sorted(_here_files()) == marked, (
+        "scripts/test-integration.sh's HERE_FILES must list exactly the test files marking a test `docker` or "
+        f"`secrets`, which only `--here` runs.\n  marked: {marked}\n  listed: {sorted(_here_files())}"
     )
 
 
 def test_no_docker_or_secrets_test_lies_under_a_suite_path() -> None:
     suite = _suite_paths()
-    deselected = sorted(
-        path
-        for path, marks in _integration_files().items()
-        if marks & {"docker", "secrets"} and any(_under(path, prefix) for prefix in suite)
-    )
+    deselected = sorted(path for path in _here_files() if any(_under(path, prefix) for prefix in suite))
     assert not deselected, (
-        f"integration test files marking a test `docker` or `secrets` under a path the pool's integration suite runs: "
-        f"{deselected}. The suite deselects them and scripts/test-integration.sh leaves suite paths out of its local "
-        "run, so they would run nowhere; name the suite's other files individually instead of their directory."
+        f"test files marking a test `docker` or `secrets` under a path the pool's integration suite runs: {deselected}. "
+        "The suite deselects them; name the suite's other files individually instead of their directory."
     )
 
 
-def test_every_listed_path_exists_and_holds_an_integration_test() -> None:
+def test_every_listed_path_exists_and_every_suite_path_holds_an_integration_test() -> None:
     files = _integration_files()
     dead = [
         path
-        for path in [*_suite_paths(), *_local_dirs()]
+        for path in _suite_paths()
         if not (_REPO_ROOT / path).exists() or not any(_under(file, path) for file in files)
     ]
-    assert not dead, f"suite or LOCAL_DIRS paths that are missing or hold no integration test: {dead}"
+    dead += [path for path in _here_files() if not (_REPO_ROOT / path).is_file()]
+    assert not dead, f"suite paths or HERE_FILES that are missing or hold no integration test: {dead}"
 
 
-def test_no_local_path_is_a_suite_path_or_inside_one() -> None:
+def test_process_only_marks_only_integration_tests() -> None:
+    """``process_only`` is deselected outside process mode and only the integration suite runs in it, so a
+    ``process_only`` module that is not also ``integration`` would run nowhere."""
+    nowhere = sorted(
+        str(path.relative_to(_REPO_ROOT))
+        for path in _test_files()
+        if {"process_only"} <= (marks := _MARK_READER.marks(parse_python_path(path))) and "integration" not in marks
+    )
+    assert not nowhere, f"modules marking `process_only` without `integration`, which run nowhere: {nowhere}"
+    assert any("process_only" in _MARK_READER.marks(parse_python_path(path)) for path in _test_files()), (
+        "the walk found no `process_only` module at all; the check above proves nothing"
+    )
+
+
+def test_no_plain_integration_test_sits_in_a_here_file_off_the_suite() -> None:
+    """``--here`` selects ``docker or secrets``, and the pool never sees a ``HERE_FILES`` module: an integration test
+    in one that carries neither mark runs nowhere."""
     suite = _suite_paths()
-    overlapping = [path for path in _local_dirs() if any(_under(path, prefix) for prefix in suite)]
-    assert not overlapping, (
-        f"LOCAL_DIRS paths that are, or lie inside, a path the pool's integration suite runs: {overlapping}. "
-        "A package that moved to the suite leaves LOCAL_DIRS."
+    stranded = sorted(
+        f"{path}::{test}"
+        for path in _here_files()
+        if not any(_under(path, prefix) for prefix in suite)
+        for test, marks in _MARK_READER.marks_by_test(parse_python_path(_REPO_ROOT / path)).items()
+        if "integration" in marks and not marks & {"docker", "secrets"}
+    )
+    assert not stranded, (
+        f"integration tests marked neither `docker` nor `secrets` in a HERE_FILES module, which run nowhere: {stranded}. "
+        "Mark them, or move them to a module the suite runs."
+    )
+    tests = _MARK_READER.marks_by_test(
+        parse_python_path(_REPO_ROOT / "packages/datasources/tests/integration/test_transaction_redshift_live.py")
+    )
+    assert tests and all({"integration", "secrets"} <= marks for marks in tests.values()), (
+        "the control: a known secrets module's tests read as integration and secrets"
     )

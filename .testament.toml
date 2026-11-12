@@ -9,10 +9,9 @@
 # off the pool: beside other batches a bound on the code becomes a bound on the runner's load. CI
 # runs them serially on GitHub's runner (scripts/ci-unit-tests.sh --loop-timing). The `docker` tests
 # drive a Docker daemon, which the image has none of, and the `secrets` tests read a credential, which
-# never ships to a runner: both stay off the pool and run on the laptop (test-integration.sh for
-# the docker tests and the Redshift ones; test-live-claude-cli.sh for the Claude CLI; for Tavily,
-# `TAVILY_API_KEY=... ./scripts/test.sh search packages/search/tests/test_embedded_smoke.py`, which the
-# key keeps local). `secrets_marker` would run them locally inside the same run, but can't be
+# never ships to a runner: both stay off the pool and run on the laptop (`test-integration.sh --here`
+# runs them all; test-live-claude-cli.sh records the Claude CLI batch; `TAVILY_API_KEY=... ./scripts/test.sh
+# search packages/search/tests/test_embedded_smoke.py` runs Tavily alone, the key keeping it local). `secrets_marker` would run them locally inside the same run, but can't be
 # set beside `fallback = "pool-only"`, so the commands deselect them instead.
 #
 # `fallback = "pool-only"`: when the pool can't take a run, it fails (exit 2, naming this key)
@@ -97,11 +96,12 @@ platform = [
 
 # The integration suite: the tests marked `integration` that need only Postgres, NATS or S3, with those
 # services started inside the pool's container as child processes (threetears.core.testing.services),
-# since the container has no Docker daemon. scripts/test-integration.sh runs it, for the paths (directories
-# or files) listed in `default_selection`. Its LOCAL_DIRS hold the rest, run on the laptop through
-# testcontainers: the files that drive Docker themselves or read a credential (the `docker` and `secrets`
-# markers, deselected here as in the unit suite, which never move) and any not on the pool yet.
-# tests/enforcement/test_integration_suite_selection.py holds the two lists to every integration test in the tree.
+# since the container has no Docker daemon. scripts/test-integration.sh runs it: the paths (directories or
+# files) listed in `default_selection`, nothing on the laptop. Its `--here` runs the rest there: the files
+# that drive Docker themselves or read a credential (the `docker` and `secrets` markers, deselected here
+# as in the unit suite). tests/enforcement/test_integration_suite_selection.py holds the two lists to every
+# integration test in the tree. The `process_only` modules check these child-process services themselves;
+# off the pool they are deselected (tests/require_services.py).
 #
 # A suite's `env` replaces the project's whole, so the uv cache is repeated; Chromium's two are left
 # out, since no integration test drives a browser (the image's ENV still names Chromium's path).

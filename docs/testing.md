@@ -102,8 +102,9 @@ the reason it refuses and exits 2.
 
 ### When the pool is down
 
-The rule while the pool can't take runs: **CI's GitHub shards gate the unit suite, and a PR's
-author runs everything else locally.** Nobody runs the whole unit suite on a laptop.
+The rule while the pool can't take runs: **CI's GitHub shards gate the unit suite, CI's
+`integration` job gates the part of the integration suite it covers, and a PR's author runs
+everything else locally.** Nobody runs the whole unit suite on a laptop.
 
 **How it shows.** `./scripts/test.sh` exits 2 and ends with "testament gave no verdict". Testament
 names the cause:
@@ -121,11 +122,16 @@ On a machine with room for it (not the laptop), a package works the same way.
 
 **Before a PR.** Run `./scripts/check-all.sh`. With the pool down it still runs lint, typecheck,
 the mcp 1.x, OpenTelemetry-floor and sidecar suites, then fails at the end with "Unit suite NOT
-run". That line is expected only when the testament error above it is one of the pool or machine
-causes listed here; any other exit 2 (a `TESTAMENT=off` with no reason, `path_not_found`, a crash
-in the code under test) is yours to fix. Every other check above it must be green. For the
-integration tests, run `TESTAMENT=off TESTAMENT_OFF_REASON="pool down" ./scripts/test-integration.sh -rs`:
-the paths that normally run on the pool then run here through testcontainers, beside the rest. Push: CI's `route` job finds the pool down and runs
+run" and "Integration suite NOT run". Those lines are expected only when the testament error above
+them is one of the pool or machine causes listed here; any other exit 2 (a `TESTAMENT=off` with no
+reason, `path_not_found`, a crash in the code under test) is yours to fix. Every other check above
+them must be green.
+
+For the integration suite, run the packages your change touches through testcontainers, one at a
+time: `TESTAMENT=off TESTAMENT_OFF_REASON="pool down" ./scripts/test-integration.sh <package> -rs`
+(it needs Docker; the `process_only` modules, which check the pool's own services, are left out). A
+whole run that way is about an hour of containers on a laptop: do it on a machine with room, if at
+all. What needs a laptop either way, pool or not, is `--here` (below). Push: CI's `route` job finds the pool down and runs
 the unit suite on the GitHub shards, and their verdict is the unit gate. To run the whole unit
 suite yourself anyway, use a machine with more memory than a 16 GB CI runner, run it the way CI
 does (`TESTAMENT_OFF_REASON="pool down" ./scripts/ci-unit-tests.sh`, in sessions), and expect
@@ -300,27 +306,37 @@ the root's per-test reset of process-wide state.
 
 ## The integration suite
 
-`./scripts/test-integration.sh` runs the integration tests. `test.sh` excludes them with
-`-m "not integration"`, and `check-all.sh` does not run them either. They run on two routes while
-they move to the testament pool one package at a time. The paths in `.testament.toml`'s
-`[suites.integration]` run on the pool, against Postgres, NATS and S3 started as processes in its
-container. The script's `LOCAL_DIRS` run here against testcontainers, and need Docker. **CI runs only part of them:** its `integration` job covers core,
-nats, epoch, scheduled-jobs and agent/acl against Postgres and NATS services, so the rest of the
-packages are executed by nothing but a developer, locally.
+`./scripts/test-integration.sh` runs the integration tests, and `check-all.sh` runs it. `test.sh`
+excludes them with `-m "not integration"`. They run on the testament pool: the paths in
+`.testament.toml`'s `[suites.integration]`, against Postgres, NATS and S3 started as child processes
+in the pool's container (`threetears.core.testing.services`, under `THREETEARS_TEST_SERVICES=process`;
+`THREETEARS_REQUIRE_SERVICES=1` makes a missing service fail rather than skip). Nothing runs on the
+laptop; `--dry-run` prints the command.
+
+`./scripts/test-integration.sh --here` runs the rest on this machine: the tests marked `docker` (the
+scrape sidecar pipe, SearXNG scoring, the nats lame-duck handover in Docker) and `secrets` (Redshift,
+the live Claude CLI batch, Tavily). Run it when a change touches scrape, search, the nats lame-duck
+handover or a credentialed package; without the credential a `secrets` test skips, naming it.
+`tests/enforcement/test_integration_suite_selection.py` holds the two lists to every integration test.
+
+**CI runs only part of the suite:** its `integration` job covers core, nats, epoch, scheduled-jobs
+and agent/acl against Postgres and NATS service containers.
 
 The evals render tests are not here. They need headless Chromium, not Docker, so they carry the
 `browser` marker and run in the unit suite: on the testament pool and on the GitHub evals shards of
 `ci.yml` and `release.yml` (above).
 A local run without Chromium skips them; `-m "not browser"` leaves them out.
 
-**Run them before any PR.** Cross-pod behaviour lives entirely there, and a green
-`check-all.sh` says nothing about it. `project-state.yaml` lists this as the third declared test
-command, so recorded evidence that omits it covers two suites out of three.
+**Run them before any PR** (`check-all.sh` does). Cross-pod behaviour lives entirely there.
+`project-state.yaml` lists this as the third declared test command, so recorded evidence that omits
+it covers two suites out of three.
 
 ### A skip is not a pass
 
-The suite exits 0 with tests skipped, so a skipped test reads exactly like a passing one in the
-summary line. Run it as `./scripts/test-integration.sh -rs` and account for every skip.
+A run that exits 0 with tests skipped reads exactly like one that ran them all. On the pool the
+suite fails a skip at runtime (`THREETEARS_REQUIRE_SERVICES=1`, `tests/require_services.py`); its one
+accepted skip is the datasources microbenchmark, an unconditional `@pytest.mark.skip`. For
+`--here`, and any run taken off the pool, run with `-rs` and account for every skip.
 
 This is not hypothetical: `test_a_real_display_is_driven_through_the_pipe` was unpassable on
 every machine for three weeks after the 2026-08-18 change that defaulted the sidecar's
@@ -331,7 +347,7 @@ noticed. It surfaced only when a release stopped to ask why 35 tests were skippi
 
 ### Build the sidecar image first
 
-Or its integration tests skip:
+Before `--here`, or the sidecar pipe test skips:
 
 ```bash
 docker buildx bake --file docker-bake.hcl nodriver-sidecar \
@@ -350,11 +366,12 @@ integration tests fail rather than skip. A native build passes.
 
 ### Legitimate skips on a dev box
 
-They need credentials or tools this repo does not ship: the Redshift live tests
-(`OTS_REDSHIFT_PASSWORD`), the live Claude CLI batch (below), and one deliberate manual
-microbenchmark. A local run of the backup suites (`TESTAMENT=off`, off the pool) also skips them
-without `pg_dump`/`pg_restore`/`psql` on PATH; any major from 16 up works there, since the test
-server follows the client's major. On the pool the image carries 16, and a missing tool fails. Anything else is a test turned off by accident. When reporting
+In `--here`, the `secrets` tests without their credential: the Redshift live tests
+(`OTS_REDSHIFT_PASSWORD`), the live Claude CLI batch (below) and Tavily (`TAVILY_API_KEY`); the
+sidecar pipe without its image; and on the pool, the one deliberate manual microbenchmark. A run of
+the suite taken off the pool (`TESTAMENT=off`) also skips the backup suites without
+`pg_dump`/`pg_restore`/`psql` on PATH; any major from 16 up works there, since the test server
+follows the client's major. On the pool the image carries 16, and a missing tool fails. Anything else is a test turned off by accident. When reporting
 results, state the pass count AND the remaining skips with their reasons -- "integration green"
 on its own is not a report.
 
