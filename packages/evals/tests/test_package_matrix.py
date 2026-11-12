@@ -11,7 +11,7 @@ kernel        yes     yes     --     --        --   --       --       --     pyd
 run           yes     yes     yes    --        --   --       --       --     pydantic
 analysis      yes     yes     --     yes       --   --       --       --     pydantic
 gen           yes     yes     --     --        yes  --       --       --     pydantic
-storage       yes     --      --     --        --   yes      --       --     (none)
+storage       yes     --      --     --        --   yes      --       --     threetears.interfaces
 testing       yes     yes     --     --        --   --       yes      --     (none)
 quick         yes     yes     yes    yes       --   yes      --       yes    pydantic
 harness       yes     yes     yes    yes       --   yes      yes      yes    pydantic
@@ -165,7 +165,8 @@ ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     "run": frozenset({"pydantic"}),
     "analysis": frozenset({"pydantic"}),
     "gen": frozenset({"pydantic"}),
-    "storage": frozenset(),
+    # The SQLite store's statements are the family's shared keyed builders: the dependency-free interfaces package.
+    "storage": frozenset({"threetears.interfaces"}),
     "testing": frozenset(),
     "quick": frozenset({"pydantic"}),
     "harness": frozenset({"pydantic"}),

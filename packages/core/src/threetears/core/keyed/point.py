@@ -23,6 +23,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Literal, overload
 
 from threetears.core.keyed._filters import Fragment, Lock, Selected, sent_by
+from threetears.interfaces.keyed.page import Sort
 from threetears.interfaces.keyed.point import read_by_statement, read_row_statement
 
 __all__ = [
@@ -42,6 +43,7 @@ async def read_by(
     records: Literal[False] = ...,
     lock: Lock | None = ...,
     where: Sequence[Fragment] = ...,
+    order: Sequence[Sort] = ...,
 ) -> list[dict[str, Any]]: ...
 
 
@@ -55,6 +57,7 @@ async def read_by(
     records: Literal[True],
     lock: Lock | None = ...,
     where: Sequence[Fragment] = ...,
+    order: Sequence[Sort] = ...,
 ) -> list[Any]: ...
 
 
@@ -67,6 +70,7 @@ async def read_by(
     records: bool = False,
     lock: Lock | None = None,
     where: Sequence[Fragment] = (),
+    order: Sequence[Sort] = (),
 ) -> list[dict[str, Any]] | list[Any]:
     """every row of ``table`` the pinned columns name: what ``fetch`` of the hand-written statement answered.
 
@@ -88,11 +92,14 @@ async def read_by(
     :ptype lock: Lock | None
     :param where: guards beside the pins, each a fragment written as ``t."col"`` from ``$1``; none when empty
     :ptype where: Sequence[Fragment]
-    :return: the rows, in no promised order
+    :param order: the sort the rows come in, the columns after the pins in the key or index serving the read; none
+        when empty
+    :ptype order: Sequence[Sort]
+    :return: the rows, in ``order``, else in no promised order
     :rtype: list[dict[str, Any]] | list[Any]
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
-    sql, params = read_by_statement(table, by=by, columns=columns, lock=lock, where=where)
+    sql, params = read_by_statement(table, by=by, columns=columns, lock=lock, where=where, order=order)
     rows = list(await sent_by(conn).fetch(sql, *params))
     return rows if records else [dict(row) for row in rows]
 

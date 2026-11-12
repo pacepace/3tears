@@ -23,10 +23,13 @@ classifiers = [
 ]
 dependencies = [
     # The completion client (`threetears.evals.providers`) speaks each provider's HTTP API directly: no SDK, no
-    # LangChain, no other 3tears package. The floor is the first release whose `AsyncClient` and `MockTransport`
-    # behave as the client and its tests use them.
+    # LangChain. The floor is the first release whose `AsyncClient` and `MockTransport` behave as the client and its
+    # tests use them.
     "httpx>=0.27",
     "pydantic>=2.0",
+    # The SQLite store's statements are the family's shared keyed builders (`threetears.interfaces.keyed`): the one
+    # 3tears package evals depends on, and it depends on nothing (owner ruling 2026-11-11).
+    "3tears-interfaces>=0.95.0,<0.96.0",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +46,9 @@ fastmcp = ["fastmcp>=3.4.2,<5", "fastmcp-slim>=3.4.2,<5"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
+
+[tool.uv.sources]
+3tears-interfaces = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/threetears"]

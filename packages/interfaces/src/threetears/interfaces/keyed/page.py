@@ -52,6 +52,7 @@ __all__ = [
     "keyset_page_statement",
     "keyset_rows_statement",
     "next_past",
+    "order_by_terms",
     "page_statement",
     "seeks_by_row",
 ]
@@ -307,11 +308,19 @@ def _chained(statements: Sequence[str], order: Sequence[Sort], rows: int) -> str
         found = " - ".join(f"(SELECT count(*) FROM {name})" for name in names[:index])
         ctes.append(f"{names[index]} AS ({head} LIMIT {rows}{' - ' + found if found else ''})")
     union = " UNION ALL ".join(f"SELECT * FROM {name}" for name in names)
-    outer = _order_by([replace(sort, expression=f"u.{quote_identifier(sort.column)}") for sort in order])
+    outer = order_by_terms([replace(sort, expression=f"u.{quote_identifier(sort.column)}") for sort in order])
     return f"WITH {', '.join(ctes)} SELECT * FROM ({union}) AS u ORDER BY {outer} LIMIT {rows}"
 
 
-def _order_by(order: Sequence[Sort]) -> str:
+def order_by_terms(order: Sequence[Sort]) -> str:
+    """``order``'s terms as an ``ORDER BY`` lists them: each sort's column or expression, its direction, and where its
+    NULLs fall when it can hold them.
+
+    :param order: the sort
+    :ptype order: Sequence[Sort]
+    :return: the terms, comma separated
+    :rtype: str
+    """
     parts = []
     for sort in order:
         direction = "DESC" if sort.descending else "ASC"
@@ -470,7 +479,7 @@ def page_statement(
         clause = f" WHERE {' AND '.join(every)}" if every else ""
         # the pinned columns, constant on every row, lead the ORDER BY too: the same order, read as one range of
         # the index they lead
-        ordered = ", ".join([f"{column} ASC" for column in lead] + ([_order_by(leg_order)] if leg_order else []))
+        ordered = ", ".join([f"{column} ASC" for column in lead] + ([order_by_terms(leg_order)] if leg_order else []))
         by_clause = f" ORDER BY {ordered}" if ordered else ""
         statements.append(f"SELECT {selected} FROM {relation(table, 't')}{clause}{by_clause} LIMIT {rows}")
     if len(statements) == 1:
@@ -480,7 +489,7 @@ def page_statement(
     else:
         # a reader whose engine may not take a LIMIT read from a subquery (a warehouse): each leg asks a whole page
         union = " UNION ALL ".join(f"({statement})" for statement in statements)
-        outer = _order_by([replace(sort, expression=f"u.{quote_identifier(sort.column)}") for sort in order])
+        outer = order_by_terms([replace(sort, expression=f"u.{quote_identifier(sort.column)}") for sort in order])
         sql = f"SELECT * FROM ({union}) AS u ORDER BY {outer} LIMIT {rows}"
     if lock is not None:
         sql += lock.of("t")

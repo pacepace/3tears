@@ -14,7 +14,7 @@ from typing import Any
 import duckdb
 import pytest
 
-from threetears.core.keyed import AnyOf, Lock, ThreadedDuckDB, read_by, read_row, read_value
+from threetears.core.keyed import AnyOf, Lock, Sort, ThreadedDuckDB, read_by, read_row, read_value
 
 
 @pytest.fixture
@@ -51,6 +51,17 @@ async def test_read_by_answers_every_row_the_pins_name(db: duckdb.DuckDBPyConnec
     assert sorted((row["a"], row["b"]) for row in rows) == _plain(
         db, "SELECT a, b FROM t WHERE a = $1 AND flag = TRUE ORDER BY b", "k1"
     )
+
+
+async def test_read_by_answers_its_rows_in_the_order_it_names(db: duckdb.DuckDBPyConnection) -> None:
+    """Flips if ``order=`` stops being the statement's ORDER BY (the rows the pins name, in the key's next column,
+    either way), or an unordered read starts sending one."""
+    reader = _Recording(db)
+    for descending in (False, True):
+        rows = await read_by(reader, "t", by={"a": "k2"}, columns=("b",), order=[Sort("b", descending=descending)])
+        assert [row["b"] for row in rows] == sorted(range(8, 12), reverse=descending)
+    await read_by(reader, "t", by={"a": "k2"}, columns=("b",))
+    assert ["ORDER BY" in sql for sql, _ in reader.statements] == [True, True, False]
 
 
 async def test_read_by_reads_every_column_when_none_is_named(db: duckdb.DuckDBPyConnection) -> None:

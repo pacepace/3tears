@@ -28,6 +28,7 @@ from threetears.interfaces.keyed.filters import (
     relation,
     selected_column,
 )
+from threetears.interfaces.keyed.page import Sort, order_by_terms
 
 __all__ = ["read_by_statement", "read_row_statement"]
 
@@ -39,6 +40,7 @@ def _sql(
     limit: bool,
     lock: Lock | None = None,
     where: Sequence[Fragment] = (),
+    order: Sequence[Sort] = (),
 ) -> tuple[str, list[Any]]:
     """the statement and its parameters.
 
@@ -55,6 +57,9 @@ def _sql(
     :param where: guards beside the pins, each a fragment written as ``t."col"`` from ``$1``, ANDed in its own
         parentheses after them; none when empty
     :ptype where: Sequence[Fragment]
+    :param order: the sort the rows come in, the columns after the pins in the key or index that serves them; no
+        order when empty
+    :ptype order: Sequence[Sort]
     :return: the statement, and its parameters
     :rtype: tuple[str, list[Any]]
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
@@ -68,7 +73,11 @@ def _sql(
     for fragment in where:
         conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
-    tail = (" LIMIT 1" if limit else "") + ("" if lock is None else lock.of("t"))
+    tail = (
+        (f" ORDER BY {order_by_terms(order)}" if order else "")
+        + (" LIMIT 1" if limit else "")
+        + ("" if lock is None else lock.of("t"))
+    )
     return f"SELECT {selected} FROM {relation(table, 't')} WHERE {' AND '.join(conditions)}{tail}", params
 
 
@@ -79,6 +88,7 @@ def read_by_statement(
     columns: Sequence[str | Selected] | None = None,
     lock: Lock | None = None,
     where: Sequence[Fragment] = (),
+    order: Sequence[Sort] = (),
 ) -> tuple[str, list[Any]]:
     """the statement reading every row of ``table`` the pinned columns name, and its binds: what
     ``threetears.core.keyed.read_by`` sends.
@@ -96,11 +106,14 @@ def read_by_statement(
     :param where: guards beside the pins (an expiry the row must not be past), each a fragment written as
         ``t."col"`` from ``$1``; none when empty
     :ptype where: Sequence[Fragment]
+    :param order: the sort the rows come in (insertion order by a rowid an index carries after the pins, say): the
+        columns after the pins in the key or index that serves the read; in no promised order when empty
+    :ptype order: Sequence[Sort]
     :return: the statement, and its binds
     :rtype: tuple[str, list[Any]]
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
-    return _sql(table, by, columns, limit=False, lock=lock, where=where)
+    return _sql(table, by, columns, limit=False, lock=lock, where=where, order=order)
 
 
 def read_row_statement(

@@ -86,12 +86,14 @@ _DEPENDENCY_FLOORS = (
     ),
     DependencyFloor(
         package="packages/evals",
-        allowed=("httpx", "pydantic"),
+        allowed=("httpx", "pydantic", "3tears-interfaces"),
         rationale=(
-            "owner ruling 2026-10-11: 3tears-evals depends on no other 3tears package. A base install "
-            "with no family dependency installs beside a family pinned at any other version, which is "
-            "what let the production host run pre-release tags against a frozen family and what lets a "
-            "product outside the family adopt it. The fastmcp transport is the one extra"
+            "owner ruling 2026-10-11: 3tears-evals depends on no 3tears package that brings a closure. A "
+            "product outside the family adopts it at the cost of httpx and pydantic alone. Owner ruling "
+            "2026-11-11: its one family dependency is 3tears-interfaces, which depends on nothing, for the "
+            "SQLite store's keyed statements (the shared builders, never SQL written by hand). Bounded to the "
+            "family's minor like every intra-family dependency, so evals installs beside a family of its own "
+            "minor. The fastmcp transport is the one extra"
         ),
     ),
 )

@@ -62,6 +62,9 @@ FIRST_HOST = "discodon"
 IMPORT_ROOTS_BY_DEPENDENCY: dict[str, tuple[str, ...]] = {
     "httpx": ("httpx",),
     "pydantic": ("pydantic",),
+    # the family's dependency-free vocabulary and pure builders, the one 3tears package the engine may name: the
+    # SQLite store's statements are its keyed builders'. It depends on nothing, so a host gains no closure by it
+    "3tears-interfaces": ("threetears.interfaces",),
 }
 
 #: Each optional extra the manifest declares: the subpackage that is the extra (and so the only
@@ -451,7 +454,8 @@ def test_every_module_the_engine_names_is_declared():
         # The client's HTTP is a base dependency; a provider SDK is not one.
         ("import httpx\n", True),
         ("import anthropic\n", False),
-        # No 3tears package is a dependency, observe included.
+        # The interfaces package is the one 3tears dependency; no other is, observe included.
+        ("from threetears.interfaces.keyed import read_row_statement\n", True),
         ("from threetears.observe import get_logger\n", False),
         ("import discodon.config\n", False),
         ("from threetears.core import thing\n", False),
