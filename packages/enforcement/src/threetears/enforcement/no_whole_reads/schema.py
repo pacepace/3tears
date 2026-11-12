@@ -1226,6 +1226,12 @@ def _index_from_call(call: ast.Call, values: _Values, table: str, origin: str, *
             spelled = (dotted(argument) or "?").rsplit(".", 1)[-1] if not isinstance(argument, ast.Starred) else "?"
             found.extend(known if known is not None else [spelled])
         columns = tuple(found)
+    # a column the index holds in an explicit collation (``collate={"signal": "C"}``) serves only comparisons in it,
+    # as ``(signal COLLATE "C")`` does in a CREATE INDEX
+    collations = _collations(_keyword(call, "collate"), values)
+    columns = tuple(
+        collated(column, collations[column.lower()]) if column.lower() in collations else column for column in columns
+    )
     return _DeclaredIndex(
         table,
         written.lower() if written is not None else ast.unparse(name_node),
@@ -1252,6 +1258,35 @@ def _index_from_call(call: ast.Call, values: _Values, table: str, origin: str, *
             for column in (values.texts(_keyword(call, order)) or [values.text(_keyword(call, order)) or ""])
         },
     )
+
+
+def _collations(node: ast.expr | None, values: _Values) -> dict[str, str]:
+    """an index's per-column collations as written (``{"signal": "C"}`` or ``(("signal", "C"),)``), by lower-cased
+    column; a pair the walk cannot read is left out (its column then counts in its own collation).
+
+    :param node: the ``collate`` argument, or None
+    :ptype node: ast.expr | None
+    :param values: the module's known values
+    :ptype values: _Values
+    :return: column -> collation
+    :rtype: dict[str, str]
+    """
+    pairs: list[tuple[ast.expr | None, ast.expr]] = []
+    if isinstance(node, ast.Dict):
+        pairs = list(zip(node.keys, node.values, strict=True))
+    elif isinstance(node, ast.Tuple | ast.List):
+        pairs = [
+            (element.elts[0], element.elts[1])
+            for element in node.elts
+            if isinstance(element, ast.Tuple | ast.List) and len(element.elts) == 2
+        ]
+    found: dict[str, str] = {}
+    for key, value in pairs:
+        column = values.text(key) if key is not None else None
+        collation = values.text(value)
+        if column is not None and collation is not None:
+            found[column.lower()] = collation
+    return found
 
 
 def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, local: bool) -> None:

@@ -686,9 +686,11 @@ def _keyed_write(call: ast.Call) -> list[str]:
     if not started:
         raise _Unseen("prefix")
     pinned, place = _conditions(_by(_argument(call, "by", None)))
-    # the prefix's rows are a range read in the column's order: keyed exactly when an index ranges that column for
-    # the reader (a C-ordered, ASC one), as a page of the range is
-    column = _quoted(started[0][0])
+    # the prefix's rows are a range read in code-point order, as prefix_conditions sends it (``COLLATE "C"``): keyed
+    # exactly when an index ranges that column in that collation for the reader (a C-ordered, ASC one), as a page of
+    # the range is. A key in the column's own collation (a primary key's lead) does not order it so, and YugabyteDB
+    # hashes a key's first column: such a prefix reads every row
+    column = f'{_quoted(started[0][0])} COLLATE "C"'
     return [f"SELECT 1 FROM {table}{_where([*pinned, f'{column} > ${place}'])} ORDER BY {column} LIMIT {_LIMIT}"]
 
 

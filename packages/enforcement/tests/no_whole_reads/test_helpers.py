@@ -34,6 +34,7 @@ CREATE TABLE fence (signal TEXT PRIMARY KEY, run_id BIGINT);
 -- plan_test: tests/test_app.py::test_fence_plan
 CREATE INDEX fence_by_signal_c ON fence (signal COLLATE "C" ASC);
 CREATE TABLE unindexed (name TEXT, run_id BIGINT PRIMARY KEY);
+CREATE TABLE threads (thread_id TEXT, checkpoint_id TEXT, PRIMARY KEY (thread_id, checkpoint_id));
 CREATE TABLE relations (id UUID PRIMARY KEY, customer_id UUID, name TEXT);
 -- purpose: src/app.py::reader
 -- plan_test: tests/test_app.py::test_relations_plan
@@ -185,6 +186,10 @@ def test_a_keyed_count_is_a_keyed_count(schema: SchemaCatalog) -> None:
         ),
         # a prefix delete on a column no index ranges
         ('delete_keyed(c, "unindexed", prefix={"name": p})', "non-key-where"),
+        # ... or one only the primary key leads with: the prefix is a code-point (COLLATE "C") range, which a key in
+        # the column's own collation does not order (and YugabyteDB hashes a key's first column): every row is read
+        ('delete_keyed(c, "threads", prefix={"thread_id": p})', "non-key-where"),
+        ('update_keyed(c, "threads", values={"checkpoint_id": r}, prefix={"thread_id": p})', "non-key-where"),
         ('update_keyed(c, "unindexed", values={"run_id": r}, prefix={"name": p})', "non-key-where"),
         # a packed read pinning a column no key leads with, or nothing
         ('read_packed(c, "results", "geo", by={"kind": k}, packed_rows=5, items=100)', "non-key-where"),
