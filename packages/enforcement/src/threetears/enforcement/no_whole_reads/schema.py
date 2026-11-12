@@ -333,6 +333,9 @@ class SchemaCatalog:
     #: whose first column is not declared ``ASC``/``DESC`` (hashed on YugabyteDB), with the read's code
     hashed_leads: set[tuple[str, str, str]] = field(default_factory=set)
     dependency_indexes: set[tuple[str, str]] = field(default_factory=set)
+    #: each index a dependency's migration drops (and does not create again after) -> the tables it sat on there:
+    #: the repo's own copy of it on one of those tables is dropped too, whichever runs first
+    dependency_drops: dict[str, set[str]] = field(default_factory=dict)
     templates: dict[str, _DeclaredTable] = field(default_factory=dict)
     #: whether only tables 3tears declares are data tables (``NoWholeReadsConfig.threetears_tables_only``)
     threetears_only: bool = False
@@ -519,6 +522,9 @@ class SchemaCatalog:
         :rtype: None
         """
         entry = self._entry(index.table, index.origin)
+        if self.marking:
+            # the dependency created it again after its drop: the drop no longer stands
+            self.dependency_drops.pop(index.name, None)
         if index.unique and not index.partial:
             self.add_unique(index.table, index.columns, index.origin)
         known = entry.indexes.get(index.name)
@@ -539,9 +545,28 @@ class SchemaCatalog:
         :return: nothing
         :rtype: None
         """
+        if self.marking:
+            held = {table for table, entry in self.tables.items() if name in entry.indexes}
+            if held:
+                self.dependency_drops[name] = held
         for entry in self.tables.values():
             entry.indexes.pop(name, None)
         self.sites = [site for site in self.sites if not (site.name == name and not site.pattern and site.table)]
+
+    def apply_dependency_drops(self) -> None:
+        """drop the repo's own copy of each index a dependency's migration drops, on a table the dependency held it
+        on (a squashed migration's copy of a dependency's index on the dependency's table: the dependency's later
+        drop runs on every schema). A same-named index on any other table is the repo's own and kept.
+
+        :return: nothing
+        :rtype: None
+        """
+        for name, tables in self.dependency_drops.items():
+            for table in tables:
+                entry = self.tables.get(table)
+                if entry is not None:
+                    entry.indexes.pop(name, None)
+            self.sites = [site for site in self.sites if not (site.name == name and site.table in tables)]
 
     def drop_column(self, table: str, column: str) -> None:
         """forget what a later migration's ``DROP COLUMN`` takes with the column: every index of the table whose key,
@@ -1918,6 +1943,7 @@ def collect_schema(
         else:
             _apply_python(catalog, parse_python_path(path), relative, local=local)
     catalog.marking = False
+    catalog.apply_dependency_drops()
     for path in table_lists if table_lists is not None else tuple(_table_lists(repo_root)):
         _apply_yaml(catalog, path, relative_posix_path(path, repo_root), local=True)
     _resolve_patterns(catalog)

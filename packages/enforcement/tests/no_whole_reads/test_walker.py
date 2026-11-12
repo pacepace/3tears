@@ -4859,3 +4859,40 @@ def test_an_agent_a_caller_may_leave_none_keeps_the_owner_only_arm_judged(tmp_pa
     findings = no_whole_reads_findings(config)
     assert ("repoint", 'non-key-where "files"') in _symbols(config), findings
     assert not [finding for finding in findings if "unknown-" in finding], findings
+
+
+def test_a_dependency_s_later_drop_of_an_index_on_its_own_table_drops_the_repo_s_copy(tmp_path: Path) -> None:
+    """Flips if an index the repo's squashed migration creates on a dependency's table (the hub's v001 copy of
+    idx_conv_mem_refs_conversation_date_created) outlives the dependency's own migration dropping it (agent-memory
+    v034), or if a dependency's drop of a same-named index on ITS table drops the repo's index on an unrelated table,
+    or a drop the dependency took back (it created the index again after) still drops the repo's copy."""
+    dependency = tmp_path / "dep"
+    dependency.mkdir()
+    (dependency / "v001.sql").write_text(
+        "CREATE TABLE refs (conversation_id UUID, id UUID, date_created TIMESTAMPTZ, PRIMARY KEY (conversation_id, id));\n"
+        "CREATE INDEX idx_refs_conv_created ON refs (conversation_id, date_created);\n"
+        "CREATE TABLE notes (id UUID PRIMARY KEY, at TIMESTAMPTZ);\n"
+        "CREATE INDEX idx_by_at ON notes (at);\n"
+        "CREATE INDEX idx_kept ON notes (at);\n",
+        encoding="utf-8",
+    )
+    (dependency / "v002.sql").write_text(
+        "DROP INDEX IF EXISTS idx_refs_conv_created;\nDROP INDEX IF EXISTS idx_by_at;\nDROP INDEX IF EXISTS idx_kept;\n",
+        encoding="utf-8",
+    )
+    (dependency / "v003.sql").write_text("CREATE INDEX idx_kept ON notes (at);\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "v001_squash.sql").write_text(
+        "CREATE INDEX IF NOT EXISTS idx_refs_conv_created ON refs (conversation_id, date_created);\n"
+        "CREATE TABLE own (id UUID PRIMARY KEY, at TIMESTAMPTZ);\n"
+        "CREATE INDEX idx_by_at ON own (at);\n"
+        "CREATE INDEX IF NOT EXISTS idx_kept ON notes (at);\n",
+        encoding="utf-8",
+    )
+    catalog = collect_schema(tmp_path, (tmp_path / "src",), dependency_roots=(dependency,))
+    assert "idx_refs_conv_created" not in catalog.tables["refs"].indexes
+    assert "idx_by_at" in catalog.tables["own"].indexes
+    assert "idx_kept" in catalog.tables["notes"].indexes
+    findings = index_findings(catalog, tmp_path, set())
+    assert not any("idx_refs_conv_created" in finding for finding in findings), findings
+    assert any("idx_by_at on own: index-no-purpose" in finding for finding in findings), findings
