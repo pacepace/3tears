@@ -145,7 +145,9 @@ fi
 # test-live-claude-cli.sh), and CLAUDE_CODE_OAUTH_TOKEN is often set for other reasons, which would
 # send every run local.
 local_only=""
-if env | grep -E '^(RECORD|THREETEARS_LIVE_[A-Z_]*|TAVILY_API_KEY)=' >/dev/null; then
+# scripts/test-integration.sh clears the same names for its pool call (tests/test_test_integration_script.py
+# holds the two lists to each other).
+if env | grep -E '^(RECORD|THREETEARS_LIVE_[A-Za-z0-9_]*|TAVILY_API_KEY)=' >/dev/null; then
     local_only="an environment gate is set"
 fi
 # a local run's own -m replaces the whole-suite run's `-m "not integration"` (pytest keeps the last)

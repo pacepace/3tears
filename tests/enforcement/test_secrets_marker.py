@@ -266,7 +266,7 @@ def test_the_walker_sees_the_known_credentialed_tests() -> None:
     """The control on the tree: the known credentialed modules are found, so a broken detector can't pass."""
     known = {
         "packages/datasources/tests/integration/test_redshift_driver_live.py",
-        "packages/datasources/tests/integration/test_transaction_live.py",
+        "packages/datasources/tests/integration/test_transaction_redshift_live.py",
         "packages/models/tests/live/test_claude_cli_structured_output_live.py",
         "packages/search/tests/test_embedded_smoke.py",
     }

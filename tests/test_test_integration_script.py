@@ -46,11 +46,12 @@ default_selection = ["{_SUITE_FILE}", "{_SUITE_DIR}/"]
 """
 
 #: a stand-in executable: appends one line to ``calls``, its name and then each argument tab-separated, and one
-#: to ``gates``, its name and then each of test.sh's environment gates it was given; then exits ``code``
+#: to ``gates``, its name and then every variable it was given named like one of test.sh's environment gates
+#: (starting RECORD, TAVILY or THREETEARS_LIVE); then exits ``code``
 _RECORDER = (
     "#!/bin/sh\n"
     '{{ printf "%s" "$(basename "$0")"; printf "\\t%s" "$@"; printf "\\n"; }} >> "{calls}"\n'
-    '{{ printf "%s" "$(basename "$0")"; for gate in $(env | cut -d= -f1 | grep -E "^(RECORD|TAVILY_API_KEY|THREETEARS_LIVE_.*)$" | sort); do printf "\\t%s" "$gate"; done; printf "\\n"; }} >> "{gates}"\n'
+    '{{ printf "%s" "$(basename "$0")"; for gate in $(env | cut -d= -f1 | grep -E "^(RECORD|TAVILY|THREETEARS_LIVE)" | sort); do printf "\\t%s" "$gate"; done; printf "\\n"; }} >> "{gates}"\n'
     "exit {code}\n"
 )
 
@@ -72,12 +73,15 @@ class _Run:
     :ptype calls: list[list[str]]
     :param gates: each stand-in call's name, then the environment gates it saw
     :ptype gates: list[list[str]]
+    :param stdout: what it printed to stdout
+    :ptype stdout: str
     """
 
     returncode: int
     stderr: str
     calls: list[list[str]]
     gates: list[list[str]]
+    stdout: str = ""
 
     def gates_seen(self, name: str) -> list[str]:
         """the environment gates the stand-in ``name`` saw when it was called.
@@ -153,8 +157,9 @@ def _run(
     env: dict[str, str] | None = None,
     testament_exit: int = 0,
     uv_exit: int = 0,
+    script: str = "test-integration.sh",
 ) -> _Run:
-    """Run the staged script with recording stand-ins for ``uv`` and, optionally, ``testament``.
+    """Run a staged script with recording stand-ins for ``uv`` and, optionally, ``testament``.
 
     :param repo: the miniature repo root
     :ptype repo: Path
@@ -168,6 +173,8 @@ def _run(
     :ptype testament_exit: int
     :param uv_exit: the exit status the ``uv`` stand-in returns
     :ptype uv_exit: int
+    :param script: the staged script to run, ``test-integration.sh`` or ``test.sh``
+    :ptype script: str
     :return: what the run did
     :rtype: _Run
     """
@@ -187,7 +194,7 @@ def _run(
     (bin_dir / "python3").unlink(missing_ok=True)
     (bin_dir / "python3").symlink_to(python)
     result = subprocess.run(
-        ["bash", str(repo / "scripts" / "test-integration.sh"), *args],
+        ["bash", str(repo / "scripts" / script), *args],
         cwd=repo,
         env={"PATH": f"{bin_dir}:/usr/bin:/bin", **(env or {})},
         capture_output=True,
@@ -198,7 +205,11 @@ def _run(
     lines = calls.read_text().splitlines() if calls.exists() else []
     seen = gates.read_text().splitlines() if gates.exists() else []
     return _Run(
-        result.returncode, result.stderr, [line.split("\t") for line in lines], [line.split("\t") for line in seen]
+        result.returncode,
+        result.stderr,
+        [line.split("\t") for line in lines],
+        [line.split("\t") for line in seen],
+        result.stdout,
     )
 
 
@@ -273,6 +284,76 @@ class TestAPackageGoesWhereItsTestsAre:
         assert run.returncode == 0, run.stderr
         assert run.call("testament") == [*_POOL, _SUITE_DIR]
         assert run.call("uv") is None
+
+
+class TestWhatCountsAsAnIntegrationTest:
+    """the script reads marks as the selection enforcement does: a ``pytest.mark.integration`` applied, not the words."""
+
+    def test_a_package_in_neither_list_runs_here_whole(self, repo: Path) -> None:
+        """a package whose integration test is in neither list runs here whole, as before the pool; its mark sits
+        on a class, which counts.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        (repo / "packages" / "newpkg" / "tests").mkdir(parents=True)
+        (repo / "packages" / "newpkg" / "tests" / "test_live.py").write_text(
+            "import pytest\n\n\n@pytest.mark.integration\nclass TestLive:\n    def test_y(self) -> None:\n        pass\n"
+        )
+        run = _run(repo, ["newpkg", "-q"])
+        assert run.returncode == 0, run.stderr
+        assert run.call("testament") is None
+        assert run.call("uv") == ["run", "pytest", "packages/newpkg", "-m", "integration", "-q"]
+
+    def test_the_words_in_a_docstring_are_no_mark(self, repo: Path) -> None:
+        """a module that only mentions ``pytest.mark.integration`` holds no integration test: nothing runs.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        (repo / "packages" / "prose" / "tests").mkdir(parents=True)
+        (repo / "packages" / "prose" / "tests" / "test_words.py").write_text(
+            '"""these are unit tests; the live ones carry ``pytest.mark.integration``."""\n\n\n'
+            "def test_y() -> None:\n    pass\n"
+        )
+        run = _run(repo, ["prose"])
+        assert run.returncode == 5
+        assert run.calls == []
+
+
+class TestTheDryRun:
+    """``--dry-run`` prints what each route would run, and runs nothing."""
+
+    def test_both_commands_and_nothing_run(self, repo: Path) -> None:
+        """the pool's command and the local one, with the options on each.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["--dry-run", "-rs"])
+        assert run.returncode == 0, run.stderr
+        assert run.calls == []
+        assert run.stdout.splitlines() == [
+            f"on the pool: ./scripts/test.sh --suite integration {_SUITE_FILE} {_SUITE_DIR} -rs",
+            f"here: uv run pytest {' '.join(_local_dirs())} -m integration --ignore={_SUITE_FILE} -rs",
+        ]
+
+    def test_a_pool_only_package_prints_one_line(self, repo: Path) -> None:
+        """scheduled-jobs has nothing local.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["--dry-run", "scheduled-jobs"])
+        assert run.stdout.splitlines() == [f"on the pool: ./scripts/test.sh --suite integration {_SUITE_DIR}"]
 
 
 class TestAWholeRun:
@@ -465,6 +546,38 @@ class TestEnvironmentGates:
         assert run.call("testament") == [*_POOL, _SUITE_FILE, _SUITE_DIR, "-rs"]
         assert run.gates_seen("testament") == []
         assert run.gates_seen("uv") == sorted(self._GATES)
+
+    @pytest.mark.parametrize(
+        ("name", "is_a_gate"),
+        [
+            ("RECORD", True),
+            ("TAVILY_API_KEY", True),
+            ("THREETEARS_LIVE_CLAUDE_CLI", True),
+            ("THREETEARS_LIVE_price2", True),
+            ("RECORDING", False),
+            ("TAVILY_API_KEY_OLD", False),
+            ("THREETEARS_LIVEX", False),
+        ],
+    )
+    def test_the_two_scripts_agree_on_what_a_gate_is(self, repo: Path, name: str, is_a_gate: bool) -> None:
+        """a variable test.sh takes for a gate (the run stays local) is one test-integration.sh clears for its pool
+        call, and one it does not take for a gate reaches the pool untouched.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param name: the variable
+        :ptype name: str
+        :param is_a_gate: whether test.sh should take it for one
+        :ptype is_a_gate: bool
+        :return: nothing
+        :rtype: None
+        """
+        alone = _run(repo, [f"{_SUITE_DIR}/test_jobs.py"], env={name: "1"}, script="test.sh")
+        kept_local = alone.call("testament") is None
+        through = _run(repo, ["scheduled-jobs"], env={name: "1"})
+        assert through.returncode == 0, through.stderr
+        cleared = name not in through.gates_seen("testament")
+        assert kept_local == cleared == is_a_gate
 
     def test_a_package_on_the_pool_is_never_sent_local_by_a_gate(self, repo: Path) -> None:
         """scheduled-jobs moved to the pool; a gate does not bring it back to the laptop.

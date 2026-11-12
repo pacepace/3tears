@@ -6,10 +6,11 @@ cd "$REPO_ROOT"
 
 # Run the integration tests -- the ones ./scripts/test.sh deliberately excludes.
 #
-# Usage: ./scripts/test-integration.sh [package] [test paths...] [extra pytest args...]
+# Usage: ./scripts/test-integration.sh [--dry-run] [package] [test paths...] [extra pytest args...]
 # Examples:
 #   ./scripts/test-integration.sh -rs                  # everything: the pool's part, then the laptop's
 #   ./scripts/test-integration.sh scheduled-jobs       # one package
+#   ./scripts/test-integration.sh --dry-run -rs        # print both commands, run neither
 #   ./scripts/test-integration.sh core packages/core/tests/integration/test_process_services.py -v
 #
 # Test paths come first, before any option, and lie under packages/ or tests/.
@@ -38,31 +39,27 @@ cd "$REPO_ROOT"
 # Where the pool route is not taken -- no `testament` on PATH, CI, or TESTAMENT=off with a stated
 # TESTAMENT_OFF_REASON -- everything selected runs here, as before the pool.
 LOCAL_DIRS=(
-    packages/agent/acl/tests/integration
-    packages/agent/audit/tests/integration
     packages/agent/identity/tests/integration
     packages/agent/intention/tests/integration
     packages/agent/memory/tests/integration
     packages/agent/skills/tests/integration
-    packages/agent/tools/tests/integration
     packages/agent/wake/tests/integration
-    packages/agent/workspace/tests/integration
     packages/backup/tests/integration
-    packages/channels/tests/integration
-    packages/conversations/tests/integration
     packages/core/tests/integration
-    packages/datasources/tests/integration
-    packages/epoch/tests/integration
-    packages/geo/tests/integration
-    packages/langgraph/tests/integration
-    packages/mcp/tests/integration
+    packages/datasources/tests/integration/test_redshift_driver_live.py
+    packages/datasources/tests/integration/test_transaction_redshift_live.py
+    packages/epoch/tests/integration/test_generation_grants_live.py
     packages/nats/tests/integration
     packages/object-store/tests/integration
-    packages/registry/tests/integration
-    packages/scrape/tests/integration
+    packages/scrape/tests/integration/test_operator_pipe_sidecar.py
     packages/search/tests/test_searxng_live_scoring.py
 )
 
+DRY_RUN=""
+if [ "${1:-}" = "--dry-run" ]; then
+    DRY_RUN=1
+    shift
+fi
 PACKAGE=""
 if [ $# -gt 0 ] && [[ "$1" != -* ]] && [ -d "packages/$1" ]; then
     PACKAGE="$1"
@@ -181,22 +178,62 @@ if [ -z "$pool_route" ] && [ ${#POOL[@]} -gt 0 ]; then
     POOL=()
 fi
 
+# every test_*.py under the given paths that marks a test `integration`, read as
+# tests/enforcement/test_integration_suite_selection.py reads it: `pytest.mark.integration` in a decorator or a
+# `pytestmark` assignment, at module or class level (the word in a docstring or a string is no mark)
+integration_files() {
+    python3 -I - "$@" <<'PY'
+import ast
+import sys
+from pathlib import Path
+
+
+def marks(tree):
+    applied = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            applied.extend(node.decorator_list)
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "pytestmark" for target in node.targets
+        ):
+            applied.append(node.value)
+    return {
+        sub.attr
+        for expr in applied
+        for sub in ast.walk(expr)
+        if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Attribute) and sub.value.attr == "mark"
+    }
+
+
+for arg in sys.argv[1:]:
+    root = Path(arg)
+    found = [root] if root.is_file() else sorted(root.glob("**/test_*.py")) if root.is_dir() else []
+    for path in found:
+        if "__pycache__" not in path.parts and "integration" in marks(ast.parse(path.read_text(encoding="utf-8"))):
+            print(path)
+PY
+}
 # a local path holding no integration test once the suite's paths are left out (a package root whose only
 # integration directory is the suite's) is not run: pytest would collect nothing and exit 5. A named file stays.
-holds_local_tests() {
-    local file
-    [ -f "${1%%::*}" ] && return 0
+MARKED=()
+if [ ${#LOCAL[@]} -gt 0 ]; then
+    listed="$(integration_files "${LOCAL[@]}")"
     while IFS= read -r file; do
+        [ -z "$file" ] && continue
         if [ -n "$pool_route" ] && in_suite "$file"; then
             continue
         fi
-        return 0
-    done < <(grep -rlE --include='test_*.py' 'mark\.integration' "$1" 2>/dev/null)
-    return 1
-}
+        MARKED+=("$file")
+    done <<<"$listed"
+fi
 KEPT=()
 for path in ${LOCAL+"${LOCAL[@]}"}; do
-    holds_local_tests "$path" && KEPT+=("$path")
+    keep=""
+    [ -f "${path%%::*}" ] && keep=1
+    for file in ${MARKED+"${MARKED[@]}"}; do
+        under "$file" "$path" && keep=1
+    done
+    [ -n "$keep" ] && KEPT+=("$path")
 done
 LOCAL=(${KEPT+"${KEPT[@]}"})
 if [ ${#POOL[@]} -eq 0 ] && [ ${#LOCAL[@]} -eq 0 ]; then
@@ -214,6 +251,29 @@ while IFS= read -r name; do
     esac
 done < <(compgen -e)
 
+# the suite's own paths inside a local directory run on the pool, so the local run leaves them out
+IGNORES=()
+if [ -n "$pool_route" ]; then
+    for suite_path in ${SUITE_PATHS+"${SUITE_PATHS[@]}"}; do
+        for path in ${LOCAL+"${LOCAL[@]}"}; do
+            if [ "$suite_path" != "$path" ] && under "$suite_path" "$path"; then
+                IGNORES+=("--ignore=$suite_path")
+                break
+            fi
+        done
+    done
+fi
+
+if [ -n "$DRY_RUN" ]; then
+    if [ ${#POOL[@]} -gt 0 ]; then
+        echo "on the pool: ./scripts/test.sh --suite integration ${POOL[*]}${EXTRA_ARGS[*]+ ${EXTRA_ARGS[*]}}"
+    fi
+    if [ ${#LOCAL[@]} -gt 0 ]; then
+        echo "here: uv run pytest ${LOCAL[*]} -m integration${IGNORES[*]+ ${IGNORES[*]}}${EXTRA_ARGS[*]+ ${EXTRA_ARGS[*]}}"
+    fi
+    exit 0
+fi
+
 pool_status=0
 if [ ${#POOL[@]} -gt 0 ]; then
     env ${GATES+"${GATES[@]}"} ./scripts/test.sh --suite integration "${POOL[@]}" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} ||
@@ -222,18 +282,6 @@ fi
 
 local_status=0
 if [ ${#LOCAL[@]} -gt 0 ]; then
-    IGNORES=()
-    if [ -n "$pool_route" ]; then
-        # the suite's own paths inside a local directory ran on the pool
-        for suite_path in ${SUITE_PATHS+"${SUITE_PATHS[@]}"}; do
-            for path in "${LOCAL[@]}"; do
-                if [ "$suite_path" != "$path" ] && under "$suite_path" "$path"; then
-                    IGNORES+=("--ignore=$suite_path")
-                    break
-                fi
-            done
-        done
-    fi
     echo "test-integration.sh: running here, through testcontainers: ${LOCAL[*]}" >&2
     uv run pytest "${LOCAL[@]}" -m integration ${IGNORES+"${IGNORES[@]}"} ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} ||
         local_status=$?

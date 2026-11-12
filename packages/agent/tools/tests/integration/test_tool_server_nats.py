@@ -3,10 +3,10 @@
 uses the canonical session-scoped ``nats_container`` fixture from
 :mod:`threetears.core.testing.fixtures` (registered at the workspace
 root conftest) so the test suite spins up its own JetStream-enabled
-NATS server rather than depending on a pre-running ``localhost:4222``.
-``check_docker_available`` inside the fixture gates the suite on the
-docker daemon -- a fresh checkout without docker still skips
-gracefully, but with docker (the normal case) the tests run.
+NATS server rather than depending on a pre-running ``localhost:4222``:
+a child process on the testament pool, a testcontainer elsewhere. A
+checkout with neither docker nor process-mode services skips; the
+pool's integration suite fails instead (``require_services``).
 
 There is no hub here, so each test declares what the hub would before a pod starts: the
 ``{ns}-proxy_assertion_nonces`` bucket (:func:`_declare_the_hubs_buckets`). A tool server runs in a

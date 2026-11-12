@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from typing import Any
+from uuid import uuid4
 
 import asyncpg
 import pytest
@@ -117,7 +118,7 @@ async def pg_schema(db_container: str) -> AsyncIterator[tuple[str, str]]:
     :return: async iterator yielding the connection URL + schema name
     :rtype: AsyncIterator[tuple[str, str]]
     """
-    schema = f"elig_it_{id(object())}".lower().replace("-", "_")
+    schema = f"elig_it_{uuid4().hex}"
     conn = await asyncpg.connect(db_container)
     try:
         await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')

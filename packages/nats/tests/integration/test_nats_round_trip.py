@@ -6,10 +6,11 @@ JetStream-enabled NATS server.
 
 uses the canonical session-scoped ``nats_container`` fixture from
 :mod:`threetears.core.testing.fixtures` (registered at the workspace
-root conftest). ``check_docker_available`` inside that fixture gates
-the suite on the docker daemon -- a fresh checkout without docker
-skips cleanly rather than erroring on ``DockerException`` from a raw
-``DockerContainer.start()``.
+root conftest): a child process on the testament pool, a testcontainer
+elsewhere. ``require_services`` inside that fixture skips a fresh
+checkout without docker cleanly rather than erroring on
+``DockerException`` from a raw ``DockerContainer.start()``, and fails
+the pool's integration suite instead.
 
 run with:
 
