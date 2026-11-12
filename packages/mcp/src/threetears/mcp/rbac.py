@@ -35,6 +35,7 @@ from uuid import UUID
 
 from sqlalchemy import MetaData, Table
 from threetears.core.collections.generation import WRITE_GENERATION
+from threetears.core.declared import whole_read
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
     STRING_TYPE,
@@ -305,7 +306,16 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
                 "wire CollectionRegistry.configure(l3_pool=...) before "
                 "calling load_all_grants",
             )
-        rows = await self.l3_pool.fetch(
-            "SELECT grant_id, principal_type, principal_id, tool_name, permission, date_created FROM mcp_tool_grants",
+        rows = await whole_read(
+            self.l3_pool.fetch(
+                "SELECT grant_id, principal_type, principal_id, tool_name, permission, date_created FROM mcp_tool_grants",
+            ),
+            kind="cold_start",
+            reason="LocalGrantAuthorizer fills its empty grant cache once at start, and again only when a write changed "
+            "the whole table (a truncate or a load, the operator's reset); a changed grant is read by key",
+            ruling="Pace 2026-11-12: cold start fills read whole; coordinator 2026-11-12: a whole-table change is one",
+            proof="packages/mcp/tests/integration/test_multi_pod_rbac.py::"
+            "test_load_all_grants_is_reached_only_at_the_cold_start_and_a_whole_table_change",
+            speed="packages/mcp/tests/integration/test_multi_pod_rbac.py::test_load_all_grants_speed_at_real_size",
         )
         return [dict(row) for row in rows]
