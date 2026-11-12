@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Any, Final
 from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter
 
+from threetears.core.declared import whole_read
 from threetears.core.keyed import WholeReads
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join
@@ -105,10 +106,23 @@ _NO_SCOPE: Final = "_"
 COLD_START: Final = "cold_start"
 SCHEMA_CHANGE: Final = "schema_change"
 
-#: why a write read a table whole from the copy: the follower read it whole from L3 (a cold start, reset or schema
-#: change, ``copy_follower_whole_reads_total``), or a change named no tables (:meth:`CopyCheckpoints.applied` with
-#: ``touched=None``)
+#: why a write read a table whole from the copy: the follower read it whole from L3 (a cold start, reset, schema
+#: change or an older writer's whole record, ``copy_follower_whole_reads_total``)
 _WHOLE_TOUCH: Final = "whole_touch"
+
+#: why a write read a derived table whole from the copy: a followed table with no scope changed, which may reach every
+#: scope of what is derived from it. Not a cold start: a steady-state whole read, a finding until the derived table can
+#: be narrowed (its scopes recomputed from the keys the change named)
+_UNSCOPED_DERIVED: Final = "unscoped_derived"
+
+#: the situation each why the follower reads a table whole for is (``copy_follower._stage``): what a checkpoint
+#: writing that table whole again declares its read as
+_FOLLOWER_KINDS: Final[Mapping[str, str]] = {
+    "cold_start": "cold_start",
+    "reset": "cold_start",
+    "schema_change": "schema_change",
+    "legacy_whole_record": "rolling_upgrade",
+}
 
 #: every why ``copy_checkpoint_whole_writes_total`` counts; nothing else reads a table whole from the copy. Only a
 #: cold start is expected
@@ -118,8 +132,9 @@ _WHOLE_WRITES: Final = WholeReads(
     whys={
         COLD_START: "no checkpoint holds the table (the first, or one whose parts did not read back): its cold start",
         SCHEMA_CHANGE: "every checkpoint holding the table wrote it with another schema digest",
-        _WHOLE_TOUCH: "the follower read the table whole from L3 (a cold start, reset or schema change), or a change "
-        "named no tables",
+        _WHOLE_TOUCH: "the follower read the table whole from L3 (a cold start, reset, schema change or an older "
+        "writer's whole record)",
+        _UNSCOPED_DERIVED: "a followed table with no scope changed: a table derived from it is read whole",
     },
     expected={COLD_START},
 )
@@ -388,7 +403,7 @@ class _Taken:
     since: int
     touched: dict[str, set[str] | None]
     keys: dict[str, set[tuple[str, ...]]]
-    everything: bool
+    kinds: dict[str, str]
     due: bool
     whole: frozenset[str]
 
@@ -402,6 +417,8 @@ class _Plan:
     :ivar scopes: a scoped table's scopes to read again from the copy (empty: every part named again)
     :ivar keys: a table with no scope: the keys to patch its part by (empty: its part named again)
     :ivar why: a :data:`_WHOLE_WRITES` why when the table is read whole from the copy; None otherwise
+    :ivar kind: the situation a whole read is (``cold_start``, ``schema_change``, ``rolling_upgrade``), each read by its
+        own declared function; :data:`_UNSCOPED_DERIVED` for the one that is no such situation
     """
 
     table: FollowedTable
@@ -409,6 +426,7 @@ class _Plan:
     scopes: frozenset[str] = frozenset()
     keys: frozenset[tuple[str, ...]] = frozenset()
     why: str | None = None
+    kind: str = ""
 
 
 def _add_touched(into: dict[str, set[str] | None], table: str, scopes: Iterable[str] | None) -> None:
@@ -506,7 +524,8 @@ class CopyCheckpoints:
         #: each table with no scope changed since, and the keys of it changed
         self._keys: dict[str, set[tuple[str, ...]]] = {}
         #: a change was counted with no tables named: the next write writes every table
-        self._everything = False
+        #: each table the follower read whole since the last write, onto the situation it read it in
+        self._whole_kinds: dict[str, str] = {}
         #: tables the next write writes whole or from the previous checkpoint: left out of the load, or loaded from
         #: the previous checkpoint
         self._whole: set[str] = set()
@@ -577,7 +596,7 @@ class CopyCheckpoints:
         :rtype: StagedCheckpoint
         """
         found = await self.newest()
-        self._touched, self._keys, self._everything, self._since, self._stale = {}, {}, False, 0, False
+        self._touched, self._keys, self._whole_kinds, self._since, self._stale = {}, {}, {}, 0, False
         if found is None:
             self._held_rows, self._priors, self._whole, self._whole_due, self._missing = None, {}, set(), False, {}
             return StagedCheckpoint(
@@ -688,8 +707,9 @@ class CopyCheckpoints:
     def applied(
         self,
         rows: int,
-        touched: Mapping[str, frozenset[str] | None] | None = None,
+        touched: Mapping[str, frozenset[str] | None],
         keys: Mapping[str, Iterable[tuple[str, ...]]] | None = None,
+        whys: Mapping[str, str] | None = None,
     ) -> None:
         """count a change the follower applied: its rows make the next checkpoint due, and what it touched is what
         the next checkpoint writes. Kept until a write lands.
@@ -697,21 +717,26 @@ class CopyCheckpoints:
         :param rows: the rows the change applied
         :ptype rows: int
         :param touched: each table the change touched, and the scopes of the rows it touched (for a table with no
-            scope, any set); None for a table read whole. None for the whole argument: not known, and the next
-            checkpoint writes every table
-        :ptype touched: Mapping[str, frozenset[str] | None] | None
+            scope, any set); None for a table read whole
+        :ptype touched: Mapping[str, frozenset[str] | None]
         :param keys: each table with no scope the change touched (not whole), and the keys it touched, each its values
             as text in key order: what the next checkpoint patches its part by
         :ptype keys: Mapping[str, Iterable[tuple[str, ...]]] | None
+        :param whys: each table read whole, onto why the follower read it (``cold_start``, ``reset``,
+            ``schema_change``, ``legacy_whole_record``): the situation the checkpoint's whole read of it is
+        :ptype whys: Mapping[str, str] | None
         :return: nothing
         :rtype: None
-        :raises ValueError: when a table with no scope is touched, not whole, and no keys are named for it
+        :raises ValueError: when a table with no scope is touched, not whole, and no keys are named for it, or a table
+            read whole has no known why
         """
+        whole = sorted(name for name, scopes in touched.items() if scopes is None)
+        unknown = [name for name in whole if (whys or {}).get(name) not in _FOLLOWER_KINDS]
+        if unknown:
+            raise ValueError(f"{unknown} were read whole: name why, one of {sorted(_FOLLOWER_KINDS)}")
         self._since += rows
-        if touched is None:
-            self._everything = True
-            self._whole_due = self._whole_due or bool(self._whole)
-            return
+        for name in whole:
+            self._whole_kinds[name] = _FOLLOWER_KINDS[(whys or {})[name]]
         scopeless = {t.name for t in self._tables if t.scope is None}
         unkeyed = sorted(
             name
@@ -743,7 +768,7 @@ class CopyCheckpoints:
         return self._since >= max(1, int(self._ratio * self._held_rows))
 
     def _incremental(self) -> bool:
-        return bool(self._priors) and not self._everything
+        return bool(self._priors)
 
     async def write(self, read: Callable[[], Any]) -> Checkpoint | None:
         """write a checkpoint of the copy as one read holds it, and move the pointer to it.
@@ -775,11 +800,11 @@ class CopyCheckpoints:
             since=self._since,
             touched=self._touched,
             keys=self._keys,
-            everything=self._everything,
+            kinds=self._whole_kinds,
             due=self._whole_due,
             whole=frozenset(self._whole),
         )
-        self._touched, self._keys, self._everything, self._whole_due = {}, {}, False, False
+        self._touched, self._keys, self._whole_kinds, self._whole_due = {}, {}, {}, False
         return taken
 
     def _give_back(self, taken: _Taken) -> None:
@@ -794,7 +819,7 @@ class CopyCheckpoints:
             _add_touched(self._touched, table, scopes)
         for table, keys in taken.keys.items():
             _add_keys(self._keys, table, keys)
-        self._everything = self._everything or taken.everything
+        self._whole_kinds = {**taken.kinds, **self._whole_kinds}
         self._whole_due = self._whole_due or taken.due
 
     def _plan(self, table: FollowedTable, taken: _Taken, newest: Checkpoint | None) -> _Plan | None:
@@ -810,17 +835,17 @@ class CopyCheckpoints:
             prior = None  # another replica wrote twice since: its objects may be retired
         if prior is None:
             if name in self._missing:
-                return _Plan(table, None, why=self._missing[name])
+                return _Plan(table, None, why=self._missing[name], kind=self._missing[name])
             held = newest.tables.get(name) if newest is not None else None
             if newest is None or held is None or (newest.seq, name) in self._broken:
-                return _Plan(table, None, why=COLD_START)
+                return _Plan(table, None, why=COLD_START, kind=COLD_START)
             if held.digest != self._digests[name]:
-                return _Plan(table, None, why=SCHEMA_CHANGE)
+                return _Plan(table, None, why=SCHEMA_CHANGE, kind=SCHEMA_CHANGE)
             return None
         if self._derived(name):
             return self._plan_derived(table, taken, prior)
-        if taken.everything or (name in taken.touched and taken.touched[name] is None):
-            return _Plan(table, None, why=_WHOLE_TOUCH)
+        if name in taken.touched and taken.touched[name] is None:
+            return _Plan(table, None, why=_WHOLE_TOUCH, kind=taken.kinds[name])
         if name not in taken.touched:
             return _Plan(table, prior)
         if table.scope is None:
@@ -835,12 +860,16 @@ class CopyCheckpoints:
         :rtype: _Plan
         """
         followed = {name: scopes for name, scopes in taken.touched.items() if not self._derived(name)}
-        if taken.everything or any(scopes is None for scopes in followed.values()):
-            return _Plan(table, None, why=_WHOLE_TOUCH)
+        whole = sorted(name for name, scopes in followed.items() if scopes is None)
+        if whole:
+            # read whole after what it derives from was: the situation that table was read in (a cold start first)
+            kinds = {taken.kinds[name] for name in whole}
+            kind = next(k for k in ("cold_start", "schema_change", "rolling_upgrade") if k in kinds)
+            return _Plan(table, None, why=_WHOLE_TOUCH, kind=kind)
         by_name = {t.name: t for t in self._tables}
         if any(name in by_name and by_name[name].scope is None for name in followed):
             # a change of a followed table with no scope may reach every scope of what is derived from it
-            return _Plan(table, None, why=_WHOLE_TOUCH)
+            return _Plan(table, None, why=_UNSCOPED_DERIVED, kind=_UNSCOPED_DERIVED)
         return _Plan(table, prior, scopes=frozenset(s for scopes in followed.values() for s in scopes or ()))
 
     async def _write_locked(self, read: Callable[[], Any], lock: str) -> Checkpoint | None:
@@ -976,7 +1005,8 @@ class CopyCheckpoints:
         """
         table, prior = plan.table, plan.prior
         if prior is None:
-            reader = await asyncio.to_thread(_batches, cursor, table.name, self._part_rows)
+            read = WHOLE_WRITE_READS.get(plan.kind, _batches_unscoped_derived)
+            reader = await asyncio.to_thread(read, cursor, table.name, self._part_rows)
             parts = await self._put_parts(_split_by_scope(reader, table), table.name, seq, written, keys)
             self._refuse_unscoped(table, parts)
             return tuple(parts)
@@ -1108,10 +1138,10 @@ class CopyCheckpoints:
         return bool(keys)
 
 
-def _batches(cursor: Any, table: str, rows: int) -> Any:
-    """a table's rows on a read's cursor, as a reader of Arrow batches of at most ``rows`` rows: the one whole read of a
-    table in the copy, for a write that finds no checkpoint holding it (its cold start), its schema changed, or the
-    follower read it whole from L3 (``copy_checkpoint_whole_writes_total``).
+def _batches_cold_start(cursor: Any, table: str, rows: int) -> Any:
+    """a table's rows on a read's cursor, as a reader of Arrow batches of at most ``rows`` rows, because no checkpoint
+    holds it (the first write, one whose parts did not read back) or the follower read it whole at its cold start or an
+    operator's reset (``copy_checkpoint_whole_writes_total``).
 
     :param cursor: the read's cursor
     :ptype cursor: duckdb.DuckDBPyConnection
@@ -1122,7 +1152,68 @@ def _batches(cursor: Any, table: str, rows: int) -> Any:
     :return: the reader
     :rtype: pyarrow.RecordBatchReader
     """
+    return whole_read(
+        cursor.execute(f"SELECT * FROM {quote_identifier(table)}").fetch_record_batch(rows),  # noqa: S608
+        kind="cold_start",
+        reason="no checkpoint holds the table, or the follower read it whole at a cold start or reset: written whole",
+        ruling="Pace 2026-11-12: the one full load is a true no-data cold start; coordinator 2026-11-12: reset, schema change, rolling upgrade; copy_checkpoint split per reason",
+        proof="packages/core/tests/unit/collections/test_copy_checkpoint.py::test_a_whole_write_is_reached_only_at_a_cold_start_a_schema_change_or_a_whole_read",
+        speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_checkpoint_whole_write_speed_at_real_size",
+    )
+
+
+def _batches_schema_change(cursor: Any, table: str, rows: int) -> Any:
+    """a table's rows on a read's cursor, as :func:`_batches_cold_start` reads them, because its schema changed (every
+    checkpoint holding it wrote another schema digest, or the follower read it whole after a migration).
+
+    :return: the reader
+    :rtype: pyarrow.RecordBatchReader
+    """
+    return whole_read(
+        cursor.execute(f"SELECT * FROM {quote_identifier(table)}").fetch_record_batch(rows),  # noqa: S608
+        kind="schema_change",
+        reason="a migration changed the table: every checkpoint holding it wrote another schema; written whole again",
+        ruling="Pace 2026-11-12: the one full load is a true no-data cold start; coordinator 2026-11-12: reset, schema change, rolling upgrade; copy_checkpoint split per reason",
+        proof="packages/core/tests/unit/collections/test_copy_checkpoint.py::test_a_whole_write_is_reached_only_at_a_cold_start_a_schema_change_or_a_whole_read",
+        speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_checkpoint_whole_write_speed_at_real_size",
+    )
+
+
+def _batches_rolling_upgrade(cursor: Any, table: str, rows: int) -> Any:
+    """a table's rows on a read's cursor, as :func:`_batches_cold_start` reads them, because the follower read it whole
+    for a writer older than 0.95.0 that recorded the whole table mid-roll (gone by 0.96.0).
+
+    :return: the reader
+    :rtype: pyarrow.RecordBatchReader
+    """
+    return whole_read(
+        cursor.execute(f"SELECT * FROM {quote_identifier(table)}").fetch_record_batch(rows),  # noqa: S608
+        kind="rolling_upgrade",
+        reason="a writer older than 0.95.0 recorded the whole table mid-roll: the checkpoint writes it whole again",
+        until="0.96.0",
+        ruling="Pace 2026-11-12: rolling_upgrade until 0.96.0 (the older writers' whole record is read for one release)",
+        proof="packages/core/tests/unit/collections/test_copy_checkpoint.py::test_a_whole_write_is_reached_only_at_a_cold_start_a_schema_change_or_a_whole_read",
+        speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_checkpoint_whole_write_speed_at_real_size",
+    )
+
+
+def _batches_unscoped_derived(cursor: Any, table: str, rows: int) -> Any:
+    """a derived table's rows on a read's cursor, because a followed table with no scope changed and may reach every
+    scope of it: a steady-state whole read, no cold start (coordinator 2026-11-12: left a finding until the derived
+    table can be narrowed to the scopes the change reaches).
+
+    :return: the reader
+    :rtype: pyarrow.RecordBatchReader
+    """
     return cursor.execute(f"SELECT * FROM {quote_identifier(table)}").fetch_record_batch(rows)  # noqa: S608
+
+
+#: each situation a checkpoint write reads a table whole in, onto its own declared read
+WHOLE_WRITE_READS: Final[Mapping[str, Callable[[Any, str, int], Any]]] = {
+    COLD_START: _batches_cold_start,
+    SCHEMA_CHANGE: _batches_schema_change,
+    "rolling_upgrade": _batches_rolling_upgrade,
+}
 
 
 def _reader_batches(reader: Any) -> Iterator[Any]:

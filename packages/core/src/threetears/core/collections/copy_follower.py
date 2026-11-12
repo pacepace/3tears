@@ -951,6 +951,8 @@ class CopyFollower:
                 else frozenset(scope for scope in self._staged_scopes.get(name, ()) if scope is not None)
                 for name in self._staged
             }
+            # why each table read whole was: the situation a checkpoint writing it whole again is in
+            whole_whys = {name: why for name, why in self._staged_whole.items() if name in touched}
             # a table with no scope: the keys it replaced, which a checkpoint patches its one part by
             touched_keys = {
                 name: frozenset(self._staged_touched.get(name, set()))
@@ -975,7 +977,7 @@ class CopyFollower:
             )
             for listener in tuple(self._listeners):
                 listener(label)
-            self._checkpoint_when_due(rows, touched, touched_keys)
+            self._checkpoint_when_due(rows, touched, touched_keys, whole_whys)
             return True
 
     def _checkpoint_when_due(
@@ -983,6 +985,7 @@ class CopyFollower:
         rows: int,
         touched: Mapping[str, frozenset[str] | None],
         keys: Mapping[str, frozenset[tuple[str, ...]]],
+        whys: Mapping[str, str],
     ) -> None:
         """count a change's rows toward the next checkpoint, and write one beside the follower when it is due.
 
@@ -992,12 +995,15 @@ class CopyFollower:
         :ptype touched: Mapping[str, frozenset[str] | None]
         :param keys: each table with no scope the change applied (not whole), and the keys it replaced
         :ptype keys: Mapping[str, frozenset[tuple[str, ...]]]
+        :param whys: each table read whole, onto why (``cold_start``, ``reset``, ``schema_change``,
+            ``legacy_whole_record``)
+        :ptype whys: Mapping[str, str]
         :return: nothing
         :rtype: None
         """
         if self._checkpoints is None:
             return
-        self._checkpoints.applied(rows, touched, keys)
+        self._checkpoints.applied(rows, touched, keys, whys)
         if not self._checkpoints.due() or (self._checkpointing is not None and not self._checkpointing.done()):
             return
         self._checkpointing = asyncio.create_task(self._write_checkpoint())

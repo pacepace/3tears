@@ -32,6 +32,7 @@ ipc = pytest.importorskip("pyarrow.ipc")
 from prometheus_client import REGISTRY  # noqa: E402
 
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange  # noqa: E402
+from threetears.core.collections import copy_checkpoint  # noqa: E402
 from threetears.core.collections.copy_checkpoint import (  # noqa: E402
     COLD_START,
     SCHEMA_CHANGE,
@@ -400,16 +401,6 @@ async def test_a_scope_whose_rows_all_left_drops_out_of_the_checkpoint() -> None
     assert loaded.held(_VOTES) == copy.held(_VOTES)
 
 
-async def test_a_change_of_unknown_tables_writes_every_part() -> None:
-    copy, checkpoints, _, _ = await _written_world()
-    first = (await checkpoints.newest())[0]
-    checkpoints.applied(1)
-    before = _writes("full", "written")
-    second = await checkpoints.write(copy.read)
-    assert not second.names() & first.names()
-    assert _writes("full", "written") == before + 1
-
-
 async def test_a_failed_write_keeps_what_it_was_to_write_for_the_next() -> None:
     copy, checkpoints, store, pointers = await _written_world()
     copy.put(_VOTES, _votes(_state("VA", 50, votes=3) + _state("IL", 10)), "v2", 2)
@@ -502,7 +493,7 @@ async def test_two_code_versions_keep_each_others_tables_and_each_loads_what_it_
     assert kept.tables[_VOTES] == kept.previous.tables[_VOTES]
     # once it has read votes whole, its checkpoint holds its own
     new.put(_VOTES, _votes(_state("VA", 5), share=True), "v2", 2)
-    checkpoints.applied(5, {_VOTES: None})
+    checkpoints.applied(5, {_VOTES: None}, whys={_VOTES: "reset"})
     assert checkpoints.due()
     before = _whole_writes(_VOTES, SCHEMA_CHANGE)
     mine = await checkpoints.write(new.read)
@@ -584,7 +575,7 @@ async def test_a_whole_read_is_counted_by_why_and_only_cold_start_schema_change_
     }
     # the follower read votes whole (a reset, say): written whole, counted so
     copy.put(_VOTES, _votes(_state("VA", 3)), "v2", 2)
-    checkpoints.applied(3, {_VOTES: None})
+    checkpoints.applied(3, {_VOTES: None}, whys={_VOTES: "reset"})
     touched = _whole_writes(_VOTES, _WHOLE_TOUCH)
     copy.statements.clear()
     assert await checkpoints.write(copy.read) is not None
@@ -698,7 +689,7 @@ async def test_a_derived_table_is_read_whole_when_a_followed_table_was() -> None
     copy, checkpoints, _, _ = await _derived_world(_needles())
     copy.put(_VOTES, _votes(_state("VA", 5)), "v2", 2)
     _derive(copy, _state("VA", 5))
-    checkpoints.applied(5, {_VOTES: None})
+    checkpoints.applied(5, {_VOTES: None}, whys={_VOTES: "reset"})
     before = _whole_writes(_NEEDLES, _WHOLE_TOUCH)
     assert await checkpoints.write(copy.read) is not None
     assert _whole_writes(_NEEDLES, _WHOLE_TOUCH) == before + 1
@@ -708,9 +699,10 @@ async def test_a_derived_table_is_read_whole_when_a_followed_table_with_no_scope
     copy, checkpoints, _, _ = await _derived_world(_needles())
     copy.put(_RACES, _races([(1, "gov"), (2, "senate")]), "r2", 2)
     checkpoints.applied(1, {_RACES: frozenset()}, {_RACES: [("2",)]})
-    before = _whole_writes(_NEEDLES, _WHOLE_TOUCH)
+    # counted apart from a whole read the follower made: this one is no cold start (a finding until narrowed)
+    before = _whole_writes(_NEEDLES, "unscoped_derived")
     assert await checkpoints.write(copy.read) is not None
-    assert _whole_writes(_NEEDLES, _WHOLE_TOUCH) == before + 1
+    assert _whole_writes(_NEEDLES, "unscoped_derived") == before + 1
 
 
 async def test_a_derived_table_with_no_scope_is_refused_by_name() -> None:
@@ -730,12 +722,13 @@ async def test_a_table_with_no_scope_over_one_part_is_refused_by_name() -> None:
     assert not pointers.entries and not store.objects
 
 
-async def test_batches_is_reached_only_at_a_cold_start_a_schema_change_or_a_whole_read() -> None:
-    """the proving test of _batches' ledger line: a write reads a table whole from the copy only when no checkpoint
+async def test_a_whole_write_is_reached_only_at_a_cold_start_a_schema_change_or_a_whole_read() -> None:
+    """the proof of _batches_cold_start's, _batches_schema_change's and _batches_rolling_upgrade's declarations (and
+    where _batches_unscoped_derived, a finding, is reached): a write reads a table whole from the copy only when no checkpoint
     holds it (the first write), its schema changed, or the follower read it whole from L3; every steady-state write
     (scopes, a patch by key, a replica writing on the previous checkpoint's parts, a stale replica, a derived table's
     scopes) reads none. A whole read is a statement on the read's cursor reading a table with no filter, the one
-    _batches runs."""
+    each of them runs."""
     store, pointers = _Store(), _Pointers()
     copy = _Copy()
     copy.put(_VOTES, _votes(_state("VA", 50) + _state("IL", 10)), "v1", 1)
@@ -760,9 +753,12 @@ async def test_batches_is_reached_only_at_a_cold_start_a_schema_change_or_a_whol
     assert await checkpoints.write(copy.read) is not None
     assert reached() == []
     checkpoints.applied(1, {_RACES: frozenset()}, {_RACES: [("2",)]})
-    # a change of a table with no scope reaches every derived scope: the derived table alone is read whole
+    # a change of a table with no scope reaches every derived scope: the derived table alone is read whole, by the
+    # one whole read that is no declared situation (a finding until the derived table can be narrowed)
+    unscoped = _whole_writes(_NEEDLES, "unscoped_derived")
     assert await checkpoints.write(copy.read) is not None
     assert reached() == [_NEEDLES]
+    assert _whole_writes(_NEEDLES, "unscoped_derived") == unscoped + 1
     copy.statements.clear()
     # the second replica writes on the previous checkpoint's parts, then goes stale
     other.put(_VOTES, _votes(_state("VA", 50) + _state("IL", 10) + _state("OH", 1)), "v9", 9)
@@ -772,6 +768,34 @@ async def test_batches_is_reached_only_at_a_cold_start_a_schema_change_or_a_whol
     # the follower read votes whole (a reset): that table alone, and what derives from it
     copy.put(_VOTES, _votes(_state("VA", 4)), "v3", 3)
     _derive(copy, _state("VA", 4))
-    checkpoints.applied(4, {_VOTES: None})
+    checkpoints.applied(4, {_VOTES: None}, whys={_VOTES: "reset"})
     assert await checkpoints.write(copy.read) is not None
     assert reached() == [_NEEDLES, _VOTES]
+
+
+async def test_a_table_read_whole_names_why_and_is_written_by_that_situations_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flips if a table read whole with no why is taken, or a checkpoint writing it whole again reads it by another
+    situation's declared read than the follower's why (a reset is a cold start, a migration a schema change, an older
+    writer's whole record a rolling upgrade)."""
+    copy, checkpoints, _, _ = await _written_world()
+    with pytest.raises(ValueError, match="read whole"):
+        checkpoints.applied(1, {_VOTES: None})
+    reached: list[str] = []
+    for kind, read in list(copy_checkpoint.WHOLE_WRITE_READS.items()):
+
+        def recorded(cursor: Any, table: str, rows: int, *, kind: str = kind, read: Any = read) -> Any:
+            reached.append(kind)
+            return read(cursor, table, rows)
+
+        monkeypatch.setitem(copy_checkpoint.WHOLE_WRITE_READS, kind, recorded)
+    for why, kind in (
+        ("reset", "cold_start"),
+        ("schema_change", "schema_change"),
+        ("legacy_whole_record", "rolling_upgrade"),
+    ):
+        reached.clear()
+        checkpoints.applied(1, {_VOTES: None}, whys={_VOTES: why})
+        assert await checkpoints.write(copy.read) is not None
+        assert reached == [kind], (why, reached)

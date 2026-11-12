@@ -310,8 +310,9 @@ async def test_checkpoint_stage_speed_at_real_size() -> None:
 
 
 async def test_checkpoint_whole_write_speed_at_real_size() -> None:
-    """a checkpoint write at a table's cold start, whose whole read of the copy is copy_checkpoint._batches, within 2x
-    the bare read of the same rows and their encoding as parts."""
+    """a checkpoint write at a table's cold start, whose whole read of the copy is copy_checkpoint._batches_cold_start
+    (the same statement _batches_schema_change and _batches_rolling_upgrade run), within 2x the bare read of the same
+    rows and their encoding as parts."""
     source = _filled()
 
     def read_and_encode() -> None:
@@ -334,5 +335,5 @@ async def test_checkpoint_whole_write_speed_at_real_size() -> None:
     print(
         f"cold-start write of {_ROWS} rows {took:.2f} s, bare read and encode {baseline:.2f} s, {took / baseline:.2f}x"
     )
-    problem = budget_problem(f"a cold-start checkpoint write (_batches) of {_ROWS} rows", took, baseline)
+    problem = budget_problem(f"a cold-start checkpoint write (_batches_cold_start) of {_ROWS} rows", took, baseline)
     assert problem is None, problem

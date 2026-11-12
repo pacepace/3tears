@@ -5,9 +5,10 @@ reads a whole table to learn what changed, re-verifies its own rows by scanning 
 reload. The rule (:mod:`threetears.enforcement.no_whole_reads`) walks every package's ``src`` and names each whole
 read, whole aggregate, unkeyed pager, whole-table write, whole/rebuild/warm call and every call into one.
 
-The only way out is ``_no_whole_reads_exemptions.txt`` beside this file: a true cold start or a schema change,
-with the test proving it is reached only then. There is no allowlist of violations; this gate is red until each
-one it names is fixed.
+The only way out is a read declared whole by nature where it is written (``threetears.core.declared.whole_read``:
+a cold start, a schema change, a drain, ... each by Pace's ruling), with the test proving it is reached only then and,
+for most kinds, its speed test at real size. There is no ledger and no allowlist of violations; this gate is red
+until each one it names is fixed.
 
 The runtime half is :class:`threetears.core.testing.plans.WholeScanGuard`, wrapped around the connection of a
 load-path test.
