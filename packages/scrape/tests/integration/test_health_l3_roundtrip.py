@@ -29,6 +29,8 @@ import asyncpg
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.plans import explain_statement, plan_uses_index
+from threetears.core.testing.schemas import drop_schema
 
 from threetears.scrape.health import (
     ScrapeTargetHealthCollection,
@@ -575,3 +577,104 @@ async def test_a_human_clearing_a_target_also_clears_its_robots_block(
     assert row is not None
     assert row.robots_blocked_at is None
     assert target_id not in {r.target_id for r in await health.list_walled()}
+
+
+async def test_list_walled_merges_its_legs_newest_first(health: ScrapeTargetHealthCollection) -> None:
+    """Flips if the queue stops being every walled or robots-held target newest first by
+    ``COALESCE(last_blocked_at, robots_blocked_at)``: a target held back by ``robots.txt`` and
+    walled too sorts by its wall, one held back only by ``robots.txt`` by that stamp, and a
+    robots-held target whose circuit has closed again stays queued."""
+    base = datetime.now(UTC).replace(microsecond=0) + timedelta(days=3650)
+    walled, robots_only, both, closed_robots = (
+        _target("merge_walled"),
+        _target("merge_robots"),
+        _target("merge_both"),
+        _target("merge_closed_robots"),
+    )
+    await record_circuit_state(
+        health,
+        target_id=walled,
+        circuit_state="open",
+        consecutive_fetch_failures=3,
+        blocked_until=base + timedelta(hours=1),
+        blocked_at=base + timedelta(minutes=3),
+    )
+    await record_robots_block(health, target_id=robots_only, reason="disallowed", now=base + timedelta(minutes=4))
+    await record_robots_block(health, target_id=both, reason="disallowed", now=base + timedelta(minutes=9))
+    await record_circuit_state(
+        health,
+        target_id=both,
+        circuit_state="open",
+        consecutive_fetch_failures=3,
+        blocked_until=base + timedelta(hours=1),
+        blocked_at=base + timedelta(minutes=1),
+    )
+    await record_robots_block(health, target_id=closed_robots, reason="disallowed", now=base + timedelta(minutes=2))
+    await record_circuit_state(
+        health,
+        target_id=closed_robots,
+        circuit_state="closed",
+        consecutive_fetch_failures=0,
+        blocked_until=None,
+        blocked_at=base + timedelta(minutes=5),
+    )
+
+    found = [row.target_id for row in await health.list_walled(limit=4)]
+
+    # by the wall's stamp where there is one (5, 3, 1 minutes), else the robots stamp (4)
+    assert found == [closed_robots, robots_only, walled, both], found
+
+
+class _Captured:
+    """an L3 pool that runs nothing and records each statement asked of it."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[str, tuple[object, ...]]] = []
+
+    async def fetch(self, sql: str, *args: object) -> list[object]:
+        self.asked.append((sql, args))
+        return []
+
+    async def fetchval(self, sql: str, *args: object) -> str:
+        self.asked.append((sql, args))
+        return "PostgreSQL"
+
+
+async def test_list_walled_reads_its_indexes(db_container: str) -> None:
+    """Flips if either leg of the walled queue stops reading its partial index
+    (``scrape_target_health_walled`` / ``scrape_target_health_robots``): the queue would read
+    and sort every target's health row to find the few a human must unblock."""
+    schema = f"scrape_plan_{uuid.uuid4().hex[:12]}"
+    admin = await asyncpg.connect(db_container)
+    await admin.execute(f'CREATE SCHEMA "{schema}"')
+    pool: asyncpg.Pool = await asyncpg.create_pool(
+        db_container, min_size=1, max_size=2, server_settings={"search_path": schema}
+    )
+    try:
+        await apply_migrations(pool)
+        async with pool.acquire() as conn:
+            # 5000 targets that have only ever worked, 40 walled now, 40 held back by robots.txt alone
+            await conn.execute(
+                "INSERT INTO scrape_target_health (target_id, circuit_state, last_blocked_at, robots_blocked_at)"
+                " SELECT 't' || g, CASE WHEN g <= 40 THEN 'open' ELSE 'closed' END,"
+                " CASE WHEN g <= 40 THEN now() - g * interval '1 minute' END,"
+                " CASE WHEN g BETWEEN 41 AND 80 THEN now() - g * interval '1 minute' END"
+                " FROM generate_series(1, 5040) g"
+            )
+            await conn.execute("ANALYZE scrape_target_health")
+            registry = CollectionRegistry()
+            captured = _Captured()
+            registry.configure(l3_pool=captured)
+            collection = ScrapeTargetHealthCollection(
+                registry, DefaultCoreConfig(collection_flush="ALWAYS"), nats_client=None
+            )
+            await collection.list_walled(limit=20)
+            legs = [asked for asked in captured.asked if "scrape_target_health" in asked[0]]
+            assert len(legs) == 2, captured.asked
+            for (sql, args), index in zip(legs, ("scrape_target_health_walled", "scrape_target_health_robots")):
+                plan = await explain_statement(conn, sql, *args)
+                assert plan_uses_index(plan, index), (sql, plan.plan)
+    finally:
+        await pool.close()
+        await drop_schema(admin, schema)
+        await admin.close()

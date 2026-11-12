@@ -283,6 +283,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(11)(v011_target_health_last_egress)
     pkg.version(12)(v012_target_health_robots_block)
     pkg.version(13)(v013_extraction_enrichment_status)
+    pkg.version(14)(v014_target_health_walled_indexes)
     runner.register(pkg)
     return pkg
 
@@ -373,6 +374,33 @@ async def v013_extraction_enrichment_status(store: DataStore) -> None:
         ("id",),
         columns=("enrichment_status", "enrichment_notes"),
         fill=lambda row: legacy_enrichment_translation(row) or None,
+    )
+
+
+async def v014_target_health_walled_indexes(store: DataStore) -> None:
+    """Index the two legs of ``list_walled``, the queue of targets a human must unblock.
+
+    The list is every target walled now (circuit open on a bot wall) or held back by
+    ``robots.txt``, newest first by whichever stamp it has. v010's index on ``circuit_state``
+    could find neither half by itself -- a robots block never touches the circuit -- so the
+    list read every row and sorted them. Each leg here is one partial index in the list's own
+    order, so a page reads only the targets it returns: a target with a bot-wall stamp sorts
+    by it, one held back only by ``robots.txt`` by that stamp. The legs are disjoint and
+    together are exactly the list.
+    """
+    await store.execute(
+        "-- purpose: packages/scrape/src/threetears/scrape/health.py::ScrapeTargetHealthCollection.list_walled\n"
+        "-- plan_test: packages/scrape/tests/integration/test_health_l3_roundtrip.py::test_list_walled_reads_its_indexes\n"
+        "CREATE INDEX IF NOT EXISTS scrape_target_health_walled "
+        "ON scrape_target_health (last_blocked_at DESC, target_id DESC) "
+        "WHERE last_blocked_at IS NOT NULL AND (circuit_state <> 'closed' OR robots_blocked_at IS NOT NULL)"
+    )
+    await store.execute(
+        "-- purpose: packages/scrape/src/threetears/scrape/health.py::ScrapeTargetHealthCollection.list_walled\n"
+        "-- plan_test: packages/scrape/tests/integration/test_health_l3_roundtrip.py::test_list_walled_reads_its_indexes\n"
+        "CREATE INDEX IF NOT EXISTS scrape_target_health_robots "
+        "ON scrape_target_health (robots_blocked_at DESC, target_id DESC) "
+        "WHERE robots_blocked_at IS NOT NULL AND last_blocked_at IS NULL"
     )
 
 

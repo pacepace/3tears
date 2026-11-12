@@ -39,6 +39,7 @@ from typing import Any, ClassVar, Final
 from threetears.core.coordination.tables import STORAGE_FAILURES
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError, GenerationUnavailableError
+from threetears.core.keyed import Fragment, Sort, keyset_page
 from threetears.core.operator import operator_command
 
 from .collections import ScrapeCollection, _parse_dt_or_unrecorded, _parse_dt_strict
@@ -63,6 +64,28 @@ __all__ = [
 #: Anything else -- an ``AttributeError`` in a row accessor, a wiring error -- is a bug and
 #: propagates rather than reading as an outage.
 #:
+#: the columns a health row is read with
+_HEALTH_COLUMNS: Final[tuple[str, ...]] = (
+    "target_id",
+    "content_fingerprint",
+    "fingerprint_updated_at",
+    "consecutive_fetch_failures",
+    "circuit_state",
+    "blocked_until",
+    "last_blocked_at",
+    "last_block_kind",
+    "last_egress",
+    "robots_blocked_at",
+    "robots_blocked_reason",
+    "classified_fingerprint",
+    "classified_verdict",
+    "classified_evidence",
+    "session_state_sealed",
+    "session_state_expires_at",
+    "date_created",
+    "date_updated",
+)
+
 #: Private to this package: every degrading caller of a health read imports it from here, so the
 #: set is decided once.
 _HEALTH_STORE_READ_FAILURES: Final[tuple[type[Exception], ...]] = STORAGE_FAILURES
@@ -377,8 +400,12 @@ class ScrapeTargetHealthCollection(ScrapeCollection[ScrapeTargetHealth]):
         proves otherwise, and dropping it from this list would make a queue empty itself on a
         timer.
 
-        Served by the partial index ``scrape_target_health_circuit_state``, which was created
-        for this query in ``v010`` and has had nothing to serve since.
+        Read as two disjoint legs, each one page of its own partial index (``v014``) newest
+        first, merged here: a target with a bot-wall stamp sorts by it
+        (``scrape_target_health_walled``: walled now, or held back by ``robots.txt`` too), one
+        held back only by ``robots.txt`` by that stamp (``scrape_target_health_robots``). The two
+        together are exactly the targets above, in ``COALESCE(last_blocked_at,
+        robots_blocked_at)`` order, and neither leg reads a target that is not in the list.
 
         :param now: current time; injected by tests, defaults to now. Unused by the predicate
             today and taken anyway, so adding a freshness bound later is not a signature change
@@ -397,18 +424,36 @@ class ScrapeTargetHealthCollection(ScrapeCollection[ScrapeTargetHealth]):
             return []
         # cache-bypass: a multi-row scan by circuit state is not pk-addressable, so the L1
         # row cache cannot serve it.
-        rows = await self.l3_pool.fetch(
-            "SELECT target_id, content_fingerprint, fingerprint_updated_at, "
-            "consecutive_fetch_failures, circuit_state, blocked_until, last_blocked_at, "
-            "last_block_kind, last_egress, robots_blocked_at, robots_blocked_reason, "
-            "classified_fingerprint, classified_verdict, classified_evidence, "
-            "session_state_sealed, session_state_expires_at, date_created, date_updated "
-            "FROM scrape_target_health "
-            "WHERE (circuit_state <> 'closed' AND last_blocked_at IS NOT NULL) "
-            "   OR robots_blocked_at IS NOT NULL "
-            "ORDER BY COALESCE(last_blocked_at, robots_blocked_at) DESC LIMIT $1",
-            limit,
+        # walled now, or held back by robots.txt as well: by the bot-wall stamp (scrape_target_health_walled)
+        walled = await keyset_page(
+            self.l3_pool,
+            "scrape_target_health",
+            columns=_HEALTH_COLUMNS,
+            by={},
+            order=[Sort("last_blocked_at", cast="timestamptz", descending=True), Sort("target_id", descending=True)],
+            limit=limit,
+            where=[
+                Fragment(
+                    't."last_blocked_at" IS NOT NULL'
+                    """ AND (t."circuit_state" <> 'closed' OR t."robots_blocked_at" IS NOT NULL)"""
+                )
+            ],
         )
+        # held back only by robots.txt, never walled: by the robots stamp (scrape_target_health_robots)
+        robots = await keyset_page(
+            self.l3_pool,
+            "scrape_target_health",
+            columns=_HEALTH_COLUMNS,
+            by={},
+            order=[Sort("robots_blocked_at", cast="timestamptz", descending=True), Sort("target_id", descending=True)],
+            limit=limit,
+            where=[Fragment('t."robots_blocked_at" IS NOT NULL AND t."last_blocked_at" IS NULL')],
+        )
+        rows = sorted(
+            [*walled.rows, *robots.rows],
+            key=lambda row: (row["last_blocked_at"] or row["robots_blocked_at"], row["target_id"]),
+            reverse=True,
+        )[:limit]
         return [ScrapeTargetHealth(dict(row), is_new=False, collection=self) for row in rows]
 
 
