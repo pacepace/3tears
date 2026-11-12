@@ -176,6 +176,14 @@ class NoWholeReadsConfig:
         are called from repos this walk never reads, so there a step over a public function's parameter stays judged
         in its body. A definition referenced other than by a call the walk matches (handed on as a value, its module
         imported whole, a method name another definition shares) is never one
+    :ivar declared_parameters: ``<qualified function>.<parameter>`` (``_apply_slice.tables``,
+        ``Backend.export_partition.table``) onto the values the repo declares it holds where no caller the walk reads
+        says (a run-time mapping of a copy's tables, a protocol method 3tears calls): a ``str`` (or unannotated)
+        parameter holds one of them, any other a collection a loop over it binds each of; a name a loop of the
+        function binds (``apply_states.table`` for ``for table, pieces in small.items()``) each of them. Every read naming one is
+        judged once per value, through names the function binds from it once and its module's lookup functions
+        (``_state_column(table)``), so its key must key every member. Keep the values a module constant the repo's
+        own test holds equal to what runs; a declaration naming no parameter of the walk is a finding
     :ivar dependency_schema: whether 3tears' own declarations (its change log, notes and collections, which a
         consumer reads) key reads too; its indexes are never the repo's to give a purpose
     :ivar threetears_tables_only: whether only the tables 3tears declares are data tables (a ``TableSchema``, a
@@ -213,6 +221,7 @@ class NoWholeReadsConfig:
     helper_modules: tuple[str, ...] = ()
     relation_producers: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
     public_forwarders: bool = False
+    declared_parameters: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     threetears_tables_only: bool = False
     consumer_purposes: tuple[str, ...] = ()
     frozen_migrations: tuple[str, ...] = ()
@@ -414,6 +423,7 @@ def _hits(config: NoWholeReadsConfig) -> tuple[list[WholeReadHit], WholeReadScan
         view_producers={producer: _keys_of(declared) for producer, declared in config.view_producers.items()},
         relation_producers=frozenset(config.relation_producers),
         public_forwarders=config.public_forwarders,
+        declared_parameters=config.declared_parameters,
     )
     return scan.hits, scan
 
@@ -537,6 +547,11 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
             "check src_roots, since a walk that reads nothing reports nothing"
         )
     findings.extend(f"excluded prefix {prefix!r} matches no module; delete it" for prefix in scan.unmatched_exclusions)
+    findings.extend(
+        f"declared parameter {key!r} names no parameter of a function the walk reads (qualified as "
+        "<Class>.<method>.<parameter>); fix or delete the declaration"
+        for key in sorted(set(config.declared_parameters) - scan.declared_matched)
+    )
     exemptions, defects = _parse(config.ledger_dir / _EXEMPTIONS_NAME)
     findings.extend(defects)
     for exemption in exemptions:

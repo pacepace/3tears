@@ -54,6 +54,7 @@ from threetears.enforcement.no_whole_reads.flow import (
     RelationFlow,
     RepoForwarders,
     step_builders,
+    default_of,
     step_relation_arguments,
 )
 from threetears.enforcement.no_whole_reads.helpers import (
@@ -132,6 +133,10 @@ TRANSIENT_PRODUCED: Final[str] = "__transient_produced__"
 
 #: the most combinations of resolved parameter values a keyed helper call is judged under; past it, unresolved
 _MAX_PARAMETER_COMBINATIONS: Final[int] = 16
+
+#: the most calls a declared parameter's values make of one helper call (``declared_parameters``): each value is one
+#: relation or column of a family the repo names, judged in turn, so a family is linear, never a cross of sites
+_MAX_DECLARED_COMBINATIONS: Final[int] = 512
 
 #: how many calls up a parameter's value is followed (``run`` -> ``_write`` -> ``_held`` -> the helper)
 _PARAMETER_DEPTH: Final[int] = 6
@@ -608,6 +613,7 @@ class WholeReadScan:
     constants: set[str] = field(default_factory=set)
     schema: SchemaCatalog = field(default_factory=SchemaCatalog)
     statements: list[WrittenStatement] = field(default_factory=list)
+    declared_matched: set[str] = field(default_factory=set)
 
 
 #: callees that only quote the name they are given: checked before a template function, since a quoter returning
@@ -704,6 +710,14 @@ def _placeholder(value: ast.expr, constants: dict[str, str], produced: Produced 
         if isinstance(node, (ast.Name, ast.Attribute))
     ]
     return PK_TOKEN if any(_KEY_NAME.search(found) for found in names) else "{}"
+
+
+#: 3tears' keyed-helper connections over a local database (DuckDB in process): a helper handed one reads its tables
+_LOCAL_CONNECTIONS: Final[frozenset[str]] = frozenset({"InlineDuckDB"})
+
+
+#: how many bindings deep a family name is followed through a function's own names (``_declared_calls``)
+_INLINE_DEPTH: Final[int] = 3
 
 
 #: the most scopes a function's if/else branch bindings are judged in
@@ -869,6 +883,155 @@ def _definitions(tree: ast.Module) -> list[tuple[ast.FunctionDef | ast.AsyncFunc
                 for member in statement.body
                 if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
             ]
+    return found
+
+
+def _binds(function: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:
+    """whether a function binds ``name`` itself: a parameter, or a store in its own body.
+
+    :param function: the function
+    :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+    :param name: the name
+    :ptype name: str
+    :return: whether it does
+    :rtype: bool
+    """
+    arguments = function.args
+    if name in {a.arg for a in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]}:
+        return True
+    return any(
+        isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id == name
+        for node in _own_nodes(function.body)
+    )
+
+
+def _local_relation(call: ast.Call, declared: frozenset[str]) -> ast.Call:
+    """a helper call on a local database's connection (``InlineDuckDB(cursor)``) naming a table a declared parameter
+    holds (``declared_parameters``: a copy's table) bare, written as the table of that database's ``main`` schema: a
+    local copy's relation, never the L3 table of the same name. Any other bare name (a scratch relation the code
+    registers) is left as it is.
+
+    :param call: the helper call, its arguments resolved
+    :ptype call: ast.Call
+    :param declared: every value a declared parameter holds
+    :ptype declared: frozenset[str]
+    :return: the call, its relation local where it is
+    :rtype: ast.Call
+    """
+    args = list(call.args)
+    if not (
+        len(args) > 1
+        and isinstance(args[0], ast.Call)
+        and _final(args[0]) in _LOCAL_CONNECTIONS
+        and isinstance(args[1], ast.Constant)
+        and isinstance(args[1].value, str)
+        and args[1].value in declared
+    ):
+        return call
+    args[1] = ast.Constant(f"main.{args[1].value}")
+    return ast.Call(func=call.func, args=args, keywords=call.keywords)
+
+
+def _declared_of(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, qualified: str, declared: Mapping[str, tuple[str, ...]]
+) -> dict[str, tuple[list[Passed], str]]:
+    """the function's parameters the repo declares the values of (``declared_parameters``, keyed
+    ``<qualified function>.<parameter>``), each onto its values and whether it holds one of them (a ``str`` or
+    unannotated parameter) or a collection of them (a loop over it binds each).
+
+    :param function: the function
+    :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+    :param qualified: its qualified name (``Class.method``)
+    :ptype qualified: str
+    :param declared: the repo's declarations
+    :ptype declared: Mapping[str, tuple[str, ...]]
+    :return: name onto its values and how it holds them (``one``, ``many``, ``loop``)
+    :rtype: dict[str, tuple[list[Passed], str]]
+    """
+    if not declared:
+        return {}
+    found: dict[str, tuple[list[Passed], str]] = {}
+    arguments = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
+    for argument in arguments:
+        values = declared.get(f"{qualified}.{argument.arg}")
+        if values is None:
+            continue
+        annotation = argument.annotation
+        one = annotation is None or (isinstance(annotation, ast.Name) and annotation.id == "str")
+        found[argument.arg] = (list(values), "one" if one else "many")
+    # a name a loop of the function binds (``for table, pieces in small.items()``): each value, in every loop
+    for node in _own_nodes(function.body):
+        target = node.target if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)) else None
+        if isinstance(target, ast.Tuple) and target.elts:
+            target = target.elts[0]
+        if isinstance(target, ast.Name) and target.id not in found:
+            values = declared.get(f"{qualified}.{target.id}")
+            if values is not None:
+                found[target.id] = (list(values), "loop")
+    return found
+
+
+def _lookup_functions(
+    tree: ast.Module, module_values: Mapping[str, ast.expr], constants: dict[str, str]
+) -> dict[str, tuple[dict[str, str], str | None]]:
+    """the module's top-level lookup functions: one parameter, and one statement after any docstring returning a
+    module mapping of strings looked up by it (``return _STATE_COLUMNS.get(table, STATE_COLUMN)``, ``return
+    _COLUMNS[table]``), each onto the mapping and its default (None for a subscript).
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param module_values: the module's names onto what its top level binds them to
+    :ptype module_values: Mapping[str, ast.expr]
+    :param constants: the module's names bound to strings
+    :ptype constants: dict[str, str]
+    :return: name onto mapping and default
+    :rtype: dict[str, tuple[dict[str, str], str | None]]
+    """
+    found: dict[str, tuple[dict[str, str], str | None]] = {}
+    for function in tree.body:
+        if not isinstance(function, ast.FunctionDef) or len(function.args.args) != 1 or function.args.kwonlyargs:
+            continue
+        body = [
+            statement
+            for statement in function.body
+            if not (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant))
+        ]
+        if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+            continue
+        parameter = function.args.args[0].arg
+        value = body[0].value
+        mapping: ast.expr | None = None
+        default: str | None = None
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and value.func.attr == "get"
+            and len(value.args) == 2
+            and isinstance(value.args[0], ast.Name)
+            and value.args[0].id == parameter
+        ):
+            mapping = value.func.value
+            default = _constant_text(value.args[1], constants)
+            if default is None:
+                continue
+        elif isinstance(value, ast.Subscript) and isinstance(value.slice, ast.Name) and value.slice.id == parameter:
+            mapping = value.value
+        held = module_values.get(mapping.id) if isinstance(mapping, ast.Name) else None
+        if (
+            isinstance(held, ast.Call)
+            and isinstance(held.func, ast.Name)
+            and held.func.id in {"MappingProxyType", "dict"}
+        ):
+            held = held.args[0] if len(held.args) == 1 else None
+        if not isinstance(held, ast.Dict):
+            continue
+        pairs = [
+            (None if key is None else _constant_text(key, constants), _constant_text(item, constants))
+            for key, item in zip(held.keys, held.values, strict=True)
+        ]
+        if any(key is None or item is None for key, item in pairs):
+            continue
+        found[function.name] = ({key: item for key, item in pairs if key is not None and item is not None}, default)
     return found
 
 
@@ -1052,6 +1215,7 @@ class _ModuleWalk(ast.NodeVisitor):
         forwarders: RepoForwarders | None = None,
         builders: frozenset[str] = frozenset(),
         never_none: frozenset[tuple[str, str]] = frozenset(),
+        declared: Mapping[str, tuple[str, ...]] | None = None,
     ) -> None:
         """prepare a walk of one module.
 
@@ -1118,6 +1282,15 @@ class _ModuleWalk(ast.NodeVisitor):
         self._parameter_values = parameter_values or {}
         self._parameter_sites = parameter_sites or {}
         self._tuples = tuples or {}
+        #: ``<qualified function>.<parameter>`` onto the values the repo declares it holds (``declared_parameters``)
+        self._declared = dict(declared or {})
+        self._declared_values = frozenset(value for values in self._declared.values() for value in values)
+        #: the declarations a function of this module has the parameter of
+        self.declared_matched: set[str] = set()
+        #: the module's lookup functions (:func:`_lookup_functions`), read once its strings are known
+        self._lookups: dict[str, tuple[dict[str, str], str | None]] | None = None
+        #: each nested function onto the function it is nested in, read once
+        self._enclosing: dict[int, ast.FunctionDef | ast.AsyncFunctionDef] | None = None
         self.source = source
         self.hits: list[WholeReadHit] = []
         #: every SQL statement the module writes as text, as the walk reads it
@@ -1461,6 +1634,9 @@ class _ModuleWalk(ast.NodeVisitor):
         """
         self._stack.append(node.name)
         self.definitions.add(f"{self.path}::{self._function}")
+        self.declared_matched.update(
+            f"{self._function}.{name}" for name in _declared_of(node, self._function, self._declared)
+        )
         # a source change read's terms hold in the function and every function nested in it
         self._source.append(self._source[-1] if self._source else _NO_SOURCE)
         self._mark_operator(node)
@@ -2386,6 +2562,10 @@ class _ModuleWalk(ast.NodeVisitor):
         passed = _passed_arguments(call, callee)
         if passed is None:
             return []
+        # a parameter the call leaves to its default holds the default (``flow.handed_arguments`` hands it)
+        for name, _ in callee.parameters():
+            if name not in passed and (default := default_of(callee.function, name)) is not None:
+                passed[name] = default
         handed = next((name for name, value in passed.items() if value is argument), None)
         if handed is None:
             return []
@@ -2436,6 +2616,20 @@ class _ModuleWalk(ast.NodeVisitor):
         }
         receivers = {a.arg for a in [*callee.function.args.posonlyargs, *callee.function.args.args]} - parameters
         unbound: list[str] = []
+        # a local the forwarder binds once by a plain assignment (``within = Fragment(...)``): what it binds
+        stored: dict[str, int] = {}
+        for node in ast.walk(callee.function):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                stored[node.id] = stored.get(node.id, 0) + 1
+        once = {
+            node.targets[0].id: node.value
+            for node in ast.walk(callee.function)
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and stored.get(node.targets[0].id) == 1
+        }
+        inlining: list[str] = []
 
         class _Bind(ast.NodeTransformer):
             def visit_Name(self, node: ast.Name) -> ast.expr:
@@ -2445,6 +2639,13 @@ class _ModuleWalk(ast.NodeVisitor):
                     return node
                 if node.id in parameters:
                     return passed[node.id]
+                if node.id in once and isinstance(node.ctx, ast.Load) and len(inlining) < _INLINE_DEPTH:
+                    inlining.append(node.id)
+                    try:
+                        inlined: ast.expr = self.visit(ast.parse(ast.unparse(once[node.id]), mode="eval").body)
+                    finally:
+                        inlining.pop()
+                    return inlined
                 if node.id in local:
                     return ast.Name(id=f"__forwarded__{node.id}", ctx=node.ctx)
                 return node
@@ -2600,18 +2801,18 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: None
         """
         statement: HelperStatement
-        resolved = self._resolved_call(node)
         hits: dict[str, str] = {}
         # a judged finding of a call one site's values make is that site's: recorded where the caller passes them
         passed: dict[tuple[str, int, str, str], str] = {}
         for call, at in (
             (matched, at)
-            for branched in _branch_calls(self._none_folded(resolved))
+            for declared in self._declared_calls(node)
+            for branched in _branch_calls(self._none_folded(self._resolved_call(declared)))
             for picked in self._mapping_calls(branched)
             for each, at in self._parameter_calls(picked)
             for matched in self._match_calls(each)
         ):
-            for statement in self._helper_statements(call):
+            for statement in self._helper_statements(_local_relation(call, self._declared_values)):
                 if statement.sql is UNSEEN or statement.sql is None:
                     hits.setdefault(f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(site))
                     continue
@@ -2999,9 +3200,16 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: list[tuple[ast.Call, Site | None]]
         """
         function = self._function_node
-        if function is None or not (self._parameter_values or self._tuples):
+        declared = _declared_of(function, self._function, self._declared) if function is not None else {}
+        if function is None or not (self._parameter_values or self._tuples or declared):
             return [(call, None)]
-        bindings = _function_bindings(function, self._tuples)
+        bindings = _function_bindings(function, self._tuples, declared)
+        # a declared value (``declared_parameters``) is one of a family judged member by member: its own bound
+        most = (
+            _MAX_DECLARED_COMBINATIONS
+            if declared or any(self._declared_site(name) for name in self._parameter_sites_of(function))
+            else _MAX_PARAMETER_COMBINATIONS
+        )
         arguments = [*call.args, *(keyword.value for keyword in call.keywords)]
         named = _argument_names(arguments)
         # names every site reads alike: a loop over a module tuple, an attribute kept from the constructor
@@ -3042,7 +3250,7 @@ class _ModuleWalk(ast.NodeVisitor):
             choices = {**shared, **given}
             for chosen in itertools.product(*choices.values()):
                 combinations.append((dict(zip(choices, chosen, strict=True)), at))
-                if len(combinations) > _MAX_PARAMETER_COMBINATIONS:
+                if len(combinations) > most:
                     return [(call, None)]
         calls: list[tuple[ast.Call, Site | None]] = []
         seen: set[str] = set()
@@ -3050,9 +3258,10 @@ class _ModuleWalk(ast.NodeVisitor):
             bound = _Substituted(combination)
             made = ast.Call(
                 func=call.func,
-                args=[_folded_literals(bound.visit(_copied(argument))) for argument in call.args],
+                args=[self._looked_up(_folded_literals(bound.visit(_copied(argument)))) for argument in call.args],
                 keywords=[
-                    ast.keyword(arg=k.arg, value=_folded_literals(bound.visit(_copied(k.value)))) for k in call.keywords
+                    ast.keyword(arg=k.arg, value=self._looked_up(_folded_literals(bound.visit(_copied(k.value)))))
+                    for k in call.keywords
                 ],
             )
             text = f"{ast.unparse(made)} {None if site is None else (site.path, site.line)}"
@@ -3060,6 +3269,134 @@ class _ModuleWalk(ast.NodeVisitor):
                 seen.add(text)
                 calls.append((made, site))
         return calls
+
+    def _parameter_sites_of(self, function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+        """the qualified scopes of each call site of ``function``.
+
+        :param function: the function
+        :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+        :return: each site's calling scope
+        :rtype: list[str]
+        """
+        return [site.function for site in self._parameter_sites.get(function.name, [])]
+
+    def _declared_site(self, scope: str) -> bool:
+        """whether a calling scope has a declared parameter (``declared_parameters``), whose values its call hands on.
+
+        :param scope: the calling scope's qualified name
+        :ptype scope: str
+        :return: whether it has one
+        :rtype: bool
+        """
+        return any(key.rsplit(".", 1)[0] == scope for key in self._declared)
+
+    def _declared_calls(self, call: ast.Call) -> list[ast.Call]:
+        """the call once per value of each name in it bound to a declared family (``declared_parameters``): the
+        declared parameter itself, a name a loop over it binds (``for table in tables``), and a name the function
+        binds once from either (``held_in = f"main.{table}"``, ``column = quote_identifier(_state_column(table))``),
+        put in place, each value a literal, a lookup function over it read (:func:`_lookup_functions`). Every value
+        is judged, so a key the read binds must key every member; a call naming no such name is itself.
+
+        :param call: the helper call, as written
+        :ptype call: ast.Call
+        :return: the calls to judge
+        :rtype: list[ast.Call]
+        """
+        function = self._function_node
+        declared = _declared_of(function, self._function, self._declared) if function is not None else {}
+        if function is None or not declared:
+            return [call]
+        family = _function_bindings(function, self._tuples, declared).loops
+        plain = _function_bindings(function, self._tuples).loops
+        named = {name: values for name, values in family.items() if name not in plain}
+        if not named:
+            return [call]
+        inlined = self._inlined_locals(call, function, frozenset(named))
+        used = sorted({node.id for node in ast.walk(inlined) if isinstance(node, ast.Name) and node.id in named})
+        if not used:
+            return [call]
+        texts = [[value for value in named[name] if isinstance(value, str)] for name in used]
+        if any(len(values) != len(named[name]) for values, name in zip(texts, used, strict=True)):
+            return [call]
+        calls: list[ast.Call] = []
+        seen: set[str] = set()
+        for chosen in itertools.product(*texts):
+            if len(calls) >= _MAX_DECLARED_COMBINATIONS:
+                return [call]
+            bound = _Substituted({name: ast.Constant(value) for name, value in zip(used, chosen, strict=True)})
+            made = self._looked_up(bound.visit(_copied(inlined)))
+            assert isinstance(made, ast.Call)
+            text = ast.unparse(made)
+            if text not in seen:
+                seen.add(text)
+                calls.append(made)
+        return calls
+
+    def _inlined_locals(
+        self, call: ast.Call, function: ast.FunctionDef | ast.AsyncFunctionDef, family: frozenset[str]
+    ) -> ast.Call:
+        """the call with each name the function binds once (a plain assignment) to an expression reading a family
+        name written as that expression, a few bindings deep.
+
+        :param call: the call
+        :ptype call: ast.Call
+        :param function: the function it is in
+        :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+        :param family: the names bound to a declared family
+        :ptype family: frozenset[str]
+        :return: the call, inlined
+        :rtype: ast.Call
+        """
+        stores: dict[str, int] = {}
+        bound: dict[str, ast.expr] = {}
+        for node in _own_nodes(function.body):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                stores[node.id] = stores.get(node.id, 0) + 1
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                bound[node.targets[0].id] = node.value
+        reading = set(family)
+        local: dict[str, ast.expr] = {}
+        for _ in range(_INLINE_DEPTH):
+            for name, value in bound.items():
+                if stores.get(name) == 1 and name not in local and name not in family:
+                    if any(isinstance(node, ast.Name) and node.id in reading for node in ast.walk(value)):
+                        local[name] = value
+                        reading.add(name)
+        made: ast.expr = _copied(call)
+        for _ in range(_INLINE_DEPTH):
+            made = _Substituted(local).visit(made)
+        assert isinstance(made, ast.Call)
+        return made
+
+    def _looked_up(self, node: ast.expr) -> ast.expr:
+        """``node`` with each call of a lookup function of the module on a literal (``_state_column("lsf_rows")``)
+        written as the string it returns (:func:`_lookup_functions`).
+
+        :param node: the expression
+        :ptype node: ast.expr
+        :return: it, looked up
+        :rtype: ast.expr
+        """
+        if self._lookups is None:
+            self._lookups = _lookup_functions(self._tree, self._module_values, self._envs[0])
+        if not self._lookups:
+            return node
+        lookups = self._lookups
+
+        class _LookedUp(ast.NodeTransformer):
+            def visit_Call(self, call: ast.Call) -> ast.AST:
+                self.generic_visit(call)
+                found = lookups.get(call.func.id) if isinstance(call.func, ast.Name) else None
+                argument = call.args[0] if len(call.args) == 1 and not call.keywords else None
+                if found is None or not (isinstance(argument, ast.Constant) and isinstance(argument.value, str)):
+                    return call
+                mapping, default = found
+                value = mapping.get(argument.value, default)
+                return call if value is None else ast.Constant(value)
+
+        looked = _LookedUp().visit(node)
+        assert isinstance(looked, ast.expr)
+        return looked
 
     def _held_parameter(self, attribute: str) -> tuple[str, str] | None:
         """the constructor parameter the enclosing class keeps as ``self.<attribute>``: assigned once in the whole
@@ -3278,6 +3615,25 @@ class _ModuleWalk(ast.NodeVisitor):
             )
         )
 
+    def _enclosing_function(
+        self, function: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+        """the function ``function`` is nested in directly; None for one at a module's or class's top level.
+
+        :param function: the function
+        :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+        :return: the enclosing function, or None
+        :rtype: ast.FunctionDef | ast.AsyncFunctionDef | None
+        """
+        if self._enclosing is None:
+            self._enclosing = {}
+            for outer in ast.walk(self._tree):
+                if isinstance(outer, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for inner in _own_nodes(outer.body):
+                        if isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            self._enclosing[id(inner)] = outer
+        return self._enclosing.get(id(function))
+
     def _receiver_class(
         self,
         node: ast.Call,
@@ -3319,6 +3675,10 @@ class _ModuleWalk(ast.NodeVisitor):
                         function,
                         owner,
                     )
+            enclosing = self._enclosing_function(function)
+            if not known and enclosing is not None and not _binds(function, receiver.id):
+                # a name a nested function reads from the function around it (a closure): that function's
+                known = self._receiver_class(node, enclosing, owner)
         elif (
             isinstance(receiver, ast.Attribute)
             and isinstance(receiver.value, ast.Name)
@@ -4844,29 +5204,49 @@ class _Bindings:
     tuples: dict[str, list[Passed]] = field(default_factory=dict)
 
 
-def _function_bindings(function: ast.FunctionDef | ast.AsyncFunctionDef, tuples: dict[str, list[Passed]]) -> _Bindings:
-    """the parameters and loop names of ``function`` whose values the walk can follow.
+def _function_bindings(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    tuples: dict[str, list[Passed]],
+    declared: Mapping[str, tuple[list[Passed], str]] | None = None,
+) -> _Bindings:
+    """the parameters and loop names of ``function`` whose values the walk can follow: a declared parameter
+    (``declared_parameters``) holds each of its values when it is a string, and a loop over it binds each of them.
 
     :param function: the function
     :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
     :param tuples: the module tuples it may loop over
     :ptype tuples: dict[str, list[Passed]]
+    :param declared: its declared names onto their values, and how each holds them: ``one`` (a string parameter),
+        ``many`` (a collection parameter a loop over binds each), ``loop`` (a loop target, each value in turn)
+    :ptype declared: Mapping[str, tuple[list[Passed], str]] | None
     :return: its bindings
     :rtype: _Bindings
     """
+    declared = declared or {}
+    tuples = {**tuples, **{name: list(values) for name, (values, how) in declared.items() if how == "many"}}
     stores: dict[str, int] = {}
     for node in _own_nodes(function.body):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             stores[node.id] = stores.get(node.id, 0) + 1
-    loops: dict[str, list[Passed]] = {}
+    # a name every binding of which is a loop over known elements (``for table in tables`` twice): each of them
+    looped_over: dict[str, list[list[Passed] | None]] = {}
     for node in _own_nodes(function.body):
         looped = (
             (node.target, node.iter) if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)) else (None, None)
         )
         target, over = looped
-        elements = _iterated(over, tuples) if over is not None else None
-        if isinstance(target, ast.Name) and elements is not None and stores.get(target.id) == 1:
-            loops[target.id] = elements
+        if isinstance(target, ast.Name) and over is not None:
+            looped_over.setdefault(target.id, []).append(_iterated(over, tuples))
+    loops: dict[str, list[Passed]] = {}
+    for name, iterations in looped_over.items():
+        if stores.get(name) == len(iterations) and all(elements is not None for elements in iterations):
+            union: list[Passed] = []
+            for elements in iterations:
+                union += [element for element in elements or [] if element not in union]
+            loops[name] = union
+    for name, (values, how) in declared.items():
+        if (how == "one" and name not in stores) or how == "loop":
+            loops[name] = list(values)
     arguments = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
     return _Bindings(
         parameters=frozenset(argument.arg for argument in arguments if argument.arg not in stores),
@@ -4894,6 +5274,12 @@ def _iterated(over: ast.expr, tuples: dict[str, list[Passed]]) -> list[Passed] |
     if isinstance(over, ast.IfExp):
         body, orelse = _iterated(over.body, tuples), _iterated(over.orelse, tuples)
         return None if body is None or orelse is None else [*body, *orelse]
+    if isinstance(over, ast.Call) and not over.keywords:
+        # ``sorted(tables)``, ``list(tables)``, ``tables.keys()``: the same elements
+        if isinstance(over.func, ast.Name) and over.func.id in {"sorted", "list", "tuple"} and len(over.args) == 1:
+            return _iterated(over.args[0], tuples)
+        if isinstance(over.func, ast.Attribute) and over.func.attr == "keys" and not over.args:
+            return _iterated(over.func.value, tuples)
     return None
 
 
@@ -5136,6 +5522,7 @@ def _parameter_values(
     strings: dict[str, dict[str, str]],
     tuples: dict[str, dict[str, list[Passed]]] | None = None,
     sites: dict[str, list[Site]] | None = None,
+    declared: Mapping[str, tuple[str, ...]] | None = None,
 ) -> dict[tuple[str, str], list[Passed]]:
     """for every function the repo defines once by its name, what each call site passes each of its parameters: a
     literal, or a module constant of the calling module (its own, or one it imports from the repo); a default the
@@ -5152,6 +5539,9 @@ def _parameter_values(
     :param sites: filled, when given, with each function's call sites, one at a time: what each passes each
         parameter, so a call is judged by one site's values together, never one site's crossed with another's
     :ptype sites: dict[str, list[Site]] | None
+    :param declared: the parameters the repo declares the values of (``declared_parameters``): a site passing one,
+        or a name a loop over one binds, passes each value
+    :ptype declared: Mapping[str, tuple[str, ...]] | None
     :return: ``(function, parameter)`` onto each site's value, or None
     :rtype: dict[tuple[str, str], list[Passed]]
     """
@@ -5180,7 +5570,14 @@ def _parameter_values(
                 scopes.append((node, node.body))
         for function, body in scopes:
             where = (relative, "<module>" if function is None else qualified.get(id(function), function.name))
-            caller = None if function is None else (function.name, _function_bindings(function, module_tuples))
+            caller = (
+                None
+                if function is None
+                else (
+                    function.name,
+                    _function_bindings(function, module_tuples, _declared_of(function, where[1], declared or {})),
+                )
+            )
             # a call on an imported module (``keyed.holds_any``) is that module's, not a method of the same name
             calls = [
                 node
@@ -5693,6 +6090,7 @@ def scan_whole_reads(
     view_producers: Mapping[str, tuple[tuple[str, ...], ...]] | None = None,
     relation_producers: frozenset[str] = frozenset(),
     public_forwarders: bool = False,
+    declared_parameters: Mapping[str, tuple[str, ...]] | None = None,
 ) -> WholeReadScan:
     """walk every module under ``src_roots`` and record every whole read, write and call.
 
@@ -5733,6 +6131,9 @@ def scan_whole_reads(
     :param public_forwarders: whether a public function, method or constructor that hands a parameter to a step is
         judged at each of its calls in the repo, as a private one is in its module (:class:`RepoForwarders`)
     :ptype public_forwarders: bool
+    :param declared_parameters: ``<qualified function>.<parameter>`` onto the values the repo declares it holds: a
+        relation or column named at run time (a copy's every table), judged once per value
+    :ptype declared_parameters: Mapping[str, tuple[str, ...]] | None
     :return: the walk
     :rtype: WholeReadScan
     """
@@ -5760,7 +6161,11 @@ def scan_whole_reads(
     cte_arguments = _cte_arguments([(relative, parse_python_path(path)) for relative, path in modules])
     parameter_sites: dict[str, list[Site]] = {}
     parameter_values = _parameter_values(
-        [(relative, parse_python_path(path)) for relative, path in modules], strings, tuples, parameter_sites
+        [(relative, parse_python_path(path)) for relative, path in modules],
+        strings,
+        tuples,
+        parameter_sites,
+        declared_parameters,
     )
     match_builders = _match_builders([(relative, parse_python_path(path)) for relative, path in modules], strings)
     never_none = _never_none_parameters([(relative, parse_python_path(path)) for relative, path in modules])
@@ -5797,6 +6202,7 @@ def scan_whole_reads(
             forwarders=forwarders,
             builders=builders,
             never_none=never_none,
+            declared=declared_parameters,
         )
 
     # the repo's step builders, by name across every walked module: a call of one is a step judged where it is
@@ -5827,6 +6233,7 @@ def scan_whole_reads(
         module_classes[relative] = walk.module_classes
         scan.operators.extend(walk.operators)
         imports[relative] = walk.imports
+        scan.declared_matched.update(walk.declared_matched)
         scan.files_scanned += 1
     resolved, callers = _resolve(
         calls, scan.hits, module_functions, scan.definitions, stubs, imports, module_classes, scan.operators

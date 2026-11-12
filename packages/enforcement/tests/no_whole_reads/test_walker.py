@@ -5086,3 +5086,174 @@ def test_a_module_function_wrapping_its_parameter_as_a_step_relation_reads_as_th
     assert ("by_kind", "non-key-where copy.{}") in found, found
     assert ("static_by_state", "non-key-where copy.benchmarks") in found, found
     assert ("unwrapped", "unknown-predicate scan(rel)") in found, found
+
+
+_COPY_FAMILY = """
+    from typing import Any, Final, Mapping
+
+    from threetears.core import keyed
+    from threetears.core.keyed import InlineDuckDB, quote_identifier
+
+    STATE_COLUMN: Final = "join_state_code"
+    HELD_RUNS: Final = "held_runs"
+    _STATE_COLUMNS: Final = {HELD_RUNS: "state"}
+
+
+    def _state_column(table: str) -> str:
+        \"\"\"the column naming a row's state.\"\"\"
+        return _STATE_COLUMNS.get(table, STATE_COLUMN)
+
+
+    def _held_rows(connection, table: str, states):
+        return keyed.read_keyed_arrow(InlineDuckDB(connection), table, keys=keyed.KeyBatch((_state_column(table),), [(s,) for s in states]))
+
+
+    def apply_slice(scratch, connection, tables: Mapping[str, Any], states):
+        for table in tables:
+            _held_rows(connection, table, states)
+        for table in tables:
+            column = quote_identifier(_state_column(table))
+            held_in = f"main.{table}"
+            scratch.step_arrow(keyed.scan(held_in, where=[keyed.Fragment(f"t.{column} IN (SELECT unnest($1))", (list(states),))]))
+
+
+    def small_parts(connection, small, states):
+        for table, pieces in small.items():
+            _held_rows(connection, table, states)
+
+
+    def by_kind(scratch, tables: Mapping[str, Any], kind):
+        for table in sorted(tables):
+            scratch.step_arrow(keyed.scan(f"main.{table}", where=[keyed.Fragment("t.kind = $1", (kind,))]))
+
+
+    def undeclared(scratch, tables: Mapping[str, Any], states):
+        for table in tables:
+            column = quote_identifier(_state_column(table))
+            scratch.step_arrow(keyed.scan(f"main.{table}", where=[keyed.Fragment(f"t.{column} = $1", (states,))]))
+
+
+    class Backend:
+        def export_partition(self, table: str, column: str, value):
+            return _partition(None, table, column, value)
+
+
+    def _partition(cursor, table: str, column: str, value):
+        return keyed.read_keyed_arrow(InlineDuckDB(cursor), table, keys=keyed.KeyBatch((column,), [(value,)]))
+"""
+
+#: the copy's keys: by default its state, the race; the held runs table by its own state column too
+_FAMILY_KEYS = {"*": (("join_state_code",), ("office_key",)), "held_runs": (("join_state_code", "run_id"), ("state",))}
+
+
+def test_a_declared_parameter_is_judged_once_per_value_it_declares(tmp_path: Path) -> None:
+    """Flips if a read over a declared parameter's values (``declared_parameters``: a collection a loop binds each
+    of, a string holding one) stays unknown when each value's own key is bound (``apply_slice``, its forwarder
+    ``_held_rows`` at its call, ``Backend.export_partition`` through ``_partition``: a lookup function's column per
+    table, through names bound once from the loop; ``small_parts``, a declared loop target), if a member keyed otherwise is not reported by name
+    (``benchmarks`` read by state: its key is ``benchmark``), if a read off every member's key passes (``by_kind``),
+    or if an undeclared parameter is judged rather than left as the run-time relation it is (``undeclared``)."""
+    members = ("rows", "held_runs", "benchmarks")
+    declared = {
+        "apply_slice.tables": members,
+        "by_kind.tables": members,
+        "small_parts.table": ("rows", "held_runs"),
+        "Backend.export_partition.table": ("rows", "held_runs"),
+        "Backend.export_partition.column": ("join_state_code",),
+    }
+    keys = {**_FAMILY_KEYS, "benchmarks": (("benchmark",),)}
+    config = _config(tmp_path, {"copy/apply.py": _COPY_FAMILY}, local_relations=keys, declared_parameters=declared)
+    found = _symbols(config)
+    assert ("apply_slice", 'non-key-where "main"."benchmarks"') in found, found
+    assert ("apply_slice", 'whole-select "main"."benchmarks"') in found, found
+    assert not any(function == "apply_slice" and "held_runs" in symbol for function, symbol in found), found
+    assert ("by_kind", 'non-key-where "main"."rows"') in found, found
+    assert ("undeclared", "non-key-where copy.{}") in found, found
+    assert not any(function in {"Backend.export_partition", "_partition"} for function, _ in found), found
+    assert not any(function == "_held_rows" for function, _ in found), found
+
+
+def test_a_declared_parameter_naming_no_parameter_is_a_finding(tmp_path: Path) -> None:
+    """Flips if a declaration (``declared_parameters``) naming no parameter of a function the walk reads (a renamed
+    function or parameter) is silently ignored, or if one naming a parameter is reported."""
+    declared = {"apply_slice.tables": ("rows",), "apply_slice.gone": ("rows",), "renamed.tables": ("rows",)}
+    config = _config(
+        tmp_path, {"copy/apply.py": _COPY_FAMILY}, local_relations=_FAMILY_KEYS, declared_parameters=declared
+    )
+    stale = [finding for finding in no_whole_reads_findings(config) if finding.startswith("declared parameter")]
+    assert len(stale) == 2 and all("apply_slice.tables" not in line for line in stale), stale
+
+
+_DEFAULTED_FORWARDER = """
+    from threetears.core import keyed
+
+    FEED_RACE = "feed_race"
+    FEED_COUNTY = "feed_county"
+
+
+    def moves(states, feed_race: str = f"main.{FEED_RACE}", feed_county: str = f"main.{FEED_COUNTY}"):
+        within = keyed.Fragment("t.join_state_code IN (SELECT unnest($1))", (sorted(states),))
+        race = keyed.scan(feed_race, ["office_key"], where=[within])
+        county = keyed.scan(feed_county, ["office_key"], where=[within])
+        return keyed.union(race, county)
+
+
+    def by_kind(kinds, feed: str = f"main.{FEED_RACE}"):
+        return keyed.scan(feed, ["office_key"], where=[keyed.Fragment("t.kind IN (SELECT unnest($1))", (kinds,))])
+
+
+    class _Work:
+        def put(self, rows):
+            return keyed.change_relation("rows")
+
+        def step(self, step):
+            return step
+
+
+    class Settle:
+        def moved(self, of):
+            work: _Work = self.work
+
+            def made(states):
+                race, county = (work.put(of[name]) for name in (FEED_RACE, FEED_COUNTY))
+                return work.step(moves(states, race, county))
+
+            return made(["VA"])
+
+        def unpacked_whole(self, of):
+            work: _Work = self.work
+
+            def made(states):
+                race, county = (of[name] for name in (FEED_RACE, FEED_COUNTY))
+                return work.step(moves(states, race, county))
+
+            return made(["VA"])
+
+
+    def copy_moves(states):
+        return moves(states)
+
+
+    def copy_kinds(kinds):
+        return by_kind(kinds)
+"""
+
+
+def test_a_forwarder_s_defaulted_relation_is_judged_at_the_call_that_leaves_it(tmp_path: Path) -> None:
+    """Flips if a forwarder's relation parameter a call leaves to its default is not judged there with the steps the
+    forwarder makes of it (``copy_moves``: the copy's feeds by state, keyed; ``copy_kinds``: a default read off the
+    key, reported at the call), if a change set a closure's receiver makes (``work`` annotated in the function around
+    it) or names unpacked from a comprehension of such change sets are not read as change sets (``Settle.moved``),
+    or if names unpacked from a comprehension of anything else are (``Settle.unpacked_whole``)."""
+    found = _symbols(
+        _config(
+            tmp_path,
+            {"copy/moves.py": _DEFAULTED_FORWARDER},
+            local_relations=_FAMILY_KEYS,
+            transient_producers=frozenset({"_Work.put"}),
+            public_forwarders=True,
+        )
+    )
+    assert ("copy_kinds", 'non-key-where "main"."feed_race"') in found, found
+    assert not any(function in {"copy_moves", "moves", "Settle.moved.made"} for function, _ in found), found
+    assert any(function == "Settle.unpacked_whole.made" for function, _ in found), found

@@ -223,6 +223,22 @@ def bare_table(name: str) -> str | None:
 _L3_SCHEMAS: Final[frozenset[str]] = frozenset({"public", "pg_catalog"})
 
 
+#: the local database's own schema (DuckDB's, SQLite's): a table in it is a local copy's
+_LOCAL_MAIN: Final[str] = "main"
+
+
+def _schema_part(name: str) -> str | None:
+    """the schema a relation is qualified by, unquoted and lowercased; None when it has none.
+
+    :param name: the relation as written
+    :ptype name: str
+    :return: the schema, or None
+    :rtype: str | None
+    """
+    parts = re.findall(r"\"[^\"]+\"|[^.\"]+", name.strip())
+    return parts[-2].strip('"').strip().lower() if len(parts) >= 2 else None
+
+
 def _own_schema(name: str) -> bool:
     """whether ``name`` is qualified by a schema of its own: a literal one that is neither an L3 schema nor the
     ``copy.`` namespace (``report.settings``, a local database's views).
@@ -428,6 +444,11 @@ class SchemaCatalog:
         if bare is not None and _own_schema(name):
             # a relation in a schema of its own (``report.<view>``): a local relation first, then the L3 table
             found = self.tables.get(f"{COPY_PREFIX}{bare}")
+            if found is None and _schema_part(name) == _LOCAL_MAIN:
+                # a table of the local database's own schema (DuckDB's or SQLite's ``main``) the repo declares no key
+                # for: a local copy's, with the default every copy declares (``local_relations["*"]``), never the L3
+                # table of the same name (where the repo declares that default)
+                found = self.tables.get(f"{COPY_PREFIX}{{}}")
         if found is None and bare is not None:
             found = self.tables.get(bare)
         if found is None and bare is not None and not bare.startswith(COPY_PREFIX):

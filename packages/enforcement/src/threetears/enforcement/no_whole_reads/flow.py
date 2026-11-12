@@ -29,7 +29,7 @@ from typing import Final, Literal
 from threetears.enforcement.common import dotted
 from threetears.enforcement.no_whole_reads.helpers import COPY_CALLS, STEP_CALLS, STEP_RELATIONS, STEP_TARGETS
 
-__all__ = ["CLEAN", "HANDED", "Callee", "RelationFlow", "step_builders", "step_relation_arguments"]
+__all__ = ["CLEAN", "HANDED", "Callee", "RelationFlow", "default_of", "step_builders", "step_relation_arguments"]
 
 #: what an expression a step names is: a change relation or a step judged where it is written (``clean``), a
 #: forwarder's parameter judged at its call sites (``handed``), or None for anything the walk cannot tell
@@ -597,7 +597,10 @@ class RelationFlow:
             modes = handed.get(name)
             if not modes:
                 continue
+            # a parameter the call leaves to its default is handed the default: judged at the call as if passed
             argument = _argument(call, name, position)
+            if argument is None:
+                argument = default_of(callee.function, name)
             if argument is None:
                 continue
             for mode in sorted(modes):
@@ -907,9 +910,15 @@ class RelationFlow:
             add(target.id, _Binding(value, "value", function))
         elif isinstance(target, (ast.Tuple, ast.List)):
             values = value.elts if isinstance(value, (ast.Tuple, ast.List)) else None
+            # unpacked from a comprehension (``race, county = (work.put(x) for x in ...)``): each a value it makes
+            made = isinstance(value, (ast.ListComp, ast.GeneratorExp)) and not any(
+                isinstance(element, ast.Starred) for element in target.elts
+            )
             for index, element in enumerate(target.elts):
                 matched = values[index] if values is not None and len(values) == len(target.elts) else None
-                if isinstance(element, ast.Name):
+                if isinstance(element, ast.Name) and made:
+                    add(element.id, _Binding(value, "iterated", function))
+                elif isinstance(element, ast.Name):
                     add(element.id, _Binding(matched, "value", function))
                 else:
                     for name in _names(element):
@@ -1006,3 +1015,23 @@ def _mutation(call: ast.Call, function: Function) -> list[_Binding]:
     if name in _ADDS_AT and len(call.args) == 2:
         return [_Binding(call.args[1], "element", function)]
     return []
+
+
+def default_of(function: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> ast.expr | None:
+    """the default a function's parameter takes when a call leaves it out; None when it has none.
+
+    :param function: the function
+    :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+    :param name: the parameter
+    :ptype name: str
+    :return: the default expression, or None
+    :rtype: ast.expr | None
+    """
+    arguments = function.args
+    positional = [*arguments.posonlyargs, *arguments.args]
+    named = [argument.arg for argument in positional][len(positional) - len(arguments.defaults) :]
+    defaults: dict[str, ast.expr] = dict(zip(named, arguments.defaults, strict=True))
+    defaults.update(
+        {a.arg: d for a, d in zip(arguments.kwonlyargs, arguments.kw_defaults, strict=True) if d is not None}
+    )
+    return defaults.get(name)
