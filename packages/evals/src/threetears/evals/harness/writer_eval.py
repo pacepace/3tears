@@ -90,8 +90,9 @@ stops before its last pair.
 
 Once a page is written its judging is priced in full, page and all, and the engine admits it against what the run's
 cap has left before any call is paid for: a case whose judging does not fit is set aside unjudged, never scored low,
-and stops its run there (a re-judge takes it up). So the floor decides only what a launch is refused on, and an arm's
-judging never takes it past its part.
+and stops its run there (a re-judge takes it up). So the floor decides only what a launch is refused on, and whether a
+batch launches; each batch's run runs under all its arm's part has left, so a case is set aside only when the arm
+cannot afford its judging, and an arm's judging never takes it past its part.
 
 **The job budget sets how many cases an arm may run.** A writer cell's deadline is a whole report: every turn its
 budget allows at the request ceiling, and its page's judging after. The engine gives an arm's job a budget sized as
@@ -1086,9 +1087,8 @@ class WriterEval:
         # The design, the question, the margin and the control are fixed here, in the call, before any arm runs: the
         # campaign, filed once they have, is dated now, so its criteria read as set before its results.
         declared_at = utc_now_iso()
-        # What each part has spent so far, as its runs and passes recorded it (a run that priced nothing counts its
-        # whole reservation): the spend cap bounds actual spend, so a batch that came in under its reservation leaves
-        # the rest to the next.
+        # What each part has spent so far, as its runs and passes recorded it (a run that priced nothing counts the
+        # whole cap it ran under): the spend cap bounds actual spend, so what a batch did not spend is left to the next.
         spent = {arm: 0.0 for arm in self.arms}
         spent_pass = {arm: 0.0 for arm in list(self.arms)[1:]}
         cap_stop: str | None = None
@@ -1147,30 +1147,35 @@ class WriterEval:
             launched += planned if batch is None else batch
             for arm in [arm for arm in self.arms if arm not in held]:
                 ran_cases[arm] += planned if batch is None else batch
-            # A batch's runs each run under the batch's own reservation, which its arm's spend so far leaves room
-            # for; one batch of every case runs under the whole part, as it always has. The engine admits each cell's
-            # judging against its run's cap and stops the run at a cell it cannot admit, so a batch's judging never
-            # takes it past its reservation, nor an arm past its part.
+            # The reservation decides whether a batch launches: its reports at the budget and its judging at the
+            # judge's floor, the one worst case known before a page is written, must fit what each part has left. Once
+            # launched, each arm's run runs under all its part has left, not under the reservation: a page's judging
+            # is priced in full only once the page exists, and the engine admits it against the run's cap before
+            # paying for any of it, so a run capped at a floor-priced reservation would set aside judging the arm
+            # could afford. The arm's runs run one after another, each under what the ones before it left, and the
+            # engine holds each to its cap, so together they stay within the part.
             reservation = costs.arm(size) if len(batches) > 1 else share
+            caps = {arm: share - spent[arm] for arm in arms}
             log.info(
-                "eval.writer_batch_launch scope=%s batch=%d/%d cases=%d arms=%s reserve_usd=%.4f",
+                "eval.writer_batch_launch scope=%s batch=%d/%d cases=%d arms=%s reserve_usd=%.4f caps_usd=%s",
                 self.scope_id,
                 index + 1,
                 len(batches),
                 size // self.k,
                 ",".join(arms),
                 reservation,
+                ",".join(f"{arm}:{cap:.4f}" for arm, cap in caps.items()),
             )
-            ran = await self._launch_batch(host, template_id, ref, dict.fromkeys(arms, reservation), arms)
+            ran = await self._launch_batch(host, template_id, ref, caps, arms)
             for arm, run_id in ran.items():
                 run_ids[arm].append(run_id)
                 run_spent, status, stopped = await run_blocking(
-                    eval_host.blocking_executor, self._spent, eval_host, run_id, reservation
+                    eval_host.blocking_executor, self._spent, eval_host, run_id, caps[arm]
                 )
                 spent[arm] += run_spent
                 log.info(
                     "eval.writer_batch_ran scope=%s batch=%d/%d arm=%s run=%s status=%s spent_usd=%.4f "
-                    "reserve_usd=%.4f arm_spent_usd=%.4f arm_part_usd=%.4f stopped=%s",
+                    "cap_usd=%.4f arm_spent_usd=%.4f arm_part_usd=%.4f stopped=%s",
                     self.scope_id,
                     index + 1,
                     len(batches),
@@ -1178,7 +1183,7 @@ class WriterEval:
                     run_id,
                     status,
                     run_spent,
-                    reservation,
+                    caps[arm],
                     spent[arm],
                     share,
                     stopped or "-",
@@ -1322,12 +1327,12 @@ class WriterEval:
             ),
         )
 
-    def _spent(self, host: EvalHost, run_id: str, reservation: float) -> tuple[float, str, str | None]:
-        """What a run spent, as its results recorded it (its reservation when any of it went unpriced), its status,
-        and why a designed stop ended it, if one did. Blocking."""
+    def _spent(self, host: EvalHost, run_id: str, cap: float) -> tuple[float, str, str | None]:
+        """What a run spent, as its results recorded it (the whole cap it ran under when any of it went unpriced), its
+        status, and why a designed stop ended it, if one did. Blocking."""
         summary = summarize_run(host, run_id, self.scope_id)
         cost = summary.total_cost_usd
-        return (reservation if cost is None else cost), summary.status, summary.stopped_because
+        return (cap if cost is None else cost), summary.status, summary.stopped_because
 
     async def _launch_batch(
         self, host: OpsHost, template_id: str, case_set: CaseSetRef, parts: Mapping[str, float], arms: Sequence[str]
@@ -1782,8 +1787,8 @@ class WriterEval:
                 for arm, ran in passes.items()
             }
         arms = {arm: summarize_runs(host, ids, self.scope_id, case_names=case_names) for arm, ids in run_ids.items()}
-        # An arm launched in batches ran under its part of the cap across them, each batch under its reservation, so
-        # its ceiling is the part: the reservations summed would read above the cap.
+        # An arm launched in batches ran under its part of the cap across them, each batch under what the ones before
+        # it left, so its ceiling is the part: the runs' ceilings summed would read above the cap.
         arms = {
             arm: summary if len(run_ids[arm]) == 1 else summary.model_copy(update={"max_cost_usd": self._arm_part})
             for arm, summary in arms.items()

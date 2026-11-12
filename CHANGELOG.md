@@ -116,10 +116,13 @@ stored. The first such cell stops the run (`budget_stopped`, no new cell starts)
 (`BudgetStop.cells_not_judged`, core minor v15.12). The stop line ends "N cells not judged, as the cap had too little
 left for their judging".
 
-A batched writer eval's runs now end within each batch's reservation, so an arm stays within its part, and every batch
-the spend leaves room for launches. The batched launch loop logs each batch it launches and what it reserved
-(`eval.writer_batch_launch`), what each run spent and how it ended (`eval.writer_batch_ran`), and a stop at the spend
-cap (`eval.writer_batch_cap_stop`).
+In a batched writer eval, the reservation (each report at `budget_usd`, its judging at the judge's floor) still decides
+whether a batch launches. A launched batch's run now runs under all its arm's part has left, not under the
+reservation: a page's judging is priced in full only once the page is written, so a run capped at a floor-priced
+reservation would set aside judging the arm could afford. Each run is held to its cap and an arm's runs run one after
+another, so the arm stays within its part. The batched launch loop logs each batch it launches, what it reserved and
+the cap each run got (`eval.writer_batch_launch`), what each run spent and how it ended (`eval.writer_batch_ran`), and
+a stop at the spend cap (`eval.writer_batch_cap_stop`).
 
 ### evals: a seed reads each template revision's cases once (#1148)
 
