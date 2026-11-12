@@ -242,7 +242,9 @@ async def test_reset_happy_path_reverts_files_and_advances_version(
     # 2 file upserts, 2 journal revert rows, 1 version update
     file_upserts = [e for e in pool.conn.executions if "INSERT INTO workspace_files" in e[0]]
     journal_inserts = [e for e in pool.conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
-    version_updates = [e for e in pool.conn.executions if e[0].startswith('UPDATE "workspaces" SET "current_version" = $1')]
+    version_updates = [
+        e for e in pool.conn.executions if e[0].startswith('UPDATE "workspaces" SET "current_version" = $1')
+    ]
     assert len(file_upserts) == 2
     assert len(journal_inserts) == 2
     assert len(version_updates) == 1
