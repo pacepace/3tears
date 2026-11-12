@@ -178,6 +178,26 @@ class TestTheHandOffGoesWhenTheWorkerIsDone:
         rows = await single.run(jobs.handed_rows, read=False, tables={"t": pa.table({"a": [1]})})
         assert rows.value == 1, "a fresh pool"
 
+    async def test_a_worker_whose_death_is_heard_before_its_lock_goes_leaves_nothing(
+        self, store: SharedArrowStore, single: SharedArrowPool
+    ) -> None:
+        """the pool hears a worker die when a pipe the worker holds closes, which the kernel does as the process exits,
+        in no order against the hand-off's lock: the release that follows may find the lock still held, and the
+        executor fails the job's future before it reaps its workers. Nothing else sweeps, so the hand-off stayed until
+        some unrelated hand, publish or claim (brooks-nas, pacepace/3tears#1140). Here the worker closes that pipe
+        itself and holds the lock until the pool kills it.
+        """
+        with pytest.raises(BrokenProcessPool):
+            await single.run(
+                jobs.die_heard_before_its_lock_goes,
+                str(store.root),
+                read=False,
+                tables={"t": pa.table({"a": [1, 2, 3]})},
+            )
+        await _until(lambda: store.handoffs() == () and _hidden(store) == [], "the dead worker's hand-off removed")
+        assert store.status()["handoffs_open"] == 0
+        assert store.held_bytes() == 0
+
     def test_a_released_hand_off_a_worker_still_maps_stays_until_it_lets_go(
         self, store: SharedArrowStore, executor: ProcessPoolExecutor, tmp_path: Path
     ) -> None:

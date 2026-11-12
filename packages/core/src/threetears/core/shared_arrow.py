@@ -2509,6 +2509,10 @@ class SharedArrowPool:
         self._stale = False
         #: held while a thread picks, makes or shuts a pool: never by the event loop
         self._lock = threading.Lock()
+        #: the broken pools a thread is reaping, each once (:meth:`_reap_if_broken`); a lock of its own, since the
+        #: executor's thread takes it while holding the executor's lock, which :meth:`_submit` takes under ``_lock``
+        self._reaping: weakref.WeakSet[ProcessPoolExecutor] = weakref.WeakSet()
+        self._reaping_lock = threading.Lock()
         self._jobs = 0
         self._replaced = 0
 
@@ -2658,7 +2662,8 @@ class SharedArrowPool:
                     self._stale = False
                     for _ in range(self._workers):
                         self._pool.submit(_spawned)
-                future = self._pool.submit(
+                pool = self._pool
+                future = pool.submit(
                     _run_job,
                     str(self._store.root),
                     None if lease is None else lease.version.name,
@@ -2671,7 +2676,48 @@ class SharedArrowPool:
             run.release_all()
             raise
         future.add_done_callback(run.worker_done)
+        future.add_done_callback(functools.partial(self._reap_if_broken, pool))
         return run, future
+
+    def _reap_if_broken(self, pool: ProcessPoolExecutor, future: Future[Any]) -> None:
+        """a job's future's callback: when its worker died, sweep once the broken pool's processes are reaped.
+
+        The executor hears a worker die when a pipe the worker holds closes, which the kernel does as the process
+        exits, in no order against the other files it closes then, the hand-off's lock among them; and it fails the
+        job's future before it terminates and joins its processes. So the release that follows the death
+        (:meth:`_Run.worker_done`) may find the dead worker's lock still held and leave its hand-off, its version
+        or its result in place, and nothing else would sweep until an unrelated hand, publish or claim (brooks-nas,
+        pacepace/3tears#1140). Once the pool's processes are reaped, none of their locks is held: a sweep then
+        removes what they left. On a thread of its own: this runs on the executor's thread, which the reaping joins.
+
+        :param pool: the pool the job was submitted to
+        :ptype pool: ProcessPoolExecutor
+        :param future: the job's future, done
+        :ptype future: Future[Any]
+        :return: nothing
+        :rtype: None
+        """
+        if future.cancelled() or not isinstance(future.exception(), BrokenProcessPool):
+            return
+        with self._reaping_lock:
+            if pool in self._reaping:
+                return
+            self._reaping.add(pool)
+        threading.Thread(target=self._reap, args=(pool,), name=f"shared-arrow-reap-{self._name}").start()
+
+    def _reap(self, pool: ProcessPoolExecutor) -> None:
+        """wait until a broken pool's processes are reaped, then sweep what they left (:meth:`_reap_if_broken`).
+
+        :param pool: the broken pool
+        :ptype pool: ProcessPoolExecutor
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            pool.shutdown(wait=True)
+            self._store.sweep()
+        except Exception as exc:  # noqa: BLE001 -- a thread has no caller to raise to; contained, so it is counted
+            contain(exc, log=log, what="a dead shared Arrow worker's hand-off, version or result could not be swept")
 
     async def close(self) -> None:
         """shut the workers down, waiting for them: what they map and hold goes back to the system.
