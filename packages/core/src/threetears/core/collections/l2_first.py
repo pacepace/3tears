@@ -59,6 +59,7 @@ from threetears.observe.metrics import counter, gauge
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk
 from threetears.core.collections.generation import split_generation_token
 from threetears.core.collections.l2_degrade import degrade_l2
+from threetears.core.declared import whole_read
 from threetears.core.exceptions import GenerationUnavailableError, L2LostError, L2ScopeNotConfiguredError
 from threetears.nats.errors import KvError
 
@@ -599,7 +600,14 @@ class L2Refiller:
         """
         refilled = 0
         for collection in l2_first_collections(self._registry):
-            if await self.refill(collection):
+            if await whole_read(
+                self.refill(collection),
+                kind="cold_start",
+                reason="L2 holds nothing for this table (its first fill, or NATS lost the memory bucket and the complete mark with it)",
+                ruling="Pace 2026-11-12: the one full load is a true no-data cold start",
+                proof="packages/epoch/tests/unit/test_l2_first.py::test_the_refill_reads_l3_only_while_l2_holds_no_data",
+                speed="packages/epoch/tests/integration/test_l2_refill_speed_live.py::test_refill_from_l3_speed_at_real_size",
+            ):
                 refilled += 1
         return refilled
 
@@ -620,7 +628,14 @@ class L2Refiller:
         head = await self._epochs.read(table)
         if head is None or await collection.l2_first_support.complete():
             return False
-        rows = await collection.l2_first_support.refill_from_l3(page_size=_REFILL_PAGE_ROWS)
+        rows = await whole_read(
+            collection.l2_first_support.refill_from_l3(page_size=_REFILL_PAGE_ROWS),
+            kind="cold_start",
+            reason="L2 holds nothing for this table (its first fill, or NATS lost the memory bucket and the complete mark with it)",
+            ruling="Pace 2026-11-12: the one full load is a true no-data cold start",
+            proof="packages/epoch/tests/unit/test_l2_first.py::test_the_refill_reads_l3_only_while_l2_holds_no_data",
+            speed="packages/epoch/tests/integration/test_l2_refill_speed_live.py::test_refill_from_l3_speed_at_real_size",
+        )
         if await collection.l2_first_support.read_state("saved") is None:
             await collection.l2_first_support.write_state(head.encode("utf-8"), "saved")  # convert at border: KV value
         await collection.l2_first_support.mark_complete(head)
@@ -1013,7 +1028,14 @@ class L2FirstSupport:
         if kv is None:
             return 0
         written = 0
-        async for page in self._l3_pages(page_size=page_size):
+        async for page in whole_read(
+            self._l3_pages(page_size=page_size),
+            kind="cold_start",
+            reason="L2 holds nothing for this table (its first fill, or NATS lost the memory bucket and the complete mark with it)",
+            ruling="Pace 2026-11-12: the one full load is a true no-data cold start",
+            proof="packages/epoch/tests/unit/test_l2_first.py::test_the_refill_reads_l3_only_while_l2_holds_no_data",
+            speed="packages/epoch/tests/integration/test_l2_refill_speed_live.py::test_refill_from_l3_speed_at_real_size",
+        ):
             for row in page:
                 if self._is_expired(row):
                     continue

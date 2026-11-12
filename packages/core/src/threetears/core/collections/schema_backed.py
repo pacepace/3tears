@@ -86,6 +86,7 @@ from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.epoch_change import RESET_REASON, WholeReach
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
+from threetears.core.declared import whole_read
 from threetears.core.keyset import keyset_pages
 from threetears.core.entities.base import BaseEntity
 from threetears.core.serialization import resolve_base_type
@@ -2294,12 +2295,19 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         if pool is None:
             raise NotImplementedError(f"{type(self).__name__} has no L3 to read its rows from")
         schema = self.schema
-        pages = keyset_pages(
-            pool,
-            f"SELECT {build_select_column_list(schema)} FROM {schema.name}",  # noqa: S608 - the declared schema
-            list(schema.pk_columns),
-            page_size=page_size,
-            lead_array=schema.hashed_lead_array(schema.pk_columns),
+        pages = whole_read(
+            keyset_pages(
+                pool,
+                f"SELECT {build_select_column_list(schema)} FROM {schema.name}",  # noqa: S608 - the declared schema
+                list(schema.pk_columns),
+                page_size=page_size,
+                lead_array=schema.hashed_lead_array(schema.pk_columns),
+            ),
+            kind="cold_start",
+            reason="L2 holds nothing for this table (its first fill, or NATS lost the memory bucket and the complete mark with it)",
+            ruling="Pace 2026-11-12: the one full load is a true no-data cold start",
+            proof="packages/epoch/tests/unit/test_l2_first.py::test_the_refill_reads_l3_only_while_l2_holds_no_data",
+            speed="packages/epoch/tests/integration/test_l2_refill_speed_live.py::test_refill_from_l3_speed_at_real_size",
         )
 
         async def coerced() -> AsyncIterator[list[dict[str, Any]]]:

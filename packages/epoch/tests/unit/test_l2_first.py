@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, ClassVar
 
@@ -90,7 +90,28 @@ def _metadata(table: str) -> MetaData:
 
 
 class _NoL3(DurableStore):
-    """a durable L3 the registry does not wrap as SQL; the rows live in the test's dict."""
+    """a durable L3 the registry does not wrap as SQL; the rows live in the test's dict, so nothing reads it."""
+
+    async def fetch_one(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any] | None:
+        raise AssertionError("the test's rows live in its dict")
+
+    async def upsert(
+        self,
+        table: str,
+        row: Mapping[str, Any],
+        *,
+        pk: Sequence[str] | None = None,
+        on_conflict: str = "update",
+        cas: datetime | None = None,
+        conn: Any = None,
+    ) -> int:
+        raise AssertionError("the test's rows live in its dict")
+
+    async def delete(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> None:
+        raise AssertionError("the test's rows live in its dict")
+
+    async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+        raise AssertionError("the test's rows live in its dict")
 
 
 class _UniqueViolation(Exception):
@@ -125,12 +146,14 @@ class _Results(BaseCollection[_Row]):
 
     datetime_columns: ClassVar[frozenset[str]] = frozenset({"date_created", "date_updated"})
     write_generation = WRITE_GENERATION
-    l2_first = L2_FIRST
+    l2_first: ClassVar[L2First | None] = L2_FIRST
     _table: ClassVar[str] = _TABLE
 
     def __init__(self, registry: CollectionRegistry, l3: _L3, **kwargs: Any) -> None:
         self._l3 = l3
         self.l3_reads = 0
+        #: how often the refiller read this table whole from L3 (_l3_pages)
+        self.whole_reads = 0
         super().__init__(registry, DefaultCoreConfig(), **kwargs)
 
     @property
@@ -168,6 +191,7 @@ class _Results(BaseCollection[_Row]):
         self._l3.notes.append(str(entity_id))
 
     def _l3_pages(self, *, page_size: int) -> AsyncIterator[list[dict[str, Any]]]:
+        self.whole_reads += 1
         rows = [dict(row) for row in self._l3.rows.values()]
 
         async def pages() -> AsyncIterator[list[dict[str, Any]]]:
@@ -427,6 +451,27 @@ class TestANoWaitRefusalIsLoud:
 
 
 class TestL2Lost:
+    async def test_the_refill_reads_l3_only_while_l2_holds_no_data(self, fleet: _Fleet) -> None:
+        """L2Refiller.run_pass -> L2Refiller.refill -> L2FirstSupport.refill_from_l3 -> _l3_pages: the one whole read
+        of L3, reached only while L2 holds nothing for the table (its first fill, or after NATS lost the memory bucket
+        and the complete mark with it); never for a write, a pass with L2 complete, or before the log is back."""
+        assert (fleet.working.whole_reads, fleet.feed_work.whole_reads) == (1, 1), "the first fill: L2 held nothing"
+        await _save(fleet.writing, "precinct-1", "10")
+        await _save(fleet.feeding, "precinct-2", "20")
+        await fleet.saver.run_pass()
+        for _ in range(3):
+            assert await fleet.refiller.run_pass() == 0, "L2 holds the table complete: nothing to refill"
+        assert (fleet.working.whole_reads, fleet.feed_work.whole_reads) == (1, 1), "a write never reads L3 whole"
+
+        await fleet.lose_nats()
+        assert await fleet.refiller.run_pass() == 0, "the refiller waits for the keeper to put the log back"
+        assert (fleet.working.whole_reads, fleet.feed_work.whole_reads) == (1, 1)
+        assert await fleet.restore()
+        assert await fleet.refiller.run_pass() == 2, "NATS lost every row and the mark: both tables refill once"
+        assert (fleet.working.whole_reads, fleet.feed_work.whole_reads) == (2, 2)
+        assert await fleet.refiller.run_pass() == 0
+        assert (fleet.working.whole_reads, fleet.feed_work.whole_reads) == (2, 2), "complete again: never read again"
+
     async def test_the_restore_and_refill_bring_the_pod_back_without_it_reading_l3(self, fleet: _Fleet) -> None:
         await _save(fleet.writing, "precinct-1", "10")
         await _save(fleet.writing, "precinct-2", "20")
@@ -528,6 +573,7 @@ class TestTheChangeLogWarnsBeforeItFills:
             await source.advance_with_change(_TABLE, [ChangedRow(ids=[f"row-{each:04d}"])])
         with caplog.at_level(logging.WARNING):
             ratio = await source.observe_change_log_fill()
+        assert ratio is not None
         assert ratio > EPOCH_CHANGES_FILL_WARN_RATIO
         assert any("epoch change log" in record.getMessage() for record in caplog.records)
 
