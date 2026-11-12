@@ -55,6 +55,7 @@ from threetears.enforcement.no_whole_reads.flow import (
     RepoForwarders,
     step_builders,
     default_of,
+    local_names,
     step_relation_arguments,
 )
 from threetears.enforcement.no_whole_reads.helpers import (
@@ -5852,12 +5853,14 @@ def _constructors(modules: list[tuple[str, ast.Module]]) -> dict[str, ast.Functi
                 annotations.update(id(element) for element in ast.walk(node.returns))
             elif isinstance(node, ast.Call):
                 called.add(id(node.func))
+        local = local_names(tree)
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Name | ast.Attribute)
                 and isinstance(node.ctx, ast.Load)
                 and id(node) not in called
                 and id(node) not in annotations
+                and id(node) not in local
             ):
                 loose.add(node.id if isinstance(node, ast.Name) else node.attr)
     found: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}

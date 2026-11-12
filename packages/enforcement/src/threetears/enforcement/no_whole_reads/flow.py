@@ -29,7 +29,16 @@ from typing import Final, Literal
 from threetears.enforcement.common import dotted
 from threetears.enforcement.no_whole_reads.helpers import COPY_CALLS, STEP_CALLS, STEP_RELATIONS, STEP_TARGETS
 
-__all__ = ["CLEAN", "HANDED", "Callee", "RelationFlow", "default_of", "step_builders", "step_relation_arguments"]
+__all__ = [
+    "CLEAN",
+    "HANDED",
+    "Callee",
+    "RelationFlow",
+    "default_of",
+    "local_names",
+    "step_builders",
+    "step_relation_arguments",
+]
 
 #: what an expression a step names is: a change relation or a step judged where it is written (``clean``), a
 #: forwarder's parameter judged at its call sites (``handed``), or None for anything the walk cannot tell
@@ -186,6 +195,84 @@ def _annotations(tree: ast.Module) -> set[int]:
     return inside
 
 
+#: the nodes that open a scope of their own: a name bound inside one is that scope's
+_SCOPES: Final = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+
+
+def _scope_nodes(scope: ast.AST) -> Iterator[ast.AST]:
+    """every node inside ``scope`` that is not inside a scope nested in it (a nested scope's node itself is given)."""
+    for child in ast.iter_child_nodes(scope):
+        yield child
+        if not isinstance(child, (*_SCOPES, ast.ClassDef)):
+            yield from _scope_nodes(child)
+
+
+def _bound_in(scope: ast.AST) -> set[str]:
+    """the names a function, lambda or comprehension binds for itself: its parameters (its comprehension targets),
+    and every name it assigns, imports, defines or catches, less those it declares ``global`` / ``nonlocal``."""
+    bound: set[str] = set()
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        arguments = scope.args
+        every = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs, arguments.vararg, arguments.kwarg]
+        bound.update(argument.arg for argument in every if argument is not None)
+        body: list[ast.AST] = [scope.body] if isinstance(scope, ast.Lambda) else list(scope.body)
+    else:
+        assert isinstance(scope, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp))
+        body = [generator.target for generator in scope.generators]
+    declared: set[str] = set()
+    for top in body:
+        for node in [top, *_scope_nodes(top)]:
+            if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+                bound.add(node.id)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bound.add(node.name)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                bound.update((alias.asname or alias.name).split(".", 1)[0] for alias in node.names)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                bound.add(node.name)
+            elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                declared.update(node.names)
+    return bound - declared
+
+
+def local_names(tree: ast.Module) -> set[int]:
+    """the ids of every bare name in ``tree`` that is a function's (a lambda's, a comprehension's) own binding or one
+    of an enclosing function's: a local, never the module definition of that name.
+
+    A local that shares a module function's name (``namesakes = [...]`` in another function) is neither a use of
+    that function as a value nor a rebinding of it.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :return: the ids of the local names
+    :rtype: set[int]
+    """
+    found: set[int] = set()
+
+    def visit(node: ast.AST, enclosing: tuple[frozenset[str], ...]) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, _SCOPES):
+                visit(child, (*enclosing, frozenset(_bound_in(child))))
+            elif isinstance(child, ast.ClassDef):
+                # a class body is no function scope: its methods see the module's names, not the class's
+                visit(child, ())
+            else:
+                if isinstance(child, ast.Name) and any(child.id in scope for scope in enclosing):
+                    found.add(id(child))
+                visit(child, enclosing)
+
+    visit(tree, ())
+    return found
+
+
 #: a return or field annotation naming a keyed step (``keyed.Step``, ``Step | None``)
 _STEP_ANNOTATION: Final = re.compile(r"\bStep\b")
 
@@ -327,9 +414,10 @@ class RepoForwarders:
             imports[path] = mine
             called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
             annotated = _annotations(tree)
+            skipped = called | annotated | local_names(tree)
             names: set[str] = set()
             for node in ast.walk(tree):
-                if isinstance(node, ast.Name) and id(node) not in called and id(node) not in annotated:
+                if isinstance(node, ast.Name) and id(node) not in skipped:
                     names.add(node.id)
                 elif isinstance(node, ast.Attribute) and id(node) not in called:
                     loose_attributes.add(node.attr)
@@ -464,8 +552,9 @@ class RelationFlow:
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 called.add(id(node.func))
+        local = local_names(tree)
         for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and id(node) not in called:
+            if isinstance(node, ast.Name) and id(node) not in called and id(node) not in local:
                 loose_names.add(node.id)
             elif isinstance(node, ast.Attribute) and id(node) not in called:
                 loose_attributes.add(node.attr)

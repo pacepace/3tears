@@ -3924,6 +3924,42 @@ def test_a_public_forwarder_of_another_module_is_judged_at_each_call_where_the_r
     assert {"annotated_step", "runs_step", "Thinning.kept_runs_step", "Eviction.let_go"} <= library, library
 
 
+#: a local in each module sharing a public forwarder's name: a local, never the function used as a value
+_SHADOWING_LOCALS = """
+
+    def views(held):
+        runs_step = [("runs", "SELECT 1")] if "runs" in held else []
+        for name, view in [*runs_step]:
+            held.add(name)
+        return [annotated_step for annotated_step in held], lambda runs_step: runs_step
+"""
+
+#: the same name read as the module's function, inside a function (handed on as a value)
+_HANDED_ON = """
+
+    def handlers():
+        return [runs_step]
+"""
+
+
+def test_a_local_sharing_a_public_forwarder_s_name_does_not_stop_its_calls_being_judged(tmp_path: Path) -> None:
+    """Flips if a local (an assignment, a comprehension target, a lambda's parameter) in either module that shares a
+    public forwarder's name (``runs_step = [...]`` in a function of the callers' module; ``namesakes = [...]`` beside
+    reports' ``report_data.namesakes``) is read as that function used as a value, so the forwarder is judged in its
+    body as written (unknown) instead of at each call; or if the function itself read as a value inside a function
+    (``[runs_step]``) no longer keeps it judged in its body."""
+    shadowed = {
+        "pkg/rules.py": _PUBLIC_RULES + _SHADOWING_LOCALS,
+        "pkg/settle.py": _PUBLIC_CALLERS + _SHADOWING_LOCALS,
+    }
+    functions = {function for function, _ in _symbols(_config(tmp_path, shadowed, public_forwarders=True))}
+    assert not functions & {"annotated_step", "runs_step", "settled"}, functions
+    assert {"over_the_table", "evicts_the_table"} <= functions, functions
+    handed = {"pkg/rules.py": _PUBLIC_RULES, "pkg/settle.py": _PUBLIC_CALLERS + _HANDED_ON}
+    functions = {function for function, _ in _symbols(_config(tmp_path, handed, public_forwarders=True))}
+    assert "runs_step" in functions, functions
+
+
 _NEW_STEPS = """
     from threetears.core import keyed
     from threetears.core.collections.schema_backed import TableSchema
