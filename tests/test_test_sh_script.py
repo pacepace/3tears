@@ -30,8 +30,8 @@ _SCRIPT = _REPO_ROOT / "scripts" / "test.sh"
 
 _EVALS_FILE = "packages/evals/tests/test_transport.py"
 
-#: a stand-in executable: writes its own name and then each argument, one per line
-_RECORDER = '#!/bin/sh\n{{ basename "$0"; printf "%s\\n" "$@"; }} > "{calls}"\n'
+#: a stand-in executable: writes its own name and then each argument, one per line, and exits ``code``
+_RECORDER = '#!/bin/sh\n{{ basename "$0"; printf "%s\\n" "$@"; }} > "{calls}"\nexit {code}\n'
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="test.sh is bash; none on this host")
 
@@ -78,7 +78,14 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
-def _run(repo: Path, args: list[str], *, testament: bool = True, env: dict[str, str] | None = None) -> _Run:
+def _run(
+    repo: Path,
+    args: list[str],
+    *,
+    testament: bool = True,
+    env: dict[str, str] | None = None,
+    testament_exit: int = 0,
+) -> _Run:
     """Run the staged script with recording stand-ins for ``uv`` and, optionally, ``testament``.
 
     :param repo: the miniature repo root
@@ -89,6 +96,8 @@ def _run(repo: Path, args: list[str], *, testament: bool = True, env: dict[str, 
     :ptype testament: bool
     :param env: extra environment for the run
     :ptype env: dict[str, str] | None
+    :param testament_exit: the exit status the ``testament`` stand-in returns
+    :ptype testament_exit: int
     :return: what the run did
     :rtype: _Run
     """
@@ -98,7 +107,7 @@ def _run(repo: Path, args: list[str], *, testament: bool = True, env: dict[str, 
     calls.unlink(missing_ok=True)
     for name in ("uv", "testament") if testament else ("uv",):
         stand_in = bin_dir / name
-        stand_in.write_text(_RECORDER.format(calls=calls))
+        stand_in.write_text(_RECORDER.format(calls=calls, code=testament_exit if name == "testament" else 0))
         stand_in.chmod(0o755)
     result = subprocess.run(
         ["bash", str(repo / "scripts" / "test.sh"), *args],
@@ -649,3 +658,49 @@ class TestTheManifest:
         command = manifest["command"]
         marks = command[command.index("-m") + 1]
         assert "not integration" in marks and "not loop_timing" in marks
+
+
+class TestWhenThePoolGivesNoVerdict:
+    """testament's exit 2 means it gave no verdict on the tests; the last line says where to go on."""
+
+    @pytest.mark.parametrize("args", [pytest.param(["core"], id="package"), pytest.param([], id="whole-suite")])
+    def test_exit_2_ends_with_the_runbook_and_keeps_its_status(self, repo: Path, args: list[str]) -> None:
+        """the status passes through, and the closing line names the runbook and the agents' rule.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param args: the script's arguments
+        :ptype args: list[str]
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, args, testament_exit=2)
+        assert run.returncode == 2
+        last = run.stderr.strip().splitlines()[-1]
+        assert 'docs/testing.md, "When the pool is down"' in last
+        assert "An agent stops here and tells the person" in last
+
+    def test_a_test_failure_passes_through_without_it(self, repo: Path) -> None:
+        """a failing test (exit 1) is the code's, not the pool's: no runbook line.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core"], testament_exit=1)
+        assert run.returncode == 1
+        assert "gave no verdict" not in run.stderr
+
+    def test_the_banner_points_at_the_runbook_not_at_a_local_run(self, repo: Path) -> None:
+        """the line printed before the run no longer offers TESTAMENT=off as the way past the pool.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core"])
+        banner = run.stderr.strip().splitlines()[0]
+        assert banner.startswith("test.sh: via testament, pool only")
+        assert "When the pool is down" in banner and "TESTAMENT=off" not in banner

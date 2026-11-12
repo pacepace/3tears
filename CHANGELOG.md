@@ -20,8 +20,18 @@ terminal: a run that names only test files goes local with them, and a package o
 is refused (exit 2) with how to run it, where it used to run the whole package on this machine. CLAUDE.md's example was such a run
 (`test.sh core -v -x`).
 
+When testament gives no verdict (exit 2: the pool down, no key on this machine, a client older than
+0.45.1), `test.sh` says so last and points to docs/testing.md's new "When the pool is down": CI's
+GitHub shards gate the unit suite meanwhile, and the author runs everything else locally.
+`check-all.sh` runs every suite that doesn't use the pool and then fails with "Unit suite NOT run",
+instead of stopping at the unit step. `ci-unit-tests.sh` outside CI asks for a
+`TESTAMENT_OFF_REASON` before running the unit suite on the machine it is on (`--loop-timing`
+excepted). CLAUDE.md tells agents to stop and tell the person rather than run a package or the
+suite locally.
+
 **Fixed (docs):** docs/testing.md said CI runs no integration tests; its `integration` job runs
-core, nats, epoch, scheduled-jobs and agent/acl.
+core, nats, epoch, scheduled-jobs and agent/acl. Its testament floor is now 0.45.1, with the
+upgrade command.
 
 ## v0.95.0 -- 2026-11-07
 

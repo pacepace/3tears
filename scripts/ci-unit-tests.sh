@@ -62,6 +62,18 @@ elif [ "${1:-}" = "--shard" ]; then
     shift 2
 fi
 
+# Outside CI this runs the unit suite (or a shard of it) on this machine, for hours: evals runs on
+# one worker. That is the machine load the pool exists to take, so a local run states why, as
+# test.sh's TESTAMENT=off does. --loop-timing (six files, serial) needs no reason.
+# docs/testing.md, "When the pool is down".
+if [ -z "${CI:-}" ] && [ -z "$loop_timing_only" ] && [ -z "${TESTAMENT_OFF_REASON:-}" ]; then
+    echo "ci-unit-tests.sh: outside CI this runs the unit suite on this machine, for hours. ./scripts/test.sh runs it on the pool; if the pool is down, see docs/testing.md, \"When the pool is down\". To run it here anyway, say why: TESTAMENT_OFF_REASON=\"...\" ./scripts/ci-unit-tests.sh" >&2
+    exit 2
+fi
+if [ -z "${CI:-}" ] && [ -z "$loop_timing_only" ]; then
+    echo "ci-unit-tests.sh: running the unit suite on this machine: ${TESTAMENT_OFF_REASON}" >&2
+fi
+
 # the heaviest packages each get a session of their own; the rest share one.
 SOLO=(packages/evals "packages/core packages/datasources" packages/agent)
 

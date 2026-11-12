@@ -208,11 +208,21 @@ if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}
     exec uv run pytest ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
 fi
 if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}" != "off" ] && [ -z "$local_only" ]; then
-    echo "test.sh: via testament, pool only (integration tests run locally with test-integration.sh, loop_timing tests in CI; TESTAMENT=off with TESTAMENT_OFF_REASON runs it here)" >&2
+    echo "test.sh: via testament, pool only (integration tests run locally with test-integration.sh, loop_timing tests in CI; if the pool is down: docs/testing.md, \"When the pool is down\")" >&2
+    pool_status=0
     if [ -n "$PACKAGE" ] && [ ${#TEST_PATHS[@]} -eq 0 ]; then
-        exec testament run ${AREA_ARGS+"${AREA_ARGS[@]}"} -- "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+        testament run ${AREA_ARGS+"${AREA_ARGS[@]}"} -- "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || pool_status=$?
+    else
+        testament run ${AREA_ARGS+"${AREA_ARGS[@]}"} -- ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || pool_status=$?
     fi
-    exec testament run ${AREA_ARGS+"${AREA_ARGS[@]}"} -- ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+    # testament exits 2 when it gave no verdict on the tests: the pool, the machine or the manifest
+    # stopped it (coordinator_unreachable, no_runner, connection_lost, batches_lost,
+    # env_build_failed, machine_not_set_up, bad_manifest). Say so last, where a long run's reader
+    # looks, since the banner above has scrolled away.
+    if [ "$pool_status" -eq 2 ]; then
+        echo "test.sh: testament gave no verdict (exit 2). If the pool, this machine's key or its testament release stopped the run, docs/testing.md, \"When the pool is down\", says how to go on. An agent stops here and tells the person: no package or whole-suite rerun with TESTAMENT=off." >&2
+    fi
+    exit "$pool_status"
 fi
 
 if [ ${#AREA_ARGS[@]} -gt 0 ]; then
