@@ -165,7 +165,7 @@ from threetears.evals.analysis.report.charts import (
     DotIntervalPanel,
     DotIntervalRow,
 )
-from threetears.evals.analysis.report.md_parts import table_lines
+from threetears.evals.analysis.report.md_parts import escaped, markdown_table, table_lines
 from threetears.evals.analysis.stats import PROJECTION_CASE_CAP, bet_order
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 from threetears.evals.kernel.capped_completion import PROMPT_FRAMING_TOKENS, prompt_token_bound, refresh_prices
@@ -650,7 +650,7 @@ class WriterResult:
         ]
         lines += self._readings()
         lines += ["", self.pairwise_text(), ""]
-        lines += ["| stratum | cases |", "|---|---|", *(f"| {name} | {n} |" for name, n in self.strata.items())]
+        lines += markdown_table(["stratum", "cases"], [[name, str(n)] for name, n in self.strata.items()])
         for arm, summary in self.arms.items():
             label = f"{arm}{' (control)' if arm == self.control else ''}"
             lines.append(f"{label}: {summary.results_text}")
@@ -694,7 +694,6 @@ class WriterResult:
                     rows.setdefault(f"{dimension.name} (judged)", {})[arm] = (dimension.mean, dimension.n)
                     passes = dimension.scale == "pass_fail"
                     read.setdefault(f"{dimension.name} (judged)", (dimension.name, "judged", passes))
-        head = ["| reading | " + " | ".join(self.arms) + " |", "|---|" + "---|" * len(self.arms)]
         forms = PageForms.off_page()
         # A measure the campaign's aspect page states a contrast of reads as that page prints its arms' levels (one form
         # per measure, number rule 1): Must-fix findings open reads 0.4 here as on the page, never 0.43.
@@ -709,7 +708,7 @@ class WriterResult:
                     if comparison.reading == "measure" and places is not None:
                         ruler = rulers.of(comparison.name, comparison.reading)
                         on_page.setdefault(comparison.name, (aspects[bundle.aspect], ruler, places))
-        body = []
+        body: list[list[str]] = []
         for label, row in rows.items():
             key, kind, rate = read[label]
             if rate:
@@ -725,8 +724,10 @@ class WriterResult:
                 }
             else:
                 said = {arm: forms.reading(mean, measure=key, kind=kind).text for arm, (mean, _) in row.items()}
-            body.append(f"| {label} | " + " | ".join(said.get(arm, "-") for arm in self.arms) + " |")
-        return [*head, *body] if body else ["no reading: no arm's results carry a measure"]
+            body.append([label, *(said.get(arm, "-") for arm in self.arms)])
+        return (
+            markdown_table(["reading", *self.arms], body) if body else ["no reading: no arm's results carry a measure"]
+        )
 
     def write(self, out_dir: Path | str) -> dict[str, Path]:
         """Write the campaign's page as one self-contained file, its Markdown, its JSON and its aspect's bundle.
@@ -738,7 +739,7 @@ class WriterResult:
         """
         written = self.page.write(out_dir)
         pairwise = Path(out_dir) / "pairwise.md"
-        said = "".join(f"\n{line}\n" for line in self._stopping_lines())
+        said = "".join(f"\n{escaped(one_line(line))}\n" for line in self._stopping_lines())
         pairwise.write_text(f"# Side by side\n\n{self.pairwise_text()}\n{said}", encoding="utf-8")
         return {**written, "pairwise": pairwise}
 
@@ -777,7 +778,10 @@ class WriterResult:
             if isinstance(block, TableBlock):
                 lines += ["", *table_lines(block)]
         if self.pairwise_unread:
-            lines += ["", *(f"pairwise pass of {arm}: {why}" for arm, why in self.pairwise_unread.items())]
+            lines += [
+                "",
+                *(escaped(one_line(f"pairwise pass of {arm}: {why}")) for arm, why in self.pairwise_unread.items()),
+            ]
         return "\n".join(lines)
 
     @property

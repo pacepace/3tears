@@ -50,7 +50,7 @@ from threetears.evals.analysis.report.doc_page.words import (
     NEXT_TITLE,
     OMITTED_TITLE,
 )
-from threetears.evals.analysis.report.md_parts import markdown_table, one_line
+from threetears.evals.analysis.report.md_parts import one_line, pipe_table
 from threetears.evals.analysis.report.parts.words import CONFIDENCE_LABEL, OPTIONS_TITLE, RUN_TEMPLATE, SYNTHETIC
 
 #: The entry points, with their callers: the analyst's ``report_check`` (``ops/analyst.py``) returns a draft's
@@ -61,7 +61,7 @@ __all__ = ["above_appendix_text", "doc_page_text"]
 
 def _table(block: ChartBlock | TableBlock) -> list[str]:
     headers, rows = values_table(block)
-    return markdown_table(headers, rows) if rows else ["(no rows)"]
+    return pipe_table(headers, rows) if rows else ["(no rows)"]
 
 
 def _cards(evidence: DocEvidence) -> bool:

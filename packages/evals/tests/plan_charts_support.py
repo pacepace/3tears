@@ -23,7 +23,7 @@ from threetears.evals.analysis.report.blocks import ChartBlock
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import reader_names, render
 from threetears.evals.analysis.report.html_parts import chart_html, escape, page_head, table_html
-from threetears.evals.analysis.report.md_parts import chart_lines, inert, one_line, table_lines
+from threetears.evals.analysis.report.md_parts import chart_lines, escaped, inert, one_line, table_lines
 from threetears.evals.analysis.report.parts.look import PageLook, page_look
 from threetears.evals.analysis.report.parts.model import PageChart
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
@@ -169,7 +169,7 @@ def charts_markdown(charts: Sequence[PageChart]) -> str:
         drawn = (
             chart_lines(block)
             if isinstance(block, ChartBlock)
-            else [f"**{one_line(block.title)}**", "", *table_lines(block)]
+            else [f"**{escaped(one_line(block.title))}**", "", *table_lines(block)]
         )
         lines += [*drawn, *(line for note in chart.notes for line in ("", inert(note))), ""]
     return "\n".join(lines)

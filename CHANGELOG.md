@@ -123,6 +123,22 @@ a page still loading a font after 15 s fails that render, naming the fonts. It l
 DejaVu, the faces the package's pages draw in on the dev box. The testament image runs it at build and CI's evals
 shards before their tests.
 
+### evals: no field is markup in a report's Markdown (#973)
+
+**Fixed:** a report's Markdown escaped HTML only where a line began, so a `<script>`, `<img onerror=...>` or `<link>` in a
+field (model-written prose, an arm or stratum name, an excerpt, a title) passed through to any host that renders
+Markdown with raw HTML on. Every string a field supplies is now escaped wherever it sits: the `# title` line, a
+heading, a bold lead-in or verdict, a `<summary>`, a fold's name, a table or chart cell and a goal check's name and
+aspect, in the campaign page, an aspect's report, a report document's page and its evidence record, and in
+`pairwise.md` and the writer result's tables. A `<` that opens a tag, a closing tag, a comment or an autolink, and an
+`&` that begins an entity, become `&lt;` and `&amp;`; a renderer shows the same text, and a `<` before a space or a
+digit (`p < 0.001`) is left as it was. A trial's stored-result id is a code span. The package's own `<details>`,
+`<summary>` and anchors stay. One function, `md_parts.escaped`, does it for every writer.
+
+**Changed:** a table cell or line that carries a tag or an entity in its text reads as its escaped source in the raw
+Markdown file (`&lt;b>`), which every renderer shows as `<b>`. The text an editor reads of a report document
+(`doc_page_text`) is not Markdown for a renderer and is unchanged.
+
 ### evals: a seed reads each template revision's cases once (#1148)
 
 **Fixed:** the seed read every stored case of a template revision again for each corpus case of it, to fill names on
