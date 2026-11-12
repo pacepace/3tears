@@ -161,9 +161,27 @@ def _names(tree: ast.Module, *, re_exports: bool) -> tuple[frozenset[str], froze
     :rtype: tuple[frozenset[str], frozenset[str]]
     """
     used: set[str] = set()
+    # a function's own local (``smallest = max(...)`` in a function) is no call of a module's name of the same spelling
+    local: set[int] = set()
+    for function in ast.walk(tree):
+        if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            bound = {node.arg for node in ast.walk(function.args) if isinstance(node, ast.arg)}
+            bound |= {
+                node.id
+                for node in ast.walk(function)
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del)
+            }
+            bound -= {
+                name
+                for node in ast.walk(function)
+                if isinstance(node, ast.Global | ast.Nonlocal)
+                for name in node.names
+            }
+            local.update(id(node) for node in ast.walk(function) if isinstance(node, ast.Name) and node.id in bound)
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
-            used.add(node.id)
+            if id(node) not in local:
+                used.add(node.id)
         elif isinstance(node, ast.Attribute):
             used.add(node.attr)
         elif isinstance(node, ast.ImportFrom) and re_exports:
@@ -265,6 +283,18 @@ class TestPublicApiHasACaller:
             baseline="v0.0.0",
         )
         assert not unadopted.has_caller(enforcement, "run_demo")
+
+    def test_a_functions_own_local_of_the_same_spelling_is_no_caller(self) -> None:
+        """Flips if a local variable spelled like a public name (evals' ``smallest = max(...)``) counts as calling it,
+        or if a call of that name in another function stops counting."""
+        local, _ = _names(ast.parse("def f(a):\n    smallest = max(a)\n    return smallest\n"), re_exports=False)
+        assert "smallest" not in local
+        called, _ = _names(
+            ast.parse("from m import smallest\n\ndef f(a):\n    x = a\n    return smallest(x)\n"), re_exports=False
+        )
+        assert "smallest" in called
+        argument, _ = _names(ast.parse("def f(smallest):\n    return smallest\n"), re_exports=False)
+        assert "smallest" not in argument
 
     def test_a_moved_name_is_not_new_and_a_new_name_in_a_moved_module_still_is(self) -> None:
         """the move map excuses only a name released under the mapped old module, under the same name."""

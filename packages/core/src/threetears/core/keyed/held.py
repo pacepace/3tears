@@ -31,7 +31,6 @@ __all__ = [
     "Held",
     "HeldArrow",
     "HeldMapping",
-    "encoded_key",
     "hash_bytes",
 ]
 
@@ -67,7 +66,7 @@ _B64: Final[Any] = _lookup(_B64_DIGITS) if _ARROW else None
 KeyTexts = tuple[str | None, ...]
 
 
-def encoded_key(texts: KeyTexts) -> str:
+def _encoded_key(texts: KeyTexts) -> str:
     """one key's canonical texts as one string (a NULL part kept apart from every text): what the Arrow form matches
     held keys to answered ones by."""
     return _SEPARATOR.join(_NULL_PART if text is None else _PRESENT + text for text in texts)
@@ -393,7 +392,7 @@ class HeldArrow:
 
     def compare(self, answered: Sequence[KeyTexts], hashes: Sequence[Any]) -> tuple[list[bool], list[tuple[Any, ...]]]:
         """whether each answered key is held with the same hash, and the held keys not answered (:meth:`Held.compare`)."""
-        answered_keys = pa.array([encoded_key(texts) for texts in answered], pa.string())
+        answered_keys = pa.array([_encoded_key(texts) for texts in answered], pa.string())
         place = pc.index_in(self._encoded, value_set=answered_keys)
         held_at = np.asarray(pc.fill_null(place, -1).to_numpy(zero_copy_only=False), dtype=np.int64)
         matched = held_at >= 0
