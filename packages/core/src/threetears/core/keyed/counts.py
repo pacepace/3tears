@@ -13,7 +13,10 @@ one place each is spelled:
 - **how many rows each key holds** (a run's rows, to tell a complete load from a cut one): :func:`counts_by`, a
   ``GROUP BY`` of the key's own rows, a bounded batch of keys a statement;
 - **how many, up to a bound** (a page's "more than 100", a cap): :func:`count_at_most`, a count of at most
-  ``at_most + 1`` rows the key names, never more.
+  ``at_most + 1`` rows the key names, never more;
+- **how many and how much, over a window** (a tenant set's requests and tokens in a period, by hour or by agent):
+  :func:`aggregate_keyed`, counts and sums of the rows a pinned prefix, a set of key values and a range of the next
+  column name, grouped or not, a bounded batch of values a statement and the batches added.
 
 Each read that takes a ``by`` reads the rows it names (:func:`~threetears.core.keyed.read_keyed`'s ``by``): a leading
 part of the key, or an index declared for the caller's read.
@@ -25,14 +28,26 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final, overload
 
 from threetears.core.keyed import _filters
-from threetears.core.keyed._filters import AnyOf, Derived, Fragment, Selected, by_conditions, narrowing, relation
+from threetears.core.keyed._filters import (
+    AnyOf,
+    Derived,
+    Fragment,
+    Selected,
+    by_conditions,
+    narrowing,
+    relation,
+    selected_column,
+)
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.counts import (
     NO_MARK_FLOOR,
     SQL_DIALECT_ATTRIBUTE,
     BoundedCount,
+    Count,
     Dialect,
     MarkedCount,
+    Range,
+    Sum,
     rows_affected,
 )
 from threetears.interfaces.keyed.filters import SQL_TYPE
@@ -42,6 +57,7 @@ __all__ = [
     "BoundedCount",
     "Dialect",
     "MarkedCount",
+    "aggregate_keyed",
     "count_at_most",
     "counts_by",
     "counts_by_relations",
@@ -198,6 +214,133 @@ async def empty_tables(conn: Any, tables: Sequence[str]) -> list[str]:
     rows = await conn.fetch(f"SELECT {probes}")
     answer = rows[0]
     return [table for index, table in enumerate(tables) if answer[f"e{index}"]]
+
+
+async def aggregate_keyed(
+    conn: Any,
+    table: str | Derived,
+    *,
+    aggregates: Mapping[str, Count | Sum],
+    by: Mapping[str, Any] | None = None,
+    ranges: Sequence[Range] = (),
+    where: Sequence[Fragment] = (),
+    group: Sequence[str | Selected] = (),
+    batch: int = 999,
+) -> list[dict[str, Any]]:
+    """counts and sums of the rows of ``table`` that ``by`` pins and ``ranges`` bound, grouped by ``group`` or not:
+    :func:`counts_by`'s keyed ``GROUP BY`` with any counts and sums, a window and any group::
+
+        SELECT <group>, count(*) AS "requests", SUM(<expr>) AS "tokens" FROM <table> AS t
+         WHERE <by> AND (t."created" >= $lo AND t."created" < $hi) AND <where> GROUP BY <group>
+
+    ``by`` and the range's column together must be a leading part of the key (or of an index declared for the
+    caller's read), the range's column last: each statement reads only the rows they name. An :class:`AnyOf` in
+    ``by`` (a tenant set) is named ``batch`` values a statement (the largest when several), and the statements'
+    answers merged: a group's counts and sums added. With ``group`` and no aggregate it is the keyed distinct values
+    of the group, each once however many batches hold it.
+
+    :param conn: anything with an asyncpg-shaped ``fetch``
+    :ptype conn: Any
+    :param table: the table (``schema.table``), or a derived relation
+    :ptype table: str | Derived
+    :param aggregates: each answer's name, a TRUSTED identifier -> its :class:`Count` or :class:`Sum`
+    :ptype aggregates: Mapping[str, Count | Sum]
+    :param by: the prefix pinned (a value, None, or an :class:`AnyOf` of values)
+    :ptype by: Mapping[str, Any] | None
+    :param ranges: ranges of ONE column, the column after the prefix, OR-ed
+    :ptype ranges: Sequence[Range]
+    :param where: filters beside the key, each a fragment written as ``t."col"`` from ``$1``
+    :ptype where: Sequence[Fragment]
+    :param group: the columns or :class:`Selected` expressions (a time bucket) grouped by, each answered under its
+        name; none: one row
+    :ptype group: Sequence[str | Selected]
+    :param batch: the most values of the batched :class:`AnyOf` a statement names
+    :ptype batch: int
+    :return: one row a group (its group values and aggregates by name); ungrouped, exactly one row (a count of no
+        row is 0, a sum of none None)
+    :rtype: list[dict[str, Any]]
+    :raises ValueError: when neither ``by`` nor ``ranges`` names the rows (the whole table), the ranges name more
+        than one column, nothing is answered (no aggregate and no group), or ``batch`` is under one
+    """
+    pinned = dict(by or {})
+    if not pinned and not ranges:
+        raise ValueError(f"a keyed aggregate of {table} names its rows (by=, ranges=): the whole table is not read")
+    if len({one.column for one in ranges}) > 1:
+        raise ValueError(f"a keyed aggregate's ranges are of one column, the one after its prefix, got {ranges}")
+    if not aggregates and not group:
+        raise ValueError("a keyed aggregate answers an aggregate or a group")
+    if batch < 1:
+        raise ValueError(f"a keyed aggregate names at least one value a statement, got batch={batch}")
+    names = [part.alias if isinstance(part, Selected) else part for part in group]
+    empty = {name: 0 if isinstance(aggregate, Count) else None for name, aggregate in aggregates.items()}
+    merged: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for chunk in _value_chunks(pinned, batch):
+        for row in await conn.fetch(*_aggregate_statement(table, aggregates, chunk, ranges, where, group)):
+            held = merged.setdefault(tuple(row[name] for name in names), {name: row[name] for name in names} | empty)
+            for name, aggregate in aggregates.items():
+                value = row[name]
+                if isinstance(aggregate, Count):
+                    held[name] += int(value)
+                elif value is not None:
+                    held[name] = value if held[name] is None else held[name] + value
+    if not group and not merged:
+        return [dict(empty)]
+    return list(merged.values())
+
+
+def _value_chunks(pinned: Mapping[str, Any], batch: int) -> list[dict[str, Any]]:
+    """``pinned`` a statement at a time: its largest :class:`AnyOf` cut into ``batch`` values each (none for no
+    value); unchanged when it holds none."""
+    sets = [column for column, value in pinned.items() if isinstance(value, AnyOf)]
+    if not sets:
+        return [dict(pinned)]
+    column = max(sets, key=lambda name: len(pinned[name].values))
+    named: AnyOf = pinned[column]
+    unique = list(dict.fromkeys(named.values))
+    return [
+        {**pinned, column: AnyOf(unique[start : start + batch], named.cast, as_list=named.as_list)}
+        for start in range(0, len(unique), batch)
+    ]
+
+
+def _aggregate_statement(
+    table: str | Derived,
+    aggregates: Mapping[str, Count | Sum],
+    pinned: Mapping[str, Any],
+    ranges: Sequence[Range],
+    where: Sequence[Fragment],
+    group: Sequence[str | Selected],
+) -> tuple[str, ...]:
+    """one batch's statement and its parameters."""
+    conditions, params = by_conditions(pinned, alias="t")
+    edges: list[str] = []
+    for one in ranges:
+        column = f"t.{quote_identifier(one.column)}"
+        bounds: list[str] = []
+        for value, operator in ((one.low, ">="), (one.high, "<=" if one.high_inclusive else "<")):
+            if value is None:
+                continue
+            params.append(value)
+            bounds.append(
+                f"{column} {operator} {f'${len(params)}' if one.cast is None else f'CAST(${len(params)} AS {one.cast})'}"
+            )
+        edges.append(f"({' AND '.join(bounds)})")
+    if edges:
+        conditions.append(f"({' OR '.join(edges)})")
+    for fragment in where:
+        conditions.append(narrowing(fragment, len(params)))
+        params += list(fragment.params)
+    grouped = [part.expression if isinstance(part, Selected) else f"t.{quote_identifier(part)}" for part in group]
+    items = [selected_column(part) for part in group]
+    for name, aggregate in aggregates.items():
+        if isinstance(aggregate, Count):
+            counted = "*" if aggregate.expression is None else aggregate.expression
+            items.append(f"count({counted}) AS {quote_identifier(name)}")
+        else:
+            items.append(f"SUM({aggregate.expression}) AS {quote_identifier(name)}")
+    clause = f" GROUP BY {', '.join(grouped)}" if grouped else ""
+    sql = f"SELECT {', '.join(items)} FROM {relation(table, 't')} WHERE {' AND '.join(conditions)}{clause}"
+    return (sql, *params)
 
 
 async def counts_by(

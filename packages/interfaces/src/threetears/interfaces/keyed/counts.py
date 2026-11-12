@@ -7,7 +7,17 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
-__all__ = ["NO_MARK_FLOOR", "SQL_DIALECT_ATTRIBUTE", "BoundedCount", "Dialect", "MarkedCount", "rows_affected"]
+__all__ = [
+    "NO_MARK_FLOOR",
+    "SQL_DIALECT_ATTRIBUTE",
+    "BoundedCount",
+    "Count",
+    "Dialect",
+    "MarkedCount",
+    "Range",
+    "Sum",
+    "rows_affected",
+]
 
 #: the verbs whose status ends in the rows they touched (``INSERT`` carries an oid before it)
 _COUNTED_VERBS: Final[frozenset[str]] = frozenset(
@@ -84,3 +94,56 @@ class MarkedCount:
     rows: int
     newest: dict[str, str | None]
     fresh: bool
+
+
+@dataclass(frozen=True)
+class Count:
+    """an aggregate's count of its rows (``count(*)``), or of the rows where ``expression`` is not NULL; counts of
+    two batches of values add.
+
+    :param expression: a TRUSTED SQL expression over ``t``; None counts every row
+    :ptype expression: str | None
+    """
+
+    expression: str | None = None
+
+
+@dataclass(frozen=True)
+class Sum:
+    """an aggregate's sum of ``expression`` (``SUM(t."input_tokens" + t."output_tokens")``); sums of two batches of
+    values add, a sum of no row is None, as SQL's.
+
+    :param expression: a TRUSTED SQL expression over ``t``
+    :ptype expression: str
+    """
+
+    expression: str
+
+
+@dataclass(frozen=True)
+class Range:
+    """one range of a column an aggregate reads: ``low <= column < high`` (``<= high`` when ``high_inclusive``), an
+    edge left None open. Several ranges of one column are OR-ed (a window's two edges, each its own range).
+
+    :param column: the column, a TRUSTED identifier: the column after the aggregate's pinned prefix in its index
+    :ptype column: str
+    :param low: the lowest value kept; None: no lower edge
+    :ptype low: Any
+    :param high: the edge kept below; None: no upper edge
+    :ptype high: Any
+    :param high_inclusive: whether ``high`` itself is kept
+    :ptype high_inclusive: bool
+    :param cast: the SQL type each edge is bound as (``CAST($n AS timestamptz)``); None binds it as it is
+    :ptype cast: str | None
+    :raises ValueError: when neither edge is given
+    """
+
+    column: str
+    low: Any = None
+    high: Any = None
+    high_inclusive: bool = False
+    cast: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.low is None and self.high is None:
+            raise ValueError(f"a range of {self.column} names at least one edge")

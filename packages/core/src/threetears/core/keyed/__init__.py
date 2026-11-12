@@ -80,6 +80,7 @@ from threetears.core.keyed.counts import (
     SQL_DIALECT_ATTRIBUTE,
     BoundedCount,
     Dialect,
+    aggregate_keyed,
     count_at_most,
     counts_by,
     counts_by_relations,
@@ -89,6 +90,7 @@ from threetears.core.keyed.counts import (
     read_packed,
     rows_affected,
 )
+from threetears.interfaces.keyed.counts import Count, Range, Sum
 from threetears.core.keyed.deletes import SweptRows, delete_before, delete_oldest, update_before
 from threetears.core.keyed.inline import InlineDuckDB, InlineTransaction, run_inline
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
@@ -170,6 +172,7 @@ __all__ = [
     "DIRECT_KEY_BATCH",
     "AnyOf",
     "BoundedCount",
+    "Count",
     "Derived",
     "Dialect",
     "Fragment",
@@ -184,14 +187,17 @@ __all__ = [
     "MarkedRead",
     "PageAfter",
     "Pin",
+    "Range",
     "Selected",
     "Sort",
     "StageMode",
     "StageWrite",
+    "Sum",
     "SweptRows",
     "ThreadedDuckDB",
     "ThreadedSQLite",
     "WholeReads",
+    "aggregate_keyed",
     "any_rows",
     "key_batch_for",
     "literal_select",
