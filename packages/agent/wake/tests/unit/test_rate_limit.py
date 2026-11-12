@@ -260,8 +260,9 @@ async def test_check_fire_limits_under_both_limits_returns_none() -> None:
     assert await check_fire_limits(trigger, pool, FireLimits(per_wake=48, per_agent=500)) is None
     wake_sql, wake_args = pool.calls[0]
     agent_sql, agent_args = pool.calls[1]
-    assert "schedule_id = $2" in wake_sql
-    assert wake_args[:2] == (trigger.conversation_id, trigger.schedule_id)
+    # the wake's own schedule, by schedule_id alone (unique; its conversation selects the same rows)
+    assert "schedule_id = $1" in wake_sql and "conversation_id" not in wake_sql
+    assert wake_args[0] == trigger.schedule_id
     assert "ws.agent_id = $1" in agent_sql
     assert agent_args[0] == trigger.agent_id
 

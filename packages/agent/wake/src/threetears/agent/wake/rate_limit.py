@@ -82,10 +82,14 @@ _ADVISORY_XACT_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)"
 # Fires that ran, silent ones included, for one schedule / one webhook
 # subscription since a point in time. Both are keyed by the wake's own
 # conversation, the fire rows' partition.
+# A wake's fires are found by its schedule alone: schedule_id is unique (agent_wake_schedules UNIQUE (schedule_id)), and
+# every writer stamps a fire with its own schedule's conversation (the tick's claim and the manual claim both take the
+# pair from the schedule row), so binding the conversation too selects the same rows. Bound, YugabyteDB's planner
+# reads the conversation's every fire through the hashed primary key prefix instead of this wake's day.
 _COUNT_WAKE_FIRES_SQL = (
     "SELECT COUNT(*) FROM wake_fires "
-    "WHERE conversation_id = $1 AND schedule_id = $2 AND actual_fired_at > $3 "
-    "AND status IN ('fired', 'fired_silent') AND ($4 OR fire_source <> 'manual')"
+    "WHERE schedule_id = $1 AND actual_fired_at > $2 "
+    "AND status IN ('fired', 'fired_silent') AND ($3 OR fire_source <> 'manual')"
 )
 _COUNT_SUBSCRIPTION_FIRES_SQL = (
     "SELECT COUNT(*) FROM wake_fires "
@@ -292,9 +296,7 @@ async def check_fire_limits(
     # cache-bypass: aggregate COUNTs over a rolling window must read committed
     # state at fire time; a cached count is a limit that silently over-fires.
     if trigger.schedule_id is not None:
-        wake_count = await pool.fetchval(
-            _COUNT_WAKE_FIRES_SQL, trigger.conversation_id, trigger.schedule_id, since, count_manual
-        )
+        wake_count = await pool.fetchval(_COUNT_WAKE_FIRES_SQL, trigger.schedule_id, since, count_manual)
     else:
         wake_count = await pool.fetchval(
             _COUNT_SUBSCRIPTION_FIRES_SQL,

@@ -359,6 +359,22 @@ async def test_wake_fires_schedule_time(conn: asyncpg.Connection) -> None:
     for sql, args in statements:
         plan = await explain_statement(conn, sql, *args)
         assert plan_uses_index(plan, "idx_wake_fires_schedule_time"), (sql, plan.plan)
+    # the wake's count by its schedule alone is the count the conversation-bound statement gave, for every wake seeded
+    since = datetime.now(UTC) - timedelta(hours=rate_limit.RATE_LIMIT_WINDOW_HOURS)
+    for schedule in await conn.fetch(
+        "SELECT DISTINCT conversation_id, schedule_id FROM wake_fires WHERE schedule_id IS NOT NULL"
+    ):
+        for manual in (True, False):
+            alone = await conn.fetchval(statements[-1][0], schedule["schedule_id"], since, manual)
+            bound = await conn.fetchval(
+                "SELECT COUNT(*) FROM wake_fires WHERE conversation_id = $1 AND schedule_id = $2"
+                " AND actual_fired_at > $3 AND status IN ('fired', 'fired_silent') AND ($4 OR fire_source <> 'manual')",
+                schedule["conversation_id"],
+                schedule["schedule_id"],
+                since,
+                manual,
+            )
+            assert alone == bound, (schedule, manual, alone, bound)
 
 
 async def test_wake_fires_webhook_time(conn: asyncpg.Connection) -> None:
