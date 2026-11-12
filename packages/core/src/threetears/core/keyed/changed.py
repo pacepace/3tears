@@ -38,13 +38,15 @@ from decimal import Decimal
 from typing import Any, Final
 
 from threetears.core.backends.dialect import known_on_yugabyte
-from threetears.core.keyed.held import Held, HeldArrow, HeldMapping, hash_bytes as _hash_bytes
-from threetears.core.keyed._filters import Derived, Fragment, Selected, by_conditions, relation as _relation, narrowing
+from threetears.core.keyed._filters import Derived, Fragment, Selected, by_conditions, narrowing, sent_by
+from threetears.core.keyed._filters import relation as _relation
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
+from threetears.core.keyed.held import Held, HeldArrow, HeldMapping
+from threetears.core.keyed.held import hash_bytes as _hash_bytes
 from threetears.core.keyed.inline import InlineDuckDB
-from threetears.core.keyed.threaded import ThreadedDuckDB
 from threetears.core.keyed.page import Sort, keyset_rows
 from threetears.core.keyed.rows import KeyBatch, read_keyed
+from threetears.core.keyed.threaded import ThreadedDuckDB
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.changed import (
     ROW_HASH_COLUMN,
@@ -835,7 +837,7 @@ async def _group_hash_rows(
             f"{row_hash_sql(hash_columns, dialect, alias='t', encoding=HashEncoding.HEX)} AS h FROM {_relation(relation, 't')}{filtered}"
             f" OFFSET 0) AS s GROUP BY {grouped} ORDER BY {ordered} LIMIT {page}"
         )
-        rows = await conn.fetch(sql, *params)
+        rows = await sent_by(conn).fetch(sql, *params)
         found.extend(rows)
         if len(rows) < page:
             return found

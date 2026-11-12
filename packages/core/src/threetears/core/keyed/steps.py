@@ -39,10 +39,11 @@ from threetears.core.keyed._filters import (
     Derived,
     Fragment,
     Selected,
-    quoted_table,
     narrowing,
+    quoted_table,
     renumbered,
     selected_column,
+    sent_by,
 )
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.page import Sort
@@ -518,7 +519,7 @@ async def read_step(
     :raises ValueError: for a limit that is no count of rows
     """
     sql, params = _ordered(_as_step(step), order, limit)
-    return [dict(row) for row in await conn.fetch(sql, *params)]
+    return [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
 
 
 async def read_step_arrow(
@@ -560,7 +561,7 @@ async def read_step_arrow(
         raise ValueError(f"an Arrow batch is sized for at least one row, not {size!r}")
     sql, params = _ordered(_as_step(step), order, limit)
     if isinstance(conn, (InlineDuckDB, ThreadedDuckDB)):
-        return await conn.fetch_arrow(sql, *params, types=types, size=size if size is not None else limit)
+        return await sent_by(conn).fetch_arrow(sql, *params, types=types, size=size if size is not None else limit)
     if types is None:
         raise TypeError("read_step_arrow needs types= off DuckDB: its rows carry no Arrow types")
     return await l3_fetch_arrow(conn, sql, *params, types=types)
@@ -592,7 +593,7 @@ async def count_step(conn: Any, step: Rel) -> int:
     """
     statement = _Statement()
     source = statement.source(_as_step(step), "c")
-    rows = await conn.fetch(f"SELECT count(*) AS n FROM {source}", *statement.params)
+    rows = await sent_by(conn).fetch(f"SELECT count(*) AS n FROM {source}", *statement.params)
     return int(rows[0]["n"])
 
 
@@ -608,7 +609,7 @@ async def any_step(conn: Any, step: Rel) -> bool:
     """
     statement = _Statement()
     source = statement.source(_as_step(step), "e")
-    rows = await conn.fetch(f"SELECT EXISTS (SELECT 1 FROM {source}) AS held", *statement.params)
+    rows = await sent_by(conn).fetch(f"SELECT EXISTS (SELECT 1 FROM {source}) AS held", *statement.params)
     return bool(rows[0]["held"])
 
 
@@ -708,7 +709,7 @@ async def first_difference(
     joined = " AND ".join(match.condition("t", "k") for match in on)
     ordered = ", ".join(f"t.{quote_identifier(column)}" for column in order)
     conditions = [*statement.fragments(where), f"({differs})"]
-    rows = await conn.fetch(
+    rows = await sent_by(conn).fetch(
         f"SELECT {selected} FROM {left} JOIN {right} ON {joined} WHERE {' AND '.join(conditions)} "
         f"ORDER BY {ordered} LIMIT 1",
         *statement.params,

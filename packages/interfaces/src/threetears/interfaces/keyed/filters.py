@@ -27,6 +27,7 @@ __all__ = [
     "batched_join_hint",
     "by_conditions",
     "narrowing",
+    "one_use_each",
     "prefix_conditions",
     "quote_identifier",
     "quoted_table",
@@ -220,6 +221,41 @@ def renumbered(fragment: Fragment, before: int) -> str:
     if numbers and max(numbers) > len(fragment.params):
         raise ValueError(f"a fragment names ${max(numbers)} but binds {len(fragment.params)} parameters")
     return PLACEHOLDER.sub(lambda match: f"${int(match.group(1)) + before}", fragment.sql)
+
+
+#: a quoted literal or identifier, or a placeholder: what :func:`one_use_each` reads a statement as
+_TOKEN: Final[re.Pattern[str]] = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|\$(\d+)\b")
+
+
+def one_use_each(sql: str, params: Sequence[Any]) -> tuple[str, list[Any]]:
+    """``sql`` with every use of a placeholder its own number, and the parameters each binds, in that order: a
+    statement naming ``$2`` three times names ``$2``, ``$3`` and ``$4``, each bound to the old ``$2``'s value. A
+    placeholder inside a quoted literal or identifier is text, and stays.
+
+    Some drivers bind each placeholder once (Redshift through a datasource reader refuses a statement naming one
+    twice, where PostgreSQL takes it); a statement sent through such a reader is sent this way, whatever builder
+    wrote it.
+
+    :param sql: the statement, its placeholders ``$1``..``$n``
+    :ptype sql: str
+    :param params: the parameters, ``$1`` first
+    :ptype params: Sequence[Any]
+    :return: the statement and its parameters, one placeholder a use
+    :rtype: tuple[str, list[Any]]
+    :raises ValueError: when the statement names a placeholder it binds no parameter for
+    """
+    sent: list[Any] = []
+
+    def placed(match: re.Match[str]) -> str:
+        if match.group(1) is None:
+            return match.group()
+        number = int(match.group(1))
+        if not 1 <= number <= len(params):
+            raise ValueError(f"the statement names ${number} but binds {len(params)} parameters")
+        sent.append(params[number - 1])
+        return f"${len(sent)}"
+
+    return _TOKEN.sub(placed, sql), sent
 
 
 def narrowing(fragment: Fragment, before: int) -> str:

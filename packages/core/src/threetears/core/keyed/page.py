@@ -40,10 +40,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from threetears.core.backends.dialect import known_on_yugabyte
+from threetears.core.keyed._filters import Derived, Fragment, Lock, Selected, sent_by
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
-from threetears.core.keyed._filters import Derived, Fragment, Lock, Selected
 from threetears.interfaces.keyed.page import (
     KeyPage,
     Sort,
@@ -123,7 +123,7 @@ async def keyset_page(
         seek_legs=legs,
         chain_legs=_chains_legs(conn),
     )
-    return KeyPage.cut(order, [dict(row) for row in await conn.fetch(sql, *params)], limit)
+    return KeyPage.cut(order, [dict(row) for row in await sent_by(conn).fetch(sql, *params)], limit)
 
 
 async def _steps_by_row(conn: Any, order: Sequence[Sort]) -> bool:
@@ -230,7 +230,7 @@ async def keyset_rows(
             seek_legs=legs,
             chain_legs=_chains_legs(conn),
         )
-        answered = await conn.fetch(sql, *params)
+        answered = await sent_by(conn).fetch(sql, *params)
         rows.extend(dict(row) for row in answered)
         if len(answered) <= page:
             return rows

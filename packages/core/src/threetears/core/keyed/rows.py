@@ -48,8 +48,9 @@ from threetears.core.keyed._filters import (
     Selected,
     binds_native_arrays,
     by_conditions,
-    relation,
     narrowing,
+    relation,
+    sent_by,
 )
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.rows import (
@@ -219,7 +220,7 @@ async def read_keyed(
 
     async def fetch(chunk: Sequence[tuple[Any, ...]]) -> list[Any]:
         sql, params = statement.render(chunk, natively)
-        return list(await conn.fetch(sql, *params))
+        return list(await sent_by(conn).fetch(sql, *params))
 
     rows: list[Any] = []
     fit = _Fit()
@@ -385,5 +386,5 @@ async def any_rows(
         params += list(fragment.params)
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     selected = ", ".join(f"t.{quote_identifier(column)}" for column in columns)
-    rows = await conn.fetch(f"SELECT {selected} FROM {relation(table, 't')}{clause} LIMIT {limit}", *params)
+    rows = await sent_by(conn).fetch(f"SELECT {selected} FROM {relation(table, 't')}{clause} LIMIT {limit}", *params)
     return [dict(row) for row in rows]

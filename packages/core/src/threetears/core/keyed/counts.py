@@ -37,6 +37,7 @@ from threetears.core.keyed._filters import (
     narrowing,
     relation,
     selected_column,
+    sent_by,
 )
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.counts import (
@@ -102,7 +103,7 @@ async def estimated_rows(
     if spelled not in _ESTIMATE_SQL:
         raise ValueError(f"no row estimate is read from {dialect}")
     sql = _ESTIMATE_SQL[spelled]
-    rows = await conn.fetch(sql, table, schema)
+    rows = await sent_by(conn).fetch(sql, table, schema)
     if not rows:
         return None
     estimate = rows[0]["estimate"]
@@ -167,7 +168,7 @@ async def count_at_most(
         f"SELECT count(*) AS held FROM (SELECT 1 FROM {relation(table, 'r')}{where}{ordered} "
         f"LIMIT ${len(values) + 1}) AS held"
     )
-    rows = await conn.fetch(sql, *values, at_most + 1)
+    rows = await sent_by(conn).fetch(sql, *values, at_most + 1)
     held = int(rows[0]["held"])
     return BoundedCount(count=min(held, at_most), more=held > at_most)
 
@@ -189,7 +190,7 @@ async def holds_any(
     :rtype: bool
     """
     where, values = _where(by or {})
-    rows = await conn.fetch(
+    rows = await sent_by(conn).fetch(
         f"SELECT 1 AS held FROM {relation(table, 'r')}{where}{_ordered(table, order)} LIMIT 1", *values
     )
     return bool(rows)
@@ -211,7 +212,7 @@ async def empty_tables(conn: Any, tables: Sequence[str]) -> list[str]:
         f"NOT EXISTS (SELECT 1 FROM {quote_identifier(table)} LIMIT 1) AS e{index}"
         for index, table in enumerate(tables)
     )
-    rows = await conn.fetch(f"SELECT {probes}")
+    rows = await sent_by(conn).fetch(f"SELECT {probes}")
     answer = rows[0]
     return [table for index, table in enumerate(tables) if answer[f"e{index}"]]
 
@@ -275,7 +276,7 @@ async def aggregate_keyed(
     empty = {name: 0 if isinstance(aggregate, Count) else None for name, aggregate in aggregates.items()}
     merged: dict[tuple[Any, ...], dict[str, Any]] = {}
     for chunk in _value_chunks(pinned, batch):
-        for row in await conn.fetch(*_aggregate_statement(table, aggregates, chunk, ranges, where, group)):
+        for row in await sent_by(conn).fetch(*_aggregate_statement(table, aggregates, chunk, ranges, where, group)):
             held = merged.setdefault(tuple(row[name] for name in names), {name: row[name] for name in names} | empty)
             for name, aggregate in aggregates.items():
                 value = row[name]
@@ -434,7 +435,7 @@ async def _counts_paged(
             f"SELECT {quoted} AS counted, count(*) AS held FROM {relation(table, 'r')} WHERE {' AND '.join(conditions)}"
             f" GROUP BY {quoted} ORDER BY {quoted} LIMIT {batch}"
         )
-        rows = await conn.fetch(sql, *params)
+        rows = await sent_by(conn).fetch(sql, *params)
         for row in rows:
             counted[row["counted"]] = int(row["held"])
         if len(rows) < batch:
@@ -445,7 +446,7 @@ async def _counts_paged(
         return counted
     # the NULL group, which no "> last" reaches: one keyed count of its own
     conditions, params = by_conditions({**by, column: None})
-    rows = await conn.fetch(
+    rows = await sent_by(conn).fetch(
         f"SELECT count(*) AS held FROM {relation(table, 'r')} WHERE {' AND '.join(conditions)}", *params
     )
     if rows and int(rows[0]["held"]):
@@ -631,7 +632,7 @@ async def counts_by_relations(
             f"WHERE {clause} GROUP BY {quoted}"
             for index, label in enumerate(labels)
         ]
-        for row in await conn.fetch(" UNION ALL ".join(parts), *params):
+        for row in await sent_by(conn).fetch(" UNION ALL ".join(parts), *params):
             counted[labels[int(row["relation"])]][row["counted"]] = int(row["held"])
     return counted
 
@@ -725,7 +726,9 @@ async def _packed_cells(
         f"SELECT {cells} FROM (SELECT ROW_NUMBER() OVER (ORDER BY {alias}) - 1 AS n, {alias} FROM ({texts}) AS texts) "
         f"AS numbered GROUP BY n - n % {width}"
     )
-    return [str(text) for row in await conn.fetch(sql, *params) for text in dict(row).values() if text is not None]
+    return [
+        str(text) for row in await sent_by(conn).fetch(sql, *params) for text in dict(row).values() if text is not None
+    ]
 
 
 async def read_packed(
@@ -877,7 +880,7 @@ async def _counts_since(
         f"{flag} AS fresh {tail}{extra}"
         for index, group_text, flag, tail, extra in parts
     )
-    for row in await conn.fetch(sql, *params):
+    for row in await sent_by(conn).fetch(sql, *params):
         answer[labels[int(row["relation"])]].append(
             MarkedCount(
                 value=row["counted"],

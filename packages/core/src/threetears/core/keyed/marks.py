@@ -24,7 +24,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from threetears.core.keyed._filters import Derived, Fragment, by_conditions, relation, narrowing
+from threetears.core.keyed._filters import Derived, Fragment, by_conditions, narrowing, relation, sent_by
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.marks import MarkedRead, PageAfter
 
@@ -102,7 +102,7 @@ async def read_past_marks(
     clause = " AND ".join([*pinned, f"({moved})"]) if pinned else moved
     selected = ", ".join(quote(column) for column in columns)
     sql = f"SELECT {selected} FROM {quote(relation)} WHERE {clause}"
-    rows = [dict(row) for row in await conn.fetch(sql, *params)]
+    rows = [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
     newest = dict(marks)
     for row in rows:
         for stamp in marks:
@@ -159,5 +159,5 @@ async def read_after(
         f"SELECT {selected} FROM {relation(table, 'r')} WHERE {' AND '.join(conditions)} "
         f"ORDER BY {quote_identifier(id_column)} LIMIT {limit}"
     )
-    rows = [dict(row) for row in await conn.fetch(sql, *params)]
+    rows = [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
     return PageAfter(rows=rows, last=rows[-1][id_column] if rows else after, more=len(rows) == limit)

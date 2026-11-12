@@ -22,7 +22,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal, overload
 
-from threetears.core.keyed._filters import Fragment, Lock, Selected
+from threetears.core.keyed._filters import Fragment, Lock, Selected, sent_by
 from threetears.interfaces.keyed.point import read_by_statement, read_row_statement
 
 __all__ = [
@@ -93,7 +93,7 @@ async def read_by(
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
     sql, params = read_by_statement(table, by=by, columns=columns, lock=lock, where=where)
-    rows = list(await conn.fetch(sql, *params))
+    rows = list(await sent_by(conn).fetch(sql, *params))
     return rows if records else [dict(row) for row in rows]
 
 
@@ -156,7 +156,7 @@ async def read_row(
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
     sql, params = read_row_statement(table, by=by, columns=columns, lock=lock, where=where)
-    rows = list(await conn.fetch(sql, *params))
+    rows = list(await sent_by(conn).fetch(sql, *params))
     if not rows:
         return None
     return rows[0] if records else dict(rows[0])
@@ -179,5 +179,5 @@ async def read_value(conn: Any, table: str, *, by: Mapping[str, Any], column: st
     :raises ValueError: when nothing is pinned
     """
     sql, params = read_row_statement(table, by=by, columns=(column,))
-    rows = list(await conn.fetch(sql, *params))
+    rows = list(await sent_by(conn).fetch(sql, *params))
     return rows[0][column] if rows else None

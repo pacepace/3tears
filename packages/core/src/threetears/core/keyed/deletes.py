@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from threetears.core.keyed._filters import by_conditions, quoted_table
+from threetears.core.keyed._filters import by_conditions, quoted_table, sent_by
 from threetears.core.keyed.counts import rows_affected
 from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
 from threetears.core.sql_fragments import quote_identifier
@@ -106,7 +106,7 @@ async def _paged(
             rows = await _unserved_page(reader, sql, params)
         else:
             async with collection.bypassing_write(conn=conn) as settled:
-                rows = await reader.fetch(sql, *params)
+                rows = await sent_by(reader).fetch(sql, *params)
                 settled.touches(*(_entity_id(row, key) for row in rows))
         statements += 1
         touched += len(rows)
@@ -128,7 +128,7 @@ async def _unserved_page(reader: Any, sql: str, params: Sequence[Any]) -> list[A
     :return: the keys it returned
     :rtype: list[Any]
     """
-    return list(await reader.fetch(sql, *params))
+    return list(await sent_by(reader).fetch(sql, *params))
 
 
 def _entity_id(row: Mapping[str, Any], key: Sequence[str]) -> Any:

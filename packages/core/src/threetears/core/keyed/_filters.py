@@ -7,11 +7,11 @@ is the one question a filter asks of the connection it is sent on: whether it bi
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 
 import asyncpg
 from asyncpg.pool import PoolConnectionProxy
-
+from threetears.interfaces.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.interfaces.keyed.filters import (
     IN_SUBQUERY,
     AnyOf,
@@ -23,6 +23,7 @@ from threetears.interfaces.keyed.filters import (
     batched_join_hint,
     by_conditions,
     narrowing,
+    one_use_each,
     prefix_conditions,
     quoted_table,
     relation,
@@ -46,7 +47,9 @@ __all__ = [
     "selected_column",
     "relation",
     "narrowing",
+    "one_use_each",
     "renumbered",
+    "sent_by",
 ]
 
 
@@ -64,3 +67,91 @@ def binds_native_arrays(conn: Any) -> bool:
     if isinstance(conn, asyncpg.Connection | asyncpg.Pool | PoolConnectionProxy):
         return True
     return getattr(conn, "binds_native_arrays", None) is True
+
+
+#: the dialects whose drivers take a placeholder named more than once (a reader naming one is sent as written)
+_TAKES_REUSE: Final[frozenset[Dialect]] = frozenset({Dialect.POSTGRES, Dialect.YUGABYTE, Dialect.DUCKDB})
+
+
+class _OneUseEach:
+    """a reader naming its engine's dialect, sent every statement with one placeholder a use (:func:`sent_by`)."""
+
+    def __init__(self, reader: Any) -> None:
+        self._reader = reader
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._reader, name)
+
+    async def fetch(self, sql: str, *params: Any, **options: Any) -> Any:
+        """the reader's ``fetch`` of ``sql`` sent one placeholder a use.
+
+        :param sql: the statement
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Any
+        :param options: the reader's own options, passed on
+        :ptype options: Any
+        :return: what the reader answers
+        :rtype: Any
+        """
+        statement, sent = one_use_each(sql, params)
+        return await self._reader.fetch(statement, *sent, **options)
+
+    async def fetchrow(self, sql: str, *params: Any, **options: Any) -> Any:
+        """the reader's ``fetchrow`` of ``sql`` sent one placeholder a use.
+
+        :param sql: the statement
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Any
+        :param options: the reader's own options, passed on
+        :ptype options: Any
+        :return: what the reader answers
+        :rtype: Any
+        """
+        statement, sent = one_use_each(sql, params)
+        return await self._reader.fetchrow(statement, *sent, **options)
+
+    async def fetchval(self, sql: str, *params: Any, **options: Any) -> Any:
+        """the reader's ``fetchval`` of ``sql`` sent one placeholder a use.
+
+        :param sql: the statement
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Any
+        :param options: the reader's own options, passed on
+        :ptype options: Any
+        :return: what the reader answers
+        :rtype: Any
+        """
+        statement, sent = one_use_each(sql, params)
+        return await self._reader.fetchval(statement, *sent, **options)
+
+    async def fetch_arrow(self, sql: str, *params: Any, **options: Any) -> Any:
+        """the reader's ``fetch_arrow`` of ``sql`` sent one placeholder a use.
+
+        :param sql: the statement
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Any
+        :param options: the reader's own options, passed on
+        :ptype options: Any
+        :return: what the reader answers
+        :rtype: Any
+        """
+        statement, sent = one_use_each(sql, params)
+        return await self._reader.fetch_arrow(statement, *sent, **options)
+
+
+def sent_by(conn: Any) -> Any:
+    """what a keyed read sends its statement through: ``conn`` itself, or, for a reader naming its engine's dialect
+    (a warehouse's datasource reader, any but PostgreSQL, YugabyteDB and DuckDB: Redshift binds each placeholder once, and refuses a statement naming ``$1`` twice where
+    PostgreSQL takes it), ``conn`` sending each statement :func:`one_use_each`, whatever builder wrote it.
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :return: what to send the statement through
+    :rtype: Any
+    """
+    named = getattr(conn, SQL_DIALECT_ATTRIBUTE, None)
+    return _OneUseEach(conn) if isinstance(named, Dialect) and named not in _TAKES_REUSE else conn
