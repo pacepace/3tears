@@ -83,6 +83,11 @@ class _Store:
         del query, params, namespace
         return "DELETE 0"
 
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        """the expiry sweep's page (``keyed.delete_before``), which deletes nothing here: no key returned."""
+        del query, params
+        return []
+
 
 def _registry(nats: _Nats | None = None, store: _Store | None = None) -> CollectionRegistry:
     l1 = SQLiteBackend(db_name=f"claims_{uuid.uuid4().hex[:8]}")

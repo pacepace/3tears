@@ -72,6 +72,7 @@ from threetears.core.coordination.flusher import PeriodicFlusher
 from threetears.core.data.schema import ColumnDef, IndexDef as DdlIndexDef, TableDef
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import DataLayerUnavailableError, L2ScopeNotConfiguredError
+from threetears.core.keyed.deletes import delete_before
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 from threetears.core.tenancy import TENANT_BY_SCHEMA
@@ -162,10 +163,6 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
     """
 
     primary_key_column: str | tuple[str, ...] = ("purpose", "key")
-    #: the table's expiry sweep (:meth:`sweep_expired`): at most ``$2`` rows expired before ``$1`` deleted, found
-    #: through the table's expiry index, which names this statement its purpose. Written out per table so the
-    #: statement says which table and index it reads
-    sweep_expired_sql: ClassVar[str] = ""
     # save_to_store below only answers for a registry with no L3; every row it writes goes
     # through the generated statement, so a row is completed as that statement stores it.
     stores_through_generated_sql: ClassVar[bool | None] = True
@@ -411,9 +408,13 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         (:meth:`BaseCollection._l2_entry_lifetime`), so the broker removes the entry without
         being asked. This statement is the third tier only.
 
-        **This is the one direct L3 write a negative-caching collection may make**, and it needs
-        no write-generation advance: deleting a row that every tier already reads as absent cannot
-        change any read's answer, and an absent-marker only ever claims absence.
+        **The rows it deletes are settled in every cache, like any other write.** Each page is
+        :func:`~threetears.core.keyed.delete_before` inside this collection's
+        :meth:`~threetears.core.collections.base.BaseCollection.bypassing_write`: the keys the
+        ``DELETE`` returns are evicted from L1 and L2 and the eviction broadcast (a switched-on
+        collection's write generation advances). An expired row already reads as absent, but no
+        cache may hold a row the store deleted (the trust-epoch rule), so the sweep does not argue
+        its way out of settling them.
 
         Raises on a storage failure, so a caller sweeping deliberately sees it;
         :meth:`sweep_expired_if_due`, which this collection's write paths drive, contains it.
@@ -427,14 +428,22 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         :raises threetears.core.exceptions.DataLayerUnavailableError: on an L3 failure, and
             whatever else the backend raises
         """
-        store = self.l3_pool
-        if store is None:
+        if self.l3_pool is None:
             return 0
         cutoff = now or datetime.now(UTC)
         table = self.table_name
-        # each table's own statement, its expired rows found through its expiry index (the index names it)
-        deleted = await store.execute(type(self).sweep_expired_sql, cutoff, int(batch))
-        rows = _rows_affected(deleted)
+        # the expired rows, oldest first, found through the table's expiry index (each names this sweep its purpose);
+        # one page a sweep: the throttle (sweep_expired_if_due) runs it again after the interval
+        swept = await delete_before(
+            self.schema.name,
+            collection=self,
+            key=("purpose", "key"),
+            column="expires_at",
+            before=cutoff,
+            page=int(batch),
+            most_pages=1,
+        )
+        rows = swept.deleted
         # Logged even at zero: an operator looking at a growing table needs to tell "sweeping,
         # nothing expired" from "never sweeping" and from "sweeping and failing".
         log.info(
@@ -475,24 +484,6 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
             return 0
 
 
-def _rows_affected(result: Any) -> int:
-    """read a rowcount out of whatever the L3 backend returned.
-
-    asyncpg reports a command tag (``"DELETE 12"``); other backends report an int or nothing.
-
-    :param result: the backend's return value
-    :ptype result: Any
-    :return: rows affected, 0 when it cannot be read
-    :rtype: int
-    """
-    if isinstance(result, int):
-        return result
-    if isinstance(result, str):
-        tail = result.rsplit(" ", 1)[-1]
-        return int(tail) if tail.isdigit() else 0
-    return 0
-
-
 class CoordinationCountersCollection(CoordinationCollection):
     """windowed attempt counts: many increments, each cheap, none worth an L3 write on its own."""
 
@@ -519,15 +510,11 @@ class CoordinationCountersCollection(CoordinationCollection):
                 "idx_coordination_counters_expiry_range",
                 "expires_at",
                 asc=("expires_at",),
-                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationCountersCollection.sweep_expired_sql",
+                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection.sweep_expired",
                 plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
             ),
         ),
-    )
-    sweep_expired_sql: ClassVar[str] = (
-        "DELETE FROM coordination_counters WHERE (purpose, key) IN ("
-        "SELECT purpose, key FROM coordination_counters WHERE expires_at IS NOT NULL AND expires_at < $1 LIMIT $2)"
     )
 
 
@@ -561,15 +548,11 @@ class CoordinationClaimsCollection(CoordinationCollection):
                 "idx_coordination_claims_expiry_range",
                 "expires_at",
                 asc=("expires_at",),
-                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationClaimsCollection.sweep_expired_sql",
+                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection.sweep_expired",
                 plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
             ),
         ),
-    )
-    sweep_expired_sql: ClassVar[str] = (
-        "DELETE FROM coordination_claims WHERE (purpose, key) IN ("
-        "SELECT purpose, key FROM coordination_claims WHERE expires_at IS NOT NULL AND expires_at < $1 LIMIT $2)"
     )
 
 
@@ -599,15 +582,11 @@ class CoordinationRevocationsCollection(CoordinationCollection):
                 "idx_coordination_revocations_expiry_range",
                 "expires_at",
                 asc=("expires_at",),
-                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationRevocationsCollection.sweep_expired_sql",
+                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection.sweep_expired",
                 plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
             ),
         ),
-    )
-    sweep_expired_sql: ClassVar[str] = (
-        "DELETE FROM coordination_revocations WHERE (purpose, key) IN ("
-        "SELECT purpose, key FROM coordination_revocations WHERE expires_at IS NOT NULL AND expires_at < $1 LIMIT $2)"
     )
 
 
@@ -638,15 +617,11 @@ class CoordinationRedemptionsCollection(CoordinationCollection):
                 "idx_coordination_redemptions_expiry_range",
                 "expires_at",
                 asc=("expires_at",),
-                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationRedemptionsCollection.sweep_expired_sql",
+                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection.sweep_expired",
                 plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
             ),
         ),
-    )
-    sweep_expired_sql: ClassVar[str] = (
-        "DELETE FROM coordination_redemptions WHERE (purpose, key) IN ("
-        "SELECT purpose, key FROM coordination_redemptions WHERE expires_at IS NOT NULL AND expires_at < $1 LIMIT $2)"
     )
 
 

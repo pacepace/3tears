@@ -80,7 +80,8 @@ class _RecordingStore:
 
 
 class _SweepStore:
-    """an L3 backend that answers the sweep's DELETE and remembers how it was called."""
+    """an L3 backend that answers the sweep's DELETE (its page's keys, as ``RETURNING`` names them) and remembers how
+    it was called."""
 
     def __init__(self, deleted: int = 0) -> None:
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
@@ -90,6 +91,10 @@ class _SweepStore:
         del namespace
         self.calls.append((" ".join(query.split()), params))
         return f"DELETE {self.deleted}"
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        self.calls.append((" ".join(query.split()), params))
+        return [{"purpose": "p", "key": f"k{n}"} for n in range(self.deleted)]
 
 
 # parity-with: threetears.core.collections.generation.GenerationSource
@@ -148,6 +153,11 @@ class _RowStore:
     async def execute(self, query: str, *params: Any, namespace: str | None = None) -> str:
         del query, params, namespace
         return "DELETE 0"
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        """the expiry sweep's page (``keyed.delete_before``), which deletes nothing here: no key returned."""
+        del query, params
+        return []
 
 
 def _registry(*, l3: Any = None, l2: Any = None) -> CollectionRegistry:
@@ -634,13 +644,22 @@ class TestTheSweep:
         store = _SweepStore(deleted=7)
         registry = _registry(l3=store)
         collection = coordination_collection(registry, CoordinationCountersCollection, _config())
+        evicted: list[tuple[Any, ...]] = []
+
+        async def _evict(entity_ids: Any) -> None:
+            evicted.extend(entity_ids)
+
+        collection.invalidate_cache_many = _evict  # type: ignore[method-assign]
         cutoff = datetime(2026, 1, 1, tzinfo=UTC)
         assert await collection.sweep_expired(now=cutoff, batch=250) == 7
+        assert len(store.calls) == 1, "one page a sweep: the throttle runs the next"
         sql, params = store.calls[0]
-        assert "DELETE FROM coordination_counters" in sql
-        assert "expires_at IS NOT NULL AND expires_at < $1" in sql
-        assert "LIMIT $2" in sql
-        assert params == (cutoff, 250)
+        assert 'DELETE FROM "coordination_counters"' in sql
+        # an expired row only (a NULL expiry never compares less), the oldest first, at most the batch
+        assert '"expires_at" < $1 ORDER BY "expires_at" LIMIT 250' in sql
+        assert params == (cutoff,)
+        # every row the store deleted is settled in every cache: evicted (and broadcast) by its key
+        assert sorted(evicted) == sorted(("p", f"k{n}") for n in range(7))
 
     @pytest.mark.asyncio
     async def test_without_l3_it_does_nothing(self) -> None:

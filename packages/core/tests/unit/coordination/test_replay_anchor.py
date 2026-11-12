@@ -75,6 +75,19 @@ class _Store:
         del query, params, namespace
         return "DELETE 0"
 
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        """the expiry sweep's page (``keyed.delete_before``): delete the rows expired before ``$1``, oldest first, at
+        most the page's ``LIMIT``, and answer their keys, as the statement's ``RETURNING`` does."""
+        assert query.lstrip().startswith(("DELETE", "/*+")) and '"expires_at" < $1' in query, query
+        page = int(query.rsplit("LIMIT", 1)[1].split(")", 1)[0])
+        expired = sorted(
+            (row for row in self.rows.values() if row.get("expires_at") is not None and row["expires_at"] < params[0]),
+            key=lambda row: row["expires_at"],
+        )[:page]
+        for row in expired:
+            del self.rows[(row["purpose"], row["key"])]
+        return [{"purpose": row["purpose"], "key": row["key"]} for row in expired]
+
 
 # parity-with: threetears.core.collections.generation.GenerationSource
 class _FakeGenerations:

@@ -1,8 +1,8 @@
 """coordination v005: each coordination table's expiry index range-sharded, built beside the hashed one it replaces.
 
-The expiry sweep (``sweep_expired_sql``) reads a table's rows by ``expires_at < $1``. On YugabyteDB a secondary
-index's first column is hashed unless declared ``ASC``, and a hashed index cannot answer a range: the sweep read
-every tablet. Each table now declares ``idx_coordination_<table>_expiry_range`` on ``expires_at ASC`` (the same
+The expiry sweep (``CoordinationCollection.sweep_expired``) reads a table's rows by ``expires_at < $1``. On
+YugabyteDB a secondary index's first column is hashed unless declared ``ASC``, and a hashed index cannot answer a
+range: the sweep read every tablet. Each table now declares ``idx_coordination_<table>_expiry_range`` on ``expires_at ASC`` (the same
 btree on Postgres). A schema v001 creates from this release on has it already; this builds it beside the
 ``idx_coordination_<table>_expiry`` a schema created before carries, and only then drops the old one, so the sweep
 always has an index to read.

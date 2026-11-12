@@ -14,6 +14,13 @@ ONE generated test module per repo walks the manifest and, for each entry:
 - :func:`assert_source_says` checks the module still holds the helper call the manifest records, in the function it
   names, its table, columns and each pin bound to the same argument: the proof is of the code that runs.
 
+**Sweeps** (``"shape": "sweep"``): an expiry ``DELETE`` replaced by :func:`~threetears.core.keyed.delete_before`. Its
+table is seeded with rows expired before the cutoff, rows after it, rows on it and rows with no expiry; each statement
+runs in a transaction rolled back after it, with a batch holding every expired row and one holding fewer. With room
+for all, both delete exactly the same rows; with fewer, each deletes the batch's count of expired rows, the helper the
+oldest (its ``ORDER BY``; the old statement named no order). The source check finds the ``delete_before`` call in the
+function with the recorded key and column, its collection ``self``.
+
 **Seeding.** Each row is built from the table as migrated (its columns, types, NOT NULLs, defaults, enums and unique
 keys, read from the catalog), so a table needs no hand-written row factory: every
 column the read pins as a parameter is shared by a tenant's rows (the key names many rows), or unique a row where a
@@ -39,7 +46,7 @@ from pathlib import Path
 from typing import Any, Final
 from uuid import NAMESPACE_OID, uuid5
 
-from threetears.core.keyed import read_by, read_row, read_value
+from threetears.core.keyed import delete_before, read_by, read_row, read_value
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
 __all__ = [
@@ -78,7 +85,7 @@ def entry_id(entry: Mapping[str, Any]) -> str:
     :return: the id
     :rtype: str
     """
-    pinned = ",".join(pin["column"] for pin in entry["pins"])
+    pinned = ",".join(pin["column"] for pin in entry.get("pins", ()))
     return f"{entry['path']}::{entry['function']}:{entry['helper']}({entry['table']}:{pinned})"
 
 
@@ -321,6 +328,9 @@ async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides:
     :rtype: None
     :raises AssertionError: naming each case whose rows differ
     """
+    if entry.get("shape") == "sweep":
+        await _assert_sweep_same(conn, entry)
+        return
     table = entry["table"]
     await _drop_checks(conn, table)
     shape = await _catalog(conn, table)
@@ -417,7 +427,118 @@ def _written_columns(columns: ast.expr | None, tree: ast.Module) -> list[Any] | 
     return None
 
 
+#: the rows a sweep's table is seeded with: this many expired before the cutoff, as many after it, plus one on it and
+#: one with no expiry, each under one of two purposes
+_SWEEP_EXPIRED: Final = 12
+
+
+async def _sweep_rows(conn: Any, entry: Mapping[str, Any]) -> tuple[list[str], datetime]:
+    """seed the sweep's table, inside the caller's transaction: its rows' keys, and the cutoff."""
+    table, key, column = entry["table"], entry["key"], entry["column"]
+    shape = await _catalog(conn, table)
+    if column not in shape.columns or any(part not in shape.columns for part in key):
+        raise AssertionError(f"{table}: the sweep names {key} and {column}, which the table does not hold")
+    cutoff = _BASE_TIME
+    expiries: list[datetime | None] = [cutoff - timedelta(minutes=n + 1) for n in range(_SWEEP_EXPIRED)]
+    expiries += [cutoff + timedelta(minutes=n + 1) for n in range(_SWEEP_EXPIRED)]
+    expiries += [cutoff, None]
+    seeded = [c for c in shape.columns.values() if not c.generated and c.name not in {*key, column} and _seedable(c)]
+    names = [*key, column, *(c.name for c in seeded)]
+    for n, expiry in enumerate(expiries):
+        values = [f"{part}-{n % 2}" if part == key[0] else f"{part}-{n}" for part in key]
+        values += [expiry, *(_value(c, n) for c in seeded)]
+        places = ", ".join(f"${i}" for i in range(1, len(values) + 1))
+        quoted = ", ".join(f'"{name}"' for name in names)
+        await conn.execute(f"INSERT INTO {table} ({quoted}) VALUES ({places})", *values)  # noqa: S608 - test table
+    return names, cutoff
+
+
+async def _left(conn: Any, entry: Mapping[str, Any]) -> set[tuple[Any, ...]]:
+    key = ", ".join(f'"{part}"' for part in entry["key"])
+    return {tuple(row) for row in await conn.fetch(f"SELECT {key} FROM {entry['table']}")}  # noqa: S608 - test table
+
+
+async def _assert_sweep_same(conn: Any, entry: Mapping[str, Any]) -> None:
+    """the sweep entry's ``delete_before`` deletes what its old statement deleted, on ``conn``'s database.
+
+    :param conn: an asyncpg connection to a migrated test database
+    :ptype conn: Any
+    :param entry: the manifest entry (``shape`` ``sweep``)
+    :ptype entry: Mapping[str, Any]
+    :return: nothing
+    :rtype: None
+    :raises AssertionError: naming the batch whose deleted rows differ
+    """
+    table, key, column = entry["table"], entry["key"], entry["column"]
+    await _drop_checks(conn, table)
+    for batch in (_SWEEP_EXPIRED + 5, _SWEEP_EXPIRED // 3):
+        deleted: dict[str, set[tuple[Any, ...]]] = {}
+        expired: set[tuple[Any, ...]] = set()
+        oldest: set[tuple[Any, ...]] = set()
+        for side in ("old", "helper"):
+            transaction = conn.transaction()
+            await transaction.start()
+            try:
+                await conn.execute(f"DELETE FROM {table}")  # noqa: S608 - the test's own table, in its transaction
+                _, cutoff = await _sweep_rows(conn, entry)
+                before = await _left(conn, entry)
+                named = ", ".join(f'"{part}"' for part in key)
+                expired = {
+                    tuple(row)
+                    for row in await conn.fetch(
+                        f'SELECT {named} FROM {table} WHERE "{column}" < $1 ORDER BY "{column}"',  # noqa: S608
+                        cutoff,
+                    )
+                }
+                ordered = await conn.fetch(
+                    f'SELECT {named} FROM {table} WHERE "{column}" < $1 ORDER BY "{column}" LIMIT {batch}',  # noqa: S608
+                    cutoff,
+                )
+                oldest = {tuple(row) for row in ordered}
+                if side == "old":
+                    await conn.execute(entry["old_sql"], cutoff, batch)
+                else:
+                    await delete_before(
+                        table,
+                        collection=None,
+                        conn=conn,
+                        key=key,
+                        column=column,
+                        before=cutoff,
+                        page=batch,
+                        most_pages=1,
+                    )
+                deleted[side] = before - await _left(conn, entry)
+            finally:
+                await transaction.rollback()
+        if batch >= len(expired):
+            assert deleted["old"] == deleted["helper"] == expired, (
+                f"{table} batch {batch}: the old statement deleted {sorted(deleted['old'])}, delete_before "
+                f"{sorted(deleted['helper'])}, the expired rows are {sorted(expired)}"
+            )
+        else:
+            assert len(deleted["old"]) == len(deleted["helper"]) == batch, (table, batch, deleted)
+            assert deleted["old"] <= expired and deleted["helper"] == oldest, (table, batch, deleted, oldest)
+
+
+def _sweep_says(call: ast.Call, entry: Mapping[str, Any]) -> bool:
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    collection = keywords.get("collection")
+    if not (isinstance(collection, ast.Name) and collection.id == "self"):
+        return False
+    column = keywords.get("column")
+    if not (isinstance(column, ast.Constant) and column.value == entry["column"]):
+        return False
+    key = keywords.get("key")
+    if not isinstance(key, ast.Tuple | ast.List):
+        return False
+    written = [element.value for element in key.elts if isinstance(element, ast.Constant)]
+    return written == list(entry["key"]) and bool(call.args) and ast.unparse(call.args[0]) == entry["table_argument"]
+
+
 def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
+    if entry.get("shape") == "sweep":
+        return _sweep_says(call, entry)
     keywords = {keyword.arg: keyword.value for keyword in call.keywords}
     if len(call.args) != 2 or not (isinstance(call.args[1], ast.Constant) and call.args[1].value == entry["table"]):
         return False
@@ -468,5 +589,5 @@ def assert_source_says(repo_root: Path, entry: Mapping[str, Any]) -> None:
     ]
     assert any(_says(call, entry, tree) for call in calls), (
         f"{entry['path']}::{entry['function']}: no {entry['helper']} call of {entry['table']} as the manifest records it"
-        f" (by {[pin['column'] for pin in entry['pins']]}, args {entry['args']})"
+        f" (by {[pin['column'] for pin in entry.get('pins', ())]}, args {entry.get('args')})"
     )

@@ -947,5 +947,89 @@
    }
   ],
   "table": "workspace_file_versions"
+ },
+ {
+  "args": [
+   "cutoff",
+   "batch"
+  ],
+  "column": "expires_at",
+  "columns": null,
+  "function": "CoordinationCollection.sweep_expired",
+  "helper": "delete_before",
+  "key": [
+   "purpose",
+   "key"
+  ],
+  "new_call": "delete_before(self.schema.name, collection=self, key=('purpose', 'key'), column='expires_at', before=cutoff, page=int(batch), most_pages=1)",
+  "old_sql": "DELETE FROM coordination_counters WHERE (purpose, key) IN (SELECT purpose, key FROM coordination_counters WHERE expires_at IS NOT NULL AND expires_at < $1 LIMIT $2)",
+  "path": "packages/core/src/threetears/core/coordination/tables.py",
+  "pins": [],
+  "shape": "sweep",
+  "table": "coordination_counters",
+  "table_argument": "self.schema.name"
+ },
+ {
+  "args": [
+   "cutoff",
+   "batch"
+  ],
+  "column": "expires_at",
+  "columns": null,
+  "function": "CoordinationCollection.sweep_expired",
+  "helper": "delete_before",
+  "key": [
+   "purpose",
+   "key"
+  ],
+  "new_call": "delete_before(self.schema.name, collection=self, key=('purpose', 'key'), column='expires_at', before=cutoff, page=int(batch), most_pages=1)",
+  "old_sql": "DELETE FROM coordination_claims WHERE (purpose, key) IN (SELECT purpose, key FROM coordination_claims WHERE expires_at IS NOT NULL AND expires_at < $1 LIMIT $2)",
+  "path": "packages/core/src/threetears/core/coordination/tables.py",
+  "pins": [],
+  "shape": "sweep",
+  "table": "coordination_claims",
+  "table_argument": "self.schema.name"
+ },
+ {
+  "args": [
+   "cutoff",
+   "batch"
+  ],
+  "column": "expires_at",
+  "columns": null,
+  "function": "CoordinationCollection.sweep_expired",
+  "helper": "delete_before",
+  "key": [
+   "purpose",
+   "key"
+  ],
+  "new_call": "delete_before(self.schema.name, collection=self, key=('purpose', 'key'), column='expires_at', before=cutoff, page=int(batch), most_pages=1)",
+  "old_sql": "DELETE FROM coordination_revocations WHERE (purpose, key) IN (SELECT purpose, key FROM coordination_revocations WHERE expires_at IS NOT NULL AND expires_at < $1 LIMIT $2)",
+  "path": "packages/core/src/threetears/core/coordination/tables.py",
+  "pins": [],
+  "shape": "sweep",
+  "table": "coordination_revocations",
+  "table_argument": "self.schema.name"
+ },
+ {
+  "args": [
+   "cutoff",
+   "batch"
+  ],
+  "column": "expires_at",
+  "columns": null,
+  "function": "CoordinationCollection.sweep_expired",
+  "helper": "delete_before",
+  "key": [
+   "purpose",
+   "key"
+  ],
+  "new_call": "delete_before(self.schema.name, collection=self, key=('purpose', 'key'), column='expires_at', before=cutoff, page=int(batch), most_pages=1)",
+  "old_sql": "DELETE FROM coordination_redemptions WHERE (purpose, key) IN (SELECT purpose, key FROM coordination_redemptions WHERE expires_at IS NOT NULL AND expires_at < $1 LIMIT $2)",
+  "path": "packages/core/src/threetears/core/coordination/tables.py",
+  "pins": [],
+  "shape": "sweep",
+  "table": "coordination_redemptions",
+  "table_argument": "self.schema.name"
  }
 ]

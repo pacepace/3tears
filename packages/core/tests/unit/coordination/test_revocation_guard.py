@@ -104,6 +104,11 @@ class _Store:
         del query, params, namespace
         return "DELETE 0"
 
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        """the expiry sweep's page (``keyed.delete_before``), which deletes nothing here: no key returned."""
+        del query, params
+        return []
+
 
 # parity-with: threetears.core.collections.generation.GenerationSource
 class _FakeGenerations:
