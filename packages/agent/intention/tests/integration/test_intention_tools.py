@@ -11,7 +11,7 @@ a pgvector/pg16 container:
   ownership (a foreign user's want reads back not-found), and emits the
   presence event (surfaced on ``asked``, resolved on ``granted`` /
   ``dropped``);
-- ``IntentionsCollection.decay_salience`` sinks an abandoned want.
+- with salience decay on read, an abandoned want ranks below a fresh one.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from unittest.mock import patch
 import asyncpg
 import pytest
 
+from threetears.core.collections import SalienceDecay
 from threetears.core.exceptions import ConcurrentModificationError
 
 from threetears.agent.intention.events import (
@@ -481,35 +482,46 @@ class TestIntentionMarkSurfaced:
 
 
 class TestIntentionDecay:
-    async def test_decay_sinks_abandoned_want(self, pg_schema: tuple[str, str]) -> None:
-        """decay_salience ages a want with an old last_decayed_at toward the floor."""
+    async def test_an_abandoned_want_ranks_below_a_fresh_one_with_decay_on_read(
+        self, pg_schema: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """with decay on read, a want stamped 120 days ago (0.9 on a 60-day half-life reads ~0.225) ranks below a
+        fresh 0.5 one, and nothing rewrites its stored salience; off (the default), the ranking is the stored one."""
         url, schema = pg_schema
         await apply_migrations(url, schema)
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
             agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-            intention_id = uuid.uuid4()
+            abandoned, fresh = uuid.uuid4(), uuid.uuid4()
             async with pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO intentions (intention_id, agent_id, customer_id, user_id, status, "
-                    "content, salience, last_decayed_at, date_created, date_updated) "
-                    "VALUES ($1,$2,$3,$4,'open','abandoned',0.9, now() - interval '120 days', now(), now())",
-                    intention_id,
-                    agent_id,
-                    customer_id,
-                    user_id,
-                )
-                # a 60-day half-life over 120 days -> ~1/4 of 0.9 = ~0.225
-                decayed = await coll.decay_salience(half_life_days=60.0, floor=0.1)
-                assert decayed >= 1
+                for intention_id, content, salience, age in (
+                    (abandoned, "abandoned", 0.9, "120 days"),
+                    (fresh, "fresh", 0.5, "0 days"),
+                ):
+                    await conn.execute(
+                        "INSERT INTO intentions (intention_id, agent_id, customer_id, user_id, status, "
+                        "content, salience, last_decayed_at, date_created, date_updated) "
+                        f"VALUES ($1,$2,$3,$4,'open',$5,$6, now() - interval '{age}', now(), now())",
+                        intention_id,
+                        agent_id,
+                        customer_id,
+                        user_id,
+                        content,
+                        salience,
+                    )
+            stored = [entity.intention_id for entity in await coll.find_by_user(user_id, agent_id=agent_id)]
+            assert stored == [abandoned, fresh]
+            monkeypatch.setattr(type(coll), "salience_decay", SalienceDecay(half_life=timedelta(days=60), floor=0.1))
+            decayed = [entity.intention_id for entity in await coll.find_by_user(user_id, agent_id=agent_id)]
+            assert decayed == [fresh, abandoned]
+            async with pool.acquire() as conn:
                 sal = await conn.fetchval(
                     "SELECT salience FROM intentions WHERE agent_id = $1 AND intention_id = $2",
                     agent_id,
-                    intention_id,
+                    abandoned,
                 )
-            assert float(sal) < 0.9
-            assert float(sal) >= 0.1  # never below the floor
+            assert abs(float(sal) - 0.9) < 1e-6
         finally:
             await pool.close()
 
@@ -571,7 +583,7 @@ class TestIntentionCacheCoherence:
             await pool.close()
 
     async def test_decay_and_bump_invalidate_cache(self, pg_schema: tuple[str, str]) -> None:
-        """decay_salience + bump_salience each invalidate the affected pks (defense B)."""
+        """bump_salience invalidates the affected pks (defense B)."""
         url, schema = pg_schema
         await apply_migrations(url, schema)
         pool = await make_pool(url, schema)
@@ -607,10 +619,6 @@ class TestIntentionCacheCoherence:
             coll.invalidate_cache = _spy  # type: ignore[method-assign]
             coll.invalidate_cache_many = _spy_many  # type: ignore[method-assign]
 
-            await coll.decay_salience(half_life_days=60.0, floor=0.1)
-            assert (agent_id, wid) in calls
-
-            calls.clear()
             await coll.bump_salience([wid], agent_id=agent_id, access_bump=0.05)
             assert (agent_id, wid) in calls
         finally:

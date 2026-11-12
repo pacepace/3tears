@@ -51,7 +51,7 @@ from threetears.agent.memory.revisions import RETRACTED_BECAUSE_PREFIX, RETRACTE
 from threetears.core.backends.schema_sql import decode_vector
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.collections.salience import apply_salience_decay
+from threetears.core.collections.salience import SalienceDecay
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     DATETIMETZ_TYPE,
@@ -727,6 +727,11 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
 
     tenancy = TENANT_BY_SCHEMA
 
+    #: salience decay on read (:class:`~threetears.core.collections.salience.SalienceDecay`, pinned by ``evergreen``),
+    #: off by default: with it, the ambient reads' salience floor compares the effective salience and a reinforcement
+    #: stamps the decay so far into the base
+    salience_decay: ClassVar[SalienceDecay | None] = None
+
     primary_key_column: str | tuple[str, ...] = ("agent_id", "memory_id")
     # v0.8.0 enrichment: TableSchema is now the single source of truth
     # for the SQLAlchemy registration. Mirrors the v0.7.5
@@ -812,7 +817,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             # omit it apply 0.5 (metadata-only add, no table rewrite).
             # ``immutable=True`` excludes it from the entity-save UPDATE
             # generator: salience is written ONLY by the raw decay / bump
-            # SQL (decay_salience / bump_salience), never by a full-entity
+            # SQL (bump_salience; decay is read, SalienceDecay), never by a full-entity
             # save. Without this, an unrelated content UPDATE would carry a
             # stale cached salience and revert a scheduled decay (design §2
             # "the UPDATE narrows to content + embedding + date_updated").
@@ -1750,7 +1755,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                             SELECT 1 FROM memories g
                             WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
                       AND {_NOT_RETRACTED}
-                      AND salience >= ${vec_salience_idx}{allowed}
+                      AND {self._salience_read()} >= ${vec_salience_idx}{allowed}
                     ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
                     LIMIT {limit_param}
                     """,
@@ -1779,7 +1784,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                         SELECT 1 FROM memories g
                         WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
                   AND {_NOT_RETRACTED}
-                  AND salience >= ${vec_salience_idx}{allowed}
+                  AND {self._salience_read()} >= ${vec_salience_idx}{allowed}
                 ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
                 LIMIT {limit_param}
                 """,
@@ -1839,7 +1844,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                         SELECT 1 FROM memories g
                         WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
                   AND {_NOT_RETRACTED}
-                  AND salience >= ${fts_salience_idx}{fts_allowed}
+                  AND {self._salience_read()} >= ${fts_salience_idx}{fts_allowed}
                 ORDER BY fts_rank DESC
                 LIMIT {fts_limit_param}
                 """,
@@ -2520,65 +2525,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             entities.append(entity)
         return entities
 
-    @spans_partitions(marker_only=True)
-    async def decay_salience(
-        self,
-        *,
-        half_life_days: float,
-        floor: float,
-    ) -> int:
-        """decay stored salience for every non-evergreen memory (v024).
-
-        The scheduled maintenance pass: ``salience`` sinks toward
-        ``floor`` on a ``half_life_days`` half-life, anchored on
-        ``last_decayed_at`` so the total decay over a period is
-        cadence-independent. ``evergreen`` rows are skipped. Delegates
-        to the shared :func:`apply_salience_decay` so ``agent/memory``
-        and ``agent/intention`` run identical decay; this method stays
-        the single entry point for the ``memories`` table's SQL.
-
-        Never deletes and never drops below ``floor`` (dormant, not
-        gone): a decayed memory drops out of ambient retrieval but is
-        still reachable by direct id / alias recall.
-
-        Cache coherence: the raw L3 decay leaves L1/L2 holding the
-        pre-decay salience, so every decayed pk is invalidated (in one
-        :meth:`invalidate_cache_many` call) -- otherwise a later full-entity save
-        from the stale cache could write the old salience back. The
-        ``salience``/``last_decayed_at`` columns are also ``immutable`` to
-        the entity-UPDATE generator, so the two defenses compose: the
-        generator never emits salience, and the cache is refreshed anyway.
-
-        :param half_life_days: decay half-life in days
-        :ptype half_life_days: float
-        :param floor: salience asymptote; never decays below this
-        :ptype floor: float
-        :return: number of memories decayed
-        :rtype: int
-        """
-        if self.l3_pool is None:
-            return 0
-        # __SPANS_PARTITIONS__: salience decay is a global maintenance
-        # sweep with no partition to scope to -- it ages every row the
-        # pool holds. The SQL literal lives in the shared helper (which
-        # carries no ``memories`` literal), so the partition-enforcement
-        # walker is satisfied and this method holds no raw table SQL.
-        # each decayed row is evicted from L1/L2 so a subsequent get() re-reads fresh salience
-        # from L3. A bulk sweep issues one invalidation per decayed row; acceptable for a
-        # maintenance pass (revisit with a coarser generation-bump if a huge corpus makes the
-        # per-row publish a bottleneck).
-        async with self.bypassing_write() as write:
-            result = await apply_salience_decay(
-                self.l3_pool,
-                table="memories",
-                half_life_seconds=half_life_days * 86400.0,
-                floor=floor,
-                returning_columns=self.primary_key_columns,
-            )
-            decayed_pks = result if isinstance(result, list) else []
-            write.touches(*decayed_pks)
-        return len(decayed_pks)
-
     async def set_salience(
         self,
         agent_id: UUID,
@@ -2612,6 +2558,28 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                 memory_ids,
             )
         return None
+
+    def _salience_read(self) -> str:
+        """what the ambient reads compare to their salience floor: the stored salience, or with decay on read the
+        effective salience (an ``evergreen`` row's stored one).
+
+        :return: the SQL expression
+        :rtype: str
+        """
+        decay = type(self).salience_decay
+        return "salience" if decay is None else decay.effective_sql()
+
+    def _reinforced(self, bump: str) -> str:
+        """a reinforcement's ``SET`` of salience: the stored salience plus the bump, or with decay on read the
+        effective salience plus the bump, stamped now.
+
+        :param bump: the increment's bind
+        :ptype bump: str
+        :return: the assignments
+        :rtype: str
+        """
+        decay = type(self).salience_decay
+        return f"salience = LEAST(1.0, salience + {bump})" if decay is None else decay.reinforced_sql(bump)
 
     async def bump_salience(
         self,
@@ -2651,7 +2619,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # the ids surfaced this retrieval).
         async with self.bypassing_write(*[(agent_id, memory_id) for memory_id in memory_ids]):
             await self.l3_pool.execute(
-                "UPDATE memories SET salience = LEAST(1.0, salience + $1), "
+                f"UPDATE memories SET {self._reinforced('$1')}, "
                 "last_accessed = now() "
                 "WHERE agent_id = $2 AND memory_id = ANY($3::uuid[]) AND NOT evergreen",
                 access_bump,

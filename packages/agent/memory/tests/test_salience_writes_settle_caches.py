@@ -1,6 +1,6 @@
 """a raw salience or supersession UPDATE evicts every row it may have changed, however it ends.
 
-``bump_salience``, ``mark_superseded`` and ``decay_salience`` write L3 directly and then evict
+``bump_salience`` and ``mark_superseded`` write L3 directly and then evict
 the rows they touched. Two ways that eviction used to go missing:
 
 - the UPDATE raised after reaching L3 (a connection lost once the statement was sent). Its
@@ -14,7 +14,6 @@ Both are asserted on the invalidation broadcast, not on a local re-read.
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from typing import Any
 
@@ -42,21 +41,6 @@ class _Pool:
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         del sql, args
         return [{"agent_id": agent_id, "memory_id": memory_id} for agent_id, memory_id in self.returned]
-
-
-class _SuspendingNats(FakeNatsClient):
-    """a NATS client whose first publish suspends until released, where a real broker acknowledgement would."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.first_publish_started = asyncio.Event()
-        self.release = asyncio.Event()
-
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
-        if not self.first_publish_started.is_set():
-            self.first_publish_started.set()
-            await self.release.wait()
-        await super().publish(subject=subject, message=message, reply_to=reply_to)
 
 
 def _collection(pool: Any, nats: FakeNatsClient, authorizer: MemoryAuthorizerDependencies) -> MemoriesCollection:
@@ -96,24 +80,3 @@ class TestAnUpdateThatRaisesStillEvicts:
             await collection.mark_superseded(agent_id=agent_id, source_memory_ids=ids, gist_id=uuid.uuid4())
 
         assert _evicted(nats) == {(str(agent_id), str(i)) for i in ids}
-
-
-class TestACancelledEvictionFinishes:
-    @pytest.mark.asyncio
-    async def test_decay_salience(self, permissive_memory_authorizer: MemoryAuthorizerDependencies) -> None:
-        """cancelled while evicting the first decayed row: every decayed row is still evicted."""
-        nats = _SuspendingNats()
-        agent_id = uuid.uuid4()
-        decayed = [(agent_id, uuid.uuid4()) for _ in range(3)]
-        collection = _collection(_Pool(decayed), nats, permissive_memory_authorizer)
-
-        task = asyncio.create_task(collection.decay_salience(half_life_days=30.0, floor=0.05))
-        await asyncio.wait_for(nats.first_publish_started.wait(), timeout=5.0)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        nats.release.set()
-        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        await asyncio.gather(*pending)
-
-        assert _evicted(nats) == {(str(a), str(m)) for a, m in decayed}

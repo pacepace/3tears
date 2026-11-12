@@ -83,7 +83,6 @@ UNFILTERED: dict[type, dict[str, str]] = {
         "mark_retracted": "a write by id; its callers (the memory tools, extraction) find the memory through "
         "find_for_recall first",
         "clear_retracted": "a write by id; memory_restore finds the memory through find_for_recall first",
-        "decay_salience": "a maintenance sweep over every row; returns only a count",
         "set_salience": "a write by id set; returns nothing",
         "bump_salience": "reinforces ids an already-filtered retrieval surfaced; returns nothing",
         "mark_superseded": "points sources at a gist; a write that returns nothing",

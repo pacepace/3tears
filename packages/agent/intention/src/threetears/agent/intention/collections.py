@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, cast
+from typing import ClassVar, Any, cast
 from uuid import UUID
 
 from sqlalchemy import MetaData, Table
 
-from threetears.core.collections.salience import apply_salience_decay
+from threetears.core.collections.salience import SalienceDecay
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
     ENUM_TYPE,
@@ -35,7 +35,6 @@ from threetears.core.collections.schema_backed import (
     Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
-    spans_partitions,
 )
 from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, schema_with_embedding_dim
 from threetears.observe import get_logger
@@ -107,6 +106,10 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
 
     tenancy = TENANT_BY_SCHEMA
 
+    #: salience decay on read (:class:`~threetears.core.collections.salience.SalienceDecay`), off by default: with
+    #: it, the ranked reads order by effective salience and a reinforcement stamps the decay so far into the base
+    salience_decay: ClassVar[SalienceDecay | None] = None
+
     primary_key_column: str | tuple[str, ...] = ("agent_id", "intention_id")
     schema = TableSchema(
         name="intentions",
@@ -148,7 +151,7 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
             ),
             # reuses the memory decay substrate: NUMERIC(5,4) seeded 0.5.
             # ``immutable=True`` (mirrors memory): salience is written ONLY
-            # by the raw decay / bump passes (decay_salience / bump_salience),
+            # by the raw decay / bump passes (bump_salience; decay is read, SalienceDecay),
             # never by a full-entity save -- so a mark_surfaced / refresh save
             # can't carry a stale cached salience back and revert a scheduled
             # decay. Insert still applies the value / server default.
@@ -274,7 +277,7 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
         rows = await self.l3_pool.fetch(
             f"SELECT {_INTENTIONS_SELECT_COLUMNS} FROM intentions "
             "WHERE agent_id = $1 AND user_id = $2 "
-            "ORDER BY salience DESC, date_created DESC",
+            f"ORDER BY {self._salience_rank()} DESC, date_created DESC",
             agent_id,
             user_id,
         )
@@ -326,7 +329,7 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
             "WHERE agent_id = $1 AND user_id = $2 "
             f"AND status = '{IntentionStatus.OPEN.value}' "
             "AND (last_surfaced_at IS NULL OR last_surfaced_at < $3) "
-            "ORDER BY salience DESC, date_created DESC",
+            f"ORDER BY {self._salience_rank()} DESC, date_created DESC",
             agent_id,
             user_id,
             cooldown_cutoff,
@@ -435,7 +438,7 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
             return None
         async with self.bypassing_write(*[(agent_id, intention_id) for intention_id in intention_ids]):
             await self.l3_pool.execute(
-                "UPDATE intentions SET salience = LEAST(1.0, salience + $1) "
+                f"UPDATE intentions SET {self._reinforced('$1')} "
                 "WHERE agent_id = $2 AND intention_id = ANY($3::uuid[])",
                 access_bump,
                 agent_id,
@@ -443,59 +446,23 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
             )
         return None
 
-    @spans_partitions(marker_only=True)
-    async def decay_salience(
-        self,
-        *,
-        half_life_days: float,
-        floor: float,
-    ) -> int:
-        """decay stored salience for every want (restraint brake #2).
+    def _salience_rank(self) -> str:
+        """what the ranked reads order by: the stored salience, or with decay on read its rank expression.
 
-        The scheduled maintenance pass: ``salience`` sinks toward
-        ``floor`` on a ``half_life_days`` half-life, anchored on
-        ``last_decayed_at`` so total decay over a period is
-        cadence-independent. Delegates to the shared
-        :func:`apply_salience_decay` (factored in A2) so ``agent/memory``
-        and ``agent/intention`` run identical decay; this method stays
-        the single entry point for the ``intentions`` table's SQL.
-
-        ``skip_evergreen=False`` because ``intentions`` carries no
-        ``evergreen`` pin column -- a standing want has no "never decays"
-        concept (design §6.5), so the pass ages every want.
-
-        Cache coherence: the raw L3 decay leaves L1/L2 holding the
-        pre-decay salience, so every decayed pk is invalidated (in one
-        :meth:`invalidate_cache_many` call) -- otherwise ``intention_log``'s
-        dedup-refresh, which reads the want via ``get()`` before bumping
-        it, could re-persist a stale salience and undo the decay.
-
-        Abandoned wants sink out of the salience-ranked deliberation list
-        without being deleted -- a re-log refreshes them.
-
-        :param half_life_days: decay half-life in days
-        :ptype half_life_days: float
-        :param floor: salience asymptote; never decays below this
-        :ptype floor: float
-        :return: number of wants decayed
-        :rtype: int
+        :return: the SQL expression
+        :rtype: str
         """
-        if self.l3_pool is None:
-            return 0
-        # __SPANS_PARTITIONS__: salience decay is a global maintenance
-        # sweep with no partition to scope to -- it ages every row the
-        # pool holds. The SQL literal lives in the shared helper (which
-        # carries no ``intentions`` literal), so the partition-enforcement
-        # walker is satisfied and this method holds no raw table SQL.
-        async with self.bypassing_write() as write:
-            result = await apply_salience_decay(
-                self.l3_pool,
-                table="intentions",
-                half_life_seconds=half_life_days * 86400.0,
-                floor=floor,
-                skip_evergreen=False,
-                returning_columns=self.primary_key_columns,
-            )
-            decayed_pks = result if isinstance(result, list) else []
-            write.touches(*decayed_pks)
-        return len(decayed_pks)
+        decay = type(self).salience_decay
+        return "salience" if decay is None else decay.rank_sql()
+
+    def _reinforced(self, bump: str) -> str:
+        """a reinforcement's ``SET``: the stored salience plus the bump, or with decay on read the effective
+        salience plus the bump, stamped now.
+
+        :param bump: the increment's bind
+        :ptype bump: str
+        :return: the assignments
+        :rtype: str
+        """
+        decay = type(self).salience_decay
+        return f"salience = LEAST(1.0, salience + {bump})" if decay is None else decay.reinforced_sql(bump)

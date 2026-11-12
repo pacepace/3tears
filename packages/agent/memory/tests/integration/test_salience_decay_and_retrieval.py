@@ -3,9 +3,10 @@
 Exercises the decay/reinforcement cycle and the ambient-vs-direct
 retrieval split against real Postgres:
 
-- ``MemoriesCollection.decay_salience`` -- cadence-independent decay
-  (two steps over 20d + 10d equal one step over 30d), the floor asymptote
-  (never below floor, never deleted), and evergreen exclusion.
+- salience decay on read (``MemoriesCollection.salience_decay``) --
+  cadence-independent (a reinforcement folding 20d, then 10d more, reads
+  as one 30d decay), the floor asymptote (never below floor, never
+  deleted), and evergreen exclusion; no sweep writes a row.
 - ``MemoriesCollection.bump_salience`` -- reinforcement increment clamped
   to 1.0, ``last_accessed`` stamped, evergreen skipped.
 - ``MemoriesCollection.hybrid_search`` -- ambient retrieval drops rows
@@ -17,7 +18,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -28,7 +29,7 @@ from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MemoriesCollection
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.conversations.migrations import register as register_conversations
-from threetears.core.collections import init_connection
+from threetears.core.collections import SalienceDecay, init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
@@ -71,13 +72,24 @@ async def _make_pool(url: str, schema: str) -> asyncpg.Pool:
     return pool
 
 
-def _build_collection(pool: asyncpg.Pool) -> MemoriesCollection:
-    """registry-bound MemoriesCollection; authorizer unused by these paths."""
+#: the decay on read these tests opt into: a 60-day half-life, a 0.1 floor, evergreen rows pinned
+_DECAY = SalienceDecay(half_life=timedelta(days=60), floor=0.1, pinned="evergreen")
+
+
+class _DecayingMemories(MemoriesCollection):
+    """memories with salience decay on read switched on."""
+
+    salience_decay = _DECAY
+
+
+def _build_collection(pool: asyncpg.Pool, *, decaying: bool = False) -> MemoriesCollection:
+    """registry-bound MemoriesCollection (with decay on read when ``decaying``); authorizer unused by these paths."""
     registry = CollectionRegistry()
     registry.configure(l3_pool=pool)
     config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     authorizer = MagicMock(spec=MemoryAuthorizerDependencies)
-    return MemoriesCollection(registry=registry, config=config, authorizer=authorizer)
+    kind = _DecayingMemories if decaying else MemoriesCollection
+    return kind(registry=registry, config=config, authorizer=authorizer)
 
 
 async def _insert_memory(
@@ -126,13 +138,18 @@ async def _salience(conn: asyncpg.Connection, memory_id: uuid.UUID) -> float:
     return float(val)
 
 
+async def _effective(conn: asyncpg.Connection, memory_id: uuid.UUID) -> float:
+    """the row's effective salience as a reader with decay on sees it."""
+    val = await conn.fetchval(f"SELECT {_DECAY.effective_sql()} FROM memories WHERE memory_id = $1", memory_id)
+    return float(val)
+
+
 class TestDecaySalience:
     async def test_two_step_decay_equals_single_step(self, applied_schema: tuple[str, str]) -> None:
-        """20d + 10d in two calls equals a single 30d decay (cadence-safe).
+        """20d folded by a reinforcement, then 10d more, reads as a single 30d decay (cadence-free).
 
-        The formula is multiplicative and anchored on ``last_decayed_at``,
-        so 0.5^(20/h) * 0.5^(10/h) = 0.5^(30/h) regardless of how the run
-        is split.
+        The formula is multiplicative and anchored on ``last_decayed_at``, so 0.5^(20/h) * 0.5^(10/h) = 0.5^(30/h)
+        however the time is split between a stamp and the read.
         """
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
@@ -142,7 +159,7 @@ class TestDecaySalience:
             agent_id = uuid.uuid4()
             user_id = uuid.uuid4()
             customer_id = uuid.uuid4()
-            coll = _build_collection(pool)
+            coll = _build_collection(pool, decaying=True)
 
             mem_id = await _insert_memory(
                 conn,
@@ -156,15 +173,16 @@ class TestDecaySalience:
                 "UPDATE memories SET last_decayed_at = now() - interval '20 days' WHERE memory_id = $1",
                 mem_id,
             )
-            await coll.decay_salience(half_life_days=60.0, floor=0.1)
-            # simulate 10 more days elapsing since the last decay run
+            # a reinforcement of nothing folds the 20 days into the base and stamps the row now
+            await coll.bump_salience([mem_id], agent_id=agent_id, access_bump=0.0)
+            assert abs(await _salience(conn, mem_id) - 0.5 ** (20.0 / 60.0)) < 0.01
+            # simulate 10 more days elapsing since the stamp
             await conn.execute(
                 "UPDATE memories SET last_decayed_at = now() - interval '10 days' WHERE memory_id = $1",
                 mem_id,
             )
-            await coll.decay_salience(half_life_days=60.0, floor=0.1)
 
-            got = await _salience(conn, mem_id)
+            got = await _effective(conn, mem_id)
             expected = 0.5 ** (30.0 / 60.0)  # single 30-day decay of salience 1.0
             assert abs(got - expected) < 0.01, f"cadence drift: {got} vs {expected}"
         finally:
@@ -172,13 +190,12 @@ class TestDecaySalience:
             await pool.close()
 
     async def test_floor_is_asymptote_never_deletes(self, applied_schema: tuple[str, str]) -> None:
-        """Salience decays toward the floor and never drops below it."""
+        """Salience decays toward the floor and never drops below it; nothing deletes the row."""
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         conn = await asyncpg.connect(url)
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
-            coll = _build_collection(pool)
             mem_id = await _insert_memory(
                 conn,
                 agent_id=uuid.uuid4(),
@@ -190,12 +207,15 @@ class TestDecaySalience:
                 "UPDATE memories SET last_decayed_at = now() - interval '3650 days' WHERE memory_id = $1",
                 mem_id,
             )
-            await coll.decay_salience(half_life_days=60.0, floor=0.1)
-            assert abs(await _salience(conn, mem_id) - 0.1) < 1e-4
+            assert abs(await _effective(conn, mem_id) - 0.1) < 1e-4
 
-            # row still exists (never deleted) and never sinks below floor
-            await coll.decay_salience(half_life_days=60.0, floor=0.1)
-            assert abs(await _salience(conn, mem_id) - 0.1) < 1e-4
+            # the stored base is untouched (no sweep), the row still exists, and it never reads below the floor
+            assert abs(await _salience(conn, mem_id) - 0.2) < 1e-4
+            await conn.execute(
+                "UPDATE memories SET last_decayed_at = now() - interval '36500 days' WHERE memory_id = $1",
+                mem_id,
+            )
+            assert abs(await _effective(conn, mem_id) - 0.1) < 1e-4
             exists = await conn.fetchval("SELECT count(*) FROM memories WHERE memory_id = $1", mem_id)
             assert exists == 1
         finally:
@@ -209,7 +229,6 @@ class TestDecaySalience:
         conn = await asyncpg.connect(url)
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
-            coll = _build_collection(pool)
             mem_id = await _insert_memory(
                 conn,
                 agent_id=uuid.uuid4(),
@@ -222,8 +241,7 @@ class TestDecaySalience:
                 "UPDATE memories SET last_decayed_at = now() - interval '3650 days' WHERE memory_id = $1",
                 mem_id,
             )
-            await coll.decay_salience(half_life_days=60.0, floor=0.1)
-            assert abs(await _salience(conn, mem_id) - 0.8) < 1e-4
+            assert abs(await _effective(conn, mem_id) - 0.8) < 1e-4
         finally:
             await conn.close()
             await pool.close()
@@ -463,15 +481,15 @@ class TestCacheCoherence:
     Two defenses compose (chosen A+B): salience / last_decayed_at /
     last_accessed / superseded_by are ``immutable`` to the entity-UPDATE
     generator (A), so a full-entity save never carries a stale value back;
-    and the raw decay/bump/supersede passes invalidate each affected row's
+    and the raw bump/supersede passes invalidate each affected row's
     L1/L2 entry (B), so a subsequent ``get()`` re-reads fresh from L3.
     """
 
     async def test_decayed_salience_survives_stale_entity_save(self, applied_schema: tuple[str, str]) -> None:
-        """A content-only entity save must NOT revert a scheduled decay (defense A).
+        """A content-only entity save must NOT revert a folded decay (defense A).
 
         Reproduces the reviewed scenario: an entity is fetched (salience
-        0.9), the decay pass then drops L3 salience, and a later
+        0.9), a reinforcement then folds the decay so far into L3's base, and a later
         full-entity save from that now-stale entity must leave the decayed
         salience intact while the content change lands.
         """
@@ -481,7 +499,7 @@ class TestCacheCoherence:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             agent_id, user_id, customer_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-            coll = _build_collection(pool)
+            coll = _build_collection(pool, decaying=True)
             mem_id = await _insert_memory(
                 conn,
                 agent_id=agent_id,
@@ -495,12 +513,12 @@ class TestCacheCoherence:
             assert entity is not None
             assert float(entity.salience) == 0.9
 
-            # decay drops L3 salience (backdate the anchor so it moves)
+            # a reinforcement folds 60 days of decay into L3's base (backdate the anchor so it moves)
             await conn.execute(
                 "UPDATE memories SET last_decayed_at = now() - interval '60 days' WHERE memory_id = $1",
                 mem_id,
             )
-            await coll.decay_salience(half_life_days=60.0, floor=0.1)
+            await coll.bump_salience([mem_id], agent_id=agent_id, access_bump=0.0)
             decayed = await _salience(conn, mem_id)
             assert decayed < 0.9  # ~0.45
 
@@ -517,14 +535,14 @@ class TestCacheCoherence:
             await pool.close()
 
     async def test_decay_bump_supersede_invalidate_cache(self, applied_schema: tuple[str, str]) -> None:
-        """decay / bump / mark_superseded each invalidate the affected pks (defense B)."""
+        """bump (decay on read folding into it) / mark_superseded each invalidate the affected pks (defense B)."""
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         conn = await asyncpg.connect(url)
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             agent_id, user_id, customer_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-            coll = _build_collection(pool)
+            coll = _build_collection(pool, decaying=True)
             m1 = await _insert_memory(conn, agent_id=agent_id, user_id=user_id, customer_id=customer_id)
             m2 = await _insert_memory(conn, agent_id=agent_id, user_id=user_id, customer_id=customer_id)
             for mid in (m1, m2):
@@ -551,10 +569,6 @@ class TestCacheCoherence:
             coll.invalidate_cache = _spy  # type: ignore[method-assign]
             coll.invalidate_cache_many = _spy_many  # type: ignore[method-assign]
 
-            await coll.decay_salience(half_life_days=60.0, floor=0.1)
-            assert (agent_id, m1) in calls and (agent_id, m2) in calls
-
-            calls.clear()
             await coll.bump_salience([m1], agent_id=agent_id, access_bump=0.05)
             assert (agent_id, m1) in calls
 

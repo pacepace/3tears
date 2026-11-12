@@ -62,7 +62,7 @@ from threetears.core.collections.registry import (
     CollectionRegistry,
     DerivedCacheRegistration,
 )
-from threetears.core.collections.salience import apply_salience_decay
+from threetears.core.collections.salience import SalienceDecay
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     BYTES_TYPE,
@@ -105,6 +105,7 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    "SalienceDecay",
     "BOOL_TYPE",
     "BYTES_TYPE",
     "COLLECTIONS_BUCKET_SUFFIX",
@@ -146,7 +147,6 @@ __all__ = [
     "WRITE_GENERATION_UNDECLARED",
     "WriteBuffer",
     "WriteGeneration",
-    "apply_salience_decay",
     "bind_collections_bucket",
     "announce_delete_cascade",
     "announce_unheard_writes",

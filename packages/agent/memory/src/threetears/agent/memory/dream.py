@@ -275,8 +275,8 @@ class DreamService:
 
         No RBAC authorizer: consolidation is a platform-invoked background
         maintenance pass over a single agent partition (the same class of
-        operation as :meth:`MemoriesCollection.decay_salience` /
-        ``bump_salience``, which are also unauthorized), not a request-path
+        operation as :meth:`MemoriesCollection.bump_salience`, which is also
+        unauthorized), not a request-path
         operation with a caller identity to gate.
 
         :param config: memory configuration; supplies the consolidation
