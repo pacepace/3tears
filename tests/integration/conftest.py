@@ -7,8 +7,8 @@ rewritten statement to its helper call on a database holding every rewritten tab
 on the other: a PostgreSQL run proves the PostgreSQL half, a YugabyteDB run the YugabyteDB half.
 
 The schema is built once a session, by each package's own migrations: the agent-scope packages (conversations, memory,
-skills, tools, workspace, langgraph) and the platform-scope ones (core's coordination tables, epoch, mcp,
-scheduled-jobs). The datasources tables are created by
+skills, tools, workspace, langgraph, wake) and the platform-scope ones (acl and the tools columns on its namespaces,
+core's coordination tables, epoch, mcp, scheduled-jobs). The datasources tables are created by
 the hub, not by a 3tears migration, so they are built from their declared :class:`TableSchema` (the hub's source too).
 The schema is dropped when the session ends.
 """
@@ -27,9 +27,12 @@ from sqlalchemy import MetaData
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex, CreateTable
 
+from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.agent.skills.migrations import register as register_skills
 from threetears.agent.tools.migrations import register as register_tools
+from threetears.agent.tools.platform_migrations import register as register_tools_platform
+from threetears.agent.wake.migrations import register as register_wake
 from threetears.agent.workspace.migrations import register as register_workspace
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.coordination.migrations import register as register_coordination
@@ -97,8 +100,11 @@ async def _build(url: str, schema: str) -> bool:
         register_tools(agent)
         register_workspace(agent)
         register_langgraph(agent)
+        register_wake(agent)
         await agent.apply_for_agent_schema(_Store(conn))  # type: ignore[arg-type]
         platform = MigrationRunner()
+        register_acl(platform)
+        register_tools_platform(platform, depends_on=("agent_acl",))
         register_coordination(platform)
         register_epoch(platform)
         register_mcp(platform)

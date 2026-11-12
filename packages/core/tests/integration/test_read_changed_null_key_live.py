@@ -91,7 +91,9 @@ async def test_a_changed_row_under_a_null_key_part_is_read_in_full_through_the_k
         hash_columns=_HASHED,
         by={"state": "PA"},
     )
-    assert sorted((row["county"], row["id"], row["name"]) for row in changed.rows) == [
+    got = [(row["county"], row["id"], row["name"]) for row in changed.rows]
+    # NULL county first: a None never compares with a str, so the sort key says where it goes
+    assert sorted(got, key=lambda row: (row[0] is not None, row[0] or "", row[1])) == [
         (None, 20, "moved"),
         (None, 500, "moved"),
         ("c21", 21, "moved"),

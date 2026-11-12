@@ -199,6 +199,16 @@ def _text_of(column: CatalogColumn, n: int) -> str:
     return text
 
 
+def _numeric_of(column: CatalogColumn, n: int) -> Decimal:
+    """``n`` as a value a ``numeric(precision, scale)`` column holds: its last ``precision`` digits, ``scale`` of them
+    after the point, so each ``n`` below ``10 ** precision`` gives its own value and none overflows the column."""
+    typed = re.search(r"\((\d+)\s*,\s*(\d+)\)", column.type)
+    if typed is None:
+        return Decimal(n)
+    precision, scale = int(typed.group(1)), int(typed.group(2))
+    return Decimal(n % 10**precision).scaleb(-scale)
+
+
 def seed_scalar(column: CatalogColumn, category: str, n: int) -> Any:
     """a value of a column's type, distinct for each ``n``."""
     kind = column.type.split("(")[0].removesuffix("[]").strip()
@@ -215,7 +225,7 @@ def seed_scalar(column: CatalogColumn, category: str, n: int) -> Any:
             return n
         if kind in {"real", "double precision"}:
             return float(n)
-        return Decimal(n)
+        return _numeric_of(column, n)
     if kind == "timestamp with time zone":
         return _BASE_TIME + timedelta(seconds=n)
     if kind == "timestamp without time zone":

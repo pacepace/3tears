@@ -54,11 +54,13 @@ from threetears.agent.acl import (
     RoleAssignment,
     ScopeType,
 )
+from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
 from threetears.agent.workspace.authorize import (
     WorkspaceAccessDenied,
 )
+from threetears.core.data.migrations import MigrationRunner
 
 
 # rbac-task-01 v016 seeds ``WorkspaceEditor`` with this deterministic UUID
@@ -110,13 +112,24 @@ def _schema_name(agent_id: UUID) -> str:
     return f"agent_{agent_id.hex}"
 
 
+class _ConnStore:
+    """the migration runner's store over one connection."""
+
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        return str(await self._conn.execute(sql, *args))
+
+    async def query(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        return [dict(row) for row in await self._conn.fetch(sql, *args)]
+
+
 async def _build_platform_schema(conn: asyncpg.Connection) -> None:
     """create the unified rbac tables + seed ``WorkspaceEditor``.
 
-    rbac-task-01 Phase 3 replaced ``namespace_grants`` with ``groups``
-    / ``group_members`` / ``roles`` / ``role_assignments``. the
-    minimal DDL here mirrors the v016 migration without the invariant
-    checks so the test seeds directly into the new shape.
+    the tables come from agent-acl's migrations, so the seeded rows
+    carry the shape the access reads expect (``row_scope`` included).
 
     the session-scoped ``db_container`` is shared across every
     integration test that uses it; sibling suites (notably
@@ -140,75 +153,14 @@ async def _build_platform_schema(conn: asyncpg.Connection) -> None:
     # user/agent identifier.
     await conn.execute("DROP SCHEMA IF EXISTS platform CASCADE")
     await conn.execute("CREATE SCHEMA platform")
-    await conn.execute(
-        """
-        CREATE TABLE platform.namespaces (
-            namespace_id  UUID PRIMARY KEY,
-            name          TEXT NOT NULL,
-            namespace_type TEXT NOT NULL,
-            owner_agent_id UUID NOT NULL,
-            schema_name   TEXT,
-            customer_id   UUID,
-            metadata      JSONB NOT NULL DEFAULT '{}'::jsonb,
-            date_created  TIMESTAMPTZ NOT NULL,
-            date_updated  TIMESTAMPTZ NOT NULL
-        )
-        """,
-    )
-    await conn.execute(
-        """
-        CREATE TABLE platform.groups (
-            group_id UUID PRIMARY KEY,
-            customer_id UUID,
-            name VARCHAR(255) NOT NULL,
-            description TEXT,
-            date_created TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            date_updated TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-        """,
-    )
-    await conn.execute(
-        """
-        CREATE TABLE platform.group_members (
-            id UUID PRIMARY KEY,
-            group_id UUID NOT NULL REFERENCES platform.groups(group_id) ON DELETE CASCADE,
-            member_type VARCHAR(10) NOT NULL
-                CHECK (member_type IN ('user', 'agent')),
-            member_id UUID NOT NULL,
-            customer_id UUID,
-            date_added TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-        """,
-    )
-    await conn.execute(
-        """
-        CREATE TABLE platform.roles (
-            role_id UUID PRIMARY KEY,
-            name VARCHAR(255) NOT NULL UNIQUE,
-            description TEXT,
-            permissions JSONB NOT NULL,
-            is_builtin BOOLEAN NOT NULL DEFAULT FALSE,
-            date_created TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            date_updated TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-        """,
-    )
-    await conn.execute(
-        """
-        CREATE TABLE platform.role_assignments (
-            assignment_id UUID PRIMARY KEY,
-            role_id UUID NOT NULL REFERENCES platform.roles(role_id),
-            group_id UUID NOT NULL REFERENCES platform.groups(group_id) ON DELETE CASCADE,
-            scope_type VARCHAR(16) NOT NULL
-                CHECK (scope_type IN ('namespace', 'type_customer', 'all')),
-            scope_namespace_id UUID REFERENCES platform.namespaces(namespace_id) ON DELETE CASCADE,
-            scope_namespace_type VARCHAR(255),
-            scope_customer_id UUID,
-            granted_by UUID,
-            date_granted TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-        """,
-    )
+    # the five access tables as production has them: agent-acl's own migrations, so the test sees every column the access reads name (row_scope among them)
+    await conn.execute("SET search_path TO platform")
+    try:
+        runner = MigrationRunner()
+        register_acl(runner)
+        await runner.apply_for_platform_schema(_ConnStore(conn))  # type: ignore[arg-type]
+    finally:
+        await conn.execute("RESET search_path")
     # seed the WorkspaceEditor role with the production-matching id +
     # permissions so the evaluator resolves correctly. namespace-task-01
     # phase 7 added the path-glob-bearing ``read_file_matching:<glob>``
@@ -1069,9 +1021,9 @@ async def _seed_namespace_row(
     await conn.execute(
         """
         INSERT INTO platform.namespaces (
-            namespace_id, name, namespace_type, owner_agent_id, schema_name,
+            row_scope, namespace_id, name, namespace_type, owner_agent_id, schema_name,
             customer_id, metadata, date_created, date_updated
-        ) VALUES ($1, $2, 'workspace', $3, $4, $5, '{}'::jsonb, $6, $7)
+        ) VALUES ('customer', $1, $2, 'workspace', $3, $4, $5, '{}'::jsonb, $6, $7)
         """,
         workspace_id,
         f"workspace.{workspace_id}",
@@ -1122,8 +1074,8 @@ async def _grant_via_singleton_group(
     await conn.execute(
         """
         INSERT INTO platform.groups (
-            group_id, customer_id, name, description, date_created, date_updated
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+            row_scope, group_id, customer_id, name, description, date_created, date_updated
+        ) VALUES ('customer', $1, $2, $3, $4, $5, $6)
         """,
         group_id,
         customer_id,
@@ -1148,11 +1100,11 @@ async def _grant_via_singleton_group(
     await conn.execute(
         """
         INSERT INTO platform.role_assignments (
-            assignment_id, role_id, group_id, scope_type,
+            row_scope, assignment_id, role_id, group_id, scope_type,
             scope_namespace_id, scope_namespace_type, scope_customer_id,
             granted_by, date_granted
         )
-        VALUES ($1, $2, $3, 'namespace', $4, NULL, NULL, NULL, $5)
+        VALUES ('customer', $1, $2, $3, 'namespace', $4, NULL, NULL, NULL, $5)
         """,
         assignment_id,
         role_id,
