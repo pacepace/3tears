@@ -29,6 +29,17 @@ a page still loading a font after 15 s fails that render, naming the fonts. It l
 DejaVu, the faces the package's pages draw in on the dev box. The testament image runs it at build and CI's evals
 shards before their tests.
 
+### evals: a seed reads each template revision's cases once (#1148)
+
+**Fixed:** the seed read every stored case of a template revision again for each corpus case of it, to fill names on
+nameless cases, so a boot cost a template's corpus cases times its stored cases. One production seed hydrated about
+144,000 cases over 980 corpus cases, 11.7 s of a 12.6 s boot. It now reads each revision once and indexes the names
+its live cases carry and its nameless cases by content, and it updates that index after each name it fills and each
+case it creates. Each fill still reads its case again with a token and writes conditionally on it, so a write that
+lands in between is never undone. Two races are closed on the way. A case another writer named after the seed read
+the revision ends the fill, so its name is not given to a second case of that content. A case another writer archived
+is skipped and not named.
+
 ### evals: names leave the evidence (bundle shape 66, campaign bundle shape 4; every stored analysis is regenerated once)
 
 **Changed:** names are presentation, never evidence (owner ruling, 2026-11-11). The bundle an analysis is frozen over,
