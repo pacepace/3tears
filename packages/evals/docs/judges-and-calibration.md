@@ -897,9 +897,10 @@ each batch a run of every arm in one campaign. After each batch the pass judges 
 answers it already has, and reads the bet's prefix. The arms stop launching once every candidate's preference has
 separated, or at N. A host picks the batch from its concurrent-cell count and its admitted-runs limit: a batch of the
 cells a run holds in flight is one full wave. At k = N the side-by-side reading is the one-batch reading, number for
-number; the gated readings are too when every batch run stored a page. A batch run that stored no page judged nothing,
-so it is left out of the gated readings, its pairs read side by side (a missing page losing its pair, or tying it),
-and the run says so once.
+number, and so are the gated readings. A batch run that stored no page judged nothing, yet it sits in its arm's test
+setup: a judge dimension none of its results exercised reads at the level its arm's runs read. Its unwritten reports
+count as failures in Report finished, the judged readings find no score of it, its pairs read side by side (a missing
+page losing its pair, or tying it), and the run says so once.
 
 | At the stop | What the run does |
 |---|---|
