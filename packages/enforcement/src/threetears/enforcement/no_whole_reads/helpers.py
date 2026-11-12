@@ -287,8 +287,9 @@ def _by(node: ast.expr | None, argument: str = "by") -> list[tuple[str, str]]:
         return []
     zipped = _zipped_columns(node)
     if argument == "by" and zipped is not None:
-        # ``by=dict(zip(pk_columns, key))``: every column a run-time list names, each bound, as ``{pk_columns}`` in
-        # SQL the caller wrote: the key when its name says so, else a predicate the rule cannot see
+        # ``by=dict(zip(pk_columns, key))`` / ``by=dict(pk)``: every column a run-time list or mapping names, each
+        # bound, as ``{pk_columns}`` in SQL the caller wrote: the key when its name says so, else a predicate the
+        # rule cannot see
         return [("{" + _named(zipped, argument)[1:-1] + "}", "eq")]
     if not isinstance(node, ast.Dict) or any(key is None for key in node.keys):
         raise _Unseen(argument)
@@ -310,11 +311,15 @@ def _by(node: ast.expr | None, argument: str = "by") -> list[tuple[str, str]]:
 
 
 def _zipped_columns(node: ast.expr) -> ast.expr | None:
-    """the column list of a ``dict(zip(<columns>, <values>))`` pin: a name or attribute the code binds at run time,
-    each of its columns bound to its value; None for any other expression."""
+    """the column list of a ``dict(zip(<columns>, <values>))`` pin, or the mapping of a ``dict(<mapping>)`` one: a
+    name or attribute the code binds at run time, each of its columns bound to its value; None for any other
+    expression."""
     if not (isinstance(node, ast.Call) and _name(node) == "dict" and len(node.args) == 1 and not node.keywords):
         return None
     inner = node.args[0]
+    if isinstance(inner, ast.Name | ast.Attribute):
+        # ``dict(pk)``: a copy of a run-time column -> value mapping, every column of it pinned
+        return inner
     if not (isinstance(inner, ast.Call) and _name(inner) == "zip" and len(inner.args) == 2):
         return None
     columns = inner.args[0]
@@ -424,9 +429,18 @@ def _read_keyed(call: ast.Call) -> list[str]:
 
 def _read_by(call: ast.Call) -> list[str]:
     """a point read (``read_by``, ``read_row``, ``read_value``): the rows its ``by`` pins, each ``= $n``; one pinning
-    nothing is the whole read it is."""
-    table, own = _relation(_argument(call, "table", 1), "table")
-    pinned, _ = _conditions(_by(_argument(call, "by", None)), alias="t")
+    nothing is the whole read it is. A table the code names at run time read by columns it also names at run time
+    (``by=dict(pk)``, ``by={pk_column: i}``) is a generic reader's, judged as the interpolated SQL it would write
+    (``FROM {table} WHERE {pk} = $1``), as :func:`_read_keyed` judges one; by literal columns, the walk cannot match
+    them to any table's key."""
+    table_node = _argument(call, "table", 1)
+    pins = _by(_argument(call, "by", None))
+    own: list[str] = []
+    if isinstance(table_node, ast.Name | ast.Attribute) and pins and all(column.startswith("{") for column, _ in pins):
+        table = _named(table_node, "table")
+    else:
+        table, own = _relation(table_node, "table")
+    pinned, _ = _conditions(pins, alias="t")
     return [f"SELECT * FROM {table} AS t{_where(pinned)}", *own]
 
 

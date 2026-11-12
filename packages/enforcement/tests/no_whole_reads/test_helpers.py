@@ -270,6 +270,9 @@ def test_a_helper_naming_no_key_is_a_whole_read(code: str, kind: str, schema: Sc
         # a look with no bound is no bounded look
         ('any_rows(c, "results", cols)', "limit"),
         ('delete_keyed(c, "results", by=pinned)', "by"),
+        # a table named at run time read by a literal column: the walk cannot match it to any table's key
+        ('read_row(c, table, by={"id": i})', "table"),
+        ('read_row(c, table, by={pk_column: i, "id": j})', "table"),
     ],
 )
 def test_a_helper_whose_arguments_the_walk_cannot_read_is_unseen(code: str, argument: str) -> None:
@@ -293,6 +296,14 @@ def test_a_helper_whose_arguments_the_walk_cannot_read_is_unseen(code: str, argu
         # live twin): keyed, as SQL over {pk_columns} would be; a list whose name says nothing of the key is not
         ('read_row(c, "{}", by=dict(zip(pk_columns, key, strict=True)))', []),
         ('read_row(c, "results", by=dict(zip(columns, values)))', ["non-key-where"]),
+        # a generic store's row by the primary key mapping its caller hands (SqlL3Backend.fetch_one / delete with no
+        # schema registered; a generated collection's fetch_from_store): keyed, as its SQL over {table} / {pk} would
+        # be; a mapping whose name says nothing of the key is a predicate the walk cannot see
+        ("read_row(c, table, by=dict(pk))", []),
+        ("delete_keyed(c, table, by=dict(pk))", []),
+        ("read_row(c, tbl_name, by={pk_column: entity_id})", []),
+        ("read_row(c, table, by=dict(filters))", ["unknown-schema"]),
+        ('read_row(c, "results", by=dict(values))', ["non-key-where"]),
     ],
 )
 def test_a_by_column_named_at_run_time_is_judged_as_its_interpolation(
