@@ -184,6 +184,34 @@ class TestAnonymizeDetails:
         assert anonymize_details({"name": "Alice"}, event_type=_PLAIN_EVENT) == {"name": ANONYMIZED_MARKER}
         assert anonymize_details({"name": "Alice"}, event_type="workspace.fs_write") == {"name": ANONYMIZED_MARKER}
 
+    @pytest.mark.parametrize(
+        "event_type",
+        [
+            "rbac.group.create",
+            "rbac.group.delete",
+            "rbac.role.create",
+            "rbac.role.update",
+            "rbac.role.delete",
+            "channel_realm.create",
+            "engagement.create",
+        ],
+    )
+    def test_a_hub_resource_keeps_its_own_name(self, event_type: str) -> None:
+        """Flips if a hub group's, role's, realm's or engagement's own name (an admin-chosen resource name, Pace
+        2026-11-12: object names are not personal) is refused at write or masked."""
+        refuse_identifying_details({"name": "Finance readers"}, event_type=event_type)
+        assert anonymize_details({"name": "Finance readers"}, event_type=event_type) == {"name": "Finance readers"}
+        assert "name" not in identifying_keys_for(event_type)
+
+    @pytest.mark.parametrize(
+        "event_type",
+        ["rbac.group.member.add", "rbac.group.member.remove", "channel_realm.delete", "engagement.transition"],
+    )
+    def test_a_hub_familys_allowance_reaches_no_other_event(self, event_type: str) -> None:
+        """Flips if a resource-name allowance leaks to a sibling event, where a name may be a person's."""
+        with pytest.raises(IdentifyingAuditDetail):
+            refuse_identifying_details({"name": "Alice"}, event_type=event_type)
+
     def test_a_tuple_comes_back_a_tuple(self) -> None:
         """the kept skeleton includes the container type, not just the nesting."""
         details = {"tool_names": ("fs_write", {"login": "alice"})}

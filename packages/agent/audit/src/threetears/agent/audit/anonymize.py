@@ -345,6 +345,16 @@ _BUILT_IN_FAMILY_IDENTIFYING_ALLOWED: Final[Mapping[str, frozenset[str]]] = Mapp
         # the workspace's own name, a resource name its user chose, beside workspace_resource_id (3tears)
         "workspace.create": frozenset({"name"}),
         "workspace.delete": frozenset({"name"}),
+        # a group's own name, an admin-chosen resource name, beside its group id (hub); not rbac.group.member.*, whose
+        # names would be a member's
+        "rbac.group.create": frozenset({"name"}),
+        "rbac.group.delete": frozenset({"name"}),
+        # a role's own name, an admin-chosen resource name, beside its role id: create / update / delete (hub)
+        "rbac.role": frozenset({"name"}),
+        # a channel realm's own name, an admin-chosen resource name, beside its realm id (hub)
+        "channel_realm.create": frozenset({"name"}),
+        # an engagement's own name, an admin-chosen resource name, beside its engagement id (hub)
+        "engagement.create": frozenset({"name"}),
     }
 )
 
