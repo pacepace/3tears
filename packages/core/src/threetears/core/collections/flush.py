@@ -14,6 +14,7 @@ import asyncpg
 from sqlalchemy import Column, Integer, MetaData, String, Table, Text
 
 from threetears.core.backends.schema_sql import json_default
+from threetears.core.declared import whole_read
 from threetears.core.collections.generation import WriteGeneration
 from threetears.core.collections.l2_order import l2_order_of
 from threetears.core.backends.protocol import RowcountUnreadableError
@@ -230,7 +231,13 @@ class WriteBuffer:
         async with self._lock:
             claimed: list[PendingWrite] = []
             if self._l1 is not None:
-                rows = self._l1.execute_query("SELECT * FROM write_buffer")
+                rows = whole_read(
+                    self._l1.execute_query("SELECT * FROM write_buffer"),
+                    kind="drain",
+                    reason="the process's own write buffer (L1, never L3): every pending write is claimed to flush",
+                    ruling="Pace 2026-11-12: a drain of a process-local buffer reads it whole (declared kind drain)",
+                    proof="packages/core/tests/unit/collections/test_write_buffer_typed_recovery.py::test_drain_reads_only_the_process_local_write_buffer",
+                )
                 for row in rows:
                     key = self._key(row["table_name"], row["entity_id"])
                     if key in self._in_flight:
@@ -826,7 +833,13 @@ async def flush_pending(
     :raises GenerationUnavailableError: when a switched-on table's rows landed and its write
         generation could not be advanced.
     """
-    pending = await write_buffer.drain(decode=_collection_decoder(registry))
+    pending = await whole_read(
+        write_buffer.drain(decode=_collection_decoder(registry)),
+        kind="drain",
+        reason="the process's own write buffer (L1, never L3): every pending write is claimed to flush",
+        ruling="Pace 2026-11-12: a drain of a process-local buffer reads it whole (declared kind drain)",
+        proof="packages/core/tests/unit/collections/test_write_buffer_typed_recovery.py::test_drain_reads_only_the_process_local_write_buffer",
+    )
     if not pending:
         return 0
 

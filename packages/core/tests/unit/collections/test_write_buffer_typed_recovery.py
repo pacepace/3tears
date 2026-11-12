@@ -443,3 +443,25 @@ async def test_a_buffered_row_whose_instant_will_not_parse_still_drains() -> Non
     )
 
     assert [write.data for write in pending] == [{"id": "h1", "date_created": "not a time"}]
+
+
+async def test_drain_reads_only_the_process_local_write_buffer() -> None:
+    """the proof of WriteBuffer.drain's and flush_pending's whole_read(drain) declarations: the one whole read a flush
+    makes is of the process's own L1 write buffer, through WriteBuffer.drain, and no other relation is read whole."""
+
+    class _Recording(SQLiteBackend):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.queries: list[str] = []
+
+        def execute_query(self, query: str, *args: Any, **kwargs: Any) -> Any:
+            self.queries.append(" ".join(query.split()))
+            return super().execute_query(query, *args, **kwargs)
+
+    l1 = _Recording(db_name=f"wb_drain_{uuid.uuid4().hex}")
+    buffer = WriteBuffer(l1_backend=l1)
+    await buffer.add("unregistered", "u1", {"id": "u1"})
+    l1.queries.clear()
+    await flush_pending(buffer, CollectionRegistry())
+    whole = [query for query in l1.queries if query.upper().startswith("SELECT") and " WHERE " not in query.upper()]
+    assert whole == ["SELECT * FROM write_buffer"], l1.queries
