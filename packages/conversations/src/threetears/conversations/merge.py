@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from threetears.core.collections import repoint_agent_user_rows
+from threetears.core.collections import repoint_user_rows
 from threetears.observe import get_logger
 
 __all__ = ["repoint_user"]
@@ -61,8 +61,9 @@ async def repoint_user(
     :return: ``(agent_id, conversation_id)`` keys of the repointed rows
     :rtype: list[tuple[Any, ...]]
     """
-    moved = await repoint_agent_user_rows(
+    moved = await repoint_user_rows(
         conn,
+        user_column="user_id",
         table="conversations",
         agent_id=agent_id,
         pk_columns=["agent_id", "conversation_id"],

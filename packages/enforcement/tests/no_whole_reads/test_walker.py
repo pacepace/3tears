@@ -4640,3 +4640,69 @@ def test_a_base_class_method_s_schema_name_is_each_subclass_s_table(tmp_path: Pa
     assert {symbol.split(" ")[0] for function, symbol in found if function == "Shared.by_owner"} == {"non-key-where"}, (
         found
     )
+
+
+_FORWARDED_REPOINT = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import update_keyed
+
+    FILES = TableSchema(
+        name="files",
+        primary_key=("agent_id", "file_id"),
+        columns=[],
+        indexes=(
+            Index(
+                "idx_files_agent_user",
+                ("agent_id", "user_id"),
+                purpose="src/helpers.py::repoint",
+                plan_test="tests/test_plans.py::test_repoint_uses_idx_files_agent_user",
+            ),
+        ),
+    )
+
+    async def repoint(conn, *, table, user_column, from_user, to_user, agent_id=None):
+        by = {user_column: from_user} if agent_id is None else {"agent_id": agent_id, user_column: from_user}
+        return await update_keyed(conn, table, values={user_column: to_user}, by=by, returning=("file_id",))
+"""
+
+_REPOINT_CALLERS = """
+    from uuid import UUID
+
+    from helpers import repoint
+
+    async def move_files(conn, *, from_user: UUID, to_user: UUID, agent_id: UUID):
+        return await repoint(
+            conn, table="files", user_column="user_id", from_user=from_user, to_user=to_user, agent_id=agent_id
+        )
+"""
+
+_REPOINT_PLANS = """
+    from threetears.core.testing.plans import explain_write, plan_uses_index
+
+    async def test_repoint_uses_idx_files_agent_user(conn):
+        sql = "UPDATE files SET user_id = $1 WHERE agent_id = $2 AND user_id = $3"
+        assert plan_uses_index(await explain_write(conn, sql), "idx_files_agent_user")
+"""
+
+
+def test_a_forwarded_column_and_a_never_none_agent_judge_the_one_statement_sent(tmp_path: Path) -> None:
+    """Flips if a helper judged at its callers reads a mapping key that is its parameter (``{user_column: ...}``) as
+    unknown rather than each string its callers pass, or judges the ``agent_id is None`` arm where every caller passes
+    an agent that is never None (a required ``UUID`` parameter): the agent's write by its index is all it sends."""
+    _plans(tmp_path, _REPOINT_PLANS)
+    config = _config(tmp_path, {"helpers.py": _FORWARDED_REPOINT, "merge.py": _REPOINT_CALLERS})
+    findings = no_whole_reads_findings(config)
+    assert not [finding for finding in findings if "unknown-" in finding], findings
+    assert not [finding for finding in findings if ": index-" in finding], findings
+    assert not any(function == "repoint" for function, _ in _symbols(config)), findings
+
+
+def test_an_agent_a_caller_may_leave_none_keeps_the_owner_only_arm_judged(tmp_path: Path) -> None:
+    """Flips if the ``agent_id is None`` arm is folded away while a caller may pass None (``UUID | None``) or leaves
+    the default: its write by the owner alone has no index and stays a non-key write."""
+    _plans(tmp_path, _REPOINT_PLANS)
+    optional = _REPOINT_CALLERS.replace("agent_id: UUID)", "agent_id: UUID | None)")
+    config = _config(tmp_path, {"helpers.py": _FORWARDED_REPOINT, "merge.py": optional})
+    findings = no_whole_reads_findings(config)
+    assert ("repoint", 'non-key-where "files"') in _symbols(config), findings
+    assert not [finding for finding in findings if "unknown-" in finding], findings

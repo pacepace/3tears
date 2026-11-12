@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
-from threetears.core.collections import repoint_agent_user_rows
+from threetears.core.collections import repoint_user_rows
 from threetears.core.operator import operator_command
 from threetears.observe import get_logger
 
@@ -297,16 +297,18 @@ async def repoint_user(
         agent_id=agent_id,
     )
     repointed = result.repointed
-    repointed["memories"] = await repoint_agent_user_rows(
+    repointed["memories"] = await repoint_user_rows(
         conn,
+        user_column="user_id",
         table="memories",
         agent_id=agent_id,
         pk_columns=["agent_id", "memory_id"],
         from_user_id=from_user_id,
         to_user_id=to_user_id,
     )
-    repointed["media"] = await repoint_agent_user_rows(
+    repointed["media"] = await repoint_user_rows(
         conn,
+        user_column="user_id",
         table="media",
         agent_id=agent_id,
         pk_columns=["agent_id", "media_id"],
@@ -314,8 +316,9 @@ async def repoint_user(
         to_user_id=to_user_id,
         touch_column=None,
     )
-    repointed["media_content"] = await repoint_agent_user_rows(
+    repointed["media_content"] = await repoint_user_rows(
         conn,
+        user_column="user_id",
         table="media_content",
         agent_id=agent_id,
         pk_columns=["agent_id", "content_id"],
@@ -323,8 +326,9 @@ async def repoint_user(
         to_user_id=to_user_id,
         touch_column=None,
     )
-    repointed["memory_chunks"] = await repoint_agent_user_rows(
+    repointed["memory_chunks"] = await repoint_user_rows(
         conn,
+        user_column="user_id",
         table="memory_chunks",
         agent_id=agent_id,
         pk_columns=["agent_id", "chunk_id"],

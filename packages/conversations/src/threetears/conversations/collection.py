@@ -204,7 +204,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                 "conversation_id",
                 purpose=(
                     "src/aibots/hub/admin/conversations.py::_fetch_paginated_rows; "
-                    "packages/core/src/threetears/core/collections/merge.py::repoint_agent_user_rows"
+                    "packages/core/src/threetears/core/collections/merge.py::repoint_user_rows"
                 ),
                 plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_user_created",
                 reason="conversations carries ten indexes: one user's conversations by creation date",
@@ -217,7 +217,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                 "conversation_id",
                 purpose=(
                     "src/aibots/hub/admin/conversations.py::_fetch_paginated_rows; "
-                    "packages/core/src/threetears/core/collections/merge.py::repoint_agent_user_rows"
+                    "packages/core/src/threetears/core/collections/merge.py::repoint_user_rows"
                 ),
                 plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_user_status",
                 reason="conversations carries ten indexes: one user's conversations by status",

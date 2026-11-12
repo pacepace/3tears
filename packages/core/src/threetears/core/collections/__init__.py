@@ -49,7 +49,7 @@ from threetears.core.collections.generation import (
     WriteGeneration,
     announce_unheard_writes,
 )
-from threetears.core.collections.merge import repoint_agent_user_rows, repoint_user_rows
+from threetears.core.collections.merge import repoint_user_rows
 from threetears.core.collections.reapply import (
     REAPPLY_BACKOFF_SECONDS,
     REAPPLY_MAX_ATTEMPTS,
@@ -157,7 +157,6 @@ __all__ = [
     "init_connection",
     "reapply_on_lost_race",
     "register_jsonb_text_codec",
-    "repoint_agent_user_rows",
     "repoint_user_rows",
     "serialize_to_json",
     "spans_partitions",

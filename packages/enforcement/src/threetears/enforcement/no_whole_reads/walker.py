@@ -973,6 +973,7 @@ class _ModuleWalk(ast.NodeVisitor):
         match_builders: Mapping[str, MatchBuilder] | None = None,
         forwarders: RepoForwarders | None = None,
         builders: frozenset[str] = frozenset(),
+        never_none: frozenset[tuple[str, str]] = frozenset(),
     ) -> None:
         """prepare a walk of one module.
 
@@ -1023,10 +1024,14 @@ class _ModuleWalk(ast.NodeVisitor):
         :ptype forwarders: RepoForwarders | None
         :param builders: the repo's step builders (:func:`~threetears.enforcement.no_whole_reads.flow.step_builders`)
         :ptype builders: frozenset[str]
+        :param never_none: ``(function, parameter)`` every call site passes something that is never None
+            (:func:`_never_none_parameters`)
+        :ptype never_none: frozenset[tuple[str, str]]
         :return: nothing
         :rtype: None
         """
         self.path = path
+        self._never_none = never_none
         self._match_builders = dict(match_builders or {})
         #: the names the module's imports bind: ``x.read_by()`` on any other name is a method of an object
         self._module_names = _imported_names(tree)
@@ -2502,7 +2507,7 @@ class _ModuleWalk(ast.NodeVisitor):
         hits: dict[str, str] = {}
         for call in (
             matched
-            for branched in _branch_calls(resolved)
+            for branched in _branch_calls(self._none_folded(resolved))
             for picked in self._mapping_calls(branched)
             for each in self._parameter_calls(picked)
             for matched in self._match_calls(each)
@@ -2757,6 +2762,35 @@ class _ModuleWalk(ast.NodeVisitor):
             )
         return calls
 
+    def _none_folded(self, call: ast.Call) -> ast.Call:
+        """the call with each argument that is one literal or another by whether a parameter of the calling function
+        is None (``{...} if agent_id is None else {...}``) read as the one arm it takes, where every caller passes that
+        parameter something never None (:func:`_never_none_parameters`): the other arm is never sent.
+
+        :param call: the call, its arguments resolved
+        :ptype call: ast.Call
+        :return: the call, folded
+        :rtype: ast.Call
+        """
+        function = self._function_node
+        if function is None or not self._never_none:
+            return call
+
+        def folded(value: ast.expr) -> ast.expr:
+            if not _literal_branches(value):
+                return value
+            assert isinstance(value, ast.IfExp)
+            tested = _none_test(value.test)
+            if tested is None or (function.name, tested[0]) not in self._never_none:
+                return value
+            return value.body if tested[1] else value.orelse
+
+        return ast.Call(
+            func=call.func,
+            args=[folded(argument) for argument in call.args],
+            keywords=[ast.keyword(arg=keyword.arg, value=folded(keyword.value)) for keyword in call.keywords],
+        )
+
     def _parameter_calls(self, call: ast.Call) -> list[ast.Call]:
         """the call once per combination of the strings its arguments are passed: an argument that is a parameter of
         the calling function, never rebound in it, which every call site in the repo fills with a literal or a module
@@ -2775,7 +2809,11 @@ class _ModuleWalk(ast.NodeVisitor):
             return [call]
         bindings = _function_bindings(function, self._tuples)
         choices: dict[str, list[str]] = {}
-        for value in [*call.args, *(keyword.value for keyword in call.keywords)]:
+        arguments = [*call.args, *(keyword.value for keyword in call.keywords)]
+        # a mapping's key that is a parameter (``by={user_column: source}``) reads as what its callers pass, as an
+        # argument does
+        keys = [key for value in arguments if isinstance(value, ast.Dict) for key in value.keys if key is not None]
+        for value in [*arguments, *keys]:
             named = _bound_name(value)
             if named is None:
                 continue
@@ -2796,6 +2834,9 @@ class _ModuleWalk(ast.NodeVisitor):
             return [call]
 
         def bound(value: ast.expr, given: dict[str, str]) -> ast.expr:
+            if isinstance(value, ast.Dict):
+                keys = [None if key is None else bound(key, given) for key in value.keys]
+                return ast.Dict(keys=keys, values=value.values)
             spelled = ast.unparse(value) if _bound_name(value) is not None else None
             return ast.Constant(given[spelled]) if spelled is not None and spelled in given else value
 
@@ -3614,6 +3655,147 @@ def _arms(value: ast.IfExp) -> list[ast.expr]:
     for arm in (value.body, value.orelse):
         found.extend(_arms(arm) if isinstance(arm, ast.IfExp) and _string_arm(arm) else [arm])
     return found
+
+
+def _none_test(test: ast.expr) -> tuple[str, bool] | None:
+    """the name a condition asks is None or not (``x is None`` -> ``("x", False)``, ``x is not None`` -> ``("x",
+    True)``: whether the condition holds when the name is not None); None for any other condition.
+
+    :param test: the condition
+    :ptype test: ast.expr
+    :return: the name and whether the condition holds for a value that is not None, or None
+    :rtype: tuple[str, bool] | None
+    """
+    if (
+        isinstance(test, ast.Compare)
+        and isinstance(test.left, ast.Name)
+        and len(test.ops) == 1
+        and isinstance(test.ops[0], ast.Is | ast.IsNot)
+        and isinstance(test.comparators[0], ast.Constant)
+        and test.comparators[0].value is None
+    ):
+        return test.left.id, isinstance(test.ops[0], ast.IsNot)
+    return None
+
+
+def _admits_none(argument: ast.arg) -> bool:
+    """whether a parameter's annotation lets it hold None: none written, ``Any``, ``object``, or one naming
+    ``None`` / ``Optional``.
+
+    :param argument: the parameter
+    :ptype argument: ast.arg
+    :return: whether it may hold None
+    :rtype: bool
+    """
+    if argument.annotation is None:
+        return True
+    text = ast.unparse(argument.annotation)
+    return any(word in re.findall(r"\w+", text) for word in ("None", "Optional", "Any", "object"))
+
+
+def _never_none_parameters(modules: list[tuple[str, ast.Module]]) -> frozenset[tuple[str, str]]:
+    """for every function the repo defines once by its name, each parameter every call site passes something never
+    None: a literal that is not None, or the calling function's own parameter, never rebound, whose annotation admits
+    no None and which has no default of None; a site leaving the parameter to its default counts only for a default
+    that is a literal other than None. A parameter no site calls is not among them.
+
+    :param modules: each module's path and parse
+    :ptype modules: list[tuple[str, ast.Module]]
+    :return: ``(function, parameter)`` for each
+    :rtype: frozenset[tuple[str, str]]
+    """
+    definitions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
+    for _, tree in modules:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not _stub(node):
+                definitions.setdefault(node.name, []).append(node)
+    verdicts: dict[tuple[str, str], bool] = {}
+
+    def never_none(value: ast.expr, caller: ast.FunctionDef | ast.AsyncFunctionDef | None) -> bool:
+        if isinstance(value, ast.Constant):
+            return value.value is not None
+        if not isinstance(value, ast.Name) or caller is None:
+            return False
+        arguments = [*caller.args.posonlyargs, *caller.args.args, *caller.args.kwonlyargs]
+        held = next((argument for argument in arguments if argument.arg == value.id), None)
+        if held is None or value.id not in _function_bindings(caller, {}).parameters or _admits_none(held):
+            return False
+        defaults = dict(
+            zip(
+                [argument.arg for argument in [*caller.args.posonlyargs, *caller.args.args]][
+                    len(caller.args.posonlyargs) + len(caller.args.args) - len(caller.args.defaults) :
+                ],
+                caller.args.defaults,
+                strict=True,
+            )
+        )
+        defaults.update(
+            {
+                argument.arg: default
+                for argument, default in zip(caller.args.kwonlyargs, caller.args.kw_defaults, strict=True)
+                if default is not None
+            }
+        )
+        default = defaults.get(value.id)
+        return default is None or not (isinstance(default, ast.Constant) and default.value is None)
+
+    for _, tree in modules:
+        # a module's or a class's own statements, then each function's: each scope its own
+        definers = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        callers: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef | None, list[ast.stmt]]] = [
+            (None, [statement for statement in tree.body if not isinstance(statement, definers)])
+        ]
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                callers.append((None, [statement for statement in node.body if not isinstance(statement, definers)]))
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                callers.append((node, node.body))
+        for caller, body in callers:
+            for call in _own_nodes(body):
+                if not isinstance(call, ast.Call):
+                    continue
+                defined = definitions.get(_final(call) or "", [])
+                if len(defined) != 1:
+                    continue
+                function = defined[0]
+                positional = [*function.args.posonlyargs, *function.args.args]
+                if positional[:1] and positional[0].arg in ("self", "cls") and isinstance(call.func, ast.Attribute):
+                    positional = positional[1:]
+                if any(isinstance(argument, ast.Starred) for argument in call.args) or any(
+                    keyword.arg is None for keyword in call.keywords
+                ):
+                    passed: dict[str, ast.expr | None] = {}
+                    unreadable = True
+                else:
+                    passed = dict(zip([argument.arg for argument in positional], call.args, strict=False))
+                    passed.update({keyword.arg: keyword.value for keyword in call.keywords if keyword.arg})
+                    unreadable = False
+                defaults = dict(
+                    zip(
+                        [argument.arg for argument in positional][len(positional) - len(function.args.defaults) :],
+                        function.args.defaults,
+                        strict=False,
+                    )
+                )
+                defaults.update(
+                    {
+                        argument.arg: default
+                        for argument, default in zip(function.args.kwonlyargs, function.args.kw_defaults, strict=True)
+                        if default is not None
+                    }
+                )
+                for argument in [*positional, *function.args.kwonlyargs]:
+                    value = passed.get(argument.arg)
+                    if unreadable:
+                        ok = False
+                    elif value is not None:
+                        ok = never_none(value, caller)
+                    else:
+                        default = defaults.get(argument.arg)
+                        ok = isinstance(default, ast.Constant) and default.value is not None
+                    key = (function.name, argument.arg)
+                    verdicts[key] = verdicts.get(key, True) and ok
+    return frozenset(key for key, ok in verdicts.items() if ok)
 
 
 def _branch_calls(call: ast.Call) -> list[ast.Call]:
@@ -5075,6 +5257,7 @@ def scan_whole_reads(
         [(relative, parse_python_path(path)) for relative, path in modules], strings, tuples
     )
     match_builders = _match_builders([(relative, parse_python_path(path)) for relative, path in modules], strings)
+    never_none = _never_none_parameters([(relative, parse_python_path(path)) for relative, path in modules])
     walked: list[tuple[str, Path]] = []
     for relative, path in modules:
         excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
@@ -5106,6 +5289,7 @@ def scan_whole_reads(
             match_builders=match_builders,
             forwarders=forwarders,
             builders=builders,
+            never_none=never_none,
         )
 
     # the repo's step builders, by name across every walked module: a call of one is a step judged where it is

@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from threetears.core.collections.merge import repoint_agent_user_rows, repoint_user_rows
+from threetears.core.collections.merge import repoint_user_rows
 
 
 class _RecordingConn:
@@ -123,8 +123,9 @@ async def test_an_agents_table_is_repointed_by_agent_and_user() -> None:
     conv = uuid4()
     conn = _RecordingConn([{"agent_id": agent_id, "conversation_id": conv}])
 
-    result = await repoint_agent_user_rows(
+    result = await repoint_user_rows(
         conn,
+        user_column="user_id",
         table="conversations",
         agent_id=agent_id,
         pk_columns=["agent_id", "conversation_id"],
@@ -147,8 +148,9 @@ async def test_an_agents_table_without_a_touch_column_sets_only_the_owner() -> N
     from_id = uuid4()
     conn = _RecordingConn([])
 
-    await repoint_agent_user_rows(
+    await repoint_user_rows(
         conn,
+        user_column="user_id",
         table="media",
         agent_id=agent_id,
         pk_columns=["agent_id", "media_id"],

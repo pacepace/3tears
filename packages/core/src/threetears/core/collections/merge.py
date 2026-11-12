@@ -24,7 +24,7 @@ from uuid import UUID
 
 from threetears.core.keyed import update_keyed
 
-__all__ = ["repoint_agent_user_rows", "repoint_user_rows"]
+__all__ = ["repoint_user_rows"]
 
 
 async def repoint_user_rows(
@@ -35,6 +35,7 @@ async def repoint_user_rows(
     pk_columns: Sequence[str],
     from_user_id: UUID,
     to_user_id: UUID,
+    agent_id: UUID | None = None,
     touch_column: str | None = "date_updated",
     now: datetime | None = None,
 ) -> list[tuple[Any, ...]]:
@@ -44,6 +45,13 @@ async def repoint_user_rows(
     WHERE {user_column} = source RETURNING {pk_columns}`` on ``conn`` (a
     transaction connection). returns the primary-key tuples of the moved
     rows for post-commit cache invalidation.
+
+    in an agent's table (``agent_id`` given) the ``UPDATE`` pins ``agent_id =
+    agent`` beside the owner: a table in an agent's schema is led by
+    ``agent_id`` (its key and its owner index ``(agent_id, user_id)``), so
+    pinning the agent the schema holds reads one user's rows through that
+    index. the schema holds only that agent's rows, so it moves the rows the
+    owner alone names.
 
     cache-bypass: this is a deliberate bulk ownership rewrite for a user
     merge; ``user_column`` is immutable so it cannot ride the collection
@@ -62,6 +70,9 @@ async def repoint_user_rows(
     :ptype from_user_id: UUID
     :param to_user_id: master user the rows move to
     :ptype to_user_id: UUID
+    :param agent_id: the agent whose schema ``conn`` is bound to, for a table
+        in an agent's schema; None for a platform table
+    :ptype agent_id: UUID | None
     :param touch_column: optional ``date_updated``-style column to stamp;
         ``None`` to skip
     :ptype touch_column: str | None
@@ -71,58 +82,8 @@ async def repoint_user_rows(
     :rtype: list[tuple[Any, ...]]
     """
     values = _repointed_values(user_column, to_user_id, touch_column, now)
-    moved = await update_keyed(conn, table, values=values, by={user_column: from_user_id}, returning=pk_columns)
-    return [tuple(row[col] for col in pk_columns) for row in moved.rows]
-
-
-async def repoint_agent_user_rows(
-    conn: Any,
-    *,
-    table: str,
-    agent_id: UUID,
-    pk_columns: Sequence[str],
-    from_user_id: UUID,
-    to_user_id: UUID,
-    touch_column: str | None = "date_updated",
-    now: datetime | None = None,
-) -> list[tuple[Any, ...]]:
-    """repoint ``user_id`` from a source user to a master user in one agent's table.
-
-    issues ``UPDATE {table} SET user_id = master[, {touch} = now] WHERE
-    agent_id = agent AND user_id = source RETURNING {pk_columns}`` on
-    ``conn``: a table in an agent's schema is led by ``agent_id`` (its key
-    and its owner index ``(agent_id, user_id)``), so pinning the agent the
-    schema holds reads one user's rows through that index. the schema holds
-    only that agent's rows, so it moves the rows :func:`repoint_user_rows`
-    by ``user_id`` alone moves. returns the primary-key tuples of the moved
-    rows for post-commit cache invalidation.
-
-    cache-bypass: as :func:`repoint_user_rows`.
-
-    :param conn: asyncpg transaction connection (search_path set by caller)
-    :ptype conn: Any
-    :param table: unqualified table name to repoint
-    :ptype table: str
-    :param agent_id: the agent whose schema ``conn`` is bound to
-    :ptype agent_id: UUID
-    :param pk_columns: primary-key column names, in order
-    :ptype pk_columns: Sequence[str]
-    :param from_user_id: source user whose rows move
-    :ptype from_user_id: UUID
-    :param to_user_id: master user the rows move to
-    :ptype to_user_id: UUID
-    :param touch_column: optional ``date_updated``-style column to stamp;
-        ``None`` to skip
-    :ptype touch_column: str | None
-    :param now: timestamp for ``touch_column``; defaults to ``now(UTC)``
-    :ptype now: datetime | None
-    :return: list of primary-key tuples for the repointed rows
-    :rtype: list[tuple[Any, ...]]
-    """
-    values = _repointed_values("user_id", to_user_id, touch_column, now)
-    moved = await update_keyed(
-        conn, table, values=values, by={"agent_id": agent_id, "user_id": from_user_id}, returning=pk_columns
-    )
+    by = {user_column: from_user_id} if agent_id is None else {"agent_id": agent_id, user_column: from_user_id}
+    moved = await update_keyed(conn, table, values=values, by=by, returning=pk_columns)
     return [tuple(row[col] for col in pk_columns) for row in moved.rows]
 
 

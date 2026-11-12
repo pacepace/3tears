@@ -900,7 +900,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                     "::MemoriesCollection.find_for_user_in_agents; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MemoriesCollection.hybrid_search._nearest; "
-                    "packages/core/src/threetears/core/collections/merge.py::repoint_agent_user_rows"
+                    "packages/core/src/threetears/core/collections/merge.py::repoint_user_rows"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memories_agent_user",
                 reason=(
@@ -2896,7 +2896,7 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
                 "idx_media_agent_user",
                 "agent_id",
                 "user_id",
-                purpose="packages/core/src/threetears/core/collections/merge.py::repoint_agent_user_rows",
+                purpose="packages/core/src/threetears/core/collections/merge.py::repoint_user_rows",
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_repoint_agent_user",
                 reason="media carries three indexes: one user's files under one agent, repointed by a user merge",
             ),
@@ -3042,7 +3042,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
                     "::MediaContentCollection.search_by_semantic; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MediaContentCollection.search_by_fts; "
-                    "packages/core/src/threetears/core/collections/merge.py::repoint_agent_user_rows"
+                    "packages/core/src/threetears/core/collections/merge.py::repoint_user_rows"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_content_agent_user",
                 reason="media_content carries three indexes: one user's file contents, every search of them",
@@ -3646,7 +3646,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                     "::MemoryChunkCollection.hybrid_search; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MemoryChunkCollection.search_by_semantic; "
-                    "packages/core/src/threetears/core/collections/merge.py::repoint_agent_user_rows"
+                    "packages/core/src/threetears/core/collections/merge.py::repoint_user_rows"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memory_chunks_agent_user",
                 reason="memory_chunks carries four indexes: one user's chunks, every search of them",
