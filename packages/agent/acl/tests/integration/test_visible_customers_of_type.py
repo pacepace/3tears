@@ -83,6 +83,9 @@ async def _grant(conn: asyncpg.Connection, user: uuid.UUID, scope: str, **values
         group,
         user,
     )
+    if scope == "type_customer":
+        # acl v005: a type grant records its scope's customer
+        values = {**values, "customer_id": values.get("scope_customer_id")}
     columns = ", ".join(values)
     marks = ", ".join(f"${index}" for index in range(5, 5 + len(values)))
     await conn.execute(
@@ -257,6 +260,9 @@ async def _granting_groups(conn: asyncpg.Connection) -> list[uuid.UUID]:
         }[k % 4]
         grants = [grant, {"scope_type": "all"}] if k == 21 else [grant]
         for values in grants:
+            if values["scope_type"] == "type_customer":
+                # acl v005: a type grant records its scope's customer
+                values = {**values, "customer_id": values["scope_customer_id"]}
             columns = ", ".join(values)
             marks = ", ".join(f"${index}" for index in range(4, 4 + len(values)))
             await conn.execute(
@@ -338,7 +344,7 @@ async def test_the_set_reaches_a_grant_through_a_nested_group(conn: asyncpg.Conn
     )
     await conn.execute(
         "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_customer_id,"
-        " scope_namespace_type) VALUES ('platform', $1, $2, $3, 'type_customer', $4, $5)",
+        " scope_namespace_type, customer_id) VALUES ('platform', $1, $2, $3, 'type_customer', $4, $5, $4)",
         uuid.uuid4(),
         role,
         granting,

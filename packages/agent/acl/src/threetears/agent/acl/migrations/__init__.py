@@ -15,6 +15,8 @@ version history:
 - v003 creates the indexes the namespace lookups by owner, customer, owner namespace and schema use
   (3tears v0.95.0).
 - v004 creates the indexes the access tables' other keyed methods use (3tears v0.95.0).
+- v005 adds ``role_assignments.customer_id``, the grant's customer, nullable and unchecked (the expand step;
+  ``RoleAssignmentCollection.backfill_customers`` fills the older grants) (3tears v0.95.0).
 
 ``agent_tools_platform`` ALTERs ``namespaces``; a deployment that runs
 both registers it with ``depends_on=("agent_acl",)``.
@@ -33,6 +35,7 @@ from threetears.agent.acl.migrations.v001_create_acl_tables import ACL_TABLES_DD
 from threetears.agent.acl.migrations.v002_reader_indexes import create_acl_reader_indexes
 from threetears.agent.acl.migrations.v003_namespace_reader_indexes import create_acl_namespace_reader_indexes
 from threetears.agent.acl.migrations.v004_keyed_method_indexes import create_acl_keyed_method_indexes
+from threetears.agent.acl.migrations.v005_assignment_customer import add_assignment_customer
 from threetears.core.data.migrations import MigrationRunner, MigrationScope, PackageMigrations
 
 PACKAGE_NAME = "agent_acl"
@@ -52,6 +55,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(2)(create_acl_reader_indexes)
     pkg.version(3)(create_acl_namespace_reader_indexes)
     pkg.version(4)(create_acl_keyed_method_indexes)
+    pkg.version(5)(add_assignment_customer)
     # the five access tables are switched on: each carries the write-mark trigger from this run
     pkg.mark_write_generation(
         GroupCollection.schema,
