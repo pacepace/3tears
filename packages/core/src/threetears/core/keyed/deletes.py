@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from threetears.core.keyed._filters import by_conditions, quoted_table, sent_by
 from threetears.core.keyed.counts import rows_affected
-from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
+from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.sweeps import SweptRows, delete_before_statement, update_before_statement
 
@@ -200,6 +200,7 @@ async def delete_oldest(
     count: int,
     key: str = "rowid",
     by: Mapping[str, Any] | None = None,
+    order: str | None = None,
 ) -> int:
     """delete ``table``'s ``count`` oldest rows (within ``by``) by its key's order: a cache's trim back to its cap.
 
@@ -210,10 +211,11 @@ async def delete_oldest(
     caller knows how far past its cap the table is from a count it keeps (a trigger's) or a bounded probe
     (:func:`~threetears.core.keyed.count_at_most` with no ``by``, ``at_most`` the cap plus the most it trims).
 
-    :param conn: the local cache's connection: :class:`~threetears.core.keyed.ThreadedSQLite` or
+    :param conn: the local cache's connection: :class:`~threetears.core.keyed.ThreadedSQLite` (or
+        :class:`~threetears.core.keyed.InlineSQLite` on a caller holding the write path) or
         :class:`~threetears.core.keyed.ThreadedDuckDB`. An L1 table is no L3 row and follows no epoch; an L3 table's
         rows are deleted through its collection (:func:`delete_before`)
-    :ptype conn: ThreadedSQLite | ThreadedDuckDB
+    :ptype conn: ThreadedSQLite | InlineSQLite | ThreadedDuckDB
     :param table: the table, a TRUSTED identifier
     :ptype table: str
     :param count: how many rows to delete; none when under one
@@ -222,11 +224,14 @@ async def delete_oldest(
     :ptype key: str
     :param by: columns pinned ahead of it
     :ptype by: Mapping[str, Any] | None
+    :param order: the column whose order is the rows' age when it is not the key (a ``date_updated`` an index keeps,
+        many rows sharing a value): the ``count`` keys first in ``order`` (then ``key``) are deleted, exactly that many
+    :ptype order: str | None
     :return: the rows deleted
     :rtype: int
     :raises TypeError: when ``conn`` is not a local cache's
     """
-    if not isinstance(conn, ThreadedSQLite | ThreadedDuckDB):
+    if not isinstance(conn, ThreadedSQLite | InlineSQLite | ThreadedDuckDB):
         raise TypeError(f"delete_oldest trims a local cache's table; {table} is read through {type(conn).__name__}")
     if count < 1:
         return 0
@@ -235,6 +240,14 @@ async def delete_oldest(
     pinned = "".join(f"{condition} AND " for condition in conditions)
     named = quote_identifier(key)
     quoted = quoted_table(table)
+    if order is not None:
+        # the age is a column many rows share: the count oldest keys by its index's order, then deleted by key
+        aged = quote_identifier(order)
+        sql = (
+            f"DELETE FROM {quoted} WHERE {pinned}{named} IN ("
+            f"SELECT {named} FROM {quoted}{where} ORDER BY {aged}, {named} LIMIT ${len(params) + 1})"
+        )
+        return rows_affected(await conn.execute(sql, *params, count))
     # one range delete up to the count-th oldest key, found by one seek of the key's order (its OFFSET), or to the
     # newest when fewer are held: no list of keys built and probed (0.37 ms against 0.54 ms for 3,000 of 300,000)
     sql = (

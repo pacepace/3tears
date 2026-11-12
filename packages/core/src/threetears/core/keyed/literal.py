@@ -24,9 +24,10 @@ from threetears.core.keyed._filters import (
     selected_column,
 )
 from threetears.core.keyed._filters import relation as _relation_sql
+from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.filters import PLACEHOLDER
 
-__all__ = ["literal_select"]
+__all__ = ["literal_select", "literal_upsert"]
 
 
 def _sql_literal(value: Any) -> str:
@@ -100,3 +101,34 @@ def literal_select(
     written = PLACEHOLDER.sub(lambda match: _sql_literal(values[int(match.group(1)) - 1]), text)
     selected = ", ".join(selected_column(column, alias) for column in columns)
     return f"SELECT {selected} FROM {_relation_sql(relation, alias)} WHERE {written}"  # noqa: S608 - TRUSTED names; literals
+
+
+def literal_upsert(table: str, row: Mapping[str, Any], *, key: Sequence[str]) -> str:
+    """the keyed write of one row, every value written in as a literal: ``INSERT ... VALUES (...) ON CONFLICT (key)
+    DO UPDATE SET`` each other column, for a statement handed over as text (a dev container's ``ysqlsh -c``) that
+    binds no parameters. A table of one row keys it by a fixed key (``id`` = 1, ``CHECK (id = 1)``): the write
+    replaces that row and :func:`literal_select` reads it back by the same key.
+
+    :param table: the table, a TRUSTED name
+    :ptype table: str
+    :param row: the row: column -> value, the key columns included; columns TRUSTED
+    :ptype row: Mapping[str, Any]
+    :param key: the key the conflict is judged on, each column in ``row``
+    :ptype key: Sequence[str]
+    :return: the statement, binding no parameters
+    :rtype: str
+    :raises ValueError: when the key is empty or a key column is missing from the row, or a value has no literal
+    """
+    if not key or any(column not in row for column in key):
+        raise ValueError(f"a literal upsert names its key and gives each key column a value: key {list(key)!r}")
+    columns = ", ".join(quote_identifier(column) for column in row)
+    values = ", ".join(_sql_literal(value) for value in row.values())
+    others = [column for column in row if column not in key]
+    conflict = ", ".join(quote_identifier(column) for column in key)
+    action = (
+        "DO UPDATE SET "
+        + ", ".join(f"{quote_identifier(column)} = EXCLUDED.{quote_identifier(column)}" for column in others)
+        if others
+        else "DO NOTHING"
+    )
+    return f"INSERT INTO {table} ({columns}) VALUES ({values}) ON CONFLICT ({conflict}) {action}"

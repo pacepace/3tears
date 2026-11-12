@@ -43,7 +43,7 @@ from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.keyed._filters import Derived, Fragment, Lock, Selected, sent_by
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.inline import InlineDuckDB
-from threetears.core.keyed.threaded import ThreadedDuckDB, ThreadedSQLite
+from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
 from threetears.interfaces.keyed.page import (
     KeyPage,
     Sort,
@@ -132,7 +132,7 @@ async def _steps_by_row(conn: Any, order: Sequence[Sort]) -> bool:
     no round trip, :func:`~threetears.core.backends.dialect.known_on_yugabyte`)."""
     if not seeks_by_row(order):
         return False
-    if isinstance(conn, ThreadedDuckDB | ThreadedSQLite | InlineDuckDB):
+    if isinstance(conn, ThreadedDuckDB | ThreadedSQLite | InlineSQLite | InlineDuckDB):
         return True
     # a reader naming its dialect (a datasource's engine) is not asked: a warehouse (Redshift) is read by the
     # expansion, plain SQL every engine takes
@@ -151,7 +151,7 @@ async def _seeks_by_legs(conn: Any, order: Sequence[Sort]) -> bool:
     column steps by legs on every engine."""
     if order[0].nullable or len(order) == 1:
         return False
-    if isinstance(conn, ThreadedDuckDB | ThreadedSQLite | InlineDuckDB):
+    if isinstance(conn, ThreadedDuckDB | ThreadedSQLite | InlineSQLite | InlineDuckDB):
         return False
     if isinstance(getattr(conn, SQL_DIALECT_ATTRIBUTE, None), Dialect):
         return False

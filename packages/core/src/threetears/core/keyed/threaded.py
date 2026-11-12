@@ -29,7 +29,7 @@ try:
 except ImportError:  # NOSILENT: the snapshot extra is optional; fetch_arrow refuses without it, saying so
     _PYARROW = False
 
-__all__ = ["ThreadedDuckDB", "ThreadedSQLite"]
+__all__ = ["InlineSQLite", "ThreadedDuckDB", "ThreadedSQLite"]
 
 
 def _fetch(conn: Any, query: str, params: Sequence[Any]) -> list[dict[str, Any]]:
@@ -207,3 +207,50 @@ class ThreadedSQLite:
         :rtype: str
         """
         return await asyncio.to_thread(_sqlite_execute, self._conn, query, params)
+
+
+class InlineSQLite:
+    """a SQLite connection read and written through ``fetch`` / ``execute``, each statement run at once on the
+    caller's thread: for synchronous code that already holds the cache's write path (an L1's cap trim inside its
+    write), driven by :func:`~threetears.core.keyed.run_inline`.
+
+    .. code-block:: python
+
+        db = InlineSQLite(l1)  # an L1 SQLiteBackend, or a sqlite3.Connection
+        run_inline(keyed.delete_oldest(db, "turn_dedup", count=over, key="key", order="date_updated"))
+
+    :param conn: a ``sqlite3.Connection``, or a backend whose ``get_connection()`` answers one (each statement asks
+        for it, so a backend that rebinds its connection is followed)
+    :ptype conn: Any
+    """
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def _connection(self) -> Any:
+        found = getattr(self._conn, "get_connection", None)
+        return found() if found is not None else self._conn
+
+    async def fetch(self, query: str, /, *params: Any) -> list[dict[str, Any]]:
+        """the statement's rows, as dicts.
+
+        :param query: the statement, ``$n`` placeholders
+        :ptype query: str
+        :param params: its parameters
+        :ptype params: Any
+        :return: the rows
+        :rtype: list[dict[str, Any]]
+        """
+        return _sqlite_fetch(self._connection(), query, params)
+
+    async def execute(self, query: str, /, *params: Any) -> str:
+        """run a write and answer its status as asyncpg spells it (``DELETE 3``).
+
+        :param query: the statement, ``$n`` placeholders
+        :ptype query: str
+        :param params: its parameters
+        :ptype params: Any
+        :return: the status
+        :rtype: str
+        """
+        return _sqlite_execute(self._connection(), query, params)
