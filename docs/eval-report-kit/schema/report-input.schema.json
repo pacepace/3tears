@@ -1235,7 +1235,11 @@
     "providers": {
      "type": "array",
      "items": {"type": "string"},
-     "description": "Each provider its model calls name as serving them (RoleUsage.provider on every role but external), sorted; empty where none does."
+     "description": "Each provider its model calls name as serving them (RoleUsage.served_provider, else RoleUsage.provider, on every role but external), sorted; empty where none does: not recorded."
+    },
+    "providers_in_part": {
+     "type": "boolean",
+     "description": "Some of its model calls named no provider beside calls that named one: providers names who served part of them, and the rest are not recorded."
     },
     "tool_providers": {
      "type": "array",

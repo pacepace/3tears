@@ -146,6 +146,8 @@ class UsageView(Protocol):
     @property
     def served_model(self) -> str | None: ...
     @property
+    def served_provider(self) -> str | None: ...
+    @property
     def prompt_tokens(self) -> int | None: ...
     @property
     def completion_tokens(self) -> int | None: ...
@@ -535,6 +537,7 @@ class UsageReading:
     role: str
     model: str | None
     served_model: str | None
+    served_provider: str | None
     prompt_tokens: int | None
     completion_tokens: int | None
     reasoning_tokens: int | None
@@ -559,6 +562,7 @@ class UsageReading:
             role=shared.text(row.role),
             model=shared.text(row.model),
             served_model=shared.text(row.served_model),
+            served_provider=shared.text(row.served_provider),
             prompt_tokens=row.prompt_tokens,
             completion_tokens=row.completion_tokens,
             reasoning_tokens=row.reasoning_tokens,

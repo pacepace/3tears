@@ -382,7 +382,13 @@ CORE_SCHEMA_VERSION: int = 15
 #:   so a run setting none is stored byte for byte as before. None is in any identity, context or variant key, cell or
 #:   confound; the disclosure is carried into the bundle, so a run setting one moves its bundle's fingerprint.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 11
+#: - **v15.12** — a usage row names the upstream provider that served its token-metered calls, as the replies named
+#:   it: ``RoleUsage.served_provider`` (default None: not recorded, a direct provider, or stored before the field
+#:   existed), beside ``served_model``, and a key of the row as it is, so calls a router sent to two upstreams are two
+#:   rows. Left out of the document when unset, so a row setting none is stored byte for byte as before. In no
+#:   identity, key or digest; the bundle's census reads it into each arm's pricing, which no fingerprint covers.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 12
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

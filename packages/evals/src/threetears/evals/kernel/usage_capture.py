@@ -172,6 +172,10 @@ class CallUsage:
     #: Why the call is unpriced, as its pricer said (a completion's optional ``pricing_failure``, the shipped
     #: client's); ``None`` when it is priced or said nothing. Carried to the row's ``unpriced_reasons``.
     pricing_failure: str | None = None
+    #: The upstream provider the reply named as having served the call (a completion's optional ``served_provider``,
+    #: the shipped client's: OpenRouter names the provider it routed to); ``None`` when it named none, or when the
+    #: folded attempts named different ones. Keys the row beside ``served_model``.
+    served_provider: str | None = None
 
     @classmethod
     def billed(cls, completion: Any) -> CallUsage:
@@ -193,7 +197,9 @@ class CallUsage:
         read: dict[str, Any] = {name: getattr(completion, name, None) for name in USAGE_LEDGER_ATTRIBUTES}
         read["model"] = read["model"] or None
         read["served_model"] = read["served_model"] or None
-        return cls(**read, pricing_failure=_pricing_failure_of(completion))
+        return cls(
+            **read, pricing_failure=_pricing_failure_of(completion), served_provider=_served_provider_of(completion)
+        )
 
     @classmethod
     def of(cls, completion: Any) -> CallUsage:
@@ -226,6 +232,22 @@ def _pricing_failure_of(completion: object) -> str | None:
     :rtype: str | None
     """
     said = getattr(completion, "pricing_failure", None)
+    return said if isinstance(said, str) and said else None
+
+
+def _served_provider_of(completion: object) -> str | None:
+    """The upstream provider ``completion`` says served it, or ``None``.
+
+    Reads the optional ``served_provider`` member the shipped client's completions carry (the provider OpenRouter
+    routed the call to). A disclosure, never a refusal: an absent member, an empty one, or one that is not text says
+    nothing, and the row reads as not recorded.
+
+    :param completion: A completion, or a usage record standing for one.
+    :ptype completion: object
+    :return: The provider, or ``None``.
+    :rtype: str | None
+    """
+    said = getattr(completion, "served_provider", None)
     return said if isinstance(said, str) and said else None
 
 
@@ -286,8 +308,11 @@ class _ModelTotals:
     unanswered_reasons: dict[str, int] = field(default_factory=dict)
 
 
-#: One ledger row's key: ``(model, served_model, provider, provider_unit, price_source, actor_id, purpose)``.
-_RowKey = tuple[str | None, str | None, str | None, str | None, str | None, str | None, KnownSimulatorPurpose | None]
+#: One ledger row's key: ``(model, served_model, served_provider, provider, provider_unit, price_source, actor_id,
+#: purpose)``.
+_RowKey = tuple[
+    str | None, str | None, str | None, str | None, str | None, str | None, str | None, KnownSimulatorPurpose | None
+]
 
 
 #: The roles whose completions are read for what they were sent: the two that pooling and disclosure cover.
@@ -308,7 +333,8 @@ class RoleUsageLedger:
     #: ``None`` on every token-metered role and on an external role whose run declared no
     #: usable rates — then the calls are counted and nothing else is claimed about them.
     rate_table: ExternalRateTable | None = None
-    #: Keyed by ``(model, served_model, provider, provider_unit, price_source, actor_id, purpose)``. There is no
+    #: Keyed by ``(model, served_model, served_provider, provider, provider_unit, price_source, actor_id, purpose)``.
+    #: There is no
     #: ledger-wide price source: each contribution names its own, so a row's provenance is what its
     #: contributions reported rather than what the ledger was built expecting. The last two are the
     #: simulator's attribution and ``None`` on every other role.
@@ -338,6 +364,7 @@ class RoleUsageLedger:
         reasoning_tokens: int | None,
         cost_usd: float | None,
         served_model: str | None = None,
+        served_provider: str | None = None,
         calls: int | None = 1,
         provider_units: int | None = None,
         provider: str | None = None,
@@ -371,6 +398,10 @@ class RoleUsageLedger:
         named none. It keys the row beside ``model``: calls one alias had answered by two models are two
         rows, because which model produced the numbers is exactly what a blended row would lose.
 
+        ``served_provider`` is the upstream provider the response named as having served the call (the provider a
+        router sent it to), ``None`` when it named none. It keys the row too: one model's cost differs by who served
+        it, so calls served by two upstreams are two rows, each naming its own.
+
         **Totals key on ``(model, provider, provider_unit, price_source)``, not model alone.**
         That is what makes "units from different providers are never summed" structural rather
         than a rule every downstream reader has to remember: two providers land in two rows and
@@ -396,7 +427,16 @@ class RoleUsageLedger:
         """
         if (actor_id is not None or purpose is not None) and self.role != "simulator":
             raise ValueError(f"actor_id and purpose attribute simulator calls, not the {self.role!r} role's")
-        key = (model or None, served_model or None, provider, provider_unit, price_source, actor_id, purpose)
+        key = (
+            model or None,
+            served_model or None,
+            served_provider or None,
+            provider,
+            provider_unit,
+            price_source,
+            actor_id,
+            purpose,
+        )
         totals = self._totals.setdefault(key, _ModelTotals())
         totals.call_count = sum_optional_tokens(totals.call_count, calls)
         totals.provider_units = sum_optional_tokens(totals.provider_units, provider_units)
@@ -433,7 +473,8 @@ class RoleUsageLedger:
 
         ``served_model`` is read off the completion and never off ``model``: a client may fill
         ``model`` from the request, which for a floating alias names the pointer rather than the model
-        that answered. ``sent_settings``, the optional member, is read through
+        that answered. ``served_provider``, an optional member, is the upstream the reply named
+        (:class:`CallUsage`); a completion without it reads as not recorded. ``sent_settings``, the optional member, is read through
         :func:`~threetears.evals.schema.completion.sent_settings_of` on the judge and simulator roles only (every other
         role's row carries its spend alone): absent reads as unverified, and a value of the wrong type is refused.
 
@@ -453,6 +494,7 @@ class RoleUsageLedger:
         self.add(
             model=read.model,
             served_model=read.served_model,
+            served_provider=read.served_provider,
             prompt_tokens=read.input_tokens,
             completion_tokens=read.output_tokens,
             reasoning_tokens=read.reasoning_tokens,
@@ -511,6 +553,7 @@ class RoleUsageLedger:
         *,
         model: str | None,
         served_model: str | None = None,
+        served_provider: str | None = None,
         price_source: str | None = None,
         provider: str | None = None,
         provider_unit: str | None = None,
@@ -531,7 +574,8 @@ class RoleUsageLedger:
         reach that no :meth:`add` reached holds only unanswered calls (``RoleUsage.answers_nothing``): its spend stays
         unreported, never 0, and a cell's cost leaves it out, so it never unprices that cost.
 
-        The row is the one :meth:`add` keys on ``model``, ``served_model``, ``provider``, ``provider_unit``,
+        The row is the one :meth:`add` keys on ``model``, ``served_model``, ``served_provider``, ``provider``,
+        ``provider_unit``,
         ``price_source``, ``actor_id`` and ``purpose``: pass what that call passed for the calls these sit beside, so they land on its row. A lost call named no served model, and its
         host may name no price source: :meth:`rows` folds counts that reached a key no :meth:`add` did into the row of
         the same model, provider, unit, actor and purpose that counts answered calls. Where that model answered nothing,
@@ -542,6 +586,8 @@ class RoleUsageLedger:
         :ptype model: str | None
         :param served_model: The model the provider named as having answered, for retried calls; ``None`` otherwise.
         :ptype served_model: str | None
+        :param served_provider: The upstream provider the reply named, for retried calls; ``None`` otherwise.
+        :ptype served_provider: str | None
         :param price_source: The price source :meth:`add` named for the row these sit beside.
         :ptype price_source: str | None
         :param provider: The provider :meth:`add` named for that row.
@@ -578,7 +624,16 @@ class RoleUsageLedger:
                     f"unanswered reasons account for {sum(reasons.values())} calls, more than the "
                     f"{(retried or 0) + (lost or 0)} counted unanswered here"
                 )
-        key = (model or None, served_model or None, provider, provider_unit, price_source, actor_id, purpose)
+        key = (
+            model or None,
+            served_model or None,
+            served_provider or None,
+            provider,
+            provider_unit,
+            price_source,
+            actor_id,
+            purpose,
+        )
         totals = self._totals.setdefault(key, _ModelTotals())
         totals.unanswered_retried = sum_optional_tokens(totals.unanswered_retried, retried)
         totals.unanswered_lost = sum_optional_tokens(totals.unanswered_lost, lost)
@@ -647,6 +702,7 @@ class RoleUsageLedger:
         for (
             model,
             served_model,
+            served_provider,
             provider,
             provider_unit,
             price_source,
@@ -658,6 +714,7 @@ class RoleUsageLedger:
                     role=self.role,
                     model=model,
                     served_model=served_model,
+                    served_provider=served_provider,
                     prompt_tokens=totals.prompt_tokens,
                     completion_tokens=totals.completion_tokens,
                     reasoning_tokens=totals.reasoning_tokens,

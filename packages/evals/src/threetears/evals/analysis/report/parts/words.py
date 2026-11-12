@@ -91,7 +91,9 @@ __all__ = [
     "REFERENCE_TEMPLATE",
     "REPEAT_TEMPLATE",
     "RECOMMENDED_MARK",
+    "SERVED_BY_IN_PART_TEMPLATE",
     "SERVED_BY_TEMPLATE",
+    "SERVED_BY_UNRECORDED",
     "TOOL_SPEND_TEMPLATE",
     "UPLIFT_NOT_COMPARABLE",
     "MONEY_DRAWN_NOTE",
@@ -197,6 +199,12 @@ PRICED_HEADER = "Priced by"
 
 #: Who served an arm's model calls, beside its price sources: the model's providers, never a tool it called.
 SERVED_BY_TEMPLATE = "served by {providers}"
+
+#: The same, where no reply an arm's cost counts named who served it: unknown, never guessed.
+SERVED_BY_UNRECORDED = "provider not recorded"
+
+#: The same, where some of its replies named who served them and the rest named nobody.
+SERVED_BY_IN_PART_TEMPLATE = "served by {providers}, the rest not recorded"
 
 #: The tools an arm's cost counts spend on, beside who served its model calls: a web-search API it called is tool
 #: spend in the cost, never a provider of the model.

@@ -100,6 +100,16 @@ a page still loading a font after 15 s fails that render, naming the fonts. It l
 DejaVu, the faces the package's pages draw in on the dev box. The testament image runs it at build and CI's evals
 shards before their tests.
 
+### evals: a cost names the upstream that served it (#1010; core v15.12)
+
+**Fixed:** an LLM call routed through OpenRouter recorded no upstream provider, so the "served by" beside each arm's
+cost on the report was always empty for model calls. A usage row now records the upstream the reply named
+(`RoleUsage.served_provider`, beside `served_model`), and calls served by two upstreams are two rows. Each arm's
+pricing names those providers in the options table and in the writer's cost fact. Where no reply named one, the page
+says `provider not recorded`; where only some did, it names them and says the rest were not recorded. A row stored
+before the field reads as not recorded. The field is left out of a row that names none, so stored rows and
+fingerprints do not move.
+
 ### evals: a seed reads each template revision's cases once (#1148)
 
 **Fixed:** the seed read every stored case of a template revision again for each corpus case of it, to fill names on

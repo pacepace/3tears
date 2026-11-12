@@ -196,6 +196,7 @@ class CompletionProtocolDefect(TypeError):
         self.calls = 0
         self.model: str | None = None
         self.served_model: str | None = None
+        self.served_provider: str | None = None
         self.input_tokens: int | None = None
         self.output_tokens: int | None = None
         self.reasoning_tokens: int | None = None

@@ -72,7 +72,9 @@ from threetears.evals.analysis.report.parts.words import (
     PASSES_TEMPLATE,
     PRICED_HEADER,
     RECOMMENDED_MARK,
+    SERVED_BY_IN_PART_TEMPLATE,
     SERVED_BY_TEMPLATE,
+    SERVED_BY_UNRECORDED,
     TOOL_SPEND_TEMPLATE,
     UPLIFT_NOT_COMPARABLE,
 )
@@ -317,19 +319,20 @@ def _priced_share(pricing: Pricing | None) -> str | None:
 
 
 def _priced_by(pricing: Pricing | None) -> TableCell:
-    """What priced an arm's cost: its price sources, and beside them who served its model calls, then the tools it
-    spent on as tool spend (never as the model's providers); empty where unsaid."""
+    """What priced an arm's cost: its price sources, and beside them who served its model calls (not recorded where
+    no reply named one, never guessed), then the tools it spent on as tool spend (never as the model's providers);
+    empty where the input states no pricing."""
     if pricing is None:
         return TableCell(value=None)
+    served = ", ".join(pricing.providers)
     said = [
-        template.format(providers=", ".join(providers))
-        for template, providers in (
-            (SERVED_BY_TEMPLATE, pricing.providers),
-            (TOOL_SPEND_TEMPLATE, pricing.tool_providers),
-        )
-        if providers
+        (SERVED_BY_IN_PART_TEMPLATE if pricing.providers_in_part else SERVED_BY_TEMPLATE).format(providers=served)
+        if served
+        else SERVED_BY_UNRECORDED
     ]
-    return TableCell(value=", ".join(pricing.sources) or None, flag="; ".join(said) or None)
+    if pricing.tool_providers:
+        said.append(TOOL_SPEND_TEMPLATE.format(providers=", ".join(pricing.tool_providers)))
+    return TableCell(value=", ".join(pricing.sources) or None, flag="; ".join(said))
 
 
 # --- more than one aspect ----------------------------------------------------------------------------------------

@@ -5190,13 +5190,15 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
     carries ``None`` reasoning — coercing it to 0 would fabricate an observation.
     A genuine zero (a non-reasoning model reporting 0 reasoning tokens) stays 0.
 
-    Rows are keyed by **(role, model, served model, price source)**, not role alone: a role that spent
-    tokens on more than one model — a run whose per-dim judge configs pin different
+    Rows are keyed by **(role, model, served model, served provider, price source)**, not role alone: a role that
+    spent tokens on more than one model — a run whose per-dim judge configs pin different
     models, say — contributes one row per model, because blending them would have
     to drop ``model`` and with it the ability to re-derive the dollars. Dollars priced
     two ways stay in two rows for the same reason, and so do calls one requested alias had
     answered by two different models: ``served_model`` is the evidence of which model produced
-    the numbers, and a blended row could name neither.
+    the numbers, and a blended row could name neither. Calls a router sent to two upstream providers are two rows
+    too (``served_provider``): one model's cost differs by who served it, so a row naming one provider never holds
+    another's calls.
 
     The ``external`` role (paid non-LLM APIs, e.g. web search) has no token
     concept at all: it reports ``call_count`` and — where the caller could count
@@ -5232,6 +5234,18 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
             "The model the provider's RESPONSE named as having answered this row's calls, never the id requested. "
             "None = not recorded: the responses named no model. "
             "Never read the alias in `model` in its place."
+        ),
+    )
+    # Left out of the document when unset, so a row whose replies named no upstream is stored as it was before the
+    # field existed, and an older build reading one that names it keeps it unread.
+    served_provider: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The upstream provider the RESPONSE named as having served this row's token-metered calls (OpenRouter's "
+            "reply names the provider it routed to). None = not recorded: the replies named none, a direct "
+            "provider's never do, or the row was stored before the field existed; never a guess. A different field "
+            "from provider, which names who was called for an external contribution."
         ),
     )
     prompt_tokens: int | None = Field(default=None, ge=0)
