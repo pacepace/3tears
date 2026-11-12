@@ -98,6 +98,33 @@ async def _indexes(conn: asyncpg.Connection, schema: str) -> dict[str, str]:
     return {r["indexname"]: r["indexdef"] for r in rows}
 
 
+async def _index_columns(conn: asyncpg.Connection, schema: str, index: str) -> list[str]:
+    """return the key columns of ``schema.index``, in key order, from the catalog.
+
+    read from ``pg_index`` rather than matched in ``indexdef`` text: YugabyteDB spells the same index
+    ``lsm (parent_type HASH, parent_id ASC)``, PostgreSQL ``btree (parent_type, parent_id)``.
+
+    :param conn: live asyncpg connection
+    :ptype conn: asyncpg.Connection
+    :param schema: schema to read
+    :ptype schema: str
+    :param index: index name
+    :ptype index: str
+    :return: column names in key order
+    :rtype: list[str]
+    """
+    rows = await conn.fetch(
+        "SELECT a.attname FROM pg_index i"
+        " JOIN pg_class c ON c.oid = i.indexrelid"
+        " JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, n) ON true"
+        " JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum"
+        " WHERE c.relnamespace = $1::regnamespace AND c.relname = $2 ORDER BY k.n",
+        schema,
+        index,
+    )
+    return [r["attname"] for r in rows]
+
+
 async def _connect(url: str, schema: str) -> asyncpg.Connection:
     """open a connection whose search_path selects ``schema``.
 
@@ -181,7 +208,7 @@ class TestOnAConsumerShapedTable:
             assert constraints_before <= await _constraints(conn, schema)
             indexes_after = await _indexes(conn, schema)
             assert set(indexes_after) - set(indexes_before) == {PARENT_INDEX_NAME}
-            assert "(parent_type, parent_id)" in indexes_after[PARENT_INDEX_NAME]
+            assert await _index_columns(conn, schema, PARENT_INDEX_NAME) == ["parent_type", "parent_id"]
             assert {k: indexes_after[k] for k in indexes_before} == indexes_before
         finally:
             await conn.close()
