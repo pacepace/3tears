@@ -68,6 +68,7 @@ from threetears.evals.schema import (
     BoundCompletionClient,
     ClientRequestSettings,
     CompletionResult,
+    ModelListing,
     StopReason,
     ToolResultClearing,
     TurnCeiling,
@@ -843,6 +844,13 @@ class _Live:
             return None
         return self._fallback.unbounded_because(self.last_refresh)
 
+    def price_ceiling_refusal(self) -> str | None:
+        """Why :meth:`price_ceiling` answers no ceiling as things stand, or ``None`` when it bounds one."""
+        if self._asked.max_tokens is None:
+            return "the request has no output cap"
+        unbounded = self.unbounded_because()
+        return unbounded[0] if unbounded is not None else None
+
     async def refresh_prices(self) -> PriceRefresh:
         if self.rated() is not None:
             self.last_refresh = _NOTHING_READ
@@ -1478,6 +1486,22 @@ class Model:
         """
         return self._client.price_ceiling(system=system, user=user, response_format=response_format)
 
+    def price_ceiling_refusal(self) -> str | None:
+        """Why :meth:`price_ceiling` answers no ceiling as things stand, or ``None`` when it bounds a call. Reads nothing.
+
+        What a launch quotes when it refuses an arm under a cost cap whose call this model cannot price: the catalogue
+        not read (or its first read failing), its rows too old after a failed refresh, no row that prices the model,
+        a price the client cannot bound, or a request with no output cap. ``None`` while replaying, which costs
+        nothing. Await :meth:`refresh_prices` first, as the engine does, so it answers from the read the ceiling
+        would be priced from.
+
+        :return: The reason, or ``None``.
+        :rtype: str | None
+        """
+        if self._live is None:
+            return None
+        return self._live.price_ceiling_refusal()
+
     def ceiling_is_estimate(self) -> bool:
         """Whether this model's price ceilings are estimates: bounds on rates its pricer does not guarantee.
 
@@ -1569,6 +1593,9 @@ class _Lease:
 
     def ceiling_is_estimate(self) -> bool:
         return self._model.ceiling_is_estimate()
+
+    def price_ceiling_refusal(self) -> str | None:
+        return self._model.price_ceiling_refusal()
 
     async def refresh_prices(self) -> PriceRefresh:
         return await self._model.refresh_prices()
@@ -1732,6 +1759,56 @@ class Clients:
             if matched is None or self.catalogue.rates(matched) is None:
                 unpriced[model_id] = f"no single priced row of OpenRouter's catalogue matches {model_id!r}"
         return unpriced
+
+    async def model_listing(self, model: str, *, role: CompletionRole | None = None) -> ModelListing | None:
+        """Whether the provider a call to ``model`` goes to still lists it, read now: the engine's served-model check.
+
+        A launch asks this of every model an arm names before the arm is priced, and refuses an arm whose model the
+        provider no longer lists. OpenRouter's list is the price catalogue every model here shares, so the read is
+        the one a price ceiling needs and one catalogue read serves both: rows younger than ``refresh_after`` are
+        kept, older ones are fetched again. A list that cannot be read now, or whose refresh failed so the rows held
+        are stale, answers ``listed=None`` saying why, and the launch goes ahead saying the check was skipped.
+
+        The provider is the one the factory would build ``model`` on: the role's own (a role given as a
+        :class:`Model` keeps its provider), else OpenRouter for a ``vendor/model`` id. ``role=None`` is a model the
+        host calls through its own route (a subject's candidate), read by the id alone. Only OpenRouter's list is
+        read here, so a model going to Anthropic or OpenAI directly, or to an OpenAI-compatible ``base_url``, answers
+        ``None``: there is no list to check it against.
+
+        :param model: The model id, as the launch names it.
+        :ptype model: str
+        :param role: The engine role the model serves, or ``None`` for a candidate the host calls itself.
+        :ptype role: CompletionRole | None
+        :return: The listing, or ``None`` when the model's provider has no list here.
+        :rtype: ModelListing | None
+        """
+        template = self._roles.get(role, self._default) if role is not None else None
+        # A role's Model built on Anthropic, OpenAI or a base_url derives every model of that role there; anything
+        # else goes where its id says, as Model builds it: a vendor/model id to OpenRouter.
+        if isinstance(template, Model) and (template.base_url is not None or template.provider != "openrouter"):
+            return None
+        if "/" not in model:
+            return None
+        read = await self.catalogue.read()
+        listed = self.catalogue.lists(model)
+        if listed is None:
+            return ModelListing(
+                provider="openrouter",
+                listed=None,
+                detail=read.failure or "OpenRouter's model list (the price catalogue) has not been read",
+            )
+        fetched = self.catalogue.fetched_at
+        when = fetched.isoformat(timespec="seconds") if fetched is not None else "an unknown time"
+        if self.catalogue.stale_since is not None:
+            return ModelListing(
+                provider="openrouter",
+                listed=None,
+                detail=(
+                    f"the OpenRouter model list held was read at {when} and reading it again failed "
+                    f"({self.catalogue.refresh_failure or 'no reason given'}), so it is not current"
+                ),
+            )
+        return ModelListing(provider="openrouter", listed=listed, detail=f"OpenRouter's model list, read at {when}")
 
     async def aclose(self) -> None:
         """Close every model the factory built, and forget them, then the ``http`` client it owns; a failure to close

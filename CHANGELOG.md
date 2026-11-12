@@ -100,6 +100,28 @@ a page still loading a font after 15 s fails that render, naming the fonts. It l
 DejaVu, the faces the package's pages draw in on the dev box. The testament image runs it at build and CI's evals
 shards before their tests.
 
+### evals: launch admission reads prices and the provider's model list before it admits an arm (#950, #1147)
+
+**Fixed:** a launch, an estimate or a resume in a process that had not read the price catalogue yet priced each
+arm's largest call as unknown, and under a cost cap skipped the "largest call above the cap" refusal with only a
+WARNING logged. Admission now awaits each client's `refresh_prices` before it prices a call, and under a cap an arm
+whose largest call still cannot be priced is refused, naming the call and why (`UnpricedCall`, on
+`ArmPlan.call_unpriced`). With no cap there is nothing to check a ceiling against, and the arm is admitted as before.
+`price_subject_call_floor` and the judge kind's pricer refresh first, and answer an `UnpricedCall` where they
+answered `None`.
+
+**Added:** the served-model check. Admission asks the host's client factory what the provider's own model list, read
+now, says of each arm's candidate, judge and simulator models (`ModelListing`, `ServedCheck`,
+`ArmPlan.served_checks`). `Clients.model_listing` reads OpenRouter's list, which is the price catalogue, so one read
+serves both checks. A model the list does not name is refused whatever the cap, naming the model and the provider. A
+list that cannot be read lets the launch go ahead, and the caller is told the check was skipped and why:
+`ArmEstimate.served_check_skipped` (and the estimate's text), `AdmittedLaunch.notices` and `JobsStarted.notices`. A
+model going to Anthropic or OpenAI directly, and every model of a factory without `model_listing`, is not checked.
+`Model.price_ceiling_refusal()` says why a ceiling is unknown, and `unpriced_because` words it for a refusal.
+
+**Docs:** the host guide names the boot step, `await clients.load_prices()` before a host offers launches or
+resumes, and the launch docstrings no longer say a run refuses a call inside a cell.
+
 ### evals: a seed reads each template revision's cases once (#1148)
 
 **Fixed:** the seed read every stored case of a template revision again for each corpus case of it, to fill names on

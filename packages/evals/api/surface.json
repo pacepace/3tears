@@ -846,6 +846,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.ModelListing": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ModelRoleOrigin": {
       "kind": "type alias",
       "signature": "",
@@ -3231,6 +3236,11 @@
       "signature": "",
       "tier": "host-contract"
     },
+    "threetears.evals.kernel.unpriced_because": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.UnreadableBarName": {
       "kind": "dataclass",
       "signature": "",
@@ -3738,7 +3748,7 @@
     },
     "threetears.evals.run.ArmPlan": {
       "kind": "dataclass",
-      "signature": "ArmPlan(case_count: int, candidate_model: str, judge: PlannedJudge | None, simulator_model: str | None, call_ceiling: CallCeiling | None = None)",
+      "signature": "ArmPlan(case_count: int, candidate_model: str, judge: PlannedJudge | None, simulator_model: str | None, call_ceiling: CallCeiling | None = None, call_unpriced: UnpricedCall | None = None, served_checks: tuple[ServedCheck, ...] = ())",
       "tier": "stable"
     },
     "threetears.evals.run.ArmPrice": {
@@ -4258,7 +4268,7 @@
     },
     "threetears.evals.run.LaunchableKind": {
       "kind": "dataclass",
-      "signature": "LaunchableKind(launch: KindLauncher, resolve_subject: SubjectResolver, unhonoured_launch_arguments: frozenset[LaunchArgument] = frozenset(), ignored_template_fields: frozenset[TemplateField] = frozenset(), plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None, apparatus_settings: Mapping[str, ApparatusSettingValue] = <lambda>(), price_largest_call: Callable[[LaunchRequest], Awaitable[CallCeiling | None]] | None = None)",
+      "signature": "LaunchableKind(launch: KindLauncher, resolve_subject: SubjectResolver, unhonoured_launch_arguments: frozenset[LaunchArgument] = frozenset(), ignored_template_fields: frozenset[TemplateField] = frozenset(), plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None, apparatus_settings: Mapping[str, ApparatusSettingValue] = <lambda>(), price_largest_call: Callable[[LaunchRequest], Awaitable[CallCeiling | UnpricedCall | None]] | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.run.LaunchArgument": {
@@ -4398,7 +4408,7 @@
     },
     "threetears.evals.run.price_subject_call_floor": {
       "kind": "async function",
-      "signature": "price_subject_call_floor(host: EvalHost, request: LaunchRequest, *, judged_artifact: JudgedArtifact) -> CallCeiling | None",
+      "signature": "price_subject_call_floor(host: EvalHost, request: LaunchRequest, *, judged_artifact: JudgedArtifact) -> CallCeiling | UnpricedCall | None",
       "tier": "host-contract"
     },
     "threetears.evals.run.quote_launch": {
@@ -4656,6 +4666,16 @@
       "signature": "SeedTemplateCase(template: str, name: str, variation_params: dict[str, str] = dict(), host_payload: VerbatimObject = dict(), stratum: str | None = None)",
       "tier": "host-contract"
     },
+    "threetears.evals.run.ServedCheck": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.run.ServedRole": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.run.set_analysis_archived": {
       "kind": "function",
       "signature": "",
@@ -4765,6 +4785,11 @@
       "kind": "dataclass",
       "signature": "UnknownSubject(remedy: str)",
       "tier": "host-contract"
+    },
+    "threetears.evals.run.UnpricedCall": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.run.UnreadableRunDeleteStore": {
       "kind": "protocol",
@@ -7683,7 +7708,7 @@
     },
     "threetears.evals.ops.JobsStarted": {
       "kind": "model",
-      "signature": "JobsStarted(jobs: list[JobHandle])",
+      "signature": "JobsStarted(jobs: list[JobHandle], notices: list[str] = list())",
       "tier": "stable"
     },
     "threetears.evals.ops.JobState": {

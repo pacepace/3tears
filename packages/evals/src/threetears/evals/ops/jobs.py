@@ -208,9 +208,18 @@ class JobHandle(EvalBaseModel):
 
 
 class JobsStarted(EvalBaseModel):
-    """What starting long work returns: one handle per job, in the order the work was asked for."""
+    """What starting long work returns: one handle per job, in the order the work was asked for, and what the call
+    told its caller beside starting it."""
 
     jobs: list[JobHandle] = Field(min_length=1)
+    notices: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "What admitting the work found and did not refuse it for, each a sentence: a launch whose served-model "
+            "check could not be made (its provider's model list could not be read) says so here. Left out when empty."
+        ),
+    )
 
 
 class JobStatus(EvalBaseModel):

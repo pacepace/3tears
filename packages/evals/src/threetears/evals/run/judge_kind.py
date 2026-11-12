@@ -49,7 +49,12 @@ from threetears.evals.kernel.candidate_kind import (
     CellSpanWindow,
     VariantConfig,
 )
-from threetears.evals.kernel.capped_completion import call_ceiling, ceiling_is_estimate, refresh_prices
+from threetears.evals.kernel.capped_completion import (
+    call_ceiling,
+    ceiling_is_estimate,
+    refresh_prices,
+    unpriced_because,
+)
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.failed_call import failed_call_output
 from threetears.evals.kernel.run_pages import iter_keyed_results
@@ -83,6 +88,7 @@ from threetears.evals.run.launch import (
     KindWiring,
     LaunchableKind,
     UnknownSubject,
+    UnpricedCall,
     launch_run,
     require_candidate_model,
 )
@@ -924,6 +930,28 @@ class JudgeKind:
             )
         return PreparedJudge(model=self._model, span_window=span_window)
 
+    def client_for_case(self, test_case: EvalTestCase) -> Any:
+        """The client :meth:`invoke`'s call for ``test_case`` goes through, built on first ask and kept.
+
+        What a launch brings up to date (``refresh_prices``) before it prices the case's call, and asks why when the
+        call cannot be priced.
+
+        :param test_case: The cell's case, carrying the judge case in its ``host_payload``.
+        :ptype test_case: EvalTestCase
+        :return: The kind's judge client at the temperature the case's criterion is asked at.
+        :rtype: Any
+        :raises ValueError: As :meth:`price_case` raises it.
+        """
+        case = judge_case_of(test_case)
+        if case is None:
+            raise ValueError(f"test case {test_case.id!r} carries no judge case to price")
+        service = JudgeService(
+            client_factory=lambda _model, temperature: self._client(temperature),
+            configs=self._configs,
+            failure_describer=self._failure_describer,
+        )
+        return service.client_for(self._request(service, case, _context_of(test_case, case)))
+
     def price_case(self, test_case: EvalTestCase) -> float | None:
         """The ceiling of the call :meth:`invoke` makes for ``test_case``, built as it builds it.
 
@@ -1276,12 +1304,24 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         )
         return kind, request.cases_or(_template_cases(host.storage, request.template, request.scope_id))
 
-    async def price_largest_call(request: LaunchRequest) -> CallCeiling | None:
+    async def price_largest_call(request: LaunchRequest) -> CallCeiling | UnpricedCall | None:
         # Every case's call is priced as invoke builds it — the prompt is the case's frozen evidence, so the
-        # largest call is the case with the most of it — on the clients the run's cells would call through.
+        # largest call is the case with the most of it — on the clients the run's cells would call through, each
+        # brought up to date first: a fresh process has read no price catalogue yet. A case whose call still cannot
+        # be priced makes the largest call unknown, which a cost cap refuses.
         kind, cases = await run_blocking(launch_host().eval_host.blocking_executor, built, request)
         try:
-            priced = [(ceiling, case.id) for case in cases if (ceiling := kind.price_case(case)) is not None]
+            for client in {id(client): client for client in map(kind.client_for_case, cases)}.values():
+                await refresh_prices(client)
+            priced: list[tuple[float, str]] = []
+            for case in cases:
+                ceiling = kind.price_case(case)
+                if ceiling is None:
+                    return UnpricedCall(
+                        call=f"the judge call on case {case.id!r} on {kind.model!r}",
+                        why=unpriced_because(kind.client_for_case(case)),
+                    )
+                priced.append((ceiling, case.id))
             estimate = kind.ceiling_is_estimate()
         finally:
             await kind.aclose()
