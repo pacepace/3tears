@@ -19,7 +19,6 @@ import dataclasses
 import hashlib
 import json
 import re
-import socket
 from collections.abc import Collection
 from pathlib import Path
 from typing import Any, Final
@@ -32,6 +31,7 @@ from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
     default_cases,
     dry_sessions,
 )
+from packages.evals.tests.offline_support import Connect, refuse_connects
 from packages.evals.tests.writer_case_support import SEED
 from packages.evals.tests.writer_eval_support import JUDGE, FakeScoringJudge, ScoredReply, lay_recording
 from threetears.evals.analysis import EvalSummary, summarize_run, summarize_runs
@@ -72,17 +72,10 @@ SCOPE: Final = "batched"
 
 
 @pytest.fixture
-def offline(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+def offline(monkeypatch: pytest.MonkeyPatch) -> list[Connect]:
     """No writer key in the environment, and every socket connect refused and counted."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    attempts: list[object] = []
-
-    def connect(_self: socket.socket, address: object) -> None:
-        attempts.append(address)
-        raise AssertionError(f"a replay-only run connected to {address}")
-
-    monkeypatch.setattr(socket.socket, "connect", connect)
-    return attempts
+    return refuse_connects(monkeypatch)
 
 
 def _variant(lines: int = 1) -> AnalystSkill:
@@ -195,7 +188,7 @@ async def _runs(result: WriterResult) -> list[str]:
 
 
 async def test_a_landslide_stops_launching_at_the_first_batch_whose_preference_separates(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     """The judge prefers the control's page on every case: the preference separates toward keep at case 6, in the
     second batch, so the arms launch 6 of the 7 cases and the run says it read its other readings on those 6."""
@@ -239,7 +232,7 @@ async def test_a_landslide_stops_launching_at_the_first_batch_whose_preference_s
 
 
 async def test_a_close_run_goes_to_the_cap_and_reads_what_one_batch_of_every_case_reads(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     """A mixed preference never separates, so the arms launch all seven cases, three at a time; the reading at the cap
     is the one the same cases read when every case launches at once, bit for bit, and no pair is asked twice."""
@@ -281,7 +274,7 @@ async def test_a_close_run_goes_to_the_cap_and_reads_what_one_batch_of_every_cas
 
 
 async def test_an_improved_stop_whose_guardrails_are_not_shown_held_goes_on_to_the_cap_and_says_so(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     """The judge prefers the candidate's page on every case, so the preference separates improved at case 6; on the six
     cases run by then its guardrail, a judged dimension the scope's template reads as one, is not shown held, so the
@@ -319,7 +312,7 @@ async def test_an_improved_stop_whose_guardrails_are_not_shown_held_goes_on_to_t
 
 
 async def test_a_side_under_the_eval_s_floor_runs_and_its_resolution_line_says_so(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     """Fewer side cases than the eval asks for is a disclosure, never a refusal: the run goes ahead, and the floor's
     line, first among the launch's disclosures after any budget warning, says it is under them."""
@@ -335,7 +328,7 @@ async def test_a_side_under_the_eval_s_floor_runs_and_its_resolution_line_says_s
     assert offline == []
 
 
-async def test_a_second_batched_run_in_the_scope_reuses_its_batch_sets(tmp_path: Path, offline: list[object]) -> None:
+async def test_a_second_batched_run_in_the_scope_reuses_its_batch_sets(tmp_path: Path, offline: list[Connect]) -> None:
     """The held-out set and the bet are the same on a second run, so its batches list the same cases: each batch's set
     is the one the first run minted, not refused as unchanged and not minted again."""
     arms = _arms()
@@ -365,7 +358,7 @@ def _rename_batch(storage: EvalStorage, runs: Collection[str], batch: str, ref: 
 
 @pytest.mark.parametrize("claimed", ["hand-picked", "other split"])
 async def test_a_one_launch_set_that_is_no_batch_of_the_held_out_set_is_still_refused(
-    tmp_path: Path, offline: list[object], claimed: str
+    tmp_path: Path, offline: list[Connect], claimed: str
 ) -> None:
     """The promotion read accepts a case run from a set made for one launch only as a batch of the held-out set version
     the set's name gives, which lists it. A hand-picked one-launch subset of the held-out cases, or a set named a batch
@@ -410,7 +403,7 @@ async def test_a_one_launch_set_that_is_no_batch_of_the_held_out_set_is_still_re
 
 
 async def test_three_arms_each_candidate_stops_at_its_own_stop_and_its_readings_are_read_there_once(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     """One candidate's page loses on every case and separates at case 6; the other's matches the control's, so its
     preference never separates. The first stops launching after the second batch, its pass and its promotion read
@@ -442,7 +435,7 @@ async def test_three_arms_each_candidate_stops_at_its_own_stop_and_its_readings_
 
 
 async def test_an_arm_s_batches_summarise_as_one_and_runs_of_two_arms_are_refused(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     """``summarize_runs`` over one arm's batches: its cases, results and spend are the batches' together, its ceiling
     their ceilings summed, its status completed only when each is; one run reads as ``summarize_run`` reads it; and
@@ -507,7 +500,7 @@ async def _spent_by_arm(result: WriterResult) -> dict[str, list[EvalSummary]]:
 
 
 async def test_a_spend_cap_that_admits_two_batches_stops_the_run_there_and_says_so_once(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     """Every judge call costs $0.05, its floor too. A batch of two reserves $2.90 of an arm's part (two reports at $0.75
     and 14 judge calls each), and spends about $0.70; a $10 spend cap gives each arm $4, so the second batch fits what
@@ -545,7 +538,7 @@ async def test_a_spend_cap_that_admits_two_batches_stops_the_run_there_and_says_
 
 
 async def test_a_batch_whose_judging_costs_past_its_reservation_leaves_the_next_only_what_was_not_spent(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     """The judge reserves $0.01 a call before any page is read and bills $0.50 for a call with a page, so each batch
     spends past its reservation. Each batch's runs run under the batch's own reservation, never the whole part, and
@@ -582,7 +575,7 @@ async def test_a_batch_whose_judging_costs_past_its_reservation_leaves_the_next_
 
 
 async def test_a_cap_that_admits_no_batch_is_refused_naming_the_smallest_that_would(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     """The one cap refused: a $3 cap gives each arm $1.20, under the first batch's two reports at $0.75. The refusal
     names the smallest cap that admits it, two arms' $1.50 over the four fifths the arms share: $3.75."""
@@ -637,7 +630,7 @@ async def _verdicts(result: WriterResult) -> list[tuple[str, str, float | None]]
 
 
 async def test_a_batch_that_stored_no_page_on_either_arm_adds_no_second_set_of_gated_readings(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     """One case a batch, four of them unjudged: a batch that stored no page on either arm judged nothing, so its runs
     record no judge. They stay out of the campaign's readings, said once, and the pass reads their pairs as ties: the
@@ -681,7 +674,7 @@ async def test_a_batch_that_stored_no_page_on_either_arm_adds_no_second_set_of_g
 
 
 async def test_a_pair_s_two_runs_must_share_a_rig_and_an_unjudged_batch_makes_no_second_one(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     """One case a batch, four of them unjudged and so left out of the campaign's readings: each arm sits under one rig.
     Given a second rig on one batch's two runs, each arm sits under two and each pair's two runs still share one, so
@@ -727,7 +720,7 @@ async def test_a_pair_s_two_runs_must_share_a_rig_and_an_unjudged_batch_makes_no
 
 
 async def test_a_batch_run_that_stored_no_page_on_one_arm_alone_adds_no_second_setup(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     """One case a batch, and the candidate writes no page on one of them while the control does: the candidate's run
     of that batch judged nothing and records no judge. It stays out of the campaign's readings, said once with its
