@@ -102,6 +102,17 @@ class TestUpdateKeyed:
             (f"k{b % 10}", b) for b in range(100) if b % 10 in (1, 2)
         )
 
+    async def test_its_row_and_value_answer_as_fetchrow_and_fetchval_did(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if ``row`` / ``value`` answer other than ``fetchrow`` / ``fetchval`` of the same ``RETURNING``
+        statement: the first row and its first column when a row was written, None when none was."""
+        written = await update_keyed(
+            ThreadedDuckDB(db), "t", values={"v": -7}, by={"a": "k3", "b": 13}, returning=["b", "v"]
+        )
+        assert written.row == {"b": 13, "v": -7}
+        assert written.value == 13
+        missed = await delete_keyed(ThreadedDuckDB(db), "t", by={"a": "k3", "b": 14}, returning=["b"])
+        assert missed.rows == [] and missed.row is None and missed.value is None
+
     async def test_a_none_in_the_key_names_the_null_rows(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if ``by``'s None is bound as a value (matching nothing) rather than read as IS NULL."""
         written = await update_keyed(ThreadedDuckDB(db), "t", values={"v": -1}, by={"a": "k0", "s": None})

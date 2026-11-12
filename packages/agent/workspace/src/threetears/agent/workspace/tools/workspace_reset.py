@@ -50,7 +50,7 @@ from threetears.agent.workspace.validators import (
     WorkspaceValidationError,
     dispatch_validators,
 )
-from threetears.core.keyed import delete_keyed
+from threetears.core.keyed import delete_keyed, update_keyed
 from threetears.observe import contain, get_logger
 
 __all__ = [
@@ -91,10 +91,6 @@ INSERT INTO workspace_file_versions (
     sha256, action, label, actor_id, correlation_id, date_created
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 """
-
-_UPDATE_WORKSPACE_VERSION_SQL = (
-    "UPDATE workspaces SET current_version = $1, date_updated = $2 WHERE workspace_id = $3 AND agent_id = $4"
-)
 
 
 class WorkspaceResetTool(TearsTool):
@@ -440,12 +436,11 @@ class WorkspaceResetTool(TearsTool):
                         now,
                         correlation_id,
                     )
-                await conn.execute(
-                    _UPDATE_WORKSPACE_VERSION_SQL,
-                    new_version,
-                    now,
-                    workspace_id,
-                    self._agent_id,
+                await update_keyed(
+                    conn,
+                    "workspaces",
+                    values={"current_version": new_version, "date_updated": now},
+                    by={"workspace_id": workspace_id, "agent_id": self._agent_id},
                 )
         return n_changed
 

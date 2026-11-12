@@ -36,37 +36,13 @@ in the 3tears hub deployment) is applied at the L3 pool's
 
 from __future__ import annotations
 
-from threetears.core.collections.generation import WRITE_GENERATION
-
 import json as _json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any
-from typing import ClassVar, Final
+from typing import Any, ClassVar, Final
 from uuid import UUID, uuid7
-
-from threetears.core.collections import DeleteCascade
-from threetears.core.collections.scan_cache import ScanCacheKey
-from threetears.core import keyed as k
-from threetears.core.keyset import keyset_pages
-from threetears.core.collections.schema_backed import (
-    BOOL_TYPE,
-    DATETIMETZ_TYPE,
-    ENUM_TYPE,
-    INT_TYPE,
-    JSONB_TYPE,
-    STRING_TYPE,
-    UUID_TYPE,
-    Column,
-    SchemaBackedCollection,
-    TableSchema,
-)
-from threetears.core.exceptions import GenerationUnavailableError
-from threetears.core.keyed import AnyOf, KeyPage, Pin, Selected, Sort, counts_by, keyset_page, read_by
-from threetears.core.namespaces import NAMESPACE_NAME_SEPARATOR, namespace_contains
-from threetears.observe import get_logger
 
 from threetears.agent.acl.entities import (
     GroupEntity,
@@ -88,7 +64,28 @@ from threetears.agent.acl.types import (
     ScopeType,
 )
 from threetears.agent.acl.types import Namespace as AclNamespace
+from threetears.core import keyed as k
+from threetears.core.collections import DeleteCascade
+from threetears.core.collections.generation import WRITE_GENERATION
+from threetears.core.collections.scan_cache import ScanCacheKey
+from threetears.core.collections.schema_backed import (
+    BOOL_TYPE,
+    DATETIMETZ_TYPE,
+    ENUM_TYPE,
+    INT_TYPE,
+    JSONB_TYPE,
+    STRING_TYPE,
+    UUID_TYPE,
+    Column,
+    SchemaBackedCollection,
+    TableSchema,
+)
+from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.keyed import AnyOf, KeyPage, Pin, Selected, Sort, counts_by, keyset_page, read_by, update_keyed
+from threetears.core.keyset import keyset_pages
+from threetears.core.namespaces import NAMESPACE_NAME_SEPARATOR, namespace_contains
 from threetears.core.tenancy import no_tenant, tenant_column
+from threetears.observe import get_logger
 
 log = get_logger(__name__)
 
@@ -1262,13 +1259,12 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
         """
         result: list[Role] = []
         if self.l3_pool is not None and len(role_ids) > 0:
-            rows = await self.l3_pool.fetch(
-                """
-                SELECT role_id, name, permissions, is_builtin, customer_id
-                  FROM roles
-                 WHERE role_id = ANY($1::uuid[])
-                """,
-                list(role_ids),
+            rows = await read_by(
+                self.l3_pool,
+                "roles",
+                by={"role_id": AnyOf(list(role_ids), cast="uuid")},
+                columns=("role_id", "name", "permissions", "is_builtin", "customer_id"),
+                records=True,
             )
             result = [
                 Role(
@@ -2530,17 +2526,15 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             # reaches this method having READ a row through the pool, so a
             # ``None`` here would be a wiring change that broke the read too,
             # and it names that rather than raising an attribute error.
-            written = await self.required_l3_pool.fetchrow(
-                "UPDATE namespaces"
-                "   SET row_scope = $1, customer_id = $2, date_updated = $3"
-                " WHERE namespace_id = $4 AND row_scope = $5"
-                " RETURNING namespace_id",
-                target_scope,
-                customer_id,
-                datetime.now(UTC),
-                namespace_id,
-                previous_scope,
-            )
+            written = (
+                await update_keyed(
+                    self.required_l3_pool,
+                    "namespaces",
+                    values={"row_scope": target_scope, "customer_id": customer_id, "date_updated": datetime.now(UTC)},
+                    by={"namespace_id": namespace_id, "row_scope": previous_scope},
+                    returning=("namespace_id",),
+                )
+            ).row
             moved = written is not None
         outcome = NamespaceRescope(
             namespace_id=namespace_id,

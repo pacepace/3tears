@@ -40,7 +40,7 @@ from threetears.core.collections.schema_backed import (
     Column,
     TableSchema,
 )
-from threetears.core.keyed import delete_keyed, read_row, update_keyed
+from threetears.core.keyed import AnyOf, Fragment, delete_keyed, read_row, update_keyed
 from threetears.core.tenancy import no_tenant
 from threetears.observe import get_logger
 from threetears.scheduled_jobs.entities import JobFireEntity, ScheduledJobEntity
@@ -530,15 +530,15 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
         if self.l3_pool is not None:
             # cache-bypass: targeted UPDATE; the row is evicted from every tier once it lands.
             async with self.bypassing_write((partition_key, job_id)) as write:
-                changed = await self.l3_pool.fetchval(
-                    "UPDATE scheduled_jobs SET status = $1, date_updated = $2 "
-                    "WHERE partition_key = $3 AND job_id = $4 "
-                    "RETURNING job_id",
-                    status,
-                    now,
-                    partition_key,
-                    job_id,
-                )
+                changed = (
+                    await update_keyed(
+                        self.l3_pool,
+                        "scheduled_jobs",
+                        values={"status": status, "date_updated": now},
+                        by={"partition_key": partition_key, "job_id": job_id},
+                        returning=("job_id",),
+                    )
+                ).value
                 if changed is None:
                     write.unchanged()
         return changed is not None
@@ -602,17 +602,19 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
                 )
                 # cache-bypass: targeted UPDATE; the row is evicted from every tier once it lands.
                 async with self.bypassing_write((partition_key, job_id)) as write:
-                    changed = await self.l3_pool.fetchval(
-                        "UPDATE scheduled_jobs "
-                        "SET schedule_config = $1, next_fire_at = $2, date_updated = $3 "
-                        "WHERE partition_key = $4 AND job_id = $5 "
-                        "RETURNING job_id",
-                        schedule_config,
-                        next_fire_at,
-                        now,
-                        partition_key,
-                        job_id,
-                    )
+                    changed = (
+                        await update_keyed(
+                            self.l3_pool,
+                            "scheduled_jobs",
+                            values={
+                                "schedule_config": schedule_config,
+                                "next_fire_at": next_fire_at,
+                                "date_updated": now,
+                            },
+                            by={"partition_key": partition_key, "job_id": job_id},
+                            returning=("job_id",),
+                        )
+                    ).value
                     if changed is None:
                         write.unchanged()
                 updated = changed is not None
@@ -651,14 +653,15 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
             # cache-bypass: targeted UPDATE guarded on status; the row is evicted from every tier
             # once it lands, unless the guard matched nothing.
             async with self.bypassing_write((partition_key, job_id)) as write:
-                requested = await self.l3_pool.fetchval(
-                    "UPDATE scheduled_jobs SET next_fire_at = $1, date_updated = $1 "
-                    "WHERE partition_key = $2 AND job_id = $3 AND status = 'active' "
-                    "RETURNING job_id",
-                    now,
-                    partition_key,
-                    job_id,
-                )
+                requested = (
+                    await update_keyed(
+                        self.l3_pool,
+                        "scheduled_jobs",
+                        values={"next_fire_at": now, "date_updated": now},
+                        by={"partition_key": partition_key, "job_id": job_id, "status": "active"},
+                        returning=("job_id",),
+                    )
+                ).value
                 if requested is None:
                     write.unchanged()
         return requested is not None
@@ -768,18 +771,20 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
         # cache-bypass: atomic CAS UPDATE; the row is evicted from every tier once it lands, and
         # a claim that lost changed nothing and evicts nothing.
         async with self.bypassing_write((partition_key, job_id)) as write:
-            claimed = await self.l3_pool.fetchval(
-                "UPDATE scheduled_jobs "
-                "SET next_fire_at = $1, last_fired_at = $2, date_updated = $2, status = $3 "
-                "WHERE partition_key = $4 AND job_id = $5 AND next_fire_at = $6 "
-                "RETURNING job_id",
-                computed_next_fire,
-                now,
-                new_status,
-                partition_key,
-                job_id,
-                expected_next_fire,
-            )
+            claimed = (
+                await update_keyed(
+                    self.l3_pool,
+                    "scheduled_jobs",
+                    values={
+                        "next_fire_at": computed_next_fire,
+                        "last_fired_at": now,
+                        "date_updated": now,
+                        "status": new_status,
+                    },
+                    by={"partition_key": partition_key, "job_id": job_id, "next_fire_at": expected_next_fire},
+                    returning=("job_id",),
+                )
+            ).value
             if claimed is None:
                 write.unchanged()
         return claimed is not None
@@ -1022,15 +1027,16 @@ class JobFireCollection(DeclaredTableCollection[JobFireEntity]):
         # cache-bypass: targeted UPDATE on the failure columns; the row is evicted from every
         # tier once it lands.
         async with self.bypassing_write((partition_key, fire_id)):
-            await self.l3_pool.execute(
-                "UPDATE job_fires SET status = 'failed', error = $1, latency_ms = $2, "
-                "output = COALESCE($5::jsonb, output) "
-                "WHERE partition_key = $3 AND fire_id = $4",
-                error,
-                latency_ms,
-                partition_key,
-                fire_id,
-                output,
+            await update_keyed(
+                self.l3_pool,
+                "job_fires",
+                values={
+                    "status": "failed",
+                    "error": error,
+                    "latency_ms": latency_ms,
+                    "output": Fragment("COALESCE($1::jsonb, output)", (output,)),
+                },
+                by={"partition_key": partition_key, "fire_id": fire_id},
             )
         return None
 
@@ -1149,17 +1155,19 @@ class JobFireCollection(DeclaredTableCollection[JobFireEntity]):
         if self.l3_pool is None or not fire_ids:
             return []
         # __SPANS_PARTITIONS__: the caller names fires across partitions;
-        # ``partition_key`` is named in the RETURNING clause so the
-        # partition-column enforcement walker sees it as a static literal.
+        # ``partition_key`` is among the returned columns, so each reaped
+        # fire's full key is settled below.
         # cache-bypass: see reap_stale_dispatching.
         async with self.bypassing_write() as write:
-            rows = await self.l3_pool.fetch(
-                "UPDATE job_fires SET status = 'failed', error = $1 "
-                "WHERE status = 'dispatching' AND fire_id = ANY($2::uuid[]) "
-                "RETURNING partition_key, fire_id",
-                REAPED_DISPATCH_ERROR,
-                list(fire_ids),
-            )
+            rows = (
+                await update_keyed(
+                    self.l3_pool,
+                    "job_fires",
+                    values={"status": "failed", "error": REAPED_DISPATCH_ERROR},
+                    by={"status": "dispatching", "fire_id": AnyOf(list(fire_ids), cast="uuid")},
+                    returning=("partition_key", "fire_id"),
+                )
+            ).rows
             write.touches(*((row["partition_key"], row["fire_id"]) for row in rows))
         return [row["fire_id"] for row in rows]
 

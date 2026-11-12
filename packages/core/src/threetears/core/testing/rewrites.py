@@ -26,15 +26,19 @@ function with the recorded key and column, its collection ``self``.
 each side runs on its own seeded table in a transaction rolled back after it, and the table as each leaves it (every
 column of every row) is compared: the same rows written, to the same values, and no other. A ``SET`` parameter binds
 a value no seeded row holds (the write shows), ``now()`` the transaction's own time on both sides (it is the same
-within a transaction only per side: compared by being set, not by its instant). The source check finds the call's
-table, ``by`` pins and ``values`` as recorded.
+within a transaction only per side: compared by being set, not by its instant); an increment (``col = col + 1``) and an
+expression (``GREATEST(col, $1)``: its parameters bound as the set column's type) are sent as ``Increment`` and
+``Fragment``. A ``RETURNING`` write's returned rows
+are compared too (the entry's ``returning`` columns: the old statement's every returned row against the helper's
+``rows``). The source check finds the call's table, ``by`` pins, ``values`` and ``returning`` as recorded.
 
 **Seeding.** Each row is built from the table as migrated (its columns, types, NOT NULLs, defaults, enums and unique
 keys, read from the catalog), so a table needs no hand-written row factory: every
 column the read pins as a parameter is shared by a tenant's rows (the key names many rows), or unique a row where a
 unique key would otherwise collide; a column pinned to a literal holds it on two rows in three and another value on the
 third; every other column is unique a row, NULL on the NULLs case's odd rows where nullable. The parameters are the
-values of the first row (tenant 0). Foreign keys and triggers are held off while seeding
+values of the first row (tenant 0); an ``= ANY($n)`` pin's array holds the first row's value and a second tenant's
+(``AnyOf`` on the helper's side, with the statement's cast). Foreign keys and triggers are held off while seeding
 (``session_replication_role = replica``: the connection must be a superuser's, as a test database's is), and the
 table's CHECK constraints are dropped in the test database (:func:`_drop_checks`: the statements are then compared over
 more rows than production can hold, never fewer). A column no generic value fits takes ``overrides``: column -> value
@@ -54,7 +58,17 @@ from pathlib import Path
 from typing import Any, Final
 from uuid import NAMESPACE_OID, uuid5
 
-from threetears.core.keyed import Fragment, delete_before, delete_keyed, read_by, read_row, read_value, update_keyed
+from threetears.core.keyed import (
+    AnyOf,
+    Fragment,
+    Increment,
+    delete_before,
+    delete_keyed,
+    read_by,
+    read_row,
+    read_value,
+    update_keyed,
+)
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
 __all__ = [
@@ -252,7 +266,7 @@ def row_factory(
     for column in pins:
         if column not in shape.columns:
             raise AssertionError(f"{entry['table']}: the read pins {column}, which the table has no column of")
-    bound = {column for column, pin in pins.items() if pin["kind"] == "param"}
+    bound = {column for column, pin in pins.items() if pin["kind"] in _BOUND}
     per_row = {column for column in shape.columns if column not in pins}
     for unique in shape.unique:
         # a unique key (a partial one's predicate columns counted in) holding a bound column: the bound column is
@@ -293,11 +307,26 @@ def row_factory(
         return {column.name: value(column, seed) for column in seeded}
 
     first = Seeded(index=0, case="params", tenant=0, null=False, tie=0)
-    params: list[Any] = [None] * len({pin["param"] for pin in pins.values() if pin["kind"] == "param"})
+    # an ANY pin's array: the first row's value and a second tenant's (or row's), so the set is read as a set
+    second = Seeded(index=1, case="params", tenant=1, null=False, tie=0)
+    params: list[Any] = [None] * len({pin["param"] for pin in pins.values() if pin["kind"] in _BOUND})
     for column, pin in pins.items():
         if pin["kind"] == "param":
             params[pin["param"] - 1] = value(shape.columns[column], first)
+        elif pin["kind"] == "any":
+            params[pin["param"] - 1] = [value(shape.columns[column], first), value(shape.columns[column], second)]
     return row, params
+
+
+#: the pin kinds bound as a parameter: ``= $n`` and ``= ANY($n)``
+_BOUND: Final[frozenset[str]] = frozenset({"param", "any"})
+
+
+def _numbers(pin: Mapping[str, Any]) -> tuple[int, ...]:
+    """the statement's parameters a manifest pin or SET binds (a fragment's, in order; none for a literal)."""
+    if pin["kind"] == "fragment":
+        return tuple(pin["params"])
+    return (pin["param"],) if pin.get("param") else ()
 
 
 def _seedable(column: CatalogColumn) -> bool:
@@ -316,6 +345,8 @@ def _by(entry: Mapping[str, Any], params: Sequence[Any]) -> dict[str, Any]:
     for pin in entry["pins"]:
         if pin["kind"] == "param":
             by[pin["column"]] = params[pin["param"] - 1]
+        elif pin["kind"] == "any":
+            by[pin["column"]] = AnyOf(params[pin["param"] - 1], cast=pin.get("cast"))
         elif pin["kind"] == "literal":
             by[pin["column"]] = pin["literal"]
         else:
@@ -408,25 +439,25 @@ async def _assert_write_same(conn: Any, entry: Mapping[str, Any], *, overrides: 
     await _drop_checks(conn, table)
     shape = await _catalog(conn, table)
     # the pins numbered $1.. among themselves for the row factory, then each placed at its own number
-    numbered = sorted({pin["param"] for pin in entry["pins"] if pin["kind"] == "param"})
+    numbered = sorted({pin["param"] for pin in entry["pins"] if pin["kind"] in _BOUND})
     compact = {number: place + 1 for place, number in enumerate(numbered)}
-    pins = [{**pin, "param": compact[pin["param"]]} if pin["kind"] == "param" else pin for pin in entry["pins"]]
+    pins = [{**pin, "param": compact[pin["param"]]} if pin["kind"] in _BOUND else pin for pin in entry["pins"]]
     row, pinned = row_factory(shape, {**entry, "pins": pins}, (overrides or {}).get(table, {}))
-    total = max([pin["param"] for pin in (*entry["pins"], *entry["sets"]) if pin.get("param")] or [0])
+    total = max([number for pin in (*entry["pins"], *entry["sets"]) for number in _numbers(pin)] or [0])
     params: list[Any] = [None] * total
     for number, place in compact.items():
         params[number - 1] = pinned[place - 1]
     for offset, pin in enumerate(entry["sets"]):
-        if pin["kind"] == "param" and params[pin["param"] - 1] is None:
+        for number in _numbers(pin):
+            if params[number - 1] is not None:
+                continue
             column = shape.columns.get(pin["column"])
             if column is None:
                 raise AssertionError(f"{table}: the write sets {pin['column']}, which the table has no column of")
-            # a value no seeded row holds, so the write shows in the table after it
-            params[pin["param"] - 1] = _value(column, 900_000 + offset)
-    by = {
-        pin["column"]: params[pin["param"] - 1] if pin["kind"] == "param" else pin.get("literal")
-        for pin in entry["pins"]
-    }
+            # a value no seeded row holds, so the write shows in the table after it (a fragment's parameters are
+            # taken as the set column's type: GREATEST(col, $1), COALESCE($1::jsonb, col))
+            params[number - 1] = _value(column, 900_000 + offset)
+    by = _by(entry, params)
     values: dict[str, Any] = {}
     for pin in entry["sets"]:
         if pin["kind"] == "param":
@@ -435,15 +466,21 @@ async def _assert_write_same(conn: Any, entry: Mapping[str, Any], *, overrides: 
             values[pin["column"]] = pin["literal"]
         elif pin["kind"] == "now":
             values[pin["column"]] = Fragment("now()")
+        elif pin["kind"] == "increment":
+            values[pin["column"]] = Increment(pin["literal"])
+        elif pin["kind"] == "fragment":
+            values[pin["column"]] = Fragment(pin["literal"], tuple(params[number - 1] for number in pin["params"]))
         else:
             values[pin["column"]] = None
 
+    returning = list(entry.get("returning") or ())
+
     async def helper(c: Any) -> list[Any]:
         if entry["helper"] == "update_keyed":
-            await update_keyed(c, table, values=values, by=by)
+            written = await update_keyed(c, table, values=values, by=by, returning=returning)
         else:
-            await delete_keyed(c, table, by=by)
-        return []
+            written = await delete_keyed(c, table, by=by, returning=returning)
+        return written.rows
 
     # now() differs between the two sides' transactions: compared by whether it was set, not by its instant
     now_columns = {pin["column"] for pin in entry["sets"] if pin["kind"] == "now"}
@@ -459,6 +496,7 @@ async def _assert_write_same(conn: Any, entry: Mapping[str, Any], *, overrides: 
             old_sql=entry["old_sql"],
             params=params,
             helper=helper,
+            columns=returning or None,
             state_sql=f"SELECT {listed}{stamped} FROM {table}",  # noqa: S608 - the test's own table
         )
     finally:
@@ -477,24 +515,41 @@ def _write_says(call: ast.Call, entry: Mapping[str, Any]) -> bool:
         for key, value, pin in zip(written.keys, written.values, pins, strict=True):
             if not (isinstance(key, ast.Constant) and key.value == pin["column"]):
                 return False
-            if pin["kind"] == "param":
-                if not _same_expression(value, entry["args"][pin["param"] - 1]):
-                    return False
-            elif pin["kind"] == "now":
-                if not _same_expression(value, 'Fragment("now()")'):
-                    return False
-            elif not (
-                isinstance(value, ast.Constant)
-                and value.value == (pin["literal"] if pin["kind"] == "literal" else None)
-            ):
+            if not _pin_says(value, pin, entry["args"]):
                 return False
         return True
 
     if not matches(keywords.get("by"), entry["pins"]):
         return False
+    returning = keywords.get("returning")
+    if entry.get("returning"):
+        if not isinstance(returning, ast.Tuple | ast.List):
+            return False
+        if [element.value for element in returning.elts if isinstance(element, ast.Constant)] != entry["returning"]:
+            return False
+    elif returning is not None:
+        return False
     if entry["helper"] == "update_keyed":
         return matches(keywords.get("values"), entry["sets"])
     return "values" not in keywords
+
+
+def _pin_says(value: ast.expr, pin: Mapping[str, Any], args: Sequence[str]) -> bool:
+    """whether a helper call's pinned or set value is the entry's: its argument, ``AnyOf(<argument>, cast=...)``,
+    ``Fragment("now()")``, the literal, or None."""
+    if pin["kind"] == "param":
+        return _same_expression(value, args[pin["param"] - 1])
+    if pin["kind"] == "any":
+        return _same_expression(value, f"AnyOf({args[pin['param'] - 1]}, cast={pin.get('cast')!r})")
+    if pin["kind"] == "now":
+        return _same_expression(value, 'Fragment("now()")')
+    if pin["kind"] == "increment":
+        return _same_expression(value, f"Increment({pin['literal']!r})")
+    if pin["kind"] == "fragment":
+        bound = ", ".join(args[number - 1] for number in pin["params"])
+        tail = "," if len(pin["params"]) == 1 else ""
+        return _same_expression(value, f"Fragment({pin['literal']!r}, ({bound}{tail}))")
+    return isinstance(value, ast.Constant) and value.value == (pin["literal"] if pin["kind"] == "literal" else None)
 
 
 def _function(tree: ast.Module, qualified: str) -> ast.AST | None:
@@ -667,12 +722,7 @@ def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
     for key, value, pin in zip(by.keys, by.values, entry["pins"], strict=True):
         if not (isinstance(key, ast.Constant) and key.value == pin["column"]):
             return False
-        if pin["kind"] == "param":
-            if not _same_expression(value, entry["args"][pin["param"] - 1]):
-                return False
-        elif not (
-            isinstance(value, ast.Constant) and value.value == (pin["literal"] if pin["kind"] == "literal" else None)
-        ):
+        if not _pin_says(value, pin, entry["args"]):
             return False
     if entry["helper"] == "read_value":
         column = keywords.get("column")

@@ -39,16 +39,16 @@ from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 from uuid import UUID
 
-from threetears.core.collections import CallerTransaction
-from threetears.core.utils.local_time import resolve_zone
-from threetears.observe import get_logger
-from threetears.scheduled_jobs import compute_next_fire_at
-
 from threetears.agent.wake.collections import WakeScheduleCollection
 from threetears.agent.wake.entities import WakeScheduleEntity
 from threetears.agent.wake.migrations import PROTECTED_GATE_SETTING
 from threetears.agent.wake.tools.validators import validate_schedule_config
 from threetears.agent.wake.wording import describe_schedule, format_wake_time
+from threetears.core.collections import CallerTransaction
+from threetears.core.keyed import Fragment, delete_keyed, update_keyed
+from threetears.core.utils.local_time import resolve_zone
+from threetears.observe import get_logger
+from threetears.scheduled_jobs import compute_next_fire_at
 
 __all__ = [
     "ProtectedWakeChange",
@@ -60,13 +60,6 @@ __all__ = [
 log = get_logger(__name__)
 
 _OPEN_GATE_SQL = "SELECT set_config($1, $2, true)"
-
-_UPDATE_SQL = (
-    "UPDATE agent_wake_schedules SET schedule_config = $3, next_fire_at = $4, date_updated = now() "
-    "WHERE conversation_id = $1 AND schedule_id = $2 AND protected"
-)
-
-_DELETE_SQL = "DELETE FROM agent_wake_schedules WHERE conversation_id = $1 AND schedule_id = $2 AND protected"
 
 
 class ProtectedWakeError(ValueError):
@@ -196,7 +189,16 @@ async def update_protected(
         await conn.execute(_OPEN_GATE_SQL, PROTECTED_GATE_SETTING, "update")
         # cache-bypass: the gated UPDATE must run on the transaction that opened the gate; the row
         # is evicted from every tier once that transaction ends.
-        await conn.execute(_UPDATE_SQL, conversation_id, schedule_id, dict(schedule_config), next_fire_at)
+        await update_keyed(
+            conn,
+            "agent_wake_schedules",
+            values={
+                "schedule_config": dict(schedule_config),
+                "next_fire_at": next_fire_at,
+                "date_updated": Fragment("now()"),
+            },
+            by={"conversation_id": conversation_id, "schedule_id": schedule_id, "protected": True},
+        )
     log.info(
         "protected wake schedule changed",
         extra={
@@ -316,7 +318,11 @@ async def _delete(conn: Any, conversation_id: UUID, schedule_id: UUID) -> None:
     await conn.execute(_OPEN_GATE_SQL, PROTECTED_GATE_SETTING, "delete")
     # cache-bypass: the gated DELETE must run on the transaction that opened the gate; the caller
     # runs it inside bypassing_write, which evicts the row once that transaction ends.
-    await conn.execute(_DELETE_SQL, conversation_id, schedule_id)
+    await delete_keyed(
+        conn,
+        "agent_wake_schedules",
+        by={"conversation_id": conversation_id, "schedule_id": schedule_id, "protected": True},
+    )
 
 
 def _pool(collection: WakeScheduleCollection) -> Any:

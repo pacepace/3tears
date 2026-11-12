@@ -392,7 +392,7 @@ async def test_bind_body_updates_file_emits_update_journal(
 
     journal_rows = [e for e in executions if "INSERT INTO workspace_file_versions" in e[0]]
     head_rows = [e for e in executions if "INSERT INTO workspace_files" in e[0]]
-    ws_rows = [e for e in executions if "UPDATE workspaces" in e[0]]
+    ws_rows = [e for e in executions if e[0].startswith('UPDATE "workspaces"')]
     assert len(journal_rows) == 1
     assert journal_rows[0][1][3] == 2  # new version is prior+1
     assert journal_rows[0][1][6] == "update"

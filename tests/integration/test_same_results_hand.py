@@ -13,6 +13,11 @@ other engine).
   ``keyset_page``, ``before`` as a ``where`` fragment); ``adelete_thread`` (``delete_keyed`` by the thread);
   ``adelete_customer_threads`` (``LIKE '<prefix>%'`` -> ``delete_keyed(prefix=)``); anonymization's pages of a
   thread (past a tuple cursor -> ``keyset_page`` by its cursor) and its rewrites by key (``update_keyed``).
+- skills ``AgentSkillCollection.increment_outcome_counts`` (two statements chosen by the outcome -> one
+  ``update_keyed`` whose ``values`` the outcome picks: ``Increment(1)``, ``now()``) and workspace's version stamp (four
+  modules' ``UPDATE workspaces SET current_version = GREATEST(current_version, $1)`` ->
+  ``tools.helpers.raise_workspace_version``; the reset's plain set -> ``update_keyed``): held as write entries of the
+  rewrite harness (:func:`threetears.core.testing.rewrites.assert_rewrite_same`), the table after each compared.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from typing import Any
 import pytest
 
 from threetears.core.keyed import Fragment, Sort, delete_keyed, keyset_page, keyset_rows, read_by, update_keyed
+from threetears.core.testing.rewrites import assert_rewrite_same
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
 #: tenant 0's thread and customer prefix; tenant 1's rows are another customer's
@@ -268,3 +274,83 @@ async def test_an_anonymized_write_is_rewritten_by_its_key(db: Any) -> None:
         helper=_deleting(lambda c: update_keyed(c, "checkpoint_writes", values={"blob": b"anon"}, by=key)),
         state_sql="SELECT * FROM checkpoint_writes",
     )
+
+
+def _entry(table: str, old_sql: str, sets: list[dict[str, Any]], pins: list[dict[str, Any]]) -> dict[str, Any]:
+    """a hand conversion as the rewrite harness's write entry: the old statement, the SETs and pins the helper sends."""
+    return {
+        "shape": "write",
+        "helper": "update_keyed",
+        "table": table,
+        "old_sql": old_sql,
+        "sets": sets,
+        "pins": pins,
+        "returning": [],
+    }
+
+
+_SKILL_KEY = [
+    {"column": "agent_id", "kind": "param", "param": 1},
+    {"column": "skill_id", "kind": "param", "param": 2},
+]
+_WORKSPACE_KEY = [
+    {"column": "workspace_id", "kind": "param", "param": 3},
+    {"column": "agent_id", "kind": "param", "param": 4},
+]
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        _entry(
+            "agent_skills",
+            "UPDATE agent_skills SET success_count = success_count + 1, date_updated = now() "
+            "WHERE agent_id = $1 AND skill_id = $2",
+            [
+                {"column": "success_count", "kind": "increment", "literal": 1},
+                {"column": "date_updated", "kind": "now"},
+            ],
+            _SKILL_KEY,
+        ),
+        _entry(
+            "agent_skills",
+            "UPDATE agent_skills SET failure_count = failure_count + 1, last_failure_at = now(), date_updated = now() "
+            "WHERE agent_id = $1 AND skill_id = $2",
+            [
+                {"column": "failure_count", "kind": "increment", "literal": 1},
+                {"column": "last_failure_at", "kind": "now"},
+                {"column": "date_updated", "kind": "now"},
+            ],
+            _SKILL_KEY,
+        ),
+        _entry(
+            "workspaces",
+            "UPDATE workspaces SET current_version = GREATEST(current_version, $1), date_updated = $2 "
+            "WHERE workspace_id = $3 AND agent_id = $4",
+            [
+                {
+                    "column": "current_version",
+                    "kind": "fragment",
+                    "literal": "GREATEST(current_version, $1)",
+                    "params": [1],
+                },
+                {"column": "date_updated", "kind": "param", "param": 2},
+            ],
+            _WORKSPACE_KEY,
+        ),
+        _entry(
+            "workspaces",
+            "UPDATE workspaces SET current_version = $1, date_updated = $2 WHERE workspace_id = $3 AND agent_id = $4",
+            [
+                {"column": "current_version", "kind": "param", "param": 1},
+                {"column": "date_updated", "kind": "param", "param": 2},
+            ],
+            _WORKSPACE_KEY,
+        ),
+    ],
+    ids=["skill-success", "skill-failure", "workspace-raise", "workspace-reset"],
+)
+async def test_a_hand_keyed_write_leaves_the_table_as_its_statement_did(db: Any, entry: dict[str, Any]) -> None:
+    """Flips if a hand conversion's update_keyed (an increment, a GREATEST fragment, a plain set) leaves its table
+    other than the statement it replaced did."""
+    await assert_rewrite_same(db, entry)

@@ -44,7 +44,7 @@ from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.backends.schema_sql import decode_jsonb, encode_jsonb
 from threetears.core.collections.base import BaseCollection
 from threetears.core.data.gin import gin_filter
-from threetears.core.keyed import delete_keyed, read_row, update_keyed
+from threetears.core.keyed import AnyOf, Fragment, Increment, delete_keyed, read_row, update_keyed
 from threetears.core.serialization import (
     deserialize_from_json,
     serialize_to_json,
@@ -708,12 +708,11 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         # pod's L1). Invalidate each bumped pk so the cross-tier drop +
         # cross-pod invalidation fire and the next read fetches through
         # to observe the bump.
-        await self.l3_pool.execute(
-            "UPDATE agent_skills "
-            "SET use_count = use_count + 1, last_used_at = now(), date_updated = now() "
-            "WHERE agent_id = $1 AND skill_id = ANY($2::uuid[])",
-            agent_id,
-            list(skill_ids),
+        await update_keyed(
+            self.l3_pool,
+            "agent_skills",
+            values={"use_count": Increment(1), "last_used_at": Fragment("now()"), "date_updated": Fragment("now()")},
+            by={"agent_id": agent_id, "skill_id": AnyOf(list(skill_ids), cast="uuid")},
         )
         # one call for every row: one commit's rows are one advance, and its broadcasts one count
         await self.invalidate_cache_many([(agent_id, skill_id) for skill_id in skill_ids])
@@ -743,19 +742,15 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         :rtype: None
         :raises ValueError: when ``outcome`` is not one of the valid values
         """
+        values: dict[str, Any]
         if outcome == "success":
-            sql = (
-                "UPDATE agent_skills "
-                "SET success_count = success_count + 1, date_updated = now() "
-                "WHERE agent_id = $1 AND skill_id = $2"
-            )
+            values = {"success_count": Increment(1), "date_updated": Fragment("now()")}
         elif outcome == "failure":
-            sql = (
-                "UPDATE agent_skills "
-                "SET failure_count = failure_count + 1, "
-                "    last_failure_at = now(), date_updated = now() "
-                "WHERE agent_id = $1 AND skill_id = $2"
-            )
+            values = {
+                "failure_count": Increment(1),
+                "last_failure_at": Fragment("now()"),
+                "date_updated": Fragment("now()"),
+            }
         else:
             raise ValueError(
                 f"increment_outcome_counts: outcome must be 'success' or 'failure'; got {outcome!r}",
@@ -768,7 +763,7 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         # this pod's L1, in L2, and in every peer pod's L1. Invalidate
         # the pk after the write so the cross-tier drop + cross-pod
         # invalidation fire and the next read fetches through.
-        await self.l3_pool.execute(sql, agent_id, skill_id)
+        await update_keyed(self.l3_pool, "agent_skills", values=values, by={"agent_id": agent_id, "skill_id": skill_id})
         await self.invalidate_cache((agent_id, skill_id))
         return None
 
@@ -1115,12 +1110,11 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
             return None
         # cache-bypass: bulk UPDATE WHERE invocation_id IN (...) is not
         # primary-key addressable for the row cache.
-        await self.l3_pool.execute(
-            "UPDATE agent_skill_invocations SET message_id = $3 "
-            "WHERE agent_id = $1 AND invocation_id = ANY($2::uuid[])",
-            agent_id,
-            list(invocation_ids),
-            message_id,
+        await update_keyed(
+            self.l3_pool,
+            "agent_skill_invocations",
+            values={"message_id": message_id},
+            by={"agent_id": agent_id, "invocation_id": AnyOf(list(invocation_ids), cast="uuid")},
         )
         return None
 

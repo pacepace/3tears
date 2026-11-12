@@ -312,7 +312,7 @@ async def test_write_file_atomic_new_file_inserts_at_version_one() -> None:
     order = [e[0] for e in pool.conn.executions]
     assert "INSERT INTO workspace_file_versions" in order[0]
     assert "INSERT INTO workspace_files" in order[1]
-    assert "UPDATE workspaces" in order[2]
+    assert order[2].startswith('UPDATE "workspaces"')
     # transaction entered + exited exactly once
     assert len(pool.conn.transactions) == 1
     assert pool.conn.transactions[0].entered is True
@@ -458,7 +458,7 @@ async def test_write_file_atomic_workspace_update_uses_greatest_semantics() -> N
         workspace_collection=None,
     )
     update_sql, update_args, _ = pool.conn.executions[2]
-    assert "UPDATE workspaces" in update_sql
+    assert update_sql.startswith('UPDATE "workspaces" SET "current_version" = GREATEST(current_version, $1)')
     assert "GREATEST(current_version" in update_sql
     # args positions: new_version, now, workspace_id
     assert update_args[0] == 1

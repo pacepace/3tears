@@ -1582,5 +1582,802 @@
   ],
   "shape": "write",
   "table": "job_fires"
+ },
+ {
+  "args": [
+   "target_scope",
+   "customer_id",
+   "datetime.now(UTC)",
+   "namespace_id",
+   "previous_scope"
+  ],
+  "columns": null,
+  "function": "NamespaceCollection._rescope_existing",
+  "helper": "update_keyed",
+  "line": 2534,
+  "method": "fetchrow",
+  "new_call": "(await update_keyed(self.required_l3_pool, 'namespaces', values={'row_scope': target_scope, 'customer_id': customer_id, 'date_updated': datetime.now(UTC)}, by={'namespace_id': namespace_id, 'row_scope': previous_scope}, returning=('namespace_id',))).row",
+  "old_sql": "UPDATE namespaces   SET row_scope = $1, customer_id = $2, date_updated = $3 WHERE namespace_id = $4 AND row_scope = $5 RETURNING namespace_id",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "column": "namespace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 4
+   },
+   {
+    "column": "row_scope",
+    "kind": "param",
+    "literal": null,
+    "param": 5
+   }
+  ],
+  "returning": [
+   "namespace_id"
+  ],
+  "sets": [
+   {
+    "column": "row_scope",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "customer_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "column": "date_updated",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   }
+  ],
+  "shape": "write",
+  "table": "namespaces"
+ },
+ {
+  "args": [
+   "status",
+   "now",
+   "partition_key",
+   "job_id"
+  ],
+  "columns": null,
+  "function": "ScheduledJobCollection.set_status",
+  "helper": "update_keyed",
+  "line": 534,
+  "method": "fetchval",
+  "new_call": "(await update_keyed(self.l3_pool, 'scheduled_jobs', values={'status': status, 'date_updated': now}, by={'partition_key': partition_key, 'job_id': job_id}, returning=('job_id',))).value",
+  "old_sql": "UPDATE scheduled_jobs SET status = $1, date_updated = $2 WHERE partition_key = $3 AND job_id = $4 RETURNING job_id",
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "column": "partition_key",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   },
+   {
+    "column": "job_id",
+    "kind": "param",
+    "literal": null,
+    "param": 4
+   }
+  ],
+  "returning": [
+   "job_id"
+  ],
+  "sets": [
+   {
+    "column": "status",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "date_updated",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "shape": "write",
+  "table": "scheduled_jobs"
+ },
+ {
+  "args": [
+   "schedule_config",
+   "next_fire_at",
+   "now",
+   "partition_key",
+   "job_id"
+  ],
+  "columns": null,
+  "function": "ScheduledJobCollection.update_schedule",
+  "helper": "update_keyed",
+  "line": 606,
+  "method": "fetchval",
+  "new_call": "(await update_keyed(self.l3_pool, 'scheduled_jobs', values={'schedule_config': schedule_config, 'next_fire_at': next_fire_at, 'date_updated': now}, by={'partition_key': partition_key, 'job_id': job_id}, returning=('job_id',))).value",
+  "old_sql": "UPDATE scheduled_jobs SET schedule_config = $1, next_fire_at = $2, date_updated = $3 WHERE partition_key = $4 AND job_id = $5 RETURNING job_id",
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "column": "partition_key",
+    "kind": "param",
+    "literal": null,
+    "param": 4
+   },
+   {
+    "column": "job_id",
+    "kind": "param",
+    "literal": null,
+    "param": 5
+   }
+  ],
+  "returning": [
+   "job_id"
+  ],
+  "sets": [
+   {
+    "column": "schedule_config",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "next_fire_at",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "column": "date_updated",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   }
+  ],
+  "shape": "write",
+  "table": "scheduled_jobs"
+ },
+ {
+  "args": [
+   "now",
+   "partition_key",
+   "job_id"
+  ],
+  "columns": null,
+  "function": "ScheduledJobCollection.request_immediate_fire",
+  "helper": "update_keyed",
+  "line": 655,
+  "method": "fetchval",
+  "new_call": "(await update_keyed(self.l3_pool, 'scheduled_jobs', values={'next_fire_at': now, 'date_updated': now}, by={'partition_key': partition_key, 'job_id': job_id, 'status': 'active'}, returning=('job_id',))).value",
+  "old_sql": "UPDATE scheduled_jobs SET next_fire_at = $1, date_updated = $1 WHERE partition_key = $2 AND job_id = $3 AND status = 'active' RETURNING job_id",
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "column": "partition_key",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "column": "job_id",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   },
+   {
+    "column": "status",
+    "kind": "literal",
+    "literal": "active",
+    "param": null
+   }
+  ],
+  "returning": [
+   "job_id"
+  ],
+  "sets": [
+   {
+    "column": "next_fire_at",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "date_updated",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "shape": "write",
+  "table": "scheduled_jobs"
+ },
+ {
+  "args": [
+   "computed_next_fire",
+   "now",
+   "new_status",
+   "partition_key",
+   "job_id",
+   "expected_next_fire"
+  ],
+  "columns": null,
+  "function": "ScheduledJobCollection.claim_and_reschedule",
+  "helper": "update_keyed",
+  "line": 772,
+  "method": "fetchval",
+  "new_call": "(await update_keyed(self.l3_pool, 'scheduled_jobs', values={'next_fire_at': computed_next_fire, 'last_fired_at': now, 'date_updated': now, 'status': new_status}, by={'partition_key': partition_key, 'job_id': job_id, 'next_fire_at': expected_next_fire}, returning=('job_id',))).value",
+  "old_sql": "UPDATE scheduled_jobs SET next_fire_at = $1, last_fired_at = $2, date_updated = $2, status = $3 WHERE partition_key = $4 AND job_id = $5 AND next_fire_at = $6 RETURNING job_id",
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "column": "partition_key",
+    "kind": "param",
+    "literal": null,
+    "param": 4
+   },
+   {
+    "column": "job_id",
+    "kind": "param",
+    "literal": null,
+    "param": 5
+   },
+   {
+    "column": "next_fire_at",
+    "kind": "param",
+    "literal": null,
+    "param": 6
+   }
+  ],
+  "returning": [
+   "job_id"
+  ],
+  "sets": [
+   {
+    "column": "next_fire_at",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "last_fired_at",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "column": "date_updated",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "column": "status",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   }
+  ],
+  "shape": "write",
+  "table": "scheduled_jobs"
+ },
+ {
+  "args": [
+   "gist_id",
+   "agent_id",
+   "source_memory_ids"
+  ],
+  "columns": null,
+  "function": "MemoriesCollection.mark_superseded",
+  "helper": "update_keyed",
+  "line": 2757,
+  "method": "execute",
+  "new_call": "update_keyed(self.l3_pool, 'memories', values={'superseded_by': gist_id, 'date_updated': Fragment(\"now()\")}, by={'agent_id': agent_id, 'memory_id': AnyOf(source_memory_ids, cast='uuid')})",
+  "old_sql": "UPDATE memories SET superseded_by = $1, date_updated = now() WHERE agent_id = $2 AND memory_id = ANY($3::uuid[])",
+  "path": "packages/agent/memory/src/threetears/agent/memory/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "cast": "uuid",
+    "column": "memory_id",
+    "kind": "any",
+    "literal": null,
+    "param": 3
+   }
+  ],
+  "returning": [],
+  "sets": [
+   {
+    "cast": null,
+    "column": "superseded_by",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "cast": null,
+    "column": "date_updated",
+    "kind": "now",
+    "literal": null,
+    "param": null
+   }
+  ],
+  "shape": "write",
+  "table": "memories"
+ },
+ {
+  "args": [
+   "agent_id",
+   "list(invocation_ids)",
+   "message_id"
+  ],
+  "columns": null,
+  "function": "AgentSkillInvocationCollection.set_message_id",
+  "helper": "update_keyed",
+  "line": 1119,
+  "method": "execute",
+  "new_call": "update_keyed(self.l3_pool, 'agent_skill_invocations', values={'message_id': message_id}, by={'agent_id': agent_id, 'invocation_id': AnyOf(list(invocation_ids), cast='uuid')})",
+  "old_sql": "UPDATE agent_skill_invocations SET message_id = $3 WHERE agent_id = $1 AND invocation_id = ANY($2::uuid[])",
+  "path": "packages/agent/skills/src/threetears/agent/skills/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "cast": "uuid",
+    "column": "invocation_id",
+    "kind": "any",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "returning": [],
+  "sets": [
+   {
+    "cast": null,
+    "column": "message_id",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   }
+  ],
+  "shape": "write",
+  "table": "agent_skill_invocations"
+ },
+ {
+  "args": [
+   "conversation_id",
+   "schedule_id",
+   "dict(schedule_config)",
+   "next_fire_at"
+  ],
+  "columns": null,
+  "function": "update_protected",
+  "helper": "update_keyed",
+  "line": 65,
+  "method": "execute",
+  "new_call": "update_keyed(conn, 'agent_wake_schedules', values={'schedule_config': dict(schedule_config), 'next_fire_at': next_fire_at, 'date_updated': Fragment(\"now()\")}, by={'conversation_id': conversation_id, 'schedule_id': schedule_id, 'protected': True})",
+  "old_sql": "UPDATE agent_wake_schedules SET schedule_config = $3, next_fire_at = $4, date_updated = now() WHERE conversation_id = $1 AND schedule_id = $2 AND protected",
+  "path": "packages/agent/wake/src/threetears/agent/wake/protected.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "conversation_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "cast": null,
+    "column": "schedule_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "cast": null,
+    "column": "protected",
+    "kind": "literal",
+    "literal": true,
+    "param": null
+   }
+  ],
+  "returning": [],
+  "sets": [
+   {
+    "cast": null,
+    "column": "schedule_config",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   },
+   {
+    "cast": null,
+    "column": "next_fire_at",
+    "kind": "param",
+    "literal": null,
+    "param": 4
+   },
+   {
+    "cast": null,
+    "column": "date_updated",
+    "kind": "now",
+    "literal": null,
+    "param": null
+   }
+  ],
+  "shape": "write",
+  "table": "agent_wake_schedules"
+ },
+ {
+  "args": [
+   "conversation_id",
+   "schedule_id"
+  ],
+  "columns": null,
+  "function": "_delete",
+  "helper": "delete_keyed",
+  "line": 69,
+  "method": "execute",
+  "new_call": "delete_keyed(conn, 'agent_wake_schedules', by={'conversation_id': conversation_id, 'schedule_id': schedule_id, 'protected': True})",
+  "old_sql": "DELETE FROM agent_wake_schedules WHERE conversation_id = $1 AND schedule_id = $2 AND protected",
+  "path": "packages/agent/wake/src/threetears/agent/wake/protected.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "conversation_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "cast": null,
+    "column": "schedule_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "cast": null,
+    "column": "protected",
+    "kind": "literal",
+    "literal": true,
+    "param": null
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "write",
+  "table": "agent_wake_schedules"
+ },
+ {
+  "args": [
+   "REAPED_DISPATCH_ERROR",
+   "list(fire_ids)"
+  ],
+  "columns": null,
+  "function": "JobFireCollection.reap_fires",
+  "helper": "update_keyed",
+  "line": 1162,
+  "method": "fetch",
+  "new_call": "(await update_keyed(self.l3_pool, 'job_fires', values={'status': 'failed', 'error': REAPED_DISPATCH_ERROR}, by={'status': 'dispatching', 'fire_id': AnyOf(list(fire_ids), cast='uuid')}, returning=('partition_key', 'fire_id'))).rows",
+  "old_sql": "UPDATE job_fires SET status = 'failed', error = $1 WHERE status = 'dispatching' AND fire_id = ANY($2::uuid[]) RETURNING partition_key, fire_id",
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "status",
+    "kind": "literal",
+    "literal": "dispatching",
+    "param": null
+   },
+   {
+    "cast": "uuid",
+    "column": "fire_id",
+    "kind": "any",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "returning": [
+   "partition_key",
+   "fire_id"
+  ],
+  "sets": [
+   {
+    "cast": null,
+    "column": "status",
+    "kind": "literal",
+    "literal": "failed",
+    "param": null
+   },
+   {
+    "cast": null,
+    "column": "error",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "shape": "write",
+  "table": "job_fires"
+ },
+ {
+  "args": [
+   "list(role_ids)"
+  ],
+  "columns": [
+   "role_id",
+   "name",
+   "permissions",
+   "is_builtin",
+   "customer_id"
+  ],
+  "function": "RoleCollection.get_many",
+  "helper": "read_by",
+  "line": 1263,
+  "method": "fetch",
+  "new_call": "read_by(self.l3_pool, 'roles', by={'role_id': AnyOf(list(role_ids), cast='uuid')}, columns=('role_id', 'name', 'permissions', 'is_builtin', 'customer_id'), records=True)",
+  "old_sql": "\n                SELECT role_id, name, permissions, is_builtin, customer_id\n                  FROM roles\n                 WHERE role_id = ANY($1::uuid[])\n                ",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": "uuid",
+    "column": "role_id",
+    "kind": "any",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "roles"
+ },
+ {
+  "args": [
+   "agent_id",
+   "source_memory_id"
+  ],
+  "columns": [
+   "consolidated_memory_id"
+  ],
+  "function": "MemoryConsolidationsCollection.find_consolidated_into",
+  "helper": "read_by",
+  "line": 4942,
+  "method": "fetch",
+  "new_call": "read_by(self.l3_pool, 'memory_consolidations', by={'agent_id': agent_id, 'source_memory_id': source_memory_id}, columns=('consolidated_memory_id',), records=True)",
+  "old_sql": "SELECT consolidated_memory_id FROM memory_consolidations WHERE agent_id = $1 AND source_memory_id = $2",
+  "path": "packages/agent/memory/src/threetears/agent/memory/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "source_memory_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "memory_consolidations"
+ },
+ {
+  "args": [
+   "salience",
+   "agent_id",
+   "memory_ids"
+  ],
+  "columns": null,
+  "function": "MemoriesCollection.set_salience",
+  "helper": "update_keyed",
+  "line": 2554,
+  "method": "execute",
+  "new_call": "update_keyed(self.l3_pool, 'memories', values={'salience': Fragment('GREATEST(0.0, LEAST(1.0, $1))', (salience,))}, by={'agent_id': agent_id, 'memory_id': AnyOf(memory_ids, cast='uuid'), 'evergreen': False})",
+  "old_sql": "UPDATE memories SET salience = GREATEST(0.0, LEAST(1.0, $1)) WHERE agent_id = $2 AND memory_id = ANY($3::uuid[]) AND NOT evergreen",
+  "path": "packages/agent/memory/src/threetears/agent/memory/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": "uuid",
+    "column": "memory_id",
+    "kind": "any",
+    "literal": null,
+    "param": 3,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "evergreen",
+    "kind": "literal",
+    "literal": false,
+    "param": null,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [
+   {
+    "cast": null,
+    "column": "salience",
+    "kind": "fragment",
+    "literal": "GREATEST(0.0, LEAST(1.0, $1))",
+    "param": null,
+    "params": [
+     1
+    ]
+   }
+  ],
+  "shape": "write",
+  "table": "memories"
+ },
+ {
+  "args": [
+   "agent_id",
+   "list(skill_ids)"
+  ],
+  "columns": null,
+  "function": "AgentSkillCollection.bump_use_count",
+  "helper": "update_keyed",
+  "line": 712,
+  "method": "execute",
+  "new_call": "update_keyed(self.l3_pool, 'agent_skills', values={'use_count': Increment(1), 'last_used_at': Fragment(\"now()\"), 'date_updated': Fragment(\"now()\")}, by={'agent_id': agent_id, 'skill_id': AnyOf(list(skill_ids), cast='uuid')})",
+  "old_sql": "UPDATE agent_skills SET use_count = use_count + 1, last_used_at = now(), date_updated = now() WHERE agent_id = $1 AND skill_id = ANY($2::uuid[])",
+  "path": "packages/agent/skills/src/threetears/agent/skills/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": "uuid",
+    "column": "skill_id",
+    "kind": "any",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [
+   {
+    "cast": null,
+    "column": "use_count",
+    "kind": "increment",
+    "literal": 1,
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "last_used_at",
+    "kind": "now",
+    "literal": null,
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "date_updated",
+    "kind": "now",
+    "literal": null,
+    "param": null,
+    "params": []
+   }
+  ],
+  "shape": "write",
+  "table": "agent_skills"
+ },
+ {
+  "args": [
+   "error",
+   "latency_ms",
+   "partition_key",
+   "fire_id",
+   "output"
+  ],
+  "columns": null,
+  "function": "JobFireCollection.finalize_failed",
+  "helper": "update_keyed",
+  "line": 1031,
+  "method": "execute",
+  "new_call": "update_keyed(self.l3_pool, 'job_fires', values={'status': 'failed', 'error': error, 'latency_ms': latency_ms, 'output': Fragment('COALESCE($1::jsonb, output)', (output,))}, by={'partition_key': partition_key, 'fire_id': fire_id})",
+  "old_sql": "UPDATE job_fires SET status = 'failed', error = $1, latency_ms = $2, output = COALESCE($5::jsonb, output) WHERE partition_key = $3 AND fire_id = $4",
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "partition_key",
+    "kind": "param",
+    "literal": null,
+    "param": 3,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "fire_id",
+    "kind": "param",
+    "literal": null,
+    "param": 4,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [
+   {
+    "cast": null,
+    "column": "status",
+    "kind": "literal",
+    "literal": "failed",
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "error",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "latency_ms",
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "output",
+    "kind": "fragment",
+    "literal": "COALESCE($1::jsonb, output)",
+    "param": null,
+    "params": [
+     5
+    ]
+   }
+  ],
+  "shape": "write",
+  "table": "job_fires"
  }
 ]

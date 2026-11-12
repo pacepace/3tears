@@ -57,11 +57,14 @@ class _RecordingPool:
         fetch_rows: list[dict[str, Any]] | None = None,
         fetchrow_row: dict[str, Any] | None = None,
         fetchval_result: Any = None,
+        written: list[dict[str, Any]] | None = None,
     ) -> None:
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self._fetch_rows = fetch_rows or []
         self._fetchrow_row = fetchrow_row
         self._fetchval_result = fetchval_result
+        #: what a keyed write (threetears.core.keyed.update_keyed, its statement's table quoted) returns
+        self._written = written or []
 
     async def execute(self, sql: str, *args: Any) -> str:
         self.calls.append((sql, args))
@@ -69,6 +72,8 @@ class _RecordingPool:
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         self.calls.append((sql, args))
+        if sql.startswith('UPDATE "'):
+            return self._written
         return self._fetch_rows
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
@@ -142,7 +147,7 @@ class TestClaimAndReschedule:
 
     async def test_claim_hit_returns_true(self) -> None:
         job_id = uuid4()
-        pool = _RecordingPool(fetchval_result=job_id)
+        pool = _RecordingPool(written=[{"job_id": job_id}])
         coll = _make_schedule_collection(pool)
         partition = uuid4()
         expected = _now()
@@ -157,17 +162,17 @@ class TestClaimAndReschedule:
         )
         assert ok is True
         sql, args = pool.calls[-1]
-        assert "UPDATE scheduled_jobs" in sql
-        assert "next_fire_at = $6" in sql  # the CAS predicate column
-        # bound params: computed, now, status, partition, job, expected
+        assert 'UPDATE "scheduled_jobs"' in sql
+        assert 'AND "next_fire_at" = $7 ' in sql  # the CAS predicate column
+        # bound params: computed, now, now, status, partition, job, expected
         assert args[0] == computed
-        assert args[2] == "active"
-        assert args[3] == partition
-        assert args[4] == job_id
-        assert args[5] == expected
+        assert args[3] == "active"
+        assert args[4] == partition
+        assert args[5] == job_id
+        assert args[6] == expected
 
     async def test_claim_miss_returns_false(self) -> None:
-        pool = _RecordingPool(fetchval_result=None)
+        pool = _RecordingPool(written=[])
         coll = _make_schedule_collection(pool)
         ok = await coll.claim_and_reschedule(
             partition_key=uuid4(),
@@ -217,9 +222,9 @@ class TestFireStoreWrites:
         fire_id, partition = uuid4(), uuid4()
         await coll.finalize_failed(partition, fire_id, error="boom", latency_ms=None)
         sql, args = pool.calls[-1]
-        assert "status = 'failed'" in sql
-        assert args[0] == "boom"
-        assert args[4] is None
+        assert sql.startswith('UPDATE "job_fires" SET "status" = $1, "error" = $2')
+        assert args[:2] == ("failed", "boom")
+        assert args[3] is None
 
     async def test_finalize_failed_keeps_a_reported_output(self) -> None:
         pool = _RecordingPool()
@@ -227,8 +232,8 @@ class TestFireStoreWrites:
         fire_id, partition = uuid4(), uuid4()
         await coll.finalize_failed(partition, fire_id, error="boom", latency_ms=3, output={"delivered": False})
         sql, args = pool.calls[-1]
-        assert "output = COALESCE($5::jsonb, output)" in sql
-        assert args == ("boom", 3, partition, fire_id, {"delivered": False})
+        assert '"output" = COALESCE($4::jsonb, output)' in sql
+        assert args == ("failed", "boom", 3, {"delivered": False}, partition, fire_id)
 
     async def test_reap_stale_dispatching_updates_old_dispatching_rows(self) -> None:
         # two reclaimed rows come back from RETURNING -> count == 2
@@ -247,13 +252,13 @@ class TestFireStoreWrites:
 
     async def test_reap_fires_fails_only_the_named_fires_still_dispatching(self) -> None:
         named = [uuid4(), uuid4()]
-        pool = _RecordingPool(fetch_rows=[{"partition_key": uuid4(), "fire_id": named[0]}])
+        pool = _RecordingPool(written=[{"partition_key": uuid4(), "fire_id": named[0]}])
         coll = _make_fire_collection(pool)
         assert await coll.reap_fires(named) == [named[0]]
         sql, args = pool.calls[-1]
-        assert "UPDATE job_fires SET status = 'failed'" in sql
-        assert "status = 'dispatching' AND fire_id = ANY($2::uuid[])" in sql
-        assert args == (REAPED_DISPATCH_ERROR, named)
+        assert sql.startswith('UPDATE "job_fires" SET "status" = $1, "error" = $2')
+        assert 'WHERE "status" = $3 AND "fire_id" = ANY($4::uuid[])' in sql
+        assert args == ("failed", REAPED_DISPATCH_ERROR, "dispatching", named)
 
     async def test_reap_fires_with_nothing_named_touches_nothing(self) -> None:
         pool = _RecordingPool(fetch_rows=[{"partition_key": uuid4(), "fire_id": uuid4()}])

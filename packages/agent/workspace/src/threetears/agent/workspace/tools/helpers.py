@@ -33,7 +33,7 @@ from uuid import UUID, uuid7
 
 from threetears.agent.acl import AclCache
 from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
-from threetears.core.keyed import read_row, with_options
+from threetears.core.keyed import Fragment, read_row, update_keyed, with_options
 from threetears.core.namespaces import PLATFORM_RBAC_READ_NAMESPACE
 
 __all__ = [
@@ -44,6 +44,7 @@ __all__ = [
     "authorize_workspace",
     "authorize_workspace_file",
     "enrich_workspace_identity",
+    "raise_workspace_version",
     "resolve_ref",
     "resolve_workspace",
     "workspace_audit_identity",
@@ -575,13 +576,6 @@ ON CONFLICT (workspace_id, relative_path) DO UPDATE SET
     date_updated = EXCLUDED.date_updated
 """
 
-_UPDATE_WORKSPACE_VERSION_SQL = """
-UPDATE workspaces
-SET current_version = GREATEST(current_version, $1),
-    date_updated = $2
-WHERE workspace_id = $3 AND agent_id = $4
-"""
-
 
 async def write_file_atomic(
     *,
@@ -729,12 +723,8 @@ async def write_file_atomic(
                 new_version,
                 now,
             )
-            await conn.execute(
-                _UPDATE_WORKSPACE_VERSION_SQL,
-                new_version,
-                now,
-                workspace.id,
-                workspace.agent_id,
+            await raise_workspace_version(
+                conn, workspace_id=workspace.id, agent_id=workspace.agent_id, version=new_version, now=now
             )
     return new_version, new_sha256
 
@@ -864,3 +854,29 @@ async def resolve_ref(
     else:
         result = dict(row)
     return result
+
+
+async def raise_workspace_version(conn: Any, *, workspace_id: Any, agent_id: Any, version: int, now: Any) -> None:
+    """raise the workspace's current version to ``version`` (never lower it: ``GREATEST``), stamped ``now``.
+
+    The one statement every writer of a workspace's files ends with, a keyed write by the workspace's key.
+
+    :param conn: the caller's connection (in its transaction)
+    :ptype conn: Any
+    :param workspace_id: the workspace
+    :ptype workspace_id: Any
+    :param agent_id: its agent
+    :ptype agent_id: Any
+    :param version: the version the workspace now holds at least
+    :ptype version: int
+    :param now: the stamp
+    :ptype now: Any
+    :return: nothing
+    :rtype: None
+    """
+    await update_keyed(
+        conn,
+        "workspaces",
+        values={"current_version": Fragment("GREATEST(current_version, $1)", (version,)), "date_updated": now},
+        by={"workspace_id": workspace_id, "agent_id": agent_id},
+    )

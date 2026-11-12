@@ -80,7 +80,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.config import CoreConfig
 from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, schema_with_embedding_dim
 from threetears.core.data.gin import gin_filter
-from threetears.core.keyed import read_by
+from threetears.core.keyed import AnyOf, Fragment, read_by, update_keyed
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.observe import get_logger
 
@@ -2550,12 +2550,11 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         if self.l3_pool is None or not memory_ids:
             return None
         async with self.bypassing_write(*[(agent_id, memory_id) for memory_id in memory_ids]):
-            await self.l3_pool.execute(
-                "UPDATE memories SET salience = GREATEST(0.0, LEAST(1.0, $1)) "
-                "WHERE agent_id = $2 AND memory_id = ANY($3::uuid[]) AND NOT evergreen",
-                salience,
-                agent_id,
-                memory_ids,
+            await update_keyed(
+                self.l3_pool,
+                "memories",
+                values={"salience": Fragment("GREATEST(0.0, LEAST(1.0, $1))", (salience,))},
+                by={"agent_id": agent_id, "memory_id": AnyOf(memory_ids, cast="uuid"), "evergreen": False},
             )
         return None
 
@@ -2753,12 +2752,11 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # superseded_by + date_updated (the ambient-retrieval filter reads L3
         # directly, but a later entity save must see the advanced CAS fence).
         async with self.bypassing_write(*[(agent_id, source_memory_id) for source_memory_id in source_memory_ids]):
-            await self.l3_pool.execute(
-                "UPDATE memories SET superseded_by = $1, date_updated = now() "
-                "WHERE agent_id = $2 AND memory_id = ANY($3::uuid[])",
-                gist_id,
-                agent_id,
-                source_memory_ids,
+            await update_keyed(
+                self.l3_pool,
+                "memories",
+                values={"superseded_by": gist_id, "date_updated": Fragment("now()")},
+                by={"agent_id": agent_id, "memory_id": AnyOf(source_memory_ids, cast="uuid")},
             )
         return None
 
@@ -4939,10 +4937,12 @@ class MemoryConsolidationsCollection(SchemaBackedCollection[MemoryConsolidationE
         # cache-bypass: back-lookup by (agent_id, source_memory_id) is
         # not full-pk-addressable; served by the back-edge GIN-free btree
         # index idx_memory_consolidations_source.
-        rows = await self.l3_pool.fetch(
-            "SELECT consolidated_memory_id FROM memory_consolidations WHERE agent_id = $1 AND source_memory_id = $2",
-            agent_id,
-            source_memory_id,
+        rows = await read_by(
+            self.l3_pool,
+            "memory_consolidations",
+            by={"agent_id": agent_id, "source_memory_id": source_memory_id},
+            columns=("consolidated_memory_id",),
+            records=True,
         )
         return [_as_pk_uuid(row["consolidated_memory_id"]) for row in rows]
 

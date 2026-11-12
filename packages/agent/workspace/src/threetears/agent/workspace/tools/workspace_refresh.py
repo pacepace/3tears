@@ -51,6 +51,7 @@ from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
     WorkspaceNotFound,
     _next_journal_version,
+    raise_workspace_version,
     resolve_workspace,
     authorize_workspace,
 )
@@ -91,13 +92,6 @@ ON CONFLICT (workspace_id, relative_path) DO UPDATE SET
     sha256 = EXCLUDED.sha256,
     version = EXCLUDED.version,
     date_updated = EXCLUDED.date_updated
-"""
-
-_UPDATE_WORKSPACE_VERSION_SQL = """
-UPDATE workspaces
-SET current_version = GREATEST(current_version, $1),
-    date_updated = $2
-WHERE workspace_id = $3 AND agent_id = $4
 """
 
 
@@ -307,12 +301,8 @@ class WorkspaceRefreshTool(TearsTool):
                             now=now,
                             correlation_id=correlation_id,
                         )
-                    await conn.execute(
-                        _UPDATE_WORKSPACE_VERSION_SQL,
-                        max_version,
-                        now,
-                        workspace.id,
-                        workspace.agent_id,
+                    await raise_workspace_version(
+                        conn, workspace_id=workspace.id, agent_id=workspace.agent_id, version=max_version, now=now
                     )
             n_imported = len(creates) + len(updates)
         return n_imported

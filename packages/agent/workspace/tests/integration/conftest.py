@@ -180,7 +180,7 @@ class _FakeStore:
             self._handle_insert_version(args)
         elif q.startswith("INSERT INTO workspace_files"):
             self._handle_upsert_file(args)
-        elif q.startswith("UPDATE workspaces"):
+        elif q.startswith('UPDATE "workspaces"'):
             self._handle_update_workspace(args)
         elif q.startswith('DELETE FROM "workspace_files"'):
             self._handle_delete_file(args)

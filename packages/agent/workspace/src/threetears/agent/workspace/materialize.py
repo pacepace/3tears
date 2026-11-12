@@ -83,7 +83,7 @@ from uuid import UUID, uuid7
 from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.call_scope import current_scope
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
-from threetears.agent.workspace.tools.helpers import _next_journal_version
+from threetears.agent.workspace.tools.helpers import _next_journal_version, raise_workspace_version
 from threetears.core.keyed import delete_keyed, read_row
 from threetears.core.utils.atomic_write import atomic_write
 from threetears.observe import contain, counter, get_logger
@@ -202,14 +202,6 @@ ON CONFLICT (workspace_id, relative_path) DO UPDATE SET
     sha256 = EXCLUDED.sha256,
     version = EXCLUDED.version,
     date_updated = EXCLUDED.date_updated
-"""
-
-
-_UPDATE_WORKSPACE_VERSION_SQL = """
-UPDATE workspaces
-SET current_version = GREATEST(current_version, $1),
-    date_updated = $2
-WHERE workspace_id = $3 AND agent_id = $4
 """
 
 
@@ -692,12 +684,8 @@ async def _seed_l3_import_all(
                     new_version,
                     now,
                 )
-            await conn.execute(
-                _UPDATE_WORKSPACE_VERSION_SQL,
-                max_version,
-                now,
-                workspace.id,
-                workspace.agent_id,
+            await raise_workspace_version(
+                conn, workspace_id=workspace.id, agent_id=workspace.agent_id, version=max_version, now=now
             )
     return len(disk)
 
@@ -858,12 +846,8 @@ async def _seed_l3_disk_wins(
                         now,
                     )
                     await delete_keyed(conn, "workspace_files", by={"workspace_id": workspace.id, "relative_path": rel})
-                await conn.execute(
-                    _UPDATE_WORKSPACE_VERSION_SQL,
-                    max_version,
-                    now,
-                    workspace.id,
-                    workspace.agent_id,
+                await raise_workspace_version(
+                    conn, workspace_id=workspace.id, agent_id=workspace.agent_id, version=max_version, now=now
                 )
         n_touched = len(creates) + len(updates) + len(deletes)
     return n_touched
@@ -1167,12 +1151,8 @@ async def _handle_watch_batch(
                         )
                         changed.append(rel)
                 if changed:
-                    await conn.execute(
-                        _UPDATE_WORKSPACE_VERSION_SQL,
-                        max_version,
-                        now,
-                        workspace.id,
-                        workspace.agent_id,
+                    await raise_workspace_version(
+                        conn, workspace_id=workspace.id, agent_id=workspace.agent_id, version=max_version, now=now
                     )
     return changed
 
@@ -1460,12 +1440,8 @@ async def _capture_back(
                     changed.append(rel)
                     change_kinds[rel] = "delete"
 
-                await conn.execute(
-                    _UPDATE_WORKSPACE_VERSION_SQL,
-                    max_version,
-                    now,
-                    workspace.id,
-                    workspace.agent_id,
+                await raise_workspace_version(
+                    conn, workspace_id=workspace.id, agent_id=workspace.agent_id, version=max_version, now=now
                 )
         # defense-in-depth: publish one additive audit event per
         # changed file on top of the baseline ``tool.call`` emitted
@@ -1914,12 +1890,8 @@ async def recover(
                     )
                     changed.append(rel)
 
-                await conn.execute(
-                    _UPDATE_WORKSPACE_VERSION_SQL,
-                    max_version,
-                    now,
-                    workspace.id,
-                    workspace.agent_id,
+                await raise_workspace_version(
+                    conn, workspace_id=workspace.id, agent_id=workspace.agent_id, version=max_version, now=now
                 )
     log.info(
         "workspace.recover.done",

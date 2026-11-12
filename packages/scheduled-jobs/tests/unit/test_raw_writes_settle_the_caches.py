@@ -47,6 +47,9 @@ class _ScriptedPool:
         return "UPDATE 1"
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if sql.endswith(' RETURNING "job_id"'):
+            # a keyed write's returned key (threetears.core.keyed.update_keyed): the row it wrote, if told it wrote
+            return [] if self.write_result is None else [{"job_id": self.write_result}]
         if sql.lstrip().startswith("UPDATE"):
             return [self.row]
         if 'FROM "job_fires" AS t WHERE t."job_id"' in sql:

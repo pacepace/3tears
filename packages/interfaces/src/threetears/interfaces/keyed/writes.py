@@ -58,6 +58,26 @@ class KeyedWrite:
     count: int
     rows: list[dict[str, Any]]
 
+    @property
+    def row(self) -> dict[str, Any] | None:
+        """the first row returned, or None when none was: what ``fetchrow`` answered of a one-statement write's
+        ``RETURNING``.
+
+        :return: the row, or None
+        :rtype: dict[str, Any] | None
+        """
+        return self.rows[0] if self.rows else None
+
+    @property
+    def value(self) -> Any:
+        """the first returned row's first column, or None when no row was returned: what ``fetchval`` answered of a
+        one-statement write's ``RETURNING``.
+
+        :return: the value, or None
+        :rtype: Any
+        """
+        return next(iter(self.rows[0].values())) if self.rows else None
+
 
 @dataclass(frozen=True)
 class Increment:

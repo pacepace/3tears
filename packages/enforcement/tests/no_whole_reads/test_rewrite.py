@@ -74,6 +74,10 @@ _READS = """
 
     async def interpolated(conn, table, agent_id):
         return await conn.fetchrow(f"SELECT * FROM {table} WHERE id = $1", agent_id)
+
+
+    async def live_one(conn, agent_id):
+        return await conn.fetchrow("SELECT id FROM agents WHERE id = $1 AND live AND NOT gone", agent_id)
 """
 
 
@@ -110,6 +114,26 @@ def test_a_plain_point_read_is_parsed(sql: str, expected: PointSql | None) -> No
     assert parsed.pins[0].kind == "param" and parsed.pins[0].param == 1
 
 
+def test_any_and_boolean_column_pins_are_read() -> None:
+    """Flips if ``= ANY($n::type[])`` is not read as a set pin with its cast (none when the array is untyped), or a
+    bare boolean column is not read as pinned TRUE and a NOT one as pinned FALSE."""
+    parsed = parse_point("SELECT id FROM t WHERE a = ANY($1::UUID[]) AND b = any($2) AND live AND NOT t.gone")
+    assert isinstance(parsed, PointSql)
+    assert [(pin.column, pin.kind, pin.param, pin.literal, pin.cast) for pin in parsed.pins] == [
+        ("a", "any", 1, None, "uuid"),
+        ("b", "any", 2, None, None),
+        ("live", "literal", None, True, None),
+        ("gone", "literal", None, False, None),
+    ]
+    written = parse_write("DELETE FROM t WHERE k = $1 AND id = ANY($2::bigint[]) AND protected")
+    assert isinstance(written, WriteSql)
+    assert written.pins == (
+        Pin("k", "param", param=1),
+        Pin("id", "any", param=2, cast="bigint"),
+        Pin("protected", "literal", literal=True),
+    )
+
+
 def test_literal_and_null_pins_keep_their_values() -> None:
     """Flips if a literal pin loses its value or type, or IS NULL is read as anything else."""
     parsed = parse_point(
@@ -129,7 +153,13 @@ def test_literal_and_null_pins_keep_their_values() -> None:
 @pytest.mark.parametrize(
     "sql",
     [
-        "SELECT id FROM t WHERE id = ANY($1::uuid[])",
+        "SELECT id FROM t WHERE id = ANY($1::uuid[]) OR a = $2",
+        "SELECT id FROM t WHERE id = ANY(ARRAY[$1])",
+        "SELECT id FROM t WHERE id = ANY($1::uuid[] || $2)",
+        "SELECT id FROM t WHERE id <> ALL($1::uuid[])",
+        "SELECT id FROM t WHERE a = $1 AND NOT (b)",
+        "SELECT id FROM t WHERE a = $1 AND true",
+        "SELECT id FROM t WHERE a = $1 AND NOT NULL",
         "SELECT id FROM t WHERE id IN ($1, $2)",
         "SELECT id FROM t WHERE a = $1 OR b = $1",
         "SELECT id FROM t WHERE a > $1",
@@ -162,10 +192,12 @@ def test_point_reads_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path) 
         ("a_geo", "read_by"),
         ("agent_name", "read_value"),
         ("another_geo", "read_by"),
+        ("by_ids", "read_by"),
+        ("live_one", "read_row"),
         ("one_agent", "read_row"),
     ]
     refused = {refusal.function: refusal.reason for refusal in refusals}
-    assert refused.keys() == {"by_status", "by_ids", "interpolated"}, refused
+    assert refused.keys() == {"by_status", "interpolated"}, refused
     assert "unkeyed" in refused["by_status"]
 
     assert apply_rewrites(tmp_path, rewrites, ruff=None) == ["src/pkg/reads.py"]
@@ -173,11 +205,16 @@ def test_point_reads_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path) 
     write_manifest(manifest, rewrites)
     write_manifest(manifest, rewrites)
     entries = json.loads(manifest.read_text(encoding="utf-8"))
-    assert len(entries) == 4
+    assert len(entries) == 6
 
     source = (tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    assert "from threetears.core.keyed import read_by, read_row, read_value" in source
+    assert "from threetears.core.keyed import AnyOf, read_by, read_row, read_value" in source
+    assert "read_by(conn, 'agents', by={'id': AnyOf(ids, cast='uuid')}, columns=('id',), records=True)" in source
+    assert (
+        "read_row(conn, 'agents', by={'id': agent_id, 'live': True, 'gone': False}, columns=('id',), records=True)"
+        in source
+    )
     assert "_GEO_SQL" not in source and "a geo by its key" not in source
     assert "read_row(conn, 'agents', by={'id': agent_id, 'is_deleted': False}, records=True)" in source
     assert "read_value(pool, 'agents', by={'id': agent_id}, column='name')" in source
@@ -189,7 +226,7 @@ def test_point_reads_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path) 
         assert_source_says(tmp_path, entry)
 
     left = [finding for finding in use_the_helper_findings(config) if "use-the-helper point" in finding]
-    assert {finding.split(" in ")[1].split(":")[0] for finding in left} == {"by_status", "by_ids", "interpolated"}
+    assert {finding.split(" in ")[1].split(":")[0] for finding in left} == {"by_status", "interpolated"}
     assert _unlined(no_whole_reads_findings(config)) == _unlined(before)
 
 
@@ -240,11 +277,47 @@ _WRITES = """
 
 
     async def bumped(conn, agent_id):
-        await conn.execute("UPDATE agents SET hits = hits + 1 WHERE id = $1", agent_id)
+        await conn.execute("UPDATE agents SET hits = hits + 1, date_updated = now() WHERE id = $1", agent_id)
+
+
+    async def raised(conn, version, at, agent_id):
+        await conn.execute(
+            "UPDATE agents SET version = GREATEST(version, $1), date_updated = $2, note = COALESCE($1::text, note)"
+            " WHERE id = $3",
+            version,
+            at,
+            agent_id,
+        )
+
+
+    async def from_elsewhere(conn, agent_id):
+        await conn.execute("UPDATE agents SET hits = (SELECT max(hits) FROM agents) WHERE id = $1", agent_id)
 
 
     async def returned(conn, agent_id):
         return await conn.fetch("DELETE FROM agents WHERE id = $1 RETURNING id", agent_id)
+
+
+    async def claimed(conn, agent_id, name):
+        claimed = await conn.fetchval("UPDATE agents SET name = $1 WHERE id = $2 RETURNING id, name", name, agent_id)
+        return claimed is not None
+
+
+    async def moved(conn, agent_id, name):
+        row = await conn.fetchrow("UPDATE agents SET name = $1 WHERE id = $2 RETURNING id, name", name, agent_id)
+        return dict(row) if row is not None else None
+
+
+    async def rename_many(conn, ids, name):
+        await conn.execute("UPDATE agents SET name = $1 WHERE id = ANY($2::uuid[]) AND NOT gone", name, ids)
+
+
+    async def returned_all(conn, agent_id):
+        return await conn.fetch("DELETE FROM agents WHERE id = $1 RETURNING *", agent_id)
+
+
+    async def returned_by_execute(conn, agent_id):
+        await conn.execute("DELETE FROM agents WHERE id = $1 RETURNING id", agent_id)
 """
 
 
@@ -274,15 +347,48 @@ def test_a_keyed_write_by_equality_is_parsed() -> None:
     )
 
 
+def test_an_increment_and_a_set_expression_are_parsed() -> None:
+    """Flips if ``col = col + n`` is not read as an increment (``- n`` negative), another column's arithmetic or a
+    function as anything but a fragment with its parameters renumbered from $1 in first-use order, or a comma inside
+    the expression's parentheses splits the SET."""
+    parsed = parse_write(
+        "UPDATE t SET n = n + 1, m = m - 2, v = GREATEST(v, $3), w = COALESCE($1::jsonb, w, $3), x = y + 1"
+        " WHERE id = $2"
+    )
+    assert isinstance(parsed, WriteSql), parsed
+    assert parsed.sets == (
+        Pin("n", "increment", literal=1),
+        Pin("m", "increment", literal=-2),
+        Pin("v", "fragment", literal="GREATEST(v, $1)", params=(3,)),
+        Pin("w", "fragment", literal="COALESCE($1::jsonb, w, $2)", params=(1, 3)),
+        Pin("x", "fragment", literal="y + 1", params=()),
+    )
+
+
+def test_a_returning_of_plain_columns_is_parsed() -> None:
+    """Flips if a write's trailing RETURNING of plain columns is not read as those columns, in order, or is read into
+    the WHERE's last pin."""
+    assert parse_write("UPDATE t SET v = $1 WHERE id = $2 RETURNING id, V") == WriteSql(
+        "update", "t", (Pin("v", "param", param=1),), (Pin("id", "param", param=2),), ("id", "v")
+    )
+    assert parse_write("DELETE FROM t WHERE id = $1 AND s = 'a returning b' RETURNING id;") == WriteSql(
+        "delete", "t", (), (Pin("id", "param", param=1), Pin("s", "literal", literal="a returning b")), ("id",)
+    )
+
+
 @pytest.mark.parametrize(
     "sql",
     [
-        "UPDATE t SET n = n + 1 WHERE id = $1",
-        "UPDATE t SET v = $1::jsonb WHERE id = $2",
-        "UPDATE t SET v = $1 WHERE id = ANY($2)",
+        "UPDATE t SET n = m + 1 WHERE id = $1 AND m = (SELECT 1)",
+        "UPDATE t SET v = (SELECT $1::jsonb) WHERE id = $2",
+        "UPDATE t SET v = $1 WHERE id IN ($2)",
+        "UPDATE t SET v = $1 WHERE id = ANY($2) OR k = $3",
         "UPDATE t SET v = $1 FROM u WHERE t.id = u.id AND u.k = $2",
         "DELETE FROM t WHERE id IN (SELECT id FROM t WHERE at < $1 LIMIT $2)",
-        "DELETE FROM t WHERE id = $1 RETURNING id",
+        "DELETE FROM t WHERE id = $1 RETURNING *",
+        "DELETE FROM t WHERE id = $1 RETURNING id + 1",
+        "DELETE FROM t WHERE id = $1 RETURNING id, id",
+        "UPDATE t SET at = now() WHERE id = $1 RETURNING at",
         "DELETE FROM t USING u WHERE t.id = u.id AND u.k = $1",
         "UPDATE t SET v = (SELECT max(v) FROM u) WHERE id = $1",
         "DELETE FROM {} WHERE id = $1",
@@ -295,22 +401,41 @@ def test_anything_but_a_write_by_equality_is_refused(sql: str) -> None:
 
 
 def test_keyed_writes_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path) -> None:
-    """Flips if a keyed write by equality, its status discarded, is not rewritten onto update_keyed / delete_keyed
-    exactly, the manifest does not record it, or the rewritten module still holds a use-the-helper finding for it or
-    a new whole-read finding; or a write whose status is read, an increment, a RETURNING or an unkeyed write is
-    rewritten."""
+    """Flips if a keyed write by equality, its status discarded (or its RETURNING of plain columns read by fetch,
+    fetchrow or fetchval), is not rewritten onto update_keyed / delete_keyed exactly, read as the method it replaces
+    read it, the manifest does not record it, or the rewritten module still holds a use-the-helper finding for it or
+    a new whole-read finding; or a write whose status is read, an increment, a RETURNING * or a RETURNING sent by
+    execute, or an unkeyed write is rewritten."""
     config = _write_config(tmp_path)
     before = no_whole_reads_findings(config)
     rewrites, refusals = plan_write_rewrites(config)
     assert sorted((rewrite.function, rewrite.helper) for rewrite in rewrites) == [
+        ("bumped", "update_keyed"),
+        ("claimed", "update_keyed"),
         ("forget", "delete_keyed"),
+        ("moved", "update_keyed"),
+        ("raised", "update_keyed"),
         ("rename", "update_keyed"),
+        ("rename_many", "update_keyed"),
+        ("returned", "delete_keyed"),
     ]
     refused = {refusal.function: refusal.reason for refusal in refusals}
-    assert refused.keys() >= {"renamed_count", "by_status", "bumped"}, refused
+    assert refused.keys() >= {
+        "renamed_count",
+        "by_status",
+        "from_elsewhere",
+        "returned_all",
+        "returned_by_execute",
+    }, refused
     assert "status is read" in refused["renamed_count"]
     assert "unkeyed" in refused["by_status"]
-    assert not [rewrite for rewrite in rewrites if rewrite.function == "returned"]
+    assert "plain columns" in refused["returned_all"]
+    assert "execute" in refused["returned_by_execute"]
+    assert {rewrite.function: rewrite.returning for rewrite in rewrites if rewrite.returning} == {
+        "claimed": ["id"],
+        "moved": ["id", "name"],
+        "returned": ["id"],
+    }
 
     assert apply_rewrites(tmp_path, rewrites, ruff=None) == ["src/pkg/writes.py"]
     manifest = tmp_path / "manifest.json"
@@ -319,16 +444,44 @@ def test_keyed_writes_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path)
     assert {entry["shape"] for entry in entries} == {"write"}
 
     source = (tmp_path / "src/pkg/writes.py").read_text(encoding="utf-8")
-    assert "from threetears.core.keyed import Fragment, delete_keyed, update_keyed" in source
+    assert "from threetears.core.keyed import AnyOf, Fragment, Increment, delete_keyed, update_keyed" in source
+    assert (
+        "await update_keyed(conn, 'agents', values={'hits': Increment(1), 'date_updated': Fragment(\"now()\")},"
+        " by={'id': agent_id})" in source
+    )
+    assert (
+        "await update_keyed(conn, 'agents', values={'version': Fragment('GREATEST(version, $1)', (version,)),"
+        " 'date_updated': at, 'note': Fragment('COALESCE($1::text, note)', (version,))}, by={'id': agent_id})" in source
+    )
+    assert (
+        "await update_keyed(conn, 'agents', values={'name': name}, by={'id': AnyOf(ids, cast='uuid'), 'gone': False})"
+        in source
+    )
     assert "_FORGET_SQL" not in source and "forget one geo" not in source
     assert (
         "await update_keyed(conn, 'agents', values={'name': name, 'date_updated': Fragment(\"now()\"), 'flag': True},"
         " by={'id': agent_id})" in source
     )
     assert "await delete_keyed(conn, 'geos', by={'state': state, 'geo_id': geo})" in source
+    assert "return (await delete_keyed(conn, 'agents', by={'id': agent_id}, returning=('id',))).rows" in source
+    assert (
+        "claimed = (await update_keyed(conn, 'agents', values={'name': name}, by={'id': agent_id},"
+        " returning=('id',))).value" in source
+    )
+    assert (
+        "row = (await update_keyed(conn, 'agents', values={'name': name}, by={'id': agent_id},"
+        " returning=('id', 'name'))).row" in source
+    )
     for entry in entries:
         assert_source_says(tmp_path, entry)
 
     left = [finding for finding in use_the_helper_findings(config) if "use-the-helper write" in finding]
-    assert not [finding for finding in left if " in rename:" in finding or " in forget:" in finding], left
+    assert not [
+        finding
+        for finding in left
+        if any(
+            f" in {function}:" in finding
+            for function in ("rename", "forget", "returned", "claimed", "moved", "rename_many", "bumped", "raised")
+        )
+    ], left
     assert _unlined(no_whole_reads_findings(config)) == _unlined(before)
