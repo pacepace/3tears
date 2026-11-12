@@ -219,7 +219,8 @@ class TestAsyncpgTransactionLive:
             # observes ITS OWN bound, not the 1s one
             observed = await driver.fetch("SHOW statement_timeout")
             assert observed[0]["statement_timeout"] in {"0", "30s", "30000ms"}, observed
-            rows = await driver.fetch("SELECT pg_sleep(2), 1 AS ok", timeout_seconds=60)
+            # longer than the 1s bound above, which would cancel it had it leaked
+            rows = await driver.fetch("SELECT pg_sleep(1.5), 1 AS ok", timeout_seconds=60)
             assert rows[0]["ok"] == 1
         finally:
             await driver.close()
