@@ -161,15 +161,18 @@ class HeldMapping:
         lanes: Sequence[int],
         modulus: int,
     ) -> HeldMapping:
+        """a held mapping of key -> stored hash, each key by its canonical texts (``canonical``)."""
         return cls({canonical(key): (key, hashed) for key, hashed in held.items()}, lanes, modulus)
 
     def group_hashes(self, at: int) -> dict[str | None, GroupHash | None]:
+        """each held group's hash, the group the key part at ``at`` names (:meth:`Held.group_hashes`)."""
         grouped: dict[str | None, list[str | None]] = {}
         for text, (_, hashed) in self._by_text.items():
             grouped.setdefault(text[at], []).append(hashed)
         return {text: _group_hash(hashes, self._lanes, self._modulus) for text, hashes in grouped.items()}
 
     def outside(self, at: int, answered: set[str | None]) -> tuple[list[tuple[Any, ...]], dict[str | None, Any]]:
+        """the held keys whose group (the key part at ``at``) was not answered, and each such group's value (:meth:`Held.outside`)."""
         vanished = [key for text, (key, _) in self._by_text.items() if text[at] not in answered]
         groups: dict[str | None, Any] = {}
         for text, (key, _) in self._by_text.items():
@@ -178,10 +181,12 @@ class HeldMapping:
         return vanished, groups
 
     def within(self, at: int, groups: set[str | None]) -> HeldMapping:
+        """what is held of the groups named, alone (:meth:`Held.within`)."""
         kept = {text: holding for text, holding in self._by_text.items() if text[at] in groups}
         return HeldMapping(kept, self._lanes, self._modulus)
 
     def compare(self, answered: Sequence[KeyTexts], hashes: Sequence[Any]) -> tuple[list[bool], list[tuple[Any, ...]]]:
+        """whether each answered key is held with the same hash, and the held keys not answered (:meth:`Held.compare`)."""
         same = []
         for text, hashed in zip(answered, hashes, strict=True):
             holding = self._by_text.get(text)
@@ -334,6 +339,7 @@ class HeldArrow:
         return inside
 
     def group_hashes(self, at: int) -> dict[str | None, GroupHash | None]:
+        """each held group's hash, the group the key part at ``at`` names (:meth:`Held.group_hashes`)."""
         if not len(self._encoded):
             return {}
         encoded = pc.dictionary_encode(self._texts[at], null_encoding="encode")
@@ -361,6 +367,7 @@ class HeldArrow:
         return answer
 
     def outside(self, at: int, answered: set[str | None]) -> tuple[list[tuple[Any, ...]], dict[str | None, Any]]:
+        """the held keys whose group (the key part at ``at``) was not answered, and each such group's value (:meth:`Held.outside`)."""
         mask = ~self._in(at, answered)
         if not mask.any():
             return [], {}
@@ -372,6 +379,7 @@ class HeldArrow:
         return vanished, groups
 
     def within(self, at: int, groups: set[str | None]) -> HeldArrow:
+        """what is held of the groups named, alone (:meth:`Held.within`)."""
         mask = pa.array(self._in(at, groups))
         return HeldArrow(
             self._table.filter(mask),
@@ -384,6 +392,7 @@ class HeldArrow:
         )
 
     def compare(self, answered: Sequence[KeyTexts], hashes: Sequence[Any]) -> tuple[list[bool], list[tuple[Any, ...]]]:
+        """whether each answered key is held with the same hash, and the held keys not answered (:meth:`Held.compare`)."""
         answered_keys = pa.array([encoded_key(texts) for texts in answered], pa.string())
         place = pc.index_in(self._encoded, value_set=answered_keys)
         held_at = np.asarray(pc.fill_null(place, -1).to_numpy(zero_copy_only=False), dtype=np.int64)
