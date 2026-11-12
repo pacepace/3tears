@@ -59,8 +59,14 @@ _ECHO = "ttl.echo"
 _NS = "ttllive"
 _BUCKET = f"{_NS}-cfg"
 _KEY = "k"
-#: what the responder mints. Short, so the test outlives it.
-_MINTED_TTL_SECONDS = 40
+#: what the responder mints. Short, so the test outlives it: every lifetime under the renewal's margins
+#: (:data:`~threetears.nats.credential_renewal.REAUTH_MARGIN_SECONDS`) schedules the same renewal, one
+#: :data:`~threetears.nats.credential_renewal.REAUTH_MIN_SLEEP_SECONDS` after each connect, so a shorter
+#: one changes nothing but how long the test waits for it to run out.
+_MINTED_TTL_SECONDS = 10
+#: how far past the minted expiry the pod is asked to serve: the server ends an expired connection at
+#: its ``exp``, a whole second, so a few seconds past it is past it on any clock.
+_PAST_EXPIRY_SECONDS = 5
 #: what the pod is configured to believe: the platform default that bit cobalt-dev.
 _CONFIGURED_TTL_SECONDS = 86_400
 #: the longest request the pod declares. Small, so the renewal fires well inside the minted TTL.
@@ -137,7 +143,7 @@ def _server_config(account_pub: str) -> str:
 
 
 async def test_the_server_reports_the_minted_lifetime_and_the_renewal_runs_on_it() -> None:
-    """the pod believes a day, the hub mints 40s; the pod learns 40s and is still serving after it."""
+    """the pod believes a day, the hub mints 10s; the pod learns 10s and is still serving after it."""
     account_seed = generate_account_seed()
     resolver = _Resolver()
     responder = AuthCalloutResponder(
@@ -189,7 +195,7 @@ async def test_the_server_reports_the_minted_lifetime_and_the_renewal_runs_on_it
 
             # past the minted expiry by a clear margin: without a renewal the server has ended the
             # connection by now, and nats-py does not come back from an expired authorization.
-            await asyncio.sleep(_MINTED_TTL_SECONDS + 10)
+            await asyncio.sleep(_MINTED_TTL_SECONDS + _PAST_EXPIRY_SECONDS)
 
             reply = await pod.request_raw(subject=Subject.raw(_ECHO), payload=b"still-here")
             assert reply == b"still-here"
