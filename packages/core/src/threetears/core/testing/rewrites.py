@@ -445,7 +445,7 @@ async def _sweep_rows(conn: Any, entry: Mapping[str, Any]) -> tuple[list[str], d
     seeded = [c for c in shape.columns.values() if not c.generated and c.name not in {*key, column} and _seedable(c)]
     names = [*key, column, *(c.name for c in seeded)]
     for n, expiry in enumerate(expiries):
-        values = [f"{part}-{n % 2}" if part == key[0] else f"{part}-{n}" for part in key]
+        values: list[Any] = [f"{part}-{n % 2}" if part == key[0] else f"{part}-{n}" for part in key]
         values += [expiry, *(_value(c, n) for c in seeded)]
         places = ", ".join(f"${i}" for i in range(1, len(values) + 1))
         quoted = ", ".join(f'"{name}"' for name in names)
