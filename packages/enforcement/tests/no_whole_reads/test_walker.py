@@ -5471,3 +5471,33 @@ def test_a_whole_read_written_as_a_module_constant_names_its_callers(tmp_path: P
     assert any("in nightly: calls-whole-read count" in finding for finding in named), named
     assert not any("in lookup:" in finding for finding in named), named
     assert sum(": whole-aggregate items" in finding for finding in named) == 1, named
+
+
+_TRIMMED = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import delete_oldest
+
+    TURNS = TableSchema(
+        name="turns",
+        primary_key="key",
+        columns=[],
+        indexes=(
+            Index("turns_by_updated", "date_updated", "key", asc="date_updated", purpose="src/turns.py::enforce_cap", plan_test="tests/test_plans.py::test_updated"),
+        ),
+    )
+
+    async def enforce_cap(conn, over):
+        return await delete_oldest(conn, "turns", count=over, key="key", order=ORDER)
+"""
+
+
+def test_a_trim_by_an_age_column_uses_the_index_that_age_leads(tmp_path: Path) -> None:
+    """Flips if a cache's trim by an age column (``delete_oldest(order="date_updated")``, the SDK's turn_dedup cap) is
+    not credited to the index leading with that column then the key, or if a trim by a column no index leads is
+    credited (its purpose unused) or passes as keyed."""
+    _plans(tmp_path, "def test_updated(plan):\n    assert plan_uses_index(plan, 'turns_by_updated')\n")
+    aged = no_whole_reads_findings(_config(tmp_path, {"turns.py": _TRIMMED.replace("ORDER", '"date_updated"')}))
+    assert not [finding for finding in aged if "turns" in finding], aged
+    other = no_whole_reads_findings(_config(tmp_path, {"turns.py": _TRIMMED.replace("ORDER", '"kind"')}))
+    assert any("index-purpose-unused -- src/turns.py::enforce_cap" in finding for finding in other), other
+    assert any("enforce_cap" in finding and "index-" not in finding for finding in other), other

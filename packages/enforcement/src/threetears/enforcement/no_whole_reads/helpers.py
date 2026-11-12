@@ -784,13 +784,19 @@ def _keyed_write(call: ast.Call) -> list[str]:
 
 
 def _delete_oldest(call: ast.Call) -> list[str]:
+    """a cache's trim (``delete_oldest``), as the statement it sends: its ``count`` oldest keys within ``by``, oldest
+    by ``key``, or by ``order`` then ``key`` when the age is a column many rows share (a ``date_updated``), so the read
+    is keyed (and credits an index's purpose) exactly when an index leads with ``order`` (then ``key``)."""
     table, _ = _relation(_argument(call, "table", 1), "table")
     key_node = _argument(call, "key", None)
     key = "rowid" if key_node is None else _text(key_node, "key")
+    order_node = _argument(call, "order", None)
+    unset = order_node is None or (isinstance(order_node, ast.Constant) and order_node.value is None)
+    aged = [] if unset else [_quoted(_text(order_node, "order"))]
     pinned, place = _conditions(_by(_argument(call, "by", None)))
     return [
         f"DELETE FROM {table} WHERE {_quoted(key)} IN (SELECT {_quoted(key)} FROM {table}{_where(pinned)} "
-        f"ORDER BY {_quoted(key)} LIMIT ${place})"
+        f"ORDER BY {', '.join([*aged, _quoted(key)])} LIMIT ${place})"
     ]
 
 
