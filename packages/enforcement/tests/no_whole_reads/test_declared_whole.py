@@ -217,3 +217,31 @@ def test_a_declared_statement_is_not_a_use_the_helper_finding(tmp_path: Path) ->
     assert plain != _STORE
     undeclared = use_the_helper_findings(_config(tmp_path, {"store.py": plain}))
     assert any("SELECT count(*) FROM items" in finding for finding in undeclared), undeclared
+
+
+def test_a_call_into_a_declared_constant_read_is_declared_there_too(tmp_path: Path) -> None:
+    """Flips if a call into a function whose declared read is a module constant (count_items) passes undeclared, or
+    is refused when declared with the same kind."""
+    caller = """
+    from threetears.core.declared import whole_read
+    from store import count_items
+
+    async def plain(conn):
+        return await count_items(conn)
+
+    async def same(conn):
+        return await whole_read(
+            count_items(conn),
+            kind="backup_verification",
+            reason="the restore check compares the manifest's counts with its own",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_same_entry",
+            speed="tests/test_backup.py::test_same_speed",
+        )
+"""
+    proofs = _PROOFS + textwrap.indent(
+        "\ndef test_same_entry():\n    assert same\n\ndef test_same_speed():\n    budget_problem(same)\n", "    "
+    )
+    findings = _findings(tmp_path, {"store.py": _STORE, "restore.py": caller}, proofs)
+    assert any("in plain: calls-whole-read count_items" in finding for finding in findings), findings
+    assert not any("in same:" in finding or " same whole_read" in finding for finding in findings), findings

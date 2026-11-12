@@ -598,7 +598,9 @@ class _Declared:
         for hit in hits:
             owners = [declared for declared in sound if declared.covers(hit.path, hit.function, hit.line)]
             if owners and all(self._lets(declared, hit, scan.schema) for declared in owners):
-                kinds_of.setdefault((hit.path, hit.function), set()).update(d.kind for d in owners)
+                # a constant's hit is the declaring function's read (its callers declare the same kind)
+                for owner in owners:
+                    kinds_of.setdefault((owner.path, owner.function), set()).add(owner.kind)
             elif hit.kind != "calls-whole-read":
                 undeclared.add((hit.path, hit.function))
         used: set[int] = set()

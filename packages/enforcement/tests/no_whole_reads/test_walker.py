@@ -5389,3 +5389,35 @@ def test_a_forwarder_s_defaulted_relation_is_judged_at_the_call_that_leaves_it(t
     assert ("copy_kinds", 'non-key-where "main"."feed_race"') in found, found
     assert not any(function in {"copy_moves", "moves", "Settle.moved.made"} for function, _ in found), found
     assert any(function == "Settle.unpacked_whole.made" for function, _ in found), found
+
+
+_CONSTANT_READS = """
+    from threetears.core.collections.schema_backed import TableSchema
+
+    ITEMS = TableSchema(name="items", primary_key="id", columns=[])
+    _COUNT = "SELECT count(*) FROM items"
+    _ONE = "SELECT body FROM items WHERE id = $1"
+    _ALIAS = _COUNT
+
+    async def count(conn):
+        return await conn.fetchval(_COUNT)
+
+    async def one(conn, item):
+        return await conn.fetchrow(_ONE, item)
+
+    async def nightly(conn):
+        return await count(conn)
+
+    async def lookup(conn, item):
+        return await one(conn, item)
+"""
+
+
+def test_a_whole_read_written_as_a_module_constant_names_its_callers(tmp_path: Path) -> None:
+    """Flips if a function running a whole read written as a module constant hides it from its callers (no
+    calls-whole-read at nightly), if a keyed constant's caller is named, or if the read is counted twice."""
+    findings = no_whole_reads_findings(_config(tmp_path, {"store.py": _CONSTANT_READS}))
+    named = [finding for finding in findings if " in " in finding]
+    assert any("in nightly: calls-whole-read count" in finding for finding in named), named
+    assert not any("in lookup:" in finding for finding in named), named
+    assert sum(": whole-aggregate items" in finding for finding in named) == 1, named

@@ -608,6 +608,121 @@ class OperatorMark:
         return _OPERATOR_MARKS[self.mark]
 
 
+def module_constant_spans(tree: ast.Module) -> dict[str, tuple[int, int]]:
+    """each module-level name bound once, onto the lines of its value: where a statement written as a module constant
+    is judged (its hits are the module's, at those lines).
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :return: name onto its value's first and last line
+    :rtype: dict[str, tuple[int, int]]
+    """
+    spans: dict[str, tuple[int, int]] = {}
+    seen: set[str] = set()
+    for statement in tree.body:
+        targets = (
+            statement.targets
+            if isinstance(statement, ast.Assign)
+            else [statement.target]
+            if isinstance(statement, ast.AnnAssign) and statement.value is not None
+            else []
+        )
+        value = getattr(statement, "value", None)
+        for target in targets:
+            if isinstance(target, ast.Name) and value is not None:
+                if target.id in seen:
+                    spans.pop(target.id, None)
+                    continue
+                seen.add(target.id)
+                spans[target.id] = (value.lineno, value.end_lineno or value.lineno)
+    return spans
+
+
+class _ConstantUses(ast.NodeVisitor):
+    """each function (qualified as the walk names it) and the module constants it names."""
+
+    def __init__(self, constants: Mapping[str, tuple[int, int]]) -> None:
+        """prepare to find the uses of ``constants``.
+
+        :param constants: each module constant onto its value's lines
+        :ptype constants: Mapping[str, tuple[int, int]]
+        """
+        self._constants = constants
+        self._stack: list[str] = []
+        self.uses: set[tuple[str, int, int]] = set()
+
+    def _scope(self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        """walk a scope with its name on the stack.
+
+        :param node: the scope
+        :ptype node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+        :return: nothing
+        :rtype: None
+        """
+        self._stack.append(node.name)
+        self.generic_visit(node)
+        self._stack.pop()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        """a class's scope.
+
+        :param node: the class
+        :ptype node: ast.ClassDef
+        :return: nothing
+        :rtype: None
+        """
+        self._scope(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        """a function's scope.
+
+        :param node: the function
+        :ptype node: ast.FunctionDef
+        :return: nothing
+        :rtype: None
+        """
+        self._scope(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        """a coroutine function's scope.
+
+        :param node: the function
+        :ptype node: ast.AsyncFunctionDef
+        :return: nothing
+        :rtype: None
+        """
+        self._scope(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        """a name: a module constant's use by the function the walk is in.
+
+        :param node: the name
+        :ptype node: ast.Name
+        :return: nothing
+        :rtype: None
+        """
+        span = self._constants.get(node.id)
+        # a function's own use of a module constant; a constant naming another is the module's, not a function's
+        if span is not None and isinstance(node.ctx, ast.Load) and self._stack:
+            self.uses.add((".".join(self._stack), *span))
+
+
+def constant_readers(path: str, tree: ast.Module) -> set[tuple[str, str, int, int]]:
+    """``(path, function, first, last)`` of each function naming a module constant of ``path``, with the lines of
+    that constant's value: a whole read written there is the function's for its callers (``calls-whole-read``).
+
+    :param path: the module's repo-relative path
+    :ptype path: str
+    :param tree: the module
+    :ptype tree: ast.Module
+    :return: the uses
+    :rtype: set[tuple[str, str, int, int]]
+    """
+    finder = _ConstantUses(module_constant_spans(tree))
+    finder.visit(tree)
+    return {(path, function, first, last) for function, first, last in finder.uses}
+
+
 @dataclass(frozen=True)
 class DeclaredWhole:
     """a read declared whole by nature where it is written (``whole_read(<read>, kind=..., ...)``).
@@ -2364,24 +2479,7 @@ class _ModuleWalk(ast.NodeVisitor):
             if k.arg and isinstance(k.value, ast.Constant) and isinstance(k.value.value, str)
         }
         if self._string_constants is None:
-            self._string_constants = {}
-            seen: set[str] = set()
-            for statement in self._tree.body:
-                targets = (
-                    statement.targets
-                    if isinstance(statement, ast.Assign)
-                    else [statement.target]
-                    if isinstance(statement, ast.AnnAssign) and statement.value is not None
-                    else []
-                )
-                value = getattr(statement, "value", None)
-                for target in targets:
-                    if isinstance(target, ast.Name) and value is not None:
-                        if target.id in seen:
-                            self._string_constants.pop(target.id, None)
-                            continue
-                        seen.add(target.id)
-                        self._string_constants[target.id] = (value.lineno, value.end_lineno or value.lineno)
+            self._string_constants = module_constant_spans(self._tree)
         constants: list[tuple[str, int, int]] = []
         if wrapped is not None:
             inside = [n.id for n in ast.walk(wrapped) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
@@ -4997,6 +5095,7 @@ def _resolve(
     imports: dict[str, dict[str, str]],
     module_classes: dict[str, set[str]] | None = None,
     operators: list[OperatorMark] | None = None,
+    constant_uses: set[tuple[str, str, int, int]] | None = None,
 ) -> tuple[list[WholeReadHit], list[str]]:
     """the call graph's hits: ``calls-whole-read`` and ``whole-call``.
 
@@ -5039,6 +5138,19 @@ def _resolve(
     for hit in hits:
         if hit.kind in _READ_KINDS and (hit.path, hit.function) not in backstops:
             readers.setdefault((hit.path, hit.function), hit)
+    # a whole read written as a module constant is judged where the constant is written (the module's); the function
+    # running it reads whole all the same, so its callers are named too
+    at_module: dict[str, list[WholeReadHit]] = {}
+    for hit in hits:
+        if hit.function == "<module>":
+            at_module.setdefault(hit.path, []).append(hit)
+    constant_reach: set[tuple[str, str]] = set()
+    for path, function, first, last in sorted(constant_uses or ()):
+        for hit in at_module.get(path, []):
+            if first <= hit.line <= last and (path, function) not in backstops:
+                constant_reach.add((path, function))
+                if hit.kind in _READ_KINDS:
+                    readers.setdefault((path, function), hit)
     constructors_found: set[int] = set()
     resolved: list[tuple[_CallSite, list[tuple[str, str]]]] = []
     for index, call in enumerate(calls):
@@ -5046,7 +5158,7 @@ def _resolve(
         if targets is None:
             constructors_found.add(index)
         resolved.append((call, targets or []))
-    reaches = {(hit.path, hit.function) for hit in hits} - backstops
+    reaches = ({(hit.path, hit.function) for hit in hits} | constant_reach) - backstops
     grew = True
     while grew:
         grew = False
@@ -6358,6 +6470,7 @@ def scan_whole_reads(
     scan = WholeReadScan(schema=schema if schema is not None else SchemaCatalog())
     used: set[str] = set()
     calls: list[_CallSite] = []
+    constant_uses: set[tuple[str, str, int, int]] = set()
     module_functions: dict[str, set[str]] = {}
     module_classes: dict[str, set[str]] = {}
     stubs: set[str] = set()
@@ -6453,9 +6566,18 @@ def scan_whole_reads(
         scan.declarations.extend(walk.declarations)
         imports[relative] = walk.imports
         scan.declared_matched.update(walk.declared_matched)
+        constant_uses |= constant_readers(relative, tree)
         scan.files_scanned += 1
     resolved, callers = _resolve(
-        calls, scan.hits, module_functions, scan.definitions, stubs, imports, module_classes, scan.operators
+        calls,
+        scan.hits,
+        module_functions,
+        scan.definitions,
+        stubs,
+        imports,
+        module_classes,
+        scan.operators,
+        constant_uses,
     )
     scan.hits.extend(resolved)
     scan.operator_callers = callers
