@@ -43,6 +43,17 @@ A mark is checked: every caller of a marked function in the repo must carry the 
 entry nothing in the repo calls (a route, a CLI command); ``proof`` names ``<test file>::<test function>``, a test
 that names the function and proves its entry needs the operator; the reason is 30 characters or more.
 
+**A read whole by nature is declared where it is written** (:func:`threetears.core.declared.whole_read`, Pace
+2026-11-12), never listed: ``await whole_read(conn.fetch(...), kind=..., reason=..., ruling=..., proof=..., speed=...)``.
+The kind (:data:`~threetears.enforcement.no_whole_reads.walker.DECLARED_KINDS`) lets through only its own whole reads
+in the wrapped expression, or in a module constant only it names; the reason is 30 characters or more; the ruling
+names Pace and a date; ``proof`` names a test that names the enclosing function (it proves the statement is reached
+only in that situation); ``speed``, for the kinds reading our own tables at size, names a test calling
+``budget_problem``; a ``drain`` or ``unbounded_by_warehouse`` read is never of a declared L3 table. A call into a
+function holding a declared read is still ``calls-whole-read`` unless that call is declared with the same kind. A
+declaration covering no whole read is a finding. The gate prints every one it accepts, and the use-the-helper rule
+does not count its statement (no keyed helper answers it).
+
 **The one way out for a cold start or schema change: the exemptions ledger.** A function that is a true cold start, or a schema change, is listed
 in the repo's ``_no_whole_reads_exemptions.txt``, one line each::
 
@@ -88,11 +99,16 @@ from threetears.enforcement.no_whole_reads.declarations import DECLARATIONS_NAME
 from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, SchemaCatalog, collect_schema, index_findings
 from threetears.enforcement.no_whole_reads.use_the_helper import statement_counts, statement_findings
 from threetears.enforcement.no_whole_reads.walker import (
+    DECLARED_KINDS,
+    DECLARED_OUTSIDE_KINDS,
+    DECLARED_SPEED_KINDS,
     DEFAULT_NARROWING_KEYWORDS,
     DEFAULT_PAGER_CALLS,
+    DeclaredWhole,
     OperatorMark,
     WholeReadHit,
     WholeReadScan,
+    WrittenStatement,
     produced_relation,
     scan_whole_reads,
 )
@@ -531,6 +547,150 @@ _STATIC_UNIT_KINDS: Final[frozenset[str]] = frozenset(
 )
 
 
+#: Pace's ruling, as a declaration cites it: his name and the ruling's date
+_RULING: Final[re.Pattern[str]] = re.compile(r"\bPace\b.*\b\d{4}-\d{2}-\d{2}\b|\b\d{4}-\d{2}-\d{2}\b.*\bPace\b")
+
+#: a ``calls-whole-read`` hit's statement: ``<call> -> <path>:<line> <symbol>``
+_REACHED: Final[re.Pattern[str]] = re.compile(r" -> (?P<path>[^ :]+):\d+ ")
+
+
+def _declared_relation_outside(hit: WholeReadHit, schema: SchemaCatalog) -> bool:
+    """whether a hit's relation is no declared L3 table (a process-local buffer, a warehouse relation).
+
+    :param hit: the hit
+    :ptype hit: WholeReadHit
+    :param schema: the declared tables
+    :ptype schema: SchemaCatalog
+    :return: whether it is outside the declared tables
+    :rtype: bool
+    """
+    relation = hit.symbol.split(" ", 1)[1] if " " in hit.symbol else ""
+    found = schema.table(relation) if relation else None
+    return found is None or not found.threetears
+
+
+class _Declared:
+    """the repo's declarations judged: which are sound, and which hits each covers."""
+
+    def __init__(self, config: NoWholeReadsConfig, scan: WholeReadScan, hits: list[WholeReadHit]) -> None:
+        """judge every declaration against its hits.
+
+        :param config: the repo's config
+        :ptype config: NoWholeReadsConfig
+        :param scan: the walk
+        :ptype scan: WholeReadScan
+        :param hits: every hit
+        :ptype hits: list[WholeReadHit]
+        """
+        self.findings: list[str] = []
+        self.accepted: list[DeclaredWhole] = []
+        self.covered: set[WholeReadHit] = set()
+        sound: list[DeclaredWhole] = []
+        for declared in scan.declarations:
+            defects = self._defects(config, declared)
+            where = f"{declared.path}:{declared.line} {declared.function} whole_read(kind={declared.kind!r})"
+            self.findings.extend(f"{where}: {defect}" for defect in defects)
+            if not defects:
+                sound.append(declared)
+        # a function's declared kinds, for a call into it: the same kind must be declared at the call
+        kinds_of: dict[tuple[str, str], set[str]] = {}
+        undeclared: set[tuple[str, str]] = set()
+        for hit in hits:
+            owners = [declared for declared in sound if declared.covers(hit.path, hit.function, hit.line)]
+            if owners and all(self._lets(declared, hit, scan.schema) for declared in owners):
+                kinds_of.setdefault((hit.path, hit.function), set()).update(d.kind for d in owners)
+            elif hit.kind != "calls-whole-read":
+                undeclared.add((hit.path, hit.function))
+        used: set[int] = set()
+        for hit in hits:
+            for index, declared in enumerate(sound):
+                if not declared.covers(hit.path, hit.function, hit.line) or not self._lets(declared, hit, scan.schema):
+                    continue
+                if hit.kind == "calls-whole-read":
+                    reached = _REACHED.search(hit.statement)
+                    target = (reached.group("path") if reached else "", hit.symbol.split(" ", 1)[-1])
+                    if target in undeclared or kinds_of.get(target) != {declared.kind}:
+                        continue
+                self.covered.add(hit)
+                used.add(index)
+        for index, declared in enumerate(sound):
+            if index in used:
+                self.accepted.append(declared)
+            else:
+                self.findings.append(
+                    f"{declared.path}:{declared.line} {declared.function} whole_read(kind={declared.kind!r}): covers "
+                    "no whole read of its kind (a keyed read needs no declaration; a call into a function must be "
+                    "declared there with the same kind): remove it or fix what it wraps"
+                )
+
+    @staticmethod
+    def _lets(declared: DeclaredWhole, hit: WholeReadHit, schema: SchemaCatalog) -> bool:
+        """whether a declaration's kind lets a hit through (before a call's callee is checked).
+
+        :param declared: the declaration
+        :ptype declared: DeclaredWhole
+        :param hit: the hit it wraps
+        :ptype hit: WholeReadHit
+        :param schema: the declared tables
+        :ptype schema: SchemaCatalog
+        :return: whether it does
+        :rtype: bool
+        """
+        if hit.kind not in DECLARED_KINDS[declared.kind]:
+            return False
+        if declared.kind in DECLARED_OUTSIDE_KINDS and hit.kind != "calls-whole-read":
+            return _declared_relation_outside(hit, schema)
+        return True
+
+    @staticmethod
+    def _defects(config: NoWholeReadsConfig, declared: DeclaredWhole) -> list[str]:
+        """what is wrong with a declaration's own arguments.
+
+        :param config: the repo's config
+        :ptype config: NoWholeReadsConfig
+        :param declared: the declaration
+        :ptype declared: DeclaredWhole
+        :return: its defects
+        :rtype: list[str]
+        """
+        defects: list[str] = []
+        if declared.kind not in DECLARED_KINDS:
+            return [f"kind must be one of {sorted(DECLARED_KINDS)}, as a literal"]
+        if len(declared.reason) < _MIN_REASON:
+            defects.append(f"the reason must say which situation reads whole ({_MIN_REASON}+ characters, a literal)")
+        if _RULING.search(declared.ruling) is None:
+            defects.append('the ruling must cite Pace\'s ruling with its date ("Pace 2026-11-12: ..."), a literal')
+        line = _Exemption(
+            declared.line, declared.path, declared.function, 1, declared.kind, declared.proof, declared.reason
+        )
+        proof = _proving_test_defect(config.repo_root, line)
+        if proof is not None:
+            defects.append(f"the proof {proof}")
+        if declared.kind in DECLARED_SPEED_KINDS:
+            speed = _proving_test_defect(config.repo_root, line, test=declared.speed, calls="budget_problem")
+            if speed is not None:
+                defects.append(f"the speed test {speed}")
+        return defects
+
+
+def _announce_declared(accepted: list[DeclaredWhole]) -> list[str]:
+    """print and warn each declaration the gate accepts, so every one is seen on every run.
+
+    :param accepted: the sound declarations covering a read
+    :ptype accepted: list[DeclaredWhole]
+    :return: the lines printed
+    :rtype: list[str]
+    """
+    lines = [
+        f"declared-whole {declared.kind} {declared.path}:{declared.line} {declared.function} -- {declared.ruling}"
+        for declared in accepted
+    ]
+    for line in lines:
+        sys.stderr.write(f"{line}\n")
+        warnings.warn(line, _WholeReadAccepted, stacklevel=2)
+    return lines
+
+
 def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
     """every finding: each whole read outside an exempt function, and every ledger or walk defect.
 
@@ -571,7 +731,10 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
         if speed is not None:
             findings.append(f"{where}: the speed test {speed}")
     findings.extend(_operator_mark_findings(config, scan))
+    declared = _Declared(config, scan, hits)
+    findings.extend(declared.findings)
     _announce(scan)
+    _announce_declared(declared.accepted)
     for exemption in exemptions:
         if exemption.kind == "source-gap":
             line = f"no_whole_reads accepts source-gap {exemption.path} :: {exemption.function}: {exemption.reason}"
@@ -587,7 +750,7 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
         )
     )
     for hit in hits:
-        if _marked(hit, scan.operators, scan.schema):
+        if _marked(hit, scan.operators, scan.schema) or hit in declared.covered:
             continue
         if not any(_inside(hit, exemption) for exemption in exemptions):
             findings.append(f"{hit.path}:{hit.line} in {hit.function}: {hit.symbol} -- {hit.statement} -- {_ADVICE}")
@@ -603,9 +766,8 @@ def use_the_helper_findings(config: NoWholeReadsConfig) -> list[str]:
     :return: the findings
     :rtype: list[str]
     """
-    _, scan = _hits(config)
     return statement_findings(
-        scan.statements,
+        _helper_statements(config),
         ledger_dir=config.ledger_dir,
         helper_modules=config.helper_modules,
         producers=_producers(config),
@@ -621,8 +783,25 @@ def use_the_helper_counts(config: NoWholeReadsConfig) -> dict[str, int]:
     :return: shape onto count
     :rtype: dict[str, int]
     """
-    _, scan = _hits(config)
-    return statement_counts(scan.statements, config.helper_modules, _producers(config))
+    return statement_counts(_helper_statements(config), config.helper_modules, _producers(config))
+
+
+def _helper_statements(config: NoWholeReadsConfig) -> list[WrittenStatement]:
+    """the statements the use-the-helper rule judges: every one the repo writes as text, but a read declared whole by
+    nature (no keyed helper answers it; the no-whole-reads gate judges its declaration).
+
+    :param config: the repo's config
+    :ptype config: NoWholeReadsConfig
+    :return: the statements
+    :rtype: list[WrittenStatement]
+    """
+    hits, scan = _hits(config)
+    accepted = _Declared(config, scan, hits).accepted
+    return [
+        statement
+        for statement in scan.statements
+        if not any(declared.covers(statement.path, statement.function, statement.line) for declared in accepted)
+    ]
 
 
 def _producers(config: NoWholeReadsConfig) -> frozenset[str]:

@@ -92,8 +92,12 @@ from threetears.enforcement.no_whole_reads.sql import (
 )
 
 __all__ = [
+    "DECLARED_KINDS",
+    "DECLARED_OUTSIDE_KINDS",
+    "DECLARED_SPEED_KINDS",
     "DEFAULT_NARROWING_KEYWORDS",
     "DEFAULT_PAGER_CALLS",
+    "DeclaredWhole",
     "OperatorMark",
     "WholeReadHit",
     "WholeReadScan",
@@ -405,6 +409,72 @@ _NO_SOURCE: Final[tuple[frozenset[str], frozenset[str], bool]] = (frozenset(), f
 #: the marks reachable only from their own entry: every caller in the repo carries the same mark
 _ENTRY_ONLY_MARKS: Final[frozenset[str]] = frozenset({"operator_reset", "operator_command"})
 
+#: the call declaring a read whole by nature (:func:`threetears.core.declared.whole_read`)
+_DECLARATION_CALL: Final[str] = "whole_read"
+
+#: each kind a read may be declared whole in (Pace, 2026-11-12) onto the hit kinds it lets through inside the wrapped
+#: expression; anything else there is still reported. A new kind is a rule change Pace approves.
+DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
+    # the one fill of an empty copy: its whole select or pager, and a call into a function declared the same
+    "cold_start": frozenset(
+        {
+            "whole-select",
+            "unkeyed-pager",
+            "unkeyed-sort",
+            "may-read-whole",
+            "whole-read",
+            "whole-call",
+            "calls-whole-read",
+        }
+    ),
+    # an answer for every state (a national panel): its rows are every state's, filtered or summed
+    "every_state_answer": frozenset(
+        {
+            "whole-select",
+            "whole-aggregate",
+            "non-key-where",
+            "unkeyed-sort",
+            "unkeyed-pager",
+            "may-read-whole",
+            "whole-read",
+            "calls-whole-read",
+        }
+    ),
+    # a backup's own count and checksum, taken inside its snapshot
+    "backup_verification": frozenset({"whole-select", "whole-aggregate", "verify-aggregate", "calls-whole-read"}),
+    # a warehouse relation holding no key to read by (never an L3 table)
+    "unbounded_by_warehouse": frozenset(
+        {
+            "whole-select",
+            "whole-aggregate",
+            "non-key-where",
+            "unknown-schema",
+            "unknown-predicate",
+            "unkeyed-sort",
+            "unkeyed-pager",
+            "may-read-whole",
+            "whole-read",
+            "calls-whole-read",
+        }
+    ),
+    # a schema change rewriting the table
+    "schema_change": frozenset(
+        {"whole-select", "whole-aggregate", "whole-maintenance", "whole-update", "unkeyed-pager", "calls-whole-read"}
+    ),
+    # the drain of a process-local buffer (never an L3 table)
+    "drain": frozenset({"whole-select", "whole-delete"}),
+    # an operator's reset
+    "operator_reset": frozenset({"truncate", "truncate-call", "whole-delete"}),
+}
+
+#: the kinds whose declaration names a speed test: they read our own tables at size
+DECLARED_SPEED_KINDS: Final[frozenset[str]] = frozenset(
+    {"cold_start", "every_state_answer", "backup_verification", "schema_change"}
+)
+
+#: the kinds whose relation is never a declared L3 table: a process-local buffer, a warehouse relation
+DECLARED_OUTSIDE_KINDS: Final[frozenset[str]] = frozenset({"drain", "unbounded_by_warehouse"})
+
 #: calls whose first argument is SQL text that is run as written
 _EXEC_CALLS: Final[frozenset[str]] = frozenset(
     {
@@ -539,6 +609,56 @@ class OperatorMark:
 
 
 @dataclass(frozen=True)
+class DeclaredWhole:
+    """a read declared whole by nature where it is written (``whole_read(<read>, kind=..., ...)``).
+
+    :ivar path: repo-relative posix path of the module
+    :ivar function: qualified name of the enclosing function
+    :ivar line: line of the declaration
+    :ivar first: first line of the wrapped expression
+    :ivar last: last line of the wrapped expression
+    :ivar kind: the declared kind, empty when not a literal
+    :ivar reason: the reason, empty when not a literal
+    :ivar ruling: Pace's ruling, empty when not a literal
+    :ivar proof: ``<test file>::<test function>``, empty when not a literal
+    :ivar speed: the speed test, empty when not given or not a literal
+    :ivar constants: each module constant the wrapped expression names and nothing else in the module does, with the
+        lines of its value: its statement's hits are written there
+    """
+
+    path: str
+    function: str
+    line: int
+    first: int
+    last: int
+    kind: str
+    reason: str
+    ruling: str
+    proof: str
+    speed: str = ""
+    constants: tuple[tuple[str, int, int], ...] = ()
+
+    def covers(self, path: str, function: str, line: int) -> bool:
+        """whether a site (a hit, a written statement) is the declared read: in the wrapped expression, or the value
+        of a module constant only it names.
+
+        :param path: the site's module
+        :ptype path: str
+        :param function: the site's enclosing function
+        :ptype function: str
+        :param line: the site's line
+        :ptype line: int
+        :return: whether it is
+        :rtype: bool
+        """
+        if path != self.path:
+            return False
+        if function == self.function and self.first <= line <= self.last:
+            return True
+        return function == "<module>" and any(first <= line <= last for _, first, last in self.constants)
+
+
+@dataclass(frozen=True)
 class _CallSite:
     """a call that may reach a whole-read function of the repo, resolved after every module is walked.
 
@@ -603,6 +723,7 @@ class WholeReadScan:
         index's ``purpose`` may name when the SQL is written there
     :ivar schema: the declared keys and indexes every statement was judged against
     :ivar statements: every SQL statement the walked modules write as text
+    :ivar declarations: every read declared whole by nature (``whole_read``)
     """
 
     hits: list[WholeReadHit] = field(default_factory=list)
@@ -615,6 +736,7 @@ class WholeReadScan:
     schema: SchemaCatalog = field(default_factory=SchemaCatalog)
     statements: list[WrittenStatement] = field(default_factory=list)
     declared_matched: set[str] = field(default_factory=set)
+    declarations: list[DeclaredWhole] = field(default_factory=list)
 
 
 #: callees that only quote the name they are given: checked before a template function, since a quoter returning
@@ -1330,6 +1452,10 @@ class _ModuleWalk(ast.NodeVisitor):
             statement.name for statement in tree.body if isinstance(statement, ast.ClassDef)
         }
         self.operators: list[OperatorMark] = []
+        self.declarations: list[DeclaredWhole] = []
+        self._tree = tree
+        #: each module constant bound to a string expression once, onto its value's lines (for a declaration)
+        self._string_constants: dict[str, tuple[int, int]] | None = None
         #: a name imported into the module, onto ``<module>.<name>`` it came from
         self.imports: dict[str, str] = {}
         self._pagers = pagers
@@ -2213,12 +2339,73 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: None
         """
         name = _final(node)
+        if name == _DECLARATION_CALL:
+            self._declare(node)
         if name is not None:
             self._judge_call(node, name)
             self._judge_helper(node)
             self._judge_change_relation(node)
             self._judge_handed(node)
         self.generic_visit(node)
+
+    def _declare(self, node: ast.Call) -> None:
+        """record a read declared whole by nature: ``whole_read(<read>, kind=..., reason=..., ruling=..., proof=...,
+        speed=...)``. Its arguments are read as written (literals); the gate judges them.
+
+        :param node: the declaration
+        :ptype node: ast.Call
+        :return: nothing
+        :rtype: None
+        """
+        wrapped = node.args[0] if node.args else None
+        literal = {
+            k.arg: k.value.value
+            for k in node.keywords
+            if k.arg and isinstance(k.value, ast.Constant) and isinstance(k.value.value, str)
+        }
+        if self._string_constants is None:
+            self._string_constants = {}
+            seen: set[str] = set()
+            for statement in self._tree.body:
+                targets = (
+                    statement.targets
+                    if isinstance(statement, ast.Assign)
+                    else [statement.target]
+                    if isinstance(statement, ast.AnnAssign) and statement.value is not None
+                    else []
+                )
+                value = getattr(statement, "value", None)
+                for target in targets:
+                    if isinstance(target, ast.Name) and value is not None:
+                        if target.id in seen:
+                            self._string_constants.pop(target.id, None)
+                            continue
+                        seen.add(target.id)
+                        self._string_constants[target.id] = (value.lineno, value.end_lineno or value.lineno)
+        constants: list[tuple[str, int, int]] = []
+        if wrapped is not None:
+            inside = [n.id for n in ast.walk(wrapped) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
+            everywhere = [n.id for n in ast.walk(self._tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
+            for name in sorted(set(inside)):
+                span = self._string_constants.get(name)
+                # a constant named anywhere else in the module is not this declaration's alone
+                if span is not None and everywhere.count(name) == inside.count(name):
+                    constants.append((name, *span))
+        self.declarations.append(
+            DeclaredWhole(
+                self.path,
+                self._function,
+                node.lineno,
+                wrapped.lineno if wrapped is not None else node.lineno,
+                (wrapped.end_lineno or wrapped.lineno) if wrapped is not None else node.lineno,
+                literal.get("kind", ""),
+                literal.get("reason", ""),
+                literal.get("ruling", ""),
+                literal.get("proof", ""),
+                literal.get("speed", ""),
+                tuple(constants),
+            )
+        )
 
     def _relation_produced(self, value: ast.expr) -> str | None:
         """the relation an expression names when a declared relation producer yields it: a call of a declared
@@ -3539,7 +3726,8 @@ class _ModuleWalk(ast.NodeVisitor):
             for value in [*node.args[1:], *(k.value for k in node.keywords)]
         )
         whole_named = (
-            name not in self._pagers
+            name != _DECLARATION_CALL
+            and name not in self._pagers
             and name not in self._always_whole
             and _WHOLE_CALL.search(name.lower()) is not None
             and _WHOLE_QUESTION.search(name) is None
@@ -6262,6 +6450,7 @@ def scan_whole_reads(
         module_functions[relative] = walk.module_functions
         module_classes[relative] = walk.module_classes
         scan.operators.extend(walk.operators)
+        scan.declarations.extend(walk.declarations)
         imports[relative] = walk.imports
         scan.declared_matched.update(walk.declared_matched)
         scan.files_scanned += 1
