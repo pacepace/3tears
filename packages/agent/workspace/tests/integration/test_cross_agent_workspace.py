@@ -61,6 +61,7 @@ from threetears.agent.workspace.authorize import (
     WorkspaceAccessDenied,
 )
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.testing.schemas import drop_schema
 
 
 # rbac-task-01 v016 seeds ``WorkspaceEditor`` with this deterministic UUID
@@ -69,6 +70,10 @@ from threetears.core.data.migrations import MigrationRunner
 # ``{"workspace": ["read", "write"]}`` permissions when resolving
 # assignments from this test's singleton groups.
 _WORKSPACE_EDITOR_ROLE_ID = UUID("f3684adb-bc37-5e79-90b9-af9c814bb29e")
+
+#: this run's own stand-in for the hub's platform schema: made by the test and dropped by it, so it never touches a
+#: schema it did not create (the shared test database's other suites keep their own)
+_PLATFORM = f"ws_platform_{uuid4().hex[:12]}"
 
 # canonical testcontainer harness from threetears.core; provides
 # the ``db_container`` fixture this file's ``pg_url`` alias wraps.
@@ -131,14 +136,11 @@ async def _build_platform_schema(conn: asyncpg.Connection) -> None:
     the tables come from agent-acl's migrations, so the seeded rows
     carry the shape the access reads expect (``row_scope`` included).
 
-    the session-scoped ``db_container`` is shared across every
-    integration test that uses it; sibling suites (notably
-    ``packages/core/tests/integration/test_migration_rollback.py``)
-    also create a ``platform`` schema with overlapping tables, so the
-    DDL here drops the schema first to guarantee a clean slate
-    (cascade cleans nested tables + foreign keys). without that, a
-    ``DuplicateTableError`` lands when this test runs after a sibling
-    that already populated the schema in the same session.
+    the database is shared with sibling suites (notably
+    ``packages/core/tests/integration/test_migration_rollback.py``,
+    which stands up a ``platform`` schema of its own), so the tables
+    go in this run's own schema, :data:`_PLATFORM`, which the test
+    drops when it ends.
 
     :param conn: asyncpg connection
     :ptype conn: asyncpg.Connection
@@ -151,10 +153,9 @@ async def _build_platform_schema(conn: asyncpg.Connection) -> None:
     # because group_members is not in the shard's rename list -- it
     # already has a separate ``member_id`` column carrying the
     # user/agent identifier.
-    await conn.execute("DROP SCHEMA IF EXISTS platform CASCADE")
-    await conn.execute("CREATE SCHEMA platform")
+    await conn.execute(f'CREATE SCHEMA "{_PLATFORM}"')
     # the five access tables as production has them: agent-acl's own migrations, so the test sees every column the access reads name (row_scope among them)
-    await conn.execute("SET search_path TO platform")
+    await conn.execute(f'SET search_path TO "{_PLATFORM}"')
     try:
         runner = MigrationRunner()
         register_acl(runner)
@@ -168,11 +169,11 @@ async def _build_platform_schema(conn: asyncpg.Connection) -> None:
     # bucket; per-file gates require those alongside the workspace-level
     # ``read`` / ``write``.
     await conn.execute(
-        """
-        INSERT INTO platform.roles (role_id, name, description, permissions, is_builtin)
+        f"""
+        INSERT INTO "{_PLATFORM}".roles (role_id, name, description, permissions, is_builtin)
         VALUES ($1, 'WorkspaceEditor',
                 'Read and write on workspaces and workspace files.',
-                '{"workspace": ["read", "write", "read_file_matching:**/*", "write_file_matching:**/*"], "workspace_file": ["read", "write"]}'::jsonb,
+                '{{"workspace": ["read", "write", "read_file_matching:**/*", "write_file_matching:**/*"], "workspace_file": ["read", "write"]}}'::jsonb,
                 TRUE)
         """,
         _WORKSPACE_EDITOR_ROLE_ID,
@@ -275,9 +276,9 @@ class _SqlMembershipLoader:
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT group_id, member_type, member_id, customer_id
-                  FROM platform.group_members
+                  FROM "{_PLATFORM}".group_members
                  WHERE member_type = 'user' AND member_id = $1
                 """,
                 user_id,
@@ -305,9 +306,9 @@ class _SqlMembershipLoader:
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT group_id, member_type, member_id, customer_id
-                  FROM platform.group_members
+                  FROM "{_PLATFORM}".group_members
                  WHERE member_type = 'agent' AND member_id = $1
                 """,
                 agent_id,
@@ -367,10 +368,10 @@ class _SqlGrantLoader:
             return ()
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT assignment_id, role_id, group_id, scope_type,
                        scope_namespace_id, scope_namespace_type, scope_customer_id
-                  FROM platform.role_assignments
+                  FROM "{_PLATFORM}".role_assignments
                  WHERE group_id = ANY($1::uuid[])
                    AND (
                           (scope_type = 'namespace'
@@ -414,9 +415,9 @@ class _SqlGrantLoader:
             return {}
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT role_id, name, permissions, is_builtin
-                  FROM platform.roles
+                  FROM "{_PLATFORM}".roles
                  WHERE role_id = ANY($1::uuid[])
                 """,
                 list(role_ids),
@@ -458,9 +459,9 @@ class _SqlGrantLoader:
             return {}
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT group_id, name, customer_id
-                  FROM platform.groups
+                  FROM "{_PLATFORM}".groups
                  WHERE group_id = ANY($1::uuid[])
                 """,
                 list(group_ids),
@@ -786,7 +787,7 @@ class _SchemaBoundPool:
         del namespace
         async with self._pool.acquire() as conn:
             await conn.execute(
-                f'SET search_path TO "{self._schema}", platform',
+                f'SET search_path TO "{self._schema}", "{_PLATFORM}"',
             )
             return await conn.fetchrow(query, *args)
 
@@ -810,7 +811,7 @@ class _SchemaBoundPool:
         del namespace
         async with self._pool.acquire() as conn:
             await conn.execute(
-                f'SET search_path TO "{self._schema}", platform',
+                f'SET search_path TO "{self._schema}", "{_PLATFORM}"',
             )
             return await conn.fetch(query, *args)
 
@@ -834,7 +835,7 @@ class _SchemaBoundPool:
         del namespace
         async with self._pool.acquire() as conn:
             await conn.execute(
-                f'SET search_path TO "{self._schema}", platform',
+                f'SET search_path TO "{self._schema}", "{_PLATFORM}"',
             )
             return await conn.execute(query, *args)
 
@@ -922,7 +923,7 @@ class _NamespaceTxCM:
         :rtype: Any
         """
         await self._conn.execute(
-            f'SET search_path TO "{self._schema}", platform',
+            f'SET search_path TO "{self._schema}", "{_PLATFORM}"',
         )
         self._tx = self._conn.transaction()
         return await self._tx.__aenter__()
@@ -971,7 +972,7 @@ class _SchemaBoundAcquire:
         self._cm = self._pool.raw_pool.acquire()
         self._conn = await self._cm.__aenter__()
         await self._conn.execute(
-            f'SET search_path TO "{self._schema}", platform',
+            f'SET search_path TO "{self._schema}", "{_PLATFORM}"',
         )
         return _NamespaceTxWrapper(self._conn, self._pool)
 
@@ -1019,11 +1020,11 @@ async def _seed_namespace_row(
     """
     now = datetime.now(UTC)
     await conn.execute(
-        """
-        INSERT INTO platform.namespaces (
+        f"""
+        INSERT INTO "{_PLATFORM}".namespaces (
             row_scope, namespace_id, name, namespace_type, owner_agent_id, schema_name,
             customer_id, metadata, date_created, date_updated
-        ) VALUES ('customer', $1, $2, 'workspace', $3, $4, $5, '{}'::jsonb, $6, $7)
+        ) VALUES ('customer', $1, $2, 'workspace', $3, $4, $5, '{{}}'::jsonb, $6, $7)
         """,
         workspace_id,
         f"workspace.{workspace_id}",
@@ -1072,8 +1073,8 @@ async def _grant_via_singleton_group(
     group_name = f"{principal_type}:{principal_id}"
     now = datetime.now(UTC)
     await conn.execute(
-        """
-        INSERT INTO platform.groups (
+        f"""
+        INSERT INTO "{_PLATFORM}".groups (
             row_scope, group_id, customer_id, name, description, date_created, date_updated
         ) VALUES ('customer', $1, $2, $3, $4, $5, $6)
         """,
@@ -1085,8 +1086,8 @@ async def _grant_via_singleton_group(
         now,
     )
     await conn.execute(
-        """
-        INSERT INTO platform.group_members (
+        f"""
+        INSERT INTO "{_PLATFORM}".group_members (
             id, group_id, member_type, member_id, customer_id, date_added
         ) VALUES ($1, $2, $3, $4, $5, $6)
         """,
@@ -1098,8 +1099,8 @@ async def _grant_via_singleton_group(
         now,
     )
     await conn.execute(
-        """
-        INSERT INTO platform.role_assignments (
+        f"""
+        INSERT INTO "{_PLATFORM}".role_assignments (
             row_scope, assignment_id, role_id, group_id, scope_type,
             scope_namespace_id, scope_namespace_type, scope_customer_id,
             granted_by, date_granted
@@ -1453,7 +1454,7 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
         # assertion: new journal row in A's schema, actor_id == agent_b
         async with pool.acquire() as conn:
             await conn.execute(
-                f'SET search_path TO "{owner_schema}", platform',
+                f'SET search_path TO "{owner_schema}", "{_PLATFORM}"',
             )
             latest = await conn.fetchrow(
                 "SELECT actor_id, action, version FROM workspace_file_versions "
@@ -1527,6 +1528,8 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
         # scoping rule in effect.
         assert u2_result.success is False, "same-customer user without grant should be denied"
     finally:
+        async with pool.acquire() as conn:
+            await drop_schema(conn, _PLATFORM)
         await pool.close()
 
 
