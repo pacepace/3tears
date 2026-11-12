@@ -254,7 +254,9 @@ elif bad:
     print("failed", "no", f"{bad} test(s) failed or errored (exit {code})")
 elif code == 0 and envelope.get("exit_code") == 0:
     print("passed", "no", f"counts {counts}")
-elif code == 2 and error.get("code") in POOL_DOWN:
+elif code in (2, 75) and (error.get("code") in POOL_DOWN or envelope.get("verdict") == "unavailable"):
+    # testament before 0.46 exits 2 for these; from 0.46 a run the pool could not serve exits 75 and its
+    # envelope says verdict "unavailable" (store_full among them), while every other stop keeps exit 2
     print("unreachable", retry, said)
 elif code == 5:
     print("failed", "no", "the pool collected no tests (exit 5)")
