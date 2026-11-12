@@ -13,6 +13,7 @@ from threetears.core.testing.rewrites import (
     CatalogColumn,
     row_factory,
     seed_scalar,
+    set_value,
     CatalogTable,
     assert_source_says,
     entry_id,
@@ -174,3 +175,32 @@ def test_a_json_column_is_seeded_as_its_text() -> None:
         value = seed_scalar(CatalogColumn("doc", kind, "U", "", True, False, False), "U", 7)
         assert isinstance(value, str)
         assert json.loads(value) == {"n": 7}
+
+
+def test_a_set_parameter_takes_the_table_s_override_past_the_seeded_rows() -> None:
+    """Flips if a write's SET parameter ignores the override (a column of a type with no generic value then cannot be
+    proven), or the override is handed a seed a seeded row could also have been handed."""
+    mac = CatalogColumn("mac", "macaddr", "U", "", True, False, False)
+    with pytest.raises(AssertionError, match="no generic value"):
+        set_value(mac, 900_000, {})
+    handed: list[Seeded] = []
+
+    def override(seed: Seeded) -> str:
+        handed.append(seed)
+        return f"mac-{seed.index}"
+
+    assert set_value(mac, 900_001, {"mac": override}) == "mac-900001"
+    assert handed == [Seeded(index=900_001, case="sets", tenant=900_001, null=False, tie=900_001)]
+    name = CatalogColumn("name", "text", "S", "", True, False, False)
+    assert set_value(name, 900_000, {"mac": override}) == "name-900000"
+
+
+def test_a_vector_column_is_seeded_as_pgvector_text_of_its_width() -> None:
+    """Flips if a vector(n) column has no generic value (the hub's embedding writes then need an override each), or
+    its text is not n dimensions, distinct for each n."""
+    for spelled in ("vector(3)", "public.vector(3)"):
+        column = CatalogColumn("embedding", spelled, "U", "", True, False, False)
+        assert seed_scalar(column, "U", 7) == "[7,0,0]"
+        assert seed_scalar(column, "U", 8) != seed_scalar(column, "U", 7)
+    with pytest.raises(AssertionError, match="no declared width"):
+        seed_scalar(CatalogColumn("embedding", "vector", "U", "", True, False, False), "U", 7)

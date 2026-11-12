@@ -41,8 +41,9 @@ values of the first row (tenant 0); an ``= ANY($n)`` pin's array holds the first
 (``AnyOf`` on the helper's side, with the statement's cast). Foreign keys and triggers are held off while seeding
 (``session_replication_role = replica``: the connection must be a superuser's, as a test database's is), and the
 table's CHECK constraints are dropped in the test database (:func:`_drop_checks`: the statements are then compared over
-more rows than production can hold, never fewer). A column no generic value fits takes ``overrides``: column -> value
-of a :class:`Seeded`.
+more rows than production can hold, never fewer). A pgvector ``vector(n)`` column is seeded as the text of ``n``
+dimensions. A column no generic value fits takes ``overrides``: column -> value of a :class:`Seeded`, for the seeded
+rows and for a write's SET parameters (:func:`set_value`).
 """
 
 from __future__ import annotations
@@ -77,6 +78,7 @@ __all__ = [
     "entry_id",
     "load_manifest",
     "row_factory",
+    "set_value",
 ]
 
 #: per table, column -> its value for a seed, where the catalog's row does not fit
@@ -146,8 +148,24 @@ async def _drop_checks(conn: Any, table: str) -> None:
         await conn.execute(f'ALTER TABLE {table} DROP CONSTRAINT "{name}"')
 
 
+async def _vectors_as_text(conn: Any) -> None:
+    """bind and read pgvector's ``vector`` as its text on ``conn``, as the code under test sends it (``$n::text``
+    cast to the vector, ``col::text`` read back).
+
+    asyncpg has no vector codec. On PostgreSQL the extension's type has an ordinary OID and asyncpg falls back to its
+    text form; on YugabyteDB ``vector`` is a built-in type (OID 8078), which asyncpg refuses outright ("unhandled
+    standard data type") when a seeded row binds one or the table's state is read. A text codec covers both.
+    """
+    for found in await conn.fetch(
+        "SELECT n.nspname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.typname = 'vector'"
+    ):
+        await conn.set_type_codec("vector", schema=found["nspname"], encoder=str, decoder=str, format="text")
+
+
 async def _catalog(conn: Any, table: str) -> CatalogTable:
-    """the table as migrated: its columns, their types and constraints, its unique keys."""
+    """the table as migrated: its columns, their types and constraints, its unique keys (``conn`` then binds and
+    reads a vector as its text: :func:`_vectors_as_text`)."""
+    await _vectors_as_text(conn)
     found = await conn.fetchval("SELECT to_regclass($1)::oid", table)
     if found is None:
         raise AssertionError(f"{table}: no such table on the test database's search path")
@@ -243,6 +261,14 @@ def seed_scalar(column: CatalogColumn, category: str, n: int) -> Any:
         return f"{n}".encode()
     if kind == "inet":
         return f"10.0.{n // 256 % 256}.{n % 256}"
+    if kind.rsplit(".", 1)[-1] == "vector":
+        # pgvector's text form, as many dimensions as the column declares (format_type: [public.]vector(n))
+        dimensions = re.search(r"\((\d+)\)", column.type)
+        if dimensions is None:
+            raise AssertionError(
+                f"column {column.name} ({column.type}): a vector of no declared width; give it an override"
+            )
+        return "[" + ",".join([str(n), *["0"] * (int(dimensions.group(1)) - 1)]) + "]"
     raise AssertionError(f"column {column.name} ({column.type}): no generic value; give it an override")
 
 
@@ -250,6 +276,24 @@ def _value(column: CatalogColumn, n: int) -> Any:
     if column.category == "A":
         return [seed_scalar(column, column.element_category, n)]
     return seed_scalar(column, column.category, n)
+
+
+def set_value(column: CatalogColumn, n: int, overrides: Mapping[str, Callable[[Seeded], Any]]) -> Any:
+    """the value a write's SET parameter ``n`` binds for ``column``: the table's override for the column when given
+    (handed a seed past every seeded row, so no row holds it before the write), else the column's generic value.
+
+    :param column: the column the parameter is set into
+    :ptype column: CatalogColumn
+    :param n: the value's number, past the seeded rows' (900_000 up)
+    :ptype n: int
+    :param overrides: the table's column -> value of a seed
+    :ptype overrides: Mapping[str, Callable[[Seeded], Any]]
+    :return: the parameter's value
+    :rtype: Any
+    """
+    if column.name in overrides:
+        return overrides[column.name](Seeded(index=n, case="sets", tenant=n, null=False, tie=n))
+    return _value(column, n)
 
 
 def _other(column: CatalogColumn, literal: Any) -> Any:
@@ -466,7 +510,7 @@ async def _assert_write_same(conn: Any, entry: Mapping[str, Any], *, overrides: 
                 raise AssertionError(f"{table}: the write sets {pin['column']}, which the table has no column of")
             # a value no seeded row holds, so the write shows in the table after it (a fragment's parameters are
             # taken as the set column's type: GREATEST(col, $1), COALESCE($1::jsonb, col))
-            params[number - 1] = _value(column, 900_000 + offset)
+            params[number - 1] = set_value(column, 900_000 + offset, (overrides or {}).get(table, {}))
     by = _by(entry, params)
     values: dict[str, Any] = {}
     for pin in entry["sets"]:
