@@ -269,6 +269,11 @@ _WRITES = """
 
     async def renamed_count(conn, agent_id, name):
         status = await conn.execute("UPDATE agents SET name = $1 WHERE id = $2", name, agent_id)
+        return parse_rowcount(status)
+
+
+    async def renamed_status(conn, agent_id, name):
+        status = await conn.execute("UPDATE agents SET name = $1 WHERE id = $2", name, agent_id)
         return status
 
 
@@ -404,8 +409,10 @@ def test_keyed_writes_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path)
     """Flips if a keyed write by equality, its status discarded (or its RETURNING of plain columns read by fetch,
     fetchrow or fetchval), is not rewritten onto update_keyed / delete_keyed exactly, read as the method it replaces
     read it, the manifest does not record it, or the rewritten module still holds a use-the-helper finding for it or
-    a new whole-read finding; or a write whose status is read, an increment, a RETURNING * or a RETURNING sent by
-    execute, or an unkeyed write is rewritten."""
+    a new whole-read finding; or a write whose status is read but not as a count (returned as it is), a RETURNING *
+    or a RETURNING sent by execute, or an unkeyed write is rewritten. A write whose status is read as a count
+    (``parse_rowcount(status)``) is rewritten onto the helper's ``.count`` (coordinator ruling 2026-11-12: the
+    caller's status read becomes the helper's count; there is no ``KeyedWrite.status``)."""
     config = _write_config(tmp_path)
     before = no_whole_reads_findings(config)
     rewrites, refusals = plan_write_rewrites(config)
@@ -417,17 +424,18 @@ def test_keyed_writes_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path)
         ("raised", "update_keyed"),
         ("rename", "update_keyed"),
         ("rename_many", "update_keyed"),
+        ("renamed_count", "update_keyed"),
         ("returned", "delete_keyed"),
     ]
     refused = {refusal.function: refusal.reason for refusal in refusals}
     assert refused.keys() >= {
-        "renamed_count",
+        "renamed_status",
         "by_status",
         "from_elsewhere",
         "returned_all",
         "returned_by_execute",
     }, refused
-    assert "status is read" in refused["renamed_count"]
+    assert "status is read as 'return status', which no count reads" in refused["renamed_status"]
     assert "unkeyed" in refused["by_status"]
     assert "plain columns" in refused["returned_all"]
     assert "execute" in refused["returned_by_execute"]
@@ -472,6 +480,10 @@ def test_keyed_writes_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path)
         "row = (await update_keyed(conn, 'agents', values={'name': name}, by={'id': agent_id},"
         " returning=('id', 'name'))).row" in source
     )
+    assert (
+        "status = (await update_keyed(conn, 'agents', values={'name': name}, by={'id': agent_id})).count\n"
+        "    return status\n" in source
+    )
     for entry in entries:
         assert_source_says(tmp_path, entry)
 
@@ -481,9 +493,174 @@ def test_keyed_writes_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path)
         for finding in left
         if any(
             f" in {function}:" in finding
-            for function in ("rename", "forget", "returned", "claimed", "moved", "rename_many", "bumped", "raised")
+            for function in (
+                "rename",
+                "forget",
+                "returned",
+                "claimed",
+                "moved",
+                "rename_many",
+                "bumped",
+                "raised",
+                "renamed_count",
+            )
         )
     ], left
+    assert _unlined(no_whole_reads_findings(config)) == _unlined(before)
+
+
+_STATUS_READS = """
+    from typing import Final
+
+    from threetears.core.backends.protocol import parse_rowcount
+    from threetears.interfaces.keyed.counts import rows_affected
+
+    #: forget one agent, or one geo
+    _FORGET_SQL: Final[dict[str, str]] = {
+        "agents": "DELETE FROM agents WHERE id = $1",
+        "geos": "DELETE FROM geos WHERE state = $1",
+    }
+    _HIDE_SQL = "UPDATE agents SET gone = TRUE WHERE id = $1"
+    _DROP_SQL = "DELETE FROM agents WHERE id = $1"
+
+
+    async def compared(conn, agent_id):
+        if await conn.execute("DELETE FROM agents WHERE id = $1", agent_id) == "DELETE 0":
+            return False
+        return True
+
+
+    async def kept(conn, agent_id, name):
+        status = await conn.execute("UPDATE agents SET name = $1 WHERE id = $2", name, agent_id)
+        log = "UPDATE 0" != status
+        return status != "UPDATE 0", log
+
+
+    async def ended(conn, agent_id):
+        status = await conn.execute("UPDATE agents SET hits = 0 WHERE id = $1", agent_id)
+        if status.endswith(" 0"):
+            raise LookupError(agent_id)
+
+
+    async def ended_not(conn, agent_id):
+        return not (await conn.execute("UPDATE agents SET hits = 1 WHERE id = $1", agent_id)).endswith(" 1")
+
+
+    async def counted(conn, agent_id):
+        n = int((await conn.execute("DELETE FROM agents WHERE gone AND id = $1", agent_id)).split()[-1])
+        return n
+
+
+    async def worded(conn, agent_id):
+        status = await conn.execute("UPDATE agents SET hits = 2 WHERE id = $1", agent_id)
+        return status.split()[-1] == "0", int(status.rsplit(" ", 1)[-1])
+
+
+    async def parsed(conn, agent_id):
+        return parse_rowcount(await conn.execute("UPDATE agents SET hits = 3 WHERE id = $1", agent_id))
+
+
+    async def affected(conn, agent_id):
+        status: str = await conn.execute("UPDATE agents SET hits = 4 WHERE id = $1", agent_id)
+        return rows_affected(status) == 1
+
+
+    async def forget(conn, table, key):
+        return parse_rowcount(await conn.execute(_FORGET_SQL[table], key))
+
+
+    async def drop_or_hide(conn, agent_id, hard):
+        sql = _DROP_SQL if hard else _HIDE_SQL
+        return parse_rowcount(await conn.execute(sql, agent_id))
+
+
+    async def wrong_verb(conn, agent_id):
+        status = await conn.execute("UPDATE agents SET hits = 5 WHERE id = $1", agent_id)
+        return status == "DELETE 0"
+
+
+    async def logged(conn, agent_id):
+        status = await conn.execute("UPDATE agents SET hits = 6 WHERE id = $1", agent_id)
+        print(status)
+        return parse_rowcount(status)
+
+
+    async def suffix(conn, agent_id):
+        status = await conn.execute("UPDATE agents SET hits = 7 WHERE id = $1", agent_id)
+        return status.endswith("0")
+
+
+    async def rebound(conn, agent_id):
+        status = await conn.execute("UPDATE agents SET hits = 8 WHERE id = $1", agent_id)
+        status = parse_rowcount(status)
+        return status
+"""
+
+
+def test_a_write_whose_status_is_read_reads_the_helpers_count(tmp_path: Path) -> None:
+    """Flips if a keyed write whose status is read in a common spelling (compared with its own verb's tag, ``!=``
+    either side, ``.endswith(" n")``, ``int(status.split()[-1])`` / ``rsplit(" ", 1)``, the last word compared with a
+    number, ``parse_rowcount`` / ``rows_affected``; read where it is awaited or through a local bound once, through a
+    dict of statements or a conditional choice of two) is not rewritten onto the helper with each read of the status
+    reading the helper's ``.count`` exactly (coordinator ruling 2026-11-12; there is no ``KeyedWrite.status``), or if a
+    spelling no count reads (another verb's tag, a bare ``endswith("0")``, the status printed, the local bound twice)
+    is rewritten at all."""
+    src = tmp_path / "src"
+    for name, source in {"pkg/tables.py": _TABLES, "pkg/status.py": _STATUS_READS}.items():
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
+    config = NoWholeReadsConfig(
+        repo_root=tmp_path, src_roots=(src,), ledger_dir=tmp_path, dependency_schema=False, table_lists=()
+    )
+    before = no_whole_reads_findings(config)
+    rewrites, refusals = plan_write_rewrites(config)
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    assert {rewrite.function for rewrite in rewrites} == {
+        "compared",
+        "kept",
+        "ended",
+        "ended_not",
+        "counted",
+        "worded",
+        "parsed",
+        "affected",
+        "<module>",
+        "drop_or_hide",
+    }, refused
+    assert refused.keys() == {"wrong_verb", "logged", "suffix", "rebound"}, refused
+    assert "compared with 'DELETE 0', not its own verb's tag" in refused["wrong_verb"]
+    assert "read as 'print(status)', which no count reads" in refused["logged"]
+    assert "read as 'status.endswith(\"0\")'" in refused["suffix"]
+    assert "bound more than once" in refused["rebound"]
+
+    assert apply_rewrites(tmp_path, rewrites, ruff=None) == ["src/pkg/status.py"]
+    source = (src / "pkg/status.py").read_text(encoding="utf-8")
+    ast.parse(source)
+    for text in (
+        "if (await delete_keyed(conn, 'agents', by={'id': agent_id})).count == 0:",
+        "status = (await update_keyed(conn, 'agents', values={'name': name}, by={'id': agent_id})).count",
+        "log = 0 != status",
+        "return status != 0, log",
+        "if status == 0:",
+        "return not ((await update_keyed(conn, 'agents', values={'hits': 1}, by={'id': agent_id})).count == 1)",
+        "n = (await delete_keyed(conn, 'agents', by={'gone': True, 'id': agent_id})).count",
+        "return status == 0, status",
+        "return (await update_keyed(conn, 'agents', values={'hits': 3}, by={'id': agent_id})).count",
+        "status: int = (await update_keyed(conn, 'agents', values={'hits': 4}, by={'id': agent_id})).count",
+        "return status == 1",
+        "return (await _FORGET_SQL[table](conn, key)).count",
+        "return (await (delete_keyed(conn, 'agents', by={'id': agent_id}) if hard else update_keyed(conn, 'agents',"
+        " values={'gone': True}, by={'id': agent_id}))).count",
+    ):
+        assert text in source, (text, source)
+    assert "_DROP_SQL" not in source and "_HIDE_SQL" not in source and "sql = " not in source
+    assert "parse_rowcount(status)\n" in source and 'status == "DELETE 0"' in source
+    # a status parser the rewrite left unused is no longer imported; one still read stays
+    assert "rows_affected" not in source, source
+    assert "from threetears.core.backends.protocol import parse_rowcount\n" in source
+    left = [finding for finding in use_the_helper_findings(config) if "use-the-helper write" in finding]
+    assert {finding.split(" in ")[1].split(":")[0] for finding in left} == set(refused), left
     assert _unlined(no_whole_reads_findings(config)) == _unlined(before)
 
 

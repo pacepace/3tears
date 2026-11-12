@@ -30,7 +30,13 @@ run again: a rewritten function must hold no whole-read finding it did not hold 
 :func:`~threetears.core.keyed.delete_keyed` with the same ``values`` and ``by``. Sent by an awaited ``execute`` whose
 status is discarded; or, with a ``RETURNING`` of plain columns, by an awaited ``fetch`` / ``fetchrow`` / ``fetchval``,
 the helper then called with ``returning=`` and its answer read as that method answered (``.rows``, ``.row``, ``.value``:
-a list of rows, the first row or None, the first row's first column or None).
+a list of rows, the first row or None, the first row's first column or None). A write whose status is read is
+rewritten too when every read is one a count gives exactly (ruling 2026-11-12; there is no ``KeyedWrite.status``): the
+awaited call becomes ``(await helper(...)).count``, read where it was awaited or bound once to a local, and each read
+becomes the count's: ``status == "UPDATE n"`` / ``!=`` (the statement's own verb) as ``count == n``,
+``status.endswith(" n")`` as ``count == n``, ``int(status.split()[-1])`` / ``parse_rowcount(status)`` /
+``rows_affected(status)`` as the count, ``status.split()[-1] == "n"`` as ``count == n``. Any other read (returned,
+logged, another verb's tag) is refused, and a status parser the rewrite leaves unused is no longer imported.
 
 Splicing is by the call's ``ast`` span; the touched files are then put through ``ruff check --select I --fix`` (the
 new import sorted in) and ``ruff format``, which every repo runs.
@@ -583,12 +589,246 @@ def _call_of(module: _Module, use: ast.expr, methods: frozenset[str] = frozenset
     if not isinstance(awaited, ast.Await):
         return "the call is not awaited where it is made"
     if methods == _WRITE_METHODS and not isinstance(module.parent(awaited), ast.Expr):
-        return "the statement's status is read (the helper answers a count, not a status)"
+        read = _status_reading(module, awaited)
+        if isinstance(read, str):
+            return read
     if call.keywords:
         return "keyword arguments to the call (timeout=, ...)"
     if any(isinstance(arg, ast.Starred) for arg in call.args):
         return "starred arguments"
     return call
+
+
+#: a status compared with a literal: ``status == "UPDATE 0"``, the verb and the count
+_STATUS_TAG: Final[re.Pattern[str]] = re.compile(r"^(?P<verb>UPDATE|DELETE) (?P<count>\d+)$")
+#: a status's ending: ``status.endswith(" 0")``, the count after its space
+_STATUS_END: Final[re.Pattern[str]] = re.compile(r"^ (?P<count>\d+)$")
+#: the functions that read a status as its count (``parse_rowcount(status)``, ``rows_affected(status)``)
+_STATUS_PARSERS: Final[frozenset[str]] = frozenset({"parse_rowcount", "rows_affected"})
+#: where a status read rewritten into a comparison is written bare; anywhere else it is parenthesised
+_BARE_CONTEXTS: Final[tuple[type[ast.AST], ...]] = (
+    ast.If,
+    ast.While,
+    ast.Assert,
+    ast.Return,
+    ast.Assign,
+    ast.AnnAssign,
+    ast.BoolOp,
+    ast.IfExp,
+    ast.Expr,
+    ast.keyword,
+    ast.comprehension,
+)
+
+
+@dataclass(frozen=True)
+class _StatusRead:
+    """how a write's status is read, as the helper's count reads it (ruling 2026-11-12: the caller reads
+    ``(await helper(...)).count``; there is no ``KeyedWrite.status``).
+
+    :ivar local: the name the status is bound to (``status = await conn.execute(...)``), None when it is read where
+        it is awaited
+    :ivar binding: that binding (its annotation, if any, becomes ``int``)
+    :ivar reads: each place the status is read: the node replaced, and its text with ``{}`` for the count
+    """
+
+    local: str | None
+    binding: ast.Assign | ast.AnnAssign | None
+    reads: tuple[tuple[ast.expr, str], ...]
+
+
+def _minus_one(node: ast.expr) -> bool:
+    return isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) and _int_constant(node.operand) == 1
+
+
+def _int_constant(node: ast.expr) -> int | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+        return node.value
+    return None
+
+
+def _last_word(module: _Module, status: ast.expr) -> ast.Subscript | None:
+    """``status.split()[-1]`` (``split(" ")``, ``rsplit()``, ``rsplit(" ", 1)``; ``[1]`` too: an UPDATE or DELETE
+    status is two words), the subscript; None when ``status`` is not read so."""
+    method = module.parent(status)
+    if not (isinstance(method, ast.Attribute) and method.value is status and method.attr in ("split", "rsplit")):
+        return None
+    call = module.parent(method)
+    if not (isinstance(call, ast.Call) and call.func is method and not call.keywords):
+        return None
+    separator = call.args[0] if call.args else None
+    if separator is not None and not (isinstance(separator, ast.Constant) and separator.value in (" ", None)):
+        return None
+    if len(call.args) > 2 or (len(call.args) == 2 and (method.attr != "rsplit" or _int_constant(call.args[1]) != 1)):
+        return None
+    subscript = module.parent(call)
+    if not (isinstance(subscript, ast.Subscript) and subscript.value is call):
+        return None
+    return subscript if _minus_one(subscript.slice) or _int_constant(subscript.slice) == 1 else None
+
+
+def _compared(
+    module: _Module, node: ast.expr, other: ast.expr, verbs: frozenset[str] | None, *, word: bool
+) -> tuple[ast.expr, str] | str | None:
+    """``node == <literal>`` / ``!=`` (either side) as the count compared; None when ``node`` is in no comparison."""
+    compare = module.parent(node)
+    if not isinstance(compare, ast.Compare) or len(compare.ops) != 1:
+        return None
+    if not isinstance(compare.ops[0], ast.Eq | ast.NotEq):
+        return None
+    if not (isinstance(other, ast.Constant) and isinstance(other.value, str)):
+        return None
+    if word:
+        if not other.value.isascii() or not other.value.isdigit():
+            return None
+        count = int(other.value)
+    else:
+        tag = _STATUS_TAG.match(other.value)
+        if tag is None:
+            return None
+        if verbs is not None and verbs != {tag["verb"].lower()}:
+            return f"the statement's status is compared with {other.value!r}, not its own verb's tag"
+        count = int(tag["count"])
+    op = "==" if isinstance(compare.ops[0], ast.Eq) else "!="
+    return compare, ("{} " + op + f" {count}" if compare.left is node else f"{count} {op} " + "{}")
+
+
+def _one_read(module: _Module, status: ast.expr, verbs: frozenset[str] | None) -> tuple[ast.expr, str] | str:
+    """one place a write's status is read, as the node it replaces and its text with ``{}`` for the count; or why it
+    cannot be read as a count."""
+    parent = module.parent(status)
+    # status == "UPDATE 0" / "DELETE 1" != status
+    if isinstance(parent, ast.Compare):
+        other = parent.comparators[0] if parent.left is status else parent.left
+        compared = _compared(module, status, other, verbs, word=False)
+        if compared is not None:
+            return compared
+    # parse_rowcount(status) / rows_affected(status)
+    if (
+        isinstance(parent, ast.Call)
+        and parent.args == [status]
+        and not parent.keywords
+        and (parent.func.id if isinstance(parent.func, ast.Name) else getattr(parent.func, "attr", None))
+        in _STATUS_PARSERS
+    ):
+        return parent, "{}"
+    # status.endswith(" 0")
+    if isinstance(parent, ast.Attribute) and parent.attr == "endswith":
+        call = module.parent(parent)
+        if (
+            isinstance(call, ast.Call)
+            and call.func is parent
+            and len(call.args) == 1
+            and not call.keywords
+            and isinstance(call.args[0], ast.Constant)
+            and isinstance(call.args[0].value, str)
+        ):
+            end = _STATUS_END.match(call.args[0].value)
+            if end is not None:
+                text = "{} == " + end["count"]
+                return call, f"({text})" if not isinstance(module.parent(call), _BARE_CONTEXTS) else text
+    # int(status.split()[-1]); status.split()[-1] == "0"
+    word = _last_word(module, status)
+    if word is not None:
+        holder = module.parent(word)
+        if (
+            isinstance(holder, ast.Call)
+            and isinstance(holder.func, ast.Name)
+            and holder.func.id == "int"
+            and holder.args == [word]
+            and not holder.keywords
+        ):
+            return holder, "{}"
+        if isinstance(holder, ast.Compare):
+            other = holder.comparators[0] if holder.left is word else holder.left
+            compared = _compared(module, word, other, verbs, word=True)
+            if compared is not None:
+                return compared
+    shown: ast.AST = parent if parent is not None else status
+    if isinstance(shown, ast.Attribute) and isinstance(module.parent(shown), ast.Call):
+        shown = module.parent(shown)  # type: ignore[assignment]
+    spelled = module.segment(shown)
+    return (
+        f"the statement's status is read as {' '.join(spelled.split())[:60]!r}, which no count reads "
+        "(the helper answers a count, not a status)"
+    )
+
+
+def _status_reading(module: _Module, awaited: ast.Await, verbs: frozenset[str] | None = None) -> _StatusRead | str:
+    """every read of the status of the awaited write ``awaited`` (read where it is awaited, or bound once to a local
+    and read there), each as the helper's count reads it; or why one cannot be (refused, and listed).
+
+    :param module: the module
+    :ptype module: _Module
+    :param awaited: the awaited ``execute``
+    :ptype awaited: ast.Await
+    :param verbs: the write's verbs (``update``/``delete``), so a compared tag is the statement's own; None to take
+        either
+    :ptype verbs: frozenset[str] | None
+    :return: the reads, or the refusal
+    :rtype: _StatusRead | str
+    """
+    binding = module.parent(awaited)
+    if not isinstance(binding, ast.Assign | ast.AnnAssign) or binding.value is not awaited:
+        read = _one_read(module, awaited, verbs)
+        return read if isinstance(read, str) else _StatusRead(None, None, (read,))
+    targets = binding.targets if isinstance(binding, ast.Assign) else [binding.target]
+    if len(targets) != 1 or not isinstance(targets[0], ast.Name):
+        return "the statement's status is bound to something other than one name"
+    local = targets[0].id
+    scope = module.scope(binding)
+    if any(isinstance(node, ast.Global | ast.Nonlocal) and local in node.names for node in ast.walk(scope)):
+        return f"the statement's status {local} is global or nonlocal"
+    named = _loads(scope, local)
+    if [node for node in named if not isinstance(node.ctx, ast.Load)] != [targets[0]]:
+        return f"the statement's status {local} is bound more than once"
+    reads = []
+    for node in named:
+        if node is targets[0]:
+            continue
+        read = _one_read(module, node, verbs)
+        if isinstance(read, str):
+            return read
+        reads.append(read)
+    return _StatusRead(local, binding, tuple(reads))
+
+
+def _status_edits(
+    module: _Module, call: ast.Call, text: str, verbs: frozenset[str]
+) -> list[tuple[int, int, int, int, str]] | str:
+    """the edits that put ``text`` (the helper's call, awaited where ``call`` was) in ``call``'s place: the call
+    alone when its status is discarded; when it is read, the awaited call read as its ``.count`` and each read of the
+    status as that count reads it (:func:`_status_reading`); or why the status cannot be read so.
+
+    :return: the edits, or the refusal
+    :rtype: list[tuple[int, int, int, int, str]] | str
+    """
+    awaited = module.parent(call)
+    assert isinstance(awaited, ast.Await)
+    if isinstance(module.parent(awaited), ast.Expr):
+        assert call.end_lineno is not None and call.end_col_offset is not None
+        return [(call.lineno, call.col_offset, call.end_lineno, call.end_col_offset, text)]
+    read = _status_reading(module, awaited, verbs)
+    if isinstance(read, str):
+        return read
+    count = f"(await {text}).count"
+    edits: list[tuple[int, int, int, int, str]] = []
+    if read.local is None:
+        ((node, template),) = read.reads
+        assert node.end_lineno is not None and node.end_col_offset is not None
+        return [(node.lineno, node.col_offset, node.end_lineno, node.end_col_offset, template.format(count))]
+    assert awaited.end_lineno is not None and awaited.end_col_offset is not None
+    edits.append((awaited.lineno, awaited.col_offset, awaited.end_lineno, awaited.end_col_offset, count))
+    if isinstance(read.binding, ast.AnnAssign):
+        annotation = read.binding.annotation
+        assert annotation.end_lineno is not None and annotation.end_col_offset is not None
+        edits.append(
+            (annotation.lineno, annotation.col_offset, annotation.end_lineno, annotation.end_col_offset, "int")
+        )
+    for node, template in read.reads:
+        assert node.end_lineno is not None and node.end_col_offset is not None
+        edits.append((node.lineno, node.col_offset, node.end_lineno, node.end_col_offset, template.format(read.local)))
+    return edits
 
 
 def _sent_by(
@@ -703,7 +943,8 @@ def _render_write(rewrite: Rewrite, receiver: str) -> str:
 
 
 def _statement_literal(module: _Module, line: int, verb: str = "select") -> ast.Constant | str:
-    """the string literal holding the statement at ``line``, one starting with ``verb``."""
+    """the string literal holding the statement at ``line``, one starting with ``verb`` (a status tag the statement's
+    status is compared with, ``"DELETE 0"``, is not one)."""
     found = [
         node
         for node in ast.walk(module.tree)
@@ -717,6 +958,7 @@ def _statement_literal(module: _Module, line: int, verb: str = "select") -> ast.
         if isinstance(node, ast.Constant)
         and isinstance(node.value, str)
         and re.match(rf"\s*{verb}\b", node.value, re.I)
+        and not _STATUS_TAG.match(node.value)
     ]
     if len(strings) != 1:
         return f"{len(strings)} {verb.upper()} literals on its line"
@@ -1104,11 +1346,18 @@ def _plan_dict(
         rewrite.edits.append((value.lineno, value.col_offset, value.end_lineno, value.end_col_offset, rewrite.new_call))
         planned.append(rewrite)
     first = planned[0]
+    verbs = frozenset(one.kind for one in parsed) if shape.shape == "write" else frozenset()
     for call in calls:
         assert isinstance(call.func, ast.Attribute) and call.end_lineno is not None and call.end_col_offset is not None
         rest = "".join(f", {module.segment(argument)}" for argument in call.args[1:])
         text = f"{module.segment(call.args[0])}({module.segment(call.func.value)}{rest})"
-        first.edits.append((call.lineno, call.col_offset, call.end_lineno, call.end_col_offset, text))
+        if shape.shape == "point":
+            first.edits.append((call.lineno, call.col_offset, call.end_lineno, call.end_col_offset, text))
+            continue
+        edits = _status_edits(module, call, text, verbs)
+        if isinstance(edits, str):
+            return f"its dict {name}: {edits}"
+        first.edits.extend(edits)
     if retyped[0]:
         first.edits.append(retyped)
         first.imports = {module_name: set(names) for module_name, names in _CALLABLE_IMPORTS.items()}
@@ -1266,7 +1515,13 @@ def _plan_choice(
         planned.append(rewrite)
     assert call.end_lineno is not None and call.end_col_offset is not None
     text = f"({planned[0].new_call} if {module.segment(choice.test)} else {planned[1].new_call})"
-    edits.append((call.lineno, call.col_offset, call.end_lineno, call.end_col_offset, text))
+    if shape.shape == "point":
+        edits.append((call.lineno, call.col_offset, call.end_lineno, call.end_col_offset, text))
+    else:
+        sent = _status_edits(module, call, text, frozenset(one.kind for *_, one in chosen))
+        if isinstance(sent, str):
+            return sent
+        edits.extend(sent)
     edits.append((binding.lineno, 0, (binding.end_lineno or binding.lineno) + 1, 0, ""))
     planned[0].edits, planned[0].repoints, planned[0].notes = edits, repoints, notes
     return planned
@@ -1500,11 +1755,19 @@ def plan_write_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
             # a RETURNING write replaces the awaited call (the helper's answer is read through .rows/.row/.value)
             awaited = module.parent(call)
             assert isinstance(awaited, ast.Await)
-            replaced: ast.expr = awaited if returning else call
-            assert replaced.end_lineno is not None and replaced.end_col_offset is not None
-            rewrite.edits.append(
-                (replaced.lineno, replaced.col_offset, replaced.end_lineno, replaced.end_col_offset, rewrite.new_call)
-            )
+            if returning:
+                assert awaited.end_lineno is not None and awaited.end_col_offset is not None
+                rewrite.edits.append(
+                    (awaited.lineno, awaited.col_offset, awaited.end_lineno, awaited.end_col_offset, rewrite.new_call)
+                )
+            else:
+                # its status discarded, the call alone; read, the helper's count in its place
+                edits = _status_edits(module, call, rewrite.new_call, frozenset({parsed.kind}))
+                if isinstance(edits, str):
+                    refuse(edits)
+                    planned = []
+                    break
+                rewrite.edits.extend(edits)
             planned.append(rewrite)
         if planned and constant is not None:
             planned[0].edits.append(_constant_edit(module, constant))
@@ -1555,6 +1818,38 @@ def _with_import(source: str, names: set[str], module: str = _HELPER_MODULE) -> 
     return "".join(lines[:last]) + text + "".join(lines[last:])
 
 
+def _without_unused(source: str, names: frozenset[str]) -> str:
+    """the source with each ``from ... import`` of one of ``names`` (a status parser a rewritten status read no longer
+    calls) removed when nothing else in the module names it (code, or ``__all__``).
+
+    :param source: the module, rewritten
+    :ptype source: str
+    :param names: the imported names to drop when unused
+    :ptype names: frozenset[str]
+    :return: the module
+    :rtype: str
+    """
+    tree = ast.parse(source)
+    used = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {
+        node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    edits: list[tuple[int, int, int, int, str]] = []
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        dropped = [alias for alias in node.names if (alias.asname or alias.name) in names - used]
+        if not dropped:
+            continue
+        kept = [alias for alias in node.names if alias not in dropped]
+        assert node.end_lineno is not None and node.end_col_offset is not None
+        if kept:
+            text = f"from {'.' * node.level}{node.module or ''} import {', '.join(ast.unparse(a) for a in kept)}"
+            edits.append((node.lineno, node.col_offset, node.end_lineno, node.end_col_offset, text))
+        else:
+            edits.append((node.lineno, 0, node.end_lineno + 1, 0, ""))
+    return _splice(source, edits) if edits else source
+
+
 def apply_rewrites(repo_root: Path, rewrites: list[Rewrite], *, ruff: str | None = "ruff") -> list[str]:
     """make every rewrite, import the helpers, and format the touched modules.
 
@@ -1585,6 +1880,7 @@ def apply_rewrites(repo_root: Path, rewrites: list[Rewrite], *, ruff: str | None
         for rewrite in mine:
             for imported, wanted in rewrite.imports.items():
                 source = _with_import(source, wanted, imported)
+        source = _without_unused(source, _STATUS_PARSERS)
         ast.parse(source)
         path.write_text(source, encoding="utf-8")
     touched = sorted(by_path)
