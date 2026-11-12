@@ -241,6 +241,9 @@ def _reference_media_table(metadata: sa.MetaData) -> sa.Table:
             ondelete="CASCADE",
         ),
         SAIndex("ix_media_agent_memory", "agent_id", "memory_id"),
+        # v022's, kept since 87ab93d9c (v035 no longer drops it): a user merge's repoint of one user's files under
+        # the schema's agent
+        SAIndex("idx_media_agent_user", "agent_id", "user_id"),
         SAIndex(
             "uq_media_cloud_connection_file",
             "cloud_connection_id",
