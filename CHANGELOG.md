@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### tests wait for events, not fixed sleeps; four production changes came with it
+
+**Added:**
+- `PostgresConnectionConfig` and `YugabyteConnectionConfig` take `connect_timeout_seconds` (default 10 s) and
+  `pool_startup_timeout_seconds` (default 30 s), the platform's values. `AsyncpgDriver` bounds each login and floors
+  its start budget at them, where it read the platform constants; a config that names neither behaves as before.
+- `start_audit_persister(fetch_timeout_seconds=5.0)`: how long an idle persister's fetch waits for events, and so how
+  long its stop can take.
+- `catalog_bucket(retry_first_delay=None)`: the first delay of the bucket declaration's retry, passed to
+  `PersistedCopyBucket`; `None` keeps the current schedule.
+
+**Changed:** the Claude CLI pool reads a CLI that has exited but whose parent has not collected it (a zombie in
+`/proc`) as not running. Killing such a CLI now returns at once instead of waiting out the grace period, and it is no
+longer signalled. Without `/proc` it reads signal 0 as before.
+
+The test suites lost about 315 s of fixed waiting per pass on the testament pool. Whether production timers may
+become settings for tests is pacepace/3tears#1154; the three parameters above are part of that ruling.
+
 ### testing: the pool is the only route, and the laptop runs tests only on purpose
 
 **Changed:** `.testament.toml` sets `fallback = "pool-only"` (testament 0.45.1 or later). A pool

@@ -114,10 +114,11 @@ async def test_ttl_expires_orphaned_lock(nats_container: str) -> None:
             ):
                 pass  # pragma: no cover
 
-        # After TTL expiry the key auto-deletes and the lock is winnable: wait for the broker's reaper to remove it.
-        deadline = asyncio.get_running_loop().time() + 10.0
+        # After TTL expiry the key auto-deletes and the lock is winnable: within the 1 s TTL plus a 0.5 s grace for the
+        # broker's reaper, the bound the test has always held it to. The poll only ends the wait as soon as it is gone.
+        deadline = asyncio.get_running_loop().time() + 1.5
         while await bucket.get(key="orphan") is not None:
-            assert asyncio.get_running_loop().time() < deadline, "the orphaned key never expired"
+            assert asyncio.get_running_loop().time() < deadline, "the orphaned key outlived its 1 s TTL by over 0.5 s"
             await asyncio.sleep(0.05)
         async with nats_distributed_lock(
             nc,
