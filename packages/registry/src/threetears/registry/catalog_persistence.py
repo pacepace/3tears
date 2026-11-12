@@ -28,7 +28,8 @@ the bucket is owned by :class:`threetears.nats.PersistedCopyBucket`, built here 
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any
 
 from threetears.nats import PersistedCopyBucket
 
@@ -63,7 +64,9 @@ async def _write_catalog_back(catalog: ToolCatalog, kv: KvBucketLike) -> None:
         raise CatalogRestoreError(f"{len(failed)} catalog entries were not written back: {failed}")
 
 
-def catalog_bucket(*, catalog: ToolCatalog, client: KvDeclaring, bucket: str) -> PersistedCopyBucket:
+def catalog_bucket(
+    *, catalog: ToolCatalog, client: KvDeclaring, bucket: str, retry_first_delay: timedelta | None = None
+) -> PersistedCopyBucket:
     """the owner of the catalog's bucket, not yet started.
 
     ``load`` is :meth:`ToolCatalog.load_from_kv`, which never replaces an entry the catalog holds;
@@ -76,9 +79,13 @@ def catalog_bucket(*, catalog: ToolCatalog, client: KvDeclaring, bucket: str) ->
     :ptype client: KvDeclaring
     :param bucket: the bucket's exact name
     :ptype bucket: str
+    :param retry_first_delay: the pause after the first failed declaration (it doubles with each
+        failure), or ``None`` for :class:`PersistedCopyBucket`'s own schedule
+    :ptype retry_first_delay: timedelta | None
     :return: the owner; :meth:`PersistedCopyBucket.start` begins declaring
     :rtype: PersistedCopyBucket
     """
+    schedule: dict[str, Any] = {} if retry_first_delay is None else {"retry_first_delay": retry_first_delay}
     return PersistedCopyBucket(
         client=client,
         bucket=bucket,
@@ -87,4 +94,5 @@ def catalog_bucket(*, catalog: ToolCatalog, client: KvDeclaring, bucket: str) ->
         storage="file",
         history=1,
         direct=True,
+        **schedule,
     )
