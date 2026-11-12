@@ -67,6 +67,9 @@ _ADMIN_PW = "admin-pw"  # noqa: S105 - ephemeral testcontainer credential
 _SYSTEM_PW = "system-pw"  # noqa: S105 - ephemeral testcontainer credential
 _INBOX = "_INBOX_kick_live"
 _QUERY_SUBJECT = "svc.query"
+#: the pod's reconnect backoff base, in place of the shipped second: the kicked pod's refused
+#: reconnects are what the fence test counts, and they come as fast as the backoff lets them
+_RECONNECT_BACKOFF_BASE_SECONDS = 0.1
 #: the server's wait for a callout answer: short, so a refused reconnect is refused promptly.
 _CALLOUT_TIMEOUT_SECONDS = 2
 #: a server id no server holds (a well-formed server nkey).
@@ -241,6 +244,7 @@ async def _stack(image: str) -> AsyncIterator[_Stack]:
             inbox_prefix=_INBOX,
             verify_jetstream=False,
             startup_timeout=timedelta(seconds=15),
+            reconnect_backoff_base=_RECONNECT_BACKOFF_BASE_SECONDS,
         )
         try:
             yield _Stack(admin=admin, system=system, resolver=resolver, recorder=recorder, pod=pod)
