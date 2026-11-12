@@ -905,6 +905,32 @@ def _binds(function: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:
     )
 
 
+def _family_folded(hits: dict[str, str], members: int) -> dict[str, str]:
+    """a call judged once per declared value (``declared_parameters``) with one kind of finding on every value: that
+    kind once, naming the family, not once per member (a whole read of each of a copy's tables is one finding of
+    the read); a kind on only some members is kept per member, each named.
+
+    :param hits: symbol onto its statement
+    :ptype hits: dict[str, str]
+    :param members: how many calls the declared values made
+    :ptype members: int
+    :return: the hits, folded
+    :rtype: dict[str, str]
+    """
+    if members < 2:
+        return hits
+    kinds: dict[str, list[str]] = {}
+    for symbol in hits:
+        kinds.setdefault(symbol.split(" ", 1)[0], []).append(symbol)
+    folded: dict[str, str] = {}
+    for kind, symbols in kinds.items():
+        if len(symbols) >= members:
+            folded[f"{kind} <each-declared-value>"] = f"{hits[symbols[0]]} (and each of {len(symbols)} declared values)"
+        else:
+            folded.update({symbol: hits[symbol] for symbol in symbols})
+    return folded
+
+
 def _local_relation(call: ast.Call, declared: frozenset[str]) -> ast.Call:
     """a helper call on a local database's connection (``InlineDuckDB(cursor)``) naming a table a declared parameter
     holds (``declared_parameters``: a copy's table) bare, written as the table of that database's ``main`` schema: a
@@ -2804,9 +2830,10 @@ class _ModuleWalk(ast.NodeVisitor):
         hits: dict[str, str] = {}
         # a judged finding of a call one site's values make is that site's: recorded where the caller passes them
         passed: dict[tuple[str, int, str, str], str] = {}
+        expanded = self._declared_calls(node)
         for call, at in (
             (matched, at)
-            for declared in self._declared_calls(node)
+            for declared in expanded
             for branched in _branch_calls(self._none_folded(self._resolved_call(declared)))
             for picked in self._mapping_calls(branched)
             for each, at in self._parameter_calls(picked)
@@ -2824,7 +2851,7 @@ class _ModuleWalk(ast.NodeVisitor):
                         hits.setdefault(symbol, statement.sql)
                     else:
                         passed.setdefault((at.path, at.line, at.function, symbol), statement.sql)
-        for symbol, statement_text in hits.items():
+        for symbol, statement_text in _family_folded(hits, len(expanded)).items():
             self._hit(site, symbol, statement_text)
         for (path, line, function, symbol), statement_text in passed.items():
             self.hits.append(

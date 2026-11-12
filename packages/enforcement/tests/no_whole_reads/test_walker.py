@@ -5151,7 +5151,8 @@ def test_a_declared_parameter_is_judged_once_per_value_it_declares(tmp_path: Pat
     of, a string holding one) stays unknown when each value's own key is bound (``apply_slice``, its forwarder
     ``_held_rows`` at its call, ``Backend.export_partition`` through ``_partition``: a lookup function's column per
     table, through names bound once from the loop; ``small_parts``, a declared loop target), if a member keyed otherwise is not reported by name
-    (``benchmarks`` read by state: its key is ``benchmark``), if a read off every member's key passes (``by_kind``),
+    (``benchmarks`` read by state: its key is ``benchmark``), if a read off every member's key passes or is reported
+    once per member rather than once for the family (``by_kind``),
     or if an undeclared parameter is judged rather than left as the run-time relation it is (``undeclared``)."""
     members = ("rows", "held_runs", "benchmarks")
     declared = {
@@ -5167,7 +5168,9 @@ def test_a_declared_parameter_is_judged_once_per_value_it_declares(tmp_path: Pat
     assert ("apply_slice", 'non-key-where "main"."benchmarks"') in found, found
     assert ("apply_slice", 'whole-select "main"."benchmarks"') in found, found
     assert not any(function == "apply_slice" and "held_runs" in symbol for function, symbol in found), found
-    assert ("by_kind", 'non-key-where "main"."rows"') in found, found
+    # off the key of every member: one finding naming the family, not one per member
+    assert ("by_kind", "non-key-where <each-declared-value>") in found, found
+    assert not any(function == "by_kind" and '"main"' in symbol for function, symbol in found), found
     assert ("undeclared", "non-key-where copy.{}") in found, found
     assert not any(function in {"Backend.export_partition", "_partition"} for function, _ in found), found
     assert not any(function == "_held_rows" for function, _ in found), found
