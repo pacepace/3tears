@@ -13,7 +13,7 @@ import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 import pytest
@@ -27,6 +27,7 @@ from threetears.agent.wake.collections import (
 )
 from threetears.agent.wake.migrations import register as register_wake
 from threetears.conversations.migrations import register as register_conversations
+from threetears.core.backends.protocol import L3Backend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
@@ -130,7 +131,7 @@ async def conn(pg_schema: tuple[str, str]) -> AsyncIterator[asyncpg.Connection]:
     register_conversations(runner)
     register_skills(runner)
     register_wake(runner)
-    await runner.apply_for_agent_schema(AsyncpgStore(connection))  # type: ignore[arg-type]
+    await runner.apply_for_agent_schema(AsyncpgStore(connection))
     agents = [uuid.uuid4() for _ in range(500)]
     users = [uuid.uuid4() for _ in range(250)]
     await connection.execute(
@@ -164,7 +165,9 @@ async def conn(pg_schema: tuple[str, str]) -> AsyncIterator[asyncpg.Connection]:
 
 def _collections(pool: _Captured | asyncpg.Connection) -> SimpleNamespace:
     registry = CollectionRegistry()
-    registry.configure(l3_pool=pool)
+    # the test double and the bare connection carry only the raw reads these collections use, not the whole
+    # L3Backend surface
+    registry.configure(l3_pool=cast(L3Backend, pool))
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     return SimpleNamespace(
         schedules=WakeScheduleCollection(registry=registry, config=cfg),
