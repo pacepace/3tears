@@ -421,7 +421,7 @@ async def test_wake_schedules_context_from(conn: asyncpg.Connection) -> None:
     )
     await conn.execute("ANALYZE agent_wake_schedules")
     constraint = await conn.fetchrow(
-        "SELECT confdeltype, (SELECT array_agg(a.attname ORDER BY a.attnum) FROM pg_attribute a"
+        "SELECT c.confdeltype::text AS confdeltype, (SELECT array_agg(a.attname ORDER BY a.attnum) FROM pg_attribute a"
         " WHERE a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)) AS columns"
         " FROM pg_constraint c WHERE c.conname = 'agent_wake_schedules_context_from_fk'"
         " AND c.connamespace = current_schema()::regnamespace"
