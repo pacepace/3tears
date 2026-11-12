@@ -18,6 +18,25 @@ RUN apt-get update \
 
 COPY --from=uv /uv /uvx /usr/local/bin/
 
+# Headless Chromium for the evals render tests (the `browser` marker), with the system libraries and fonts it needs,
+# installed by the playwright the workspace locks: its browsers.json pins the Chromium build, and the browser must be
+# the one that playwright drives. tests/enforcement/test_testament_image_playwright.py fails when this version and
+# uv.lock's part. Only the headless shell: the tests launch headless, and the full browser would add ~150 MB. Root-owned
+# under a fixed path, read by `lane` through PLAYWRIGHT_BROWSERS_PATH (here and in .testament.toml's env). Playwright
+# builds the shell for linux x86_64 and arm64 alike, so every runner's architecture installs it.
+# fonts-dejavu-core: the package's pages set a local font stack (IBM Plex where installed, then system-ui ...), so
+# the faces they render in are the machine's. Playwright's own font set has no DejaVu, and without it fontconfig
+# resolves sans-serif, system-ui and monospace to WenQuanYi Zen Hei, a CJK face whose taller boxes made a 390 px
+# page's bar notes overlap where the dev box (DejaVu Sans) draws them clear. With it, fc-match gives the dev box's
+# faces. fontconfig for fc-match: scripts/check-fallback-fonts.sh fails the build unless they are DejaVu.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+COPY --chmod=0755 scripts/check-fallback-fonts.sh /usr/local/bin/check-fallback-fonts
+RUN UV_NO_CACHE=1 uvx --from playwright==1.60.0 playwright install --with-deps --only-shell chromium \
+    && apt-get install -y --no-install-recommends fonts-dejavu-core fontconfig \
+    && check-fallback-fonts \
+    && chmod -R a+rX /opt/ms-playwright \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN useradd --create-home --shell /bin/bash lane
 USER lane
 

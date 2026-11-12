@@ -411,6 +411,10 @@ filterwarnings = [
 ]
 markers = [
     "integration: marks tests that require docker-backed services; run with -m integration",
+    # The evals render checks: headless Chromium through playwright, no Docker. They run in the unit suite, so on the
+    # testament pool, whose image holds the browser; tests/enforcement/test_browser_marker.py holds every user of the
+    # Chromium helpers to the marker.
+    "browser: needs headless Chromium (playwright); runs on the testament pool, not in test-integration.sh",
     "live: tests that connect to a real external service -- a warehouse, a search provider (env-gated); not run by default",
     # Opts a test out of the scrape suite's autouse offline-robots fixture, for the few whose
     # subject IS the real default fetcher. Without the opt-out that builder was patched

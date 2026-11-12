@@ -156,7 +156,7 @@ Where `testament` is installed, `test.sh` hands the run to testament's runners (
 
 `test-sidecar.sh` and `test-integration.sh` sit outside `test.sh` on purpose (an AGPL dependency, and Docker). Neither is optional:
 
-- **Run the integration suite before any PR, as `./scripts/test-integration.sh -rs`, and account for every skip.** CI runs a partial integration set: its `integration` job covers core, nats, epoch, scheduled-jobs and agent/acl against Postgres and NATS. Everything else (the sidecar, S3/minio, SearXNG, Redshift and the remaining packages) never runs in CI, so nothing but you runs it, and a skip reads exactly like a pass. When reporting, give the pass count AND each remaining skip with its reason.
+- **Run the integration suite before any PR, as `./scripts/test-integration.sh -rs`, and account for every skip.** CI runs a partial integration set: its `integration` job covers core, nats, epoch, scheduled-jobs and agent/acl against Postgres and NATS. Everything else (the sidecar, S3/minio, SearXNG, Redshift and the remaining packages) never runs in CI, so nothing but you runs it, and a skip reads exactly like a pass. When reporting, give the pass count AND each remaining skip with its reason. The evals render tests are not in it: they need headless Chromium, carry the `browser` marker and run in the unit suite, on the testament pool and CI's evals shards.
 - **Build the sidecar image first, for the Docker host's own architecture**, or its tests skip (or fail under emulation).
 
 The command, the incident behind each rule, and the list of legitimate dev-box skips: [docs/testing.md](docs/testing.md).

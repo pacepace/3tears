@@ -179,7 +179,7 @@ def test_each_stored_document_passes_every_invariant_and_renders_strict(name: st
     assert sum(line.startswith("# ") for line in doc_page_markdown(page).splitlines()) == 1
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 @pytest.mark.parametrize("name", _NAMES)
 def test_each_stored_document_s_page_passes_the_render_checks(name: str, tmp_path: Path) -> None:
     """``scripts/check.py`` at 1200, 1104, 688 and 390 px, light and dark, on each stored record's page as the store

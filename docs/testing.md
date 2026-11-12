@@ -157,6 +157,12 @@ serving an earlier passing result on the same tree. Every difference from the sh
   (a session of only integration tests).
 - **History.** The pool records every result under `TESTAMENT_BRANCH`, so `testament` can report
   on CI runs; the shards record nothing outside the job log.
+- **The browser tests** (the evals render checks, marker `browser`) run on both routes. The pool's
+  image installs headless Chromium with the locked playwright, plus DejaVu, so the package's pages
+  (a local font stack) draw in the dev box's faces rather than a CJK fallback. The evals shards run
+  `playwright install --with-deps --only-shell chromium`, cached by playwright's version. Both run
+  `./scripts/check-fallback-fonts.sh`, which fails unless the generic families resolve to DejaVu, and
+  both set `THREETEARS_REQUIRE_CHROMIUM=1`, so a missing browser fails them instead of skipping them.
 
 **The client.** testament is private and not on PyPI. The console serves its current release's
 wheel at `/api/v1/cli/wheel` to any client key, so no GitHub token for the private repo is needed,
@@ -217,6 +223,10 @@ the root's per-test reset of process-wide state.
 Postgres containers and need Docker, so folding them into the default gate would break it
 wherever Docker is absent. **CI cannot run them at all -- GitHub Actions has no Docker -- so
 nothing but a developer, locally, ever executes them.**
+
+The evals render tests are not here. They need headless Chromium, not Docker, so they carry the
+`browser` marker and run in the unit suite: on the testament pool and on CI's evals shards (above).
+A local run without Chromium skips them; `-m "not browser"` leaves them out.
 
 **Run them before any PR.** Cross-pod behaviour lives entirely there, and a green
 `check-all.sh` says nothing about it. `project-state.yaml` lists this as the third declared test

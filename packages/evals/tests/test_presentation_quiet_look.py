@@ -1,8 +1,8 @@
 """A report page looks quiet and reads at a glance: its colours carry contrast, its type keeps a five-step scale, and
 its tables are ruled, never boxed.
 
-Held on the page as served (its stylesheet's tokens and rules, read here, since no browser runs on the pool) and,
-where headless Chromium launches (the ``integration`` marker), on the page as drawn, through ``scripts/check.py``:
+Held on the page as served (its stylesheet's tokens and rules, read here without a browser) and,
+where headless Chromium launches (the ``browser`` marker), on the page as drawn, through ``scripts/check.py``:
 
 - **Contrast, both themes.** Quiet text (``--muted``, ``--ink-2``) reads at 4.5:1 or more on every ground the page
   paints (``--bg``, ``--surface``, ``--sunk``); each status colour reads at 4.5:1 on its own wash and on the surface;
@@ -680,7 +680,7 @@ _HELD_AND_APPENDIX = (
 )
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_at_688_px_a_name_never_breaks_at_its_hyphen_and_the_appendix_ends_quietly(tmp_path: Path) -> None:
     """At 688 px, a long headline set with the model's name at every place a line can end: held, the name is always
     one line fragment, where bare it breaks after its hyphen. The made line (who wrote the report, for what, when)
@@ -707,7 +707,7 @@ def test_at_688_px_a_name_never_breaks_at_its_hyphen_and_the_appendix_ends_quiet
 # =============================================================================
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_the_render_check_holds_contrast_type_and_tables_in_both_themes(tmp_path: Path) -> None:
     """``scripts/check.py`` passes Kairo's campaign page and written report at 1200, 1104, 688 and 390 px, light and
     dark, and fails each page with one fault put in: faint header text, a size off the scale, a boxed table, a filled

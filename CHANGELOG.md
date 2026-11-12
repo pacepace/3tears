@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### tests: the evals render tests run on the testament pool
+
+**Changed:** the 73 evals render tests (headless Chromium through playwright, no Docker) carry a new `browser` marker
+instead of `integration`, so they leave `./scripts/test-integration.sh` and run in the unit suite: on the testament
+pool, whose image (`docker/testament.Dockerfile`) now installs Chromium with the locked playwright and the dev box's
+DejaVu fonts, and on CI's evals shards, which install it. Where `THREETEARS_REQUIRE_CHROMIUM=1` (the pool's manifest and the evals shards set it) a
+browser that cannot launch fails these tests instead of skipping them, and the launch probe now runs once per process.
+They no longer reach the network: the reference memos' Google Fonts request is answered from a copy of IBM Plex in
+`packages/evals/tests/fixtures/plex_fonts` (SIL OFL 1.1). `tests/enforcement/test_browser_marker.py` holds every test
+that drives Chromium to the marker, and `tests/enforcement/test_testament_image_playwright.py` holds the image's
+playwright to `uv.lock`'s.
+
+**Added:** `docs/eval-report-kit/scripts/check.py --fonts DIR` answers a page's Google Fonts requests from a local copy
+and fails every other http(s) request. Without it the script fetches as before.
+
+**Changed:** `check.py` waits for the page's fonts to load and two frames to draw instead of a fixed 1.2 s per render;
+a page still loading a font after 15 s fails that render, naming the fonts. It launches Chromium with
+`--disable-dev-shm-usage` (a container's `/dev/shm` is 64 MB). Its existing arguments and checks are unchanged.
+
+**Added:** `scripts/check-fallback-fonts.sh` fails unless `sans-serif`, `system-ui`, `serif` and `monospace` resolve to
+DejaVu, the faces the package's pages draw in on the dev box. The testament image runs it at build and CI's evals
+shards before their tests.
+
 ### evals: names leave the evidence (bundle shape 66, campaign bundle shape 4; every stored analysis is regenerated once)
 
 **Changed:** names are presentation, never evidence (owner ruling, 2026-11-11). The bundle an analysis is frozen over,
