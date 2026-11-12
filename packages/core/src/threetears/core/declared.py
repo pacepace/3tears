@@ -3,8 +3,9 @@
 The no-whole-reads rule (:mod:`threetears.enforcement.no_whole_reads`) names every whole read in a repo. A few are
 whole by what they answer, never by a load path's choice (Pace, 2026-11-12): the one cold start that fills an empty
 copy, a panel answering for every state, a backup's own count and checksum, a warehouse relation that holds no key to
-read by, a schema change, the drain of a process-local buffer, an operator's reset. Each is declared on the exact
-statement, never on a whole function and never in a list::
+read by, a schema change, the drain of a process-local buffer, an operator's reset; and (coordinator, 2026-11-12) a
+read serving writers older than a rolling upgrade, until the release it names (``until=``). Each is declared on the
+exact statement, never on a whole function and never in a list::
 
     count = await whole_read(
         conn.fetchval(_COUNT_SQL),
@@ -42,6 +43,7 @@ WholeReadKind = Literal[
     "schema_change",
     "drain",
     "operator_reset",
+    "rolling_upgrade",
 ]
 
 #: the kinds, for the run-time check
@@ -54,6 +56,7 @@ _KINDS: Final[frozenset[str]] = frozenset(
         "schema_change",
         "drain",
         "operator_reset",
+        "rolling_upgrade",
     }
 )
 
@@ -66,6 +69,7 @@ def whole_read(
     ruling: str,
     proof: str,
     speed: str = "",
+    until: str = "",
 ) -> _T:
     """declare ``value`` (the call reading whole, usually not yet awaited) a read whole by nature; return it unchanged.
 
@@ -85,10 +89,16 @@ def whole_read(
         ``backup_verification`` of a bare ``count(*)`` or row checksum over one table, which the gate checks, needs
         none: it is the bare operation)
     :ptype speed: str
+    :param until: for ``rolling_upgrade`` only, the release (``"0.96.0"``) the read is gone by: it serves writers older
+        than the roll, and the gate refuses it once the package reaches that release
+    :ptype until: str
     :return: ``value``
     :rtype: _T
-    :raises ValueError: when the kind is unknown, or the reason, ruling or proof is missing
+    :raises ValueError: when the kind is unknown, or the reason, ruling or proof is missing, or ``until`` is missing
+        from a ``rolling_upgrade`` or given to any other kind
     """
+    if (kind == "rolling_upgrade") != bool(until.strip()):
+        raise ValueError("a rolling_upgrade read names until=<the release it is gone by>; no other kind takes until")
     if kind not in _KINDS or not reason.strip() or not ruling.strip() or "::" not in proof:
         raise ValueError(
             f"a whole read declares a kind of {sorted(_KINDS)}, a reason, Pace's ruling and a proof "

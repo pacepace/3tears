@@ -579,6 +579,65 @@ def _declared_relation_outside(hit: WholeReadHit, schema: SchemaCatalog) -> bool
     return found is None or not found.threetears
 
 
+#: a release as ``until=`` names it
+_RELEASE: Final[re.Pattern[str]] = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+
+#: a package's own release in its ``pyproject.toml``
+_PROJECT_VERSION: Final[re.Pattern[str]] = re.compile(r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)[^"]*"', re.MULTILINE)
+
+
+def _package_release(repo_root: Path, path: str) -> tuple[int, int, int] | None:
+    """the release of the package holding a module: the ``version`` of the nearest ``pyproject.toml`` above it.
+
+    :param repo_root: the repo root
+    :ptype repo_root: Path
+    :param path: the module, repo-relative
+    :ptype path: str
+    :return: the release, or None when no ``pyproject.toml`` above it names one
+    :rtype: tuple[int, int, int] | None
+    """
+    root = repo_root.resolve()
+    folder = (root / path).parent
+    while folder.is_relative_to(root):
+        project = folder / "pyproject.toml"
+        found = _PROJECT_VERSION.search(project.read_text(encoding="utf-8")) if project.is_file() else None
+        if found is not None:
+            major, minor, patch = (int(part) for part in found.groups())
+            return (major, minor, patch)
+        if folder == root:
+            break
+        folder = folder.parent
+    return None
+
+
+def _until_defects(repo_root: Path, declared: DeclaredWhole) -> list[str]:
+    """what is wrong with a declaration's ``until``: a ``rolling_upgrade`` names the release it is gone by, and is
+    refused from that release on; no other kind names one.
+
+    :param repo_root: the repo root
+    :ptype repo_root: Path
+    :param declared: the declaration
+    :ptype declared: DeclaredWhole
+    :return: its defects
+    :rtype: list[str]
+    """
+    if declared.kind != "rolling_upgrade":
+        return ["until= is a rolling_upgrade's alone"] if declared.until else []
+    until = _RELEASE.fullmatch(declared.until)
+    if until is None:
+        return ['a rolling_upgrade names until="<major>.<minor>.<patch>", the release it is gone by, as a literal']
+    release = _package_release(repo_root, declared.path)
+    if release is None:
+        return ["no pyproject.toml above the module names its release, so its until= cannot be judged"]
+    major, minor, patch = (int(part) for part in until.groups())
+    if release >= (major, minor, patch):
+        return [
+            f"the roll is over: the package is at {'.'.join(map(str, release))}, at or past until={declared.until!r}; "
+            "delete the read that served the older writers"
+        ]
+    return []
+
+
 class _Declared:
     """the repo's declarations judged: which are sound, and which hits each covers."""
 
@@ -724,6 +783,7 @@ class _Declared:
         proof = _proving_test_defect(config.repo_root, line)
         if proof is not None:
             defects.append(f"the proof {proof}")
+        defects.extend(_until_defects(config.repo_root, declared))
         if declared.kind in DECLARED_SPEED_KINDS and not (
             declared.kind == "backup_verification" and not declared.speed
         ):

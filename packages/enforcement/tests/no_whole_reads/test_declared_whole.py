@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from threetears.core.declared import whole_read
 from threetears.enforcement.no_whole_reads import NoWholeReadsConfig, no_whole_reads_findings, use_the_helper_findings
 
 _RULING = "Pace 2026-11-12: a backup's own count and checksum read whole"
@@ -333,3 +334,75 @@ def test_a_backup_count_omits_its_speed_test_only_when_it_is_the_bare_count(
         assert any("count_items whole_read" in finding for finding in refused), findings
         assert any("in count_items:" in finding for finding in findings), findings
         assert any("in inventory: calls-whole-read count_items" in finding for finding in findings), findings
+
+
+_ROLL = """
+    from threetears.core.declared import whole_read
+    from threetears.core.collections.schema_backed import TableSchema
+
+    ITEMS = TableSchema(name="items", primary_key="id", columns=[])
+
+    async def legacy(conn):
+        return await whole_read(
+            conn.fetch("SELECT id, body FROM items"),
+            kind="rolling_upgrade",
+            reason="a writer older than the roll left a whole record: the table is read again whole",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_legacy_only_for_old_writers",
+            speed="tests/test_backup.py::test_legacy_speed",
+            UNTIL
+        )
+"""
+
+_ROLL_PROOFS = """
+    from threetears.core.testing.calibrate import budget_problem
+
+    def test_legacy_only_for_old_writers():
+        assert legacy
+
+    def test_legacy_speed():
+        assert legacy
+        budget_problem()
+"""
+
+
+@pytest.mark.parametrize(
+    ("release", "until", "message"),
+    [
+        ("0.95.0", 'until="0.96.0",', None),
+        ("0.96.0", 'until="0.96.0",', "the roll is over: the package is at 0.96.0"),
+        ("0.97.1", 'until="0.96.0",', "the roll is over: the package is at 0.97.1"),
+        ("0.95.0", 'until="soon",', 'names until="<major>.<minor>.<patch>"'),
+        ("0.95.0", "", 'names until="<major>.<minor>.<patch>"'),
+    ],
+)
+def test_a_rolling_upgrade_read_is_refused_once_its_release_is_reached(
+    tmp_path: Path, release: str, until: str, message: str | None
+) -> None:
+    """Flips if a rolling_upgrade read is let through at or past the release it names (the package's own
+    pyproject.toml version), or with no release or one that is not a version, or if one before its release is refused
+    (coordinator ruling 2026-11-12)."""
+    (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "pkg"\nversion = "{release}"\n', encoding="utf-8")
+    findings = _findings(tmp_path, {"store.py": _ROLL.replace("UNTIL", until)}, _ROLL_PROOFS)
+    if message is None:
+        assert findings == [], findings
+    else:
+        assert any(message in finding and "legacy" in finding for finding in findings), findings
+
+
+def test_until_is_a_rolling_upgrade_s_alone(tmp_path: Path) -> None:
+    """Flips if another kind may name until= (a cold start that quietly expires), at the gate or at run time."""
+    module = _STORE.replace(
+        'speed="tests/test_backup.py::test_fill_speed",',
+        'speed="tests/test_backup.py::test_fill_speed",\n            until="0.96.0",',
+    )
+    assert any(
+        "until= is a rolling_upgrade's alone" in finding for finding in _findings(tmp_path, {"store.py": module})
+    )
+    with pytest.raises(ValueError, match="until"):
+        whole_read(1, kind="cold_start", reason="r", ruling="Pace 2026-11-12", proof="a::b", until="0.96.0")
+    with pytest.raises(ValueError, match="until"):
+        whole_read(1, kind="rolling_upgrade", reason="r", ruling="Pace 2026-11-12", proof="a::b")
+    assert (
+        whole_read(1, kind="rolling_upgrade", reason="r", ruling="Pace 2026-11-12", proof="a::b", until="0.96.0") == 1
+    )

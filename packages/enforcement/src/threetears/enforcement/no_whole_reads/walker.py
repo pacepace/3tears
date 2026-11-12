@@ -475,13 +475,26 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
     "drain": frozenset({"whole-select", "whole-delete"}),
     # an operator's reset
     "operator_reset": frozenset({"truncate", "truncate-call", "whole-delete"}),
+    # a read serving writers older than a rolling upgrade, until the release it names (``until=``): the gate refuses it
+    # once the package reaches that release (coordinator ruling 2026-11-12)
+    "rolling_upgrade": frozenset(
+        {
+            "whole-select",
+            "unkeyed-pager",
+            "unkeyed-sort",
+            "may-read-whole",
+            "whole-read",
+            "whole-call",
+            "calls-whole-read",
+        }
+    ),
 }
 
 #: the kinds whose declaration names a speed test: they read our own tables at size. A ``backup_verification`` whose
 #: every statement is a bare ``count(*)`` or row checksum over one table (no join, filter or ordering) may omit it: the
 #: statement IS the bare operation (coordinator ruling 2026-11-12)
 DECLARED_SPEED_KINDS: Final[frozenset[str]] = frozenset(
-    {"cold_start", "every_state_answer", "backup_verification", "schema_change"}
+    {"cold_start", "every_state_answer", "backup_verification", "schema_change", "rolling_upgrade"}
 )
 
 #: the kinds whose relation is never a declared L3 table: a process-local buffer, a warehouse relation
@@ -749,6 +762,7 @@ class DeclaredWhole:
     :ivar ruling: Pace's ruling, empty when not a literal
     :ivar proof: ``<test file>::<test function>``, empty when not a literal
     :ivar speed: the speed test, empty when not given or not a literal
+    :ivar until: the release a ``rolling_upgrade`` read is gone by, empty when not given or not a literal
     :ivar constants: each module constant the wrapped expression names and nothing else in the module does, with the
         lines of its value: its statement's hits are written there
     :ivar locals: each local of the enclosing function bound once and named only in the wrapped expression (the SQL
@@ -767,6 +781,7 @@ class DeclaredWhole:
     speed: str = ""
     constants: tuple[tuple[str, int, int], ...] = ()
     locals: tuple[tuple[str, int, int], ...] = ()
+    until: str = ""
 
     def covers(self, path: str, function: str, line: int) -> bool:
         """whether a site (a hit, a written statement) is the declared read: in the wrapped expression, or the value
@@ -2521,6 +2536,7 @@ class _ModuleWalk(ast.NodeVisitor):
                 literal.get("speed", ""),
                 tuple(constants),
                 own,
+                literal.get("until", ""),
             )
         )
 
