@@ -22,6 +22,8 @@ from typing import Any
 import asyncpg
 import pytest
 
+from threetears.core.testing.schemas import drop_schema
+
 # canonical testcontainer fixtures from the central harness;
 # a single ``pytest_plugins`` line pulls in ``db_container`` /
 # ``db_image`` / ``nats_container`` / ``nats_jetstream`` -- this
@@ -134,6 +136,7 @@ async def pg_schema(pg_url: str) -> AsyncIterator[tuple[str, str]]:
     yield (pg_url, schema)
     conn = await asyncpg.connect(pg_url)
     try:
-        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        # YugabyteDB answers a concurrent catalog write with SerializationError: retried, never a teardown error
+        await drop_schema(conn, schema)
     finally:
         await conn.close()
