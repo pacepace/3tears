@@ -28,7 +28,7 @@ import pyarrow as pa
 import pytest
 from threetears.nats import Subject
 
-from threetears.core.backends import nats_proxy
+from threetears.core.backends import arrow_copy, nats_proxy
 from threetears.core.backends.arrow_copy import (
     COPY_ARROW_FIELD,
     JSON_COLUMNS_FIELD,
@@ -250,22 +250,76 @@ async def _worst_lag(work: Any) -> float:
     return max(late)
 
 
-@pytest.mark.loop_timing
-class TestTheCallersLoopRunsWhileACopyIsBuilt:
-    async def test_a_12_mb_copy_holds_the_callers_loop_no_longer_than_a_ticker_idles(self) -> None:
-        """the build reads the caller's rows (Python objects) on a thread and takes turns with the loop: a 12 MB copy
-        holds the loop no longer than its own idle jitter and a few milliseconds, measured in the same run."""
-        records = _wide_records(16_000)
-        idle = await _worst_lag(lambda: asyncio.sleep(0.2))
+#: rounds of idle, copy, idle each run: the copy judged against the idle windows either side of it, so load arriving or
+#: leaving the host mid-run is seen in the windows it falls in
+_ROUNDS = 4
+
+#: how long each idle window ticks
+_IDLE_SECONDS = 0.1
+
+
+def _held_too_long(rounds: list[tuple[float, float, float]]) -> str | None:
+    """the first round whose copy held the caller's loop past its own idle jitter and a turn: 5 ms (CPython's switch
+    interval, the most a thread waiting for the lock waits once the holder yields it) plus twice the worse of the idle
+    windows either side of it.
+
+    :param rounds: each round's worst tick lag before, during and after the copy, in seconds
+    :ptype rounds: list[tuple[float, float, float]]
+    :return: what held too long, or None
+    :rtype: str | None
+    """
+    for index, (before, during, after) in enumerate(rounds):
+        idle = max(before, after)
+        if during >= 0.005 + 2 * idle:
+            return (
+                f"round {index + 1}: a 12 MB copy's build held the caller's loop {during * 1000:.1f} ms "
+                f"(idle {before * 1000:.1f} ms before, {after * 1000:.1f} ms after)"
+            )
+    return None
+
+
+async def _copy_rounds(records: list[tuple[Any, ...]]) -> list[tuple[float, float, float]]:
+    """each round's worst tick lag in an idle window, a copy of ``records`` (sent as Arrow), and another idle window."""
+    rounds: list[tuple[float, float, float]] = []
+    after = await _worst_lag(lambda: asyncio.sleep(_IDLE_SECONDS))
+    for _ in range(_ROUNDS):
         hub = _Hub({"success": True, "tx_id": _TX_ID, COPY_ARROW_FIELD: True})
         proxy = hub.proxy()
 
-        async def copy() -> None:
+        async def copy(proxy: Any = proxy) -> None:
             async with proxy.acquire() as conn, conn.transaction():
                 await conn.copy_records_to_table("rows", records=records, columns=[f"c{n}" for n in range(42)])
 
-        worst = await _worst_lag(copy)
+        before = after
+        during = await _worst_lag(copy)
+        after = await _worst_lag(lambda: asyncio.sleep(_IDLE_SECONDS))
         assert split_copy_request(hub.copy()) is not None
-        assert worst < 0.005 + 2 * idle, (
-            f"a 12 MB copy's build held the caller's loop {worst * 1000:.1f} ms (idle {idle * 1000:.1f} ms)"
-        )
+        rounds.append((before, during, after))
+    return rounds
+
+
+@pytest.mark.loop_timing
+class TestTheCallersLoopRunsWhileACopyIsBuilt:
+    async def test_a_12_mb_copy_holds_the_callers_loop_no_longer_than_a_ticker_idles(self) -> None:
+        """the build reads the caller's rows (Python objects) on a thread and takes turns with the loop: each 12 MB
+        copy holds the loop no longer than its own idle jitter and a turn, the idle measured either side of it."""
+        rounds = await _copy_rounds(_wide_records(16_000))
+        problem = _held_too_long(rounds)
+        assert problem is None, problem
+
+    async def test_a_build_holding_the_lock_without_turns_is_caught(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """the measurement's red case: a build stretch holding the interpreter lock with no turn (one C call) fails
+        the same judgement."""
+        original = arrow_copy.rows_digest
+        held: list[bool] = []
+
+        def holding(ipc: Any) -> str:
+            held.append(True)
+            # one C call: no turn, and no switch of the lock until it returns
+            sum(range(4_000_000))
+            return original(ipc)
+
+        monkeypatch.setattr(arrow_copy, "rows_digest", holding)
+        rounds = await _copy_rounds(_wide_records(16_000))
+        assert len(held) == _ROUNDS
+        assert _held_too_long(rounds) is not None, rounds

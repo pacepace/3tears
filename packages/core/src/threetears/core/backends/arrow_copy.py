@@ -119,8 +119,13 @@ _HOLD_SECONDS: Final = 0.001
 #: how long the build blocks when it lets the loop run: long enough for a waiting thread to be scheduled and take the lock
 _TURN_SECONDS: Final = 0.0002
 
-#: the values converted in Python between two of the build's turns
-_SLICE_VALUES: Final = 4096
+#: the values read or converted in Python between two of the build's turns: few enough that no stretch nears
+#: :data:`_HOLD_SECONDS` (4096 held the caller's loop a whole switch interval, 5 ms, on a loaded host)
+_SLICE_VALUES: Final = 256
+
+#: the stream's bytes copied out of Arrow's buffer at a time, with the build's turns between: one copy of a 12 MB stream
+#: into bytes held the interpreter lock for its length (3.6 ms on a Linux container)
+_PIECE_BYTES: Final = 1 << 20
 
 
 class _Turns:
@@ -215,6 +220,44 @@ _ARROW_KINDS: Final[dict[type, Any]] = (
 )
 
 
+def _kinds(values: Sequence[Any], turns: _Turns) -> set[type]:
+    """the types of a column's values, ``None``'s left out, read a slice at a time with the build's turns between.
+
+    :param values: the values
+    :ptype values: Sequence[Any]
+    :param turns: the build's turns
+    :ptype turns: _Turns
+    :return: the types
+    :rtype: set[type]
+    """
+    kinds: set[type] = set()
+    for start in range(0, len(values), _SLICE_VALUES):
+        kinds.update(map(type, values[start : start + _SLICE_VALUES]))
+        turns.take()
+    kinds.discard(_NONE)
+    return kinds
+
+
+def _column_of(records: Sequence[Sequence[Any]], position: int, turns: _Turns) -> list[Any]:
+    """one column of the rows, read a slice of rows at a time with the build's turns between.
+
+    :param records: the rows
+    :ptype records: Sequence[Sequence[Any]]
+    :param position: the column's position in each row
+    :ptype position: int
+    :param turns: the build's turns
+    :ptype turns: _Turns
+    :return: the column's values
+    :rtype: list[Any]
+    """
+    taken = operator.itemgetter(position)
+    values: list[Any] = []
+    for start in range(0, len(records), _SLICE_VALUES):
+        values.extend(map(taken, records[start : start + _SLICE_VALUES]))
+        turns.take()
+    return values
+
+
 def _arrow_column(values: Sequence[Any], turns: _Turns) -> tuple[Any, bool]:
     """one column of a copy's rows as an Arrow array, and whether it is sent as JSON text.
 
@@ -225,11 +268,11 @@ def _arrow_column(values: Sequence[Any], turns: _Turns) -> tuple[Any, bool]:
     :return: the array, and whether its values are their JSON text
     :rtype: tuple[pyarrow.Array, bool]
     """
-    kinds = set(map(type, values)) - {_NONE}
+    kinds = _kinds(values, turns)
     if not kinds <= _ARROW_KINDS.keys() or len(kinds) > 1:
         # converted as the JSON request converts them; a UUID, datetime, Decimal or bytes column is then text
         values = _converted(transport_param, values, turns)
-        kinds = set(map(type, values)) - {_NONE}
+        kinds = _kinds(values, turns)
     kind = next(iter(kinds)) if len(kinds) == 1 else str if not kinds else None
     array: Any = None
     if kind in _ARROW_KINDS:
@@ -271,8 +314,7 @@ def copy_rows_arrow(columns: Sequence[str], records: Sequence[Sequence[Any]]) ->
     for position in range(width):
         # one column at a time, never the whole transposition in one call: each call holds the interpreter lock
         # for its length, and the caller's event loop runs between them
-        values = list(map(operator.itemgetter(position), records))
-        turns.take()
+        values = _column_of(records, position, turns)
         array, as_json = _arrow_column(values, turns)
         turns.take()
         arrays.append(array)
@@ -283,9 +325,29 @@ def copy_rows_arrow(columns: Sequence[str], records: Sequence[Sequence[Any]]) ->
     with pa_ipc.new_stream(sink, table.schema) as writer:
         writer.write_table(table)
     turns.take()
-    ipc = sink.getvalue().to_pybytes()
-    turns.take()
+    ipc = _stream_bytes(sink.getvalue(), turns)
     return ArrowCopyRows(ipc, rows_digest(ipc), json_columns)
+
+
+def _stream_bytes(stream: Any, turns: _Turns) -> bytes:
+    """an IPC stream's buffer as bytes, copied out :data:`_PIECE_BYTES` at a time with the build's turns between.
+
+    CPython's ``bytes.join`` copies with the interpreter lock released once its result passes 1 MB and every part is
+    ``bytes`` (never a ``memoryview``), so the pieces are joined, and the request framed from these bytes
+    (:func:`framed_copy_request`), without holding the caller's loop.
+
+    :param stream: the stream's buffer
+    :ptype stream: pyarrow.Buffer
+    :param turns: the build's turns
+    :ptype turns: _Turns
+    :return: the stream
+    :rtype: bytes
+    """
+    pieces: list[bytes] = []
+    for start in range(0, stream.size, _PIECE_BYTES):
+        pieces.append(stream.slice(start, min(_PIECE_BYTES, stream.size - start)).to_pybytes())
+        turns.take()
+    return b"".join(pieces)
 
 
 def framed_copy_request(envelope: bytes, ipc: bytes) -> bytes:
