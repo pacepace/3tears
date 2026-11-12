@@ -34,7 +34,7 @@ fi
 
 EXTRA_ARGS=("$@")
 
-# `--area NAME` and `--not-area NAME` (repeatable; see .testament.toml's [areas]) are testament's,
+# `--area NAME` and `--not-area NAME` (repeatable; see .testament.toml's [suites.default.areas]) are testament's,
 # not pytest's: they go to `testament run` ahead of the pytest selection. Only the pool knows the
 # areas, so a run that would go local refuses them below rather than running more than was asked.
 AREA_ARGS=()
@@ -53,7 +53,7 @@ for arg in ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}; do
     esac
 done
 if [ -n "$area_flag" ]; then
-    echo "test.sh: ${area_flag} needs an area name (see [areas] in .testament.toml)" >&2
+    echo "test.sh: ${area_flag} needs an area name (see [suites.default.areas] in .testament.toml)" >&2
     exit 2
 fi
 EXTRA_ARGS=(${PYTEST_ARGS+"${PYTEST_ARGS[@]}"})
@@ -112,9 +112,11 @@ if [ -n "$PACKAGE" ] && [ ! -d "packages/$PACKAGE/tests" ]; then
 fi
 
 # Where testament is installed (see .testament.toml), it runs the tests on its runners instead,
-# outside CI and unless TESTAMENT=off. It distributes the tests itself, so no `-n 4`, and its
-# manifest command carries `-m "not integration and not loop_timing"`, so a run there skips those.
-# A `-m` given here narrows that expression (testament sends `-m "(<manifest's>) and (<yours>)"`).
+# outside CI and unless TESTAMENT=off. It distributes the tests itself, so no `-n 4`. The run names
+# the manifest's unit suite, `--suite default`, so it stays that suite whatever other suites the
+# manifest declares, and an `--area` resolves against it. That suite's command carries
+# `-m "not integration and not loop_timing and not docker and not secrets"`, so a run there skips
+# those. A `-m` given here narrows that expression (testament sends `-m "(<manifest's>) and (<yours>)"`).
 #
 # A run gated by an environment variable (RECORD, THREETEARS_LIVE_*) stays local, because it
 # would reach runners that do not have it, so its tests would skip -- and a skip reads like a pass.
@@ -210,9 +212,10 @@ if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}
     echo "test.sh: via testament, pool only (integration tests run locally with test-integration.sh, loop_timing tests in CI; if the pool is down: docs/testing.md, \"When the pool is down\")" >&2
     pool_status=0
     if [ -n "$PACKAGE" ] && [ ${#TEST_PATHS[@]} -eq 0 ]; then
-        testament run ${AREA_ARGS+"${AREA_ARGS[@]}"} -- "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || pool_status=$?
+        testament run --suite default ${AREA_ARGS+"${AREA_ARGS[@]}"} -- "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} ||
+            pool_status=$?
     else
-        testament run ${AREA_ARGS+"${AREA_ARGS[@]}"} -- ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || pool_status=$?
+        testament run --suite default ${AREA_ARGS+"${AREA_ARGS[@]}"} -- ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || pool_status=$?
     fi
     # testament exits 2 when it gave no verdict on the tests: the pool, the machine or the manifest
     # stopped it (coordinator_unreachable, no_runner, connection_lost, batches_lost,

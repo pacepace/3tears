@@ -416,6 +416,11 @@ markers = [
     # Chromium helpers to the marker.
     "browser: needs headless Chromium (playwright); runs on the testament pool, not in test-integration.sh",
     "live: tests that connect to a real external service -- a warehouse, a search provider (env-gated); not run by default",
+    # Off the testament pool: its image runs no Docker daemon, and it ships no credentials. .testament.toml's
+    # suites deselect them; tests/enforcement/test_docker_marker.py and test_secrets_marker.py hold every
+    # test that starts a container or reads a credential to its marker.
+    "docker: drives a Docker daemon itself (testcontainers, docker exec); runs locally, never on the testament pool",
+    "secrets: reads a credential from the environment (a warehouse password, an API key or token); runs locally only",
     # Opts a test out of the scrape suite's autouse offline-robots fixture, for the few whose
     # subject IS the real default fetcher. Without the opt-out that builder was patched
     # suite-wide and never executed, so the code binding a robots read to the configured exit

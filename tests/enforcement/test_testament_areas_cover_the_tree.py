@@ -1,6 +1,7 @@
-"""Enforcement: ``.testament.toml``'s ``[areas]`` put every test file in exactly one area.
+"""Enforcement: ``.testament.toml``'s unit-suite areas put every test file in exactly one area.
 
-Areas divide the unit suite for reporting and selection (``testament run --not-area evals``,
+The areas are ``[suites.default.areas]``: the manifest is version 3, which keeps areas per suite, and
+``default`` is the unit suite. Areas divide the unit suite for reporting and selection (``testament run --not-area evals``,
 ``testament time --by area``). The table names each package rather than ending in a catch-all
 ``packages/**``, because a catch-all overlaps every area above it and ``testament areas check
 --strict`` reports each overlap. The cost of naming packages is drift: a new package's tests
@@ -30,12 +31,12 @@ _IGNORED = ("packages/scrape/sidecar",)
 
 
 def _areas() -> dict[str, list[str]]:
-    """Return the manifest's areas, in declared order.
+    """Return the unit suite's areas, in declared order.
 
     :return: each area's name and globs
     :rtype: dict[str, list[str]]
     """
-    areas = tomllib.loads(_MANIFEST.read_text())["areas"]
+    areas = tomllib.loads(_MANIFEST.read_text())["suites"]["default"]["areas"]
     return {str(name): [str(glob) for glob in globs] for name, globs in areas.items()}
 
 
@@ -87,7 +88,7 @@ def test_every_test_file_is_in_an_area() -> None:
     areas = _areas()
     unassigned = [path for path in _test_files() if not _matching(path, areas)]
     assert not unassigned, (
-        f"{len(unassigned)} test files are in no area of .testament.toml's [areas], e.g. {unassigned[:5]}: "
+        f"{len(unassigned)} test files are in no area of .testament.toml's [suites.default.areas], e.g. {unassigned[:5]}: "
         "add a glob for their package"
     )
 
@@ -108,4 +109,4 @@ def test_every_glob_matches_a_test_file() -> None:
         for glob in globs
         if not any(fnmatch.fnmatchcase(path, glob) for path in files)
     ]
-    assert not dead, f"globs in .testament.toml's [areas] that match no test file: {dead}"
+    assert not dead, f"globs in .testament.toml's [suites.default.areas] that match no test file: {dead}"

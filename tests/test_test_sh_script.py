@@ -30,6 +30,9 @@ _SCRIPT = _REPO_ROOT / "scripts" / "test.sh"
 
 _EVALS_FILE = "packages/evals/tests/test_transport.py"
 
+#: how every pool run starts: the manifest's unit suite, named, so a manifest with more suites leaves it the unit suite
+_POOL = ["testament", "run", "--suite", "default"]
+
 #: a stand-in executable: writes its own name and then each argument, one per line, and exits ``code``
 _RECORDER = '#!/bin/sh\n{{ basename "$0"; printf "%s\\n" "$@"; }} > "{calls}"\nexit {code}\n'
 
@@ -135,7 +138,7 @@ class TestNamedTestPathsRunAlone:
         """
         run = _run(repo, ["evals", _EVALS_FILE, "-q"])
         assert run.returncode == 0, run.stderr
-        assert run.argv == ["testament", "run", "--", _EVALS_FILE, "-q"]
+        assert run.argv == [*_POOL, "--", _EVALS_FILE, "-q"]
 
     def test_a_node_id_goes_to_the_pool_alone(self, repo: Path) -> None:
         """``file.py::name`` counts as a test path when the file exists.
@@ -147,7 +150,7 @@ class TestNamedTestPathsRunAlone:
         """
         node = f"{_EVALS_FILE}::test_y"
         run = _run(repo, ["evals", node])
-        assert run.argv == ["testament", "run", "--", node]
+        assert run.argv == [*_POOL, "--", node]
 
     def test_a_file_runs_alone_on_the_local_route(self, repo: Path) -> None:
         """without testament, the same file runs locally and alone.
@@ -186,7 +189,7 @@ class TestAPackageWithOnlyFlagsRunsTheWholePackage:
         :rtype: None
         """
         run = _run(repo, ["evals", "-q"])
-        assert run.argv == ["testament", "run", "--", "packages/evals/tests/", "-q"]
+        assert run.argv == [*_POOL, "--", "packages/evals/tests/", "-q"]
 
     def test_a_flag_value_that_names_a_file_is_not_a_test_path(self, repo: Path) -> None:
         """``-c pyproject.toml`` names an existing file, but as the option's value.
@@ -197,7 +200,7 @@ class TestAPackageWithOnlyFlagsRunsTheWholePackage:
         :rtype: None
         """
         run = _run(repo, ["core", "-c", "pyproject.toml", "-k", "lease"])
-        assert run.argv == ["testament", "run", "--", "packages/core/tests/", "-c", "pyproject.toml", "-k", "lease"]
+        assert run.argv == [*_POOL, "--", "packages/core/tests/", "-c", "pyproject.toml", "-k", "lease"]
 
     def test_a_word_that_is_not_a_path_is_not_a_test_path(self, repo: Path) -> None:
         """a ``-k`` expression's operand is passed through, not taken for a path.
@@ -208,7 +211,7 @@ class TestAPackageWithOnlyFlagsRunsTheWholePackage:
         :rtype: None
         """
         run = _run(repo, ["core", "-k", "lease", "nonexistent_test.py"])
-        assert run.argv[:4] == ["testament", "run", "--", "packages/core/tests/"]
+        assert run.argv[:6] == [*_POOL, "--", "packages/core/tests/"]
 
 
 class TestAnOptionsValueIsNotATestPath:
@@ -241,7 +244,7 @@ class TestAnOptionsValueIsNotATestPath:
         :rtype: None
         """
         run = _run(repo, ["core", *options, "-q"])
-        assert run.argv == ["testament", "run", "--", "packages/core/tests/", *options, "-q"]
+        assert run.argv == [*_POOL, "--", "packages/core/tests/", *options, "-q"]
 
     def test_the_same_on_the_local_route(self, repo: Path) -> None:
         """without testament, ``--cov <dir>`` still runs the package's tests.
@@ -263,7 +266,7 @@ class TestAnOptionsValueIsNotATestPath:
         :rtype: None
         """
         run = _run(repo, ["evals", "--cov", "-q", _EVALS_FILE])
-        assert run.argv == ["testament", "run", "--", "--cov", "-q", _EVALS_FILE]
+        assert run.argv == [*_POOL, "--", "--cov", "-q", _EVALS_FILE]
 
 
 class TestWhatCountsAsATestPath:
@@ -290,7 +293,7 @@ class TestWhatCountsAsATestPath:
         if path == "ABSOLUTE":
             path = str(repo / _EVALS_FILE)
         run = _run(repo, ["evals", path])
-        assert run.argv == ["testament", "run", "--", path]
+        assert run.argv == [*_POOL, "--", path]
 
     def test_a_non_python_file_outside_the_test_trees_is_not_one(self, repo: Path) -> None:
         """``pyproject.toml`` exists, but it names no tests.
@@ -301,7 +304,7 @@ class TestWhatCountsAsATestPath:
         :rtype: None
         """
         run = _run(repo, ["core", "pyproject.toml"])
-        assert run.argv == ["testament", "run", "--", "packages/core/tests/", "pyproject.toml"]
+        assert run.argv == [*_POOL, "--", "packages/core/tests/", "pyproject.toml"]
 
 
 class TestTestamentOffNeedsAReason:
@@ -382,21 +385,21 @@ class TestAreasGoToTestament:
     @pytest.mark.parametrize(
         ("args", "argv"),
         [
-            pytest.param(["--not-area", "evals"], ["testament", "run", "--not-area", "evals", "--"], id="not-area"),
-            pytest.param(["--area=core", "-q"], ["testament", "run", "--area=core", "--", "-q"], id="joined-value"),
+            pytest.param(["--not-area", "evals"], [*_POOL, "--not-area", "evals", "--"], id="not-area"),
+            pytest.param(["--area=core", "-q"], [*_POOL, "--area=core", "--", "-q"], id="joined-value"),
             pytest.param(
                 ["--not-area", "evals", "--not-area", "enforcement", "-q"],
-                ["testament", "run", "--not-area", "evals", "--not-area", "enforcement", "--", "-q"],
+                [*_POOL, "--not-area", "evals", "--not-area", "enforcement", "--", "-q"],
                 id="repeated",
             ),
             pytest.param(
                 ["core", "--area", "core"],
-                ["testament", "run", "--area", "core", "--", "packages/core/tests/"],
+                [*_POOL, "--area", "core", "--", "packages/core/tests/"],
                 id="with-a-package",
             ),
             pytest.param(
                 ["evals", _EVALS_FILE, "--area", "evals"],
-                ["testament", "run", "--area", "evals", "--", _EVALS_FILE],
+                [*_POOL, "--area", "evals", "--", _EVALS_FILE],
                 id="with-a-test-path",
             ),
         ],
@@ -474,7 +477,7 @@ class TestDashMGoesToThePool:
         """
         run = _run(repo, ["core", "-m", "slow"])
         assert run.returncode == 0, run.stderr
-        assert run.argv == ["testament", "run", "--", "packages/core/tests/", "-m", "slow"]
+        assert run.argv == [*_POOL, "--", "packages/core/tests/", "-m", "slow"]
 
     def test_with_areas(self, repo: Path) -> None:
         """areas and ``-m`` together reach testament.
@@ -486,7 +489,7 @@ class TestDashMGoesToThePool:
         """
         run = _run(repo, ["--not-area", "evals", "-m", "slow"])
         assert run.returncode == 0, run.stderr
-        assert run.argv == ["testament", "run", "--not-area", "evals", "--", "-m", "slow"]
+        assert run.argv == [*_POOL, "--not-area", "evals", "--", "-m", "slow"]
 
     def test_a_local_whole_suite_run_keeps_the_callers_marks(self, repo: Path) -> None:
         """on the local route the caller's ``-m`` is the selection, as before.
@@ -647,17 +650,31 @@ class TestFlagsThatNeedOneLocalProcess:
 class TestTheManifest:
     """the pool's own settings that this script's routing relies on."""
 
-    def test_the_pool_is_pool_only_and_leaves_out_integration_and_loop_timing(self) -> None:
-        """a pool outage fails rather than run the suite here, and neither local-only kind reaches a runner.
+    def test_the_pool_is_pool_only_and_leaves_out_every_local_only_kind(self) -> None:
+        """a pool outage fails rather than run the suite here, and no local-only kind reaches a runner.
 
         :return: nothing
         :rtype: None
         """
         manifest = tomllib.loads((_REPO_ROOT / ".testament.toml").read_text())
         assert manifest["fallback"] == "pool-only"
-        command = manifest["command"]
+        command = manifest["suites"]["default"]["command"]
         marks = command[command.index("-m") + 1]
         assert "not integration" in marks and "not loop_timing" in marks
+        assert "not docker" in marks and "not secrets" in marks
+
+    def test_the_suite_the_pool_route_names_is_the_manifest_s_unit_suite(self) -> None:
+        """``--suite default`` names a suite the manifest declares, which also takes the paths and options it is given.
+
+        :return: nothing
+        :rtype: None
+        """
+        manifest = tomllib.loads((_REPO_ROOT / ".testament.toml").read_text())
+        assert manifest["manifest_version"] == 3
+        suite = manifest["suites"]["default"]
+        assert suite["adapter"] == "pytest" and suite["default_for_paths"] is True
+        assert suite["default_selection"] == ["packages/", "tests/"]
+        assert "testament run --suite default" in _SCRIPT.read_text()
 
 
 class TestWhenThePoolGivesNoVerdict:

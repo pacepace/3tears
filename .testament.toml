@@ -5,17 +5,24 @@
 # marker): the image carries headless Chromium for them, and the env below makes a launch that fails
 # fail those tests rather than skip them. The event loop's wall-clock tests (`loop_timing`) stay
 # off the pool: beside other batches a bound on the code becomes a bound on the runner's load. CI
-# runs them serially on GitHub's runner (scripts/ci-unit-tests.sh --loop-timing).
+# runs them serially on GitHub's runner (scripts/ci-unit-tests.sh --loop-timing). The `docker` tests
+# drive a Docker daemon, which the image has none of, and the `secrets` tests read a credential, which
+# never ships to a runner: both stay off the pool and run on the laptop (test-integration.sh for
+# the docker tests and the Redshift ones; test-live-claude-cli.sh; a Tavily key with test.sh). `secrets_marker` would run them locally inside the same run, but can't be
+# set beside `fallback = "pool-only"`, so the command deselects them instead.
 #
 # `fallback = "pool-only"`: when the pool can't take a run, it fails (exit 2, naming this key)
 # rather than running the suite on the submitting machine. A local run is a choice, made with
 # TESTAMENT=off and a TESTAMENT_OFF_REASON (scripts/test.sh). Needs testament 0.45.1 or later.
-manifest_version = 2
+#
+# Version 3: the suites are tables of their own ([suites.<name>]), each with its command, selection
+# and areas; the keys up to [git] are the project's, shared by every suite (one image, one setup,
+# one workspace per tree). `default` is the unit suite. scripts/test.sh and scripts/ci-unit-pool.sh
+# name it (`--suite default`), so a run of theirs stays this suite when another is added.
+manifest_version = 3
 name = "3tears"
 executor = "container"
 fallback = "pool-only"
-command = ["uv", "run", "--frozen", "pytest", "-m", "not integration and not loop_timing"]
-default_selection = ["packages/", "tests/"]
 env_inputs = ["uv.lock", ".python-version"]
 batch_timeout_s = 1800
 collect_timeout_s = 900
@@ -29,7 +36,7 @@ THREETEARS_REQUIRE_CHROMIUM = "1"
 
 [image]
 dockerfile = "docker/testament.Dockerfile"
-inputs = ["docker/testament.Dockerfile", "scripts/check-fallback-fonts.sh"]
+inputs = ["docker/testament.Dockerfile", "scripts/check-fallback-fonts.sh", "scripts/check-test-services.sh"]
 
 [setup]
 timeout_s = 1800
@@ -40,6 +47,14 @@ steps = [["uv", "sync", "--frozen", "--extra", "vision", "--quiet"]]
 # Release tags (and the trees they point at) go with the tree, so tests that read a release from git run on the pool.
 tags = ["v[0-9]*"]
 
+# The unit suite. `default_for_paths`: a path that more than one suite could take (each collects
+# packages/ and tests/, split by marker) runs here, as do options with no path (`-- -k foo`).
+[suites.default]
+adapter = "pytest"
+command = ["uv", "run", "--frozen", "pytest", "-m", "not integration and not loop_timing and not docker and not secrets"]
+default_selection = ["packages/", "tests/"]
+default_for_paths = true
+
 # Areas divide the one suite for reporting and selection without splitting it: `testament run
 # --area core` or `--not-area evals`, `testament time --by area`, `trend --by area`. They join no
 # cache or environment key and change no batching. Order matters: a test belongs to the FIRST area
@@ -47,7 +62,7 @@ tags = ["v[0-9]*"]
 # than ending in a catch-all `packages/**`, which would overlap every area above it and fail
 # `testament areas check --strict`; a new package needs its glob here, and
 # tests/enforcement/test_testament_areas_cover_the_tree.py says so. Needs testament 0.44.0 or later.
-[areas]
+[suites.default.areas]
 evals = ["packages/evals/**"]
 enforcement = ["packages/enforcement/**", "tests/enforcement/**"]
 core = ["packages/core/**"]

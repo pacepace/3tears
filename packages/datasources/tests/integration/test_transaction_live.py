@@ -255,6 +255,7 @@ def _redshift_config(base: RedshiftConnectionConfig) -> RedshiftConnectionConfig
 
 
 @pytest.mark.live
+@pytest.mark.secrets
 class TestRedshiftTransactionLive:
     """DSD-01-08 against the real Redshift cluster."""
 

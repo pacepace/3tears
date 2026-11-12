@@ -51,7 +51,7 @@ from ..unit.helpers.cancellation_contract import (
     DriverCancellationContractTest,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.live]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.secrets]
 
 
 def _make_config(

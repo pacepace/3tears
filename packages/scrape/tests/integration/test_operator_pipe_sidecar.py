@@ -44,7 +44,7 @@ from threetears.nats import NatsClient, Subjects, attach_pipe, open_pipe, set_de
 from threetears.scrape.operator_pipe import serve_display
 from threetears.scrape.operator_session import SessionClaim
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.docker]
 
 #: The image the sidecar's own compose file and bake target both write. Overridable, because a
 #: verification run against a stale image is a verification run against code that is not the code

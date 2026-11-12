@@ -58,7 +58,7 @@ from .searxng_payloads import searx_score
 #: the fixture engines' names, as SearXNG reports them on a result
 _FIXTURE_ENGINES = frozenset(name for name, _urls in SEARXNG_FIXTURE_ENGINES)
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.docker]
 
 
 def _search(base_url: str, query: str) -> dict[str, Any]:

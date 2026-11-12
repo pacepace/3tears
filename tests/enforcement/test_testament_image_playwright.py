@@ -8,7 +8,8 @@ pool fails at launch. The image is rebuilt only when the Dockerfile's text chang
 so the version written there is also what rebuilds it.
 
 The manifest's env is held here too: it points playwright at the image's browsers and requires Chromium, so a pool
-runner that lost the browser fails the render tests instead of skipping them.
+runner that lost the browser fails the render tests instead of skipping them. It is the project's env (version 3), which
+the unit suite runs with as long as it sets no ``env`` of its own.
 """
 
 from __future__ import annotations
@@ -42,6 +43,9 @@ def test_the_image_installs_chromium_with_the_locked_playwright() -> None:
 
 def test_the_manifest_points_playwright_at_the_image_s_browsers_and_requires_them() -> None:
     manifest = tomllib.loads((_REPO_ROOT / ".testament.toml").read_text(encoding="utf-8"))
+    # a suite's own `env` replaces the project's whole (manifest version 3), so the unit suite, which holds the
+    # browser tests, must set none: it then runs with the project's env below
+    assert "env" not in manifest["suites"]["default"], "the unit suite's own env would drop the project's Chromium env"
     env = manifest["env"]
     installed = re.findall(r"^ENV PLAYWRIGHT_BROWSERS_PATH=(\S+)$", _DOCKERFILE.read_text(encoding="utf-8"), re.M)
     assert installed == [env.get("PLAYWRIGHT_BROWSERS_PATH")], (installed, env.get("PLAYWRIGHT_BROWSERS_PATH"))

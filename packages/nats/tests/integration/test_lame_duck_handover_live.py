@@ -36,7 +36,7 @@ from threetears.core.testing.containers import check_docker_available
 from threetears.nats import IncomingMessage, NatsClient, Subject
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.docker]
 
 _IMAGE = "nats:2.14.2-alpine"
 _NS = "ldmlive"

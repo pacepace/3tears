@@ -39,6 +39,7 @@ _TOOLS_PRESENT = all(shutil.which(tool) for tool in _TOOLS)
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.docker,
     pytest.mark.skipif(not _TOOLS_PRESENT, reason="postgres client tools not on PATH"),
 ]
 

@@ -4,8 +4,9 @@
 #   ./scripts/ci-unit-pool.sh route   choose the route: the pool if it answers a probe, else the GitHub shards
 #   ./scripts/ci-unit-pool.sh run     run the suite on the pool; say whether it passed, failed, or was lost
 #
-# The same tests `./scripts/ci-unit-tests.sh` runs on GitHub's runners: .testament.toml selects
-# packages/ and tests/ with -m "not integration and not loop_timing", and the pool spreads them
+# The same tests `./scripts/ci-unit-tests.sh` runs on GitHub's runners: .testament.toml's unit suite
+# (`default`) selects packages/ and tests/ with -m "not integration and not loop_timing and not docker
+# and not secrets", and the pool spreads them
 # over its runners, so GitHub's job only waits; the loop_timing tests run apart (`-m`, below). docs/testing.md, "CI on the
 # testament pool", lists every difference.
 #
@@ -27,7 +28,10 @@
 # silent: the reason goes to $GITHUB_OUTPUT, the step summary and an annotation.
 #
 # THE RUN (`run`, writes outcome=passed|failed|unreachable and why=<text> to $GITHUB_OUTPUT):
-#   testament run --fresh --no-cache --no-fallback --json=summary -- -m "not loop_timing"
+#   testament run --suite default --fresh --no-cache --no-fallback --json=summary -- -m "not loop_timing"
+# --suite default: the manifest's unit suite. testament applies a selection's options to one suite
+#   only, and a bare run runs every suite the manifest declares, so naming it keeps this the unit
+#   suite (and this -m its option) whatever other suites the manifest gains.
 # --fresh: every batch in a container started cold from the project's image, so nothing an earlier
 #   run left in a warm container reaches the required check (testament's advice for a merge or
 #   release gate). It does not turn the cache off, so:
@@ -37,7 +41,7 @@
 #   ci.yml falls back to the GitHub shards instead, as below.
 # -m "not loop_timing": the event loop's wall-clock tests stay off the pool. The manifest's own
 #   expression already leaves them out; this says so again where CI depends on it, and testament
-#   narrows, never replaces (the client sends -m "(not integration and not loop_timing) and (not
+#   narrows, never replaces (the client sends -m "(<the suite's expression>) and (not
 #   loop_timing)"). On a shared runner they run beside other batches,
 #   and a bound on the code becomes a bound on the machine (#1140; run 43087460269: two of them
 #   22 ms late). ci.yml's `unit (testament pool)` job runs them after this, serially on its own
@@ -279,8 +283,8 @@ run() {
     else
         for attempt in 1 2; do
             code=0
-            testament run --fresh --no-cache --no-fallback --json=summary --junit-xml "$OUT/unit.xml" \
-                -- -m "not loop_timing" >"$OUT/envelope.json" || code=$?
+            testament run --suite default --fresh --no-cache --no-fallback --json=summary \
+                --junit-xml "$OUT/unit.xml" -- -m "not loop_timing" >"$OUT/envelope.json" || code=$?
             verdict="$(classify "$code" "$OUT/envelope.json")"
             outcome="${verdict%% *}"
             verdict="${verdict#* }"

@@ -40,6 +40,7 @@ _TOOLS_PRESENT = all(shutil.which(tool) for tool in ("pg_dump", "pg_dumpall", "p
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.docker,
     pytest.mark.skipif(not _TOOLS_PRESENT, reason="pg_dump/pg_dumpall/pg_restore not on PATH"),
 ]
 
