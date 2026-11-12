@@ -106,8 +106,10 @@ The rule while the pool can't take runs: **CI's GitHub shards gate the unit suit
 `integration` job gates the part of the integration suite it covers, and a PR's author runs
 everything else locally.** Nobody runs the whole unit suite on a laptop.
 
-**How it shows.** `./scripts/test.sh` exits 2 and ends with "testament gave no verdict". Testament
-names the cause:
+**How it shows.** `./scripts/test.sh` exits 2 and ends with "testament gave no verdict". From
+testament 0.46, testament itself exits 75 when the pool could not serve the run, and 2 for every
+other stop. `test.sh` turns its 75 into 2 and first prints "testament exit 75", so a 75 is always the
+pool. Testament names the cause:
 - `coordinator_unreachable`, `no_runner`, `connection_lost`, `batches_lost` or `env_build_failed`:
   the pool;
 - `machine_not_set_up`: this machine has no key; `unauthorized` or `revoked`: its key was revoked;
