@@ -122,6 +122,26 @@ def _value_text(column: HashColumn, dialect: Dialect, alias: str | None) -> str:
     raise ValueError(f"no canonical text for {column.kind!r}")  # pragma: no cover - every kind is matched
 
 
+#: a key column's SQL types (a Sort's cast) a text-kind key's canonical text is the value itself
+_TEXT_CASTS: Final = frozenset({"text", "varchar", "character varying"})
+
+#: a key column's SQL types (a Sort's cast) a text-kind key's canonical text is the digits of
+_INTEGER_CASTS: Final = frozenset({"bigint", "integer", "int", "smallint", "int2", "int4", "int8"})
+
+
+def _key_part_text(kind: HashColumn, sort: Sort) -> str | None:
+    """a phase-2 key column's canonical text on Redshift, over ``t``: its kind's, as the hash writes it; a text-kind
+    column of an integer type by its digits (``str`` of the value, as :func:`key_text` writes it); None for a
+    text-kind column of another type, whose text is no canonical one (its kind belongs in ``key_kinds``): its batch
+    is then bound as a list of tuples."""
+    cast = (sort.cast or "text").lower().split("(")[0].strip()
+    if kind.kind is not HashKind.TEXT or cast in _TEXT_CASTS:
+        return _value_text(kind, Dialect.REDSHIFT, "t")
+    if cast in _INTEGER_CASTS:
+        return f"CAST(t.{quote_identifier(kind.column)} AS VARCHAR)"
+    return None
+
+
 async def dialect_of(conn: Any) -> Dialect:
     """the dialect ``conn``'s statements run in: a reader's own :data:`SQL_DIALECT_ATTRIBUTE` (a datasource reader
     names its datasource's engine), DuckDB for an in-process DuckDB, else PostgreSQL or YugabyteDB as
@@ -592,11 +612,24 @@ async def read_changed(
         if not present:
             rows.extend(await keyset_rows(conn, relation, columns=read_columns, by=pinned, order=order, where=where))
             continue
-        keys = KeyBatch(
-            columns=tuple(key_columns[at] for at in present),
-            values=[tuple(key[at] for at in present) for key in pattern_keys],
-            casts=tuple(order[at].cast or "text" for at in present),
-            as_list=dialect is Dialect.REDSHIFT,
+        spelled = [_key_part_text(kinds[at], order[at]) for at in present]
+        keys = (
+            # a warehouse's composite key: one scalar IN of the key's canonical text (each column's text as the hash
+            # writes it, Python's by key_text), where Redshift plans a list of tuples key by key (528 four-column
+            # keys: 4.4 s of planning against 0.11 s). The parts are NULL-free: a NULL part is pinned above
+            KeyBatch(
+                columns=tuple(key_columns[at] for at in present),
+                values=[tuple(str(texts[at]) for at in present) for texts in map(canonical, pattern_keys)],
+                as_list=True,
+                as_text=tuple(text for text in spelled if text is not None),
+            )
+            if dialect is Dialect.REDSHIFT and len(present) > 1 and None not in spelled
+            else KeyBatch(
+                columns=tuple(key_columns[at] for at in present),
+                values=[tuple(key[at] for at in present) for key in pattern_keys],
+                casts=tuple(order[at].cast or "text" for at in present),
+                as_list=dialect is Dialect.REDSHIFT,
+            )
         )
         rows.extend(
             await read_keyed(

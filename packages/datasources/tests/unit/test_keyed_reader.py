@@ -167,8 +167,9 @@ async def test_a_changed_rows_read_runs_on_the_warehouse_through_the_rail() -> N
     assert [row["geo"] for row in changed.rows] == [2] and changed.gone_keys == [("PA", 3)]
     (_, scope, _), (_, keyed, params) = client.asked
     assert row_hash_sql(hashed, Dialect.REDSHIFT) in scope and " LIMIT " in scope
-    assert '(t."state", t."geo") IN (($1, $2))' in keyed and "unnest" not in keyed
-    assert params[:2] == ["PA", 2]
+    # the composite key as one scalar IN of its length-marked text (an integer geo held as text-kind by its digits)
+    assert 'CAST(t."geo" AS VARCHAR)' in keyed and "IN ($1)" in keyed and "(($" not in keyed and "unnest" not in keyed
+    assert params[:2] == ["2:PA1:2", "PA"]
 
 
 class _ByteCappedHub:

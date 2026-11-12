@@ -33,6 +33,7 @@ from threetears.core.keyed import (
     row_hash_selected,
     row_hash_sql,
     run_inline,
+    update_keyed,
 )
 from threetears.core.testing.same_results import Seeded, assert_same_results
 from threetears.interfaces.keyed import HashEncoding
@@ -247,8 +248,11 @@ def test_a_warehouse_reads_its_hash_in_its_own_spelling_and_lists_its_changed_ke
     assert [row["geo"] for row in changed.rows] == [6] and changed.gone_keys == []
     (scope, _), (keyed, params) = warehouse.asked
     assert row_hash_sql(_HASHED, Dialect.REDSHIFT) in scope and "strftime" not in scope
-    assert "unnest" not in keyed and "::text[]" not in keyed and '(t."state", t."geo") IN (($1, $2))' in keyed
-    assert "PA" in params and 6 in params
+    # a composite key is one scalar IN of its length-prefixed canonical text, never a tuple list (Redshift plans a
+    # tuple list key by key: 4.4 s for 528 keys against 0.11 s)
+    assert "unnest" not in keyed and "::text[]" not in keyed and "(($" not in keyed
+    assert keyed.count(" IN (") == 1 and "IN ($1)" in keyed
+    assert params[0] == "2:PA1:6" and 6 not in params
 
 
 def test_the_dialect_is_the_reader_s_own() -> None:
@@ -956,3 +960,189 @@ def test_a_lane_is_its_value_mod_2_32_as_8_hex_digits_at_every_edge() -> None:
         db.close()
     for dialect in (Dialect.POSTGRES, Dialect.REDSHIFT):
         assert all(f"MOD(MOD({{}}, {2**32}) + {2**32}, {2**32})" in packing for packing in lane_packings(dialect))
+
+
+#: a warehouse's composite keys of every kind the hash names, two of them texts that would join alike unprefixed
+_TEXT_KEYED = (
+    "CREATE TABLE keyed (a VARCHAR, b VARCHAR, n BIGINT, d DECIMAL(9, 2), f BOOLEAN, v VARCHAR, "
+    "PRIMARY KEY (a, b, n, d, f))"
+)
+
+
+@pytest.fixture
+def text_keyed() -> Iterator[duckdb.DuckDBPyConnection]:
+    db = duckdb.connect()
+    db.execute(_TEXT_KEYED)
+    db.executemany(
+        "INSERT INTO keyed VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            ["ab", "c", 1, Decimal("1.50"), True, "one"],
+            ["a", "bc", 1, Decimal("1.50"), True, "two"],
+            ["1:a", "", 1, Decimal("1.50"), True, "three"],
+            ["", "1:a", 1, Decimal("1.50"), True, "four"],
+            ["x\x1fy", "z", -3, Decimal("-0.05"), False, "five"],
+            ["Peña ✓", "選挙", 10, Decimal("0"), False, "six"],
+            ["Peña ✓", "選挙", 11, Decimal("0"), False, "seven"],
+        ],
+    )
+    yield db
+    db.close()
+
+
+_KEY_KINDS = (
+    HashColumn("a"),
+    HashColumn("b"),
+    HashColumn("n", HashKind.INTEGER),
+    HashColumn("d", HashKind.NUMERIC, scale=2),
+    HashColumn("f", HashKind.BOOLEAN),
+)
+
+#: the canonical text of each key column over ``t``, as Redshift's phase 2 spells it (DuckDB runs the same SQL)
+_KEY_TEXTS = (
+    't."a"',
+    't."b"',
+    'CAST(t."n" AS VARCHAR)',
+    'CAST(CAST(t."d" AS DECIMAL(38, 2)) AS VARCHAR)',
+    """CASE WHEN t."f" THEN 't' WHEN NOT t."f" THEN 'f' END""",
+)
+
+
+def _texts(key: Sequence[Any]) -> tuple[str, ...]:
+    return tuple(str(key_text(value, kind.kind, kind.scale)) for value, kind in zip(key, _KEY_KINDS, strict=True))
+
+
+def test_a_key_batch_spelled_as_text_reads_the_rows_the_tuple_list_reads(text_keyed: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a text-spelled batch reads a row its keys do not name (``("ab", "c")`` against ``("a", "bc")``, a part
+    holding the separator or a length mark), misses one, or binds anything but one text a key."""
+    named = [("ab", "c", 1, Decimal("1.5"), True), ("", "1:a", 1, "1.50", "true"), ("x\x1fy", "z", -3, "-0.05", False)]
+    named.append(("Peña ✓", "選挙", 10, 0, "f"))
+    reader = _Counted(text_keyed)
+    by_text = run_inline(
+        read_keyed(
+            reader,
+            "keyed",
+            keys=KeyBatch(("a", "b", "n", "d", "f"), [_texts(key) for key in named], as_list=True, as_text=_KEY_TEXTS),
+            columns=["a", "b", "n", "v"],
+        )
+    )
+    (statement,) = reader.statements
+    assert statement.count("$") == len(named) and "(($" not in statement
+    by_tuple = run_inline(
+        read_keyed(
+            InlineDuckDB(text_keyed),
+            "keyed",
+            keys=KeyBatch(
+                ("a", "b", "n", "d", "f"),
+                [("ab", "c", 1, Decimal("1.50"), True), ("", "1:a", 1, Decimal("1.50"), True)]
+                + [("x\x1fy", "z", -3, Decimal("-0.05"), False), ("Peña ✓", "選挙", 10, Decimal("0"), False)],
+                as_list=True,
+            ),
+            columns=["a", "b", "n", "v"],
+        )
+    )
+    assert sorted(row["v"] for row in by_text) == sorted(row["v"] for row in by_tuple) == ["five", "four", "one", "six"]
+
+
+def test_a_key_batch_spelled_as_text_is_a_read_s_list_of_texts_one_a_column() -> None:
+    """Flips if a text-spelled batch is taken bound as arrays, with a text per column missing, with a value that is no
+    text (a NULL part is pinned IS NULL, never spelled), or by a write (its texts are written over ``t``)."""
+    with pytest.raises(ValueError, match="as a list"):
+        KeyBatch(("a", "b"), [("x", "y")], as_text=('t."a"', 't."b"'))
+    with pytest.raises(ValueError, match="each of its 2 columns"):
+        KeyBatch(("a", "b"), [("x", "y")], as_list=True, as_text=('t."a"',))
+    with pytest.raises(ValueError, match="text"):
+        KeyBatch(("a", "b"), [("x", None)], as_list=True, as_text=('t."a"', 't."b"'))
+    with pytest.raises(ValueError, match="text"):
+        KeyBatch(("a", "b"), [("x", 1)], as_list=True, as_text=('t."a"', 't."b"'))
+    db = duckdb.connect()
+    db.execute("CREATE TABLE w (a VARCHAR, b VARCHAR, v BIGINT)")
+    with pytest.raises(ValueError, match="read"):
+        run_inline(
+            update_keyed(
+                InlineDuckDB(db),
+                "w",
+                values={"v": 1},
+                keys=KeyBatch(("a", "b"), [("x", "y")], as_list=True, as_text=('t."a"', 't."b"')),
+            )
+        )
+    db.close()
+
+
+class _WideWarehouse(_Warehouse):
+    """a Redshift reader's double holding ``keys`` composite keys, every one changed; phase 2 answers one row a key."""
+
+    def __init__(self, keys: int) -> None:
+        super().__init__()
+        self._keys = [(f"office {at}", "County", "Total", f"{46000 + at}") for at in range(keys)]
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        self.asked.append((query, params))
+        columns = ("office", "level", "district", "geo")
+        if " LIMIT " in query:
+            return [{**dict(zip(columns, key, strict=True)), ROW_HASH_COLUMN: "a" * 32} for key in self._keys]
+        return [dict(zip(columns, key, strict=True)) for key in self._keys]
+
+
+def test_a_warehouse_s_composite_keys_are_one_bind_a_key_in_one_scalar_in() -> None:
+    """Flips if a Redshift phase 2 binds a composite key as a tuple of binds (planning grows key by key: 4.4 s of
+    5.4 s for 528 keys), or its statement grows past one short bind a key; PostgreSQL's spelling unchanged."""
+    keys = 528
+    warehouse = _WideWarehouse(keys)
+    changed = run_inline(
+        read_changed(
+            warehouse,
+            "geos",
+            key=["office", "level", "district", "geo"],
+            columns=["office", "level", "district", "geo"],
+            held={},
+            hash_columns=(HashColumn("office"),),
+        )
+    )
+    assert len(changed.rows) == keys
+    (_, (keyed, params)) = warehouse.asked
+    assert len(params) == keys and all(isinstance(param, str) for param in params)
+    assert keyed.count(" IN (") == 1 and "(($" not in keyed
+    # the statement: its select list and the key's text once, then one bind a key
+    (head, binds) = keyed.split(" IN (")
+    assert len(head) < 600 and len(binds) <= keys * len(", $528")
+
+
+def test_a_warehouse_s_changed_key_holding_a_null_part_is_pinned_and_the_rest_spelled_as_text() -> None:
+    """Flips if a key with a NULL part is spelled into the text (a NULL is no text), or its other parts are not
+    read: the NULL part is pinned IS NULL and the rest read by their text."""
+
+    class _Nulls(_Warehouse):
+        async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+            self.asked.append((query, params))
+            if " LIMIT " in query:
+                return [{"a": "x", "b": None, "c": "z", ROW_HASH_COLUMN: "a" * 32}]
+            return [{"a": "x", "b": None, "c": "z"}]
+
+    warehouse = _Nulls()
+    changed = run_inline(
+        read_changed(warehouse, "t3", key=["a", "b", "c"], columns=["a", "b", "c"], held={}, hash_columns=_HASHED[:1])
+    )
+    assert [{**row, ROW_HASH_COLUMN: None} for row in changed.rows] == [
+        {"a": "x", "b": None, "c": "z", ROW_HASH_COLUMN: None}
+    ]
+    (_, (keyed, params)) = warehouse.asked
+    assert 't."b" IS NULL' in keyed and params == ("1:x1:z",)
+
+
+def test_a_warehouse_s_text_kind_key_of_no_text_type_keeps_the_tuple_list() -> None:
+    """Flips if a text-kind key column of a type whose text is no canonical one (a timestamp named only by its Sort)
+    is spelled into the key's text: Redshift's text of it would differ from Python's and the row be missed."""
+    warehouse = _Warehouse()
+    run_inline(
+        read_changed(
+            warehouse,
+            "results",
+            key=["state", Sort("geo", cast="timestamp")],
+            columns=["state", "geo", "name"],
+            held={},
+            hash_columns=_HASHED,
+            by={"state": "PA"},
+        )
+    )
+    (_, (keyed, _)) = warehouse.asked
+    assert '(t."state", t."geo") IN (($1, $2), ($3, $4))' in keyed and "LENGTH" not in keyed

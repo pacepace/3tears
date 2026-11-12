@@ -106,6 +106,10 @@ def _named(keys: KeyBatch, chunk: Sequence[tuple[Any, ...]], first: int, nativel
     :return: the condition and its parameters
     :rtype: tuple[str, list[Any]]
     """
+    if keys.as_text:
+        raise ValueError(
+            "a key batch spelled as text is a read's (its texts are written over t): a write names its keys"
+        )
     columns = [quote_identifier(column) for column in keys.columns]
     width = len(columns)
     if keys.as_list:

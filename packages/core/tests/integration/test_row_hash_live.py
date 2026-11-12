@@ -490,3 +490,55 @@ async def test_a_lane_is_its_value_mod_2_32_as_8_hex_digits_at_every_edge_on_the
     for value in LANE_EDGES:
         found = await conn.fetchval(f"SELECT {packings[0].format(f'CAST({value} AS BIGINT)')}")
         assert found.lower() == f"{value % 2**32:08x}", (value, found)
+
+
+class _RedshiftHere:
+    """a Redshift reader's double on this database: its phase 1 hash respelled as this database's (Redshift's base64
+    is FROM_VARBYTE, which PostgreSQL lacks); every other statement runs as Redshift's is sent."""
+
+    binds_native_arrays = False
+    sql_dialect = Dialect.REDSHIFT
+
+    def __init__(self, conn: asyncpg.Connection, hashed: Sequence[HashColumn], dialect: Dialect) -> None:
+        self._conn = conn
+        self._respelled = (row_hash_sql(hashed, Dialect.REDSHIFT), row_hash_sql(hashed, dialect))
+        self.asked: list[str] = []
+
+    async def fetch(self, query: str, *params: Any) -> list[Any]:
+        self.asked.append(query)
+        return list(await self._conn.fetch(query.replace(*self._respelled), *params))
+
+
+async def test_a_warehouse_s_composite_keys_spelled_as_text_read_the_rows_the_tuple_list_reads_on_the_database(
+    conn: asyncpg.Connection,
+) -> None:
+    """Flips if Redshift's phase 2, a composite key spelled as its canonical text in one scalar IN, reads other rows
+    than the database's own spelling for keys of every kind (text with unicode, a colon and the empty text, integers
+    past 2**53, numerics at scale with negatives and zero, booleans, dates, timestamps to the microsecond), or loses a
+    key holding a NULL part."""
+    dialect = await dialect_of(conn)
+    await conn.execute(
+        "CREATE TABLE ckeys (name VARCHAR, votes BIGINT, share DECIMAL(12, 4), called BOOLEAN, day DATE, "
+        "stamp TIMESTAMP, v BIGINT)"
+    )
+    await conn.executemany(
+        "INSERT INTO ckeys VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        [(*row[1:], row[0]) for row in _ROWS]
+        + [("ab", 1, Decimal("1"), True, None, None, 8), ("a", 1, None, None, None, None, 9)],
+    )
+    hashed = (*_HASHED, HashColumn("v", HashKind.INTEGER))
+    key = ["name", "votes", "share", "called", "day", "stamp"]
+    columns = [*key, "v"]
+
+    async def every_row(reader: Any) -> list[tuple[Any, ...]]:
+        changed = await read_changed(reader, "ckeys", key=key, columns=columns, held={}, hash_columns=hashed)
+        return sorted((tuple(row[column] for column in columns) for row in changed.rows), key=lambda row: row[-1])
+
+    warehouse = _RedshiftHere(conn, hashed, dialect)
+    by_text = await every_row(warehouse)
+    expected = sorted(
+        (tuple(row) for row in await conn.fetch(f"SELECT {', '.join(columns)} FROM ckeys")), key=lambda r: r[-1]
+    )
+    assert by_text == await every_row(conn) == expected
+    spelled = [query for query in warehouse.asked if "LENGTH(" in query and " IN ($1" in query]
+    assert spelled and not any("(($" in query for query in spelled)

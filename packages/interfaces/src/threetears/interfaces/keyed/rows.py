@@ -102,6 +102,13 @@ class KeyBatch:
     :param as_list: bind the keys as a list of placeholders (``(c1, c2) IN (($1, $2), ...)``), each value as it is,
         for a database with no arrays (Redshift, SQLite); a statement's text then follows its batch's size
     :ptype as_list: bool
+    :param as_text: with ``as_list``, each key column's text as a TRUSTED SQL expression over ``t`` (its canonical
+        text: ``CAST(t."n" AS VARCHAR)``); the key is then compared as ONE text, each column's text written as its
+        length, ``:`` and the text, against one bind a key, ``values`` giving each key's column texts. One scalar
+        ``IN`` of texts, where Redshift plans a list of tuples key by key (528 four-column keys: 4.4 s of planning
+        against 0.11 s). The length marks keep it exact: no two keys of different texts join alike. A read's only;
+        a NULL part is no text (pin it ``IS NULL`` in ``by``). Empty: the columns are compared as they are
+    :ptype as_text: tuple[str, ...]
     """
 
     columns: tuple[str, ...]
@@ -109,6 +116,7 @@ class KeyBatch:
     casts: tuple[str, ...] = field(default=())
     null_safe: bool = False
     as_list: bool = False
+    as_text: tuple[str, ...] = field(default=())
 
     def __post_init__(self) -> None:
         if not self.columns:
@@ -120,6 +128,17 @@ class KeyBatch:
         for key in self.values:
             if len(key) != len(self.columns):
                 raise ValueError(f"a key of {self.columns} has {len(self.columns)} values, got {tuple(key)!r}")
+        if self.as_text:
+            if not self.as_list:
+                raise ValueError("a key batch spelled as text is bound as a list of texts (as_list)")
+            if len(self.as_text) != len(self.columns):
+                raise ValueError(
+                    f"a key batch spelled as text names the text of each of its {len(self.columns)} columns, "
+                    f"got {len(self.as_text)}"
+                )
+            for key in self.values:
+                if not all(isinstance(part, str) for part in key):
+                    raise ValueError(f"a key batch spelled as text gives each key's column texts, got {tuple(key)!r}")
 
     def cast(self, index: int) -> str:
         """the SQL type column ``index``'s text is cast back to.
@@ -182,6 +201,8 @@ class _KeyedRead:
         if self.keys.as_list:
             head = f"SELECT {self.selected} FROM {relation(self.table, 't')}"
             columns = [f"t.{quote_identifier(column)}" for column in self.keys.columns]
+            if self.keys.as_text:
+                return self._text_list(head, chunk)
             if width == 1:
                 named = f"{columns[0]} IN ({', '.join(f'${place + 1}' for place in range(len(chunk)))})"
             else:
@@ -219,6 +240,17 @@ class _KeyedRead:
             sql = self._array_text(native, bool(bounded))
             _remember(shape, sql)
         return sql, (*arrays, *self._by[1], *bounded, *guarded)
+
+    def _text_list(self, head: str, chunk: Sequence[tuple[Any, ...]]) -> tuple[str, tuple[Any, ...]]:
+        """a list batch spelled as text (:attr:`KeyBatch.as_text`): the key's length-marked text in one scalar ``IN``
+        of one bind a key."""
+        spelled = " || ".join(f"CAST(LENGTH({text}) AS VARCHAR) || ':' || {text}" for text in self.keys.as_text)
+        named = f"({spelled}) IN ({', '.join(f'${place + 1}' for place in range(len(chunk)))})"
+        conditions, pinned = by_conditions(self.by, first=len(chunk) + 1, alias="t")
+        guards, guarded = self._guards(len(chunk) + len(pinned))
+        where = " AND ".join([named, *conditions, *guards])
+        texts = ("".join(f"{len(part)}:{part}" for part in key) for key in chunk)
+        return self._locked(f"{head} WHERE {where}"), (*texts, *pinned, *guarded)
 
     @cached_property
     def _by(self) -> tuple[list[str], list[Any]]:
