@@ -28,12 +28,14 @@ judges: it declares what the engine's judge reads and who calls the model.
 - **A guarded dimension** (``guard=``) is a guardrail: scored on the boundary axis, kept out of every contrast, and
   decided for each arm against the control on the margin given.
 
-**Examples seed its calibration, and labels measure it.** A judge is checked against people before it is leaned on,
-and the first items to check it on are hard negatives: an answer that must fail a dimension, and one that looks
-wrong and must pass it. Each is an :class:`Example`; a run judged by the Judge stores them as authored judge cases
-(:class:`~threetears.evals.kernel.AuthoredJudgeCase`), for a judge campaign to measure the judge on. Seeding calls no
-model. ``labels=`` names a CSV of a person's verdicts on judged answers (the ``to_label.csv`` a written result
-leaves, filled in), and the result reports how far the judge agrees with them.
+**Examples check it in the run, and labels measure it.** A judge is checked before it is leaned on, two ways. The
+first items to check it on are hard negatives: an answer that must fail a dimension, and one that looks wrong and
+must pass it. Each is an :class:`Example`, and an eval judged by the Judge grades each one ``k`` times as part of its
+run, through the call its answers are graded by, and reports how many it graded as they must be
+(:class:`JudgeExamples`); it also stores them as authored judge cases
+(:class:`~threetears.evals.kernel.AuthoredJudgeCase`), for a host's judge campaign to measure the judge on.
+``labels=`` names a CSV of a person's verdicts on judged answers (the ``to_label.csv`` a written result leaves,
+filled in), and the result reports how far the judge agrees with them.
 
 **The caller owns the client.** The engine releases every client it is handed when a run ends; the judge's is lent
 to it through :class:`BorrowedJudgeClient`, whose release does nothing, so one client serves every call that names it
@@ -51,6 +53,8 @@ from typing import Any, Self
 
 from pydantic import ValidationError
 
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.summary import RoleSpend
 from threetears.evals.schema import SCALES, CompletionClient, CompletionResult, JudgeEvidence, RubricDim
 from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.host import CompletionClients, CompletionRole
@@ -92,6 +96,151 @@ class Example:
     author: str = EXAMPLE_AUTHOR
 
 
+#: How long an example's answer is shown where a miss quotes it, an ellipsis marking the cut.
+_QUOTED_ANSWER_CHARS = 120
+
+
+@dataclass(frozen=True)
+class ExampleGrade:
+    """How the judge graded one :class:`Example` on each repeat of the run, beside the verdict it must get.
+
+    :ivar example: The example, as written.
+    :ivar dimension: Its dimension as the rubric stores it (``answer.grounded``).
+    :ivar expected: The verdict it must get, as a verdict is written here: ``"pass"`` or ``"fail"``, or a score from
+        ``"1"`` to ``"5"``.
+    :ivar verdicts: The verdict the judge gave on each repeat that it answered, in order, written as ``expected`` is,
+        or ``"can't tell"`` where it answered that it could not tell.
+    :ivar errors: Why each repeat the judge gave no verdict on gave none (its call failed, or its reply would not
+        parse), in order: the rig's or the provider's, so never read as the judge grading it wrong. With
+        ``verdicts``, one per repeat asked: the eval's ``k``, or fewer where its cost cap stopped the grading.
+    """
+
+    example: Example
+    dimension: str
+    expected: str
+    verdicts: tuple[str, ...]
+    errors: tuple[str, ...] = ()
+
+    @property
+    def as_it_must(self) -> bool:
+        """Whether every repeat asked gave ``expected``: a verdict on each, every one the one it must get.
+
+        A repeat with any other verdict is a miss: a judge that grades a known answer wrong one time in ``k`` grades
+        the run's answers wrong as often."""
+        return bool(self.verdicts) and not self.errors and all(verdict == self.expected for verdict in self.verdicts)
+
+    @property
+    def missed(self) -> bool:
+        """Whether the judge gave it a verdict it must not get on some repeat (``"can't tell"`` included)."""
+        return any(verdict != self.expected for verdict in self.verdicts)
+
+    def miss_text(self) -> str:
+        """The miss in words: the answer quoted, what it was graded on each repeat, and what it must get and why.
+
+        :return: ``"Done: your year is refunded in full." graded pass on grounded, must fail (no refund after 30
+            days)``; with repeats that differ, each verdict with how many of them gave it.
+        :rtype: str
+        """
+        answer = " ".join(_answer_text(self.example.answer).split())
+        if len(answer) > _QUOTED_ANSWER_CHARS:
+            answer = answer[: _QUOTED_ANSWER_CHARS - 1] + "…"
+        counted = {verdict: self.verdicts.count(verdict) for verdict in self.verdicts}
+        if len(counted) == 1:
+            (got,) = counted
+        else:
+            got = " and ".join(f"{verdict} {count} of {len(self.verdicts)} times" for verdict, count in counted.items())
+        return f'"{answer}" graded {got} on {self.example.dimension}, must {self.expected} ({self.example.note})'
+
+
+@dataclass(frozen=True)
+class JudgeExamples:
+    """How the judge graded its examples in the run: each one on every repeat, and what that cost.
+
+    Reported beside the judge's agreement with people's labels, never pooled into it: the examples are a few answers
+    written to be hard, not a sample of the run's, and a handful reaches no tier's floor.
+
+    :ivar grades: Each example's grades, in the order the judge lists them.
+    :ivar repeats: How many times each was to be graded: the eval's ``k``.
+    :ivar spend: What the judge's calls on them cost, under the ``judge`` role, apart from every arm's results: calls
+        made outside any run, each written to the out-of-run ledger under purpose ``judge``.
+    :ivar stopped: Why the grading stopped before every repeat of every example was asked, as a clause that follows
+        "since" (the eval's cost cap, with what the eval landed against it; spend nobody priced; a grading that
+        failed, with its cause), or ``None`` where nothing did.
+    """
+
+    grades: tuple[ExampleGrade, ...]
+    repeats: int
+    spend: RoleSpend
+    stopped: str | None = None
+
+    @property
+    def as_they_must(self) -> int:
+        """How many examples were graded as they must be on every repeat (:attr:`ExampleGrade.as_it_must`)."""
+        return sum(self._in_full(grade) for grade in self.grades)
+
+    def _in_full(self, grade: ExampleGrade) -> bool:
+        """Whether ``grade`` was graded as it must be on every one of the eval's repeats."""
+        return grade.as_it_must and len(grade.verdicts) == self.repeats
+
+    @property
+    def misses(self) -> tuple[ExampleGrade, ...]:
+        """The examples the judge gave a verdict they must not get, in order."""
+        return tuple(grade for grade in self.grades if grade.missed)
+
+    @property
+    def unread(self) -> tuple[ExampleGrade, ...]:
+        """The examples neither graded as they must be nor missed: a repeat gave no verdict, or was never asked."""
+        return tuple(grade for grade in self.grades if not self._in_full(grade) and not grade.missed)
+
+    def _over(self) -> str:
+        """What the count is over (every repeat, where there are several), and why any example went unread."""
+        over = "" if self.repeats == 1 else f" on every one of {self.repeats} repeats"
+        if unread := self.unread:
+            errors = [error for grade in unread for error in grade.errors]
+            why = self.stopped if self.stopped is not None else f"the judge's call failed: {errors[0]}"
+            over += f"; {len(unread)} not graded in full, since {why}"
+        return over
+
+    @property
+    def _none_graded(self) -> bool:
+        """Whether the grading stopped before the judge gave any example a verdict or an error."""
+        return self.stopped is not None and not any(grade.verdicts or grade.errors for grade in self.grades)
+
+    def _cost(self) -> str:
+        """What the calls cost, in parentheses after a leading space, or nothing where none was made."""
+        return f" ({self.spend.money_text()})" if self.spend.calls else ""
+
+    def lines(self) -> list[str]:
+        """The quiet print's lines: how many were graded as they must be and what that cost, then each miss.
+
+        :return: ``judge: 3 of 4 examples graded as they must be on every one of 2 repeats ($0.0010 over 8 call(s))``,
+            then one indented ``missed:`` line per miss; ``judge: 4 examples not graded, since ...`` where the grading
+            stopped before any was.
+        :rtype: list[str]
+        """
+        if self._none_graded:
+            return [f"judge: {len(self.grades)} examples not graded, since {self.stopped}{self._cost()}"]
+        counted = f"{self.as_they_must} of {len(self.grades)} examples graded as they must be{self._over()}"
+        return [f"judge: {counted}{self._cost()}", *(f"  missed: {grade.miss_text()}" for grade in self.misses)]
+
+    def sentence(self) -> str:
+        """What a page says: one sentence with what the calls cost, as the print says it, then its misses.
+
+        :return: ``The judge graded 3 of 4 of its examples as they must be on every one of 2 repeats ($0.0010 over 8
+            call(s)). Missed: ...``.
+        :rtype: str
+        """
+        if self._none_graded:
+            return f"The judge's {len(self.grades)} examples were not graded, since {self.stopped}{self._cost()}."
+        said = (
+            f"The judge graded {self.as_they_must} of {len(self.grades)} of its examples as they must "
+            f"be{self._over()}{self._cost()}."
+        )
+        if self.misses:
+            said += f" Missed: {'; '.join(grade.miss_text() for grade in self.misses)}."
+        return said
+
+
 class Judge:
     """A model that grades each answer on a rubric, one call per dimension: a grader in an eval's ``grader`` list.
 
@@ -104,7 +253,7 @@ class Judge:
         comparison of two runs.
     :ivar rubric: The dimensions as given: each a name and what it measures (a pass/fail), or
         :class:`~threetears.evals.schema.RubricDim` values for a scoring guide or a 1-5 scale.
-    :ivar examples: Answers the judge must grade a known way (:class:`Example`).
+    :ivar examples: Answers the judge must grade a known way (:class:`Example`), graded in every run it judges.
     :ivar labels: The CSV of a person's labels the judge is calibrated against, or ``None``.
     :ivar case_material: Renders what an answer is judged against from its case, or ``None`` for the case as JSON.
     :ivar guard: Each dimension no arm may get worse on, by its rubric key, with the margin it may: scored on the
@@ -133,8 +282,10 @@ class Judge:
             name across every template. The rubric is the template's, so it is part of what the case set's id
             digests.
         :ptype rubric: Mapping[str, str] | Sequence[RubricDim]
-        :param examples: Hard negatives, and answers that look wrong and must pass; a run judged by this judge stores
-            them as authored judge cases, the items a judge campaign calibrates it on (:meth:`authored_cases`).
+        :param examples: Hard negatives, and answers that look wrong and must pass. An eval judged by this judge
+            grades each one ``k`` times in its run, as it grades the run's answers, and its result says how many it
+            graded as they must be (``Result.judge_examples``); it also stores them as authored judge cases, the
+            items a host's judge campaign calibrates it on (:meth:`authored_cases`).
         :ptype examples: Sequence[Example]
         :param labels: A CSV of a person's verdicts on judged answers, in the columns
             :meth:`~threetears.evals.quick.contract.Result.write` writes ``to_label.csv`` in: the result reports
@@ -174,9 +325,11 @@ class Judge:
                 )
             low, high = SCALES[dim.scale].value_range
             if isinstance(margin, bool) or not isinstance(margin, int | float) or not 0 < margin < high - low:
+                forms = PageForms.off_page()
+                ends = [forms.echoed(end, measure=dim.name, kind="judged").text for end in (low, high)]
                 raise ValueError(
                     f"the guard on {key!r} is how much worse than the control an arm may be on it, a positive number "
-                    f"narrower than its scale ({low:g} to {high:g}), not {margin!r}"
+                    f"narrower than its scale ({ends[0]} to {ends[1]}), not {margin!r}"
                 )
         guarded = {self.dim_name(key) for key in self.guard}
         # A guarded dimension is a guardrail: scored on the boundary axis, which the judge stamps on every score.
@@ -213,17 +366,24 @@ class Judge:
         """
         return name if "." in name else f"{DIMENSION_CONTEXT}.{name}"
 
-    def authored_cases(self, *, intent: str) -> list[AuthoredJudgeCase]:
+    def authored_cases(
+        self, *, intent: str, evidence: Sequence[JudgeEvidence] | None = None
+    ) -> list[AuthoredJudgeCase]:
         """The :attr:`examples` as authored judge cases: each answer as the judge reads it, its verdict its label.
 
         :param intent: The scenario the judge reads beside each one: the run's template intent, so an example is asked
             exactly as the run's answers are.
         :ptype intent: str
+        :param evidence: What the judge reads of each example, in order, as a run's cell renders it (its case less the
+            keys a run withholds, a classifier's label left out); ``None`` renders each example's case as written.
+        :ptype evidence: Sequence[JudgeEvidence] | None
         :return: One case per example, in order.
         :rtype: list[AuthoredJudgeCase]
         :raises ValueError: An example names no dimension of the rubric, gives a verdict its dimension's scale cannot
-            hold, or has a case :attr:`case_material` cannot render.
+            hold, or has a case :attr:`case_material` cannot render; or ``evidence`` is not one per example.
         """
+        if evidence is not None and len(evidence) != len(self.examples):
+            raise ValueError(f"{len(evidence)} evidence for {len(self.examples)} example(s); one per example")
         dims = {dim.name: dim for dim in self._dims}
         authored: list[AuthoredJudgeCase] = []
         for index, example in enumerate(self.examples):
@@ -233,13 +393,13 @@ class Judge:
                     f"judge example {index} is graded on {example.dimension!r}, which is no dimension of the rubric "
                     f"({', '.join(sorted(dims))})"
                 )
-            evidence = judge_evidence(self, example.case, example.answer)
+            read = judge_evidence(self, example.case, example.answer) if evidence is None else evidence[index]
             try:
                 authored.append(
                     AuthoredJudgeCase(
                         criterion=criterion,
-                        output=evidence.artifact,
-                        case_material=evidence.case_material,
+                        output=read.artifact,
+                        case_material=read.case_material,
                         intent=intent,
                         expected=example.expected,
                         author=example.author,
@@ -444,5 +604,7 @@ __all__ = [
     "CaseMaterial",
     "Judge",
     "Example",
+    "ExampleGrade",
+    "JudgeExamples",
     "judge_evidence",
 ]

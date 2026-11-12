@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
@@ -250,10 +251,11 @@ async def test_a_declaration_no_run_can_execute_at_is_refused_naming_the_kind() 
 class _PricedClient:
     """A completion client whose every call costs ``cost_usd``, and which can say beforehand it costs at most ``ceiling_usd``.
 
-    ``ceiling_usd=None`` is a client that cannot price a call before making it.
+    ``ceiling_usd=None`` is a client that cannot price a call before making it; ``cost_usd=None`` is a call the
+    provider priced nothing for.
     """
 
-    cost_usd: float
+    cost_usd: float | None
     ceiling_usd: float | None
     calls: int = 0
     running: int = 0
@@ -451,21 +453,20 @@ async def test_an_unpriced_call_is_made_like_any_other_so_every_cell_makes_all_o
 
 
 class _ReportsBySourceKind(ToyExtractorKind):
-    """Two cells of one run, side by side: the first reports spend on two sources, the second asks the sink.
+    """Two cells of one run, side by side: the first reports spend on two sources, the second adds its own past the cap.
 
     The first to invoke reports $0.6 of candidate spend and $0.3 of background work and waits; the second, once it
-    has, asks to hold a $0.2 call and asks whether the cap is reached. Neither is refused: the $1 cap is read
-    between cells.
+    has, adds a $0.2 call of its own, taking the cells past the run's $1 cap while both still run. Neither is
+    refused: the cap is read between cells.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.reported = asyncio.Event()
-        self.asked = asyncio.Event()
+        self.added = asyncio.Event()
         self.order: list[str] = []
-        self.refused: list[str] = []
         self.negative_refused: list[str] = []
-        self.cap_reached: list[bool] = []
+        self.finished: list[str] = []
 
     async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         self.order.append(test_case.id)
@@ -476,14 +477,14 @@ class _ReportsBySourceKind(ToyExtractorKind):
                 sink.add_spend("candidate", -0.6)
             except ValueError as refused:
                 self.negative_refused.append(str(refused))
-            self.cap_reached.append(sink.cost_cap_reached())
             self.reported.set()
-            await self.asked.wait()
+            await self.added.wait()
+            self.finished.append(test_case.id)
             return CandidateOutput(output=[{"first": True}])
         await self.reported.wait()
-        sink.reserve("candidate", 0.2).release()
-        self.cap_reached.append(sink.cost_cap_reached())
-        self.asked.set()
+        sink.add_spend("candidate", 0.2)
+        self.added.set()
+        self.finished.append(test_case.id)
         return CandidateOutput(output=[{"first": False}])
 
 
@@ -494,13 +495,14 @@ async def test_a_cells_spend_by_source_only_grows_and_no_sibling_is_refused_by_i
         kinds.append(_ReportsBySourceKind(client=ScriptedExtractionClient(), world=world, goal_checks=()))
         return kinds[0]
 
-    _host, _run, _results, stopped, _cap = await _capped_run(kind_for, cap_usd=1.0, width=2, n_cases=2)
+    _host, _run, results, stopped, _cap = await _capped_run(kind_for, cap_usd=1.0, width=2, n_cases=2)
 
     (kind,) = kinds
     assert kind.negative_refused and "0 or more" in kind.negative_refused[0], "a source's total never decreases"
-    assert kind.cap_reached == [False, False], (
+    assert sorted(kind.finished) == sorted(kind.order) and len(kind.order) == 2, (
         "$0.9 beside a $0.2 call is asked of no cell: the cap is read between cells"
     )
+    assert len(results) == 2
     assert stopped is None
 
 
@@ -510,7 +512,7 @@ async def test_a_cells_spend_by_source_only_grows_and_no_sibling_is_refused_by_i
 
 
 class _ConversingPaidKind(ToyExtractorKind):
-    """A conversing kind whose candidate pays $0.01 for each answer, reserved through the cell's sink."""
+    """A conversing kind whose candidate pays $0.01 for each answer, counted on the cell's sink."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -523,10 +525,9 @@ class _ConversingPaidKind(ToyExtractorKind):
         candidate = RoleUsageLedger(role="candidate")
 
         async def answer(round_turns: Sequence[SimulatorTurn]) -> CandidateTurn:
-            held = sink.reserve("candidate", 0.01)
             response = ScriptedResponse(content="answer", model=RUN_MODELS[0], cost_usd=0.01)
             candidate.add_llm_result(response)
-            held.settle(response.cost_usd)
+            sink.add_spend("candidate", response.cost_usd)
             answered.append(round_turns[-1].content)
             return CandidateTurn(content=f"answer {len(answered)}")
 
@@ -664,7 +665,7 @@ async def test_a_judge_phase_the_cap_has_room_for_is_judged_and_its_spend_counte
 # =============================================================================
 
 
-async def test_a_capped_client_makes_every_priced_call_and_settles_each_to_what_it_cost() -> None:
+async def test_a_capped_client_makes_every_priced_call_and_counts_each_at_what_it_cost() -> None:
     paid = _PricedClient(cost_usd=0.004, ceiling_usd=0.01)
     sink = FakeCellSink()
     client = CappedCompletion(paid, sink=sink, source="candidate")
@@ -673,11 +674,27 @@ async def test_a_capped_client_makes_every_priced_call_and_settles_each_to_what_
         await client.generate(system="s", user="u")
 
     assert paid.calls == 5
-    assert sink.spent == {"candidate": pytest.approx(0.02)}
-    assert sink.held == [], "every reservation was closed"
+    assert sink.spent == {"candidate": pytest.approx(0.02)}, "each cost is added as it lands"
 
 
-async def test_a_capped_client_releases_its_reservation_when_the_call_raises() -> None:
+@pytest.mark.parametrize("cost_usd", [None, 0.004])
+async def test_a_capped_client_makes_a_call_its_client_prices_at_nan_and_counts_what_it_cost(
+    cost_usd: float | None,
+) -> None:
+    """A cell prices no call before making it: a ceiling no cap could read (NaN) neither refuses the call nor raises,
+    and the call lands at what it cost, unpriced when the provider priced nothing. Launch pricing still refuses an
+    unusable ceiling (``call_ceiling``, below)."""
+    paid = _PricedClient(cost_usd=cost_usd, ceiling_usd=math.nan)
+    sink = FakeCellSink()
+    client = CappedCompletion(paid, sink=sink, source="candidate")
+
+    await client.generate(system="s", user="u")
+
+    assert paid.calls == 1, "the call was made"
+    assert sink.spent == {"candidate": None if cost_usd is None else pytest.approx(cost_usd)}
+
+
+async def test_a_capped_client_counts_nothing_when_the_call_raises() -> None:
     class _Broken(_PricedClient):
         async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
             raise RuntimeError("the provider fell over")
@@ -688,7 +705,7 @@ async def test_a_capped_client_releases_its_reservation_when_the_call_raises() -
     with pytest.raises(RuntimeError, match="fell over"):
         await client.generate(system="s", user="u")
 
-    assert sink.held == [] and sink.spent == {}, "a call that raised holds nothing and counts nothing"
+    assert sink.spent == {}, "a call that raised counts nothing"
 
 
 @dataclass
@@ -708,8 +725,8 @@ class _MistypedSentClient(_PricedClient):
 
 
 @pytest.mark.parametrize("source", ["candidate", "simulator"])
-async def test_a_capped_client_settles_a_billed_call_whatever_its_sent_settings_hold(source: Any) -> None:
-    """The cap reads the spend alone: a wrong-typed ``sent_settings`` neither leaves the ceiling held nor fails the
+async def test_a_capped_client_counts_a_billed_call_whatever_its_sent_settings_hold(source: Any) -> None:
+    """The cap reads the spend alone: a wrong-typed ``sent_settings`` neither leaves the call uncounted nor fails the
     call, and a candidate's call is never read for what it was sent with."""
     sink = FakeCellSink()
     client = CappedCompletion(_MistypedSentClient(cost_usd=0.004, ceiling_usd=0.01), sink=sink, source=source)
@@ -717,14 +734,14 @@ async def test_a_capped_client_settles_a_billed_call_whatever_its_sent_settings_
     returned = await client.generate(system="s", user="u")
 
     assert returned.sent_settings == "low", "the completion is handed back unchanged"
-    assert sink.held == [] and sink.spent == {source: pytest.approx(0.004)}
+    assert sink.spent == {source: pytest.approx(0.004)}
 
 
-async def test_a_simulator_call_whose_sent_settings_is_refused_is_settled_and_recorded_before_the_defect_leaves() -> (
+async def test_a_simulator_call_whose_sent_settings_is_refused_is_counted_and_recorded_before_the_defect_leaves() -> (
     None
 ):
-    """Through the conversation loop: the reservation is settled to the call's cost, the driver's calls hold it, and
-    the host's defect stops the driver ``simulator_error`` and propagates."""
+    """Through the conversation loop: the call's cost is counted, the driver's calls hold it, and the host's defect
+    stops the driver ``simulator_error`` and propagates."""
     sink = FakeCellSink()
     driver = TurnDriver(conversation=ConversationSpec(actors=[actor("a")], max_turns=2), variation={})
 
@@ -739,7 +756,7 @@ async def test_a_simulator_call_whose_sent_settings_is_refused_is_settled_and_re
             driver, answer, post, llm=_MistypedSentClient(cost_usd=0.004, ceiling_usd=0.01), sink=sink
         )
 
-    assert sink.held == [] and sink.spent == {"simulator": pytest.approx(0.004)}
+    assert sink.spent == {"simulator": pytest.approx(0.004)}
     assert driver.stop_cause is ConversationStopCause.SIMULATOR_ERROR
     ledger = RoleUsageLedger(role="simulator")
     driver.fold_usage(ledger)
@@ -753,3 +770,5 @@ def test_a_ceiling_is_the_clients_own_times_the_attempts_and_unpriced_without_on
     assert call_ceiling(object(), system="s", user="u") is None, "a client with no price_ceiling cannot say"
     with pytest.raises(ValueError, match="a ceiling is a finite amount"):
         call_ceiling(_PricedClient(cost_usd=0.0, ceiling_usd=-1.0), system="s", user="u")
+    with pytest.raises(ValueError, match="a ceiling is a finite amount"):
+        call_ceiling(_PricedClient(cost_usd=0.0, ceiling_usd=math.nan), system="s", user="u")

@@ -27,13 +27,7 @@ difference between a five-minute fix and the afternoon the first one took.
 
 from __future__ import annotations
 
-from typing import Any
 
-
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
-
-
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 
@@ -83,22 +77,3 @@ def test_the_fingerprint_agrees_with_the_content() -> None:
     from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 
     assert toyhost_bundle(profile=profile).fingerprint() == toyhost_bundle(profile=profile).fingerprint()
-
-
-def test_the_generated_user_message_is_reproducible() -> None:
-    """The bundle is not the payload — the user message built from it is.
-
-    Replay keys on the exact request text, so a bundle that was stable while the
-    message built from it was not would leave the loop refusing every replay with
-    nothing visibly wrong. Asserted separately because the two can diverge: the
-    message is a rendering, and a renderer is free to introduce its own clock.
-    """
-    profile = toyhost_profile()
-    from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
-
-    assert _writer_message(toyhost_bundle(profile=profile)) == _writer_message(toyhost_bundle(profile=profile))
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))

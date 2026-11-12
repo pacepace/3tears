@@ -1,0 +1,227 @@
+{
+  "ending": "stored",
+  "reason": "",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 1,
+          "reason": "The headline, decision block and c-cost make the action clear: keep September, because both candidates cost more (+$0.62 and +$0.49 per 1,000 replies, intervals clear of zero). The main risk is something else: the cost order may come from this run's provider routing and not the models. That risk shows up only in Watch, and it collides with a prior insight that qwen3.8-flash lowers cost. The headline and confidence line present the cost order as a fact about the models, at High."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 1,
+          "reason": "Pass rate gets two intervals with no labels to tell them apart. c-margin prints uncorrected readings (qwen3.8-flash -11 to -3, 1017 -6 to +1). c-judged prints corrected ones (-13 to -2, -7 to +3). Watch says qwen3.8-flash's drop reaches 13 points, but the explore table says it leaves the margin below 11. The confound clause in the confidence line says no setting besides the model is known to differ. Yet c-cost reports 1017's reasoning share at 55% against the control's 76%, and the provider is unrecorded for every arm. No block contradicts its own sentence."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 1,
+          "reason": "The confidence line sets aside the uncalibrated judge on the grounds that the call 'rests on production cost, which is measured'. But the provider behind that cost is not recorded, and a prior insight rated high says the opposite for qwen3.8-flash. High confidence is leaning on the call's least-checked leg. September's own weak spot is shown fairly: off-lane asks fail 42 of its trials."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "The omitted items would not change the decision. On the outcome and transcript scores qwen3.8-flash is worse and 1017 cannot be told apart from the control. The send-or-queue check and failed-reply notices cannot be told apart for either candidate. Measuring spend is the evaluation's own cost. The small strata stay in the appendix."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 1,
+          "reason": "c-cost carries the reasoning-ratio confound, and a next step reruns 1017 with the share matched. But that confound is also attached to the contrasts c-judged and c-offlane read for 1017 (holds character -5, -9 to -1), and neither claim carries it. Routing is the confound that could move the cost order the call rests on, and it is missing from the confidence line."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an experiment and what it would settle: re-pricing on production routing, judge calibration weighted to off-lane asks, a rerun with the reasoning share matched, and an off-lane directive rerun."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "c-cost, c-margin and c-judged each show their own gaps. c-offlane's claim is about shares (48% and 53% of the loss), but its block draws stratum changes and never shows those shares. Its caption also mentions bold rows separated at 95% when the block has no intervals. c-cards' claim rests on counts (42, 68, 63), but its block holds only example cards. Those counts are failures for any reason, not failures to hold character."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "",
+          "severity": "must_fix",
+          "finding": "The headline, lede and c-cost rank the models by cost ('each cost more per reply') with no provider named for any arm. The call rests on that cost order, and a prior insight rated high says qwen3.8-flash lowers production cost. Watch admits the provider is unknown, but the confidence line still reads High. Its reason for setting aside the judge caveat is that the call rests on measured cost. Its confound clause says no setting besides the model is known to differ, yet both the provider and 1017's reasoning share (55% vs 76%) differ or are unrecorded. Fix: in the headline, lede and c-cost, scope the cost gap to 'as served in this run, provider not recorded'. Add a confidence clause for routing that says what would make it matter (a candidate priced below $1.89 per 1,000 replies on production routing) and why keeping the control holds until then. One supporting reason: qwen3.8-flash also loses 8 points of pass rate after correction, and 1017 loses 5 points on holding character. Otherwise lower the form to low.",
+          "id": "f1.1",
+          "since": 1
+        },
+        {
+          "claim": "c-judged",
+          "severity": "should_fix",
+          "finding": "c-judged reads 1017's corrected contrasts on holding character (-5, -9 to -1), pass rate and keeping the booth offstage. The reasoning-ratio confound is attached to all three, and the claim does not carry it. c-offlane reads the same holding-character contrast without it too. The decision's 'Why not the others' cites the 5-point loss on holding character against 1017. Fix: attach the reasoning-ratio caveat to c-judged and c-offlane, and say in each claim that 1017's character loss may partly come from how much it reasoned. c-cost already says this.",
+          "id": "f1.2",
+          "since": 1
+        },
+        {
+          "claim": "c-margin",
+          "severity": "should_fix",
+          "finding": "Pass rate appears with two intervals and no label saying which is which. c-margin prints uncorrected 95% readings (qwen3.8-flash -11 to -3, 1017 -6 to +1). c-judged and the decision print corrected ones (-13 to -2, -7 to +3). As a result, Watch says qwen3.8-flash's drop reaches 13 points, while the explore table says it leaves the margin below 11 (1017 below 6). Fix: label c-margin's intervals as uncorrected readings against the control. In the explore row, say the 6 and 11 thresholds come from those readings, or restate them on the corrected intervals Watch uses.",
+          "id": "f1.3",
+          "since": 1
+        },
+        {
+          "claim": "c-offlane",
+          "severity": "should_fix",
+          "finding": "The claim's own figures, off-lane's share of each candidate's loss on holding character (48% and 53%), are not in its block. The block draws per-stratum changes (off lane -23 and -20 points). Its caption also refers to 'bold rows separated at 95%' although the block holds no intervals. Fix: add the share for each arm to the block, for example as a row or a caption line computed from the off-lane change × 38 of 299 cases over the overall change. Drop the bold-row sentence.",
+          "id": "f1.4",
+          "since": 1
+        },
+        {
+          "claim": "c-cards",
+          "severity": "should_fix",
+          "finding": "The claim rests on counts (42 trials for September, 68 for qwen3.8-flash, 63 for 1017), but the block shows only three cards. The snapshot counts those as off-lane trials that failed for any reason, not failures to hold character. Fix: say they are off-lane trials that failed for any cause, out of 114 per arm, and put the counts in the block or its caption. Also fix the caption 'One kept card per arm..., three kept per arm', which contradicts itself. The point that the control fails the same way is better shown by its 'Cold' laundry answer (trial T64), which matches 1017's T67.",
+          "id": "f1.5",
+          "since": 1
+        }
+      ],
+      "resolved": [],
+      "total": 9,
+      "passes": false,
+      "must_fix": true,
+      "blocking": [
+        "f1.1"
+      ]
+    },
+    {
+      "round": 2,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, decision block and c-cost say what to do: keep September. They give the reason: as served in this run, qwen3.8-flash costs +$0.62 per 1,000 replies (+$0.38 to +$0.85) and 1017 costs +$0.49 (+$0.17 to +$0.81), and neither candidate shows a character gain. They also name the main risk: no provider is recorded, and a prior insight says qwen3.8-flash is cheaper. The flag, Watch and Next all carry that risk."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "I read each claim against its block row by row and found no contradictions. In c-margin, the uncorrected lower bounds (-11 and -6) stay inside the 15-point margin. In c-judged, holding character is -6 (-12 to -2) and -5 (-9 to -1), and the booth rows cannot tell the arms apart. In c-offlane, -23 and -20 are the largest stratum drops; the next largest is assistant shape at -15. options_dominance also names September as dominant."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "The page shows the recommended control's weak spot. It holds character on only 66% of off-lane asks (c-offlane) and fails 42 off-lane trials (c-cards). c-offlane is labelled an uncorrected lead and says its interval may be too narrow. The confidence clauses say what would make each open caveat matter, and why the call holds until then."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "Nothing omitted would change the call. Outcome and transcript point the same way as pass rate. Measuring spend is the evaluation's own spend, not production's. The other strata are smaller and stay in the tables. The cost-missing trials are handled in Method: the order holds even under the method's worst-case bound."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "Both confounds are carried into the story and the next steps. The provider is unrecorded for every arm. It is in the flag, the confidence and Watch, and Next asks for a re-pricing. 1017's reasoning share (55% against 76%) is now caveated on c-cost, c-judged and c-offlane, and Next asks for a matched rerun."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an experiment and what it would settle. Re-pricing on production routing settles whether a candidate could cost less than $1.89 per 1,000 replies. Calibrating the judge settles whether the character losses are real. The matched-reasoning rerun separates the model from the reasoning share. The directive revision tests whether off-lane can improve for every arm."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "Most blocks fit their claims, and c-offlane now shows its 48% and 53% loss shares. Two gaps remain. First, the c-cards claim rests on counts of 42, 68 and 63 off-lane failures, but its block shows only cards, and its caption says every non-match card brushes off before answering, while T70 (qwen3.8-flash) answers directly. Second, the Options table gives costs of $2.43 against $1.89 (a $0.54 gap) and +28%, but the page leads with a paired gap of $0.62. Nothing reconciles the two figures, and the omitted list says the percentage uplift was left out."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "c-cards",
+          "severity": "should_fix",
+          "finding": "The claim's counts (42 of 114 off-lane trials failed for any cause on September, 68 on qwen3.8-flash, 63 on 1017) are in the sentence but not in the block or its caption, so the block does not show what the claim rests on. Fix: add one caption line with the three counts out of 114 per arm. The caption also says 'every other card answers the off-lane ask after brushing it off', but T70 (qwen3.8-flash) gives 'cold wash, 30 max, inside out' with no brush-off. Change it to 'most'.",
+          "id": "f1.5",
+          "since": 1
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The Options table shows production cost as $2.43 and $2.41 against $1.89, with +28% and +27%. That reads as gaps of $0.54 and $0.52. The headline, lede and c-cost lead with paired gaps of $0.62 and $0.49, which cover the cases where both arms recorded a cost (284 cases for qwen3.8-flash). The omitted list also says the percentage uplift was left out, but the table still prints it. Fix: add one line to the Options caption or to Method. It should say the lead figures are paired gaps by case, which differ from the difference of the arm means because trials with no recorded cost drop out of the pairing. It should also say the percentages are off unpaired means.",
+          "id": "f2.1",
+          "since": 2
+        }
+      ],
+      "resolved": [
+        "f1.1",
+        "f1.2",
+        "f1.3",
+        "f1.4"
+      ],
+      "total": 13,
+      "passes": true,
+      "must_fix": false,
+      "blocking": []
+    },
+    {
+      "round": 3,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, decision block and c-cost cover what to do, why and the main risk. The call is to keep September. Both candidates cost more as served: +$0.62 and +$0.49 per 1,000 replies, with paired intervals that exclude zero. Neither holds character better. The main risk is the provider, which no arm records, and the page names it in the lede, the flag and Watch. Next says exactly which re-pricing would reopen the call."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "Each claim matches its block row by row. In c-cost the intervals are +$0.38 to +$0.85 and +$0.17 to +$0.81, both clear of zero. In c-margin, qwen3.8-flash reads -8 (-11 to -3) and 1017 reads -6 to +1, which the evidence cannot tell apart from the control. In c-judged, holding character reads -6 (-12 to -2) and -5 (-9 to -1). c-offlane gives -23 and -20, and its 48% and 53% shares follow from 38 of 299 cases. c-cards gives the counts 42, 68 and 63. The contrasts list and options_dominance agree that September is dominant. Nothing contradicts the headline."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "The control's own weakness on off-lane asks gets its own claim, c-cards: 42 failures, holding character at 66%. The page frames the cost lead as 'as served' every time and never as a property of the model. The 1017 pass-rate gap is worded 'cannot tell apart'. The c-offlane intervals are marked uncorrected and possibly too narrow."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "None of the omitted items bears on the cost order that decides the call. Outcome and transcript scores point the same way as pass rate, and the rest are telemetry or measuring spend. The strata left out include qwen3.8-flash's drop on keeping the booth offstage in story asks, which only counts further against an option already rejected. The percentage uplift is now reconciled in Method instead of contradicted."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "Provider routing is carried in the lede, confidence, Watch and Next. 1017's reasoning share (55% against 76%) is carried in c-cost, c-judged and c-offlane, with a matched rerun in Next. The uncalibrated judge has a calibration step. Method covers the cost floor if missing trials cost nothing ($2.24 and $2.36 against $2.02 with the control at its p95 of $5.30), and the order holds. The late margin is checked: the call holds at every margin, and the flips at 6 and 11 change nothing."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an experiment and what it would settle: re-price on production routing, calibrate the judge on off-lane asks, rerun 1017 with its reasoning share matched, and revise the off-lane directive and rerun. The first is tied straight to the one condition the confidence clause says could reopen the call."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 2,
+          "reason": "Each block draws its claim's own figures, and the counterfactual holds: if the cost intervals crossed zero, c-cost and the headline would have to change. The c-cost caption and Method now explain why the paired gaps differ from the gaps between the arms' means. The c-cards caption now carries the three counts and says 'most', which matches the cards."
+        }
+      ],
+      "findings": [],
+      "resolved": [
+        "f1.5",
+        "f2.1"
+      ],
+      "total": 14,
+      "passes": true,
+      "must_fix": false,
+      "blocking": []
+    }
+  ]
+}

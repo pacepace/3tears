@@ -1,0 +1,299 @@
+[
+  {
+    "case": "booking",
+    "better": "A",
+    "confidence": "lean",
+    "reasons": "A names the risk on the first screen ('the main risk is booking over busy slots'), gives each check its own interval, and correctly says the 58.2-96.5% interval is read over 12 cases. B instead says the snapshot 'does not say whether the interval allows for that, so it may be too narrow', but that width is what 12 cases give, so the clustering is already accounted for. B reads more cleanly, but it points readers to an appendix list of failed trials that does not exist. A's next step is a concrete, sized full-calendar run. Its weaknesses are an unexplained '26.6% wrong way' figure and a caption that does not match its columns.",
+    "a": {
+      "words": 1216,
+      "tables": 6,
+      "decision_first_screen": "yes: no arm recommended, main risk named, next step stated, confidence Low",
+      "statistics_read_correctly": "mostly: clustering over cases handled correctly; sample-size figures (118/241 cases, 26.6%) unexplained",
+      "factual_slips": [
+        "c2 caption says no-overlap is listed first; the table lists call_count first",
+        "Lede states the 'main risk' from 4 kept cards while the 5th failure was not inspected (self-flagged)",
+        "In-window interval 72.9-100% quoted on the first screen appears in no table"
+      ]
+    },
+    "b": {
+      "words": 1163,
+      "tables": 5,
+      "decision_first_screen": "yes: no arm recommended, confidence Low, next step stated",
+      "statistics_read_correctly": "partly: suggests the interval 'may be too narrow' for clustering, but its width already matches 12 cases",
+      "factual_slips": [
+        "Says the full set of failed trials is in the appendix; it is not (self-flagged)",
+        "Claim c2 gives no interval for the per-check rates it ranks"
+      ]
+    }
+  },
+  {
+    "case": "invoices",
+    "better": "B",
+    "confidence": "sure",
+    "reasons": "B makes a call on the first screen ('the evidence does not support a switch yet', with a labelled lean to keep v1). It notes that the 88-vs-73 pass gap was never tested in the corrected family, and it surfaces v2's new failure kind (an unusable answer on a clean invoice). A states no decision. Its confidence line is garbled ('any call is made'), and it leaves four must-fix findings open, including the unexplained clash between v1's 100% accuracy and its 17 failed trials. B has its own weaknesses: it calls the untested pass gap 'unseparated' in the lede, and c2 leans on overlapping per-arm intervals.",
+    "a": {
+      "words": 1403,
+      "tables": 6,
+      "decision_first_screen": "no: says nothing separates the arms but gives no recommendation (self-flagged must-fix)",
+      "statistics_read_correctly": "mostly: corrected contrasts read correctly, but the headline 'nothing separates' rests on a family that excludes the pass-rate gap",
+      "factual_slips": [
+        "Garbled confidence line ('Nothing declares what is good enough. any call is made')",
+        "Claim c1 leads with pass counts that its block does not show",
+        "'What we know despite it' cites the cost gap, which the page itself calls unseparated"
+      ]
+    },
+    "b": {
+      "words": 2165,
+      "tables": 9,
+      "decision_first_screen": "yes: do not switch yet; lean keep v1 (labelled as a lean); confidence Low",
+      "statistics_read_correctly": "mostly: correctly notes the pass gap has no corrected interval, but the lede calls it 'unseparated' and c2 argues from overlapping unpaired intervals",
+      "factual_slips": [
+        "Lede calls the pass-count gain 'unseparated' while c1 says it has no interval at all",
+        "Claim c1 block is a raw figure dump (reply cost usd 0.0000459) rather than the pass-rate contrast",
+        "Lean cites 'its cost may be higher' despite the cost gap being unseparated (self-flagged)"
+      ]
+    }
+  },
+  {
+    "case": "kairo",
+    "better": "B",
+    "confidence": "coin flip",
+    "reasons": "The question asks about non-inferiority with a 15-point margin. B's lede answers it in those terms: 'both inside the 15-point margin, yet September is cheaper'. A muddles it ('within the margin... clearly worse'). A's Watch also names the wrong arm as having the thinnest margin ('1017... 5.8 points'). Against that, B says 1017 is 'not separated from September on character', but the corrected table shows its persona-holds-character drop as regressed (-8.7 to -0.6). B's worst-case 10.8 comes from the uncorrected 95% interval. B also duplicates a caveat line. Both pages claim 'High' confidence over six or more open caveats.",
+    "a": {
+      "words": 3415,
+      "tables": 7,
+      "decision_first_screen": "yes: keep September, confidence High (with caveats)",
+      "statistics_read_correctly": "partly: separation read correctly, but the non-inferiority margin is confused, the forest uses 95% while the corrected table uses 99.69%, and High confidence is stated over many open caveats",
+      "factual_slips": [
+        "Watch says 1017's margin is the thinnest at 5.8 points; per its own corrected table qwen3.8-flash (-12.9 vs -15) is the thinnest",
+        "Recommendation mixes the character measure (-6, -4.7) and pass rate (-7.6, -3.0) without labelling which is which"
+      ]
+    },
+    "b": {
+      "words": 3267,
+      "tables": 7,
+      "decision_first_screen": "yes: keep September, explicitly inside the margin, cost decides; confidence High (with caveats)",
+      "statistics_read_correctly": "partly: frames non-inferiority correctly, but quotes the uncorrected 95% bound as the worst case and states High confidence over seven open caveats",
+      "factual_slips": [
+        "'The other challenger is not separated from September on character'; the corrected table shows 1017 regressed on persona holds character (-4.7, -8.7 to -0.6)",
+        "Watch worst case 10.8 points uses the 95% interval; the corrected bound is 12.9",
+        "Short-run caveat printed twice"
+      ]
+    }
+  },
+  {
+    "case": "misfit-concierge-model-selection-1",
+    "better": "B",
+    "confidence": "coin flip",
+    "reasons": "The first screens are close; both give the same flip prices and the same Atlas-M lean. B states each caveat at the level where it bites ('Material only if a claim says one arm beats another by a paired gap'), and its lean carries the troubleshooting reason. A's caveat lines are bare conditions. A's c2 claim (Open-70B is passed 'at every price') sits on a cost-only bar chart that cannot show it. B's c2 'Atlas-L leads every task' overstates point leads of 1 point that sit inside overlapping intervals.",
+    "a": {
+      "words": 2202,
+      "tables": 8,
+      "decision_first_screen": "yes: lean Atlas-M (labelled lean), flip prices, confidence Low",
+      "statistics_read_correctly": "mostly: unpaired price-per-point intervals described correctly; the Open-70B dominance claim is not evidenced by its block",
+      "factual_slips": [
+        "c2 block is cost-by-task bars only; it cannot show Open-70B dominated on quality",
+        "'+$25' in the headline appears in no table",
+        "Method calls the judge calibrated (86% agreement) while the caveat says the judge is not described"
+      ]
+    },
+    "b": {
+      "words": 1952,
+      "tables": 7,
+      "decision_first_screen": "yes: lean Atlas-M (labelled lean), flip prices, confidence Low",
+      "statistics_read_correctly": "mostly: caveats scoped well; 'leads every task' ignores overlapping intervals",
+      "factual_slips": [
+        "'Atlas-L leads every task' though persona (91 vs 90) and speculation (90 vs 89) are within overlapping intervals",
+        "'Open-70B is never the best buy' has no pooled Open-70B figure on the page",
+        "Method calls the judge calibrated on 200 ratings beside the 'judge is not described' caveat"
+      ]
+    }
+  },
+  {
+    "case": "misfit-concierge-model-selection-2",
+    "better": "B",
+    "confidence": "coin flip",
+    "reasons": "B's first screen reads the price bands correctly: 'inside a band this run does not settle the call'. It adds a Watch on Brisk-S's troubleshooting score (79 against 93) and a concrete persona-routing lead (Open-70B 90 at $6.40 against Atlas-M 88 at $17). B also has three next steps that each name what they would settle. But B's lead claim 'quality rises with cost in every task' is contradicted by its own table, and c2's 'dominated overall' is not shown. A is cleaner and has no false claim, but it ignores the band widths, gives a thin reason for its lean, and its c1 caption describes a scatter the block does not draw.",
+    "a": {
+      "words": 1748,
+      "tables": 7,
+      "decision_first_screen": "yes: lean Atlas-M (labelled lean), flip prices, confidence Low",
+      "statistics_read_correctly": "mostly: no misreadings, but it ignores the wide second-step band ($11.09-$22.05) when it leans",
+      "factual_slips": [
+        "c1 caption 'Cost per 1k conversations against pooled overall quality' does not match its price-per-point table",
+        "Pooled quality values (84.7, 92.79) cited on the first screen are in no table"
+      ]
+    },
+    "b": {
+      "words": 2596,
+      "tables": 8,
+      "decision_first_screen": "yes: lean Atlas-M plus test Open-70B on persona; bands and watch stated; confidence Low",
+      "statistics_read_correctly": "mostly: band intervals read correctly; lead claims overreach the per-task data",
+      "factual_slips": [
+        "c1 'Quality rises with cost in every task' is false per its own table (Open-70B costs more than Brisk-S yet scores lower on billing and research)",
+        "c2 'Open-70B is dominated overall' is not shown by the per-task panels",
+        "'Left out: Latency: No latency figure was read', but the appendix's Every task table prints p95 latency for every arm"
+      ]
+    }
+  },
+  {
+    "case": "misfit-query-planner-config-sweep-1",
+    "better": "A",
+    "confidence": "lean",
+    "reasons": "A commits on the first screen ('the ones that clear the 97% pass-rate gate miss the 600 ms latency budget') and lays out the trade. 'A looser latency budget makes Brisk-S high with a retry the candidate. A lower pass-rate gate makes Brisk-S low with a retry the candidate.' That gives a reader both ways out. B is more thorough and adds a useful Watch on the 97.3% multi-hop margin. But it insists 'no configuration is cleared or failed on the latency gate' and poses as open whether a task exceeds 870 ms. An overall p95 above 600 ms already means some task exceeds 600 ms. Its gate matrix also labels unknown latency as 'Fails', and it never weighs J.",
+    "a": {
+      "words": 4749,
+      "tables": 9,
+      "decision_first_screen": "yes: no configuration ships; the two ways the owner could bend; confidence Low",
+      "statistics_read_correctly": "mostly: headline right; c1 calls the two arms 'undecided on latency' though their overall p95 above 600 ms already implies a per-task miss",
+      "factual_slips": [
+        "c3 claims a quality shortfall its cost-only block does not show (self-flagged)",
+        "c1 refers to 'the two with no pass-rate miss' without naming them"
+      ]
+    },
+    "b": {
+      "words": 5540,
+      "tables": 10,
+      "decision_first_screen": "yes: no configuration clears both gates; confidence Low",
+      "statistics_read_correctly": "partly: misses that overall p95 > 600 ms implies a per-task p95 > 600 ms; flags the thin 97.3% multi-hop margin well",
+      "factual_slips": [
+        "Gate matrix marks every cell 'Fails' for latency with 'no figure', contradicting c1's statement that F and L clear the pass-rate gate",
+        "States as conditional ('If any task ... has a p95 above its overall 870 ms') what its own figures already guarantee",
+        "Confidence bullet states 'would read below the 97% gate on fresh cases' as fact"
+      ]
+    }
+  },
+  {
+    "case": "misfit-query-planner-config-sweep-2",
+    "better": "B",
+    "confidence": "sure",
+    "reasons": "A recommends J with 'Confidence: High'. That conflicts with its own figures: J clears the gate by 0.1 points, J's interval crosses the gate, and a re-run reads J below the line 38.6% of the time. A also calls J's position 'dominates' when J is merely the cheapest survivor. B recommends L, whose computed interval sits wholly above the gate (97.2-98.8%). B states openly that it overrides the code's pick, shows J failing the multi-hop and ambiguous-entity tasks, and keeps confidence Low. Its sensitivity row and its 'ship now and re-run' next step are actionable. B's slips are 'coin-flip' for a 38.6% chance and a caveat bullet phrased as fact.",
+    "a": {
+      "words": 3776,
+      "tables": 8,
+      "decision_first_screen": "yes: ship J; confidence High (with caveats)",
+      "statistics_read_correctly": "no: reports the interval spanning the gate and a 38.6% wrong-way rate yet states High confidence",
+      "factual_slips": [
+        "'Dominates': J is only the cheapest of five survivors (self-flagged)",
+        "'Each needs a retry or high reasoning': D uses low reasoning plus a retry",
+        "'111,255 cases to settle four times in five' matches a plain (50%-power) normal-approximation size, not four in five",
+        "Omits that J is below 97% on multi-hop (95.6%) and ambiguous entity (96.4%)"
+      ]
+    },
+    "b": {
+      "words": 3979,
+      "tables": 10,
+      "decision_first_screen": "yes: ship L, explicit override of the cheaper pick; confidence Low",
+      "statistics_read_correctly": "mostly: reads interval lower ends against the gate correctly; one caveat stated as fact",
+      "factual_slips": [
+        "'Clears it only on a coin-flip' for a 38.6% wrong-way rate",
+        "Confidence bullet says the recommended setup's true rate 'is below the gate' while c2 puts its interval above the gate (self-flagged)",
+        "'38,350 cases' to settle a 0.1-point clearance at about 97% is hard to reconcile with a normal approximation (roughly 100k or more)"
+      ]
+    }
+  },
+  {
+    "case": "misfit-query-planner-config-sweep-3",
+    "better": "B",
+    "confidence": "sure",
+    "reasons": "B's headline gives the decision in the reader's units ('Brisk-S with low reasoning and one retry reaches 97.1% for $1,208 a month'). Its c3 picks the one pairwise gap that matters, J against Atlas-M low with a retry (-0.8, -2.0 to +0.5), and reads it correctly as 'not told apart'. Its Watch notes multi-hop at 95.6%. A buries its key interval in a table of about 80 setting-effect and interaction rows. A also asserts 'every arm answers fast... latency does not separate the options' over a 140-2551 ms spread, and adds a c3 about Nano-XS that does not bear on the choice. A runs about 6.6k words against B's 3.9k.",
+    "a": {
+      "words": 6625,
+      "tables": 10,
+      "decision_first_screen": "yes: lean Brisk-S low + retry (labelled lean), flip prices; confidence Low",
+      "statistics_read_correctly": "mostly: interval for the Atlas-M gap read correctly; dumps 80+ uncorrected interaction verdicts with no multiplicity note",
+      "factual_slips": [
+        "c4 'Every arm answers fast... latency does not separate the options' with p95 from 140 to 2551 ms",
+        "'Left out: Per-task pass rates' while the appendix prints them",
+        "Lede '+0.7 points for $11,376' is not reconciled with c1's $17,236.36 per point on the page"
+      ]
+    },
+    "b": {
+      "words": 3917,
+      "tables": 10,
+      "decision_first_screen": "yes: lean Brisk-S low + retry at $1,208/month (labelled lean); confidence Low",
+      "statistics_read_correctly": "yes: unpaired intervals labelled, 'not told apart' used correctly, frontier steps marked as point estimates",
+      "factual_slips": [
+        "c4 says multi-hop is hardest 'for every arm' while the block shows four arms",
+        "Sensitivity row 'Below $319.67 stay on Nano-XS' skips the lower flip points and does not name the arm"
+      ]
+    }
+  },
+  {
+    "case": "misfit-turn-router-classifier-sweep-1",
+    "better": "A",
+    "confidence": "lean",
+    "reasons": "Both pages ship Brisk-S few-shot. A shows why with blocks that fit its claims: two heatmaps show Nano-XS few-shot falling under the Complex x News floor (76.7%) and Brisk-S clearing every cell (82.9%, interval 81.7-84.1). A also names fallbacks and gives a two-row sensitivity table. B's c1 table omits the cell floors, so 'only configuration that passes every gate' cannot be checked from it. B's 'Left out' line contradicts the appendix, and its 'then ship' next step skips the fresh-case re-test it lists. One caution applies to both pages: with 48,210 turns per arm, the 0.7-point clearance is roughly 5 standard errors, so both overstate its fragility. A's own '9,487 more cases' figure implies the current run already settles it.",
+    "a": {
+      "words": 2962,
+      "tables": 10,
+      "decision_first_screen": "yes: ship Brisk-S few-shot as provisional, fallbacks named; confidence Low",
+      "statistics_read_correctly": "mostly: cell intervals read correctly; calls the 0.7-point clearance thin although n=48,210 makes it about 5 SE",
+      "factual_slips": [
+        "'Settling it takes about 9,487 more cases' while the arm already has 48,210 cases"
+      ]
+    },
+    "b": {
+      "words": 2505,
+      "tables": 7,
+      "decision_first_screen": "yes: route to Brisk-S few-shot; confidence High (with caveats)",
+      "statistics_read_correctly": "partly: High confidence is defensible at this n but is not argued, and it sits beside caveats that say the opposite",
+      "factual_slips": [
+        "c1 block lacks the cell floors that eliminate Nano-XS few-shot and Brisk-S zero-shot",
+        "'Left out: per-cell figures for failing arms' while the appendix prints them",
+        "Next says 'then ship' after a latency re-measure only, skipping its own fresh-case re-test"
+      ]
+    }
+  },
+  {
+    "case": "support-replies",
+    "better": "B",
+    "confidence": "lean",
+    "reasons": "The pages are near twins. B reads the interval more honestly: 83.9-100% 'still allows a materially lower true rate'. It also says the interval 'count[s] only sampling noise, not judge error' and that the lower bound 'holds only under this judge'. A says the same interval 'still allows a failure rate of a few percent', which understates a bound that permits up to 16% failure. A carries one open finding on the provider wording. B has none and puts its next step on the first screen.",
+    "a": {
+      "words": 874,
+      "tables": 6,
+      "decision_first_screen": "yes: no verdict, a lead only; confidence Low",
+      "statistics_read_correctly": "mostly: understates the interval's reach",
+      "factual_slips": [
+        "'Allows a failure rate of a few percent': the 83.9% lower bound allows up to about 16%",
+        "Caption says routing unknown while Options says priced by openrouter:reported (self-flagged)"
+      ]
+    },
+    "b": {
+      "words": 901,
+      "tables": 6,
+      "decision_first_screen": "yes: no quality claim follows; next step stated; confidence Low",
+      "statistics_read_correctly": "yes: notes the interval covers sampling noise only, not judge error",
+      "factual_slips": [
+        "Caveat bullet opens with 'the judge is lenient' stated as fact before hedging"
+      ]
+    }
+  },
+  {
+    "case": "support-triage",
+    "better": "A",
+    "confidence": "lean",
+    "reasons": "A's lead is right and goes further than the data shown directly: the urgent score fails more trials than the label, and since only 15 of 20 failures can be urgent-score failures, 'the label alone must explain some failures'. A's next steps tag all 20 failures and size a rerun against an illustrative line. B's lead claim says the urgent-versus-label gap is 'within noise' because the two marginal intervals overlap. That test is not valid for two measures on the same 90 trials, and it shrugs off a real pattern. A has garbled lines ('reaches down to 88.1-99.9%'). Its caption also wrongly says intervals read over cases 'may be too narrow' because of repeats.",
+    "a": {
+      "words": 1390,
+      "tables": 5,
+      "decision_first_screen": "yes: hold any ship call until a line is declared; confidence Low",
+      "statistics_read_correctly": "mostly: correct failure accounting; the c1 caption muddles clustering (intervals over 30 cases already allow for repeats)",
+      "factual_slips": [
+        "'Escalation... interval reaches down to 88.1-99.9%' (garbled, self-flagged)",
+        "c1 caption: intervals 'over cases, so repeats... may leave them too narrow', which is backwards, since reading over cases is the clustering-safe choice"
+      ]
+    },
+    "b": {
+      "words": 1079,
+      "tables": 5,
+      "decision_first_screen": "yes: whether 77.8% is good enough is open; next step stated; confidence Low",
+      "statistics_read_correctly": "no: treats overlapping marginal intervals of two paired measures as 'within noise'",
+      "factual_slips": [
+        "Lead claim: urgent (83.3%) vs label (90%) gap 'within noise' because intervals overlap; overlap is not a test for paired measures",
+        "Garbled confidence line ('someone judges 77.8% to be good or bad', self-flagged)"
+      ]
+    }
+  }
+]

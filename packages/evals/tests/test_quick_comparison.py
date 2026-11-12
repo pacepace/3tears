@@ -5,7 +5,7 @@ cases that carry a second label's words. Compared with ``hasty`` as the control 
 declares one axis at the two arm names, its control resolves to the variant key ``hasty``'s run
 carries, and the code-only report tests ``careful`` against it and finds it improved — under the
 campaign's name, or by its id when it has none. Two prompts compared on a model's recorded answers are rung 3
-(``examples/3-invoices/``), held by ``test_invoices_rung.py``.
+(``examples/3-invoices/``, one concept a file: the comparison is ``compare.py``), held by ``test_invoices_rung.py``.
 """
 
 from __future__ import annotations
@@ -25,22 +25,32 @@ from threetears.evals.analysis import (
     variant_key_of_run,
 )
 from threetears.evals import Eval, Result
+from threetears.evals.ops.analysis import CAMPAIGN_NAME_CHARS
 from threetears.evals.quick import as_host
 from threetears.evals.quick.one_call import ARM_LEVER, SHARED_ARM_MODEL
 from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "compare-test"
 
-#: Eight cases; the last four carry a second label's word, which only ``careful`` reads past.
+#: Sixteen cases; the last eight carry a second label's word, which only ``careful`` reads past. A gain on half the
+#: cases is a pass rate's, read on its bounded interval, which at eight cases still reaches zero: sixteen show it.
 CASES = [
     {"text": "refund please", "label": "billing"},
     {"text": "charged twice", "label": "billing"},
+    {"text": "refund for last month", "label": "billing"},
+    {"text": "charged the wrong card", "label": "billing"},
     {"text": "app crashes", "label": "bug"},
     {"text": "button broken", "label": "bug"},
+    {"text": "upload crashes", "label": "bug"},
+    {"text": "search box broken", "label": "bug"},
     {"text": "charged, but the page crashes", "label": "billing"},
     {"text": "refund page crashes", "label": "billing"},
     {"text": "crash after refund", "label": "billing"},
     {"text": "charged then crashed", "label": "billing"},
+    {"text": "refund form broken", "label": "billing"},
+    {"text": "charged and the app crashed", "label": "billing"},
+    {"text": "checkout crashes, refund me", "label": "billing"},
+    {"text": "charged though the button is broken", "label": "billing"},
 ]
 
 
@@ -65,7 +75,8 @@ async def _compare(
 ) -> Result:
     """Compare the runners (``hasty``, the control, then ``careful``), each case graded on its ``label`` field."""
     arms = {"hasty": hasty, "careful": careful} if runners is None else runners
-    ev = Eval(CASES, arms, ["label"], k=2, name=name)
+    # Named as the arms read, as a comparison's title in these tests; an eval never builds that name itself.
+    ev = Eval(CASES, arms, ["label"], k=2, name=name if name is not None else " vs ".join(arms))
     if host is not None:
         return await ev.run(host=host, scope=scope)
     return await ev.run(store=":memory:", scope=scope)
@@ -133,23 +144,45 @@ async def test_the_report_is_titled_by_the_question_its_campaign_asks() -> None:
     assert comparison.name == "hasty vs careful"
     assert comparison.report.source.campaign_name == "hasty vs careful"
     lines = report_markdown(comparison.report).splitlines()
-    # A name that only lists the arms adds nothing to the question it asks.
-    assert lines[0] == "# Does careful do better than hasty?"
+    # The heading is the campaign's name. The quick path declares no question, so none is quoted under it; the arms
+    # line follows.
+    assert lines[0] == "# hasty vs careful"
     assert lines[1].startswith("hasty (control) vs careful · ")
 
     named = await _compare(name="triage rules", scope="compare-named")
-    assert report_markdown(named.report).startswith("# triage rules: does careful do better than hasty?\n")
+    assert report_markdown(named.report).startswith("# triage rules\nhasty (control) vs careful · ")
+
+
+async def test_an_eval_named_past_the_campaign_name_cap_files_its_campaign_under_the_cap_keeping_the_name_whole() -> (
+    None
+):
+    long = "triage rules for the billing and bug queues, round two"
+    named = await _compare(name=long, scope="compare-long-name")
+    campaign = off_loop(named.host.storage.load_campaign, named.campaign_id, "compare-long-name")
+    assert campaign is not None
+    assert len(campaign.name) <= CAMPAIGN_NAME_CHARS and campaign.name.endswith("…")
+    assert long.startswith(campaign.name[:-1]) and long[len(campaign.name) - 1] == " ", "cut where a word ends"
+    assert campaign.description == long and named.name == long, "the name is kept whole beside the cut one"
+    again = await named.against("careful")
+    held = off_loop(again.host.storage.load_campaign, again.campaign_id, "compare-long-name")
+    assert held is not None and len(held.name) <= CAMPAIGN_NAME_CHARS
+    assert again.name == f"{long}, against careful"
 
 
 async def test_a_report_without_the_campaign_s_name_is_titled_by_its_id() -> None:
     comparison = await _compare()
     report = comparison.report
     nameless = build_code_only_report(report.bundle, assembled_at=report.source.generated_at)
-    assert report_markdown(nameless).startswith(f"# Campaign {comparison.campaign_id}: does careful do better")
+    # The heading reads the id where the page is given no name, and the arms line then names the aspect.
+    assert report_markdown(nameless).startswith(
+        f"# Campaign {comparison.campaign_id}\nhasty (control) vs careful · classify · "
+    )
 
 
 async def test_the_arms_share_a_host_the_caller_hands_over() -> None:
-    host = as_host([Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"])], store=":memory:")
+    host = as_host(
+        [Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"], name="hasty vs careful")], store=":memory:"
+    )
     comparison = await _compare(host=host)
     assert comparison.host is host
     assert off_loop(host.storage.load_campaign, comparison.campaign_id, SCOPE) is not None
@@ -213,7 +246,9 @@ async def test_arms_whose_candidates_share_a_docstring_share_its_first_line_as_t
     ],
 )
 async def test_unusable_arms_are_refused_before_anything_runs(runners: dict[str, Any], refusal: str) -> None:
-    host = as_host([Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"])], store=":memory:")
+    host = as_host(
+        [Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"], name="hasty vs careful")], store=":memory:"
+    )
     with pytest.raises(ValueError, match=refusal):
         await _compare(runners, host=host)
     assert off_loop(host.storage.list_campaigns, SCOPE) == []

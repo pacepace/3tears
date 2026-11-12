@@ -1,0 +1,64 @@
+# The skill ledger: one entry for every analyst skill this package has shipped, and the basis it shipped on.
+#
+# This file is package data beside the skill and is not part of it: the skill is its Markdown files alone, so no
+# entry written here moves the skill's digest. `analysis/analyst/skill_ledger.py` reads it, and a test fails on a
+# build whose shipped skill has no entry here.
+#
+# An edit to any file of the skill is a new skill with a new digest, and it ships with a new entry, appended below
+# the last one. The test that fails names the digests to copy. Each entry is one [[shipped]] table:
+#
+#   skill    the skill's digest (AnalystSkill.digest): every file's path and text
+#   analyst  the analyst's system text's digest, with no note withheld (SkillText.digest)
+#   editor   the editor's system text's digest (SkillText.digest)
+#   date     the day the entry was recorded
+#   basis    "measured", decided by a campaign, or "unmeasured", shipped without one
+#   monthly_envelope_usd  the standing monthly spend, in US dollars, that candidate trials run under in place of
+#            per-run approval (docs/judges-and-calibration.md, "The spend rule"); the acceptance readout states a
+#            run's spend against the shipped skill's envelope and never refuses on it
+#
+# A measured entry names the decision it shipped on, as the promotion read answered it:
+#
+#   campaign      the campaign's id
+#   scope         the scope the campaign lives in
+#   candidate     the promoted arm's variant key
+#   decision      "promote"
+#   writer_model  the model the candidate arm wrote with
+#   case_set      the held-out case set it was decided on, as { name = "...", version = N }
+#
+# An unmeasured entry says why it shipped without a measurement, in `reason`.
+
+[[shipped]]
+skill = "4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149788b8"
+analyst = "063768a69822c5655b17d434470f3a655506810d0cc5334d6f4c3216c3ba368b"
+editor = "07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+date = 2026-10-31
+basis = "unmeasured"
+monthly_envelope_usd = 50
+reason = "baseline: shipped before the gate existed"
+
+[[shipped]]
+skill = "fd74326c6f2e0fb5cd417f5ac7a1cff1855f4c8641d29dd622473ee87fc45662"
+analyst = "acc32bcf6bbd14aa1c4b9ec18239d8bc6e39011711b0ae4ac8c95e42bb4e21db"
+editor = "5d29d6f5471dfc846167512fb11fb216601ed5b35362013dad0bea2926f2cc92"
+date = 2026-11-07
+basis = "unmeasured"
+monthly_envelope_usd = 50
+reason = "the owner's wording ruling: an undecided difference is one the evidence cannot tell apart, never 'not separated'; a wording change the code already prints, not measured"
+
+[[shipped]]
+skill = "5ae589a74388d9025ad57e4cc776c8a028b9f357e6264101c7b367bc71c17d78"
+analyst = "acc32bcf6bbd14aa1c4b9ec18239d8bc6e39011711b0ae4ac8c95e42bb4e21db"
+editor = "5409446fa1296dd9b80669c4ba95a86c4d078e02bf103c4851eef12fd8025a70"
+date = 2026-11-09
+basis = "unmeasured"
+monthly_envelope_usd = 50
+reason = "the owner's clearing-rule ruling: a should_fix first raised as a should_fix, round 1 included, never makes a draft; editor.md states the rule code now applies, not measured"
+
+[[shipped]]
+skill = "365899f8f20b93066db371d8879372a241076ea892b935a84ca7c392dc0e4de5"
+analyst = "813723e64e35f283aedc9bf85ce0a0e43d342d5d026362c358927134d5df3332"
+editor = "5409446fa1296dd9b80669c4ba95a86c4d078e02bf103c4851eef12fd8025a70"
+date = 2026-11-10
+basis = "unmeasured"
+monthly_envelope_usd = 50
+reason = "the pass rule names every check that fails a trial and count.failures counts every failed trial; statistics.md and writing.md say what the keys now read, not measured"

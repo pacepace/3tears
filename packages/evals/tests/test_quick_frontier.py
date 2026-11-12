@@ -69,9 +69,9 @@ def _judge() -> Judge:
 
 async def _models_compared(scope: str) -> Any:
     """``big`` against ``small``, each arm named as the model it is, judged and run twice per case."""
-    return await Eval(CASES, {"model=big": big, "model=small": small}, [_judge()], k=2).run(
-        store=":memory:", scope=scope
-    )
+    return await Eval(
+        CASES, {"model=big": big, "model=small": small}, [_judge()], k=2, name="model=big vs model=small"
+    ).run(store=":memory:", scope=scope)
 
 
 async def test_a_comparison_of_two_models_is_one_frontier_naming_the_cheaper_one() -> None:
@@ -86,7 +86,9 @@ async def test_a_comparison_of_two_models_is_one_frontier_naming_the_cheaper_one
 
 
 async def test_named_arms_share_the_comparison_s_subject_too() -> None:
-    comparison = await Eval(CASES[:4], {"v1": big, "v2": small}, [_judge()], k=1).run(store=":memory:", scope="named")
+    comparison = await Eval(CASES[:4], {"v1": big, "v2": small}, [_judge()], k=1, name="v1 vs v2").run(
+        store=":memory:", scope="named"
+    )
     (subject,) = off_loop(scope_frontier, comparison.host, "named").subjects
     assert len(subject.points) == 2
     assert {summary.arm for summary in comparison.arms.values()} == {"v1", "v2"}

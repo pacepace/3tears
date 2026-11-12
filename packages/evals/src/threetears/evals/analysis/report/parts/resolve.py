@@ -1,0 +1,109 @@
+"""A stored chart to the chart a page draws: dispatched on the chart's kind through every resolver module's registry.
+
+Each ``resolve_*`` module owns ``RESOLVERS``, its kinds to their resolvers, so the kinds are resolved apart:
+
+- :mod:`~threetears.evals.analysis.report.parts.resolve_changes`: forest, diverging bars;
+- :mod:`~threetears.evals.analysis.report.parts.resolve_magnitudes`: bars, lines;
+- :mod:`~threetears.evals.analysis.report.parts.resolve_examples`: example cards;
+- :mod:`~threetears.evals.analysis.report.parts.resolve_gates`, ``resolve_rates``, ``resolve_cells`` and
+  ``resolve_table``: the rest of the kit's kinds and the plain table, each registered by its own module.
+
+A kind no module resolves is refused, naming the kind and its source, never drawn empty; so is a kind two modules
+claim, when this module is loaded.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+
+from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.parts import (
+    resolve_cells,
+    resolve_changes,
+    resolve_examples,
+    resolve_gates,
+    resolve_magnitudes,
+    resolve_rates,
+    resolve_table,
+)
+from threetears.evals.analysis.report.parts.charting import ChartContext, KindResolver
+from threetears.evals.analysis.report.parts.look import PageLook
+from threetears.evals.analysis.report.parts.model import PageChart
+from threetears.evals.analysis.report_rows import config_grid
+from threetears.evals.kernel.chart_query import ChartSpec
+
+__all__ = ["resolve_chart"]
+
+
+def _merged(registries: Mapping[str, Mapping[str, KindResolver]]) -> dict[str, KindResolver]:
+    """Every module's resolvers, by kind.
+
+    :raises ValueError: Two modules claim one kind.
+    """
+    merged: dict[str, KindResolver] = {}
+    owner: dict[str, str] = {}
+    for module, resolvers in registries.items():
+        for kind, resolver in resolvers.items():
+            if kind in merged:
+                raise ValueError(f"chart kind {kind!r} is resolved by both {owner[kind]} and {module}")
+            merged[kind], owner[kind] = resolver, module
+    return merged
+
+
+#: Every kind a page can draw, to its resolver.
+_RESOLVERS: dict[str, KindResolver] = _merged(
+    {
+        module.__name__: module.RESOLVERS
+        for module in (
+            resolve_changes,
+            resolve_magnitudes,
+            resolve_examples,
+            resolve_gates,
+            resolve_rates,
+            resolve_cells,
+            resolve_table,
+        )
+    }
+)
+
+
+def resolve_chart(
+    spec: ChartSpec,
+    look: PageLook,
+    *,
+    title: str,
+    fallback_title: str = "",
+    forms: PageForms,
+) -> PageChart:
+    """Draw one stored chart: its kind's resolver reads its query off the input the page's forms were built from.
+
+    :param spec: The stored chart.
+    :ptype spec: ChartSpec
+    :param look: The page's look.
+    :ptype look: PageLook
+    :param title: The plan's title for the chart, its keys written out; empty where a headline says it.
+    :ptype title: str
+    :param fallback_title: What the chart's block is titled where the plan's title is empty: the section's headline.
+    :ptype fallback_title: str
+    :param forms: The page's number forms (an off-page reader's own), built once for the page: they carry the report
+        input the plan was written against, which the chart reads, so a chart never reads one input in another's
+        forms.
+    :ptype forms: PageForms
+    :return: The chart as the page draws it.
+    :rtype: PageChart
+    :raises UnresolvableReference: No resolver draws the chart's kind, or its resolver cannot draw it from the input.
+    :raises ValueError: The forms are a code page's or an off-page surface's, which carry no report input.
+    """
+    resolver = _RESOLVERS.get(spec.kind)
+    if resolver is None:
+        raise UnresolvableReference(
+            f"no resolver draws a {spec.kind!r} chart over {spec.query.source!r} yet ({title or fallback_title!r})"
+        )
+    if spec.query.source == "configs":
+        # A configs chart reads the grid the input's configs make, or, where it holds none, its arms' settings: a view
+        # of the page's input that adds no figure, so it reads in the page's own forms.
+        forms = forms.over(config_grid(forms.report_input))
+    context = ChartContext(spec=spec, look=look, title=title or fallback_title or spec.kind, forms=forms)
+    drawn = resolver(context)
+    return PageChart(title=title, chart=drawn.block, notes=list(drawn.notes))

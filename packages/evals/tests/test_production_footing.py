@@ -13,7 +13,6 @@ disclosure the cost surfaces carry, read off the host's sweepable declarations a
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any
@@ -24,20 +23,19 @@ from pydantic import BaseModel, Field
 from threetears.evals.analysis import DisclosureBlock, build_code_only_report
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.analysis.reads import run_summary
 from threetears.evals.analysis.lenses.frontier import FrontierPoint, compute_frontier
 from threetears.evals.kernel.host import SHARED_CORE, HostProfile, Sweepable
 from threetears.evals.kernel.host.kinds import KindContract
 from threetears.evals.kernel.host.sweepables import RegistrationError
 from threetears.evals.schema.values import PooledProductionFooting, ProductionFooting
-from threetears.evals.schema.models import EvalResult, EvalRun, utc_now_iso
+from threetears.evals.schema.models import EvalResult, EvalRun
 from threetears.evals import Answer, Eval
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import as_listed, make_eval_run
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
+from packages.evals.tests.writer_host_support import doc_analysis_over
 from packages.evals.tests.off_loop import off_loop
 
 _INHERITED = {"candidate": "inherited"}
@@ -84,7 +82,15 @@ class TestANewlyDeclaredLeverReachesTheDisclosure:
 
     def test_a_lever_added_to_the_toy_registry_appears_when_a_run_sets_it(self) -> None:
         registry = toyhost_profile().sweepables.extend(
-            (Sweepable(name="probe_depth", role="lever", read=_payload("depth"), reader_prose="probe depth"),)
+            (
+                Sweepable(
+                    name="probe_depth",
+                    role="lever",
+                    reader_name="probe depth",
+                    read=_payload("depth"),
+                    reader_prose="probe depth",
+                ),
+            )
         )
         run = make_eval_run(model_role_provenance=_INHERITED, host_payload={"probe": {"depth": 7}})
 
@@ -95,7 +101,15 @@ class TestANewlyDeclaredLeverReachesTheDisclosure:
 
     def test_the_same_lever_unset_is_the_subjects_own_setting(self) -> None:
         registry = SHARED_CORE.extend(
-            (Sweepable(name="probe_depth", role="lever", read=_payload("depth"), reader_prose="probe depth"),)
+            (
+                Sweepable(
+                    name="probe_depth",
+                    role="lever",
+                    reader_name="probe depth",
+                    read=_payload("depth"),
+                    reader_prose="probe depth",
+                ),
+            )
         )
 
         footing = registry.production_footing(make_eval_run(model_role_provenance=_INHERITED))
@@ -108,6 +122,7 @@ class TestANewlyDeclaredLeverReachesTheDisclosure:
                 Sweepable(
                     name="probe_depth",
                     role="lever",
+                    reader_name="probe depth",
                     read=_payload("depth"),
                     reader_prose="probe depth",
                     departs_production=lambda run, _r: _payload("depth")(run, _r) not in (None, 3),
@@ -177,7 +192,7 @@ class TestAnApparatusInputThatMovesTheCandidate:
 
 
 class _Overlays(BaseModel):
-    page_limit: int = Field(default=10, description="how many pages the candidate reads")
+    page_limit: int = Field(default=10, title="page limit", description="how many pages the candidate reads")
 
 
 class TestAKindsOverlaysAreReadAgainstTheirDefaults:
@@ -223,18 +238,10 @@ class TestEverySurfaceThatShowsTheFigureCarriesIt:
             assert "chunk_tokens" in summary.production_footing.unchecked, summary.production_footing
 
     async def _key_metrics(self, bundle: AnalysisContextBundle) -> list[dict[str, Any]]:
-        analysis, _insights = await generate_analysis(
-            campaign_bundle(bundle),
-            prompt=PROMPT,
-            model=MODEL,
-            client=FixturedClient(json.dumps(memo_payload(bundle))),
-            prompt_id=PROMPT_ID,
-            bundle_assembled_at=utc_now_iso(),
-            profile=toyhost_profile(),
-        )
+        analysis, _insights = doc_analysis_over(campaign_bundle(bundle))
         return [entry.key_metrics for entry in analysis.aspects[0].run_index]
 
-    async def test_the_generators_key_metrics_name_it_beside_the_prod_cost(self) -> None:
+    async def test_the_stored_analysis_key_metrics_name_it_beside_the_prod_cost(self) -> None:
         for metrics in await self._key_metrics(self._bundle()):
             assert "mean_prod_cost_usd" in metrics
             assert "chunk_tokens" in metrics["prod_cost_unchecked_against_production"]
@@ -260,7 +267,9 @@ class TestTheScoreRollupRowCarriesIt:
 
     async def _footing(self, arms: Mapping[str, Any]) -> tuple[dict[str, Any], EvalRun]:
         cases = [{"text": "a cat", "label": "animal"}, {"text": "an oak", "label": "plant"}]
-        comparison = await Eval(cases, arms, ["label"], k=1).run(store=":memory:", scope="footing")
+        comparison = await Eval(cases, arms, ["label"], k=1, name=" vs ".join(arms)).run(
+            store=":memory:", scope="footing"
+        )
         host = comparison.host
         run_id = next(iter(comparison.arms.values())).run_id
         summary = off_loop(
@@ -316,6 +325,7 @@ def _with_probe_depth() -> HostProfile:
     probe = Sweepable(
         name="probe_depth",
         role="lever",
+        reader_name="probe depth",
         read=lambda _run, _results: 7,
         reader_prose="probe depth",
         no_own_coordinate="the toy variant map predates it; every run carries one level of it",
@@ -362,7 +372,9 @@ class TestAPooledCostCarriesEachRunsFooting:
             for block in build_code_only_report(bundle, assembled_at="2026-10-10T00:00:00+00:00").blocks
             if isinstance(block, DisclosureBlock)
         ]
-        assert any("what production would spend" in text and "chunk_tokens" in text for text in disclosures)
+        # Each setting by the reader name the host declares for its lever, never by the lever's id.
+        assert any("what production would spend" in text and "chunk tokens" in text for text in disclosures)
+        assert not any("chunk_tokens" in text for text in disclosures)
 
 
 class TestALeverAddedToTheToyHostReachesThePooledCost:

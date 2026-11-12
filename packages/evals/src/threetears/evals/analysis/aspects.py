@@ -65,8 +65,9 @@ class AspectDeclaration(EvalDocumentModel):
     margin: float | None = Field(
         description=(
             "How far, in points of a 0-100 pass rate, a candidate may fall below the control on this aspect before it "
-            "is shown worse. None = no margin declared: shown better or unclear, never shown worse or no worse than "
-            "the margin."
+            "is shown worse. None = no margin declared: under a question, shown better, shown worse or unclear "
+            "against zero (a superiority question); asked none, shown better or unclear, never shown worse or no "
+            "worse than the margin."
         )
     )
     floors: list[Floor] = Field(

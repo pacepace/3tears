@@ -1,0 +1,693 @@
+{
+ "schema": "report-input/1",
+ "meta": {
+  "campaign": "Persona model tradeoff",
+  "behavior": "Persona chat model",
+  "kind": "change",
+  "design_shape": "multi_factor",
+  "run_date": "2026-10-24",
+  "provenance": "Synthetic example data from docs/eval-report-kit/references/r4-tradeoff.json",
+  "synthetic": true,
+  "volume_per_month": 12000000
+ },
+ "arms": [
+  {
+   "id": "prod",
+   "name": "Production",
+   "role": "control",
+   "served_model": "Meridian-4.1",
+   "settings": {
+    "model": "Meridian-4.1",
+    "max_output_tokens": "32k",
+    "reasoning": "medium"
+   }
+  },
+  {
+   "id": "f64",
+   "name": "f64",
+   "role": "challenger",
+   "served_model": "Meridian-4.1-flash",
+   "settings": {
+    "model": "Meridian-4.1-flash",
+    "max_output_tokens": "64k"
+   }
+  },
+  {
+   "id": "f16",
+   "name": "f16",
+   "role": "challenger",
+   "served_model": "Meridian-4.1-flash",
+   "settings": {
+    "model": "Meridian-4.1-flash",
+    "max_output_tokens": "16k"
+   }
+  },
+  {
+   "id": "cor",
+   "name": "cor",
+   "role": "challenger",
+   "served_model": "Corvid-3.8-flash",
+   "settings": {
+    "model": "Corvid-3.8-flash",
+    "reasoning": "high"
+   }
+  }
+ ],
+ "aspects": [
+  {
+   "id": "persona",
+   "name": "Stays in character",
+   "asked": true,
+   "readings": [],
+   "description": "Judge rubric: voice, opinions and catchphrases stay consistent. Calibrated against 240 human ratings (agreement 0.82).",
+   "graded_by": "judged"
+  },
+  {
+   "id": "task",
+   "name": "Completes the requested action",
+   "asked": false,
+   "readings": [],
+   "description": "Queue, skip or announce happens when asked (tool-call check).",
+   "graded_by": "checked"
+  },
+  {
+   "id": "facts",
+   "name": "Music facts correct",
+   "asked": false,
+   "readings": [],
+   "description": "Artist, album and date claims checked against the catalog. Standing guardrail: at least 90%.",
+   "graded_by": "judged"
+  },
+  {
+   "id": "specul",
+   "name": "Declines to speculate",
+   "asked": false,
+   "readings": [],
+   "description": "Standing guardrail from the persona policy: at least 95% on bait prompts.",
+   "graded_by": "checked"
+  }
+ ],
+ "criteria": [
+  {
+   "id": "facts",
+   "kind": "guardrail",
+   "measure": "facts",
+   "direction": "higher_is_better",
+   "threshold": 90,
+   "standing": true,
+   "label": "Music facts correct"
+  },
+  {
+   "id": "specul",
+   "kind": "guardrail",
+   "measure": "specul",
+   "direction": "higher_is_better",
+   "threshold": 95,
+   "standing": true,
+   "label": "Declines to speculate"
+  }
+ ],
+ "scoreboard": {
+  "prod": {
+   "ran": 2400,
+   "cases": 300
+  },
+  "f64": {
+   "ran": 2400,
+   "cases": 300
+  },
+  "f16": {
+   "ran": 2400,
+   "cases": 300
+  },
+  "cor": {
+   "ran": 2400,
+   "cases": 300
+  }
+ },
+ "measures": {
+  "task": {
+   "label": "Completes the requested action",
+   "unit": "pct",
+   "higher_is_better": true,
+   "means": "Queue, skip or announce happens when asked (tool-call check).",
+   "per_arm": {
+    "prod": {
+     "mean": 99.6
+    },
+    "f64": {
+     "mean": 99.8
+    },
+    "f16": {
+     "mean": 99.2
+    },
+    "cor": {
+     "mean": 98.6
+    }
+   },
+   "grade": "pass_fail"
+  },
+  "specul": {
+   "label": "Declines to speculate",
+   "unit": "pct",
+   "higher_is_better": true,
+   "means": "Standing guardrail from the persona policy: at least 95% on bait prompts.",
+   "per_arm": {
+    "prod": {
+     "mean": 97.3
+    },
+    "f64": {
+     "mean": 96.4
+    },
+    "f16": {
+     "mean": 96.0
+    },
+    "cor": {
+     "mean": 92.0
+    }
+   },
+   "grade": "pass_fail"
+  },
+  "cost_per_1k": {
+   "label": "Cost per 1k replies",
+   "unit": "usd_per_1k",
+   "higher_is_better": false,
+   "means": "Measured tokens times list price per 1,000 replies. Later turns cost more because the context is longer.",
+   "per_arm": {
+    "prod": {
+     "mean": 2.1
+    },
+    "f64": {
+     "mean": 1.47
+    },
+    "f16": {
+     "mean": 1.21
+    },
+    "cor": {
+     "mean": 1.62
+    }
+   }
+  },
+  "latency_s": {
+   "label": "Latency",
+   "unit": "s",
+   "higher_is_better": false,
+   "per_arm": {
+    "prod": {
+     "p50": 1.1,
+     "p95": 2.4
+    },
+    "f64": {
+     "p50": 0.7,
+     "p95": 1.6
+    },
+    "f16": {
+     "p50": 0.6,
+     "p95": 1.3
+    },
+    "cor": {
+     "p50": 1.3,
+     "p95": 2.9
+    }
+   }
+  }
+ },
+ "judged": {
+  "persona": {
+   "label": "Stays in character",
+   "scale": "pass_fail",
+   "calibration": "calibrated",
+   "calibration_ratings": 240,
+   "agreement": 0.82,
+   "per_arm": {
+    "prod": {
+     "mean": 91.7
+    },
+    "f64": {
+     "mean": 85.6
+    },
+    "f16": {
+     "mean": 84.3
+    },
+    "cor": {
+     "mean": 89.5
+    }
+   }
+  },
+  "facts": {
+   "label": "Music facts correct",
+   "scale": "pass_fail",
+   "per_arm": {
+    "prod": {
+     "mean": 93.0
+    },
+    "f64": {
+     "mean": 92.1
+    },
+    "f16": {
+     "mean": 89.4
+    },
+    "cor": {
+     "mean": 94.0
+    }
+   }
+  }
+ },
+ "primary_judged": "persona",
+ "contrasts": [
+  {
+   "arm": "f64",
+   "control": "prod",
+   "kind": "judged",
+   "measure": "persona",
+   "verdict": "regressed",
+   "delta": -6.1,
+   "interval": [
+    -7.3,
+    -4.9
+   ]
+  },
+  {
+   "arm": "f64",
+   "control": "prod",
+   "kind": "measure",
+   "measure": "task",
+   "verdict": "not_separated",
+   "delta": 0.2,
+   "interval": [
+    -0.1,
+    0.5
+   ]
+  },
+  {
+   "arm": "f64",
+   "control": "prod",
+   "kind": "judged",
+   "measure": "facts",
+   "verdict": "not_separated",
+   "delta": -0.9,
+   "interval": [
+    -2.7,
+    0.9
+   ]
+  },
+  {
+   "arm": "f64",
+   "control": "prod",
+   "kind": "measure",
+   "measure": "specul",
+   "verdict": "not_separated",
+   "delta": -0.9,
+   "interval": [
+    -2.8,
+    1.0
+   ]
+  },
+  {
+   "arm": "f16",
+   "control": "prod",
+   "kind": "judged",
+   "measure": "persona",
+   "verdict": "regressed",
+   "delta": -7.4,
+   "interval": [
+    -8.6,
+    -6.2
+   ]
+  },
+  {
+   "arm": "f16",
+   "control": "prod",
+   "kind": "measure",
+   "measure": "task",
+   "verdict": "regressed",
+   "delta": -0.4,
+   "interval": [
+    -0.7,
+    -0.1
+   ]
+  },
+  {
+   "arm": "f16",
+   "control": "prod",
+   "kind": "judged",
+   "measure": "facts",
+   "verdict": "regressed",
+   "delta": -3.6,
+   "interval": [
+    -5.4,
+    -1.8
+   ]
+  },
+  {
+   "arm": "f16",
+   "control": "prod",
+   "kind": "measure",
+   "measure": "specul",
+   "verdict": "not_separated",
+   "delta": -1.3,
+   "interval": [
+    -3.2,
+    0.6
+   ]
+  },
+  {
+   "arm": "cor",
+   "control": "prod",
+   "kind": "judged",
+   "measure": "persona",
+   "verdict": "regressed",
+   "delta": -2.2,
+   "interval": [
+    -3.4,
+    -1.0
+   ]
+  },
+  {
+   "arm": "cor",
+   "control": "prod",
+   "kind": "measure",
+   "measure": "task",
+   "verdict": "regressed",
+   "delta": -1.0,
+   "interval": [
+    -1.3,
+    -0.7
+   ]
+  },
+  {
+   "arm": "cor",
+   "control": "prod",
+   "kind": "judged",
+   "measure": "facts",
+   "verdict": "not_separated",
+   "delta": 1.0,
+   "interval": [
+    -0.8,
+    2.8
+   ]
+  },
+  {
+   "arm": "cor",
+   "control": "prod",
+   "kind": "measure",
+   "measure": "specul",
+   "verdict": "regressed",
+   "delta": -5.3,
+   "interval": [
+    -7.2,
+    -3.4
+   ]
+  }
+ ],
+ "contrast_families": [
+  {
+   "merit_axes": [],
+   "correction": "none",
+   "disclosure": "95% intervals on paired differences, not corrected across the three challengers.",
+   "level": "95%"
+  }
+ ],
+ "strata": [
+  {
+   "id": "depth:1-2",
+   "name": "1–2",
+   "dimension": "depth",
+   "share": 0.38,
+   "cost_multiplier": 0.7,
+   "per_arm": {
+    "prod": {
+     "persona": {
+      "mean": 93.5,
+      "half_width": 1.8,
+      "n": 912
+     }
+    },
+    "f64": {
+     "persona": {
+      "mean": 91.5,
+      "half_width": 2.1,
+      "n": 912
+     }
+    },
+    "f16": {
+     "persona": {
+      "mean": 90.5,
+      "half_width": 2.2,
+      "n": 912
+     }
+    },
+    "cor": {
+     "persona": {
+      "mean": 92.5,
+      "half_width": 2.0,
+      "n": 912
+     }
+    }
+   }
+  },
+  {
+   "id": "depth:3-5",
+   "name": "3–5",
+   "dimension": "depth",
+   "share": 0.32,
+   "cost_multiplier": 0.9,
+   "per_arm": {
+    "prod": {
+     "persona": {
+      "mean": 92.0,
+      "half_width": 2.2,
+      "n": 768
+     }
+    },
+    "f64": {
+     "persona": {
+      "mean": 87.5,
+      "half_width": 2.7,
+      "n": 768
+     }
+    },
+    "f16": {
+     "persona": {
+      "mean": 86.0,
+      "half_width": 2.8,
+      "n": 768
+     }
+    },
+    "cor": {
+     "persona": {
+      "mean": 90.0,
+      "half_width": 2.4,
+      "n": 768
+     }
+    }
+   }
+  },
+  {
+   "id": "depth:6-10",
+   "name": "6–10",
+   "dimension": "depth",
+   "share": 0.2,
+   "cost_multiplier": 1.3,
+   "per_arm": {
+    "prod": {
+     "persona": {
+      "mean": 90.0,
+      "half_width": 3.1,
+      "n": 480
+     }
+    },
+    "f64": {
+     "persona": {
+      "mean": 79.0,
+      "half_width": 4.2,
+      "n": 480
+     }
+    },
+    "f16": {
+     "persona": {
+      "mean": 78.0,
+      "half_width": 4.3,
+      "n": 480
+     }
+    },
+    "cor": {
+     "persona": {
+      "mean": 86.5,
+      "half_width": 3.5,
+      "n": 480
+     }
+    }
+   }
+  },
+  {
+   "id": "depth:11+",
+   "name": "11+",
+   "dimension": "depth",
+   "share": 0.1,
+   "cost_multiplier": 1.9,
+   "per_arm": {
+    "prod": {
+     "persona": {
+      "mean": 87.5,
+      "half_width": 4.8,
+      "n": 240
+     }
+    },
+    "f64": {
+     "persona": {
+      "mean": 70.0,
+      "half_width": 6.7,
+      "n": 240
+     }
+    },
+    "f16": {
+     "persona": {
+      "mean": 68.0,
+      "half_width": 6.8,
+      "n": 240
+     }
+    },
+    "cor": {
+     "persona": {
+      "mean": 83.0,
+      "half_width": 5.5,
+      "n": 240
+     }
+    }
+   }
+  },
+  {
+   "id": "scenario:intro",
+   "name": "Song intros",
+   "dimension": "scenario",
+   "per_arm": {
+    "f64": {
+     "persona": {
+      "change": -1.0
+     }
+    },
+    "f16": {
+     "persona": {
+      "change": -1.5
+     }
+    },
+    "cor": {
+     "persona": {
+      "change": -0.5
+     }
+    }
+   }
+  },
+  {
+   "id": "scenario:rec",
+   "name": "Recommendations",
+   "dimension": "scenario",
+   "per_arm": {
+    "f64": {
+     "persona": {
+      "change": -3.5
+     }
+    },
+    "f16": {
+     "persona": {
+      "change": -5.0
+     }
+    },
+    "cor": {
+     "persona": {
+      "change": -1.5
+     }
+    }
+   }
+  },
+  {
+   "id": "scenario:banter",
+   "name": "Banter",
+   "dimension": "scenario",
+   "per_arm": {
+    "f64": {
+     "persona": {
+      "change": -9.0
+     }
+    },
+    "f16": {
+     "persona": {
+      "change": -10.5
+     }
+    },
+    "cor": {
+     "persona": {
+      "change": -3.5
+     }
+    }
+   }
+  },
+  {
+   "id": "scenario:deflect",
+   "name": "Off-topic deflection",
+   "dimension": "scenario",
+   "per_arm": {
+    "f64": {
+     "persona": {
+      "change": -4.0
+     }
+    },
+    "f16": {
+     "persona": {
+      "change": -6.0
+     }
+    },
+    "cor": {
+     "persona": {
+      "change": -2.5
+     }
+    }
+   }
+  },
+  {
+   "id": "scenario:correct",
+   "name": "Taking a correction",
+   "dimension": "scenario",
+   "per_arm": {
+    "f64": {
+     "persona": {
+      "change": -11.5
+     }
+    },
+    "f16": {
+     "persona": {
+      "change": -13.0
+     }
+    },
+    "cor": {
+     "persona": {
+      "change": -4.0
+     }
+    }
+   }
+  }
+ ],
+ "caveats": {
+  "late_criteria": []
+ },
+ "human_pref": {
+  "control": "prod",
+  "arm": "f64",
+  "n": 240,
+  "rows": [
+   {
+    "id": "short",
+    "name": "Conversations of 1–5 turns",
+    "prefers_control": 52.0,
+    "half_width": 8.9
+   },
+   {
+    "id": "long",
+    "name": "Conversations of 6+ turns",
+    "prefers_control": 61.0,
+    "half_width": 8.7
+   }
+  ]
+ }
+}

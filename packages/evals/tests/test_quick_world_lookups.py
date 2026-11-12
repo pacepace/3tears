@@ -245,9 +245,9 @@ async def test_every_arm_of_a_comparison_is_served_one_recording(tmp_path: Path)
 
         return agent
 
-    result = await Eval(CASES, {"base": world(arm("base", 0)), "plus": world(arm("plus", 1))}, [total], k=1).run(
-        store=":memory:"
-    )
+    result = await Eval(
+        CASES, {"base": world(arm("base", 0)), "plus": world(arm("plus", 1))}, [total], k=1, name="base vs plus"
+    ).run(store=":memory:")
     assert dice.calls == 3
     assert sorted(rolled["base"]) == sorted(rolled["plus"])
     means = {name: summary.measures[0].mean for name, summary in result.arms.items()}

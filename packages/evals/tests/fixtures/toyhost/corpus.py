@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from functools import cache
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any
@@ -41,7 +42,7 @@ from threetears.evals.schema import (
     RubricScore,
     omit_paths,
 )
-from threetears.evals.kernel import EvalAnalysis, EvalInsight, EvalJudgeProfile, resolve_variant_identity
+from threetears.evals.kernel import EvalAnalysis, EvalInsight, EvalJudgeProfile, ResultKey, resolve_variant_identity
 from threetears.evals.kernel.host import HostProfile
 from threetears.evals.schema import SubjectSnapshot, SweepableValue
 from threetears.evals.schema import WorldPlacement
@@ -79,7 +80,7 @@ TOYHOST_SCOPE = "toyhost-scope"
 #: The documents every measured observation is taken over. Not test cases from a battery — the toy
 #: host has neither — just the sampling unit its numbers are means across.
 #:
-#: **Twelve, not two.** A generator handed two shared cases per arm rightly declines to rank the
+#: **Twelve, not two.** A report writer handed two shared cases per arm rightly declines to rank the
 #: arms on so few; twelve is enough cases for a comparison to be worth making.
 TOYHOST_DOCUMENTS = (
     "doc-01",
@@ -199,24 +200,43 @@ def toyhost_observation(**toyhost_values: Any) -> EvalRun:
 
 #: Two observations differing in exactly one lever. The confound scan must report nothing: this
 #: is the clean sweep, and an engine that invents a confound here is unusable.
-CLEAN_SWEEP: tuple[EvalRun, ...] = (
-    toyhost_observation(chunk_tokens=256, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"),
-    toyhost_observation(chunk_tokens=1024, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"),
-)
+@cache
+def clean_sweep() -> tuple[EvalRun, ...]:
+    """The sweep, built on first use: an EvalRun stamps its id and clock, which an import must not."""
+    return (
+        toyhost_observation(
+            chunk_tokens=256, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"
+        ),
+        toyhost_observation(
+            chunk_tokens=1024, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"
+        ),
+    )
+
 
 #: The same sweep with the apparatus moved underneath it. The scan must surface ``reviewer_pool``
 #: carrying the host's own reason — a confound no generic engine could have guessed.
-CONFOUNDED_SWEEP: tuple[EvalRun, ...] = (
-    toyhost_observation(chunk_tokens=256, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"),
-    toyhost_observation(chunk_tokens=1024, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-b"),
-)
+@cache
+def confounded_sweep() -> tuple[EvalRun, ...]:
+    """The sweep, built on first use: an EvalRun stamps its id and clock, which an import must not."""
+    return (
+        toyhost_observation(
+            chunk_tokens=256, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"
+        ),
+        toyhost_observation(
+            chunk_tokens=1024, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-b"
+        ),
+    )
+
 
 #: One side never recorded the OCR build. Neither agreement nor difference — the state that must
 #: not collapse into either, because both readings assert an observation nobody made.
-UNRECORDED_APPARATUS: tuple[EvalRun, ...] = (
-    toyhost_observation(chunk_tokens=256, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"),
-    toyhost_observation(chunk_tokens=1024, reviewer_pool="pool-a"),
-)
+@cache
+def unrecorded_apparatus() -> tuple[EvalRun, ...]:
+    """The sweep, built on first use: an EvalRun stamps its id and clock, which an import must not."""
+    return (
+        toyhost_observation(chunk_tokens=256, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"),
+        toyhost_observation(chunk_tokens=1024, reviewer_pool="pool-a"),
+    )
 
 
 #: What each sampled document does to a batch's numbers, as
@@ -314,14 +334,47 @@ class ToyhostStorage:
             listed.append(copy)
         return listed
 
-    def query_eval_results_by_run(self, run_id: str, scope_id: str) -> list[EvalResult]:
-        """Every observation of this batch in this scope."""
-        return [r for r in self._results_by_run.get(run_id, []) if r.scope_id == scope_id]
-
-    def query_eval_results_by_runs(self, run_ids: Sequence[str], scope_id: str) -> list[EvalResult]:
-        """Every observation of these batches in this scope, in one read."""
+    def query_eval_results_by_run(self, run_id: str, scope_id: str, *, elide: Sequence[str] = ()) -> list[EvalResult]:
+        """Every observation of this batch in this scope, without the fields ``elide`` names."""
         return [
-            result for run_id in dict.fromkeys(run_ids) for result in self.query_eval_results_by_run(run_id, scope_id)
+            r.model_copy(update=dict.fromkeys(elide)) if elide else r
+            for r in self._results_by_run.get(run_id, [])
+            if r.scope_id == scope_id
+        ]
+
+    def query_eval_results_by_runs(
+        self, run_ids: Sequence[str], scope_id: str, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
+        """Every observation of these batches in this scope, in one read, without the fields ``elide`` names."""
+        return [
+            result.model_copy(update=dict.fromkeys(elide)) if elide else result
+            for run_id in dict.fromkeys(run_ids)
+            for result in self.query_eval_results_by_run(run_id, scope_id)
+        ]
+
+    def iter_result_readings(self, run_ids: Sequence[str], scope_id: str) -> list[EvalResult]:
+        """Every observation of these batches in this scope, each as a reader reads it: here, the observation itself,
+        which carries every attribute its reading would."""
+        return self.query_eval_results_by_runs(run_ids, scope_id)
+
+    def query_eval_result_keys_by_run(self, run_id: str, scope_id: str) -> list[ResultKey]:
+        """The key of every observation of this batch in this scope, in one read — a paged reader's pass over it."""
+        return [
+            ResultKey(result.id, result.test_case_id, result.k_iteration, result.model, result.scored_at)
+            for result in self.query_eval_results_by_run(run_id, scope_id)
+        ]
+
+    def load_eval_results(
+        self, result_ids: Sequence[str], scope_id: str, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
+        """The observations with these ids in this scope, in one read by id — a page of a paged reader's — without the
+        fields ``elide`` names."""
+        wanted = set(result_ids)
+        return [
+            result.model_copy(update=dict.fromkeys(elide)) if elide else result
+            for results in self._results_by_run.values()
+            for result in results
+            if result.id in wanted and result.scope_id == scope_id
         ]
 
     def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str) -> list[EvalCaseStratum]:
@@ -453,7 +506,7 @@ def toyhost_batch(**toyhost_values: Any) -> EvalRun:
             "created_at": TOYHOST_INSTANT,
             "k_runs": 3,
             # A batch that produced its observations ENDED; `status` defaults to "pending",
-            # which says the opposite, and a generator reading a pending run treats its
+            # which says the opposite, and a report writer reading a pending run treats its
             # numbers as provisional.
             "status": "completed",
         }
@@ -558,7 +611,7 @@ def toyhost_measurements(
             ),
             # The kind's own mechanical fact, the one `kind.py` reports for the same
             # observation: whether this extraction cleared the accuracy the host's bar names. Carried so the
-            # bundle's per-check pass rate — the mechanical tier a generator reads with or without a bar —
+            # bundle's per-check pass rate — the mechanical tier a report reads with or without a bar —
             # has a toy-host instance.
             goal_state_outcomes=[
                 GoalStateOutcome(
@@ -608,8 +661,8 @@ def toyhost_measurements(
 
 
 __all__ = [
-    "CLEAN_SWEEP",
-    "CONFOUNDED_SWEEP",
+    "clean_sweep",
+    "confounded_sweep",
     "TOYHOST_DOCUMENTS",
     "TOYHOST_EXTRACTOR",
     "TOYHOST_GRADER_VERSION",
@@ -617,7 +670,7 @@ __all__ = [
     "TOYHOST_OBSERVATIONAL_PLACEMENTS",
     "TOYHOST_SCOPE",
     "TOYHOST_SUBJECT",
-    "UNRECORDED_APPARATUS",
+    "unrecorded_apparatus",
     "ToyhostStorage",
     "toyhost_batch",
     "toyhost_measurements",

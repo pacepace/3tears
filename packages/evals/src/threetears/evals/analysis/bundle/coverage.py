@@ -25,7 +25,7 @@ from threetears.evals.kernel.declaration import (
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import describe_measure
-from threetears.evals.schema.models import EvalResult
+from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.analysis.bundle.caps import (
     _capped,
     _CELL_STATES,
@@ -251,7 +251,7 @@ def _reportable_levers(
 
 
 def _run_axis_identities(
-    axis_id: str, run: EvalRun, results: list[EvalResult], *, profile: HostProfile
+    axis_id: str, run: EvalRun, results: list[ResultView], *, profile: HostProfile
 ) -> set[str] | None:
     """The identities a run's level on one declared axis can be joined to a declared level by, or None if unknown.
 
@@ -263,7 +263,7 @@ def _run_axis_identities(
     :param run: The run.
     :ptype run: EvalRun
     :param results: The run's results.
-    :ptype results: list[EvalResult]
+    :ptype results: list[ResultView]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: The identities, or None when the run's level on the axis cannot be established.
@@ -284,7 +284,7 @@ def _run_axis_identities(
 def _declared_crossing(
     design: AspectDesign | None,
     runs: list[EvalRun],
-    results_by_run: dict[str, list[EvalResult]],
+    results_by_run: dict[str, list[ResultView]],
     *,
     profile: HostProfile,
 ) -> DeclaredCrossing | None:
@@ -301,7 +301,7 @@ def _declared_crossing(
     :param runs: The campaign's resolved runs.
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: The crossing, or None when there is no design or it says nothing about combinations — today's reading,
@@ -336,7 +336,8 @@ def _declared_crossing(
             state = "undetermined" if unestablished else "not_run"
         cells.append(
             DeclaredCellCoverage(
-                levels={axis.axis_id: level.display for axis, level in zip(design.axes, combination, strict=True)},
+                # By identity: a page names each level off the declared design when it is rendered.
+                levels={axis.axis_id: level.content_hash for axis, level in zip(design.axes, combination, strict=True)},
                 state=state,
             )
         )
@@ -374,7 +375,7 @@ def _declared_crossing(
 def _declared_level_coverage(
     axis: SweptAxis,
     runs: list[EvalRun],
-    results_by_run: dict[str, list[EvalResult]],
+    results_by_run: dict[str, list[ResultView]],
     *,
     profile: HostProfile,
 ) -> list[DeclaredLevelCoverage]:
@@ -391,7 +392,7 @@ def _declared_level_coverage(
     :param runs: The campaign's resolved runs.
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: One entry per declared level, in the declaration's order.
@@ -420,7 +421,7 @@ def _coverage_map(
     records: list[ScoreRecord],
     apparatus_levels: dict[str, dict[str, str | None]],
     design: RealizedDesign,
-    results_by_run: dict[str, list[EvalResult]],
+    results_by_run: dict[str, list[ResultView]],
     declared_design: AspectDesign | None,
     *,
     folds: _SurfaceFolds,
@@ -478,7 +479,7 @@ def _coverage_map(
     :ptype design: RealizedDesign
     :param results_by_run: Each run's results, keyed by run id — the observation side of
         effective-config resolution.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param declared_design: What the campaign SET OUT to sweep. A declared axis earns a row even
         when nothing resolved it — see :func:`_reportable_levers`.
     :ptype declared_design: AspectDesign | None
@@ -550,7 +551,7 @@ def _coverage_map(
         if lever not in declared and folds.folds_away(lever, cohort):
             continue
         # A cohort with no records is emitted, not skipped: the lever exists in this campaign,
-        # and dropping its row would tell the generator it does not. It comes out at cells=0
+        # and dropping its row would tell the writer it does not. It comes out at cells=0
         # / n=0 / unswept, which is the honest reading — nothing here measured it.
         cohort_records = [record for record in records if record.run_id in cohort]
         composite_records = [r for r in cohort_records if r.metric == METRIC_COMPOSITE and r.value is not None]
@@ -571,7 +572,7 @@ def _coverage_map(
         k = _lever_k_floor(lever, cohort_records, k_by_arm, group_of_run, effective_by_run)
         # A declared axis is asked the authoring gate's own question. A campaign stored past that gate, or
         # before its host moved the axis's role, can still declare an apparatus or label input, and its row is then
-        # `unswept` for a reason no run could change — said here, in the host's words, so the memo
+        # `unswept` for a reason no run could change — said here, in the host's words, so the report
         # can state the cause rather than report a sweep that never happened (#675).
         controllable = profile.controllable(lever) if lever in declared else None
         if cells <= 1:
@@ -592,7 +593,7 @@ def _coverage_map(
                 # Read from the same predicate the cohort was built with, never inferred from
                 # its size: a single-lever star has every cell moving the one lever, so the
                 # cohort spans every run while still being the contrast the campaign exists to
-                # draw. Sizing it would label that row 'campaign' and tell the generator, two
+                # draw. Sizing it would label that row 'campaign' and tell the writer, two
                 # paragraphs after "compare each cell to the control", that no contrast exists.
                 cohort_scope="control_referenced" if _is_control_referenced(lever, design) else "campaign",
                 declared_levels=(
@@ -672,20 +673,8 @@ def _factor_aliasing(
     for blocks, members in sorted(by_split.items(), key=lambda item: item[1][0]):
         if len(members) < 2:
             continue
-        n_runs = sum(len(block) for block in blocks)
-        across = f"all {n_runs} runs" if n_runs == len(run_ids) else f"the {n_runs} runs that recorded them"
-        groups.append(
-            AliasedFactors(
-                factors=members,
-                n_runs=n_runs,
-                n_levels=len(blocks),
-                sentence=(
-                    f"{_listed_names(members)} move together across {across}, splitting them into the same "
-                    f"{len(blocks)} groups; no comparison separates them, so a difference across them belongs to all "
-                    f"{len(members)} at once."
-                ),
-            )
-        )
+        # Facts only: the sentence naming the group is worded at render time, each factor by its reader name.
+        groups.append(AliasedFactors(factors=members, n_runs=sum(len(block) for block in blocks), n_levels=len(blocks)))
 
     def varies_within(name: str, other: str) -> bool:
         shared = by_factor[name].keys() & by_factor[other].keys()
@@ -715,21 +704,7 @@ def _factor_aliasing(
         _MAX_FACTOR_PAIR_PIVOTS,
         weight=lambda pivot: sum(1 for cell in pivot.cells if cell.status == "not_run"),
     )
-    outside = n_covarying - n_in_groups
-    if len(factors) < 2:
-        completeness = f"{len(factors)} factor varied, so no pair of factors could co-vary."
-    else:
-        completeness = (
-            f"{n_pairs} factor pair(s) examined over the {len(factors)} factors that varied; {n_covarying} co-vary"
-            + (f", {n_in_groups} of them inside a group that moves in lockstep" if n_in_groups else "")
-            + (
-                f"; the {outside} outside any group are shown in {len(ordered)} pivot(s), a group's members sharing one"
-                if outside
-                else ""
-            )
-            + (f", of which {omitted} with the fewest unrun combinations are left out" if omitted else "")
-            + "."
-        )
+    # Facts only: what was examined and what is shown is worded at render time (the pair scan's completeness).
     return groups, FactorPairScan(
         factors=factors,
         n_pairs_examined=n_pairs,
@@ -737,13 +712,12 @@ def _factor_aliasing(
         n_covarying_in_groups=n_in_groups,
         pivots=kept,
         pivots_omitted=omitted,
-        completeness=completeness,
     )
 
 
 def _unexercised_factors(
     runs: list[EvalRun],
-    results_by_run: dict[str, list[EvalResult]],
+    results_by_run: dict[str, list[ResultView]],
     arms: _CampaignArms,
     *,
     profile: HostProfile,
@@ -800,11 +774,6 @@ def _factor_pair_pivot(
             for column_level in columns
         ],
     )
-
-
-def _listed_names(names: list[str]) -> str:
-    """``a``, ``a and b``, ``a, b and c``."""
-    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
 
 
 __all__: list[str] = []

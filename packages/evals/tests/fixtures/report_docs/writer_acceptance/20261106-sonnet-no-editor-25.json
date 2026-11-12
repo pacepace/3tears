@@ -1,0 +1,1167 @@
+{
+  "dry": false,
+  "variant": "no-editor",
+  "question": "Does the gate read the shipped skill with no editor revisions (one review, never sent back) as writing worse reports than the shipped skill with 2?",
+  "campaign": "01a1b249-284b-76b9-8282-81dc39499ac1",
+  "scope": "writer acceptance",
+  "skills": {
+    "shipped": "4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149788b8",
+    "no-editor": "4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149788b8"
+  },
+  "revisions": {
+    "shipped": 2,
+    "no-editor": 0
+  },
+  "pass_job": "action:01a1b249-294b-77e3-a622-93ba4d2c7f56",
+  "pairwise": {
+    "campaign_id": "01a1b249-284b-76b9-8282-81dc39499ac1",
+    "candidate": "no-editor",
+    "candidate_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+    "control": "shipped",
+    "control_key": "8e430ac2f51ddc359ac1f285ecfcc23efe11a911d065969cfc2a347fb5d7b916",
+    "judge_model": "google/gemini-3.8-flash",
+    "criterion": "52acab742caad5f12274e0789bd1c342f8bcd8da753cca51b5ffd9cfcac8d849",
+    "judge_family": [
+      "writer anthropic, judge google"
+    ],
+    "pairs": [
+      {
+        "case_id": "01a1b241-cdce-7463-b041-7ca5327435eb",
+        "repeat": 1,
+        "candidate_result_id": "85977993-2d70-5624-b6a0-eaf935c9fb4f",
+        "control_result_id": "d1c06f8e-1d90-586b-bfdc-dee5e40cafc0",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 4
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 1
+          }
+        ]
+      },
+      {
+        "case_id": "01a1b241-cded-72dc-af62-e635ca08b03b",
+        "repeat": 1,
+        "candidate_result_id": "95bb9226-c26b-5dc7-a94c-aa2fab581bbf",
+        "control_result_id": "5a19235d-43ce-5944-8b97-c7f5a08d9558",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 2
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 4
+          }
+        ]
+      },
+      {
+        "case_id": "01a1b241-ce2a-728b-8a44-3a5465311587",
+        "repeat": 1,
+        "candidate_result_id": "8d77babf-10ea-574d-91d0-ca2234a9cdb6",
+        "control_result_id": "2b233232-ba93-5245-b80f-574bbcb75990",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-ce52-72ac-8849-d00c95f05eeb",
+        "repeat": 1,
+        "candidate_result_id": "d039a895-c948-57f7-8d0f-ec849e538d02",
+        "control_result_id": "f0814748-0b11-596f-a4b7-87fed400a3c8",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 5
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 1
+          }
+        ]
+      },
+      {
+        "case_id": "01a1b241-ce6b-70a6-a8e3-38a220bbcc93",
+        "repeat": 1,
+        "candidate_result_id": "45f325b5-f71c-56df-ba8c-cdf60c94591f",
+        "control_result_id": "b8e44508-6594-5604-9904-1047f5235e23",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-ce86-7159-8925-7186f956482a",
+        "repeat": 1,
+        "candidate_result_id": "c8738538-fef6-5855-a9a6-85c29baada13",
+        "control_result_id": "4855d817-1224-5db0-b26f-01b353f66e7f",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 1
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 5
+          }
+        ]
+      },
+      {
+        "case_id": "01a1b241-cebd-7476-a131-fa8421967ab1",
+        "repeat": 1,
+        "candidate_result_id": "64feca94-d4a9-5409-a978-0f713215d2d1",
+        "control_result_id": "67f3b265-4cd7-5c99-954f-b5d249dc720f",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-cef2-7273-8ffc-00800fe1a9b8",
+        "repeat": 1,
+        "candidate_result_id": "5a5f9fe0-1f35-5dd0-9aa0-a060b42d30cb",
+        "control_result_id": "60dca5ec-1bd8-54cd-a15a-99f34bb7ef76",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 5
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 1
+          }
+        ]
+      },
+      {
+        "case_id": "01a1b241-d078-7356-b403-368be92143ff",
+        "repeat": 1,
+        "candidate_result_id": "651cebe1-3dd4-5f63-8dec-84db1fff72a4",
+        "control_result_id": "4e72b196-d9b3-52ca-9c64-8763d75603ea",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-d332-7440-a560-d1224da32dfb",
+        "repeat": 1,
+        "candidate_result_id": "0bc20487-c678-5bcf-a861-8a5d95ad61e4",
+        "control_result_id": "28777053-d5e4-5503-bf63-50ed33f357fc",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-d401-729a-9ebe-5f5a14fa4ad2",
+        "repeat": 1,
+        "candidate_result_id": "e6d687d4-dfde-504a-ba36-594656a8c7be",
+        "control_result_id": "0b08d22d-1b1d-5697-926d-6db268cb0c6c",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-d45b-70d7-9f39-0657513972db",
+        "repeat": 1,
+        "candidate_result_id": "b47b2b56-527b-519e-90b7-991a8e172ba4",
+        "control_result_id": "e5fd824f-4afb-5385-918e-b27192266ebc",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-d4b2-7166-95ad-6fad65a4dfc1",
+        "repeat": 1,
+        "candidate_result_id": "41166038-1e19-55a0-931f-f1d6ee839b19",
+        "control_result_id": "85e2979c-ac0c-5307-8737-a8c895b44596",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-d563-743d-9d49-63cf085003cd",
+        "repeat": 1,
+        "candidate_result_id": "7361c98a-6d0f-57c1-a022-17e91691204f",
+        "control_result_id": "bc9d5fb6-03f8-5911-ba08-2e8c0dca5161",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-d5da-71c9-9921-ae4a8181bd77",
+        "repeat": 1,
+        "candidate_result_id": "4ed6694e-1e45-5c78-af90-5c4ab1b54c49",
+        "control_result_id": "f0bbc9a9-5b95-5343-9ba1-07fb94d470bb",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-d641-71da-aa41-9927976752be",
+        "repeat": 1,
+        "candidate_result_id": "caa1c3ee-2d6d-57c1-a8a4-100c8cb1bfc1",
+        "control_result_id": "1a10429a-9a57-5d91-83d3-3167834e69a2",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-d6ae-7024-b25f-921bef110494",
+        "repeat": 1,
+        "candidate_result_id": "0c71b128-6209-53bd-b1e3-abf79b3b927d",
+        "control_result_id": "1824e946-ad4b-5607-9a2b-413a143d68db",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-d716-71d1-be08-ec2a220e9c40",
+        "repeat": 1,
+        "candidate_result_id": "a56dac20-8e1b-5866-8526-fc8a138ffd45",
+        "control_result_id": "661a323a-1ae6-53cd-bce7-4338030f66a4",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-d779-700d-b8c0-59a402eb2efc",
+        "repeat": 1,
+        "candidate_result_id": "dcb03352-70c4-5d92-9dea-f54894146155",
+        "control_result_id": "d97f2d77-8677-5a78-bfae-4417dc86b345",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-d7db-7611-9c64-f01a14fb6bef",
+        "repeat": 1,
+        "candidate_result_id": "ed50b55c-de99-53df-bfa3-50f82a5d53a1",
+        "control_result_id": "f3d30bb5-e4cb-5b90-ae8a-c0f2fb5809af",
+        "missing": "control",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-d8e7-717c-af41-82796bccb5e4",
+        "repeat": 1,
+        "candidate_result_id": "a033244b-ee67-54e7-86f4-5375a61148c2",
+        "control_result_id": "469345ae-4027-5345-9881-82e14e648e40",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-d976-7465-8e2e-20c27c0bcd8d",
+        "repeat": 1,
+        "candidate_result_id": "6f31b8b1-b57f-5db3-a70e-a6903d10c2d8",
+        "control_result_id": "110d95cb-c774-5c05-aa3b-4644b886b043",
+        "missing": "both",
+        "both_finished": false,
+        "answers": []
+      },
+      {
+        "case_id": "01a1b241-da0c-7368-8ee8-03a04af4f42f",
+        "repeat": 1,
+        "candidate_result_id": "29515c00-e993-5382-9b31-e1d4444b358d",
+        "control_result_id": "c77ff8df-148f-5370-a295-ac9b7b0f2a5b",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 5
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 1
+          }
+        ]
+      },
+      {
+        "case_id": "01a1b241-da86-7025-b015-da2a20deb826",
+        "repeat": 1,
+        "candidate_result_id": "413fe5a8-48f4-509b-8904-6325af2bf4cf",
+        "control_result_id": "30b11c3a-3b68-55bb-8e1d-51d4456b51f9",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 5
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 1
+          }
+        ]
+      },
+      {
+        "case_id": "01a1b241-db11-7194-94c2-36171de491e7",
+        "repeat": 1,
+        "candidate_result_id": "35e99072-438b-55a3-954a-449826932aa9",
+        "control_result_id": "1f249859-e47d-596c-920e-c9b9f402d5c2",
+        "missing": "control",
+        "both_finished": false,
+        "answers": []
+      }
+    ],
+    "unpaired": [],
+    "cases": [
+      {
+        "case_id": "01a1b241-cdce-7463-b041-7ca5327435eb",
+        "pairs": 1,
+        "share": 0.875,
+        "share_as_a": 1.0,
+        "share_as_b": 0.75,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.125
+      },
+      {
+        "case_id": "01a1b241-cded-72dc-af62-e635ca08b03b",
+        "pairs": 1,
+        "share": 0.25,
+        "share_as_a": 0.25,
+        "share_as_b": 0.25,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.0
+      },
+      {
+        "case_id": "01a1b241-ce2a-728b-8a44-3a5465311587",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-ce52-72ac-8849-d00c95f05eeb",
+        "pairs": 1,
+        "share": 1.0,
+        "share_as_a": 1.0,
+        "share_as_b": 1.0,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.0
+      },
+      {
+        "case_id": "01a1b241-ce6b-70a6-a8e3-38a220bbcc93",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-ce86-7159-8925-7186f956482a",
+        "pairs": 1,
+        "share": 0.0,
+        "share_as_a": 0.0,
+        "share_as_b": 0.0,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.0
+      },
+      {
+        "case_id": "01a1b241-cebd-7476-a131-fa8421967ab1",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-cef2-7273-8ffc-00800fe1a9b8",
+        "pairs": 1,
+        "share": 1.0,
+        "share_as_a": 1.0,
+        "share_as_b": 1.0,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.0
+      },
+      {
+        "case_id": "01a1b241-d078-7356-b403-368be92143ff",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-d332-7440-a560-d1224da32dfb",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-d401-729a-9ebe-5f5a14fa4ad2",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-d45b-70d7-9f39-0657513972db",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-d4b2-7166-95ad-6fad65a4dfc1",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-d563-743d-9d49-63cf085003cd",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-d5da-71c9-9921-ae4a8181bd77",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-d641-71da-aa41-9927976752be",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-d6ae-7024-b25f-921bef110494",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-d716-71d1-be08-ec2a220e9c40",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-d779-700d-b8c0-59a402eb2efc",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-d7db-7611-9c64-f01a14fb6bef",
+        "pairs": 1,
+        "share": 1.0,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-d8e7-717c-af41-82796bccb5e4",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-d976-7465-8e2e-20c27c0bcd8d",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      },
+      {
+        "case_id": "01a1b241-da0c-7368-8ee8-03a04af4f42f",
+        "pairs": 1,
+        "share": 1.0,
+        "share_as_a": 1.0,
+        "share_as_b": 1.0,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.0
+      },
+      {
+        "case_id": "01a1b241-da86-7025-b015-da2a20deb826",
+        "pairs": 1,
+        "share": 1.0,
+        "share_as_a": 1.0,
+        "share_as_b": 1.0,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.0
+      },
+      {
+        "case_id": "01a1b241-db11-7194-94c2-36171de491e7",
+        "pairs": 1,
+        "share": 1.0,
+        "share_as_a": null,
+        "share_as_b": null,
+        "scored": 0,
+        "cannot_tell": 0,
+        "order_consistent": null,
+        "first_slot_bias": null
+      }
+    ],
+    "whole": {
+      "pairs": 25,
+      "cases": 25,
+      "candidate_share": 0.605,
+      "p": 0.1079454767802037,
+      "verdict": {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.preferred",
+        "heading": "Preferred by the judge, side by side",
+        "arm": "no-editor",
+        "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": null,
+        "delta": 0.21,
+        "interval": [
+          -0.0436860672198236,
+          0.5036441800184548
+        ],
+        "interval_level": 0.95,
+        "p_adjusted": 0.1079454767802037,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": null,
+        "guardrail": false,
+        "words": "no-editor and shipped not separated"
+      }
+    },
+    "finished_only": {
+      "pairs": 0,
+      "cases": 0,
+      "candidate_share": null,
+      "p": null,
+      "verdict": {
+        "kind": "contrast",
+        "outcome": "untested",
+        "reason": "untestable",
+        "reason_detail": "0 cases with a share, and the test needs two",
+        "reading": "judged",
+        "name": "report_writer.preferred",
+        "heading": "Preferred by the judge, side by side",
+        "arm": "no-editor",
+        "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": null,
+        "delta": null,
+        "interval": null,
+        "interval_level": null,
+        "p_adjusted": null,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": null,
+        "guardrail": false,
+        "words": "untested"
+      }
+    },
+    "reliability": {
+      "both_orders": 7,
+      "order_consistent": 7,
+      "order_consistency": 1.0,
+      "one_order": 0,
+      "first_slot_bias": 0.017857142857142856,
+      "cannot_tell": 0,
+      "failed": 0
+    },
+    "stopped": null,
+    "calls_made": 14,
+    "cost_usd": 0.05374725,
+    "cap_usd": 11.200000000000001
+  },
+  "promotion": {
+    "campaign_id": "01a1b249-284b-76b9-8282-81dc39499ac1",
+    "decision": "undecided",
+    "why": "Undecided: the primary reading does not separate no-editor from shipped, and only an improved primary reading promotes.",
+    "readout": "| Reading | Role | Reads | Difference | Interval | Level |\n|---|---|---|---|---|---|\n| Preferred by the judge, side by side | primary | not separated | 0.21 | -0.04369 to 0.5036 | 0.95 |\n| Preferred by the judge, side by side, both pages finished | reported | untested |  |  |  |\n| report_writer.actionable_next_steps (judged) | gated | not separated | 0.4286 | -0.9054 to 1.763 | 0.9958 |\n| report_writer.coherent_story (judged) | gated | not separated | 0.5714 | -1.083 to 2.226 | 0.9958 |\n| report_writer.confounds_handled (judged) | gated | not separated | 0.4286 | -1.94 to 2.798 | 0.9958 |\n| report_writer.evidence_fits_claims (judged) | gated | not separated | 0.2857 | -1.84 to 2.411 | 0.9958 |\n| report_writer.first_screen (judged) | gated | not separated | -0.1429 | -0.7837 to 0.498 | 0.9958 |\n| report_writer.honest_emphasis (judged) | gated | not separated | 0 | -2.573 to 2.573 | 0.9958 |\n| report_writer.sound_elision (judged) | gated | not separated | 0.5714 | -1.992 to 3.135 | 0.9958 |\n| Production cost | gated | not separated | -0.001852 | -0.01561 to 0.0119 | 0.9958 |\n| Bounces | gated | not separated | 0.08 | -0.3648 to 0.5248 | 0.9958 |\n| Report finished | gated | not separated | 0 | -0.2417 to 0.2417 | 0.9958 |\n| Must-fix findings open | gated | not separated | 0 | -1.384 to 1.384 | 0.9958 |\n| the pass rate | gated | not separated | 0 | -0.2417 to 0.2417 | 0.9958 |\n\n| Order check | Figure |\n|---|---|\n| Cases scored in both orders | 7 |\n| Of those, both orders picked the same side | 7 |\n| Order consistency, the primary void below 0.7 | 1 |\n| Cases scored in one order only, counted apart | 0 |\n| Answers the judge could not tell | 0 |\n| Calls that failed | 0 |\n| Held-out cases like these that would settle the primary | 43 |",
+    "candidate": "no-editor",
+    "candidate_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+    "control": "shipped",
+    "levers": {
+      "candidate_kind": "report_writer",
+      "model": "claude-sonnet-5-5",
+      "report_writer.editor_model": "(none)",
+      "report_writer.reasoning_effort": "medium",
+      "report_writer.revisions": "0",
+      "report_writer.skill": "4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149\u2026"
+    },
+    "changed": [
+      "report_writer.revisions"
+    ],
+    "pairwise_job": "action:01a1b249-294b-77e3-a622-93ba4d2c7f56",
+    "primary": {
+      "kind": "contrast",
+      "outcome": "not_separated",
+      "reason": "no_margin",
+      "reason_detail": null,
+      "reading": "judged",
+      "name": "report_writer.preferred",
+      "heading": "Preferred by the judge, side by side",
+      "arm": "no-editor",
+      "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+      "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+      "control": "shipped",
+      "aspect": null,
+      "delta": 0.21,
+      "interval": [
+        -0.0436860672198236,
+        0.5036441800184548
+      ],
+      "interval_level": 0.95,
+      "p_adjusted": 0.1079454767802037,
+      "value": null,
+      "threshold": null,
+      "margin": null,
+      "margin_source": null,
+      "materiality": null,
+      "guardrail": false,
+      "words": "no-editor and shipped not separated"
+    },
+    "void": null,
+    "finished_only": {
+      "kind": "contrast",
+      "outcome": "untested",
+      "reason": "untestable",
+      "reason_detail": "0 cases with a share, and the test needs two",
+      "reading": "judged",
+      "name": "report_writer.preferred",
+      "heading": "Preferred by the judge, side by side",
+      "arm": "no-editor",
+      "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+      "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+      "control": "shipped",
+      "aspect": null,
+      "delta": null,
+      "interval": null,
+      "interval_level": null,
+      "p_adjusted": null,
+      "value": null,
+      "threshold": null,
+      "margin": null,
+      "margin_source": null,
+      "materiality": null,
+      "guardrail": false,
+      "words": "untested"
+    },
+    "reliability": {
+      "both_orders": 7,
+      "order_consistent": 7,
+      "order_consistency": 1.0,
+      "one_order": 0,
+      "first_slot_bias": 0.017857142857142856,
+      "cannot_tell": 0,
+      "failed": 0
+    },
+    "cases_to_settle": 43,
+    "verdicts": [
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.actionable_next_steps",
+        "heading": "report_writer.actionable_next_steps (judged)",
+        "arm": "no-editor",
+        "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.4285714285714288,
+        "interval": [
+          -0.9054099940179601,
+          1.7625528511608173
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "no-editor and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.coherent_story",
+        "heading": "report_writer.coherent_story (judged)",
+        "arm": "no-editor",
+        "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.5714285714285716,
+        "interval": [
+          -1.0831717455495247,
+          2.2260288884066677
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "no-editor and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.confounds_handled",
+        "heading": "report_writer.confounds_handled (judged)",
+        "arm": "no-editor",
+        "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.4285714285714288,
+        "interval": [
+          -1.9404556984018424,
+          2.7975985555446994
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "no-editor and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.evidence_fits_claims",
+        "heading": "report_writer.evidence_fits_claims (judged)",
+        "arm": "no-editor",
+        "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.2857142857142856,
+        "interval": [
+          -1.8396583039173828,
+          2.411086875345954
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "no-editor and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.first_screen",
+        "heading": "report_writer.first_screen (judged)",
+        "arm": "no-editor",
+        "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": -0.14285714285714324,
+        "interval": [
+          -0.7836810900857107,
+          0.497966804371425
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "no-editor and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.honest_emphasis",
+        "heading": "report_writer.honest_emphasis (judged)",
+        "arm": "no-editor",
+        "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.0,
+        "interval": [
+          -2.572702107951045,
+          2.572702107951045
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "no-editor and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.sound_elision",
+        "heading": "report_writer.sound_elision (judged)",
+        "arm": "no-editor",
+        "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.5714285714285716,
+        "interval": [
+          -1.9918672174857,
+          3.134724360342843
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "no-editor and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "measure",
+        "name": "production_replicating_cost",
+        "heading": "Production cost",
+        "arm": "no-editor",
+        "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": -0.0018523240000000024,
+        "interval": [
+          -0.015608908800739271,
+          0.01190426080073927
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "no-editor and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "measure",
+        "name": "report_writer.bounces",
+        "heading": "Bounces",
+        "arm": "no-editor",
+        "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.07999999999999996,
+        "interval": [
+          -0.3647873084410246,
+          0.5247873084410246
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "no-editor and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "measure",
+        "name": "report_writer.finished",
+        "heading": "Report finished",
+        "arm": "no-editor",
+        "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.0,
+        "interval": [
+          -0.24172708438709378,
+          0.24172708438709378
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "no-editor and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "measure",
+        "name": "report_writer.must_fix_open",
+        "heading": "Must-fix findings open",
+        "arm": "no-editor",
+        "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.0,
+        "interval": [
+          -1.3843379451061835,
+          1.3843379451061835
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "no-editor and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "trial",
+        "name": "passed",
+        "heading": "the pass rate",
+        "arm": "no-editor",
+        "variant_key": "f1fbee19a5a5eae8b8d8979a9524e2dc8995a93944ebde025037dfffc8f08e81",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.0,
+        "interval": [
+          -0.24172708438709378,
+          0.24172708438709378
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "no-editor and shipped not separated"
+      }
+    ],
+    "cases": 25,
+    "case_sets": [
+      {
+        "name": "writer-held-out",
+        "version": 25
+      }
+    ],
+    "cost_usd": 2.57524905,
+    "control_cost_usd": 2.5772434,
+    "unpriced_trials": 0,
+    "writer_model": "claude-sonnet-5-5",
+    "shipped": {
+      "skill": "4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149788b8",
+      "analyst": "063768a69822c5655b17d434470f3a655506810d0cc5334d6f4c3216c3ba368b",
+      "editor": "07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611",
+      "date": "2026-10-31",
+      "basis": "unmeasured",
+      "reason": "baseline: shipped before the gate existed"
+    }
+  },
+  "criterion": {
+    "passed": false,
+    "requirements": [
+      {
+        "asks": "both arms ran every case",
+        "reads": "shipped completed, 25 of 25; no-editor completed, 25 of 25",
+        "holds": true
+      },
+      {
+        "asks": "the read answers keep",
+        "reads": "undecided",
+        "holds": false
+      },
+      {
+        "asks": "the primary reading reads regressed",
+        "reads": "not separated",
+        "holds": false
+      },
+      {
+        "asks": "it separated, its interval below 0",
+        "reads": "not separated, -0.044 to 0.504 at 0.95",
+        "holds": false
+      },
+      {
+        "asks": "the judge's order consistency stands at 0.7 or more",
+        "reads": "1.00 (7 of 7 cases)",
+        "holds": true
+      },
+      {
+        "asks": "bounces do not separate",
+        "reads": "not separated",
+        "holds": true
+      }
+    ],
+    "cases_to_settle": 43
+  },
+  "readout": "P2 acceptance\n\nDoes the gate read the shipped skill with no editor revisions (one review, never sent back) as writing worse reports than the shipped skill with 2?\n\n| Arm | Role | Skill | Files differing from shipped | Editor digest | Cases | Run |\n|---|---|---|---|---|---|---|\n| shipped | control | 4e14e276b568 | none | 07e15b95eed5 | 25 | completed |\n| no-editor | candidate | 4e14e276b568 | none | 07e15b95eed5 | 25 | completed |\n\nBoth arms write on claude-sonnet-5-5; the scoring judge is google/gemini-3.8-flash.\nThe no-editor arm is given 0 revisions and the control 2, so its editor reviews each report once and never sends it back.\n\n| Part | Cap | Spent |\n|---|---|---|\n| shipped | $22.40 | $2.58 |\n| no-editor | $22.40 | $2.58 |\n| pairwise pass (14 calls) | $11.20 | $0.05 |\n\n| Reading | Role | Reads | Difference | Interval | Level |\n|---|---|---|---|---|---|\n| Preferred by the judge, side by side | primary | not separated | 0.21 | -0.04369 to 0.5036 | 0.95 |\n| Preferred by the judge, side by side, both pages finished | reported | untested |  |  |  |\n| report_writer.actionable_next_steps (judged) | gated | not separated | 0.4286 | -0.9054 to 1.763 | 0.9958 |\n| report_writer.coherent_story (judged) | gated | not separated | 0.5714 | -1.083 to 2.226 | 0.9958 |\n| report_writer.confounds_handled (judged) | gated | not separated | 0.4286 | -1.94 to 2.798 | 0.9958 |\n| report_writer.evidence_fits_claims (judged) | gated | not separated | 0.2857 | -1.84 to 2.411 | 0.9958 |\n| report_writer.first_screen (judged) | gated | not separated | -0.1429 | -0.7837 to 0.498 | 0.9958 |\n| report_writer.honest_emphasis (judged) | gated | not separated | 0 | -2.573 to 2.573 | 0.9958 |\n| report_writer.sound_elision (judged) | gated | not separated | 0.5714 | -1.992 to 3.135 | 0.9958 |\n| Production cost | gated | not separated | -0.001852 | -0.01561 to 0.0119 | 0.9958 |\n| Bounces | gated | not separated | 0.08 | -0.3648 to 0.5248 | 0.9958 |\n| Report finished | gated | not separated | 0 | -0.2417 to 0.2417 | 0.9958 |\n| Must-fix findings open | gated | not separated | 0 | -1.384 to 1.384 | 0.9958 |\n| the pass rate | gated | not separated | 0 | -0.2417 to 0.2417 | 0.9958 |\n\n| Order check | Figure |\n|---|---|\n| Cases scored in both orders | 7 |\n| Of those, both orders picked the same side | 7 |\n| Order consistency, the primary void below 0.7 | 1 |\n| Cases scored in one order only, counted apart | 0 |\n| Answers the judge could not tell | 0 |\n| Calls that failed | 0 |\n| Held-out cases like these that would settle the primary | 43 |\n\nUndecided: the primary reading does not separate no-editor from shipped, and only an improved primary reading promotes.\n\n| Pass criterion | Reads | Holds |\n|---|---|---|\n| both arms ran every case | shipped completed, 25 of 25; no-editor completed, 25 of 25 | yes |\n| the read answers keep | undecided | no |\n| the primary reading reads regressed | not separated | no |\n| it separated, its interval below 0 | not separated, -0.044 to 0.504 at 0.95 | no |\n| the judge's order consistency stands at 0.7 or more | 1.00 (7 of 7 cases) | yes |\n| bounces do not separate | not separated | yes |\n\nFAIL: not held: the read answers keep; the primary reading reads regressed; it separated, its interval below 0. About 43 held-out cases like these would settle the primary; this run stops here.\nshipped: writer turns of 25 case(s) recorded to /opt/3tears/.claude/wt/evals-reset/.prawduct/acceptance-no-editor-25/recordings/shipped-4e14e276b568-claude-sonnet-5-5-medium-r2, 0 replayed\nno-editor: writer turns of 25 case(s) recorded to /opt/3tears/.claude/wt/evals-reset/.prawduct/acceptance-no-editor-25/recordings/no-editor-4e14e276b568-claude-sonnet-5-5-medium-r0, 0 replayed\n11 case(s) name example results stored only where they were frozen"
+}

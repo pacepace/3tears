@@ -1,9 +1,11 @@
 """The floors on an aspect, each read on one candidate: broken, held or unclear, and why.
 
 A floor (:class:`~threetears.evals.kernel.declaration.Floor`) is a typed clause on one aspect:
-``RateDrop(max_points=10)`` (no pass rate may drop by more than 10 points against the control) or ``CostLower()`` (the candidate must cost less per
-reply). **A floor only warns.** It never decides: code reports, the writer recommends and a person decides, so a broken
-floor is the first line of the page and the call that adopts the candidate anyway records it as overridden.
+``RateDrop(max_points=10)`` (no pass rate may drop by more than 10 points against the control) or ``CostLower()``
+(the candidate must cost less per reply). **A floor warns.** It never decides the page or removes an option: code
+reports, the writer recommends and a person decides, so a broken floor is the first line of the page and the call that
+adopts the candidate anyway records it as overridden. Read broken on an asked aspect, it caps the candidate's standing
+in code's dominance read (:mod:`~threetears.evals.analysis.report_decision`).
 :func:`evaluate_floor` reads one floor on one candidate (:func:`read_floor` with the per-rate detail the page prints),
 and :func:`aspect_pass_rate` reads the aspect's overall pass rate on a candidate, which the campaign's readings compare.
 
@@ -20,8 +22,8 @@ rate and each check's, or the one reading it names) is in one of three states, a
   control lies wholly past the margin: the drop nearest zero it allows is still more than the margin, as is the drop
   with every lost trial given its best outcome. Only this reads as a regression.
 - **Held.** Every arm is at the case floor, and the bounded interval bounds the drop at or below the margin, as does the
-  bound over lost trials. A non-inferiority claim never reads the t interval the page's contrasts print: on a rate's
-  coarse per-case shares it holds too often (``docs/measuring-soundly.md``).
+  bound over lost trials. A non-inferiority claim never reads a t interval, the one a contrast on a reading that is no
+  rate prints: on a rate's coarse per-case shares it holds too often (``docs/measuring-soundly.md``).
 - **Unclear**, with the reason in plain words. That includes a drop past the margin on the point estimate alone, whose
   interval reaches back within it: its reason says the point estimate is past and gives the interval, so it never reads
   as a measured regression. A rate both arms pass on every trial, or on none, and that no interval reads either way,
@@ -44,11 +46,10 @@ Every sentence here names the arms by the names the page gives them, never by th
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import reduce
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import Field
 
@@ -59,7 +60,7 @@ from threetears.evals.analysis.bundle.schema import (
     FamilyComparison,
     FloorContrast,
 )
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.numbers import MoneyForm
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
     PROJECTION_CASE_CAP,
@@ -71,11 +72,19 @@ from threetears.evals.analysis.stats import (
     cases_to_clear,
     difference_interval,
 )
+from threetears.evals.analysis.report.said import Said, SaidFigure
+from threetears.evals.analysis.report.unit_once import interval_beside
+from threetears.evals.analysis.report.words import judged_name
 from threetears.evals.analysis.style import code, declared_check_name, humanize, measure_name
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.declaration import CostLower, DecisionClause, Floor, RateDrop
-from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of, rule_rates
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of, reads_as_rate, rule_rates
 from threetears.evals.schema.base import EvalDocumentModel
+
+if TYPE_CHECKING:
+    # A page's forms decide over figures this module reads, so the module that decides them reads this one: a page
+    # hands its forms in to state a projection, and the type is named for the checker alone.
+    from threetears.evals.analysis.report.forms import PageForms
 
 #: Where one floor stands on one candidate, and where each rate it reads does: the values of :data:`FloorState`.
 FloorOutcome = Literal["broken", "held", "unclear"]
@@ -85,8 +94,120 @@ FloorOutcome = Literal["broken", "held", "unclear"]
 FloorState = Literal["broken", "held", "unclear"]
 
 
+#: Which reason one floor's status rests on, or one rate's it reads (:attr:`FloorDecision.case`), each the sentence
+#: :func:`_floor_reason` words: a rate ``broken`` (shown past the margin on its whole interval) or ``held`` (shown within
+#: it); unclear because it is ``inseparable`` (both arms passed every trial or none), ``too_few_past`` or
+#: ``too_few_unshown`` (under the case floor, its point estimate past the margin or not), ``past_uncomputed``,
+#: ``past_lost_trials`` or ``past_point_only`` (past on the point estimate alone: no interval computed, the lost trials
+#: could still bring it within, or its interval reaches back within), ``unshown_uncomputed``, ``unshown_reaches`` or
+#: ``unshown_lost_trials`` (not shown within: no interval computed, its interval reaching past, or the lost trials could
+#: still take it past); a floor that read no rate because none was ``unmeasured`` on both arms, or its usable cases were
+#: ``uncounted``; and a cost floor's: ``cost_unmeasured``, ``cost_uncompared`` (no case carries it on both arms),
+#: ``cost_too_few``, ``cost_alike`` (every case cost alike, so no interval exists), ``cost_more`` (broken),
+#: ``cost_less`` (held) and ``cost_unseparated``.
+_FloorCase = Literal[
+    "broken",
+    "held",
+    "inseparable",
+    "too_few_past",
+    "too_few_unshown",
+    "past_uncomputed",
+    "past_lost_trials",
+    "past_point_only",
+    "unshown_uncomputed",
+    "unshown_reaches",
+    "unshown_lost_trials",
+    "unmeasured",
+    "uncounted",
+    "cost_unmeasured",
+    "cost_uncompared",
+    "cost_too_few",
+    "cost_alike",
+    "cost_more",
+    "cost_less",
+    "cost_unseparated",
+]
+
+
+class FloorDecision(EvalDocumentModel):
+    """Why one floor stands as it does on one candidate, or one rate it reads does, as structured facts: which reason
+    applies, the rate it is about by key, and the numbers it rests on. No name: a page words it when it is rendered
+    (:func:`_floor_reason`, :meth:`FloorStatus.reason`), naming the rate as the page names it, so renaming a measure
+    moves no campaign fingerprint (owner ruling, 2026-11-11: names are presentation, never evidence)."""
+
+    case: Literal[
+        "broken",
+        "held",
+        "inseparable",
+        "too_few_past",
+        "too_few_unshown",
+        "past_uncomputed",
+        "past_lost_trials",
+        "past_point_only",
+        "unshown_uncomputed",
+        "unshown_reaches",
+        "unshown_lost_trials",
+        "unmeasured",
+        "uncounted",
+        "cost_unmeasured",
+        "cost_uncompared",
+        "cost_too_few",
+        "cost_alike",
+        "cost_more",
+        "cost_less",
+        "cost_unseparated",
+    ] = Field(
+        description=(
+            "Which reason applies, each one sentence a page words: a rate `broken` or `held`; unclear as "
+            "`inseparable`, `too_few_*`, `past_*` or `unshown_*`; a floor that read no rate as `unmeasured` or "
+            "`uncounted`; and a cost floor's `cost_*`."
+        )
+    )
+    measure: str | None = Field(
+        default=None,
+        description=(
+            "The key of the measure whose rate the reason is about, a judged dimension's id where `judged`; None for "
+            "the trials' own pass rate, a cost floor, and a floor that read no rate."
+        ),
+    )
+    judged: bool = Field(default=False, description="Whether `measure` is a judged dimension's id.")
+    named: bool = Field(
+        default=False, description="Whether the reason names its rate, as every rate past a floor's first is."
+    )
+    reading: str | None = Field(
+        default=None,
+        description=(
+            "For `unmeasured`: the reading the floor's clause names (a check's verbatim text, a measure's or judged "
+            "dimension's key); None for a floor on every pass rate."
+        ),
+    )
+    margin: float | None = Field(default=None, description="The floor's margin, in points; None for a cost floor.")
+    control_passed: int | None = Field(default=None, description="What the control passed, where the reason counts.")
+    control_n: int | None = Field(default=None, description="What the control measured, likewise.")
+    candidate_passed: int | None = Field(default=None, description="What the candidate passed, likewise.")
+    candidate_n: int | None = Field(default=None, description="What the candidate measured, likewise.")
+    fewest: int | None = Field(
+        default=None, description="For a reason under the case floor: the fewer usable cases of the two arms."
+    )
+    low: float | None = Field(
+        default=None,
+        description=(
+            "The drop in points the reason states as its low figure: `broken`'s least drop (`at least`), "
+            "`past_point_only`'s near end of the interval."
+        ),
+    )
+    high: float | None = Field(
+        default=None,
+        description=(
+            "The drop in points the reason states as its high figure: the worst drop the interval allows, which "
+            "`held` says (`at most`) where it is above zero, `unshown_reaches` (`as much as`) and `past_point_only` "
+            "(its far end)."
+        ),
+    )
+
+
 class FloorStatus(EvalDocumentModel):
-    """One floor for one candidate: broken, held or unclear, and why."""
+    """One floor for one candidate: broken, held or unclear, and why, as facts a page words (:meth:`reason`)."""
 
     floor: str = Field(description="The floor's key (`Floor.key`): what a recorded call names an override by.")
     aspect: str = Field(description="The label of the aspect the floor is read on.")
@@ -107,7 +228,12 @@ class FloorStatus(EvalDocumentModel):
             "rate floor, dollars per reply for a cost floor; the candidate minus the control. None when none was read."
         )
     )
-    reason: str = Field(description="Why, in one plain sentence, with the counts it rests on.")
+    decision: FloorDecision = Field(
+        description=(
+            "Why, as facts: which reason applies, the rate it is about by key, and the numbers it rests on. A page "
+            "words it (:meth:`reason`), naming the rate as it names it."
+        )
+    )
     margin: float | None = Field(
         default=None,
         description="A rate floor's margin, in points: the most the candidate's rate may drop. None for a cost floor.",
@@ -130,6 +256,20 @@ class FloorStatus(EvalDocumentModel):
         ),
     )
 
+    def reason(self, name: str, *, control: str) -> str:
+        """Why, in one plain sentence naming the arms and the rate, with the counts it rests on: worded when a page is
+        rendered, since the readings hold the rate by its key and no name is evidence (owner ruling, 2026-11-11).
+
+        :param name: What the page calls what the reason is about (:func:`floor_subject`): the deciding rate, or the
+            reading a floor found unmeasured; unread for a reason that names neither.
+        :ptype name: str
+        :param control: What the page calls the control.
+        :ptype control: str
+        :return: The sentence, its figures as a campaign's readings spell them (:meth:`Said.stored`).
+        :rtype: str
+        """
+        return _floor_reason(self.decision, name=name, control=control, candidate=self.arm_label).stored()
+
 
 #: The fewest usable cases on every arm before a rate floor can be read broken or held: the page's case floor.
 _FLOOR = SMALL_N_BAND_FLOOR
@@ -151,6 +291,7 @@ class RateReading:
     trials per case, aligned with ``samples``, and ``passes`` each side's trials passed per case: carried on the overall
     pass rate, None elsewhere. Each case's share
     weighs the same in the interval whatever its trials, while the passed-of-measured counts pool every trial.
+    ``judged`` says ``measure`` is a judged dimension's id, which the rate is named by as one (:func:`_rate_name`).
     """
 
     name: str
@@ -168,6 +309,7 @@ class RateReading:
     rig: str | None = None
     trials: tuple[tuple[int, ...], tuple[int, ...]] | None = None
     passes: tuple[tuple[int, ...], tuple[int, ...]] | None = None
+    judged: bool = False
 
     def drop_bounds(self) -> tuple[float, float]:
         """The arm's drop from the control in points, at best and at worst for the arm."""
@@ -224,8 +366,8 @@ class FloorReadings:
     is the t interval on the arm's cost per reply minus the control's at ``confidence``, computed from the per-case
     costs the bundle carries (``floor_contrasts``), uncorrected; None when none exists. ``cost_compared`` says whether
     any per-case costs were carried for the pair at all, so an absent interval reads as not compared or as no spread.
-    ``check_names`` is each goal check's declared display name by its expression
-    (``AnalysisContextBundle.goal_check_names``), which a floor naming a check no rate here carries is said by.
+    ``check_names`` is each goal check's name by its expression (``AnalysisContextBundle.named_checks``), which a
+    floor naming a check no rate here carries is said by.
     """
 
     rates: tuple[RateReading, ...]
@@ -252,26 +394,31 @@ class FloorReadings:
 @dataclass(frozen=True)
 class RateVerdict:
     """One rate a rate floor reads, read on its own: ``broken`` where it is shown past the floor, ``held`` where it is
-    shown within it, ``unclear`` otherwise, with the reason in plain words about this rate alone."""
+    shown within it, ``unclear`` otherwise, with the reason in plain words about this rate alone, its figures held as
+    numbers for the page to spell (:class:`~threetears.evals.analysis.report.said.Said`)."""
 
     rate: RateReading
     outcome: FloorOutcome
-    reason: str
+    decision: FloorDecision
+    reason: Said
 
 
 @dataclass(frozen=True)
 class FloorVerdict:
-    """One floor read on one candidate, with the reason in plain words and the floor as a sentence naming the arm.
+    """One floor read on one candidate, with the reason in plain words and the floor as a sentence naming the arm, each
+    with its figures held as numbers for the page to spell (:class:`~threetears.evals.analysis.report.said.Said`): a
+    floor is read before any page's forms exist.
 
     ``rate`` is the rate that decided a rate floor: the first broken, else the unclear one nearest a regression, else
     the one whose drop the interval allows most; None for a cost floor. ``rates`` is each rate it read, with its own
-    outcome.
+    outcome. ``decision`` is the reason as facts, which ``reason`` words (:func:`_floor_reason`), as each rate's does.
     """
 
     floor: Floor
     outcome: FloorOutcome
-    reason: str
-    statement: str
+    decision: FloorDecision
+    reason: Said
+    statement: Said
     rate: RateReading | None = None
     rates: tuple[RateVerdict, ...] = ()
     readings: FloorReadings | None = None
@@ -289,7 +436,8 @@ class FloorVerdict:
 
 def reading_words(reading: str, readings: FloorReadings | None, check_names: Mapping[str, str] | None = None) -> str:
     """A reading a floor names, as the page names it: the rate's own name where the arms carry it, else a check by its
-    declared display name (``check_names``, else the readings'), else a key in words, else a check's text as code."""
+    name (``check_names``, else the readings'), else a key in words, else a check's text as code (the campaign's
+    readings, which pass no names)."""
     rates = readings.rates if readings is not None else ()
     if (rate := next((rate for rate in rates if rate.answers(reading)), None)) is not None:
         return rate.name
@@ -305,8 +453,8 @@ def floor_statement(
     candidate: str,
     readings: FloorReadings | None = None,
     check_names: Mapping[str, str] | None = None,
-) -> str:
-    """One floor as the page says it, naming the arm: ``no pass rate drops by more than 2 points``,
+) -> Said:
+    """One floor as the page says it, naming the arm, its margin held as declared for the page's forms to spell: ``no pass rate drops by more than 2 points``,
     ``no tone rate drops by more than 2 points``, ``v2 costs less per reply``.
 
     :param clause: The floor's clause.
@@ -316,17 +464,16 @@ def floor_statement(
     :param readings: What the floor is read against, whose rate names a named reading is said by; None to say it
         from its key.
     :ptype readings: FloorReadings | None
-    :param check_names: Each goal check's declared display name by its expression
-        (``AnalysisContextBundle.goal_check_names``), for a floor on a check said without ``readings``; None reads
-        the names ``readings`` carries.
+    :param check_names: Each goal check's name by its expression (``AnalysisContextBundle.named_checks``), for a
+        floor on a check said without ``readings``; None reads the names ``readings`` carries.
     :ptype check_names: Mapping[str, str] | None
     :return: The floor, lower case, with no closing stop.
-    :rtype: str
+    :rtype: Said
     """
     if isinstance(clause, CostLower):
-        return f"{candidate} costs less per reply"
+        return Said.of(f"{candidate} costs less per reply")
     which = "pass" if clause.reading is None else reading_words(clause.reading, readings, check_names)
-    return f"no {which} rate drops by more than {format_number(clause.max_points)} points"
+    return Said.of(f"no {which} rate drops by more than ", _margin(clause.max_points), " points")
 
 
 def read_floor(floor: Floor, readings: FloorReadings, *, control: str, candidate: str) -> FloorVerdict:
@@ -346,10 +493,13 @@ def read_floor(floor: Floor, readings: FloorReadings, *, control: str, candidate
     clause = floor.clause
     statement = floor_statement(clause, candidate=candidate, readings=readings)
     if isinstance(clause, CostLower):
-        outcome, reason = _cost_floor(readings, control, candidate)
-        return FloorVerdict(floor, outcome, reason, statement, readings=readings)
-    outcome, reason, rate, rates = _rate_floor(clause, readings, control, candidate)
-    return FloorVerdict(floor, outcome, reason, statement, rate=rate, rates=rates, readings=readings)
+        outcome, decision = _cost_floor(readings)
+        reason = _floor_reason(decision, name="", control=control, candidate=candidate)
+        return FloorVerdict(floor, outcome, decision, reason, statement, readings=readings)
+    outcome, decision, rate, rates = _rate_floor(clause, readings, control, candidate)
+    name = rate.name if rate is not None else reading_words(clause.reading, readings) if clause.reading else ""
+    reason = _floor_reason(decision, name=name, control=control, candidate=candidate)
+    return FloorVerdict(floor, outcome, decision, reason, statement, rate=rate, rates=rates, readings=readings)
 
 
 def evaluate_floor(
@@ -393,47 +543,237 @@ def evaluate_floor(
         status=verdict.outcome,
         reading=verdict.rate.reading() if verdict.rate is not None else None,
         interval=verdict.interval(),
-        reason=verdict.reason,
+        decision=verdict.decision,
     )
 
 
-def _points(value: float) -> str:
-    """A change in points as the page states one: to one decimal, a whole number whole."""
-    return format_number(round(value, 1))
+def _margin(points: float) -> SaidFigure:
+    """A margin in points, as declared."""
+    return SaidFigure(points, "margin")
 
 
-def _counts(rate: RateReading, control: str, candidate: str) -> str:
+def _compared_on(measure: str | None) -> str | None:
+    """The measure a rate's figures are compared on, by the rate's measure key (a label's ``match`` as
+    ``accuracy``); None for the trials' own."""
+    return None if measure is None else _compared_as(measure)
+
+
+def _points(measure: str | None, value: float, bound: Literal["lower", "upper"], margin: float) -> SaidFigure:
+    """How far a rate's drop reaches, in points, unsigned, of the measure the rate is compared on, as the bound the
+    sentence states it as (``at least`` a lower one, ``at most`` and ``as much as`` an upper one), against the margin
+    the sentence compares it with, which its printed figure keeps on its side of."""
+    return SaidFigure(value, "points", _compared_on(measure), bound=bound, margin=margin)
+
+
+def _count(count: int) -> SaidFigure:
+    """A count of passes, trials or cases, which the page states as it states any count."""
+    return SaidFigure(count, "count")
+
+
+def _of(passed: int, n: int) -> Said:
+    """Passed of measured: ``14 of 60``."""
+    return Said.of(_count(passed), " of ", _count(n))
+
+
+def _change(measure: str | None, drop: float) -> SaidFigure:
+    """A drop in points as a change: ``a drop of 92.7``, ``a gain of 35.5``, ``no change`` as its page spells it."""
+    return SaidFigure(drop, "change", _compared_on(measure))
+
+
+def _on_rate(rate: RateReading, case: _FloorCase, margin: float, *, named: bool) -> FloorDecision:
+    """A decision on ``rate``, with its key and its counts, which every reason on a rate may state."""
+    return FloorDecision(
+        case=case,
+        measure=rate.measure,
+        judged=rate.judged,
+        named=named,
+        margin=margin,
+        control_passed=rate.control_passed,
+        control_n=rate.control_n,
+        candidate_passed=rate.candidate_passed,
+        candidate_n=rate.candidate_n,
+    )
+
+
+def _held_counts(decision: FloorDecision) -> tuple[int, int, int, int]:
+    """The counts a decision's reason states, refused where the decision holds none.
+
+    :raises ValueError: The decision's reason states counts it does not hold.
+    """
+    counts = (decision.control_passed, decision.control_n, decision.candidate_passed, decision.candidate_n)
+    if None in counts:
+        raise ValueError(f"a floor decision of case {decision.case!r} states counts, and this one holds none")
+    return cast(tuple[int, int, int, int], counts)
+
+
+def _stated(value: float | None, decision: FloorDecision, what: str) -> float:
+    """One figure a decision's reason states, refused where the decision holds none.
+
+    :raises ValueError: The decision lacks the figure its reason states.
+    """
+    if value is None:
+        raise ValueError(f"a floor decision of case {decision.case!r} states its {what}, and this one holds none")
+    return value
+
+
+def _floor_reason(decision: FloorDecision, *, name: str, control: str, candidate: str) -> Said:
+    """Why a floor stands as it does on one candidate, or one rate it reads does, in one plain sentence naming the
+    arms, with its figures held as numbers for the page to spell: the one wording of a :class:`FloorDecision`, which a
+    floor read in place (:func:`read_floor`) and one a campaign's readings stored (:meth:`FloorStatus.reason`) both
+    say.
+
+    :param decision: The reason, as facts.
+    :ptype decision: FloorDecision
+    :param name: What the page calls what the reason is about (:func:`floor_subject`): the rate, or the reading a
+        floor found unmeasured; unread for a reason that names neither.
+    :ptype name: str
+    :param control: What the sentence calls the control.
+    :ptype control: str
+    :param candidate: What it calls the candidate.
+    :ptype candidate: str
+    :return: The reason, lower case, with no closing stop.
+    :rtype: Said
+    :raises ValueError: The decision lacks a figure its reason states.
+    """
+    case = decision.case
+    if case in _COST_REASONS:
+        return _cost_reason(decision, control, candidate)
+    if case == "unmeasured":
+        return Said.of(
+            "no pass rate was measured on both arms"
+            if decision.reading is None
+            else f"{name} was not measured on both arms"
+        )
+    if case == "uncounted":
+        return Said.of("the usable cases were not counted on both arms")
+    margin = _stated(decision.margin, decision, "margin")
+    points = _margin(margin)
+    measure = decision.measure
+    drop = f"{candidate}'s drop on {name}" if decision.named else f"{candidate}'s drop"
+    if case == "broken":
+        least = _stated(decision.low, decision, "least drop")
+        return Said.of(
+            _counts(decision, name, control, candidate),
+            ", a drop that exceeds the margin of ",
+            points,
+            " points on its whole interval (at least ",
+            _points(measure, least, "lower", margin),
+            ")",
+        )
+    if case == "held":
+        most = decision.high
+        at_most = (
+            Said.of(" (it is at most ", _points(measure, most, "upper", margin), ")") if most and most > 0 else Said()
+        )
+        return Said.of(f"{drop} is shown to stay within ", points, " points", at_most)
+    if case == "inseparable":
+        return Said.of(f"{name} cannot separate the arms (", _both(decision, control, candidate), ")")
+    past = Said.of(f"{drop} is past ", points, " points on the point estimate alone")
+    unshown = Said.of(f"{drop} is not shown to stay within ", points, " points")
+    if case in ("too_few_past", "too_few_unshown"):
+        fewest = Said.of(
+            _count(int(_stated(decision.fewest, decision, "fewest cases"))),
+            f" cases are too few for the interval that would show it, which is estimated only from {_FLOOR} "
+            "independent cases",
+        )
+        return Said.of(past if case == "too_few_past" else unshown, " (", fewest, ")")
+    missing = f" (no interval was computed on {name})"
+    if case == "past_uncomputed":
+        return past + missing
+    if case == "past_lost_trials":
+        return past + " (the lost trials could still bring it within)"
+    if case == "past_point_only":
+        near, worst = _stated(decision.low, decision, "near end"), _stated(decision.high, decision, "far end")
+        return Said.of(
+            past, ", not on its interval (from ", _change(measure, near), " to ", _change(measure, worst), ")"
+        )
+    if case == "unshown_uncomputed":
+        return unshown + missing
+    if case == "unshown_reaches":
+        worst = _stated(decision.high, decision, "worst drop")
+        return Said.of(unshown, " (it could be as much as ", _points(measure, worst, "upper", margin), ")")
+    return unshown + " (the lost trials could still take it past)"
+
+
+def _counts(decision: FloorDecision, name: str, control: str, candidate: str) -> Said:
     """A rate's counts in words: ``v2 passed 14 of 60 to v1's 29``. The control's total is said only where it
-    differs."""
-    theirs = f"{rate.candidate_passed} of {rate.candidate_n}"
-    ours = (
-        str(rate.control_passed) if rate.control_n == rate.candidate_n else f"{rate.control_passed} of {rate.control_n}"
-    )
-    passed = f"passed {theirs}" if rate.name == "the pass rate" else f"passed {rate.name} on {theirs}"
-    return f"{candidate} {passed} to {control}'s {ours}"
+    differs, and a rate other than the trials' own is named."""
+    control_passed, control_n, candidate_passed, candidate_n = _held_counts(decision)
+    theirs = _of(candidate_passed, candidate_n)
+    ours = Said.of(_count(control_passed)) if control_n == candidate_n else _of(control_passed, control_n)
+    passed = Said.of("passed ", theirs) if decision.measure is None else Said.of(f"passed {name} on ", theirs)
+    return Said.of(f"{candidate} ", passed, f" to {control}'s ", ours)
 
 
-def _both(rate: RateReading, control: str, candidate: str) -> str:
+def _both(decision: FloorDecision, control: str, candidate: str) -> Said:
     """What two arms that cannot be told apart each passed: ``both 0 of 18``, or each arm's where their totals
     differ."""
-    if rate.control_n == rate.candidate_n:
-        return f"both {rate.control_passed} of {rate.control_n}"
-    return (
-        f"{candidate} {rate.candidate_passed} of {rate.candidate_n}, {control} {rate.control_passed} of "
-        f"{rate.control_n}"
+    control_passed, control_n, candidate_passed, candidate_n = _held_counts(decision)
+    if control_n == candidate_n:
+        return Said.of("both ", _of(control_passed, control_n))
+    return Said.of(f"{candidate} ", _of(candidate_passed, candidate_n), f", {control} ", _of(control_passed, control_n))
+
+
+#: The cases a cost floor's reason is one of.
+_COST_REASONS: frozenset[str] = frozenset(
+    {"cost_unmeasured", "cost_uncompared", "cost_too_few", "cost_alike", "cost_more", "cost_less", "cost_unseparated"}
+)
+
+
+def _cost_reason(decision: FloorDecision, control: str, candidate: str) -> Said:
+    """A cost floor's reason in words."""
+    case = decision.case
+    if case == "cost_unmeasured":
+        return Said.of("cost per reply was not measured on both arms")
+    if case == "cost_uncompared":
+        return Said.of("cost per reply was not compared: no case carries it on both arms")
+    if case == "cost_too_few":
+        return Said.of(
+            _count(int(_stated(decision.fewest, decision, "fewest cases"))),
+            " cases are too few for the interval that would show the cost either way, which is estimated only "
+            f"from {_FLOOR} independent cases",
+        )
+    if case == "cost_alike":
+        return Said.of("every case cost alike on both arms, so no interval on the cost difference exists")
+    if case == "cost_more":
+        return Said.of(f"{candidate} costs more per reply than {control} on the whole interval")
+    if case == "cost_less":
+        return Said.of(f"{candidate} costs less per reply than {control}")
+    return Said.of("the cost difference did not separate")
+
+
+def floor_subject(
+    decision: FloorDecision, bundle: AnalysisContextBundle, *, check_names: Mapping[str, str] | None = None
+) -> str:
+    """What a page calls what a floor's decision is about, read off the aspect's evidence when the page is rendered:
+    the rate it decided on, named as :func:`floor_readings` names it (:func:`_rate_name`), or the reading a floor found
+    unmeasured, as :func:`reading_words` names it.
+
+    :param decision: The decision.
+    :ptype decision: FloorDecision
+    :param bundle: The evidence of the floor's aspect.
+    :ptype bundle: AnalysisContextBundle
+    :param check_names: Each goal check's display name by its expression; None names a check by its expression, as
+        code, as the campaign's readings read it.
+    :ptype check_names: Mapping[str, str] | None
+    :return: The name.
+    :rtype: str
+    """
+    if decision.case == "unmeasured" and decision.reading is not None:
+        return reading_words(decision.reading, None, check_names)
+    return _rate_name(bundle, decision.measure, judged=decision.judged, check_names=check_names)
+
+
+def _verdict(
+    rate: RateReading, outcome: FloorOutcome, decision: FloorDecision, control: str, candidate: str
+) -> RateVerdict:
+    """One rate's verdict, its reason worded from its decision by :func:`_floor_reason`, the one wording."""
+    return RateVerdict(
+        rate, outcome, decision, _floor_reason(decision, name=rate.name, control=control, candidate=candidate)
     )
 
 
-def _change(drop: float) -> str:
-    """A drop in points as a change: ``a drop of 92.7``, ``a gain of 35.5``, ``no change``."""
-    if round(drop, 1) == 0:
-        return "no change"
-    return f"a drop of {_points(drop)}" if drop > 0 else f"a gain of {_points(-drop)}"
-
-
-def _rate_verdict(
-    rate: RateReading, fewest: int, margin: float, control: str, candidate: str, *, named: bool
-) -> RateVerdict:
+def _rate_decision(rate: RateReading, fewest: int, margin: float, *, named: bool) -> tuple[FloorOutcome, FloorDecision]:
     """One rate a rate floor reads, in one of three states, read in this order: broken (its whole interval past the
     margin, over enough cases), then held (its interval within the margin, over enough cases), then unclear, whose
     reason is the first that applies: both arms passing every trial or none (it cannot separate them), too few cases
@@ -442,106 +782,98 @@ def _rate_verdict(
     ``fewest`` is the fewer usable cases of the two arms; ``named`` names the rate in the reason, as every rate past
     the floor's first is.
     """
-    points = format_number(margin)
-    drop = f"{candidate}'s drop on {rate.name}" if named else f"{candidate}'s drop"
+    on_rate = _on_rate(rate, "held", margin, named=named)
+
+    def decided(case: _FloorCase, **figures: float) -> FloorDecision:
+        return on_rate.model_copy(update={"case": case, **figures})
+
     least, most = rate.drop_bounds()
     near, worst = rate.least_drop(), rate.worst_drop()
     floored = fewest >= _FLOOR
     if floored and near is not None and near > margin and least > margin:
-        return RateVerdict(
-            rate,
-            "broken",
-            f"{_counts(rate, control, candidate)}, a drop that exceeds the margin of {points} points on its whole "
-            f"interval (at least {_points(min(near, least))})",
-        )
+        return "broken", decided("broken", low=min(near, least))
     if floored and worst is not None and worst <= margin and most <= margin:
-        at_most = f" (it is at most {_points(worst)})" if worst > 0 else ""
-        return RateVerdict(rate, "held", f"{drop} is shown to stay within {points} points{at_most}")
-    floor = (
-        f"{fewest} cases are too few for the interval that would show it, which is estimated only from {_FLOOR} "
-        "independent cases"
-    )
-    past = f"{drop} is past {points} points on the point estimate alone"
-    unshown = f"{drop} is not shown to stay within {points} points"
+        return "held", decided("held", high=worst)
+    past = rate.point_drop() > margin
     if rate.degenerate():
-        return RateVerdict(rate, "unclear", f"{rate.name} cannot separate the arms ({_both(rate, control, candidate)})")
+        return "unclear", decided("inseparable")
     if not floored:
-        return RateVerdict(rate, "unclear", f"{past if rate.point_drop() > margin else unshown} ({floor})")
-    missing = f"no interval was computed on {rate.name}"
-    if rate.point_drop() > margin:
+        return "unclear", decided("too_few_past" if past else "too_few_unshown", fewest=fewest)
+    if past:
         if near is None or worst is None:
-            return RateVerdict(rate, "unclear", f"{past} ({missing})")
+            return "unclear", decided("past_uncomputed")
         if near > margin:
-            return RateVerdict(rate, "unclear", f"{past} (the lost trials could still bring it within)")
-        return RateVerdict(rate, "unclear", f"{past}, not on its interval (from {_change(near)} to {_change(worst)})")
+            return "unclear", decided("past_lost_trials")
+        return "unclear", decided("past_point_only", low=near, high=worst)
     if worst is None:
-        return RateVerdict(rate, "unclear", f"{unshown} ({missing})")
+        return "unclear", decided("unshown_uncomputed")
     if worst > margin:
-        return RateVerdict(rate, "unclear", f"{unshown} (it could be as much as {_points(worst)})")
-    return RateVerdict(rate, "unclear", f"{unshown} (the lost trials could still take it past)")
+        return "unclear", decided("unshown_reaches", high=worst)
+    return "unclear", decided("unshown_lost_trials")
+
+
+def _rate_verdict(
+    rate: RateReading, fewest: int, margin: float, control: str, candidate: str, *, named: bool
+) -> RateVerdict:
+    """One rate a rate floor reads, read on its own (:func:`_rate_decision`), its reason in words naming the arms."""
+    outcome, decision = _rate_decision(rate, fewest, margin, named=named)
+    return _verdict(rate, outcome, decision, control, candidate)
 
 
 def _rate_floor(
     clause: RateDrop, readings: FloorReadings, control: str, candidate: str
-) -> tuple[FloorOutcome, str, RateReading | None, tuple[RateVerdict, ...]]:
+) -> tuple[FloorOutcome, FloorDecision, RateReading | None, tuple[RateVerdict, ...]]:
     """A rate floor: broken where a rate it reads is broken, held where every one is held, otherwise unclear.
 
-    The floor's reason and deciding rate are the first broken; else the first left unclear whose point estimate is past
-    the margin, the one nearest a regression; else the first left unclear; else, held, the one whose interval allows
-    the largest drop.
+    The floor's decision and deciding rate are the first broken; else the first left unclear whose point estimate is
+    past the margin, the one nearest a regression; else the first left unclear; else, held, the one whose interval
+    allows the largest drop, the reason naming no rate.
     """
     margin = clause.max_points
     rates = readings.read_by(clause)
     if not rates:
-        if clause.reading is None:
-            return "unclear", "no pass rate was measured on both arms", None, ()
-        return "unclear", f"{reading_words(clause.reading, readings)} was not measured on both arms", None, ()
+        return "unclear", FloorDecision(case="unmeasured", reading=clause.reading, margin=margin), None, ()
     if (fewest := readings.fewest_cases()) is None:
-        reason = "the usable cases were not counted on both arms"
-        return "unclear", reason, None, tuple(RateVerdict(rate, "unclear", reason) for rate in rates)
+        uncounted = FloorDecision(case="uncounted", margin=margin)
+        return (
+            "unclear",
+            uncounted,
+            None,
+            tuple(_verdict(rate, "unclear", uncounted, control, candidate) for rate in rates),
+        )
     verdicts = tuple(
         _rate_verdict(rate, fewest, margin, control, candidate, named=rate is not rates[0]) for rate in rates
     )
     if broken := [verdict for verdict in verdicts if verdict.outcome == "broken"]:
-        return "broken", broken[0].reason, broken[0].rate, verdicts
+        return "broken", broken[0].decision, broken[0].rate, verdicts
     if unclear := [verdict for verdict in verdicts if verdict.outcome == "unclear"]:
         lead = next((verdict for verdict in unclear if verdict.rate.point_drop() > margin), unclear[0])
-        return "unclear", lead.reason, lead.rate, verdicts
+        return "unclear", lead.decision, lead.rate, verdicts
     widest = max(rates, key=lambda rate: rate.worst_drop() or 0.0)
-    most = widest.worst_drop() or 0.0
-    at_most = f" (it is at most {_points(most)})" if most > 0 else ""
-    return (
-        "held",
-        f"{candidate}'s drop is shown to stay within {format_number(margin)} points{at_most}",
-        widest,
-        verdicts,
-    )
+    held = _on_rate(widest, "held", margin, named=False).model_copy(update={"high": widest.worst_drop() or 0.0})
+    return "held", held, widest, verdicts
 
 
-def _cost_floor(readings: FloorReadings, control: str, candidate: str) -> tuple[FloorOutcome, str]:
+def _cost_floor(readings: FloorReadings) -> tuple[FloorOutcome, FloorDecision]:
     """A cost floor, read on its own interval as a rate floor is: broken where the interval on the cost difference lies
     wholly above zero, held where it lies wholly below, each over enough cases; otherwise unclear, saying why."""
     if readings.control_cost is None or readings.candidate_cost is None:
-        return "unclear", "cost per reply was not measured on both arms"
+        return "unclear", FloorDecision(case="cost_unmeasured")
     if not readings.cost_compared:
-        return "unclear", "cost per reply was not compared: no case carries it on both arms"
+        return "unclear", FloorDecision(case="cost_uncompared")
     fewest = readings.fewest_cases()
     if fewest is None:
-        return "unclear", "the usable cases were not counted on both arms"
+        return "unclear", FloorDecision(case="uncounted")
     if fewest < _FLOOR:
-        return (
-            "unclear",
-            f"{fewest} cases are too few for the interval that would show the cost either way, which is estimated only "
-            f"from {_FLOOR} independent cases",
-        )
+        return "unclear", FloorDecision(case="cost_too_few", fewest=fewest)
     interval = readings.cost_interval
     if interval is None:
-        return "unclear", "every case cost alike on both arms, so no interval on the cost difference exists"
+        return "unclear", FloorDecision(case="cost_alike")
     if interval[0] > 0:
-        return "broken", f"{candidate} costs more per reply than {control} on the whole interval"
+        return "broken", FloorDecision(case="cost_more")
     if interval[1] < 0:
-        return "held", f"{candidate} costs less per reply than {control}"
-    return "unclear", "the cost difference did not separate"
+        return "held", FloorDecision(case="cost_less")
+    return "unclear", FloorDecision(case="cost_unseparated")
 
 
 def _floor_contrast(
@@ -656,9 +988,10 @@ def floor_readings(
 ) -> FloorReadings:
     """The figures a floor is read against for one candidate on the bundle's aspect, from the bundle alone.
 
-    The pass rates are every trial's, then each check's pass rate the arms' cells carry, counted on its better end (a
-    goal check's and a pass/fail scorer's as its mean times its observations, a lower-is-better boolean's as its false
-    count: :func:`_held` over :func:`~threetears.evals.kernel.metrics.rule_rates`, the list
+    The pass rates are the readings :func:`~threetears.evals.kernel.metrics.reads_as_rate` names a rate, the one
+    predicate a family contrast's interval reads too: every trial's, then each check's pass rate the arms' cells carry,
+    counted on its better end (a goal check's and a pass/fail scorer's as its mean times its observations, a
+    lower-is-better boolean's as its false count: :func:`_held` over :func:`~threetears.evals.kernel.metrics.rule_rates`, the list
     :func:`~threetears.evals.kernel.declaration.decision_readings` offers), then each pass/fail judged dimension on
     the capability axis, read the same way from its scores; each arm's lost trials are trials it could still add.
     Each rate carries the bounded interval computed again at ``confidence`` from its per-case values: the overall pass
@@ -666,10 +999,10 @@ def floor_readings(
     comparison, where the family compared it. Cost is each arm's cost per reply, with the t interval on the per-case
     costs ``floor_contrasts`` carries, at ``confidence``. Each arm carries its usable cases.
 
-    A check's rate is named by its expression, as code, unless ``check_names`` is passed: a page passes the names its
-    aspect's template declares (``AnalysisContextBundle.goal_check_names``) and names each check by them. The
-    campaign's readings pass none, since their words are baked into what a campaign is fingerprinted by, which a name
-    must never move.
+    Each rate is named by :func:`_rate_name`: a check's by its expression, as code, unless ``check_names`` is passed (a
+    page passes its aspect's names for its checks, ``AnalysisContextBundle.named_checks``, a declared name else what it
+    tests). The campaign's readings pass none and store no name at all: a floor's status holds its decision as facts
+    (:class:`FloorDecision`), which a page words when it is rendered.
 
     :param bundle: The aspect's evidence.
     :ptype bundle: AnalysisContextBundle
@@ -694,7 +1027,13 @@ def floor_readings(
     rates = [
         _read_on(
             RateReading(
-                "the pass rate", ours.passed, ours.usable, theirs.passed, theirs.usable, lost_control, lost_candidate
+                _rate_name(bundle, None),
+                ours.passed,
+                ours.usable,
+                theirs.passed,
+                theirs.usable,
+                lost_control,
+                lost_candidate,
             ),
             _floor_contrast(bundle, "trial", TRIAL_PASS_NAME, control, candidate),
             confidence=confidence,
@@ -704,6 +1043,8 @@ def floor_readings(
     measures: dict[str, dict[str, tuple[int, int]]] = {}
     for cell in bundle.cell_measures:
         for summary in cell.measures.measures:
+            if not reads_as_rate("measure", summary.name, descriptor=bundle.measure_catalog.get(summary.name)):
+                continue
             if (held := _held(summary, oriented.get(summary.name))) is None:
                 continue
             # An arm over several rigs is counted over all of them, as its trials are.
@@ -711,16 +1052,15 @@ def floor_readings(
             measures[summary.name][cell.variant_key] = (passed + held, n + summary.n)
     for name, by_arm in sorted(measures.items()):
         if control in by_arm and candidate in by_arm:
-            descriptor = bundle.measure_catalog.get(name)
-            heading = measure_name(
-                name,
-                descriptor.reader_name if descriptor is not None else None,
-                declared=declared_check_name(check_names or {}, name),
-            )
             rates.append(
                 _read_on(
                     RateReading(
-                        heading, *by_arm[control], *by_arm[candidate], lost_control, lost_candidate, measure=name
+                        _rate_name(bundle, name, check_names=check_names),
+                        *by_arm[control],
+                        *by_arm[candidate],
+                        lost_control,
+                        lost_candidate,
+                        measure=name,
                     ),
                     _contrast(bundle, "measure", _compared_as(name), control, candidate),
                     confidence=confidence,
@@ -730,7 +1070,11 @@ def floor_readings(
     # its scores. A boundary dimension is a guardrail, held on its own, never a floor's reading.
     for judged in sorted(bundle.judged_measures, key=lambda measure: measure.name):
         read = any(rate.measure == judged.name for rate in rates)
-        if read or judged.value_range != (0.0, 1.0) or judged.axis != "capability":
+        if (
+            read
+            or not reads_as_rate("judged", judged.name, value_range=judged.value_range)
+            or judged.axis != "capability"
+        ):
             continue
         counts: dict[str, tuple[int, int]] = {}
         for scored in judged.arms:
@@ -743,12 +1087,13 @@ def floor_readings(
             rates.append(
                 _read_on(
                     RateReading(
-                        humanize("dimension", judged.name),
+                        _rate_name(bundle, judged.name, judged=True),
                         *counts[control],
                         *counts[candidate],
                         lost_control,
                         lost_candidate,
                         measure=judged.name,
+                        judged=True,
                     ),
                     _contrast(bundle, "judged", judged.name, control, candidate),
                     confidence=confidence,
@@ -770,6 +1115,45 @@ def floor_readings(
         cost_compared=cost is not None,
         confidence=confidence,
         check_names=dict(check_names or {}),
+    )
+
+
+def _rate_name(
+    bundle: AnalysisContextBundle,
+    measure: str | None,
+    *,
+    judged: bool = False,
+    check_names: Mapping[str, str] | None = None,
+) -> str:
+    """A rate a floor reads, as every floor sentence names it: the one rule :func:`floor_readings` names its rates by
+    and a page names a stored floor decision's rate by (:func:`floor_subject`), read off the aspect's evidence. The
+    trials' own as ``the pass rate``; a judged dimension as :func:`~threetears.evals.analysis.report.words.judged_name`
+    names it; a goal check by its expression, as code, unless ``check_names`` is passed (a page's names for its checks,
+    ``AnalysisContextBundle.named_checks``); any other measure by the catalog's reader name, else its key in words.
+
+    :param bundle: The aspect's evidence, whose catalog names a measure.
+    :ptype bundle: AnalysisContextBundle
+    :param measure: The rate's measure key, a judged dimension's id where ``judged``; None for the trials' own.
+    :ptype measure: str | None
+    :param judged: Whether ``measure`` is a judged dimension's id.
+    :ptype judged: bool
+    :param check_names: Each goal check's display name by its expression; None names a check by its expression.
+    :ptype check_names: Mapping[str, str] | None
+    :return: The name.
+    :rtype: str
+    """
+    if measure is None:
+        return "the pass rate"
+    if judged:
+        return judged_name(measure)
+    check = goal_check_of(measure)
+    if check is not None and check_names is None:
+        return code(check)
+    descriptor = bundle.measure_catalog.get(measure)
+    return measure_name(
+        measure,
+        descriptor.reader_name if descriptor is not None else None,
+        declared=declared_check_name(check_names or {}, measure),
     )
 
 
@@ -821,7 +1205,8 @@ def control_cannot_show(
     :ptype control: str
     :param candidates: Each candidate's variant key read against it on the aspect.
     :ptype candidates: Sequence[str]
-    :param margin: The aspect's margin in points; None where none is declared, so no drop is read against one.
+    :param margin: The aspect's margin in points, 0 where a superiority question reads the drop against zero; None
+        where no drop is read against one.
     :ptype margin: float | None
     :param passed: The trials the control passed.
     :ptype passed: int
@@ -1121,28 +1506,15 @@ def floors_projection(
     return reduce(SampleProjection.joined, projections)
 
 
-def projected_usd_value(value: float) -> float:
-    """A projected cost to two significant figures, since the cases it prices are about: ``2.7``, ``120``; nought
-    for none. The one rounding the page's price (:func:`projected_usd`) and the writer's view both state.
-
-    :param value: The cost, in US dollars.
-    :ptype value: float
-    :return: The cost to two figures.
-    :rtype: float
-    """
-    if value <= 0:
-        return 0.0
-    return round(value, 1 - math.floor(math.log10(value)))
-
-
-def projected_usd(value: float) -> str:
-    """A projected cost to two figures (:func:`projected_usd_value`), as the page prints it: ``$2.7``, ``$120``."""
-    return format_number(projected_usd_value(value), prefix="$")
-
-
-def projected_cell(projection: SampleProjection, need: CasesNeeded) -> str:
+def projected_cell(
+    projection: SampleProjection, need: CasesNeeded, form: MoneyForm | None = None, *, forms: PageForms
+) -> str:
     """One side of a projection as a table cell says it, with its cost: ``107 cases, $2.7``, ``this run's 12 cases``,
-    ``re-run the lost trials``, ``more than 10000 cases`` or ``none would``."""
+    ``re-run the lost trials``, ``more than 10000 cases`` or ``none would``. Handed the form every projected cost the
+    table states reads in (#993), the cost, to two figures, is written in it (``107 cases, $2.70`` beside ``$27.00``).
+    The page's ``forms`` state the count and the cost
+    (:meth:`~threetears.evals.analysis.report.forms.PageForms.projected_money`).
+    """
     if need.kind == "never":
         return "none would"
     if need.kind == "lost":
@@ -1150,12 +1522,16 @@ def projected_cell(projection: SampleProjection, need: CasesNeeded) -> str:
     if need.kind == "enough":
         return f"this run's {projection.cases} cases"
     if need.kind == "beyond":
-        return f"more than {format_number(need.cases)} cases"
+        return f"more than {forms.count_alone(need.cases).text} cases"
     cost = projection.cost(need)
-    return f"{need.cases} cases" + ("" if cost is None else f", {projected_usd(cost)}")
+    if cost is None:
+        return f"{need.cases} cases"
+    return f"{need.cases} cases, {forms.projected_money(cost, form).text}"
 
 
-def projection_note(projections: Sequence[SampleProjection], *, run_cases: int, cost_clause: bool = False) -> str:
+def projection_note(
+    projections: Sequence[SampleProjection], *, run_cases: int, cost_clause: bool = False, forms: PageForms
+) -> str:
     """The sentences under the projected cases: how each count was found and that it is about, what repeats do, what a
     cost floor's blank means, and, where holding needs more cases than the run used on every side, that it does.
 
@@ -1166,6 +1542,8 @@ def projection_note(projections: Sequence[SampleProjection], *, run_cases: int, 
     :ptype run_cases: int
     :param cost_clause: Whether the table shows a cost floor, whose no-difference cell is blank.
     :ptype cost_clause: bool
+    :param forms: The page's forms, which state each count.
+    :ptype forms: PageForms
     :return: The sentences.
     :rtype: str
     """
@@ -1185,21 +1563,26 @@ def projection_note(projections: Sequence[SampleProjection], *, run_cases: int, 
         beyond = any(need.kind == "beyond" for need in needs)
         caps = sorted({need.cases for need in needs if need.kind == "beyond"})
         if not beyond:
-            span = f"about {counted[0]}" if counted[0] == counted[-1] else f"about {counted[0]} to {counted[-1]}"
+            span = (
+                f"about {counted[0]}"
+                if counted[0] == counted[-1]
+                else f"about {interval_beside(str(counted[0]), str(counted[-1]))}"
+            )
         elif caps[0] >= counted[-1]:
-            span = f"about {counted[0]} to more than {format_number(caps[-1])}"
+            span = f"about {counted[0]} to more than {forms.count_alone(caps[-1]).text}"
         else:
             # A search stopped at a cap below a count another row reached: that row needs more than its cap, which
             # may be fewer or more than the counts, so the range is the counts' and the cap is said apart.
             low, high = counted[0], counted[-1]
-            counts = f"about {low}" if low == high else f"about {low} to {high}"
-            span = f"{counts}, or more than {format_number(caps[0])} where a search stopped there"
+            counts = f"about {low}" if low == high else f"about {interval_beside(str(low), str(high))}"
+            span = f"{counts}, or more than {forms.count_alone(caps[0]).text} where a search stopped there"
         said.append(f"This run used {run_cases} cases; showing the floors hold needs {span}, more than it ran.")
     return " ".join(said)
 
 
 __all__ = [
     "CasesNeeded",
+    "FloorDecision",
     "FloorOutcome",
     "FloorReadings",
     "FloorVerdict",
@@ -1218,10 +1601,9 @@ __all__ = [
     "project_rate",
     "project_sample",
     "projected_cell",
-    "projected_usd",
-    "projected_usd_value",
     "projection_note",
     "rate_projections",
+    "floor_subject",
     "read_floor",
     "reading_words",
 ]

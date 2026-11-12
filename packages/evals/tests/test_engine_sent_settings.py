@@ -385,8 +385,15 @@ def _seconded(result_id: str, case: str, pass_id: str, sent: ClientRequestSettin
         sample_fraction=1.0,
         sample_seed=0,
         scores=[entry],
+        judged_at="2026-08-01T00:00:00+00:00",
     )
-    return make_eval_result(id=result_id, test_case_id=case, rubric_scores=[_score(_ASKED)], judge_seconds=[judging])
+    return make_eval_result(
+        id=result_id,
+        test_case_id=case,
+        rubric_scores=[_score(_ASKED)],
+        judge_seconds=[judging],
+        scored_at="2026-08-01T00:00:00+00:00",
+    )
 
 
 #: Two passes of one second judge, asked alike: the first sent as asked, the second sent a budget instead.

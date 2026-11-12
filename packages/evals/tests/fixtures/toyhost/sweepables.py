@@ -30,7 +30,8 @@ from threetears.evals.kernel.host import SHARED_CORE, RolePins, Sweepable, Sweep
 from threetears.evals.schema import SweepableValue
 
 if TYPE_CHECKING:
-    from threetears.evals.schema import EvalResult, EvalRun
+    from threetears.evals.kernel import ResultView
+    from threetears.evals.schema import EvalRun
 
 #: Where the toy host keeps its own vocabulary on the shared carrier: ``EvalRun.host_payload``,
 #: the engine-owned opaque slot. The engine stores it verbatim and never reads it, so a host's data
@@ -49,7 +50,7 @@ def _reader(key: str, *, default: Any = None) -> Any:
     :rtype: Any
     """
 
-    def read(run: EvalRun, _results: Sequence[EvalResult]) -> Any:
+    def read(run: EvalRun, _results: Sequence[ResultView]) -> Any:
         return (run.host_payload or {}).get(_TOYHOST_NAMESPACE, {}).get(key, default)
 
     return read
@@ -61,6 +62,7 @@ TOYHOST_SWEEPABLES: tuple[Sweepable, ...] = (
     Sweepable(
         name="extraction_prompt",
         role="lever",
+        reader_name="extraction prompt",
         read=lambda run, _results: (
             prompt.content_hash if (prompt := run.subject_snapshot.components.get("extraction_prompt")) else None
         ),
@@ -76,6 +78,7 @@ TOYHOST_SWEEPABLES: tuple[Sweepable, ...] = (
     Sweepable(
         name="chunk_tokens",
         role="lever",
+        reader_name="chunk tokens",
         read=_reader("chunk_tokens"),
         reader_prose="how many tokens each document chunk carried into extraction",
         acts_on="context_tokens_in",
@@ -83,12 +86,14 @@ TOYHOST_SWEEPABLES: tuple[Sweepable, ...] = (
     Sweepable(
         name="retriever_top_k",
         role="lever",
+        reader_name="retriever top k",
         read=_reader("retriever_top_k"),
         reader_prose="how many candidate chunks the retriever returned per field",
     ),
     Sweepable(
         name="extraction_schema",
         role="lever",
+        reader_name="extraction schema",
         read=_reader("extraction_schema"),
         reader_prose="the field schema the extractor was asked to fill, by content",
     ),
@@ -202,13 +207,13 @@ def _payload(run: EvalRun) -> dict[str, Any]:
     return payload
 
 
-def _retrieval_members(run: EvalRun, _results: Sequence[EvalResult]) -> dict[str, Any]:
+def _retrieval_members(run: EvalRun, _results: Sequence[ResultView]) -> dict[str, Any]:
     """One member per retrieval knob this batch's launch overlaid.
 
     :param run: The batch.
     :ptype run: EvalRun
     :param _results: Unused — overlays are declared on the batch.
-    :ptype _results: Sequence[EvalResult]
+    :ptype _results: Sequence[ResultView]
     :return: ``{retrieval.<key>: value}``; empty for a batch that overlaid nothing.
     :rtype: dict[str, Any]
     """
@@ -223,13 +228,13 @@ def _is_retrieval_member(name: str) -> bool:
     return name.startswith(RETRIEVAL_MEMBER_PREFIX) and name.removeprefix(RETRIEVAL_MEMBER_PREFIX) in TOY_RETRIEVAL_KEYS
 
 
-def _resolved_retrieval(run: EvalRun, _results: Sequence[EvalResult]) -> str | None:
+def _resolved_retrieval(run: EvalRun, _results: Sequence[ResultView]) -> str | None:
     """The resolved retrieval configuration's content hash — the level two batches agree on.
 
     :param run: The batch.
     :ptype run: EvalRun
     :param _results: Unused.
-    :ptype _results: Sequence[EvalResult]
+    :ptype _results: Sequence[ResultView]
     :return: The hash, or ``None`` for a batch that recorded no resolved configuration.
     :rtype: str | None
     """
@@ -237,13 +242,13 @@ def _resolved_retrieval(run: EvalRun, _results: Sequence[EvalResult]) -> str | N
     return None if config is None else SweepableValue.of(config, display="retrieval config").content_hash
 
 
-def _retrieval_residual(run: EvalRun, _results: Sequence[EvalResult], removed: frozenset[str]) -> dict[str, Any] | None:
+def _retrieval_residual(run: EvalRun, _results: Sequence[ResultView], removed: frozenset[str]) -> dict[str, Any] | None:
     """The resolved retrieval configuration with the named knobs taken back out.
 
     :param run: The batch.
     :ptype run: EvalRun
     :param _results: Unused.
-    :ptype _results: Sequence[EvalResult]
+    :ptype _results: Sequence[ResultView]
     :param removed: ``retrieval.<key>`` member names.
     :ptype removed: frozenset[str]
     :return: The configuration minus those keys, or ``None`` for a batch that recorded none.
@@ -255,12 +260,18 @@ def _retrieval_residual(run: EvalRun, _results: Sequence[EvalResult], removed: f
     return {key: value for key, value in config.items() if f"{RETRIEVAL_MEMBER_PREFIX}{key}" not in removed}
 
 
+def _retrieval_member_name(member: str) -> str:
+    """What a reader calls one retrieval knob: the knob's key as the launch wrote it, in words (``rerank depth``)."""
+    return member.removeprefix(RETRIEVAL_MEMBER_PREFIX).replace("_", " ")
+
+
 TOYHOST_RETRIEVAL_TUNING: tuple[Sweepable, ...] = (
     # Indeterminate when blank: a batch with no resolved configuration is one that never recorded
     # it, and two such batches did not thereby retrieve alike.
     Sweepable(
         name=RESOLVED_RETRIEVAL_CONFIG,
         role="lever",
+        reader_name="resolved retrieval config",
         read=_resolved_retrieval,
         reader_prose="the retrieval configuration the batch actually ran, after any overlaid knob",
         indeterminate_when_blank=True,
@@ -268,6 +279,7 @@ TOYHOST_RETRIEVAL_TUNING: tuple[Sweepable, ...] = (
     Sweepable(
         name="retrieval_overrides",
         role="lever",
+        member_reader_name=_retrieval_member_name,
         read=_retrieval_members,
         owns_member=_is_retrieval_member,
         reader_prose="the retrieval knobs the launch overlaid, one lever per knob",

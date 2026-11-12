@@ -11,6 +11,7 @@ own prefix), and the caller resolved per call — sync or async.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import subprocess
 import sys
@@ -20,11 +21,14 @@ from typing import Any
 import pytest
 from fastmcp import Client, FastMCP
 
-from pydantic import Field
-
-from threetears.evals.actions import Action, Caller, eval_catalogue, read_only_tools, standard_tools
-from threetears.evals.ops import OpsHost
-from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.actions import (
+    Caller,
+    analyst_tools,
+    catalogue_primer,
+    eval_catalogue,
+    read_only_tools,
+    standard_tools,
+)
 from threetears.evals.ops import report_read
 from threetears.evals.transports.fastmcp import CallTimedOut, mount_fastmcp
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
@@ -90,15 +94,16 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
             client, "evals", {"action": "report_read", "campaign_id": fixture.campaign.id}
         )
         assert not is_error and document is not None and document["format"] == "markdown"
-        assert (document["basis"], document["analysis_id"]) == ("analysis", analysis_status["analysis_id"])
-        # The title opens the page; what warns (each broken floor and missed bar, and the memo's why beside one)
-        # follows the question and the answer, never above the title.
-        assert report.startswith("# ")
-        assert "**Adopting " in report[: report.index("\n## ")]
-        assert "| Analysis | " in report and "none written" not in report
+        # The generation wrote a report document, and the campaign's page is the one it draws.
+        assert (document["basis"], document["analysis_id"], document["analysis_basis"]) == (
+            "analysis",
+            analysis_status["analysis_id"],
+            "doc",
+        )
+        assert document["doc"] is not None and f"# {document['doc']['headline']}" in report
 
 
-async def test_a_report_s_body_is_sent_once_as_the_text_and_every_other_field_as_data() -> None:
+async def test_a_report_s_body_is_its_text_and_its_structured_content_is_the_whole_document() -> None:
     fixture = off_loop(ops_fixture)
     async with Client(_served(fixture)) as client:
         for form in ("markdown", "html", "json"):
@@ -110,62 +115,31 @@ async def test_a_report_s_body_is_sent_once_as_the_text_and_every_other_field_as
                 report_read, fixture.host.eval_host, fixture.campaign.id, fixture.campaign.scope_id, format=form
             )
             assert _undated(block.text) == _undated(expected.body)
-            assert result.structured_content == {
-                "campaign_id": fixture.campaign.id,
-                "basis": expected.basis,
-                "analysis_id": expected.analysis_id,
-                "format": form,
+            structured = result.structured_content
+            assert structured is not None
+            assert {**structured, "body": _undated(structured["body"])} == {
+                **expected.model_dump(mode="json"),
+                "body": _undated(expected.body),
             }
-        # A result whose text is composed from its fields keeps every field.
-        _, listed, _ = await _text(client, "evals", {"action": "templates_list"})
-    assert listed is not None and [template["id"] for template in listed["templates"]] == [toyhost_template().id]
 
 
-class _Note(EvalBaseModel):
-    """A host action's parameters."""
-
-    echoed: str = Field(description="The words to echo.")
-
-
-class _Noted(EvalBaseModel):
-    """A host action's result, whose text is its note verbatim."""
-
-    note: str
-    scope_id: str
-
-
-async def _echo(host: OpsHost, caller: Caller, params: _Note) -> _Noted:
-    return _Noted(note=params.echoed, scope_id=caller.scope_id)
-
-
-def _echo_action(**declared: Any) -> Action:
-    return Action(
-        name="note_echo",
-        summary="Echo a note back.",
-        workflow="Host",
-        permission="read",
-        params=_Note,
-        result=_Noted,
-        handler=_echo,
-        render=lambda result: result.note,
-        example={"echoed": "hello"},
-        **declared,
-    )
-
-
-async def test_a_field_the_text_repeats_is_left_out_only_where_its_action_declares_it() -> None:
+async def test_a_client_reading_structured_content_alone_reads_the_report_code_only_and_written() -> None:
+    """A client may show a result's structured content in place of its text, so the page is there too."""
     fixture = off_loop(ops_fixture)
-    for declared, sent in (
-        ({}, {"note": "hi", "scope_id": CALLER.scope_id}),
-        ({"text_field": "note"}, {"scope_id": CALLER.scope_id}),
-    ):
-        server = FastMCP("toyhost")
-        mount_fastmcp(server, eval_catalogue((_echo_action(**declared),)), host=fixture.host, caller=lambda: CALLER)
-        async with Client(server) as client:
-            text, structured, is_error = await _text(client, "evals", {"action": "note_echo", "echoed": "hi"})
-        assert (text, structured, is_error) == ("hi", sent, False)
-    with pytest.raises(ValueError, match="text_field 'body' is no field of _Noted"):
-        _echo_action(text_field="body")
+    read = {"action": "report_read", "campaign_id": fixture.campaign.id}
+    async with Client(_served(fixture)) as client:
+        code_only = await client.call_tool("evals", read)
+        _, generation, _ = await _text(
+            client, "evals", {"action": "analysis_generate", "campaign_id": fixture.campaign.id}
+        )
+        assert generation is not None
+        assert (await _done(client, generation["jobs"][0]["job_id"]))["state"] == "completed"
+        written = await client.call_tool("evals", read)
+    for result, basis in ((code_only, "code_only"), (written, "analysis")):
+        structured = result.structured_content
+        assert structured is not None and structured["basis"] == basis
+        (block,) = result.content
+        assert block.text and structured.get("body") == block.text
 
 
 def _undated(text: str) -> str:
@@ -178,11 +152,23 @@ async def test_an_undeclared_parameter_is_refused_with_the_valid_set() -> None:
         text, structured, is_error = await _text(
             client, "evals", {"action": "job_poll", "job_id": "run:r", "analysis_id": "a"}
         )
-    assert is_error and structured == {"ending": "refused", "refusal": {"kind": "validation_failed", "status": 422}}
+    recovery = {
+        "parameters": ["analysis_id"],
+        "accepted": ["job_id"],
+        "example": {"action": "job_poll", "job_id": "run:0193a1b2-run"},
+        "see": {"action": "help", "topic": "job_poll"},
+    }
+    assert is_error and structured == {
+        "ending": "refused",
+        "refusal": {"kind": "validation_failed", "status": 422},
+        "recovery": recovery,
+    }
     assert text.startswith(
         "refused: job_poll does not take analysis_id.\njob_poll accepts:\n- job_id (string, required)"
     )
     assert 'Example: {"action": "job_poll", "job_id": "run:' in text
+    # A client may forward only the text, so the fields ride its last line too, as compact JSON.
+    assert text.splitlines()[-1] == "recovery: " + json.dumps(recovery, separators=(",", ":"))
 
 
 async def test_an_engine_refusal_reaches_the_client_with_its_kind_and_status() -> None:
@@ -199,8 +185,14 @@ async def test_each_tool_shows_a_client_its_hints_schema_and_help() -> None:
     evals, admin = tools["evals"], tools["evals_admin"]
     assert evals.annotations is not None and admin.annotations is not None
     hints = wire(evals.annotations)
-    assert (hints["readOnlyHint"], hints["destructiveHint"], hints["openWorldHint"]) == (False, False, True)
-    assert wire(admin.annotations)["destructiveHint"] is True
+    assert (hints["readOnlyHint"], hints["destructiveHint"], hints["idempotentHint"], hints["openWorldHint"]) == (
+        False,
+        False,
+        False,
+        True,
+    )
+    admin_hints = wire(admin.annotations)
+    assert admin_hints["destructiveHint"] is True and admin_hints["idempotentHint"] is False
     assert wire(evals)["inputSchema"]["properties"]["action"]["enum"][:2] == ["help", "templates_list"]
     assert set(wire(admin)["inputSchema"]["properties"]) == {
         "action",
@@ -219,6 +211,7 @@ async def test_a_host_mounts_a_read_only_tool_under_its_own_prefix() -> None:
         (tool,) = await client.list_tools()
         text, _, is_error = await _text(client, "lab", {"action": "run_launch", "template_id": "t", "subject_id": "s"})
     assert tool.name == "lab" and tool.annotations is not None and wire(tool.annotations)["readOnlyHint"] is True
+    assert wire(tool.annotations)["idempotentHint"] is True, "every read may be repeated to no further effect"
     assert is_error and "run_launch is a spend action, and tool lab carries read actions only" in text
 
 
@@ -321,6 +314,7 @@ async def test_an_eval_host_is_served_in_one_line_read_only_in_one_scope() -> No
             client, "evals", {"action": "run_launch", "template_id": "t", "subject_id": "s"}
         )
     assert server.name == "evals" and tool.name == "evals" and tool.annotations is not None
+    assert server.instructions == catalogue_primer(eval_catalogue().mount_all(read_only_tools()))
     assert wire(tool.annotations)["readOnlyHint"] is True
     assert toyhost_template().id in listed, "the scope named, over the eval host's own storage"
     assert is_error and "carries read actions only" in refused
@@ -344,6 +338,29 @@ async def test_a_reading_host_refuses_a_launch_by_name_under_the_full_tools() ->
 async def test_an_ops_host_handed_alone_keeps_its_launch_tools() -> None:
     async with Client(mount_fastmcp(off_loop(ops_fixture).host, scope=CALLER.scope_id)) as client:
         assert sorted(tool.name for tool in await client.list_tools()) == ["evals", "evals_admin"]
+
+
+def _served_instructions(client: Client) -> str | None:
+    """The instructions a connected server sent, on either fastmcp major the 1.x CI step installs.
+
+    fastmcp 4 negotiates through `server/discover` and reads them as `Client.instructions` (its
+    `initialize_result` is None there); fastmcp 3, the one mcp 1.x allows, has only the `InitializeResult`.
+    """
+    if hasattr(client, "instructions"):
+        return client.instructions
+    result = client.initialize_result
+    return None if result is None else result.instructions
+
+
+async def test_a_server_built_here_hands_a_client_the_primer_of_the_tools_it_mounts() -> None:
+    tools = (*standard_tools(), *analyst_tools())
+    server = mount_fastmcp(off_loop(ops_fixture).host, scope=CALLER.scope_id, tools=tools)
+    async with Client(server) as client:
+        instructions = _served_instructions(client)
+    assert instructions == catalogue_primer(eval_catalogue().mount_all(tools))
+    assert (
+        instructions is not None and "evals_analyst" in instructions and "figure_keys" in instructions.splitlines()[1]
+    )
 
 
 @pytest.mark.parametrize(

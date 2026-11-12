@@ -1,0 +1,280 @@
+# Report page rules
+
+The rules every campaign report page follows: how options are gated and a call's mode is read, what the page holds, which chart answers which question, how arms and numbers are written, and how the page looks. Code applies them (the gate check, the decision, the figure keys, the renderer) and the kit draws them. The analyst's skill carries the judgment of when each one matters ([ANALYST.md](ANALYST.md) §3), and the invariants and the editor hold a report to them (ANALYST §7).
+
+The file keeps its old name because code and tests cite its sections by number. It once also specified the report planner, a retired writer; the planner's shape lookup, spine and plan checks left with it.
+
+A report is drawn in three stages, each with a typed output that is stored and testable:
+
+```
+campaign bundle ──adapter──▶ report input ──analyst──▶ report document ──renderer──▶ HTML page (+ Markdown)
+  (pipeline)                 schema/report-input       schema/report-doc          kit/ + references/
+```
+
+- **Adapter** (code). Copies statistics through and never recomputes one the pipeline produced. The package's port is `report_input_build.report_input`; `adapters/bundle_to_report.py` is the kit's working example.
+- **Analyst** (a model with tools, ANALYST.md). Investigates a frozen snapshot of the report input and writes the report document: the call, the confidence, the decision slots, the claims and their blocks, and every sentence of prose. Prose names figures by key, never by typed number (§6.2). The editor reviews the rendered page before it is stored.
+- **Renderer** (code). Draws the document with the kit. It owns layout, typography, chart geometry, color, responsiveness and accessibility. The analyst never writes markup.
+
+The five pages in `references/` were built by hand with the kit, one per shape in §1.
+
+---
+
+## 1. The shape of the comparison
+
+The report input carries these signals. No code reads them to choose a page: no code path branches on the eval's kind, shape or design (ANALYST §1). The analyst reasons from them, and code computes the facts every page shares: the masthead, the arm colours, and each chart's interval level, unit and axis range.
+
+| Signal | Read from | Values |
+|---|---|---|
+| Candidate structure | `arms[].role`, `meta.design_shape` | unordered set · ordered versions · factorial grid · one control plus candidates |
+| Baseline | an arm with `role: control` | none · control |
+| Score type | `judged[].scale`, `measures` | graded (ordinal judge) · pass/fail · class label · mixed (pass/fail dimensions plus ordinal grades) |
+| Strata | `strata`, or named tasks | none · 2–6 tasks · many strata (show the largest 12) · a target matrix |
+| Criteria | `aspects[].margin`, `floors`, `bars`, `guardrails` | hard gates · margin (non-inferiority) · none declared |
+| Cross-cutting aspects | aspects that occur inside every task (safety, speculation) | list |
+| Spread and n | cost range across arms; n per cell | log axis when > 10×; borderline flags |
+
+Five shapes recur. The references show the first four, and the skill's reasoning note on each says why its page leads where it does.
+
+| Shape | Signals | The reference's first evidence chart | Reference |
+|---|---|---|---|
+| A. Candidate selection under gates | unordered, tasks, hard gates | Gate matrix: task × candidate, pass / borderline / fail with the binding reason, cheapest passing cell marked | `r1-model-selection` |
+| B. Factorial config sweep | factorial grid, pass/fail, efficiency | Gate-space scatter with one path per factor level, then lever-effect bars | `r2-config-sweep` |
+| C. Classifier over a target matrix | two factors, class labels, cell matrix | Config lattice (factor × factor tiles), then per-cell heatmaps | `r3-classifier` |
+| D. Control vs candidates | a control, paired cases, a margin or no rule | Forest plot of change from control with intervals and the margin band | `r5-kairo-round2` (decided), `r4-tradeoff` (tradeoff mode) |
+| E. Version lineage | ordered versions, same cases | Step chart per task across versions, then cases that newly fail | none yet: build from the rules |
+
+A prompt eval can be A, D or E. A model eval can be A, B or D. The shape follows what is compared, not what varied.
+
+Which block leads is the analyst's choice and the editor's to judge. Code never checks what kind of block the first claim draws (ANALYST §5).
+
+### 1.1 Mode: decide or trade off (code computes the modes)
+
+Code computes the surviving options, whether one dominates, and the modes they allow (`report_decision.decision_at`, its `modes`). The analyst reads them through `options_dominance`. A report whose call the modes do not allow is not refused: the editor is told, and judges it (ANALYST §7). The arithmetic of tradeoff mode is code's too (§4, `price_tradeoff`).
+
+- **Survivors.** An option survives when it passes every gate (each `gate` or `guardrail` criterion, read on its point estimate where its scope says: overall, in its task, in every task or in every cell) and no guardrail the pipeline read on it is breached. A gate with no figure for the option is not passed. Borderline counts as passing (§3). Floors and bars remove nothing: a bar warns, and a floor read broken on an asked aspect caps the option's standing there (Dominance); the margin is the asked aspect's own axis.
+- **Dominance.** A survivor dominates when it is at least as good as every other survivor on every axis that matters. *Gates*: every survivor passes them, so they tie. *Cost*: cost per 1,000 replies (else the one dollar measure where lower is better, else that measure blended over tasks by traffic share), lower is better; two arms with no cost tie, and an arm with no cost is not comparable with one that has a cost. *The asked aspect*: in a change, a candidate shown better (a confirmatory `better` reading, or an `improved` contrast on an asked aspect) with no floor on an asked aspect read `broken` ranks above the control; a broken floor (its whole interval past the floor) caps it below the control, as not shown no worse, and an `unclear` one caps nothing; an `improved` contrast on a judged dimension whose judge is stated uncalibrated (tier and calibration undetermined or insufficient) is set aside and raises nothing, while the candidate's other improvements count (only those two states set it aside: hosts often make a judge ad hoc, without the hours of human rating calibration takes, and a judge measured and found short, `separation` or `incidental`, still counts); one shown no worse (every floor on every asked aspect held, and within the margin on each asked reading that declares one) ties it, any other ranks below it. In a choice, an arm is at least as good as another unless a pair reading shows the other ahead.
+- **Decide** when exactly one survivor dominates; the report recommends it. Kairo round 2 is this: the control is cheaper and no candidate is shown better, so it dominates. Also decide when several survive, none dominates alone, and the campaign declared a rule that ranks the axes (`merit_priority`): the rule picks.
+- **Trade off** when two or more survive, none dominates, and the campaign declared no rule that ranks them (`merit_priority` empty, no exchange rate). §4 covers this mode.
+- **No call** when the report measures one arm, when no option survives, or, in a change, when every surviving candidate's asked readings and its asked aspects' corrected contrasts can't separate it (each reading's interval crosses zero and it is outside the margin, or no margin is declared, and no contrast on an asked aspect is `improved`, `regressed` or `equivalent`). The headline says what is missing and what would settle it.
+
+---
+
+## 2. The page contract (every report)
+
+The parts of a report page, numbered as code cites them. A report document's page lays them out in the builder's fixed order (`report/doc_page/build.py`): masthead, headline, lede, flag, confidence and decision, options, claims, explore, next steps, then the appendix with the arms key, full results, what was left out and Method. The renderer owns the order; the document fills the prose.
+
+1. **Masthead.** Code's, one line: kind · system under test · counts (arms, aspects or tasks, cases × repeats) · run date · `Synthetic example data` when it is. Never a paragraph.
+2. **Headline: the decision as an instruction with its reason.** "Keep September. Both candidates cost 27 to 28% more per reply and stay in character less often." Never the eval question restated. In tradeoff mode it states the trade (§4).
+3. **Lede.** At most two sentences: the strongest supporting fact, and what would change the answer.
+4. **Flag** (only when needed). One amber line for the report-wide disclosures the decision's confidence does not carry: "No rule set in advance" in tradeoff mode (§4), and, only under a "Low" confidence, a report-wide caveat the report chose to disclose here instead of with a clause. It says which findings it weakens and which survive. Report-wide caveats are criteria set after the results, an uncalibrated judge, and any confound or short run that touches the whole comparison. A confound that touches one arm or one finding (an arm's reasoning budget, one short run) is said once beside the claim it qualifies, usually in Watch, and never in the flag: a caveat is stated once, at the level it applies to (owner ruling, 2026-10-24).
+5. **Decision block.** The document's slots, in its order, and a confidence. A decision uses Recommendation (with its numbers) · Why not the others · Watch (the weakest margin, a confound, what wasn't measured) · Next (an experiment whose result could change the call, and which way). A tradeoff uses The trade · Where the answer flips · Our lean · What would settle it. These are the page's titles for the slot words; the analyst picks the slots and their order. A diagnosis uses What is tangled · What we know despite it · What would settle it · Next. Which margin is weakest is code's fact (`report_margins.weakest_margin`): the figure nearest the line it is read against, as a share of that line (a reading's worst case is read on the multiplicity-corrected interval of the arm's pass-rate contrast where the input holds one, else on its plain 95% interval, and `weakest.interval` says which), among a surviving option's gate, floor and bar figures, readings and floors, and a rejected option's one missed gate figure when that alone keeps it out. Watch cites it by its `weakest.*` keys. Where code found one and no Watch entry cites it, the editor is told (an input that reads no figure against a line has no weakest margin, and nothing is asked of Watch). **Confidence is conditional on the caveats, never capped by them** (review, owner-endorsed, 2026-10-25). Exactly three forms:
+   - **"High"** (`high`): no open report-wide caveat remains.
+   - **"High, if the caveats below aren't material"** (`high_if_immaterial`): the evidence is strong, and open caveats remain. Each gets one clause saying what would make it material ("The judge is uncalibrated. Material only if it misreads in-character replies"), or, where the deciding finding doesn't rest on it, saying so ("cost, the deciding finding, is measured and doesn't depend on it").
+   - **"Low"** (`low`): the evidence is weak even if every caveat is immaterial, for example a pick nothing separated. A choice whose declared gates leave its pick the one dominant survivor (§1.1) is separated by the gates and cost, not by pair readings, so it may state the confidence those earn; a choice with no gate, picked where no pair reading shows it ahead, is "low".
+
+   **Code proves which caveats are immaterial** (`report_decision.caveat_materiality`). A caveat it proves may be marked checked, and the page renders code's muted checked line for it, which counts as nothing open; a check code does not prove is refused. A late margin, floor or bar is immaterial when the decision (the modes and the dominant option) is the same across its whole plausible range. A margin's range is every margin from zero up, cut at each reading's flip margin (`-lo`, §3); a floor's, every margin it could take, cut where each read flips between held, unclear and broken; a bar only warns, so the call holds at any bar. "The late margin was checked: the call holds at every margin." A late aspect, control or guardrail margin can't be checked this way and stays open. A reading left unsettled past a declared margin, its interval allowing a loss past the margin and a change short of it, is the open caveat `unsettled:<aspect>`, never proved immaterial; it is report-wide when it is on the option code's decision names, and a report recommending that candidate, by a ranking rule too, is conditional on it. Nobody attests a caveat away: there are no acceptance records.
+
+   Code enforces the form: plain "High" is refused while an open report-wide caveat remains, and "High, if…" is refused unless it lists every open report-wide caveat, each with its clause. "Low" is always allowed. Kairo round 2: "Keep September. Confidence: high, if the caveats below aren't material." · the judge · the aspect, chosen after the results · the control, chosen after the results · "The late margin was checked: the call holds at every margin." (and the same for its late floor).
+6. **Options table.** Code's: every arm, with its settings, served model and cost, the arms the document recommends marked (`report/parts/tables.arms_table`).
+7. **Summary charts.** None on a report document's page: what a summary chart would show is a claim's block. The reference pages draw one or two beside the options table (§5.3).
+8. **Arms key**, in the appendix: each arm's full configuration once, with its role (§6.1).
+9. **Claims.** The document's story, in its order: each claim a finding with one or two evidence blocks, each block with its caption. Add a claim only if it changes or qualifies the decision.
+10. **Explore.** What a reader could change and what it would do. On a report document's page it is a table of the document's prose rows (a margin, a floor, a price per point, a weighting, a lever level). A reference page draws 1–3 controls under a divider instead, recomputing with the same gate function as the decision and saying in words where the answer flips. When no setting can flip the decision (a dominated choice), it says so in one sentence and shows where each arm's *reading* flips instead (for example, the margin below which a candidate stops holding).
+11. **Full results.** Every arm × measure, contrasts with their level, and strata, as tables (`report/parts/full_results.every_table`). These double as the table view of every chart.
+12. **Method.** 4–8 short term/definition pairs: cases and repeats, what "pass" means, the interval method and level, correction, the judge and its tier, cost basis, what wasn't compared, and the source.
+
+Rules for every section:
+
+- One gate function decides pass / borderline / fail (§3). The headline, the options table, the matrix, the charts and the explore part all call it, so they cannot disagree.
+- Every number in prose is bound to data (§6.2). If a figure isn't in the input, the sentence doesn't say it.
+- Every block the document names draws on its snapshot's input. Storing a document draws each block through the renderer's own resolvers and refuses one that does not draw, at its field: one rule at both ends, so no stored document names a block its page cannot draw.
+- Drop a section that would show nothing new. A task with no task-specific behaviors gets a one-line note, not an empty chart.
+- Method statistics (depth, repeats, pass^k, precision decomposition) go in Method or Full results. They never sit between the decision and the evidence.
+- When the input was trimmed and a comparison the page wants is missing, say so in one caption line. Never fill it in.
+- **Prior insights that the new data contradicts** go in the Watch slot, in one sentence ("the earlier finding that X lowers cost does not hold here"). Ones it confirms go nowhere; the evidence already says it.
+
+---
+
+## 3. Gate logic (shared by every part of the page)
+
+```text
+check(arm, stratum, criteria) -> {status, fails[], borders[]}
+  for each criterion c (quality floor, behavior floor, latency budget, margin, guardrail):
+    v  = point estimate; lo, hi = its interval at the level the criterion declares
+    if v fails c                        -> fails += reason        # e.g. "p95 3.6 s > 3.0 s"
+    elif the interval crosses c's limit -> borders += reason      # e.g. "90% ±4.4"
+  status = "fail" if fails else "borderline" if borders else "pass"
+```
+
+- Borderline counts as passing for the decision, but it must appear in the Watch slot with the sample needed to settle it.
+- A cross-cutting aspect gates every candidate that would receive routed traffic, not one task.
+- **Non-inferiority reading** (shape D). For a candidate with change Δ and interval [lo, hi] against margin M:
+  - `hi < 0`: **worse**. Lead with the size ("worse by 3.4 to 10.8 points"), then say whether it is within the margin.
+  - `lo > 0`: **better**.
+  - otherwise: **cannot tell apart** (a sentence: "the evidence cannot tell v2 and v1 apart"; never "not separated", which a reader takes for "the same").
+  - Within the margin when `-lo < M`. The margin at which the reading flips is `-lo`. Show it in the explore part.
+  - A margin that no plausible result could fail (larger than twice the worst observed drop) gets flagged as uninformative.
+- **Status color follows the direction of the change, not the margin.** Worse is ✕ fail-red even when it is within the margin ("Worse, within margin"); cannot tell apart is neutral gray; better is ✓ green. The margin verdict goes in the words. A green pill on a regression reads as approval.
+- **Gate the asked aspect on its readings** (`aspects[].readings`). If a floor `speaks_for` a different measure than its reading (a judged dimension instead of the pass rate), show that floor separately and name the mismatch in Method. Never merge the two.
+- **"Pass" is whatever the bundle defines.** Method states each aspect's pass rule as the input gives it (`aspects.<aspect>.pass_rule`: every goal check, each other check by the value it must hold, the counted judged dimensions at the threshold). An aspect whose input gives no rule says so plainly instead of guessing.
+- **Routing.** For each routable task, the cheapest passing candidate (among those that also pass every cross-cutting aspect). Blended cost uses declared traffic shares only.
+- **A chart's floor or budget line is a criterion's own threshold** (§5.2): the one criterion that reads the chart's measure, so the line a chart draws and the status the gate function gives come from the same declared rule.
+
+---
+
+## 4. Tradeoff mode
+
+Use it when §1.1 says so. The page prices the trade; it doesn't pretend to decide it.
+
+1. **Headline states the trade, with both sides and where the loss sits.** "Switching to A (flash · 64k out) saves $7.6k a month but loses 6 points of personality, mostly in long conversations."
+2. **Flag:** "No rule set in advance," naming who makes the call.
+3. **Price one axis in the other.** Savings per point lost, per month, at real volume: `ppp = (cost_control - cost_option) × volume / (points lost)`.
+4. **Flip points.** For a price p per point, net value = savings − p × points lost. Sweep p and record where the best option changes. Compute this over the 2–4 options an exec would choose between, not every variant, or the bands get too thin to act on.
+5. **Middle path.** If the loss concentrates in one stratum, model a hybrid that avoids it (for example, hand off after turn 5). Label it *modeled, not measured*, and state the assumption it rests on.
+6. **Anchor points to people.** Show any evidence of what users notice (blind preference, CSAT, retention). If there is none, say so in Watch.
+7. **Lean.** Allowed, labeled "Our lean", with the price band it holds for and the experiment that would settle it.
+8. **Explore**, on a reference page: a price-per-point slider, a net-value ranking, the flip bands, and a savings-against-loss map with the price line.
+
+---
+
+## 5. Charts
+
+### 5.1 Choosing a chart
+
+| Data job | Use (kit function) | Never |
+|---|---|---|
+| Pass/fail against several criteria, per candidate × task | Gate matrix (table cells with pill, reason, cost; cheapest passing highlighted) | A score heatmap that hides which criterion failed |
+| Change from a control, with interval and margin | `forest()` | A sentence saying "no worse than the margin" |
+| One rate per candidate against a floor | Dot + interval strips, floor dashed (r1 `dims`) | Bars from zero hiding a 3-point gap |
+| Two measures that trade off | Scatter with gate region or floor, Pareto line, hollow marks for failures (a key says so), each mark labelled or tagged, `placeLabels()` | A dual-axis chart; a line joining configs whose factor is not ordered |
+| Magnitudes per option (cost, error rate) | `barsH()` from zero, reference line for the budget; on a log axis, dots (a Cleveland dot plot) | Pass rates on a truncated axis: chart failure rate from zero instead; bars on a log axis, whose length from its low end measures nothing |
+| Deltas per stratum, task, place or lever | Dots with intervals about a named zero (`barsH()` with `dots`): a row with no interval an open mark, said in a caption; a row with an interval never faded | Solid bars, whose length reads surer than the one row that has an interval; a before-and-after table |
+| Ordered x (turn depth, version, date, input length) | `lineChart()`, bands on at most two series, end labels | Lines over unordered categories |
+| Latency distributions | p50–p95 range bars with the budget line, each bar labelled beside it | Mean only; a legend to decode which bar is whose |
+| Two crossed factors | Lattice of tiles with metric, cost, latency, pill | Grouped bars hiding the interaction |
+| Target matrix of cells | Sequential heatmap, n in each cell, red outline below the floor | One overall number |
+| Errors between classes | Row-normalized confusion, one per label axis | A 9 × 9 matrix on a phone |
+| Difference between two configs | Diverging heatmap, gray within ±0.5 | Two heatmaps for the reader to subtract |
+| What failures look like | Example cards: id, case, stratum, arm, judge reason, excerpt | A wall of transcripts |
+
+### 5.2 Mechanics
+
+- **One unit per axis, one interval system per chart, and the level is printed on it** ("95% intervals"; for a corrected family, what its intervals hold at together, "95% intervals (adjusted for 16 comparisons)", and over a column "95% interval (adjusted for 16 comparisons)"). The per-interval level a correction implies (99.69%) is printed only in Method and the glossary, as stored, and the key that cites it is `{family.level}`; an interval at a level no family adjustment explains states its own. Don't mix confirmatory 95% readings and family-corrected contrasts in one chart.
+  - Every value on one axis is in one unit, each figure at its own scale. Two units drawn alike are one: a share and a percent are both drawn as a percent, and any rate's change is in points.
+  - A kind that draws each measure in its own panel gives each panel its measure's unit and format: a heatmap's matrix per measure, a dot strip's strip per measure (unless its panels are by arm), and bars in panels by slice or aspect (not over configs, whose panels are a factor's levels). Panels in one unit share one span.
+  - Every other kind that reads measures is single-scale, and refuses them in more than one unit: bars on one axis, diverging bars, lines, range bars, difference heatmaps, and every chart of contrasts, whose groups share one axis. A scatter gives each of its two axes its own measure. So does a chart of strata or tasks naming no measure where its kind draws only one.
+  - The invariants and the page apply this one rule (`report/block_spec.chart_faults`), so a block the store accepts draws, and a block the page draws is accepted.
+- **Log axes** when a measure spans more than 10×; the caption says so. Its ticks fall where the log scale puts them (the decades, else 1 and 3, else 1, 2 and 5 of each), three at least, so no stretch of it is unlabelled; a linear step's ticks on a log axis leave its low decades bare. A magnitude on a log axis is a dot, never a bar.
+- **Every axis states its unit**, in its title or its tick labels, and a count is written one way on a page ("per 1,000 calls", never "per 1k calls").
+- **A drawn figure reads as its table does.** Code decides each figure's text once for the campaign, by its measure (the number policy, `packages/evals/docs/design.md`), and every value a chart draws carries it (`value_text`, `lo_text`, `hi_text` and their kin, kit/API.md), which the kit and the static page print as they are; the chart's values table prints the same texts. So a note, a tooltip or a tile never reads coarser or finer than the table beside it, or than the same measure on another page of the campaign. The package sends every chart's `fmt` with explicit digits, its measure's, so the kit never chooses a value's digits. An interval reads "low to high" in a tooltip as in a table. Only tick labels are the kit's, since where ticks fall depends on the drawn width.
+- **No label is dropped or cut.** A long row label wraps to two lines, then takes its short label, then wraps onto as many lines as it takes; it is never reduced to its tag. A line's end label and a static matrix's headings and row labels wrap the same way. A note is printed whole, wrapped, the margin widened to hold it.
+- **A reference line sits at a declared line, and code fills its value.** The document asks for the kind (`reference`); code fills the figure key at completion:
+  - a **margin** on a forest, at the chart's aspect's margin (`aspect.margin`, or `aspects.<id>.margin`);
+  - a **floor** or a **budget**, at `criteria.<id>.threshold`, the threshold of the one criterion that reads the chart's one measure (the measure its query names, else the one its rows read). A floor's criterion is higher-is-better and a budget's lower-is-better, as the kit draws them (pass at or above a floor, at or below a budget). Its statistic is one the chart draws (range bars draw p50 to p95, every other kind the mean). It reads where the chart does: over the whole comparison or each task, within the one task the chart keeps, or each cell on a chart of cells.
+
+  A line no criterion gives, or that several give, is refused naming why; the document asks for no line, or for the line a declared criterion gives. Never a line at a value the input does not declare.
+- **Small multiples** (`small_multiples_by`) only on a kind the kit draws as panels: bars and diverging bars, the two scatters, dot intervals, heatmaps and confusion matrices. On any other kind they are refused.
+- **Identity.** One color per arm for the whole page, plus a shape or letter tag, so color is never the only cue. The control is ink-gray; candidates take series colors in fixed order.
+- **Status colors** (good / borderline / fail) always come with ✓ ! ✕ and a word, and never reuse a series color.
+- **Labels.** Use `placeLabels()`, which avoids other labels, markers and reference text. On phone widths, label only the recommended point and the extremes, and use letter tags.
+- **Hover adds detail but is never the only way to read a value;** Full results carries everything.
+- **Charts render at the container's real pixel width** (`chart()`), so text stays readable on a phone.
+- **A change carries its baseline.** Every change chart names its zero: no change against the control as a row names it (`no change vs P · September`), against the second of two arms compared, against each factor's first level, or from each lever move's start. The level the change is from, as the input states it, is on the figure: in the zero label where every row shares it (`no change vs P · September ($1.89, mean over 294 cases)`), in each group's head where each measure's rows do (`Pass rate · September 85%`), else in each row's note (`-23 pts from 66%`). A chart over measures better one way marks which under its axis (`← worse · better →`), from the measure's declared direction.
+- **Descriptive versus inferential.** Per-stratum deltas computed on the page or by a tool (not the pipeline) are descriptive: say "uncorrected", bold only rows separated at 95%, and call them leads.
+
+### 5.3 Summary charts (the reference pages)
+
+- Use the same rows as the options table, in the same order and colors. Fade options that fail a gate; bold the recommended one.
+- Bars start at zero. For rates near a ceiling, chart the error or failure rate from zero with the budget as a reference line.
+- One chart per decision question: cost, the gating metric, and the losing axis if there is a trade. At most three.
+
+---
+
+## 6. Words
+
+### 6.1 Naming arms
+
+- **Store arms as structured settings**, never only as strings: `model` plus every setting that varied, and an optional owner `alias`.
+- **Full configuration once,** in the arms key, in mono type, with the role.
+- **Short name** = the short name the campaign declares for the arm (`arms[].short_name`, at most 32 characters, unique among the campaign's arms) if set; else the alias if set; else only what differs from the control, with the model trimmed of the prefix it shares with the control's model. "Meridian-4.1-flash · 64k max output · reasoning medium" against "Meridian-4.1 · 32k max output · reasoning medium" becomes "flash · 64k out". The control is named by its alias, or by its role ("Production").
+- **Collisions** append the next attribute that separates them. A declared short name never collides, since the campaign refuses two arms named alike; only a computed one can.
+- **Letter tags** (A, B, C; the control is P) in colored squares go in tight places; on phones, the tag alone.
+- **Factorial configs** are named by their factor levels: "Brisk-S · reasoning low · 1 retry".
+- `armLabels()` in `kit/kit.js` implements this.
+
+### 6.2 Numbers in prose
+
+The report document's prose names figures by key, and the renderer formats the values.
+
+Grammar: `{path|filter|filter}`, in single braces; a double brace is refused. `{arm:<id>}` prints the arm's short name with its tag and takes no filter. `figure_keys.py` (`threetears.evals.analysis.report`) parses and renders keys, and serves the figure-key reference the analyst's tools return from the same definitions.
+
+**Paths are matched, never split at dots.** Ids carry dots and spaces (`qwen3.8-flash`, `persona.holds_character`, `character adherence (v2)`), so a path is matched against a closed vocabulary built from the input: a family keyword, then the ids that family takes, then a statistic or field from a fixed set. Exactly one complete reading is the figure. Two readings are refused, naming both. No reading is refused, naming what could come next where the path stopped matching. An unknown path is a validation error, never a blank.
+
+| Path | Reads |
+|---|---|
+| `meta.<field>` | campaign, question, behavior, kind, kind_means, design_shape, run_date, provenance, volume_per_month |
+| `control.<field>` | the control's id, name, served_model, description |
+| `n_candidates`, `cases`, `repeats` | candidates; the asked aspect's cases and repeats per case |
+| `aspect.<field>`, `aspects.<aspect>.<field>` | the one asked aspect, or any aspect: id, name, margin, description, graded_by, pass_rule, pass_threshold, no_criterion |
+| `reading.<arm>.<statistic>`, `aspects.<aspect>.reading.<arm>.<statistic>` | change, interval, low, high, margin, level, verdict, control_passed, arm_passed, why |
+| `contrast.<arm>.<measure>.<statistic>` | delta, interval, low, high, verdict, p_adjusted |
+| `judged.<dim>.<arm>` | the arm's mean on a judged dimension |
+| `judged.<dim>.<field>`, `judge.<field>` | label (dimension only), model, tier, calibration, calibration_ratings, agreement; `judge.*` only where every dimension agrees |
+| `pass_rate.<arm>` | passed over usable (scoreboard), else the `pass_rate` measure |
+| `task.<task>.<arm>.<measure>.<statistic>`, `task.<task>.<field>` | an arm's figure on a measure or judged dimension within one task (mean, ci, half_width, sem, n, n_cases, p50, p95, change); the task's name, n_cases, share |
+| `criteria.<id>.<field>` | a declared criterion: threshold (in its measure's units), measure (its reader name), statistic, direction ("higher is better") |
+| `cost_per_1k.<arm>` | a `usd_per_1k` measure, else a `usd_per_1m` measure divided by 1,000, else the one `usd` measure on the cost merit axis, else the scoreboard's cost per reply, per 1,000 |
+| `measure.<key>.<arm>.<statistic>` | mean, ci, half_width, sem, n, n_cases, p50, p95, change |
+| `scoreboard.<arm>.<statistic>` | ran, usable, passed, cases, lost, failed, reply_cost_usd, test_cost_usd |
+| `reasoning_ratio.<arm>` | the share of output spent reasoning |
+| `late_criteria.set_at`, `family.<field>`, `caveats.latency`, `strata.<id>.<field>` | when late criteria were set; the one contrast family (disclosure, correction, alpha, family_size, level: the per-interval level, as stored, `99.69%`); the latency caveat; a stratum's name, n_cases, share |
+| `weakest.<field>` | the weakest margin (§2 item 5): arm, criterion (what it is read against, in reader words), value, threshold, margin (the gap, in the line's units: points for a rate or a change; bare, signed only with `signed`), interval (what the interval its worst case is read on guarantees: "the 95% interval, adjusted for 16 comparisons", or "the 95% interval" where nothing is adjusted) |
+
+**Derived values** are computed by the renderer from the input's point figures. They are descriptive: no interval, no test. `cost.uplift.<arm>` is the candidate's cost per 1,000 over the control's, minus one. `cost.uplift_range` spans the candidates' uplifts. `strata.<id>.loss_share.<arm>` is the stratum's part of the candidate's loss against the control on the primary judged dimension, weighted by cases (or by traffic share), within its stratification; `strata.<id>.loss_share` is the least of those across candidates ("about X of each candidate's loss"). `flip_margin.<arm>` is the asked reading's worst drop, the margin above which it holds. `weakest.*` reads the weakest margin. A `.name` or `.label` the input leaves undeclared prints the id's reader name (its underscores and dots as spaces), never the id.
+
+**Filters**, one spelling at most plus `abs` or `signed`, and `interval`, in any order: `pct` (a rate as a percent: 0.853 → 85.3%; a descriptive ratio in whole percents), `pts` (a change in points, signed, at its measure's precision), `abs` (the magnitude: `abs|pts` → 7.6 where the measure reads one decimal, 8 where it reads whole), `signed` (a criterion's `gap` or `weakest.margin` with its sign, `+` on a rise, in any unit; without it they read as a bare distance, whose direction the prose says: "inside the margin"), `usd` (dollars and cents), `int` (nearest whole number, its thousands separated: 12000000 → 12,000,000; prose only, since the package's number rule writes no separator inside tables' intervals and lists), `pct10` (nearest 10%), `interval` (`[lo, hi]` → "-10.8 to -3.4", at its measure's precision), `usd_per_1k` ("$1.89 per 1,000 replies"). Without a filter a rate reads as a percent, a change in points, money in dollars, and a measure stated in dollars per 1,000,000 replies (unit `usd_per_1m`) with its words ("$180 per 1,000,000 replies"; `int` reads it as a whole number, `usd` as the amount in dollars, `usd_per_1k` converted to dollars per 1,000 replies). An interval reads "lo to hi", its unit once after the high end, signed or not ("27 to 28%", "-13 to -2 pts"). Every measured figure reads at its measure's precision, the one its tables and charts print (the number policy, `packages/evals/docs/design.md`), so a key never reads finer or coarser than the table it cites; `int` and `pct10` are the writer's chosen approximations, and stay so. A declared value (a margin, a floor) reads as declared (-15, never -15.0), and minus is the hyphen-minus. A filter that does not suit the figure (a percent of money, points of a count, a percent of a change) is refused.
+
+**D3: no digit outside a key.** Keys are set aside; then every name the input holds is set aside where a non-word character or the text's edge bounds it on both sides: arm ids and names, served models, settings as displayed (`64k`), aspect, measure, dimension, stratum, task and factor ids and names, the campaign's name, trial and case ids. So are, under the same bound, two fixed package vocabularies: the percentile names `p50`, `p90`, `p95` and `p99` (`p95 latency`, never `p-ninety-five`), and the package's own unit phrases, each matched whole (`per 1,000 replies`, `($/1,000 replies)`, `per 1,000,000 replies`), which are the templates rendered figures are joined with. Any Unicode decimal digit left (`95%`, `95 percent`, `1,000 cases`, `٣`, the `95` in `xp95`) is an error. An id made only of digits is never set aside: write `{arm:1017}`, never `1017`.
+
+A reference page in `references/` is hand-built with the kit: every prose number in its page script is computed from the data beside it (`rN-*.json`), the same data the keys name. For example: `"{arm:qwen3.8-flash} is clearly worse: down {reading.qwen3.8-flash.change|abs|pts} points ({reading.qwen3.8-flash.interval|pts})"`. That makes three things true by construction: no number is invented, rounding matches the tables, and a re-run updates the prose. A sentence whose figure is missing from the input is dropped.
+
+**Money reads one way per measure.** Every amount of one money measure on a page (a column, a chart axis, a family of keys: every arm's cost per call, say) is spelled by one rule, chosen for the measure on that page, never per value: one count of significant figures, not one count of decimals (owner ruling, 2026-11-07). Below $1 an amount prints to two significant figures (`$0.0080` beside `$0.11`, never `$0.1100`), from $1 to under $10 in cents whether total or rate (`$1.90`, never `$1.9`), and from $10 up a total in cents (`$1,208.00`) and a rate to two significant figures (`$75`, `$120` for $123); a third figure only where an interval's two ends would read alike, or where a rate sits beside a total computed from it and two figures would leave that total more than half a percent off. When any member is too small for cents, the whole set reads per 1,000. A difference between amounts takes their form, with as many places as its interval's width supports.
+
+### 6.3 Style
+
+- **Headlines are findings,** with subject and direction: "Off-lane asks, the largest stratum, carry about half of each candidate's loss." Never a topic label ("Failure analysis").
+- **Use reader names,** not identifiers: "cost per 1,000 replies", not `production_replicating_cost`; "off-lane asks", not `off_lane`. Ids appear only in Full results.
+- **One name per measure.** A judged rate and a pass rate on the same aspect get different names ("in-character rate (judge)" vs "pass rate (asked)").
+- **Say each caveat once,** next to the claim it qualifies.
+- **A column whose value is the same in every row** moves into the heading.
+- **No statistician's grammar above the fold.** "Each arm's gains and its drops are each shown wrongly at most 2.5% of the time" becomes, in Method: "95% intervals, not corrected across arms."
+- **Sentences under 25 words.** Active voice. No hedging adverbs, no "worth noting".
+
+---
+
+## 7. Visual system
+
+The renderer applies the kit (`kit/kit.css`, `kit/kit.js`). Don't restyle per report.
+
+- **Host theming.** A host sets the seven `--host-*` tokens on the page's `<html>` tag (faces, text, muted text, surface, link, accent; `kit/API.md`). Series, status and sequential ramps are fixed so a brand color can never make a fail look like a pass.
+- **Both themes** are designed: tokens on `:root`, dark values under `prefers-color-scheme` and under `[data-theme="dark"]`. Heatmap cell text uses `--seq-tN` tokens because the dark ramp runs the other way.
+- **Type.** IBM Plex Sans Condensed for headlines, IBM Plex Sans for body and charts, IBM Plex Mono for ids and payloads, each as a local stack ending in a generic family. Tabular figures in tables and on axes.
+- **Layout.** A 44rem prose column; figures and tables break out to 68rem. Small multiples use auto-fill grids that collapse to one column. A table fits its frame first (cells of words wrap; numbers and ids hold their line); one still wider scrolls in its own container, its right edge fading while more lies past it and its first column staying in view; the page never scrolls sideways.
+- **Restraint.** Borders only on figures. No shadows or gradients but a scrolling table's edge fade. One emphasis per chart.
+
+---
+
+## 8. Definition of done
+
+A page is done when all of these pass. `scripts/check.py` automates the first three, at the widths and themes it lists, and also fails a table that overflows its frame with no edge fade, a first screen read at more than one measure, text under 4.5:1 or an axis or a chart's line mark (an interval) under 3:1 against its ground in either theme, a chart's label crossed by an axis, a zero line or a reference line, an interval in a table's cell broken across lines, a font size off the scale (12, 14, 16, 20, 28 px) and a table drawn in a box or under a filled header; the renderer and the invariants hold 4, 7, 8 and 9 on a report document's page (ANALYST §7).
+
+1. It renders at every width `scripts/check.py` draws, in light and dark, with no console errors.
+2. `document.documentElement.scrollWidth` equals the viewport width at every width (nothing scrolls sideways).
+3. No two chart labels overlap, no label overlaps a marker or leaves its chart, and no drawn line strikes a label through: a vertical line stops short of a chart's head, a reference label, a group's heading and a bar's note, and a scatter's reference line stops short of a point's label (inspect the screenshots; `check.py` lists any element past the right edge and any label an axis or reference line crosses).
+4. Every chart has a table view (Full results) and states its interval level.
+5. The explore part says where the answer flips (or that it can't, and where each reading flips); on a reference page its controls change the outcome text and the chart.
+6. The headline is a decision (or a trade, or a stated no-call) and matches the options table and the first chart.
+7. Every number in prose appears in the input or is computed by the renderer from it.
+8. Every caveat code assigns (late criteria, the uncalibrated judge, confounds, apparatus confounds, short runs, latency, unreported observations) that touches the call's confidence lands where its reach allows: a report-wide one in the confidence, open with its clause or checked immaterial by code; a scoped one there or beside a named claim. A method-level one (latency not compared, an unreported observation, an apparatus confound that is not report-wide) may land in Method, beside a claim, or nowhere. The confidence takes one of the three forms (§2 item 5), and plain "High" appears only with nothing open. The document records each landing structurally (caveat ids on the confidence, a claim or a Method item), so the coverage check never searches prose.
+9. No internal id, hash or measure key appears above the appendix. Trial and case ids may appear on example cards, in small mono type, as references a reader can look up. Code gives each id one reader name, and refuses above the appendix an id that reads as one (an underscore, dot, colon, slash, equals sign, bracket or quote in it) where it differs from its reader name; an arm's id where it differs from the name the page prints for the arm and from its served model, a hyphen or a digit marking it too (`fanout-1` where the page prints "fanout 1"; a model arm's id is its served model, the reader's word). The campaign writes its question in its own ids (Kairo's `dj_character_v2`), which no reader name can replace, so the page says what it asks in reader words and never quotes `{meta.question}`.
+10. A reviewer who sees only the first screen can say what to do, why, and what the main risk is.

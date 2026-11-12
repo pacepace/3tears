@@ -120,7 +120,8 @@ grades what the agent asked for, and passes one that asked for the right thing a
 do something, so doing nothing passes it). It is **proven** only when it gives opposite verdicts on the
 do-nothing control (the seed untouched, no calls), which the engine derives, and on an end state you author where
 the behaviour happened. The quick path authors none, so its checks are `unproven`, and the summary says in how
-many cases an agent that did nothing would pass; a check that passes in every case is marked `NOT A MEASUREMENT`.
+many cases an agent that did nothing passed at launch, after the page's words for an unproven check (`a candidate
+that did nothing might pass it, so it is not shown to measure the behaviour`).
 A `hold` check passes doing nothing by design, so only a control can prove it. A control shows only that the
 check tells the two outcomes apart: it is not a reference solution and does not show the task can be solved.
 
@@ -284,10 +285,11 @@ for result in results:
     print(result.test_case_id, trace.call_ledger.calls, trace.end_state, failed or "ok")
 ```
 
-**A change, better or worse.** `Eval(CASES, {"old": ROOM(old_agent), "new": ROOM(new_agent)}, [checks...])`, the
-first key the control, runs both agents on the same seeded cases. Each goal check becomes a
-reading in the contrasts table, headed by its expression (its key is `goal_state:<check>`), with its interval and
-verdict, and an unproven check is named under Not tested.
+**A change, better or worse.** `Eval(CASES, {"old": ROOM(old_agent), "new": ROOM(new_agent)}, [checks...], name="lights")`,
+the first key the control, runs both agents on the same seeded cases. Each goal check becomes a
+reading in the contrasts table, named by what it tests (`Refund amount check`, or the name its template declares;
+its key is `goal_state:<check>`, and the Glossary gives its expression), with its interval and verdict, and an
+unproven check is named under Not tested.
 [Reading a comparison](reading-reports.md#reading-a-comparison) explains the verdicts.
 
 **Placements.** Every run records what it did with each dimension:

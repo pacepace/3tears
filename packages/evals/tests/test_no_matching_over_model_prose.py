@@ -193,7 +193,7 @@ class TestThePopulationIsDerivedFromTypes:
     def test_the_marked_fields_are_found(self):
         """Non-empty and containing a known marked field — an empty population passes every scan."""
         names = prose_field_names()
-        assert {"statement", "reasons", "invalidation_trigger"} <= names, sorted(names)
+        assert {"statement", "lede", "invalidation_trigger"} <= names, sorted(names)
 
     def test_a_newly_typed_field_joins_the_population_without_a_list_edit(self):
         from threetears.evals.schema.prose import ModelProse
@@ -207,7 +207,7 @@ class TestThePopulationIsDerivedFromTypes:
 class TestNoCodeMatchesOverModelProse:
     def test_the_scan_reads_the_package(self):
         """Non-vacuity: a scan over a root holding no module finds no violation by reading nothing."""
-        assert (_EVAL_ROOT / "analysis" / "generator.py").is_file(), _EVAL_ROOT
+        assert (_EVAL_ROOT / "analysis" / "service.py").is_file(), _EVAL_ROOT
 
     def test_no_deterministic_string_matching_over_prose_in_the_eval_package(self):
         violations = _violations(prose_field_names())

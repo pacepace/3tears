@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 
 import jwt as pyjwt
 import pytest
@@ -14,6 +15,9 @@ from threetears.core.security.identity_token import (
     generate_signing_keypair,
 )
 from threetears.core.security.proxy_assertion import mint_proxy_assertion, verify_proxy_assertion
+
+# a datetime, not an ISO string: freezegun parses a string with dateutil at decoration time (import), a clock read.
+_FROZEN = datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC)
 
 
 def _mint(priv, *, kid="proxy-1", pod_id="pod-1", body_hash="bh-1", nonce="n-1", iat=None, exp=None):
@@ -66,7 +70,7 @@ class TestProxyAssertion:
         with pytest.raises(IdentityTokenError):
             verify_proxy_assertion(expired, jwks=jwks, expected_pod_id="pod-1", body_hash="bh-1")
 
-    @freeze_time("2026-10-02T12:00:00+00:00")
+    @freeze_time(_FROZEN)
     def test_an_issue_time_ahead_of_the_pod_is_refused_at_the_default_leeway(self) -> None:
         # the tool pod verifies at the default (zero), and sizes its replay guard for zero: an
         # assertion stamped even one second ahead must not be accepted, or a replay stamped
@@ -80,7 +84,7 @@ class TestProxyAssertion:
             )
         assert verify_proxy_assertion(_mint(priv, iat=now), jwks=jwks, expected_pod_id="pod-1", body_hash="bh-1")
 
-    @freeze_time("2026-10-02T12:00:00+00:00")
+    @freeze_time(_FROZEN)
     def test_the_leeway_is_the_whole_future_tolerance_on_the_issue_time(self) -> None:
         # the one leeway bounds how far ahead an issue time may be, so it is the number a
         # caller's replay guard must cover: four seconds ahead passes a five-second leeway, six

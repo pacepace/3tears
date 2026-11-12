@@ -18,8 +18,16 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from threetears.evals.kernel import OutOfRunBudget, PlannedCall
+from threetears.evals.kernel.eval_scope import eval_running
 from threetears.evals.kernel.host import ApparatusError
-from threetears.evals.schema import ClientRequestSettings, CompletionResult, OutOfRunSpend, StopReason
+from threetears.evals.schema import (
+    CellIdentity,
+    ClientRequestSettings,
+    CompletionResult,
+    OutOfRunSpend,
+    StopReason,
+    bind_cell_identity,
+)
 from threetears.evals.testing import (
     CompletionConformanceFailure,
     ReplayedCompletion,
@@ -183,6 +191,306 @@ async def test_replay_serves_repeats_in_order_and_refuses_the_call_past_the_reco
     assert f"re-record {path} with the client it stands in for" in message, "no command given: the generic remedy"
     assert "RECORD=1" not in message, "no convention is named that the caller did not pass"
     assert refused.value.remedy in message
+
+
+async def test_a_cell_s_repeat_is_served_the_call_of_its_own_index_whatever_order_the_repeats_ask_in(
+    tmp_path: Path,
+) -> None:
+    """A run's cells start in an order shuffled by its id, several at once, so serving a prompt's calls in the order
+    they are asked gave a recorded answer to a different repeat on each replay. Repeat ``i`` is served call ``i``."""
+    path = tmp_path / "rec.jsonl"
+    await _record(path, *(("Roll a die.", _Reply(content=face)) for face in ("4", "2", "6")))
+
+    async def served(order: list[int]) -> dict[int, str]:
+        client = RecordedCompletions.replay(path, settings=BUDGETED)
+        got: dict[int, str] = {}
+        for repeat in order:
+            with bind_cell_identity(
+                CellIdentity(run_id="r", test_case_id="t", subject_id="s", cell_id=f"c{repeat}", k_iteration=repeat)
+            ):
+                got[repeat] = (await client.generate(system=SYSTEM, user="Roll a die.")).content
+        return got
+
+    assert await served([2, 0, 1]) == await served([0, 1, 2]) == {0: "4", 1: "2", 2: "6"}
+
+
+def _cell(arm: str, repeat: int, case: str = "t") -> CellIdentity:
+    """A cell of arm ``arm`` (its subject and variant), with a fresh run id and cell id as every run mints."""
+    return CellIdentity(
+        run_id=f"run-{arm}-{repeat}",
+        test_case_id=case,
+        subject_id=arm,
+        cell_id=f"{arm}-{case}-{repeat}",
+        k_iteration=repeat,
+        variant_key=f"variant-{arm}",
+    )
+
+
+async def test_each_cell_is_served_the_call_recorded_for_it_when_two_arms_ask_one_prompt(tmp_path: Path) -> None:
+    """Two arms that send a judge one prompt share its key, and their repeats share call indexes: a cell is served the
+    call recorded for that very cell, whichever arm asks first, and its second ask of the prompt its second call."""
+    path = tmp_path / "rec.jsonl"
+    asked = [("a", 0), ("b", 0), ("b", 1), ("a", 1), ("a", 1)]
+    inner = _FakeInner(
+        *(_Reply(content=f"{arm}{repeat}") for arm, repeat in asked[:4]),
+        _Reply(content="a1 again"),
+        _Reply(content="outside"),
+    )
+    async with RecordedCompletions.record(inner, path, settings=BUDGETED) as client:
+        for arm, repeat in asked:
+            with bind_cell_identity(_cell(arm, repeat)):
+                await client.generate(system=SYSTEM, user="Grade it.")
+        await client.generate(system=SYSTEM, user="Grade it.")  # outside every cell
+    cells = [line["cell"] for line in _lines(path)]
+    assert cells[0] == {"subject": "a", "variant": "variant-a", "case": "t", "repeat": 0, "ask": 0}
+    assert [cell["ask"] for cell in cells[:5]] == [0, 0, 0, 0, 1] and cells[5] is None
+    assert all(line["recorder_version"] == RecordedCompletions.FORMAT_VERSION == 3 for line in _lines(path))
+
+    async def served(order: list[tuple[str, int]]) -> list[tuple[str, int, str]]:
+        replay = RecordedCompletions.replay(path, settings=BUDGETED)
+        got = []
+        for arm, repeat in order:
+            with bind_cell_identity(_cell(arm, repeat)):
+                got.append((arm, repeat, (await replay.generate(system=SYSTEM, user="Grade it.")).content))
+        return sorted(got)
+
+    expected = sorted([("a", 0, "a0"), ("b", 0, "b0"), ("b", 1, "b1"), ("a", 1, "a1"), ("a", 1, "a1 again")])
+    assert await served(asked) == expected
+    assert await served(list(reversed(asked))) == expected, "whichever arm asks first, each is served its own call"
+
+
+async def test_a_format_2_line_names_no_cell_and_is_served_by_repeat_index_then_first_left(tmp_path: Path) -> None:
+    """A recording made before format 3 noted no cell: it is still read, and replays as it did, by repeat index."""
+    path = tmp_path / "rec.jsonl"
+    await _record(path, *(("Roll a die.", _Reply(content=face)) for face in ("4", "2")))
+    lines = _lines(path)
+    for line in lines:
+        line["recorder_version"] = 2
+        del line["cell"]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+
+    client = RecordedCompletions.replay(path, settings=BUDGETED)
+    with bind_cell_identity(_cell("a", 1)):
+        assert (await client.generate(system=SYSTEM, user="Roll a die.")).content == "2"
+    assert (await client.generate(system=SYSTEM, user="Roll a die.")).content == "4", "outside a cell: the first left"
+    # Recording onto it appends format-3 lines beside the format-2 ones, and the file is read whole.
+    await _record(path, ("Roll a die.", _Reply(content="6")))
+    assert [line["recorder_version"] for line in _lines(path)] == [2, 2, 3]
+    RecordedCompletions.check_covers(path, [RecordedPrompt(SYSTEM, "Roll a die.")] * 3, settings=BUDGETED)
+
+
+def _arm(arm: str, repeat: int, case: str = "t") -> CellIdentity:
+    """A cell of arm ``arm`` of one eval: every arm shares the run's subject, and is told apart by its variant."""
+    return CellIdentity(
+        run_id=f"run-{arm}",
+        test_case_id=case,
+        subject_id="invoices",
+        cell_id=f"{arm}-{case}-{repeat}",
+        k_iteration=repeat,
+        variant_key=f"variant-{arm}",
+    )
+
+
+async def _record_arms(path: Path, arms: list[str], *, own_prompt: bool) -> None:
+    """Record, for each repeat 0 and 1 and each arm, the arm's own prompt (when ``own_prompt``) and the judge's prompt
+    every arm shares, each answer naming the arm and repeat it was recorded for."""
+    asked = [(arm, repeat) for repeat in (0, 1) for arm in arms]
+    replies = [
+        _Reply(content=f"{arm}{repeat} {what}")
+        for arm, repeat in asked
+        for what in (("answer", "grade") if own_prompt else ("grade",))
+    ]
+    async with RecordedCompletions.record(_FakeInner(*replies), path, settings=BUDGETED) as client:
+        for arm, repeat in asked:
+            with bind_cell_identity(_arm(arm, repeat)):
+                if own_prompt:
+                    await client.generate(system=SYSTEM, user=f"Answer as {arm}.")
+                await client.generate(system=SYSTEM, user="Grade it.")
+
+
+async def test_an_arm_renamed_since_a_format_3_recording_replays_its_own_calls_in_any_order(tmp_path: Path) -> None:
+    """A cell matching no recorded cell (its arm renamed) was served the first call left in recorded order, which
+    turned on the order cells asked in and took calls recorded for other arms. It now stands for the one recorded
+    line that asked its own prompt, and is served that line's calls, the judge's shared prompt included."""
+    path = tmp_path / "rec.jsonl"
+    await _record_arms(path, ["a", "b"], own_prompt=True)
+    asked = [(arm, repeat) for repeat in (0, 1) for arm in ("a", "b")]
+
+    async def served(order: list[tuple[str, int]]) -> dict[tuple[str, int], tuple[str, str]]:
+        replay = RecordedCompletions.replay(path, settings=BUDGETED)
+        got = {}
+        for arm, repeat in order:
+            asking = "a-renamed" if arm == "a" else arm  # its prompt unchanged, its name (and so its identity) not
+            with bind_cell_identity(_arm(asking, repeat)):
+                answer = (await replay.generate(system=SYSTEM, user=f"Answer as {arm}.")).content
+                grade = (await replay.generate(system=SYSTEM, user="Grade it.")).content
+            got[(asking, repeat)] = (answer, grade)
+        return got
+
+    expected = {
+        ("a-renamed", 0): ("a0 answer", "a0 grade"),
+        ("a-renamed", 1): ("a1 answer", "a1 grade"),
+        ("b", 0): ("b0 answer", "b0 grade"),
+        ("b", 1): ("b1 answer", "b1 grade"),
+    }
+    assert await served(asked) == expected
+    assert await served(list(reversed(asked))) == expected, "the same on every replay, whichever cell asks first"
+
+
+@pytest.mark.parametrize("unmatched_first", [True, False])
+async def test_a_cell_matching_no_recorded_cell_never_takes_a_call_a_matching_cell_asks_for(
+    tmp_path: Path, unmatched_first: bool
+) -> None:
+    """Two recorded arms share the judge's prompt; a third arm the recording never saw asks it. Which recorded cell
+    it stands for cannot be told, so it is refused, in either order, and both recorded arms get their own grades."""
+    path = tmp_path / "rec.jsonl"
+    await _record_arms(path, ["a", "b"], own_prompt=False)
+    replay = RecordedCompletions.replay(path, settings=BUDGETED)
+
+    async def grade(arm: str) -> str:
+        with bind_cell_identity(_arm(arm, 0)):
+            return (await replay.generate(system=SYSTEM, user="Grade it.")).content
+
+    async def unmatched() -> None:
+        with pytest.raises(RecordingRefused, match="could stand for .*which is its own cannot be told"):
+            await grade("c")
+
+    if unmatched_first:
+        await unmatched()
+    assert await grade("b") == "b0 grade"
+    if not unmatched_first:
+        await unmatched()
+    assert await grade("a") == "a0 grade"
+
+
+@pytest.mark.parametrize("order", [["a", "b"], ["b", "a"]])
+async def test_a_case_reminted_in_a_fresh_store_replays_each_arm_its_own_calls_of_a_prompt_every_arm_shares(
+    tmp_path: Path, order: list[str]
+) -> None:
+    """A case seeded into a fresh store is minted a new id, so no recorded cell names the replay's cells; two arms
+    sending the judge one prompt each fit both recorded lines by their shared subject, and were refused as ambiguous.
+    A renamed cell now stands for the recorded line sharing the most of its subject, arm and case: its own arm's."""
+    path = tmp_path / "rec.jsonl"
+    await _record_arms(path, ["a", "b"], own_prompt=False)
+    replay = RecordedCompletions.replay(path, settings=BUDGETED)
+    got = {}
+    for arm in order:
+        for repeat in (0, 1):
+            with bind_cell_identity(_arm(arm, repeat, case="t-reminted")):
+                got[(arm, repeat)] = (await replay.generate(system=SYSTEM, user="Grade it.")).content
+    assert got == {(arm, repeat): f"{arm}{repeat} grade" for arm in ("a", "b") for repeat in (0, 1)}
+
+
+async def test_a_cell_matching_none_is_refused_the_one_recorded_cell_it_fits_once_that_cell_asked(
+    tmp_path: Path,
+) -> None:
+    """The one recorded line an unmatched cell fits has asked as itself: its calls are its own, and the unmatched
+    cell is refused rather than served one."""
+    path = tmp_path / "rec.jsonl"
+    await _record_arms(path, ["a"], own_prompt=False)
+    replay = RecordedCompletions.replay(path, settings=BUDGETED)
+    with bind_cell_identity(_arm("a", 0)):
+        assert (await replay.generate(system=SYSTEM, user="Grade it.")).content == "a0 grade"
+    with bind_cell_identity(_arm("c", 1)), pytest.raises(RecordingRefused, match="is asking as itself"):
+        await replay.generate(system=SYSTEM, user="Grade it.")
+    with bind_cell_identity(_arm("a", 1)):
+        assert (await replay.generate(system=SYSTEM, user="Grade it.")).content == "a1 grade"
+
+
+async def test_a_cell_matching_none_that_no_recorded_cell_fits_is_refused_saying_so(tmp_path: Path) -> None:
+    path = tmp_path / "rec.jsonl"
+    await _record_arms(path, ["a"], own_prompt=False)
+    replay = RecordedCompletions.replay(path, settings=BUDGETED)
+    with bind_cell_identity(_arm("c", 5)), pytest.raises(RecordingRefused, match="no recorded cell it could stand for"):
+        await replay.generate(system=SYSTEM, user="Grade it.")
+
+
+# parity-with: threetears.evals.schema.CompletionClient
+class _FakeFirstLandsLast(_FakeInner):
+    """A client whose first call's answer lands only after its second's: the first asked is the last written."""
+
+    def __init__(self) -> None:
+        super().__init__(_Reply(content="asked first"), _Reply(content="asked second"))
+        self.second_landed = asyncio.Event()
+        self.calls = 0
+
+    async def generate(
+        self, *, system: str, user: str, response_format: dict[str, Any] | None = None
+    ) -> CompletionResult:
+        self.calls += 1
+        if self.calls == 1:
+            reply = self.replies.pop(0)
+            await self.second_landed.wait()
+            return reply
+        reply = self.replies.pop(0)
+        self.second_landed.set()
+        return reply
+
+
+async def test_two_concurrent_asks_of_one_prompt_by_one_cell_are_numbered_as_asked_recording_and_replaying(
+    tmp_path: Path,
+) -> None:
+    """Recording numbered a cell's asks as their answers landed, and a replay as they were asked: two asks at once,
+    the first answered last, replayed swapped. Both number an ask when it is asked now."""
+    path = tmp_path / "rec.jsonl"
+    async with RecordedCompletions.record(_FakeFirstLandsLast(), path, settings=BUDGETED) as client:
+        with bind_cell_identity(_arm("a", 0)):
+            recorded = await asyncio.gather(*(client.generate(system=SYSTEM, user="Grade it.") for _ in range(2)))
+    assert [reply.content for reply in recorded] == ["asked first", "asked second"]
+    lines = _lines(path)
+    assert [(line["result"]["content"], line["cell"]["ask"]) for line in lines] == [
+        ("asked second", 1),
+        ("asked first", 0),
+    ], "written as the answers landed, each numbered as it was asked"
+
+    replay = RecordedCompletions.replay(path, settings=BUDGETED)
+    with bind_cell_identity(_arm("a", 0)):
+        replayed = await asyncio.gather(*(replay.generate(system=SYSTEM, user="Grade it.") for _ in range(2)))
+    assert [reply.content for reply in replayed] == ["asked first", "asked second"]
+
+
+@pytest.mark.parametrize(
+    ("cell", "problem"),
+    [
+        ("a0", "its cell is a JSON str, not an object or null"),
+        ({"subject": "a", "variant": None, "case": "t", "repeat": 0}, "its cell lacks ask"),
+        ({"subject": "a", "variant": None, "case": "t", "repeat": -1, "ask": 0}, "is not a cell"),
+        ({"subject": "a", "variant": 7, "case": "t", "repeat": None, "ask": 0}, "is not a cell"),
+    ],
+)
+async def test_a_malformed_cell_refuses_the_recording_by_its_line(tmp_path: Path, cell: Any, problem: str) -> None:
+    path = tmp_path / "rec.jsonl"
+    path.write_text(json.dumps(_good_line(cell=cell)) + "\n", encoding="utf-8")
+    with pytest.raises(RecordingRefused, match="line 1 is not a recorded call") as refused:
+        RecordedCompletions.replay(path, settings=BUDGETED)
+    assert problem in str(refused.value)
+
+
+async def test_a_call_another_eval_s_run_took_is_refused_naming_that_eval_and_never_says_to_record_again(
+    tmp_path: Path,
+) -> None:
+    """A replay serves each recorded call once per client: a second eval on the same client finds them spent. The
+    cause is the shared client, so the refusal names the eval that took them and the remedy is a client per eval;
+    recording again would spend money on a recording that is whole."""
+    path = tmp_path / "rec.jsonl"
+    await _record(path, ("Roll a die.", _Reply(content="4")))
+    client = RecordedCompletions.replay(path, settings=BUDGETED)
+    with eval_running("compare"):
+        assert (await client.generate(system=SYSTEM, user="Roll a die.")).content == "4"
+    with eval_running("margin"), pytest.raises(RecordingRefused) as refused:
+        await client.generate(system=SYSTEM, user="Roll a die.")
+    message = str(refused.value)
+    assert "every one was already served to another eval's run in this process ('compare')" in message
+    assert refused.value.remedy == "build a Model per eval; the recording is whole, so record nothing again"
+    assert "re-record" not in message
+
+    # The same eval's run asking past the recording is the code asking more often: there, recording again is the cure.
+    again = RecordedCompletions.replay(path, settings=BUDGETED)
+    with eval_running("compare"):
+        await again.generate(system=SYSTEM, user="Roll a die.")
+        with pytest.raises(RecordingRefused, match="the code asks it more often") as more:
+            await again.generate(system=SYSTEM, user="Roll a die.")
+    assert more.value.remedy.startswith(f"re-record {path}")
 
 
 async def test_a_prompt_the_recording_does_not_hold_is_refused_by_name(tmp_path: Path) -> None:
@@ -363,6 +671,7 @@ def _good_line(**overrides: Any) -> dict[str, Any]:
             "stop_reason": "end_turn",
         },
         "extra": {},
+        "cell": None,
     }
     return {**line, **overrides}
 
@@ -437,12 +746,12 @@ async def test_a_line_from_an_older_recording_format_is_refused_by_name(tmp_path
     path.write_text(json.dumps(older) + "\n", encoding="utf-8")
 
     with pytest.raises(
-        RecordingRefused, match="line 1 was written in recording format 1, older than this build's 2"
+        RecordingRefused, match="line 1 was written in recording format 1, older than the oldest this build reads, 2"
     ) as refused:
         RecordedCompletions.replay(path, settings=BUDGETED)
     assert "kept no sent_settings" in str(refused.value)
     assert refused.value.remedy.startswith("re-record")
-    with pytest.raises(RecordingRefused, match="older than this build's"):
+    with pytest.raises(RecordingRefused, match="older than the oldest this build reads"):
         RecordedCompletions.record(_FakeInner(), path, settings=BUDGETED)
 
 
@@ -685,7 +994,7 @@ class _FakeLedger:
 
 
 async def _analysis_call(client: Any) -> tuple[list[float | None], Any, _FakeLedger]:
-    """One analysis call through the engine's out-of-run budget, as ``generate_analysis`` makes it: priced, then made."""
+    """One analysis call through the engine's out-of-run budget: priced, then made."""
     ledger = _FakeLedger()
     budget = OutOfRunBudget(ledger, scope_id="s", cap_usd=1.0, blocking_executor=None)
     [admitted] = budget.admit(client, "analysis", [PlannedCall(system=SYSTEM, user="Write the analysis.")])

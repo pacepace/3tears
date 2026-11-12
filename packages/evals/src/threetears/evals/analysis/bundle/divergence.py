@@ -28,7 +28,7 @@ from threetears.evals.kernel.metrics import (
     partition_components,
     remainder_withheld_reason,
 )
-from threetears.evals.schema.models import EvalResult
+from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.analysis.bundle.caps import _MAX_DIVERGENCES
 from threetears.evals.analysis.bundle.schema import (
     MeasureMovement,
@@ -68,7 +68,7 @@ if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime i
 # `not_separated` or `equivalent`, but it is context: no verdict on one movement decides a divergence.
 
 # The distinguishing clause of each reason a cross-scope difference is withheld. The reason
-# reaches the generator as a SENTENCE (see ``ScopeDivergence.unattributed_withheld``), and that
+# reaches the writer as a SENTENCE (see ``ScopeDivergence.unattributed_withheld``), and that
 # prose gets tuned for its reader — so the clause that identifies WHICH condition fired is named
 # here and shared with the tests. Rewording the sentence around it is then free, while changing
 # what a test actually pins takes editing this line.
@@ -415,7 +415,7 @@ class _Divergences(NamedTuple):
 
 def _scope_divergences(
     runs: list[EvalRun],
-    results_by_run: dict[str, list[EvalResult]],
+    results_by_run: dict[str, list[ResultView]],
     catalog: dict[str, MetricDescriptor],
     apparatus_levels: dict[str, dict[str, str | None]],
     design: RealizedDesign,
@@ -455,7 +455,7 @@ def _scope_divergences(
     :param runs: The campaign's resolved runs.
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results, keyed by run id.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param catalog: Descriptors by measure name, for the unit that makes a pair comparable.
     :ptype catalog: dict[str, MetricDescriptor]
     :param apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.

@@ -13,14 +13,18 @@ run's measurement context. A product writes the two models and names them once, 
 Example — a game master whose launch may turn six knobs, and whose template states its table::
 
     class GMOverlays(BaseModel):
-        gm_model: str = Field("gm-large", description="the model narrating the session")
+        gm_model: str = Field("gm-large", title="GM model", description="the model narrating the session")
         difficulty: Annotated[Literal["easy", "medium", "hard", "deadly"], Ordinal()] = Field(
-            "medium", description="the encounter difficulty the GM builds to"
+            "medium", title="difficulty", description="the encounter difficulty the GM builds to"
         )
-        narration_words: Annotated[int, Interval(unit="words")] = Field(120, description="how long a narration runs")
-        max_tool_rounds: int = Field(4, ge=1, description="how many tool rounds one GM turn may take")
-        style_prompt: str = Field("", description="the GM style prompt, by content")
-        house_rules: dict[str, str] = Field(default_factory=dict, description="the house rules the table plays by")
+        narration_words: Annotated[int, Interval(unit="words")] = Field(
+            120, title="narration length", description="how long a narration runs"
+        )
+        max_tool_rounds: int = Field(4, ge=1, title="tool rounds", description="how many tool rounds one GM turn may take")
+        style_prompt: str = Field("", title="style prompt", description="the GM style prompt, by content")
+        house_rules: dict[str, str] = Field(
+            default_factory=dict, title="house rules", description="the house rules the table plays by"
+        )
 
     class GMSpec(BaseModel):
         players: int = Field(ge=1, le=6)
@@ -30,7 +34,10 @@ Example — a game master whose launch may turn six knobs, and whose template st
     GM = KindContract("gm", overlays=GMOverlays, spec=GMSpec)
     profile = HostProfile(host_id="dow", host_sweepables=SHARED_CORE, kinds=(GM,), ...)
 
-Each field becomes the lever ``<kind>.<field>`` (the prefix is the kind's name unless one is given).
+Each field becomes the lever ``<kind>.<field>`` (the prefix is the kind's name unless one is given), and its
+``title`` is what every page calls it (:attr:`~threetears.evals.kernel.host.sweepables.Sweepable.reader_name`): a field
+with no title is refused, as a host measure with no reader name is. A map's entries are named by its title and the
+entry's key as the launch wrote it (``house rules flanking``).
 How a level sits on an axis follows the field: a number is an interval (``Interval`` names its
 unit), a ``Literal`` or ``Enum`` marked ``Ordinal()`` ranks in declaration order, and anything else
 is a nominal level addressed by its content — a long prompt joins across runs by what it says, not
@@ -66,7 +73,7 @@ from __future__ import annotations
 
 import types
 import typing
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
@@ -87,11 +94,18 @@ from threetears.evals.schema.values import IntervalScale, NominalScale, OrdinalS
 if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
 
-    from threetears.evals.schema.models import EvalResult, EvalRun
+    from threetears.evals.kernel.result_reading import ResultView
+    from threetears.evals.schema.models import EvalRun
 
 #: The longest display a nominal level is shown at before it is cut. A level is joined on its content
 #: hash, so the cut costs a reader nothing but the tail of a long value.
 _DISPLAY_LIMIT = 60
+
+#: How a frozen level with no value is displayed, and one whose value is empty: placeholders, which a reader-facing
+#: name replaces with words (``no system prompt``, :func:`~threetears.evals.analysis.report.words.reader_arm_name`). The display is
+#: what a stored variant index holds, so neither spelling ever changes.
+NO_VALUE_DISPLAY = "(none)"
+EMPTY_VALUE_DISPLAY = "(empty)"
 
 #: The suffix an open family's container lever carries, so the container and the map it expands are
 #: two names: ``gm.house_rules`` is the whole rule set as one level, ``gm.house_rules.*`` the family.
@@ -215,6 +229,7 @@ class _Knob:
     field_name: str
     lever: str
     prose: str
+    title: str
     family: bool
     ordinal_levels: tuple[Any, ...] | None
     interval_unit: str | None
@@ -413,6 +428,7 @@ class KindContract:
                     role="lever",
                     read=self._reader(knob.field_name),
                     reader_prose=knob.prose,
+                    reader_name=knob.title,
                     acts_on=knob.acts_on,
                     resolves_into=knob.resolves_into,
                     read_residual=knob.resolves_into_residual,
@@ -429,6 +445,7 @@ class KindContract:
                         reader_prose=f"each entry of {knob.lever} a launch set, one lever per entry",
                         open_family=f"a launch may set any entry of {knob.field_name}, so its entries are whatever it named",
                         owns_member=_member_test(member_prefix),
+                        member_reader_name=_member_name(knob.title, member_prefix),
                         resolves_into=knob.lever,
                         read_residual=self._residual_reader(knob),
                         member_acts_on=(
@@ -469,7 +486,7 @@ class KindContract:
     def _reader(self, field_name: str) -> SweepableReader:
         """A reader of one field off a run's frozen overlays."""
 
-        def read(run: EvalRun, _results: Sequence[EvalResult]) -> Any:
+        def read(run: EvalRun, _results: Sequence[ResultView]) -> Any:
             overlays = self._overlays_of(run)
             return None if overlays is None else overlays.get(field_name)
 
@@ -484,7 +501,7 @@ class KindContract:
         to compare against, so its runs read unchecked.
         """
 
-        def departs(run: EvalRun, _results: Sequence[EvalResult]) -> bool | None:
+        def departs(run: EvalRun, _results: Sequence[ResultView]) -> bool | None:
             overlays = self._overlays_of(run)
             if overlays is None:
                 return False
@@ -497,7 +514,7 @@ class KindContract:
     def _member_reader(self, knob: _Knob) -> SweepableReader:
         """A reader of an open family's members: one per entry the run's map holds."""
 
-        def read(run: EvalRun, _results: Sequence[EvalResult]) -> dict[str, Any]:
+        def read(run: EvalRun, _results: Sequence[ResultView]) -> dict[str, Any]:
             overlays = self._overlays_of(run)
             entries = (overlays or {}).get(knob.field_name) or {}
             return {f"{knob.lever}.{key}": value for key, value in entries.items()}
@@ -507,7 +524,7 @@ class KindContract:
     def _residual_reader(self, knob: _Knob) -> ResidualReader:
         """A reader of an open family's map with the named members taken back out."""
 
-        def read(run: EvalRun, _results: Sequence[EvalResult], removed: frozenset[str]) -> dict[str, Any] | None:
+        def read(run: EvalRun, _results: Sequence[ResultView], removed: frozenset[str]) -> dict[str, Any] | None:
             overlays = self._overlays_of(run)
             if overlays is None:
                 return None
@@ -598,6 +615,16 @@ def _member_test(member_prefix: str) -> FamilyMemberTest:
     return owns
 
 
+def _member_name(title: str, member_prefix: str) -> Callable[[str], str]:
+    """What a reader calls an entry of the map field titled ``title``: the title, then the entry's key as the launch
+    wrote it (``House rules flanking``)."""
+
+    def name(member: str) -> str:
+        return f"{title} {member.removeprefix(member_prefix)}"
+
+    return name
+
+
 def _read_knob(prefix: str, name: str, info: FieldInfo) -> tuple[_Knob | None, list[str]]:
     """Read one overlay field into a knob, or say why it cannot be one.
 
@@ -613,6 +640,11 @@ def _read_knob(prefix: str, name: str, info: FieldInfo) -> tuple[_Knob | None, l
     problems: list[str] = []
     if not (info.description or "").strip():
         problems.append("has no description, and a lever with no prose reads as 'component 3 moved'")
+    if not (info.title or "").strip():
+        problems.append(
+            "has no title, and a lever with no reader name prints its id on every page; give the field "
+            "Field(title=...), the words a reader calls it"
+        )
     if info.alias is not None or info.validation_alias is not None:
         problems.append("declares an alias, and a launch names an overlay by its field")
     annotation = _unwrap_optional(info.annotation)
@@ -662,6 +694,7 @@ def _read_knob(prefix: str, name: str, info: FieldInfo) -> tuple[_Knob | None, l
             field_name=name,
             lever=f"{prefix}.{name}",
             prose=str(info.description),
+            title=str(info.title),
             family=family,
             ordinal_levels=levels,
             interval_unit=interval.unit if interval is not None else None,
@@ -696,7 +729,7 @@ def _ordered_levels(annotation: Any) -> tuple[Any, ...] | None:
 def _level(knob: _Knob, value: Any) -> SweepableValue:
     """One field's frozen value as a level on its axis."""
     if value is None:
-        return SweepableValue.of(None, display="(none)")
+        return SweepableValue.of(None, display=NO_VALUE_DISPLAY)
     scale: Scale
     if knob.numeric and not isinstance(value, bool):
         scale = IntervalScale(value=float(value), unit=knob.interval_unit)
@@ -713,7 +746,7 @@ def _display(value: Any) -> str:
     text = value if isinstance(value, str) else canonical_json(value)
     text = " ".join(text.split())
     if not text:
-        return "(empty)"
+        return EMPTY_VALUE_DISPLAY
     return text if len(text) <= _DISPLAY_LIMIT else f"{text[: _DISPLAY_LIMIT - 1]}…"
 
 
@@ -725,4 +758,12 @@ def _field_errors(refused: ValidationError) -> str:
     )
 
 
-__all__ = ["Interval", "KindContract", "KindContractError", "Ordinal", "freeze"]
+__all__ = [
+    "EMPTY_VALUE_DISPLAY",
+    "NO_VALUE_DISPLAY",
+    "Interval",
+    "KindContract",
+    "KindContractError",
+    "Ordinal",
+    "freeze",
+]

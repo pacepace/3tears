@@ -446,7 +446,7 @@ async def execute_toyhost_run(
             options=RunnerOptions(candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind}),
         )
     # `EvalRun.status` defaults to `pending` and the job manager owns the transition, which the
-    # runner deliberately does not make — so a drive of `execute_run` directly makes it. A generator
+    # runner deliberately does not make — so a drive of `execute_run` directly makes it. A report writer
     # reading a pending run treats its numbers as provisional.
     runs = [run.model_copy(update={"status": "completed"}) for run in runs]
     for run in runs:
@@ -526,7 +526,7 @@ def toyhost_run_campaign(path: ToyhostRunPath) -> EvalCampaign:
 
 
 def toyhost_run_bundle(path: ToyhostRunPath) -> AnalysisContextBundle:
-    """The assembled context one memo over the run-path campaign is generated from.
+    """The assembled evidence of the run-path campaign, as its page and the analyst's snapshot read it.
 
     Assembled in the vocabulary of the host the drive ran under.
 

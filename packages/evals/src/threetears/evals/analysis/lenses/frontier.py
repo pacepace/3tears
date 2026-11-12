@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from fractions import Fraction
 from typing import TYPE_CHECKING, Literal, NamedTuple
@@ -23,6 +24,7 @@ from threetears.evals.analysis.contention import (
     withhold_contended_latency,
 )
 from threetears.evals.kernel.numbers import format_number
+from threetears.evals.analysis.report.said import Said, SaidFigure
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     case_rate_interval,
@@ -61,6 +63,7 @@ from threetears.evals.kernel.scoring import (
     pass_hat_k_cell,
     pass_hat_k_cell_alone,
     pass_hat_k_cell_reason,
+    measure_catalog_of,
     pool_pass_hat_k,
     pool_pass_hat_k_attempts,
     result_composite,
@@ -96,8 +99,9 @@ from threetears.evals.analysis.lenses.contestants import (
 from threetears.evals.kernel.usage_capture import count_substituted_deliveries, production_replicating_cost
 
 if TYPE_CHECKING:
+    from threetears.evals.kernel.metrics import MetricDescriptor
+    from threetears.evals.kernel.result_reading import ResultView
     from threetears.evals.schema.models import (
-        EvalResult,
         EvalRun,
     )
 
@@ -385,7 +389,7 @@ class PassHatKCellReading(EvalBaseModel):
 
 
 #: What "kept out" covers, said once before a contestant's cell lines wherever they are shown (the frontier's text,
-#: the report page's run disclosures, the memo writer's view): only the frontier's pass^k, its interval, its bar and its
+#: the report page's run disclosures): only the frontier's pass^k, its interval, its bar and its
 #: verdict leave a kept-out run out; every other figure of the arm still counts it.
 PASS_HAT_K_CELL_READING = (
     "An arm's frontier pass^k, with its interval, bar and verdict, reads its headline pass^k cell alone: one "
@@ -406,7 +410,7 @@ _REASON_WORDS: dict[str, str] = {
 }
 
 
-def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[str]:
+def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[Said]:
     """What a reader is told about one pass^k cell of a frontier point: every surface that renders a point says these.
 
     A cell other than the headline gets one sentence naming its runs, its reason, what differs and its own pass^k,
@@ -415,69 +419,49 @@ def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[str]:
     headline, the only cell of a point included, gets nothing.
 
     Each sentence is one line, its whitespace collapsed (a detail can carry a stored error's own line breaks), so a
-    surface may indent it or lead it with the arm and nothing of it reads as the next item's.
+    surface may indent it or lead it with the arm and nothing of it reads as the next item's. The cell's own pass^k is
+    held as a figure, which the surface printing the sentence spells in its forms
+    (:meth:`~threetears.evals.analysis.report.forms.PageForms.said`).
 
     :param reading: The cell.
     :ptype reading: PassHatKCellReading
     :return: The sentences, possibly none, each one line.
-    :rtype: list[str]
+    :rtype: list[Said]
     """
-    lines: list[str] = []
     runs = ", ".join(reading.run_ids)
     if reading.headline and reading.reason is not None:
-        lines.append(
-            f"this pass^k rests on run(s) {runs} alone, a cell of their own ({_REASON_WORDS[reading.reason]}): "
-            f"{reading.detail}"
+        return [
+            Said.of(
+                _one_line(
+                    f"this pass^k rests on run(s) {runs} alone, a cell of their own "
+                    f"({_REASON_WORDS[reading.reason]}): {reading.detail}"
+                )
+            )
+        ]
+    if reading.reason is None:
+        return []
+    kept = (
+        f"run(s) {runs} kept out of this pass^k, as a cell of their own ({_REASON_WORDS[reading.reason]}): "
+        f"{reading.detail}; "
+    )
+    if reading.pass_hat_k is None:
+        return [Said.of(_one_line(kept + "no pass^k of its own at this depth"))]
+    # Every run of whitespace reads as one space, as the all-words sentences above collapse theirs; the sentence
+    # starts with words and ends with its case count, so no end is left to strip.
+    return [
+        Said.of(
+            re.sub(r"\s+", " ", kept + "its own pass^k "),
+            SaidFigure(reading.pass_hat_k, "pass_k"),
+            " over ",
+            SaidFigure(reading.n_cases_at_k, "count"),
+            " case(s)",
         )
-    elif reading.reason is not None:
-        own = (
-            f"its own pass^k {format_number(reading.pass_hat_k)} over {reading.n_cases_at_k} case(s)"
-            if reading.pass_hat_k is not None
-            else "no pass^k of its own at this depth"
-        )
-        lines.append(
-            f"run(s) {runs} kept out of this pass^k, as a cell of their own ({_REASON_WORDS[reading.reason]}): "
-            f"{reading.detail}; {own}"
-        )
-    return [" ".join(line.split()) for line in lines]
+    ]
 
 
-#: How many run ids a bounded line names before it counts the rest (:func:`pass_hat_k_cell_lines_bounded`).
-_RUNS_NAMED = 3
-
-
-def pass_hat_k_cell_lines_bounded(readings: Sequence[PassHatKCellReading]) -> list[str]:
-    """One point's cell lines, bounded for a surface with a budget: at most one line per reason.
-
-    The headline's line is said as :func:`pass_hat_k_cell_lines` says it. A reason only one kept-out cell stands apart
-    for gets that cell's own line. A reason several do gets one line counting their runs and cells, naming the first
-    :data:`_RUNS_NAMED` run ids and how many more, so a contestant of many runs that each recorded
-    nothing costs one line, not one per run.
-
-    :param readings: The point's cells (:attr:`FrontierPoint.pass_hat_k_cells`).
-    :ptype readings: Sequence[PassHatKCellReading]
-    :return: The sentences, each one line.
-    :rtype: list[str]
-    """
-    lines: list[str] = []
-    by_reason: dict[str, list[PassHatKCellReading]] = {}
-    for reading in readings:
-        if reading.headline:
-            lines += pass_hat_k_cell_lines(reading)
-        elif reading.reason is not None:
-            by_reason.setdefault(reading.reason, []).append(reading)
-    for reason, cells in by_reason.items():
-        if len(cells) == 1:
-            lines += pass_hat_k_cell_lines(cells[0])
-            continue
-        run_ids = [run_id for cell in cells for run_id in cell.run_ids]
-        named = ", ".join(run_ids[:_RUNS_NAMED])
-        more = len(run_ids) - _RUNS_NAMED
-        lines.append(
-            f"run(s) {named}{f' and {more} more' if more > 0 else ''} kept out of this pass^k, as {len(cells)} "
-            f"cells of their own ({_REASON_WORDS[reason]}), {len(run_ids)} run(s) in all, each with its own pass^k"
-        )
-    return lines
+def _one_line(text: str) -> str:
+    """A sentence of words on one line: every run of whitespace one space, none at either end."""
+    return " ".join(text.split())
 
 
 class FrontierPoint(EvalBaseModel):
@@ -532,8 +516,8 @@ class FrontierPoint(EvalBaseModel):
     pass_hat_k_ci_low: float | None = None
     #: The high end of that interval; ``None`` exactly when ``pass_hat_k_ci_low`` is.
     pass_hat_k_ci_high: float | None = None
-    #: Attempts behind this point with nothing for pass^k to conjoin — no goal-state check and no judge — left
-    #: out of pass^k and its curve rather than read as failures (#688).
+    #: Attempts behind this point with nothing for pass^k to conjoin — no goal-state check, no label, no declared
+    #: check and no judge — left out of pass^k and its curve rather than read as failures (#688).
     n_pass_no_criterion: int = 0
     #: Why ``pass_hat_k`` is None when the reason is that no attempt carried a pass criterion: the point has
     #: no pass^k, not one of 0, and so no cost per acceptable outcome either. None otherwise.
@@ -878,7 +862,7 @@ class FrontierResult(EvalDocumentModel):
     #: dominance test and "fastest" — and how much; ``None`` when every latency ranked was read
     #: serially (:mod:`~threetears.evals.analysis.contention`).
     contended_latency_disclosure: str | None = None
-    #: Set when the scope was past :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and only one subject's runs
+    #: Set when the scope was past :data:`~threetears.evals.analysis.reads.READING_BUDGET` and only one subject's runs
     #: were read (:func:`~threetears.evals.analysis.reads.frontier`): the sentence naming the subject and what was
     #: therefore not counted (other subjects' results in ``n_filtered_out``, results whose run is missing, and other
     #: subjects' results in each judge's evidence tier). ``None`` on a whole-scope read, and then left out of a dump,
@@ -887,7 +871,7 @@ class FrontierResult(EvalDocumentModel):
 
 
 def _frontier_point(
-    results: list[EvalResult],
+    results: Sequence[ResultView],
     *,
     contestant: ContestantKey,
     k: int,
@@ -911,7 +895,7 @@ def _frontier_point(
 
     :param results: One contestant's observations (all sharing a model, and a
         ``variant_key`` when captured). Never empty.
-    :ptype results: list[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param contestant: The :func:`contestant_key` these results were grouped under. Passed
         rather than re-derived off ``results[0]``: the key is what placed them
         together, so reading the identity back out of it makes "no row in this pool
@@ -968,17 +952,24 @@ def _frontier_point(
     cells = _pass_hat_k_cells(results, runs=runs_by_id, profile=profile)
     headline_ids = set(_headline_cell(cells.readings).run_ids)
     headline_results = [r for r in results if r.eval_run_id in headline_ids]
-    pooled = pool_pass_hat_k(headline_results, cell_of_run=cells.of_run, k=k, rubric_threshold=rubric_threshold)
+    # Each check a host declares (a directed boolean, a pass/fail scorer) fails an attempt here as it fails the trial
+    # on the report's census, read off the same descriptions.
+    catalog = measure_catalog_of(results, profile.measures if profile is not None else None)
+    pooled = pool_pass_hat_k(
+        headline_results, cell_of_run=cells.of_run, k=k, catalog=catalog, rubric_threshold=rubric_threshold
+    )
     pass_hat_k = pooled["pass_hat_k"]
     pass_hat_1 = pass_hat_k_at(pooled["pass_hat_k_curve"], 1)["pass_hat_k"]
     # The same cases the headline averages, one estimate each: the interval runs over them, and a
     # domination test pairs two contestants on the test cases both measured.
     attempts, _ = pool_pass_hat_k_attempts(
-        headline_results, cell_of_run=cells.of_run, rubric_threshold=rubric_threshold
+        headline_results, cell_of_run=cells.of_run, catalog=catalog, rubric_threshold=rubric_threshold
     )
     readings = [
         reading.model_copy(
-            update=_cell_pass_hat_k(results, reading.run_ids, cells.of_run, k=k, rubric_threshold=rubric_threshold)
+            update=_cell_pass_hat_k(
+                results, reading.run_ids, cells.of_run, k=k, catalog=catalog, rubric_threshold=rubric_threshold
+            )
         )
         for reading in cells.readings
     ]
@@ -1172,7 +1163,7 @@ class _RunServed(NamedTuple):
     unrecorded: bool
 
 
-def _served_by_run(results: Sequence[EvalResult]) -> dict[str, _RunServed]:
+def _served_by_run(results: Sequence[ResultView]) -> dict[str, _RunServed]:
     """The models the provider's responses named for each run's candidate calls, over one contestant's results.
 
     Read off the candidate usage rows (:func:`~threetears.evals.analysis.reporting.served_reading`), never the id
@@ -1180,7 +1171,7 @@ def _served_by_run(results: Sequence[EvalResult]) -> dict[str, _RunServed]:
     response named no model marks its run unrecorded, whatever its other calls named.
 
     :param results: One contestant's results.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :return: Run id → what its calls named, for every run of ``results``.
     :rtype: dict[str, _RunServed]
     """
@@ -1209,7 +1200,7 @@ class _PointCells(NamedTuple):
 
 
 def _pass_hat_k_cells(
-    results: Sequence[EvalResult], *, runs: Mapping[str, EvalRun], profile: HostProfile | None
+    results: Sequence[ResultView], *, runs: Mapping[str, EvalRun], profile: HostProfile | None
 ) -> _PointCells:
     """Group one contestant's runs into pass^k cells, choose the headline, and say why each other cell stands apart.
 
@@ -1220,7 +1211,7 @@ def _pass_hat_k_cells(
     and the reason are one reading; a headline of one run carries why it pools with nothing.
 
     :param results: One contestant's results, never empty.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param runs: Every placed run by id; every run of ``results`` is in it.
     :ptype runs: Mapping[str, EvalRun]
     :param profile: The host that re-derives a run's context, or ``None``.
@@ -1437,11 +1428,12 @@ def _cell_detail(
 
 
 def _cell_pass_hat_k(
-    results: Sequence[EvalResult],
+    results: Sequence[ResultView],
     run_ids: Sequence[str],
     of_run: Mapping[str, PassHatKCell],
     *,
     k: int,
+    catalog: Mapping[str, MetricDescriptor],
     rubric_threshold: int,
 ) -> dict[str, float | int | None]:
     """One cell's own pass^k at the point's depth, over its own results.
@@ -1451,7 +1443,11 @@ def _cell_pass_hat_k(
     """
     own = set(run_ids)
     entry = pool_pass_hat_k(
-        [r for r in results if r.eval_run_id in own], cell_of_run=of_run, k=k, rubric_threshold=rubric_threshold
+        [r for r in results if r.eval_run_id in own],
+        cell_of_run=of_run,
+        k=k,
+        catalog=catalog,
+        rubric_threshold=rubric_threshold,
     )
     return {"pass_hat_k": entry["pass_hat_k"], "n_cases_at_k": entry["n_cases_at_k"]}
 
@@ -1788,7 +1784,7 @@ def _bar_decision(point: FrontierPoint, bar: float) -> BarDecision:
     return "undecided" if cleared is None else "cleared" if cleared else "missed"
 
 
-def _boundary_values(results: Sequence[EvalResult]) -> dict[str, dict[str, float]]:
+def _boundary_values(results: Sequence[ResultView]) -> dict[str, dict[str, float]]:
     """One contestant's per-case mean on each boundary dimension it was scored on — results the harness spoiled left out."""
     scores: dict[str, dict[str, list[int]]] = {}
     for result in results:
@@ -1800,7 +1796,7 @@ def _boundary_values(results: Sequence[EvalResult]) -> dict[str, dict[str, float
     return {dim: {case: sum(v) / len(v) for case, v in cases.items()} for dim, cases in scores.items()}
 
 
-def _boundary_scales(results: Iterable[EvalResult]) -> dict[str, RubricScale]:
+def _boundary_scales(results: Iterable[ResultView]) -> dict[str, RubricScale]:
     """The scale each boundary dimension was scored on."""
     return {score.dim: score.scale for result in results for score in result.rubric_scores if score.axis == "boundary"}
 
@@ -1814,7 +1810,7 @@ def _boundary_eligible(point: FrontierPoint, control_variant_key: str | None) ->
 
 def _decide_boundary_pillar(
     points: Sequence[FrontierPoint],
-    members: Sequence[Sequence[EvalResult]],
+    members: Sequence[Sequence[ResultView]],
     control_variant_key: str | None,
     margins: Mapping[str, float],
 ) -> tuple[list[str], str | None]:
@@ -1884,7 +1880,7 @@ def _decide_boundary_pillar(
 
 def compute_frontier(
     runs: list[EvalRun],
-    results: list[EvalResult],
+    results: Sequence[ResultView],
     *,
     bar: float | None = None,
     subject_id: str | None = None,
@@ -1971,7 +1967,7 @@ def compute_frontier(
     :param runs: The runs supplying subject identity. Order is irrelevant.
     :ptype runs: list[EvalRun]
     :param results: The observations to rank.
-    :ptype results: list[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param bar: The pass^k threshold the verdict is made against, in ``[0, 1]``.
         ``None`` computes the frontier without a verdict.
     :ptype bar: float | None
@@ -2036,7 +2032,7 @@ def compute_frontier(
         runs, results, known_run_ids, source="frontier", archived_run_ids=archived_run_ids
     )
 
-    by_subject: dict[str, dict[ContestantKey, list[EvalResult]]] = {}
+    by_subject: dict[str, dict[ContestantKey, list[ResultView]]] = {}
     subject_labels: dict[str, str] = {}
     # Every placed run's recorded cassette mode, collected here because a point is
     # built from RESULTS and the mode lives on the RUN — a result carries no cassette
@@ -2062,14 +2058,14 @@ def compute_frontier(
     # downstream still spanned what it spanned, and narrowing to what SURVIVED the subject
     # filter keeps the span from naming a predicate no row in this answer was keyed under
     # — the same rule the cassette-mode and template maps below follow.
-    considered: list[EvalResult] = []
+    considered: list[ResultView] = []
     considered_keys: list[ContestantKey] = []
     # The depth each subject is ranked at: the shallowest k any of its ranked runs was
     # commissioned to (see SubjectFrontier.k).
     k_by_subject: dict[str, int] = {}
     # Each placed run and its results, for the production footing a point's cost names (#571).
     placed_runs: dict[str, EvalRun] = {}
-    results_of_run: dict[str, list[EvalResult]] = {}
+    results_of_run: dict[str, list[ResultView]] = {}
 
     for run, result, resolved in placed:
         if subject_id is not None and resolved != subject_id:
@@ -2274,7 +2270,7 @@ def compute_frontier(
     )
 
 
-def _judged_pass_tier(members: Sequence[EvalResult], tiers: Sequence[JudgeEvidenceTier]) -> JudgedEvidenceTier | None:
+def _judged_pass_tier(members: Sequence[ResultView], tiers: Sequence[JudgeEvidenceTier]) -> JudgedEvidenceTier | None:
     """The tier a contestant's pass^k stands on where a judge scored its criteria, or None where none did.
 
     The judges are those behind the capability scores pass^k conjoins (a boundary dimension is no part of it), on the
@@ -2302,7 +2298,6 @@ __all__ = [
     "PASS_HAT_K_CELL_READING",
     "PassHatKCellReading",
     "pass_hat_k_cell_lines",
-    "pass_hat_k_cell_lines_bounded",
     "FrontierResult",
     "FrontierVerdict",
     "normalize_bar",

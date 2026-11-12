@@ -3,8 +3,7 @@
 A judge's agreement with people was promised by the schema (an embedded rating list on every
 result) and written by nothing. These tests pin the standalone ``calibration_rating`` document that
 replaces it, the one write that makes one (:func:`~threetears.evals.run.rate_result`), the kappa
-arithmetic, and both readers: the bundle's ``judge_agreement`` and a reporter run's
-``rating_agreement``.
+arithmetic, and the bundle's reader, ``judge_agreement``.
 
 Mutations that turn this file red (each run against a saved copy and restored from it):
 
@@ -15,18 +14,18 @@ Mutations that turn this file red (each run against a saved copy and restored fr
   ``abs(i - j)`` for the quadratic cost.
 - ``judge_agreement``: grouping without the judge model; pairing a rating whose scale differs.
 - the bundle: dropping the ``judge_agreement=`` argument from the assembly.
-- the reporter read: passing ``ratings=[]`` in ``reporter_calibration``.
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterator
 
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis import JudgeAgreement, assemble_context_bundle, judge_agreement, reporter_calibration
-from threetears.evals.analysis.reporter_kind import ReporterCase, reporter_case_payload
+from threetears.evals.analysis import JudgeAgreement, assemble_context_bundle, judge_agreement
 from threetears.evals.analysis.stats import cohen_kappa
 from threetears.evals.schema import (
     DURABLE_BASELINE_VERSION,
@@ -35,17 +34,25 @@ from threetears.evals.schema import (
     TRANSCRIPT_DIM_ID,
     CalibrationRating,
     EvalResult,
-    EvalTestCase,
     RubricScore,
     label_key_of,
 )
 from threetears.evals.kernel import NotFoundError, ValidationFailedError
 from threetears.evals.run import rate_result
-from packages.evals.tests.factories import make_calibration_rating, make_eval_result, make_eval_run, memory_storage
+from packages.evals.tests.factories import make_calibration_rating, make_eval_result, memory_storage
 from packages.evals.tests.stored_models import stored_sample
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 TONE = "conversation.tone"
 HELPED = "conversation.helped"
@@ -673,48 +680,4 @@ class TestTheBundleReadsRatingsWrittenThroughTheOperation:
         assert layout.raters == ["reviewer-1", "reviewer-2"]
         assert after.judge_agreement.unpaired == []
         assert after.fingerprint() != before.fingerprint(), "a new rating is evidence that moved"
-        assert after.schema_version == 64
-
-
-class TestTheReporterReadCarriesTheRunsRatings:
-    """The reporter kind's human labels sit beside people's ratings of the same run, read the same way."""
-
-    def test_reporter_calibration_reads_the_runs_ratings(self) -> None:
-        storage, _ = memory_storage()
-        case = ReporterCase(
-            bundle={"campaign_id": "camp-1"},
-            bundle_fingerprint="fp-1",
-            bundle_assembled_at="2026-01-01T00:00:00+00:00",
-        )
-        storage.save_test_case(
-            EvalTestCase(id="c-1", scope_id="uni-1", template_id="tpl-1", host_payload=reporter_case_payload(case))
-        )
-        storage.save_eval_run(make_eval_run(id="run-r", test_case_ids=["c-1"], status="completed"))
-        storage.save_eval_result(_result("r-1", _tone(4), eval_run_id="run-r", test_case_id="c-1"))
-        storage.save_eval_result(_result("r-other", _tone(4), eval_run_id="run-other", test_case_id="c-1"))
-        rate_result(
-            storage,
-            result_id="r-1",
-            scope_id="uni-1",
-            rubric_dim=TONE,
-            rater="owner",
-            rater_kind="person",
-            score=5,
-            reason="sharp",
-        )
-        rate_result(
-            storage,
-            result_id="r-other",
-            scope_id="uni-1",
-            rubric_dim=TONE,
-            rater="owner",
-            rater_kind="person",
-            score=4,
-            reason="x",
-        )
-
-        read = reporter_calibration(storage, "run-r", "uni-1")
-
-        (tone,) = read.rating_agreement.dimensions
-        assert (tone.rubric_dim, tone.n, tone.exact_agreement, tone.raters) == (TONE, 1, 0.0, ["owner"])
-        assert read.rating_agreement.ratings_read == 1, "another run's ratings are not this run's"
+        assert after.schema_version == 66

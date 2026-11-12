@@ -121,6 +121,20 @@ class TestTheGateCanFail:
         findings = _findings(repo)
         assert len(findings) == 1 and "route GET /things" in findings[0]
 
+    def test_growth_under_a_local_label_inside_a_patch(self, repo: Path) -> None:
+        """
+        ``0.1.0+line.1`` is a build of 0.1.0, not a release past it: a name added under it is growth.
+
+        :param repo: scratch repository
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        _release(repo, "0.1.0", ["kept"])
+        _write(repo, "0.1.0+line.1", ["kept", "added"])
+        findings = _findings(repo)
+        assert len(findings) == 1 and "src/pkg/api.py: added" in findings[0]
+
     def test_growth_in_a_module_without_all(self, repo: Path) -> None:
         """
         a module with no ``__all__`` exports what it defines.
@@ -263,6 +277,19 @@ class TestWhatTheGateAllows:
         """
         _release(repo, "0.1.0", ["kept"])
         _write(repo, "0.2.0", ["kept", "added"], route="/things")
+        assert _findings(repo) == []
+
+    def test_a_local_label_reads_as_its_public_version(self, repo: Path) -> None:
+        """
+        ``0.2.0+line.1`` is held to 0.2.0's line: growth over v0.1.0 passes, as at 0.2.0.
+
+        :param repo: scratch repository
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        _release(repo, "0.1.0", ["kept"])
+        _write(repo, "0.2.0+line.1", ["kept", "added"])
         assert _findings(repo) == []
 
     def test_the_first_release_with_no_tag(self, repo: Path) -> None:

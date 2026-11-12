@@ -213,7 +213,9 @@ async def _assert_ends_as_the_control(holder: OpsHost, run_id: str, launched: Ev
     control_run, control_rows = off_loop(_run, control, control_id), _rows(control, control_id)
     assert _cells(rows) == _cells(control_rows), "the same cells"
     assert len(rows) == len(control_rows) == 3 * K, "each stored once"
-    assert list(compute_pass_hat_k(rows).values()) == list(compute_pass_hat_k(control_rows).values()), "pass^k"
+    assert list(compute_pass_hat_k(rows, catalog={}).values()) == list(
+        compute_pass_hat_k(control_rows, catalog={}).values()
+    ), "pass^k"
     assert "cancelled" not in {row.termination for row in rows}, "no abandoned attempt is a result"
     assert run.status == control_run.status == "completed"
     assert run.progress == control_run.progress, "its progress counts every cell, the earlier holding's too"
@@ -319,6 +321,85 @@ def test_a_take_up_that_would_measure_otherwise_names_every_difference_and_no_la
     assert "cfg-2" in differences[1] and "pool-b" in differences[2]
     unlabelled = stored.model_copy(update={"subject_snapshot": relabelled})
     assert _measured_otherwise(stored, unlabelled, template, toyhost_profile()) is None
+
+
+def _taken_up(stored: EvalRun, fresh: EvalRun, template: EvalTemplate) -> EvalRun:
+    """The run a take-up of ``stored`` reopens when its launch assembles ``fresh`` from ``template``."""
+    resuming = RunResumption(
+        run=stored,
+        cases=(),
+        stored=StoredCells(),
+        rows=(),
+        holder=None,
+        epoch=1,
+        cell_order_seed=None,
+        etag=None,
+        max_cost_usd=None,
+    )
+    reopened, _cases = resuming.take_up(fresh, template, toyhost_profile())
+    return reopened
+
+
+def _under_a_cap(launched: bool | None, taken_up: bool | None, *, kept: float | None = 5.0) -> EvalRun:
+    """The run a take-up reopens when the stored run was launched under a cap and the take-up names ``kept``."""
+    stored = make_eval_run(
+        cap_checked_on_estimates=launched,
+        max_cost_usd=5.0,
+        variant_levers={},
+        identity_version=1,
+        created_at="2026-06-01T00:00:00+00:00",
+    )
+    template = make_template(created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00")
+    fresh = stored.model_copy(update={"cap_checked_on_estimates": taken_up, "max_cost_usd": kept})
+    return _taken_up(stored, fresh, template)
+
+
+@pytest.mark.parametrize(("launched", "taken_up"), [(False, True), (True, False), (None, True), (True, None)])
+def test_a_take_up_reads_admitted_on_estimates_when_either_holding_was(
+    launched: bool | None, taken_up: bool | None
+) -> None:
+    assert _under_a_cap(launched, taken_up).cap_checked_on_estimates is True
+
+
+@pytest.mark.parametrize("flag", [False, None])
+def test_a_take_up_where_neither_holding_was_admitted_on_estimates_leaves_the_flag_as_stored(flag: bool | None) -> None:
+    assert _under_a_cap(flag, flag).cap_checked_on_estimates is flag
+
+
+@pytest.mark.parametrize("launched", [True, False, None])
+def test_a_take_up_that_drops_the_cap_records_no_estimate_flag_beside_no_cap(launched: bool | None) -> None:
+    reopened = _under_a_cap(launched, True, kept=None)
+
+    assert reopened.max_cost_usd is None
+    assert reopened.cap_checked_on_estimates is None
+
+
+def test_a_take_up_across_an_engine_build_still_refuses_a_moved_judge_or_apparatus_naming_only_them() -> None:
+    stored = make_eval_run(
+        judge_model="judge-a",
+        apparatus_settings={"reviewer_pool": "pool-a"},
+        package_version="0.94.0",
+        package_rev="a" * 40,
+        variant_levers={},
+        identity_version=1,
+        created_at="2026-06-01T00:00:00+00:00",
+    )
+    upgraded = {"package_version": "0.95.0", "package_rev": "b" * 40, "cap_checked_on_estimates": True}
+    template = make_template(created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00")
+
+    assert _measured_otherwise(stored, stored.model_copy(update=upgraded), template, toyhost_profile()) is None
+    rejudged = _measured_otherwise(
+        stored, stored.model_copy(update={**upgraded, "judge_model": "judge-b"}), template, toyhost_profile()
+    )
+    assert rejudged is not None and [said.split(" ", 1)[0] for said in rejudged.split("; ")] == ["judge_model"]
+    repooled = _measured_otherwise(
+        stored,
+        stored.model_copy(update={**upgraded, "apparatus_settings": {"reviewer_pool": "pool-b"}}),
+        template,
+        toyhost_profile(),
+    )
+    assert repooled is not None and "apparatus_settings" in repooled
+    assert "package_" not in repooled and "cap_checked" not in repooled
 
 
 @pytest.mark.parametrize(

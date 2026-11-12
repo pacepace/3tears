@@ -11,12 +11,14 @@ from __future__ import annotations
 import html
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from threetears.evals import Answer, Eval, Result
+from threetears.evals.kernel.metrics import describe_goal_check_rate, goal_check_measure
 from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
 from threetears.evals.analysis import (
     ArmServedModel,
@@ -25,7 +27,8 @@ from threetears.evals.analysis import (
     report_html,
     report_markdown,
 )
-from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock, TrialBlock
+from threetears.evals.analysis.report import DisclosureBlock, PrintedCheck, PrintedJudgement, TableBlock, TrialBlock
+from threetears.evals.analysis.report.md_parts import paragraphs
 from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement
 from threetears.evals.analysis.style import GLOSSARY
 from packages.evals.tests.style_support import lint_page
@@ -40,6 +43,14 @@ from packages.evals.tests.g2_support import (
     g2_report,
     g2_ruled_report,
 )
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
 
 
 @pytest.fixture
@@ -56,28 +67,33 @@ async def g2_ruled() -> tuple[Result, Report]:
 async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     lines = report_markdown(report).splitlines()
-    # The title is the campaign's name (no floor is broken on four cases, so none warns under the verdict); the
-    # question declared before the run is quoted whole on its own line under it, the contract the verdict reads; then
+    # The title heads the campaign by the title code builds (what it compares and on what, its name a qualifier; no
+    # floor is broken on four cases, so none warns under the verdict); the question declared before the run is quoted whole on its own line under it, the contract the verdict reads; then
     # the subhead says what the question need not: each arm with its version. Then the verdict, which no floor decides.
     assert lines[0] == "# G2: can the cheaper model replace production?"
     assert lines[1] == f'"{G2_QUESTION}"'
+    # The heading is a question, which names no aspect, so the arms line names it.
     assert lines[3] == (
-        "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · "
+        "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · classify · 14 Oct 2026 · "
         "4 cases × 3 repeats"
     )
     assert '<p class="floor"' not in report_html(report)
     # The Decision section opens on the aspect's floors.
+    # A campaign name that asks a question is no name for an aspect: the label stands.
     assert "\n## Floors\n\n**Floors on classify**\n" in report_markdown(report)
     assert lines[5] == "**cheaper candidate passed less often than production; too few cases to call a difference.**"
-    # The page prints a cost, so the report-wide line on provider routing follows the verdict (owner, 2026-10-25).
-    assert lines[7] == COST_ROUTING_CAVEAT
+    # The page prints a cost, and its provider routing is said in the methods, not here: on the first screen the cost
+    # is what it costs (owner reading, 2026-11-06), so the scoreboard follows the verdict.
+    assert COST_ROUTING_CAVEAT not in report_markdown(report).split("\n## ", 1)[0]
+    assert COST_ROUTING_CAVEAT in report_markdown(report).split("\n## Methods\n", 1)[1]
     # Every arm's cost per reply is under a cent, so the cost is stated per 1,000 replies, and the header says so.
-    assert lines[9:12] == [
+    assert lines[7:10] == [
         "**Scoreboard**",
         "",
         "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Cost per 1,000 replies |",
     ]
-    assert lines[13] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
+    # The scoreboard's cost in its column's one form (#993): cents, two figures on the least.
+    assert lines[11] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.09 |"
     first = report_markdown(report).split("\n## ", 1)[0]
     # The case floor's caveat says what is withheld under four cases and why, in the reader's terms. Nothing else is
     # under the scoreboard: the design is on the arms line.
@@ -124,7 +140,7 @@ async def test_an_outcome_bar_repeating_the_scoreboard_prints_no_second_table(g2
     # Passed, failed by check and failed by judge are the scoreboard's own columns: the bar's table would repeat it.
     assert "**Outcomes**" not in report_markdown(report)
     # The page still draws the bar.
-    assert report_html(report).count('data-chart="outcome_bar"') == 1
+    assert report_html(report).count('data-figure="outcome_bar"') == 1
 
 
 async def test_the_question_is_quoted_once_under_the_title_and_never_in_the_body(
@@ -177,6 +193,204 @@ def _arm_names(report: Report) -> set[str]:
     return {str(row["arm"]).removeprefix("▸ ") for row in scoreboard.values()}
 
 
+#: Eight cases, each numbered, so a runner can price each case alike on every call, whatever order they run in.
+_NUMBERED = [{"text": f"queue request {at}", "label": "queued", "at": at} for at in range(8)]
+
+
+def _priced(base: float, step: float, unpriced: frozenset[int] = frozenset()) -> Any:
+    """A runner answering every case right, each case costing ``base`` and ``step`` more per case after the first;
+    the cases ``unpriced`` names go unpriced."""
+
+    async def run(case: Mapping[str, Any]) -> Answer:
+        at = int(case["at"])
+        cost = None if at in unpriced else base + step * at
+        return Answer(case["label"], model="deepseek", input_tokens=100, output_tokens=10, cost_usd=cost)
+
+    return run
+
+
+async def _contrasted(scale: float, candidate: float = 0.0033) -> str:
+    """A code-only page whose cost contrast resolves, at ``scale`` times a cost of a third of a cent a reply (the
+    candidate's at ``candidate`` a reply)."""
+    arms = {PRODUCTION: _priced(0.0030 * scale, 0.0001 * scale), CANDIDATE: _priced(candidate * scale, 0.00015 * scale)}
+    run = await Eval(_NUMBERED, arms, ["label"], k=3, name="queue").run(store=":memory:")
+    return report_markdown(
+        build_code_only_report(declaring(run.report.bundle, G2_QUESTION), assembled_at="2026-10-14T00:00Z")
+    )
+
+
+async def _one_arm(cost: float) -> str:
+    run = await Eval(CASES, {"production": answering(10, cost)}, ["label"], k=3, name="queue").run(store=":memory:")
+    return report_markdown(run.report)
+
+
+async def _money_pages() -> dict[str, str]:
+    """Every code-only page the money checks read, by name: the suite's pages, a one-arm page at $0.003 a reply, under
+    a cent per 1,000 and under a cent even per 1,000,000, a resolved cost contrast at ordinary size and under a cent
+    per 1,000, and a run whose candidate went unpriced on one case."""
+    pages = {f"page {at}": report_markdown(report) for at, report in enumerate(await _pages())}
+    pages["under a cent per 1,000"] = await _one_arm(0.000003)
+    pages["under a cent at the cap"] = await _one_arm(0.000000003)
+    pages["contrast"] = await _contrasted(1.0)
+    pages["contrast under a cent per 1,000"] = await _contrasted(1e-6)
+    # The candidate's cost past $10 per 1,000 replies, the production's under it: one form over both all the same.
+    pages["contrast across $10"] = await _contrasted(1.0, candidate=0.015)
+    arms = {PRODUCTION: _priced(0.003, 0.0), CANDIDATE: _priced(0.003, 0.0, frozenset({0}))}
+    pages["partly priced"] = report_markdown(
+        (await Eval(_NUMBERED, arms, ["label"], k=3, name="q").run(store=":memory:")).report
+    )
+    return pages
+
+
+#: The heads of two arms' means on one reading, side by side in one row.
+_MEANS = frozenset({"Control mean", "Arm mean"})
+
+#: One amount of money as a page prints it: its sign, its digits, its per-1,000 mark.
+_SPELLED = r"[+\-]?\$\d[\d,]*(?:\.\d+)?(?:/1000)?"
+
+
+def _places(amounts: Iterable[str]) -> set[int]:
+    """The decimals a set of amounts is written to; a zero (``$0``) says nothing of a form, so it is passed over."""
+    return {
+        len(amount.removesuffix("/1000").partition(".")[2])
+        for amount in amounts
+        if float(re.sub(r"[^\d.]", "", amount.removesuffix("/1000")) or 0) != 0
+    }
+
+
+def _two_forms(amounts: Iterable[str]) -> bool:
+    """Whether a set of amounts reads in two forms of money (owner ruling, 2026-11-07: one count of significant
+    figures per set, never one count of decimals): an amount under a dollar to other than two significant figures, or
+    three where it reconciles with a month beside it; one from a dollar to $10 to other than cents; or amounts from $10
+    up both in whole dollars (a rate's) and to cents (a total's)."""
+    whole = cents = False
+    for amount in amounts:
+        digits = re.sub(r"[^\d.]", "", amount.removesuffix("/1000"))
+        if not digits or float(digits) == 0:
+            continue
+        integer, _, fraction = digits.partition(".")
+        if int(integer) == 0:
+            if len(fraction.lstrip("0")) not in (2, 3):
+                return True
+        elif int(integer) < 10:
+            if len(fraction) != 2:
+                return True
+        elif fraction:
+            cents = True
+        else:
+            whole = True
+    return whole and cents
+
+
+def _tables(page: str) -> list[list[list[str]]]:
+    """Every Markdown table on a page, as its rows of cells, its head first (its rule row dropped)."""
+    tables: list[list[list[str]]] = []
+    run: list[list[str]] = []
+    for line in [*page.splitlines(), ""]:
+        if line.startswith("|"):
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            if not all(set(cell) <= set("-: ") for cell in cells):
+                run.append(cells)
+        elif run:
+            tables.append(run)
+            run = []
+    return tables
+
+
+def _money_faults(page: str, arms: set[str]) -> list[str]:
+    """Every way a page's money text breaks the one-form rule (#993): an amount carrying the per-1,000 mark in a table
+    that names the count it is drawn per (two scales on one amount); a mean's or a change's interval whose ends read
+    to other decimals than it does; one figure type in a table read in two forms (:func:`_two_forms`: a column's, and a
+    row's across the arms where the arms are the columns); an amount to one decimal; and a partly priced total that says nothing of it
+    beside itself."""
+    faults: list[str] = []
+    for table in _tables(page):
+        joined = " | ".join(" | ".join(row) for row in table)
+        if re.search(r"per [\d,]+ |\(\$/[\d,]+ ", joined) and "/1000" in joined:
+            faults.append(f"stacked: {joined[:200]}")
+        head, *rows = table
+        # Where the arms are the columns (or their means are), each row's amounts under them are one figure type
+        # across the arms.
+        under = [at for at, cell in enumerate(head) if cell.removeprefix("▸ ") in arms or cell in _MEANS]
+        for at in range(len(head)):
+            # A cell stating one amount (``42 cases, $0.92`` as much as ``$3.40``) states one of its column's.
+            column = [
+                found[0]
+                for row in rows
+                if at < len(row)
+                for found in [re.findall(_SPELLED, row[at])]
+                if len(found) == 1
+            ]
+            if _two_forms(column):
+                faults.append(f"column {head[at]!r}: {column}")
+        for row in rows if len(under) >= 2 else []:
+            bare = [row[at] for at in under if at < len(row) and re.fullmatch(_SPELLED, row[at])]
+            if _two_forms(bare):
+                faults.append(f"row: {row}")
+        # A projection's costs, in whichever column they sit, are one set of totals.
+        projected = [found for row in rows for cell in row for found in re.findall(rf"\d cases, ({_SPELLED})", cell)]
+        if _two_forms(projected):
+            faults.append(f"projected: {projected}")
+    # Money keeps cents or whole dollars, never one decimal ($2.3).
+    faults.extend(f"one decimal: {found.group(0)}" for found in re.finditer(r"\$\d[\d,]*\.\d(?![\d])", page))
+    for found in re.finditer(rf"({_SPELLED})(?: \| | )\[({_SPELLED}), ({_SPELLED})\]", page):
+        if len(_places(found.groups())) > 1:
+            faults.append(f"interval: {found.group(0)}")
+    if "The cost is a floor where" in page:
+        (tested,) = [line for line in page.splitlines() if line.startswith("| Test cost |")]
+        if "trials priced" not in tested:
+            faults.append(f"unmarked partial: {tested}")
+    return faults
+
+
+async def test_a_money_interval_reads_its_ends_on_its_means_ruler() -> None:
+    """Every money figure the code-only pages state with its interval reads its ends where its mean is drawn: at the
+    same count and to the same decimals, the mean between them. The one-arm page's cost, $0.003 a reply every time,
+    reads $3.00 per 1,000 replies, and so does each end; under a cent per 1,000 the ruler moves, and its heading names
+    the count; under a cent even per 1,000,000 it reads there, to the decimals its least amount needs, and never with
+    the per-1,000 mark beside the count."""
+    pages = await _money_pages()
+    assert "| Production cost, per 1,000 replies | $3.00 ($3.00 to $3.00) | 4 |" in pages["page 2"]
+    assert "| Production cost, per 1,000,000 replies | $3.00 ($3.00 to $3.00) | 4 |" in pages["under a cent per 1,000"]
+    assert (
+        "| Production cost, per 1,000,000 replies | $0.0030 ($0.0030 to $0.0030) | 4 |"
+        in pages["under a cent at the cap"]
+    )
+    read = 0
+    for page in pages.values():
+        for found in re.finditer(r"\$(\d[\d,]*\.?\d*) \(\$(\d[\d,]*\.?\d*) to \$(\d[\d,]*\.?\d*)\)", page):
+            mean, low, high = (float(group.replace(",", "")) for group in found.groups())
+            assert low <= mean <= high, found.group(0)
+            read += 1
+    assert read, "the control: some page states a money interval"
+
+
+async def test_a_money_contrasts_interval_reads_in_its_changes_form() -> None:
+    """A cost contrast's change and its interval's ends are one set, in one form: never $0.51 beside [$0.4107,
+    $0.606]. The change carries its sign, as every change does (visual pass, chunk V5), and so does each end of its
+    interval, in the one form an interval prints in."""
+    pages = await _money_pages()
+    assert "| +$0.47 | +$0.35 to +$0.60 |" in pages["contrast"]
+    assert "| +$0.00047 | +$0.00035 to +$0.00060 |" in pages["contrast under a cent per 1,000"]
+
+
+async def test_a_partly_priced_total_says_so_in_its_own_row() -> None:
+    """A run's total that counts only part of its trials' spend is a floor, and its Methods row says so beside it."""
+    pages = await _money_pages()
+    assert (
+        "| Test cost | production $0.072; cheaper candidate $0.063 (21 of 24 trials priced) |" in pages["partly priced"]
+    )
+
+
+async def test_no_code_only_page_breaks_the_one_form_rule_for_money() -> None:
+    """No page stacks two scales on an amount, reads an interval's ends to other decimals than its figure, reads one
+    figure type in a table in two forms, or states a partly priced total bare."""
+    pages = await _money_pages()
+    arms = {"production", "cheaper candidate", "v4.1-flash", "v4-flash", "deepseek-v4.1-flash", "deepseek-v4-flash"}
+    faults = {name: _money_faults(page, arms) for name, page in pages.items()}
+    assert not any(faults.values()), {name: found for name, found in faults.items() if found}
+
+
 async def test_every_page_passes_the_style_lint() -> None:
     for report in await _pages():
         assert lint_page(report_markdown(report), names=_arm_names(report)) == [], report.title
@@ -191,9 +405,17 @@ async def test_every_linked_term_is_defined_once_in_the_glossary() -> None:
         linked = {
             re.sub(r"[^a-z0-9]+", "-", term.casefold()).strip("-") for term, words in GLOSSARY.items() if words in said
         }
-        defined = re.findall(r'<dt id="g-([a-z-]+)">', page)
-        assert linked and linked == set(defined) and len(defined) == len(set(defined))
-        assert 'href="#g-' not in page
+        # Beside the terms it links, the glossary defines each goal check's name by its expression (the owner's
+        # ruling of 2026-11-07), one entry per check the aspect reads.
+        checks = {
+            "check-" + re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+            for name in report.bundle.named_checks().values()
+        }
+        defined = re.findall(r'<dt id="g-([a-z0-9-]+)">', page)
+        assert linked and linked | checks == set(defined) and len(defined) == len(set(defined))
+        assert not linked & checks
+        # The one link into the closed glossary is a goal check's to its own row (coordinator ruling, 2026-11-07).
+        assert 'href="#g-' not in page.replace('href="#g-check-', "")
         assert set(report.terms) <= set(GLOSSARY)
         assert page.index('id="glossary"') > page.index('id="methods"'), "the glossary folds last"
 
@@ -221,10 +443,11 @@ async def test_the_glossary_lists_only_what_the_page_uses_and_explains_the_contr
     assert "cannot change" not in GLOSSARY["floor status"] and "interval" in GLOSSARY["floor status"]
 
 
-async def test_one_arm_reads_n_of_n_cases_passed_first() -> None:
+async def test_one_arm_reads_its_pass_rate_as_a_count_first_then_the_cases_it_missed() -> None:
     one = await Eval(CASES, {"production": answering(10, 0.003)}, ["label"], k=3, name="queue").run(store=":memory:")
     (verdict,) = [b for b in one.report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
-    assert re.fullmatch(r"queue: \d/4 cases passed; \d miss(es)?: case \d(, case \d)*", verdict.text), verdict.text
+    said = r"production passed \d+ of 12 trials on 4 cases\. Cases that failed a trial: case \d(, case \d)*\."
+    assert re.fullmatch(said, verdict.text), verdict.text
 
 
 async def test_one_arm_heads_its_readings_as_readings_since_nothing_is_contrasted() -> None:
@@ -241,7 +464,8 @@ async def test_a_case_its_author_named_is_named_so_everywhere_and_numbered_other
     one = await Eval(named, {"production": answering(10, 0.003)}, ["label"], k=3, name="queue").run(store=":memory:")
     report = one.report
     (verdict,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
-    assert re.fullmatch(r"queue: \d/4 cases passed; \d miss(es)?: queue-\d(, queue-\d)*", verdict.text), verdict.text
+    said = r"production passed \d+ of 12 trials on 4 cases\. Cases that failed a trial: queue-\d(, queue-\d)*\."
+    assert re.fullmatch(said, verdict.text), verdict.text
     (cases,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "cases"]
     assert sorted(row["case"] for row in cases.values()) == [f"queue-{index}" for index in range(4)]
     # Only a failed or lost trial has a record, so its summary is read off the first record the page lays out; a
@@ -254,9 +478,9 @@ async def test_a_case_its_author_named_is_named_so_everywhere_and_numbered_other
     assert all(re.fullmatch(r"queue-\d", str(row["case"])) for row in passed.values())
     # The row anchors by the name; a numbered case keeps anchoring by its number.
     assert '<tr id="case-queue-0">' in report_html(report) and 'id="case-1"' not in report_html(report)
-    comparison = await Eval(CASES, {"a": answering(4, 0.001), "b": answering(1, 0.001)}, ["label"], k=2).run(
-        store=":memory:"
-    )
+    comparison = await Eval(
+        CASES, {"a": answering(4, 0.001), "b": answering(1, 0.001)}, ["label"], k=2, name="a vs b"
+    ).run(store=":memory:")
     assert '<tr id="case-1">' in report_html(comparison.report)
 
 
@@ -330,12 +554,12 @@ async def test_the_trials_section_lists_only_what_went_wrong_and_folds_the_passe
     assert [row["result"] for row in passed.values()] == [
         f"`{trial.result_id}`" for trial in report.bundle.trials if trial.state == "passed"
     ]
-    # The cases table's links: the failed ids first, then the passed, so a row's marks lead to its records.
+    # The cases table's links: every trial of the case, in its ids' own order (a row
+    # reads T1 T2 T3 on every replay; which failed is the marks' to say).
     (cases,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "cases"]
-    states = {trial.trial_id: trial.state for trial in report.bundle.trials}
     for row in cases.values():
-        listed = [states[trial_id] for trial_id in str(row["trials"]).split()]
-        assert listed == sorted(listed, key=lambda state: state == "passed"), row["trials"]
+        numbers = [int(trial_id.removeprefix("T")) for trial_id in str(row["trials"]).split()]
+        assert numbers == sorted(numbers), row["trials"]
     # Both doors: the records open, the passed table a closed fold with its table set off by blank lines.
     markdown = report_markdown(report)
     assert f'<details id="{failed[0].trial_id}" open><summary>' in markdown
@@ -348,7 +572,7 @@ async def test_the_trials_section_lists_only_what_went_wrong_and_folds_the_passe
 
 
 async def test_the_records_open_up_to_a_cap_and_the_lost_follow_the_failed() -> None:
-    every = await Eval(CASES, {"a": answering(0, 0.001), "b": answering(0, 0.001)}, ["label"], k=3).run(
+    every = await Eval(CASES, {"a": answering(0, 0.001), "b": answering(0, 0.001)}, ["label"], k=3, name="a vs b").run(
         store=":memory:"
     )
     census, table, records, passed = _trials_section(every.report)
@@ -381,9 +605,9 @@ async def test_a_trial_s_summary_is_never_the_first_line_of_what_it_asked() -> N
         'The world as it stood before the persona\'s first turn:\n\n## music\n{\n  "catalog": [{"artist": "Anz"}]\n}'
     )
     cases = [{"text": f"{world} {index}", "label": "queued"} for index in range(2)]
-    comparison = await Eval(cases, {"a": answering(4, 0.001), "b": answering(1, 0.001)}, ["label"], k=2).run(
-        store=":memory:"
-    )
+    comparison = await Eval(
+        cases, {"a": answering(4, 0.001), "b": answering(1, 0.001)}, ["label"], k=2, name="a vs b"
+    ).run(store=":memory:")
     report = comparison.report
     trials = [block for block in report.blocks if isinstance(block, TrialBlock)]
     assert trials and all(re.fullmatch(r"case \d", trial.case_label) for trial in trials)
@@ -393,6 +617,8 @@ async def test_a_trial_s_summary_is_never_the_first_line_of_what_it_asked() -> N
     trial_summaries = [summary for summary in summaries if re.match(r"T\d+ · ", summary)]
     assert len(trial_summaries) == 2 * len(trials)
     for summary in trial_summaries:
+        # Read as a reader hears it: the HTML's state is a pill, whose icon a screen reader skips and whose word it reads.
+        summary = re.sub(r"<[^>]+>", "", re.sub(r'<span aria-hidden="true">[^<]*</span>', "", summary))
         assert "{" not in summary and "The world" not in summary
         assert re.fullmatch(r"T\d+ · case \d · [ab] · (passed|failed|lost)", summary), summary
     (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "trials"]
@@ -454,16 +680,13 @@ async def test_a_transcript_is_quoted_whole_and_none_of_it_is_the_report_s_struc
     assert not re.search(r"<h[1-6][^>]*>[^<]*(music|Persona|Ben)", page)
 
 
-async def test_an_author_s_words_open_no_block_of_their_own_in_markdown(g2_ruled: tuple[Result, Report]) -> None:
-    _, coded = g2_ruled
-    report = build_code_only_report(coded.bundle, assembled_at="2026-10-14T00:00Z")
+def test_an_author_s_words_open_no_block_of_their_own_in_markdown() -> None:
+    """An author's words, as a report document's lede and captions lay them out (``md_parts.paragraphs``): paragraphs
+    and bullet lists, every other block a line would open escaped, so they add no heading to the page's outline."""
     body = "## music\n\n- # Persona\n- plain\n\n```\n\n> quoted\n\n1. first\n\n<details>"
-    words = report.model_copy(
-        update={"blocks": [*report.blocks, TextBlock(section="not_tested", role="finding_body", body=body, finding=0)]}
-    )
-    markdown = report_markdown(words)
-    assert "\\## music\n\n- \\# Persona\n- plain\n\n\\```\n\n\\> quoted\n\n1\\. first\n\n\\<details>" in markdown
-    assert _outline(markdown) == _outline(report_markdown(report))
+    markdown = "\n".join(paragraphs(body))
+    assert markdown == "\\## music\n\n- \\# Persona\n- plain\n\n\\```\n\n\\> quoted\n\n1\\. first\n\n\\<details>"
+    assert _outline(markdown) == []
 
 
 async def test_sixty_passed_trials_and_one_failed_carry_one_record_and_one_table() -> None:
@@ -480,7 +703,9 @@ async def test_sixty_passed_trials_and_one_failed_carry_one_record_and_one_table
     assert "What the case asked" not in passed_rows and "Stored result:" not in passed_rows
 
 
-async def test_a_failed_check_reads_as_its_expression_in_the_trials_table(g2_ruled: tuple[Result, Report]) -> None:
+async def test_a_failed_check_reads_as_its_name_in_the_trials_table_its_expression_in_its_record(
+    g2_ruled: tuple[Result, Report],
+) -> None:
     _, coded = g2_ruled
     expression = 'call_count("music.queue_track") >= 2'
     trials = list(coded.bundle.trials)
@@ -488,18 +713,31 @@ async def test_a_failed_check_reads_as_its_expression_in_the_trials_table(g2_rul
     trials[first] = trials[first].model_copy(
         update={
             "cause": "check",
-            "failed_checks": [TrialCheck(name=f"Pass rate of {expression}", expression=expression)],
+            # A bundle's trial holds the check by its measure's key, never a name (bundle shape 66).
+            "failed_checks": [TrialCheck(name=goal_check_measure(expression), expression=expression)],
         }
     )
-    bundle = coded.bundle.model_copy(update={"trials": trials})
+    # A goal check a trial fails is one the aspect reads: its catalog describes it.
+    catalog = {**coded.bundle.measure_catalog, goal_check_measure(expression): describe_goal_check_rate(expression)}
+    bundle = coded.bundle.model_copy(update={"trials": trials, "measure_catalog": catalog})
     report = build_code_only_report(bundle, assembled_at="2026-10-14T00:00Z")
     (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "trials"]
     whys = [row["why"] for row in table.values()]
-    # Code, as written: no underscores or dots stripped, and no "Pass rate of" on one trial's failure.
-    assert f"check: `{expression}`" in whys
+    # By its name, never its expression (the owner's ruling of 2026-11-07), and no "Pass rate of" on one trial's
+    # failure; the trial's record and the glossary print the expression as written, no underscores or dots stripped.
+    name = report.bundle.named_checks()[expression]
+    assert name == "Queue track calls check"
+    # A name that says it is a check is never told so twice (``check: Queue track calls check``).
+    assert name in whys and f"check: {name}" not in whys
+    assert not [why for why in whys if why and expression in why]
     markdown = report_markdown(report)
     assert "Pass rate of" not in markdown and "call count(" not in markdown
-    assert f"- `{expression}`" in markdown
+    assert f"- `{name}`: `{expression}`" in markdown
+    anchor = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+    assert (
+        f'- <a id="g-check-{anchor}"></a>**{name}**: The goal check `{expression}`, which code runs on every trial.'
+        in markdown
+    )
 
 
 async def test_what_a_trial_quotes_leaves_the_document_s_structure_intact(g2_ruled: tuple[Result, Report]) -> None:
@@ -512,15 +750,15 @@ async def test_what_a_trial_quotes_leaves_the_document_s_structure_intact(g2_rul
     first = next(index for index, trial in enumerate(trials) if trial.state == "failed")
     trials[first] = trials[first].model_copy(
         update={
-            "failed_checks": [TrialCheck(name="the *label* check", expression=expression)],
+            "failed_checks": [TrialCheck(name=goal_check_measure(expression), expression=expression)],
             "judge": [
                 TrialJudgement(dim="tone", criterion="Is it <b>kind</b>?", score=1, scale="ordinal", reason=reason)
             ],
         }
     )
-    report = build_code_only_report(
-        coded.bundle.model_copy(update={"trials": trials}), assembled_at="2026-10-14T00:00Z"
-    )
+    # The name reaches the page as its template declares it: a trial holds the check's key, and the page names it.
+    named = coded.bundle.model_copy(update={"trials": trials, "goal_check_names": {expression: "the *label* check"}})
+    report = build_code_only_report(named, assembled_at="2026-10-14T00:00Z")
     markdown = report_markdown(report)
     assert "- `the *label* check`: `` answer == `queued` ``" in markdown
     assert "- `tone`: 1 (ordinal). Asked: `Is it <b>kind</b>?`. `Closed early.</details>  ## Not a section`" in markdown
@@ -531,6 +769,30 @@ async def test_what_a_trial_quotes_leaves_the_document_s_structure_intact(g2_rul
     record = unquoted.split(f'<details id="{trials[first].trial_id}"', 1)[1].split("</details>", 1)[0]
     assert "Stored result:" in record
     assert _outline(markdown) == _outline(report_markdown(build_code_only_report(coded.bundle, assembled_at="x")))
+
+
+async def test_a_trials_record_prints_its_checks_and_dimensions_in_a_type_of_its_own(
+    g2_ruled: tuple[Result, Report],
+) -> None:
+    """A bundle's trial holds a check by its measure's key and a judged dimension by its id; a page's record held the
+    name it prints in the same field of the same type, so a key where a name belonged read as a silent non-match. The
+    page's record has its own types now, and a bundle's entry handed to it is refused."""
+    _, coded = g2_ruled
+    expression = "answer == 'queued'"
+    trials = list(coded.bundle.trials)
+    first = next(index for index, trial in enumerate(trials) if trial.state == "failed")
+    held_check = TrialCheck(name=goal_check_measure(expression), expression=expression)
+    held_judgement = TrialJudgement(dim="__outcome__", score=0, scale="pass_fail", reason="It never queued.")
+    trials[first] = trials[first].model_copy(update={"failed_checks": [held_check], "judge": [held_judgement]})
+    named = coded.bundle.model_copy(update={"trials": trials, "goal_check_names": {expression: "Queued check"}})
+    report = build_code_only_report(named, assembled_at="2026-10-14T00:00Z", trials="all")
+
+    (record,) = [b for b in report.blocks if isinstance(b, TrialBlock) and b.trial_id == trials[first].trial_id]
+    assert record.failed_checks == [PrintedCheck(name="Queued check", expression=expression)]
+    assert record.judge == [PrintedJudgement(name="outcome", score=0, scale="pass_fail", reason="It never queued.")]
+    for field, held in (("failed_checks", held_check), ("judge", held_judgement)):
+        with pytest.raises(ValidationError, match="valid dictionary or instance of Printed"):
+            TrialBlock.model_validate({**dict(record), field: [held]})
 
 
 # =============================================================================
@@ -547,13 +809,25 @@ async def test_every_colour_is_a_variable_both_schemes_define() -> None:
     page = report_html(await g2_report())
     (style,) = re.findall(r"<style>(.*?)</style>", page, re.S)
     roots = _root_blocks(style)
-    assert len(roots) == 6, "light, dark by preference and dark by attribute, for the page and for the charts"
+    assert len(roots) == 3, "light, dark by preference and dark by attribute: the kit's, which the charts draw from too"
     rules = re.sub(r":root[^{]*\{[^}]*\}", "", style)
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", rules), "a hard-coded colour outside :root"
-    light = " ".join(roots[0::3])
-    dark = " ".join(roots[1::3])
-    used = set(re.findall(r"var\((--[\w-]+)", rules)) - {"--font-sans", "--font-mono"}
+    light, dark_by_preference, dark_by_attribute = roots
+    # The kit's faces, type steps and measures are tokens too, set once for both schemes, a table frame sets its
+    # pinned columns' widths on itself (--key, --id1, --id2, --lines1) and a long header its own (--head); the colours
+    # are the rest.
+    used = {
+        variable
+        for variable in re.findall(r"var\((--[\w-]+)", rules)
+        if not re.match(r"--(f|t)-|--(col|wide|r|key|id1|id2|lines1|head)$", variable)
+    }
+    # A colour the light block sets as another token (``--a: var(--b)``) follows that token, which each dark block sets
+    # in its place.
+    derived = dict(re.findall(r"(--[\w-]+):\s*var\((--[\w-]+)\)", light))
     for variable in used:
-        assert f"{variable}:" in light and f"{variable}:" in dark, variable
+        defined = derived.get(variable, variable)
+        assert f"{variable}:" in light, variable
+        for dark in (dark_by_preference, dark_by_attribute):
+            assert re.search(rf"(?<![\w-]){defined}:", dark), variable
     svg = "".join(re.findall(r"<svg\b.*?</svg>", page, re.S))
     assert not re.search(r'(fill|stroke|color|style)="[^"]*(#|rgb)', svg), "a colour drawn inline"

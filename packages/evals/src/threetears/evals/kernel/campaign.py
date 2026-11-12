@@ -23,11 +23,11 @@ so it can never drift from the runs it summarises.
 from __future__ import annotations
 
 import uuid
-from typing import Any, Literal, Self, get_args
+from typing import Any, Literal, Self
 
 from pydantic import ConfigDict, Field, computed_field, field_validator, model_validator
 
-from threetears.evals.kernel.authored import AuthoredCampaignAnalysis, Confidence
+from threetears.evals.kernel.authored import Confidence
 from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall, Floor, printed_aspect_name
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.schema.values import SweepableValue
@@ -80,10 +80,6 @@ log = get_logger(__name__)
 #: tier added to one is a tier of the other.
 ConfidenceTier = Confidence
 
-#: The tiers, strongest first — the order a surface ranks by.
-CONFIDENCE_TIERS: tuple[ConfidenceTier, ...] = get_args(Confidence)
-
-
 _CONFIDENCE_TIER_DESCRIPTION = "How firmly the evidence settles the claim: very_high | high | medium | low."
 
 #: Which kind of per-cell reading a reference names — a measure (``CellFacts.measures``) or a
@@ -130,10 +126,10 @@ def evidence_tier_of(rows: list[JudgedEvidenceTier | None]) -> EvidenceTier:
 class CampaignWindow(EvalDocumentModel):
     """The [start, end] time span a campaign's runs cover — DERIVED, never stored.
 
-    Produced by :func:`derive_window` from the member runs' ``created_at`` values
-    and carried on :class:`CampaignView` in the ``campaign_get`` response. Not a
-    field on :class:`EvalCampaign`: deriving it at read time is what keeps it from
-    drifting as runs join or leave the campaign.
+    Produced by :func:`derive_window` from the member runs' ``created_at`` values, and
+    carried on a context bundle (``AnalysisContextBundle.window``). Not a field on
+    :class:`EvalCampaign`: deriving it at read time is what keeps it from drifting as runs join
+    or leave the campaign.
     """
 
     start: str = Field(description="Earliest member-run created_at (ISO-8601).")
@@ -161,8 +157,9 @@ class EvalCampaign(DurableDocumentModel):
     most one arm is the control, and it comes first. A campaign that names no candidate arm reads
     each other variant among its runs as one (:func:`~threetears.evals.analysis.campaigns.campaign_arms`).
 
-    **Floors only warn** (:class:`~threetears.evals.kernel.declaration.Floor`): each is a typed clause on one aspect,
-    and a broken one is the first thing the page says. **The call** is what a person decided over the readings
+    **Floors warn and never block** (:class:`~threetears.evals.kernel.declaration.Floor`): each is a typed clause on
+    one aspect, a broken one is the first thing the page says, and a broken one on an asked aspect caps the
+    candidate's standing in code's dominance read. **The call** is what a person decided over the readings
     (:class:`~threetears.evals.kernel.declaration.CampaignCall`), None until one is recorded.
 
     **Exploratory is derived, never stored**: a campaign none of whose aspects declares a design is exploratory, and
@@ -319,11 +316,12 @@ class EvalCampaign(DurableDocumentModel):
 
     @model_validator(mode="after")
     def _one_control_first(self) -> Self:
-        """At most one arm is the control and it comes first; labels and variant keys name one arm each.
+        """At most one arm is the control and it comes first; labels, short names and variant keys name one arm each.
 
         :return: The validated campaign.
         :rtype: EvalCampaign
-        :raises ValueError: Two control arms, a control after a candidate, or a label or key on two arms.
+        :raises ValueError: Two control arms, a control after a candidate, a label or key on two arms, or a short name
+            that is another arm's label or short name.
         """
         controls = [index for index, arm in enumerate(self.arms) if arm.role == "control"]
         if len(controls) > 1:
@@ -336,6 +334,20 @@ class EvalCampaign(DurableDocumentModel):
         ):
             if repeated := sorted({value for value in values if values.count(value) > 1}):
                 raise ValueError(f"arm {what}(s) {', '.join(map(repr, repeated))} name more than one arm")
+        # A short name is printed in place of its label where space is tight, and the label stays every identifier (a
+        # recorded call, a recommendation). So no name of one arm, its label or its short name, may be a name of
+        # another: a reader copying a name from a chart must reach the arm the chart meant.
+        owners: dict[str, set[str]] = {}
+        for arm in self.arms:
+            owners.setdefault(arm.label, set()).add(arm.label)
+            if arm.short_name is not None:
+                owners.setdefault(arm.short_name, set()).add(arm.label)
+        if alike := sorted(name for name, held in owners.items() if len(held) > 1):
+            raise ValueError(
+                f"arm name(s) {', '.join(map(repr, alike))} would name more than one arm (a short name is printed in "
+                "place of its label, and may be no other arm's label or short name); give each arm a short name no "
+                "other arm is labelled or named"
+            )
         return self
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
@@ -378,46 +390,6 @@ class EvalCampaign(DurableDocumentModel):
         :rtype: Aspect | None
         """
         return next((aspect for aspect in self.aspects if run_id in aspect.run_ids), None)
-
-
-class CampaignView(EvalDocumentModel):
-    """A campaign plus its read-time-derived window — the ``campaign_get`` payload.
-
-    Computed once by the host's eval service and serialized by every surface that
-    answers ``campaign_get``, so no two of them can answer ``campaign_get`` with different facts. ``window`` is ``None`` when
-    no member runs resolved (no scope supplied, or none of the run ids exist in
-    it) — an honest absence, not a zero span.
-
-    A member run gets exactly one of three fates, and all three are reported:
-    resolved (it feeds the window), archived, or unresolvable. The third used to be
-    a bare ``continue``, so a campaign could claim N memberships, resolve none of
-    them, and print a bare ``Runs: N``.
-    """
-
-    campaign: EvalCampaign
-    window: CampaignWindow | None = Field(
-        default=None,
-        description="Derived from member runs' created_at; None when no runs resolved.",
-    )
-    archived_run_ids: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Member runs an operator archived — still attached, excluded from the window and from "
-            "every cohort a report over this campaign assembles. Empty when no scope_id was "
-            "supplied, since membership cannot be resolved without one."
-        ),
-    )
-    unresolved_run_ids: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Member run_ids that do not exist in the supplied scope — an honest gap, not dropped "
-            "silently. Reported separately from archived_run_ids for the reason ContextBundle already "
-            "records: unresolved is a lookup that failed, archived is a curation that succeeded, and "
-            "pooling them makes a deliberate exclusion read as missing data. Empty when no scope_id "
-            "was supplied, since membership cannot be resolved without one — NOT because every member "
-            "resolved."
-        ),
-    )
 
 
 def derive_window(run_created_ats: list[str]) -> CampaignWindow | None:
@@ -483,12 +455,14 @@ class GenerationProvenance(EvalDocumentModel):
             "would be in a rebuild cut there and was never in this generation's input."
         ),
     )
-    token_cost: float = Field(
+    token_cost: float | None = Field(
         ge=0.0,
         description=(
             "Generation token cost in dollars (Visible Costs). Where a repair round-trip ran this is "
             "the TOTAL across both calls, not the successful one alone — both were billed, and a "
-            "figure naming only the survivor would under-report what the analysis cost."
+            "figure naming only the survivor would under-report what the analysis cost. None for a report document "
+            "(`basis` `doc`) any of whose turns nothing priced: unknown, never $0. The document's own generation "
+            "record holds every turn."
         ),
     )
     repair_attempts: int = Field(
@@ -497,7 +471,8 @@ class GenerationProvenance(EvalDocumentModel):
             "Soundness-repair round-trips this analysis needed: 0 when the generator's first output "
             "was accepted, 1 when it was refused and regenerated with the refusal fed back. Bounded "
             "at one attempt by the generator, deliberately NOT by this field — a stored analysis must "
-            "keep loading if that bound is ever revisited."
+            "keep loading if that bound is ever revisited. For a report document (basis doc), the analyst's "
+            "submissions sent back before one passed, every round's; the editor's asking again is not counted."
         ),
     )
     repaired_refusal: str | None = Field(
@@ -506,7 +481,9 @@ class GenerationProvenance(EvalDocumentModel):
             "payload or a missing required field alike; None when nothing was "
             "repaired. Stored as the message rather than a code because it names the offending "
             "finding and the rule it broke, which is what makes a repair rate diagnosable instead of "
-            "merely countable."
+            "merely countable. For a report document (basis doc), whose `repair_attempts` counts the analyst's "
+            "submissions sent back, it is a summary, not a refusal verbatim: each kind they were sent back for and how "
+            "many, in name order, since each bounce's own faults are in the stored analyst session."
         ),
     )
     cell_model_version: int = Field(
@@ -539,7 +516,8 @@ class GenerationProvenance(EvalDocumentModel):
         min_length=1,
         description=(
             "sha256 of the user message the generation's FIRST request sent — the bundle as the writer read it, "
-            "rendered by that build. A repair resends it with the refusal appended; that addition is "
+            "rendered by that build; for a report document (basis doc), the digest of the frozen snapshot's report "
+            "input the analyst and the editor read, since a session's first message is written from it. A repair resends it with the refusal appended; that addition is "
             "`repaired_refusal`, not part of this digest. It is what lets a later rendering of the same bundle be "
             "checked against what the writer was actually sent: a reporter case freezing a recorded memo's writer "
             "message compares against it."
@@ -577,19 +555,6 @@ class CoverageLens(EvalDocumentModel):
     """The coverage lens: per-lever measurement summaries."""
 
     levers: list[LeverCoverage] = Field(default_factory=list, description="Per-lever coverage summaries.")
-
-
-# The caveat kinds the ENGINE owns, available to every host.
-#
-# Deliberately not a closed enum on the field. R8 gives the lever vocabulary to the host for the
-# reason that applies here too: a closed engine-owned set on a host-facing field forces a domain
-# with a legitimate fifth kind to jam it into ``scope``, and the field then stops meaning anything
-# — which is the one thing a required classification exists to prevent. A host registers its own
-# kinds on its profile (:attr:`~threetears.evals.kernel.host.profile.HostProfile.caveat_kinds`) and the
-# union is CHECKED nowhere yet — that belongs where a profile is in hand and prompt compliance is
-# judged on output, which is where the prompt is rebuilt. These four were derived from
-# the first host's own caveats and are offered, not imposed.
-ENGINE_CAVEAT_KINDS: frozenset[str] = frozenset({"apparatus", "sampling", "instrument", "scope"})
 
 
 class EvidenceRow(EvalDocumentModel):
@@ -916,15 +881,15 @@ class EvalAnalysis(EvalDocumentModel):
     requires it be non-empty — that the campaign actually EXISTS is a service
     concern checked at generate time, not a model validator.
 
-    **One memo per campaign.** Code reports, the writer recommends, a person decides: ``document`` is the writer's one
-    memo over every aspect — findings across them, one recommendation, a short summary per aspect and next steps
-    (:class:`~threetears.evals.kernel.authored.AuthoredCampaignAnalysis`) — kept as written, except that each figure
-    reference in its prose is replaced by the value code read (:mod:`threetears.evals.analysis.prose_refs`).
-    **Everything else code filled sits beside it**: ``resolutions`` holds, per finding by position, the numbers its
-    readings resolved to (each row naming its aspect); ``aspects`` holds each aspect's frozen bundle and what code read
-    off it; and ``campaign_bundle`` what the campaign adds over its aspects — its question, arms, floors and code's
-    readings across aspects. Links inside the document are positions, and :meth:`check_positions` refuses one that
-    points nowhere or makes the ``invalidates`` relation cycle.
+    **What wrote it.** An analysis ``analysis_generate`` writes is a report document: the analyst's ``report-doc/1``
+    (an ``eval_report_doc``, stored beside it), which ``report_doc_id`` names (:attr:`basis` is ``doc``). Two retired
+    writers stored the others, which every door reads as code's page with the retired writer's line: the report
+    planner's names its :class:`EvalReportPlan` in ``report_plan_id`` (``basis`` ``plan``), and the memo writer's keeps
+    its memo in ``document`` (``basis`` ``memo``), held as the JSON it was stored as and never read. Exactly one of
+    ``document``, ``report_plan_id`` and ``report_doc_id`` is set. Whatever wrote it, ``recommended_variant_key``,
+    ``aspects`` (each aspect's frozen bundle and what code read off it), ``campaign_bundle`` (what the campaign adds
+    over its aspects: its question, arms, floors and code's readings across aspects) and the insights it minted mean
+    the same thing.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
@@ -961,14 +926,34 @@ class EvalAnalysis(EvalDocumentModel):
             "analysis written against one declaration must not later read as written against another."
         ),
     )
-    document: AuthoredCampaignAnalysis = Field(
-        description="What the generator authored, as written, with each figure reference in its prose rendered by code."
+    document: VerbatimJsonObject | None = Field(
+        description=(
+            "The memo a retired memo writer stored, as the JSON it was stored as; no door reads it. None for an "
+            "analysis the report planner wrote (`report_plan_id`) and for a report document's (`report_doc_id`)."
+        )
+    )
+    report_plan_id: str | None = Field(
+        default=None,
+        description=(
+            "The id of the report plan this analysis was written as (`EvalReportPlan`, stored beside it; "
+            "`report_plan_id(<analysis id>)` when generated). None for an analysis the memo writer wrote, which every "
+            "analysis stored before the planner is, and for a report document's."
+        ),
+    )
+    report_doc_id: str | None = Field(
+        default=None,
+        description=(
+            "The id of the report document this analysis was written as (`EvalReportDoc`, stored beside it), which "
+            "`analysis_generate` writes with the analyst and the report editor. None for a memo's or a plan's."
+        ),
     )
     recommended_variant_key: str | None = Field(
         description=(
-            "The variant key of the arm the memo recommends, resolved by code from the recommendation's label when the "
-            "analysis was saved, so a person's call is matched to the arm by its key whatever later relabels it. None "
-            "where the memo recommends nothing (a measurement, or a choice with no clear winner)."
+            "The variant key of the arm the memo, the plan or the report document recommends, resolved by code when the "
+            "analysis was saved (from the memo's recommendation label, the plan's recommended option, or the one arm "
+            "the document's `recommends` names), so a person's call is matched to the arm by its key whatever later "
+            "relabels it. None where it recommends nothing (a measurement, a choice with no clear winner, a plan's "
+            "trade-off or no call, a document recommending no arm or more than one)."
         )
     )
     judged_tier_rule: JudgedTierRule = Field(
@@ -980,7 +965,10 @@ class EvalAnalysis(EvalDocumentModel):
     )
     resolutions: list[FindingResolution] = Field(
         default_factory=list,
-        description="What code filled for each finding, by position in `document.findings`: its numbers.",
+        description=(
+            "What code filled for each finding of a retired memo, by position in `document`'s findings: its numbers. "
+            "Empty for a plan's and a report document's."
+        ),
     )
     aspects: list[AspectAnalysis] = Field(
         min_length=1, description="Each aspect's frozen evidence and what code read off it, in the campaign's order."
@@ -1017,6 +1005,14 @@ class EvalAnalysis(EvalDocumentModel):
             raise ValueError(f"doc_type must be 'eval_analysis', got '{v}'")
         return v
 
+    @property
+    def basis(self) -> Literal["memo", "plan", "doc"]:
+        """What wrote this analysis: ``memo`` (the memo writer, ``document``), ``plan`` (the report planner, whose
+        plan ``report_plan_id`` names) or ``doc`` (the report writer, whose document ``report_doc_id`` names)."""
+        if self.document is not None:
+            return "memo"
+        return "doc" if self.report_doc_id is not None else "plan"
+
     def aspect(self, label: str) -> AspectAnalysis:
         """The aspect of this analysis with ``label``.
 
@@ -1033,83 +1029,121 @@ class EvalAnalysis(EvalDocumentModel):
 
     @model_validator(mode="after")
     def check_positions(self) -> EvalAnalysis:
-        """Refuse a link that points nowhere, a resolution that does not match its finding, or a gating cycle.
+        """Refuse aspects that are not one each, an analysis written as none or several of a memo, a plan and a report
+        document, and resolutions on one that holds no memo.
 
-        Also refuses aspects that are not one each, a resolved row or an aspect summary naming an aspect the analysis
-        does not hold, and an aspect summarised twice.
+        A retired memo is held as stored, never read, so nothing in it is checked against its resolutions.
 
         :return: This analysis, unchanged.
         :rtype: EvalAnalysis
-        :raises ValueError: A position is out of range, a finding invalidates itself, the ``invalidates``
-            relation cycles, ``resolutions`` does not have one entry per finding, a resolution's
-            rows are not the readings its finding names, or an aspect is unknown or repeated.
+        :raises ValueError: An aspect appears twice, not exactly one of ``document``, ``report_plan_id`` and
+            ``report_doc_id`` is set, or an analysis with no memo holds resolutions.
         """
         labels = [aspect.label for aspect in self.aspects]
         if repeated := sorted({label for label in labels if labels.count(label) > 1}):
             raise ValueError(f"aspects {repeated} appear more than once; one entry per aspect")
-        findings = self.document.findings
-        count = len(findings)
-        if self.resolutions and len(self.resolutions) != count:
-            raise ValueError(f"resolutions has {len(self.resolutions)} entries for {count} findings; one per finding")
-        # A finding's evidence tier is read off its resolved rows, so the rows must be the readings the
-        # finding names — one per reading, in order, of the same kind — or the tier describes other evidence.
-        for index, (finding, resolution) in enumerate(zip(findings, self.resolutions, strict=False)):
-            named = [(ref.cell, ref.measure_id, ref.reading) for ref in finding.evidence]
-            resolved = [(row.cell_ref, row.measure_id, row.reading) for row in resolution.evidence]
-            if named != resolved:
-                raise ValueError(
-                    f"resolutions[{index}].evidence resolves {resolved} and findings[{index}] names {named}; "
-                    "one resolved row per named reading, in order"
-                )
-            if stray := sorted({row.aspect for row in resolution.evidence} - set(labels)):
-                raise ValueError(f"resolutions[{index}].evidence names aspect(s) {stray}, which this analysis lacks")
-        summarised = [summary.aspect for summary in self.document.aspect_summaries]
-        if twice := sorted({label for label in summarised if summarised.count(label) > 1}):
-            raise ValueError(f"aspect_summaries summarise {twice} more than once; one summary per aspect")
-        if unknown := sorted(set(summarised) - set(labels)):
-            raise ValueError(f"aspect_summaries name {unknown}, which this analysis's aspects ({labels}) do not hold")
-
-        def in_range(where: str, positions: list[int]) -> None:
-            bad = [position for position in positions if not 0 <= position < count]
-            if bad:
-                raise ValueError(
-                    f"{where} names finding position(s) {bad}, and there are {count} findings (0-{count - 1})"
-                )
-
-        recommended = self.document.recommended()
-        if recommended is not None:
-            in_range("recommendation.rests_on", recommended.rests_on)
-        if (recommended is None) != (self.recommended_variant_key is None):
+        written = [self.document is not None, self.report_plan_id is not None, self.report_doc_id is not None]
+        if sum(written) != 1:
             raise ValueError(
-                "recommended_variant_key is the key of the arm the memo recommends: set exactly when the memo makes a "
-                "recommendation"
+                "an analysis is written as a memo (`document`), a report plan (`report_plan_id`) or a report document "
+                "(`report_doc_id`): exactly one is set"
             )
-        for index, finding in enumerate(findings):
-            in_range(f"findings[{index}].invalidates", finding.invalidates)
-            if index in finding.invalidates:
-                raise ValueError(f"findings[{index}] invalidates itself")
-        # A gating cycle has no reading order: each finding would have to be read before the other.
-        state: dict[int, int] = {}
+        if self.document is None and self.resolutions:
+            raise ValueError("a planned analysis or a report document has no memo findings, so it holds no resolutions")
+        return self
 
-        def visit(node: int, trail: list[int]) -> None:
-            state[node] = 1
-            for nxt in findings[node].invalidates:
-                if state.get(nxt) == 1:
-                    raise ValueError(f"findings invalidate each other in a cycle: {[*trail, node, nxt]}")
-                if state.get(nxt) is None:
-                    visit(nxt, [*trail, node])
-            state[node] = 2
 
-        for node in range(count):
-            if state.get(node) is None:
-                visit(node, [])
+def report_plan_id(analysis_id: str) -> str:
+    """The id of the report plan an analysis was written as: one plan per analysis, found from the analysis alone.
+
+    :param analysis_id: The analysis.
+    :ptype analysis_id: str
+    :return: Its plan's id.
+    :rtype: str
+    """
+    return f"{analysis_id}:report-plan"
+
+
+class ReportPlanProvenance(EvalDocumentModel):
+    """How a report plan was generated: the planner's prompt, model, calls, repairs and cost.
+
+    The planner makes two calls, a structure and its prose, and each may buy one repair, so a plan took two to four
+    calls; a repaired call keeps the refusal it mended, so a repaired plan is never mistakable for one accepted first
+    time. Every field is required: the generation states each one.
+    """
+
+    prompt_id: str = Field(min_length=1, description="The registry key the planner prompt was resolved under.")
+    prompt_version: str = Field(
+        min_length=1, description="A short hash of both calls' system prompts and both contracts the planner was sent."
+    )
+    generator_model: str = Field(min_length=1, description="The model that wrote the prose, as its provider named it.")
+    calls: int = Field(ge=2, le=4, description="Provider calls the plan took: the structure, the prose, any repairs.")
+    repair_attempts: int = Field(ge=0, le=2, description="Calls repaired: at most one per call.")
+    structure_refusal: str | None = Field(description="The refusal the structure's repair mended; None for none.")
+    prose_refusal: str | None = Field(description="The refusal the prose's repair mended; None for none.")
+    token_cost: float = Field(ge=0.0, description="Dollars reported across every call, each repair's included.")
+    user_message_digest: str = Field(
+        min_length=1, description="sha256 of the structure call's first user message: the report input as sent."
+    )
+    generated_at: str = Field(description="When the plan was accepted (ISO-8601).")
+
+
+class EvalReportPlan(EvalDocumentModel):
+    """The report plan a planned analysis was written as: what its page says, in what order, with which charts.
+
+    Stored beside its :class:`EvalAnalysis`, under the id :func:`report_plan_id` derives from the analysis's, so the
+    analysis names it (``EvalAnalysis.report_plan_id``) and it names the analysis back. Derived and regenerable, like
+    the analysis: generating the campaign again writes a new analysis and a new plan, and
+    ``EvalStorage.drop_derived`` deletes it with the analyses. ``plan`` is the plan as the report planner stored it,
+    as its ``report-plan/1`` JSON; its prose names figures by key, resolved against the report input built from the
+    analysis's frozen bundle, whose digest at generation is ``report_input_digest``.
+
+    The report planner is retired, and so is its plan model: ``plan`` is held verbatim and never validated or rendered,
+    so a stored plan still reads, and the regenerable sweep (``drop_derived``, ``analysis_delete``) still clears it.
+    """
+
+    id: str = Field(min_length=1, description="`report_plan_id(analysis_id)`.")
+    doc_type: Literal["eval_report_plan"] = "eval_report_plan"
+    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    scope_id: str = Field(min_length=1)
+
+    analysis_id: str = Field(min_length=1, description="Reference → EvalAnalysis.id: the analysis this plan wrote.")
+    campaign_id: str = Field(min_length=1, description="Reference → EvalCampaign.id.")
+    report_input_digest: str = Field(
+        min_length=1,
+        description="sha256 of the report input the plan was written against, as canonical JSON, at generation.",
+    )
+    plan: VerbatimJsonObject = Field(
+        description="The completed, checked plan the page renders, as `report-plan/1` JSON (its prose names figures by key)."
+    )
+    generation: ReportPlanProvenance = Field(description="How the plan was generated.")
+    created_at: str = Field(default_factory=utc_now_iso)
+
+    @field_validator("doc_type")
+    @classmethod
+    def check_doc_type(cls, v: str) -> str:
+        """Reject documents loaded into the wrong model class."""
+        if v != "eval_report_plan":
+            raise ValueError(f"doc_type must be 'eval_report_plan', got '{v}'")
+        return v
+
+    @model_validator(mode="after")
+    def check_id(self) -> EvalReportPlan:
+        """Refuse a plan whose id is not the one its analysis derives.
+
+        :return: This plan, unchanged.
+        :rtype: EvalReportPlan
+        :raises ValueError: ``id`` is not ``report_plan_id(analysis_id)``.
+        """
+        if self.id != report_plan_id(self.analysis_id):
+            raise ValueError(f"a report plan's id is {report_plan_id(self.analysis_id)!r}, not {self.id!r}")
         return self
 
 
 #: Where one generation attempt stands. ``running``: started and not yet ended — the record a background
 #: generation writes as it starts, so its job is answerable from the store. How one ended: ``stored``: an
 #: analysis was produced and persisted.
-#: ``refused``: the generator finished and its output was refused, and so was the repair's.
+#: ``refused``: the writer finished and its output was refused, and so was the repair's.
 #: ``failed``: anything else that ended the attempt with an error — a call the provider cut short,
 #: a precondition refused before any call, a provider call that raised, a failed write.
 #: ``cancelled``: the attempt was cancelled mid-flight, by a caller's budget or disconnect, or by a shutdown —
@@ -1201,8 +1235,9 @@ class EvalAnalysisAttempt(CoreDocumentModel):
         default=0,
         ge=0,
         description=(
-            "Calls whose cost was never observed: cancelled or raised before a result came back, or returned with "
-            "no reported cost. Each may still have been billed, so `token_cost` is a floor whenever this is non-zero."
+            "Calls that returned with no reported cost, so `token_cost` is a floor whenever this is non-zero. A call "
+            "cancelled or raised before a result came back is not one: no reply reported its usage, so it adds "
+            "nothing to `token_cost` (counted in `calls` alone)."
         ),
     )
     token_cost: float = Field(
@@ -1599,9 +1634,7 @@ class EvalInsight(EvalDocumentModel):
 
 
 __all__ = [
-    "ENGINE_CAVEAT_KINDS",
     "AttemptOutcome",
-    "CampaignView",
     "CampaignWindow",
     "CoverageLens",
     "AspectAnalysis",
@@ -1626,4 +1659,5 @@ __all__ = [
     "derive_window",
     "ended_sweep_lifetimes",
     "evidence_tier_of",
+    "report_plan_id",
 ]

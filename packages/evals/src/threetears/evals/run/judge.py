@@ -29,6 +29,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.schema.models import (
     MODEL_DEFAULT_TEMPERATURE,
     PASS_FAIL_SCORES,
@@ -85,7 +86,7 @@ _FAILED_BECAUSE: dict[FailureOwner, str] = {
 #: classifier asks for two words, reasoning buys it nothing, so it sends
 #: ``reasoning: {enabled: false}``. A judge's reply is short too (the JSON contract in
 #: ``judge_service`` asks for one paragraph and one score), but the work behind the
-#: score is not. ``reporter.groundedness`` checks every claim in a memo against its
+#: score is not. A groundedness dimension checks every claim in a report against its
 #: evidence bundle, and that is what reasoning is for, so taking reasoning away would
 #: change the instrument, not just its cost. That holds for a pass/fail dimension as for a
 #: 1-5 one: a two-word answer can stand on as much checking as a number. Disabling is also
@@ -549,7 +550,7 @@ async def run_judge_llm(
             label,
             case_id,
             attempts_made,
-            "unpriced" if total_cost is None else f"${total_cost:.6f}",
+            "unpriced" if total_cost is None else f"${round_half_even(total_cost, 6)}",
         )
 
     # Every attempt sends the reply's shape, derived from the criteria the parse reads it by.
@@ -613,7 +614,7 @@ async def run_judge_llm(
         # Logged whenever the provider reported anything about the attempt's spend — a call with
         # unreported counts and a known cost still spent, and a truthiness test would drop it.
         if attempt_input is not None or attempt_output is not None or attempt_cost is not None:
-            cost_str = f" cost=${attempt_cost:.6f}" if attempt_cost is not None else ""
+            cost_str = f" cost=${round_half_even(attempt_cost, 6)}" if attempt_cost is not None else ""
             log.info(
                 "eval_judge: model=%s input=%s output=%s%s judge=%s case=%s attempt=%d/%d",
                 getattr(result, "model", "unknown") or "unknown",

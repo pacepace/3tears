@@ -37,14 +37,13 @@ that cries wolf gets switched off.
   unguarded: ``test_host_vocabulary_ceiling.py`` counts host terms in every module's full source against
   the per-module, per-term ceilings in ``host_vocabulary_register.py``, which only fall. That scope-out is also why a string
   counts only when it is **token-shaped** — no whitespace, at most
-  :data:`_MAX_TOKEN_LENGTH` characters. ``EVAL_ANALYSIS_GEN_DEFAULT`` in
-  ``analysis/gen_prompt.py`` is the live demonstration: a module-level assignment whose
-  value is the whole shipped generation prompt, so without the token-shape rule every
-  sentence of it is scanned as a "field default". It contains ``research.research_model``
+  :data:`_MAX_TOKEN_LENGTH` characters. The retired memo writer's prompt was the demonstration: a
+  module-level assignment whose value was a whole shipped generation prompt, so without the token-shape
+  rule every sentence of it was scanned as a "field default". It contained ``research.research_model``
   — whole-word ``research``, a registered host noun — in a sentence teaching a model NOT to
-  compare one role's value with another's. So the constant would register as a violation
-  on prose alone, and the same constant demonstrates the whole-word rule below: it contains
-  ``dj`` as a substring, inside ``adjective``, and ``dj`` is a registered host noun. (Derive a claim like this one from
+  compare one role's value with another's, so it would have registered as a violation on prose alone;
+  and it showed the whole-word rule below: it contained ``dj`` as a substring, inside ``adjective``, and
+  ``dj`` is a registered host noun. (Derive a claim like this one from
   :data:`~packages.evals.tests.host_vocabulary.HOST_NOUNS` rather than from a hand-typed noun
   list: a recalled list is how an example of this kind goes false.)
 - *Every string outside the three surfaces that carry one.* A string value is scanned when it is
@@ -196,11 +195,21 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "schema/campaign_upgrade.py",
     # The one rule naming an aspect after its campaign's behavior, which every site that does so calls.
     "schema/aspect_label.py",
+    # The one function reading a lever id as words, which every surface naming a lever calls.
+    "schema/lever_words.py",
     "kernel/declaration.py",
+    "kernel/eval_scope.py",
     # The measure names one result carries, read off the result model, below the declaration and the host profile.
     "kernel/carried_measures.py",
     "kernel/surface.py",
     "kernel/authored.py",
+    # The chart vocabulary a report document's charts are asked in and drawn by: the engine's vocabulary for a page.
+    "kernel/chart_query.py",
+    # The snapshot every analyst tool reads: one report input frozen whole, in the engine's vocabulary.
+    "kernel/report_snapshot.py",
+    # The report document the analyst writes from a snapshot, and its stored form: the engine's vocabulary too.
+    "kernel/report_doc.py",
+    "kernel/analyst_gap.py",
     "kernel/analysis_measures.py",
     # The engine's own Pydantic base. Shared contract by construction — it exists precisely so
     # that the models above it can be constructed in a host that has none of the first host installed —
@@ -224,7 +233,6 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # Which stored documents are kept and how an old one is upgraded: the engine's own version policy.
     "schema/versioning.py",
     "analysis/bundle/assemble.py",
-    "analysis/gen_prompt.py",
     # What the writer of a campaign's one memo reads: every host's campaign is rendered through it alike.
     "analysis/campaign_bundle.py",
     # The gen package's public root, its exports scanned. Declared module by module, like
@@ -288,6 +296,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/provider.py",
     # The completion port itself, split from how the engine reads what it returns.
     "schema/completion.py",
+    # The tool-turn port: the shape a tool-calling loop sends and gets back, named for no host.
+    "schema/turns.py",
     "run/fidelity.py",
     # The criteria judge. It left the host-coupled set when its last host reach went: the JSON
     # parser it calls now lives in the kernel, and it logs under its own module name rather than the
@@ -409,7 +419,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # `CandidateTelemetry` and into engine vocabulary (`AsyncDelivery`) beside the kind's opaque
     # `kind_payload`.
     "kernel/candidate_kind.py",
-    # The completion client a cell's calls are held to the run's cost cap through — the engine's own and a
+    # The completion client a cell's calls count in the run's cost cap through — the engine's own and a
     # host's kind's alike, so it is shared contract and names no host.
     "kernel/capped_completion.py",
     # The cassette seams a kind implements and the cell handle ``prepare`` is handed. Split out of
@@ -444,6 +454,10 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # The floor under a subject arm's largest judge or simulator call, priced before launch through the engine's
     # own judge service and simulator prompts. Shared contract from the day it existed: it names no host.
     "run/call_floor.py",
+    # How a failed provider call lands on a candidate's output (account, provider or candidate), shared by every kind
+    # the engine ships. Shared contract from the day it existed: it reads the engine's own failure description and
+    # names no host.
+    "kernel/failed_call.py",
     # How a run's cells are executed, serially or several at once: the runner's own seam, which a host may fill
     # with its own pool. It names no host and reads nothing a host owns.
     "run/executor.py",
@@ -507,6 +521,14 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # where its price came from and the ledger stores that, so a provider name arriving here would
     # be one host's pricing claimed for every host's dollars.
     "kernel/usage_capture.py",
+    # Which build of the engine is installed, from its own distribution metadata: the engine's own name only.
+    "kernel/build_stamp.py",
+    # A stored result as the engine's readers read it, and the protocol a result and its reading share: the
+    # result's own field names, and nothing a host names.
+    "kernel/result_reading.py",
+    # Where a read's wall time went, as the one eval.read_tier line a host's log store reads: the engine's own
+    # phase and field names.
+    "kernel/phase_log.py",
     # A cell's world events and the session every world-bearing kind seeds, fires and reads back
     # through: dimension names and conditions are the host's words carried as data. A host noun here
     # would be one host's world written into every kind's cell.
@@ -559,7 +581,7 @@ _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 #: adapter. Each exists to serve every host, so a host noun in either would be a leak. ``quick``, the
 #: batteries (``Eval`` and the command line), is whole from birth on the same terms, and so are the
 #: surfaces an agent drives the engine through — ``ops``, ``actions`` and ``transports`` — which every
-#: host mounts.
+#: host mounts, and ``harness``, the writer harness above ``quick``, which every writer eval runs on.
 #:
 #: ``providers``, the provider adapter the package ships as an optional extra, is whole from birth on the same
 #: terms: it serves every host that brings no client of its own. It names the providers it builds clients for,
@@ -579,6 +601,7 @@ _SHARED_CONTRACT_TREES: tuple[str, ...] = (
     "storage",
     "testing",
     "quick",
+    "harness",
     "ops",
     "actions",
     "transports",

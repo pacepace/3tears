@@ -1,0 +1,84 @@
+{
+  "ending": "stored",
+  "reason": "",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, the decision block and the frontier claim tell the reader what is unresolved and why. No price per point of overall quality was declared, and the answer flips at $4.94 and $14.76 a point. The lean is Atlas-M, and the reason is given: it matches Atlas-L on confirming and declining at $31.37 against $75.05. The risks are on screen: Atlas-M scores 2.96 points lower, it trails by 5 in troubleshooting, and the checks have no named judge. One gap: the $14.76 flip is shown as a single point in the decision block, though its interval appears in the frontier claim (see findings)."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "The claims follow on from each other. The frontier claim sets the price steps. The atlas_gap claim shows where Atlas-L's 2.96 points come from, ahead in four of five tasks and most in troubleshooting (+5, +2.7 to +7.3). The checks claim gives the lean its reason, and the open70b claim explains why Open-70B drops out. price_tradeoff confirms Open-70B is never the best buy, at $6.96 a point from Brisk-S against $4.58 onward to Atlas-M. Nothing contradicts the headline."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 1,
+          "reason": "Atlas-M's weak points are visible: 2.96 points lower overall and 5 behind in troubleshooting. Three things read stronger than the intervals allow. (1) The open70b claim calls staying in character Open-70B's 'one strength'. But 97% against Atlas-L's 95% has an interval of -1.7 to +5.7, so the two can't be told apart. (2) The lean says 'any price per point under $14.76', but that flip point's own interval runs from $11.09 to $22.05. (3) The parity in the headline and the checks claim rests on differences whose intervals cross zero (declines -1.7 to +3.7). That shows no difference was detected; it does not show the two are equal."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "I checked the omitted checks. Atlas-M is within noise of Atlas-L on calling the research tool only when needed (difference +2, -1.6 to +5.6) and on citing the source (+2, -1.9 to +5.9), as the omitted list says. Brisk-S's bigger gaps there, such as resolving the issue at 74% against 90%, only back up the lean. No failure examples are stored (examples_list is empty). Leaving out latency in other tasks doesn't matter because no latency budget was declared."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "Each caveat is handled. The unnamed judge of the checks is limited to the lean and carried into a next step. Best-of-four is weighed against leads that exclude zero. Missing declarations are carried into the first next step. The missing control is explained, but it rests on 'shared cases', which the snapshot never states. It also leaves out that the headline's own parity claim is one of the zero-crossing differences it affects (see findings)."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names the action and what it would settle. Declaring a price or guardrails turns the trade into a decision. A routed mix with Atlas-L on troubleshooting tests how much of the lead it recovers and at what cost, aimed at the 5-point shortfall. Naming and calibrating the checks' judge tests whether the parity holds. Declaring a volume turns per-thousand prices into a monthly budget."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "The frontier and checks blocks fit their claims, and the claims would change if the values flipped. The open70b claim's key figure, 97% for staying in character, is not in its block, which shows only overall quality per task. The atlas_gap block's caption promises an overall row that isn't there, so the headline's 2.96 (+1.98 to +3.94) never appears in that block. Its Note column just repeats the Value column."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "open70b",
+          "severity": "should_fix",
+          "finding": "The claim says Open-70B's 'one strength' is staying in character at 97%. Against Atlas-L's 95% the difference is +2 with an interval of -1.7 to +5.7, and that figure isn't in the block. Either add a staying-in-character panel and say it is level with the Atlas models, or point to what the block does show: on persona overall quality Open-70B scores 90, close to Atlas-L's 91 and above Atlas-M's 88 (interval -0.1 to +4.1)."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The 'Where the answer flips' line and the lean present $14.76 as a sharp line ('any price per point under $14.76'). The unpaired interval on that step runs from $11.09 to $22.05. Say that in the decision block, for example in Watch: a decider who prices a point anywhere from about $11 to $22 sits where the Atlas-M or Atlas-L call isn't settled by this run."
+        },
+        {
+          "claim": "checks",
+          "severity": "should_fix",
+          "finding": "'As often as Atlas-L' and the headline's 'as reliably' rest on differences whose intervals cross zero: declines +1 (-1.7 to +3.7) on 150 cases, and confirms 98% against 98% on 180. Reword as 'within noise of Atlas-L', or give the difference interval. Also say which model each 17-point gap is measured from: Brisk-S declines 17 points less than Atlas-M but 18 less than Atlas-L."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The no-control caveat says 'pairing the shared cases could only narrow the intervals shown', but the snapshot never states that the arms ran the same cases. The caveat also names only speculation-bait quality as an example. Its most decision-relevant use is the Atlas-M/Atlas-L parity on confirming and declining that the lean rests on. State the shared-cases assumption as an assumption and name the parity as a claim this caveat affects."
+        },
+        {
+          "claim": "atlas_gap",
+          "severity": "should_fix",
+          "finding": "The caption says 'overall and in each place', but there is no overall row. Add the pooled gap of +2.96 (+1.98 to +3.94) so the headline figure appears in its supporting block, and drop the Note column, which repeats Value. Also put a figure key on 'four of five' here and in the best-of-several caveat, as code flagged."
+        }
+      ],
+      "total": 12,
+      "passes": true,
+      "must_fix": false
+    }
+  ]
+}

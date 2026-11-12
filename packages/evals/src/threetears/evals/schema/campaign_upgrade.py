@@ -22,10 +22,17 @@ from datetime import datetime
 from typing import Any
 
 from threetears.evals.schema.aspect_label import aspect_label_for
+from threetears.evals.schema.lever_words import lever_id_words
 from threetears.evals.schema.logs import get_logger
 
 
-__all__ = ["QUESTION_SEPARATOR", "UPGRADED_CONTROL_LABEL", "aware_instant", "upgrade_campaign_v15"]
+__all__ = [
+    "QUESTION_SEPARATOR",
+    "UPGRADED_CONTROL_LABEL",
+    "aware_instant",
+    "upgrade_campaign_v15",
+    "upgrade_campaign_v16",
+]
 
 log = get_logger(__name__)
 
@@ -125,6 +132,42 @@ def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
                 "identity_version": design.get("control_identity_version"),
             }
         ]
+    return upgraded
+
+
+#: The lever prefixes the quick path's two kinds key a factor under (``callable.prompt``), which no author wrote: the
+#: step names such a lever by the factor alone (``prompt``), as the quick path now stores it.
+_QUICK_PATH_PREFIXES = ("callable.", "callable-judged.")
+
+
+def _authored_factor(lever: str) -> str:
+    """A lever's id less the quick path's kind namespace, which no author wrote (``callable.prompt`` to ``prompt``);
+    any other id as it is."""
+    return next((lever.removeprefix(prefix) for prefix in _QUICK_PATH_PREFIXES if lever.startswith(prefix)), lever)
+
+
+def upgrade_campaign_v16(document: Mapping[str, Any]) -> dict[str, Any]:
+    """A stored v16 ``eval_campaign`` with every declared axis named: each axis of each aspect's design that stores no
+    ``reader_name`` takes its id, less the quick path's kind namespace (``callable.prompt`` to ``prompt``), read as words
+    by :func:`~threetears.evals.schema.lever_words.lever_id_words`, the one rule that reads a lever's id as words; an
+    axis that stores one keeps it.
+
+    Pure, and total: an aspect with no design, a design with no axes and an axis that is not a mapping pass through as
+    they are, and ``document`` is not modified. Nothing else moves: no key, digest, time or addressing field.
+
+    :param document: The stored v16 campaign, as the store returned it (or as the v15 step left it).
+    :ptype document: Mapping[str, Any]
+    :return: A new document whose every declared axis carries a reader name.
+    :rtype: dict[str, Any]
+    """
+    upgraded = copy.deepcopy(dict(document))
+    for aspect in upgraded.get("aspects") or []:
+        design = aspect.get("design") if isinstance(aspect, dict) else None
+        if not isinstance(design, dict):
+            continue
+        for axis in design.get("axes") or []:
+            if isinstance(axis, dict) and not axis.get("reader_name") and isinstance(axis.get("axis_id"), str):
+                axis["reader_name"] = lever_id_words(_authored_factor(axis["axis_id"]))
     return upgraded
 
 

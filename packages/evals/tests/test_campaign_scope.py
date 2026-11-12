@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.evals.analysis import campaigns
+from threetears.evals.analysis import assemble_context_bundle, campaigns
 from threetears.evals.kernel.errors import ValidationFailedError
 
 from packages.evals.tests.factories import make_eval_run
@@ -121,14 +121,14 @@ class TestAttachment:
         assert campaigns.add_runs_to_campaign(storage, campaign.id, _HOME, ["run-here"]).run_ids == ["run-here"]
 
 
-def test_the_view_reads_members_in_the_campaign_s_scope() -> None:
+def test_the_evidence_reads_members_in_the_campaign_s_scope() -> None:
     storage, store = _storage_with_a_run_in_each_scope()
     campaign = campaigns.create_campaign(
         storage, _definition("run-here"), scope_id=_HOME, created_by="op", profile=_HOST, exploratory=True
     )
     del store.documents[(_HOME, "run-here")]
 
-    view = campaigns.get_campaign_view(storage, campaign.id, _HOME)
+    bundle = assemble_context_bundle(campaign, storage=storage, profile=_HOST)
 
-    assert view.unresolved_run_ids == ["run-here"]
-    assert view.window is None
+    assert bundle.unresolved_run_ids == ["run-here"]
+    assert bundle.window is None

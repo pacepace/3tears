@@ -661,6 +661,7 @@ class JudgeKindOverlays(BaseModel):
 
     config_ids: dict[str, str] = Field(
         default_factory=dict,
+        title="judge config",
         description=(
             "criterion -> the versioned JudgeConfig whose prompt asks it; a criterion absent from the map is asked "
             "with the built-in prompt"
@@ -670,6 +671,7 @@ class JudgeKindOverlays(BaseModel):
         default=None,
         ge=0.0,
         le=2.0,
+        title="temperature",
         description=(
             "the temperature every call is requested at; None = what each criterion's prompt asks for (its "
             "config's temperature, else the default every unconfigured criterion is judged at)"

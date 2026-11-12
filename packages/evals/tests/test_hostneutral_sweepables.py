@@ -23,7 +23,9 @@ from threetears.evals.kernel.host.sweepables import CORE_SWEEPABLES, JUDGE_INPUT
 from threetears.evals.schema.models import ClientRequestSettings, EvalRun
 
 
-_SUBJECT = SubjectSnapshot(subject_id="summarizer-3", subject_label="Summarizer, config 3", state=None)
+_SUBJECT = SubjectSnapshot(
+    subject_id="summarizer-3", subject_label="Summarizer, config 3", state=None, captured_at="2026-08-01T00:00:00+00:00"
+)
 
 #: Each role's apparatus dimension, the run field it reads (what the role was ASKED for), and the role's pins.
 ROLES = [
@@ -277,6 +279,32 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # the cell model hold.
     (
         (64, 14),
+        (_CORE_V24 - {"max_cost_usd"})
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
+    # 65/14: a rate's family contrast is drawn on its bounded interval, and its verdict needs that interval to exclude
+    # zero. A shape-only bump: the apparatus set and the cell model hold.
+    (
+        (65, 14),
+        (_CORE_V24 - {"max_cost_usd"})
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
+    # 66/14: names leave the evidence (a bundle freezes ids and facts; a page names and words them at render). A
+    # shape-only bump: the apparatus set and the cell model hold.
+    (
+        (66, 14),
         (_CORE_V24 - {"max_cost_usd"})
         | {
             "judge_request_settings",

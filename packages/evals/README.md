@@ -31,18 +31,27 @@ needs_human = "bool"
 first line says how it went:
 
 ```text
-triage: 16/30 cases passed; 14 misses: gdpr-delete, nonprofit, phish-suspend, phish-invoice, crash-at-checkout, and 9 more
+triage: triage passed 62 of 90 trials on 30 cases. Cases that failed a trial: refund-after-cancel, export-typo, slow-sync, gdpr-delete, nonprofit, and 9 more.
 ```
 
 Below it come each field's pass rate, each `category` label's precision and recall, the top misses with why each
-missed, and where its report page is. Then climb [the ladder](docs/ladder.md), one idea per rung:
+missed, and where its report page is. The runner also takes your app's system message, its prompt file, `max_tokens`
+and effort: [the keys a TOML file takes](examples/README.md#the-keys-a-toml-file-takes). Then climb
+[the ladder](docs/ladder.md), one idea per file:
 
 | Rung | Example | Climb it when |
 |---|---|---|
 | [1](docs/ladder.md#rung-1-your-own-function) | [`1-triage/triage.py`](examples/1-triage/triage.py) | Point it at your own function: 15 lines of Python. |
-| [2](docs/ladder.md#rung-2-a-judge-checked-against-a-person) | [`2-replies/`](examples/2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check the judge against a person. |
-| [3](docs/ladder.md#rung-3-two-prompts-compared) | [`3-invoices/`](examples/3-invoices/extract.py) | Changing a prompt? Compare it against the current one, and get a report you can hand to a reviewer. |
-| [4](docs/ladder.md#rung-4-an-agent-graded-on-the-world-it-leaves) | [`4-booking/`](examples/4-booking/agent.py) | Is your agent doing the right thing to the world, not only saying it? Then serve your evals to the team. |
+| [2](docs/ladder.md#rung-2-a-judge-checked-against-a-person) | [`2-replies/`](examples/2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check that the judge is right. |
+| [3a](docs/ladder.md#rung-3a-two-prompts-compared) | [`3-invoices/compare.py`](examples/3-invoices/compare.py) | Changing a prompt? Compare it against the current one, and read the verdict. |
+| [3b](docs/ladder.md#rung-3b-a-margin-so-a-reading-can-be-equivalent) | [`3-invoices/margin.py`](examples/3-invoices/margin.py) | Is it good enough? Declare a margin, so a reading can come out equivalent. |
+| [3c](docs/ladder.md#rung-3c-a-guardrail-decided-on-its-own) | [`3-invoices/guardrail.py`](examples/3-invoices/guardrail.py) | Must it not get worse somewhere? A guardrail, decided on its own. |
+| [3d](docs/ladder.md#rung-3d-the-gate-in-ci) | [`3-invoices/ci.py`](examples/3-invoices/ci.py) | Gate CI on it, with a report you can hand to a reviewer. |
+| [3e](docs/ladder.md#rung-3e-two-levers-at-once) | [`3-invoices/grid.py`](examples/3-invoices/grid.py) | Two levers at once? A grid of factors, read by one lever. |
+| [3f](docs/ladder.md#rung-3f-have-a-model-write-the-analysis) | `--write-report` over `compare.py` | Have a model write the analysis. |
+| [4a](docs/ladder.md#rung-4a-an-agent-graded-on-the-world-it-leaves) | [`4-booking/agent.py`](examples/4-booking/agent.py) | Is your agent doing the right thing to the world, not only saying it? |
+| [4b](docs/ladder.md#rung-4b-serve-it-to-the-team) | [`4-booking/serve.py`](examples/4-booking/serve.py) | Serve your evals, and the reports over them, to the team. |
+| [5](docs/ladder.md#rung-5-evaluate-the-evaluator) | [`5-writer/`](examples/5-writer/writer.py) | Is the model that writes your reports writing them well? A writer is a model too: compare two of its skills on frozen campaigns, and let the engine read the promotion. Its Sonnet recording replays offline, free. |
 
 **Where the science lives:**
 - [Measuring soundly](docs/measuring-soundly.md): which design answers your question, how many cases, and the traps.
@@ -70,18 +79,21 @@ In a checkout of this repo, `uv sync` at the root does it, and the commands abov
 on the base install: it speaks each provider's HTTP API over `httpx`, with no SDK and no other 3tears package. The
 examples run on cheap models through OpenRouter (`OPENROUTER_API_KEY`); `Model(id, provider="anthropic")`
 (`ANTHROPIC_API_KEY`) and `provider="openai"` (`OPENAI_API_KEY`) are options, and `base_url=` takes any
-OpenAI-compatible endpoint. After a pip install, fetch the examples from the repository first
+OpenAI-compatible endpoint. Its prices are a default for trying the package: a host hands `Model` its own pricer,
+since only the host knows what it pays ([who sets the prices](docs/cost-and-budgets.md#who-sets-the-prices)). After a
+pip install, fetch the examples from the repository first
 ([how](examples/README.md#running-them)).
 
 > **The public API is still changing.** From 0.70.0 only its host contract is promised: a name on it moves with a
-> deprecation cycle, and any other declared name may change in any release, recorded in `MIGRATIONS.toml`. About 520
-> names are declared, [mapped by rung](docs/surface.md); the rest a root exports are provisional
+> deprecation cycle, and any other declared name may change in any release, recorded in `MIGRATIONS.toml`. The declared
+> names are [mapped by rung](docs/surface.md); the rest a root exports are provisional
 > ([stability tiers](docs/adopting-a-host.md#stability-tiers)).
 
 ## What is different
 
 - **A verdict, not a mean.** Every version is run over the same frozen cases and tested case by case against a control,
-  and evidence that cannot tell two versions apart says "not separated", never "no difference"
+  and evidence that cannot tell two versions apart says so ("the evidence cannot tell v2 and v1 apart"), never "no
+  difference"
   ([why](docs/design.md#numbers)).
 - **Guardrails apart from capability.** What a version must never do is decided on its own, so a gain cannot pay for
   a breach ([why](docs/design.md#guardrails-are-a-pillar-apart-from-capability)).
@@ -99,7 +111,7 @@ this README is the package's description, they do not resolve, so read the docs 
 
 - [Building an inventory](docs/building-an-inventory.md): what to test before a line of code, ending in rung 0; then
   which cases a classifier needs, and how many.
-- [The ladder](docs/ladder.md): rungs 1 to 4, through the four examples.
+- [The ladder](docs/ladder.md): rungs 1 to 5, through the five examples.
 - [Concepts](docs/concepts.md): the six concepts, and the glossary of every other word.
 
 **Go deeper**
@@ -110,7 +122,8 @@ this README is the package's description, they do not resolve, so read the docs 
   campaigns have hit.
 - [Evaluating a tool-using agent](docs/evaluating-agents.md): a world, seeds, goal checks, the conformance kit, and
   why the world contract is shaped as it is.
-- [Cost and budgets](docs/cost-and-budgets.md): what a launch will cost, and what stops it.
+- [Cost and budgets](docs/cost-and-budgets.md): who sets the prices, what a launch or a report will cost, and what
+  stops it.
 - [Serving](docs/serving.md): the command line, keeping and reading runs, the actions an agent calls, and MCP.
 - [Adopting the engine](docs/adopting-a-host.md): your own host, store, kind and launcher.
 
@@ -128,16 +141,17 @@ this README is the package's description, they do not resolve, so read the docs 
 |---|---|---|---|
 | World contract | `World(State, tools=[...])`, each case's `world` key, expression graders; on a host, `WorldRegistry` | [Evaluating a tool-using agent](docs/evaluating-agents.md) | [`4-booking/`](examples/4-booking/agent.py) |
 | World conformance kit | `check_world_conformance` (`threetears.evals.kernel.host`) | [Step 5](docs/evaluating-agents.md#step-5-run-the-conformance-kit-against-your-world) | |
-| Guardrails, decided apart from capability | `grader(fn, guard=...)`, `Judge(guard={dim: ...})`, `Result.guardrails()`; on a host, `MetricDescriptor(guardrail=True)`, `RubricDim(axis="boundary")` | [Reading the guardrails](docs/reading-reports.md#reading-the-guardrails) | [`3-invoices/`](examples/3-invoices/extract.py) |
-| Equivalence, the only verdict that says "good enough" | `grader("label", margin=0.05)`, `grader(fn, margin=...)`, `grader(rating, range=(1, 5))`; on a host, `MetricDescriptor.materiality_threshold` and `value_range` | [Reading a comparison](docs/reading-reports.md#reading-a-comparison) | [`3-invoices/`](examples/3-invoices/extract.py) |
-| Typed verdicts and a CI gate | `Result.verdicts()`, `Result.gate()`, `python -m threetears.evals gate --fail-on regressed,breached` | [`gate`](docs/serving.md#gate) | [`3-invoices/`](examples/3-invoices/extract.py) |
-| Grids of factors | arms named as `k=v` pairs (`"prompt=v2, effort=low"`), `Result.against` | [Start from the question](docs/measuring-soundly.md#start-from-the-question) | [`3-invoices/`](examples/3-invoices/extract.py) |
+| Guardrails, decided apart from capability | `grader(fn, guard=...)`, `Judge(guard={dim: ...})`, `Result.guardrails()`; on a host, `MetricDescriptor(guardrail=True)`, `RubricDim(axis="boundary")` | [Reading the guardrails](docs/reading-reports.md#reading-the-guardrails) | [`3-invoices/guardrail.py`](examples/3-invoices/guardrail.py) |
+| Equivalence, the only verdict that says "good enough" | `grader("label", margin=0.05)`, `grader(fn, margin=...)`, `grader(rating, range=(1, 5))`; on a host, `MetricDescriptor.materiality_threshold` and `value_range` | [Reading a comparison](docs/reading-reports.md#reading-a-comparison) | [`3-invoices/margin.py`](examples/3-invoices/margin.py) |
+| Typed verdicts and a CI gate | `Result.verdicts()`, `Result.gate()`, `python -m threetears.evals gate --fail-on regressed,breached` | [`gate`](docs/serving.md#gate) | [`3-invoices/ci.py`](examples/3-invoices/ci.py) |
+| Grids of factors | arms named as `k=v` pairs (`"prompt=v2, effort=low"`), `Result.against` | [Start from the question](docs/measuring-soundly.md#start-from-the-question) | [`3-invoices/grid.py`](examples/3-invoices/grid.py) |
 | Campaigns: one question over aspects, with floors that warn | `create_campaign` (`question`, `arms`, `aspects`, `floors`, `aspects_from`), `add_runs_to_campaign`, `set_campaign_control`, `exploratory` | [Declare the campaign](docs/measuring-soundly.md#declare-the-campaign-its-question-arms-and-aspects) | |
-| One page per campaign, read by its kind (measurement, choice, change) | `campaign_report`, `Result.page`, `CampaignReport.write`, `campaign_readings` | [The campaign's first screen](docs/reading-reports.md#the-campaigns-first-screen) | [`3-invoices/`](examples/3-invoices/extract.py) |
+| One page per campaign, read by its kind (measurement, choice, change) | `campaign_report`, `Result.page`, `CampaignReport.write`, `campaign_readings` | [The campaign's first screen](docs/reading-reports.md#the-campaigns-first-screen) | [`3-invoices/compare.py`](examples/3-invoices/compare.py) |
 | A person's call, recorded against code's readings | `campaign_record` (`floors_overridden`, `bars_overridden`) | [Recording the call](docs/adopting-a-host.md#recording-the-call) | |
 | Cost against quality | `Answer`, `max_cost_usd=`, the frontier | [Cost and budgets](docs/cost-and-budgets.md), [the frontier](docs/measuring-soundly.md#the-frontier-passk-against-cost) | |
 | Judge calibration and evidence tiers | `Judge(labels=...)`, `rate_result`, `judge_agreement`, `JudgeEvidenceTier` | [Judges and calibration](docs/judges-and-calibration.md) | [`2-replies/`](examples/2-replies/replies.py) |
-| Analysis written by a model over frozen evidence | `generate_analysis` | [Having a model write the analysis](docs/reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence) | [`llm_analysis.py`](tests/fixtures/generate_analysis/llm_analysis.py) |
+| A report an analyst model writes over frozen evidence, checked by code and reviewed by an editor | `python -m threetears.evals.harness FILE --write-report MODEL`; on a host, `analysis_generate`, `report_read` and the `evals_analyst` tool | [The analyst's report](docs/reading-reports.md#the-analysts-report-written-over-frozen-evidence) | [`3-invoices/compare.py`](examples/3-invoices/compare.py), with `--write-report` |
+| The report writer evaluated as the thing under test: two of its skills on frozen campaigns, promoted on the judge's preference between pages | `WriterEval`, `Writer`, `AnalystSkill` (`threetears.evals.harness`); on a host, the `writer_pairwise` and `writer_promotion` actions | [Pairwise preference for the report writer](docs/judges-and-calibration.md#pairwise-preference-for-the-report-writer) | [`5-writer/`](examples/5-writer/writer.py), replayed offline |
 | Cassettes | `World(tools=[...], recording=...)`; on a host, `cassette_mode="capture"` / `"replay"` | [Step 4](docs/evaluating-agents.md#step-4-cassettes-for-tool-results), [on a host](docs/adopting-a-host.md#cassettes-recording-and-replaying-tools) | |
 | MCP | `threetears.evals.actions`, `mount_fastmcp` (extra `fastmcp`) | [Serving](docs/serving.md#fastmcp) | [`4-booking/serve.py`](examples/4-booking/serve.py) |
 | Keeping runs | `Eval(...).run(store=path)` (by default `.evals/evals.sqlite`); any `DocumentStore`, proven with `STORE_CONFORMANCE_CASES` | [Keep your runs](docs/serving.md#keep-your-runs-and-read-them-back), [the store](docs/adopting-a-host.md#the-store-and-the-conformance-kit-that-proves-it) | |

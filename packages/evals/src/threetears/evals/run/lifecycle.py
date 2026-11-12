@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import ValidationError
 
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalRun
@@ -439,7 +440,7 @@ def _rejudge_inputs(
 
 def _dollars(cost_usd: float | None) -> str:
     """A spend for a log line: dollars, or ``unpriced`` — never a zero standing in for unknown."""
-    return f"${cost_usd:.6f}" if cost_usd is not None else "unpriced"
+    return f"${round_half_even(cost_usd, 6)}" if cost_usd is not None else "unpriced"
 
 
 def _recount_rejudged_exclusion(

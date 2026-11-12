@@ -1,0 +1,1083 @@
+"""The report writer's judges against the Opus editor: the calibration set, and the judge arms that read it.
+
+Every recorded writer run of prototypes 4 and 5 (``fixtures/report_docs/prototype{4,5}``) holds the Opus editor's
+review of each round's page. This script turns those reviews into judge-kind cases (reset P2 §3):
+
+1. **Pages.** Each recording is replayed through :class:`~threetears.evals.ops.report_writer.writer_kind.ReportWriterKind`
+   once per round it recorded, at ``revisions`` 0, 1 and 2, so each replay ends on that round's page. Its
+   ``CandidateOutput.judge_evidence`` is the page exactly as the gate's judge reads it. A replay that does not reach
+   its round's page is left out, and named with why.
+2. **Reviews.** Each page is paired with the Opus review of its round (``generation.json``'s ``reviews``), keyed by
+   (recording, round). The replay's open findings must match that review's, or the page is left out.
+3. **Absolute cases.** One :class:`~threetears.evals.kernel.AuthoredJudgeCase` per page and rubric item, on the
+   gate's own criterion (``writer_scoring_rubric()[i]``, verbatim), its verdict the Opus score mapped 2 → 5, 1 → 3,
+   0 → 1, its note Opus's reason.
+4. **Pair cases.** Every two rounds of one recording, in both orders, on ``preference_rubric()``. The verdict comes
+   from the Opus totals, Δ = total(B) − total(A): +2 or more → 5, +1 → 4, 0 → 3, −1 → 2, −2 or less → 1.
+5. **Freeze** both into one judge template, as the case sets ``writer-opus-abs`` and ``writer-opus-pair``.
+6. **Judge arms.** One judge-kind run per judge over each set, read per criterion through ``judge_kind_readings``.
+
+The labels are an agent's (owner ruling R3). The readout calls κ "agreement with the Opus editor", and this script
+never records a judge profile from it: no campaign's judge tier reads ``calibrated`` from these cases::
+
+    uv run python -m packages.evals.tests.fixtures.writer_cases.writer_calibration --dry
+    uv run python -m packages.evals.tests.fixtures.writer_cases.writer_calibration --cap-usd 10 --out <dir>
+    uv run python -m packages.evals.tests.fixtures.writer_cases.writer_calibration --reread --cap-usd 2 --out <dir>
+
+``--dry`` runs every step on a scripted judge that calls no model; its scores carry no signal. The live run needs
+an owner's approval. It reads ``OPENROUTER_API_KEY`` for a judge named ``vendor/model`` and ``ANTHROPIC_API_KEY`` for a
+bare Claude id. Each judge arm runs under an equal share of ``--cap-usd``, enforced on its landed spend.
+
+``--reread`` asks one judge the pair set again and compares the read with its own stored one (:func:`reread`): a
+test-retest on the judge's own verdicts, so it detects a shift and never says whether the judge is right.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import contextlib
+import hashlib
+import itertools
+import json
+import os
+import re
+import sys
+from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Final
+
+from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
+from packages.evals.tests.factories import make_eval_run
+from packages.evals.tests.fixtures.writer_cases.analyst_cli import RECORDING, REPLAY
+from packages.evals.tests.fixtures.writer_cases.writer_smoke import JUDGE as SMOKE_JUDGE
+from packages.evals.tests.fixtures.writer_cases.writer_smoke import WRITER as SMOKE_WRITER
+from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, TOYHOST_SCOPE
+from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.judge import ToyJudgeCompletion
+from packages.evals.tests.report_writer_support import RecordedModel
+from packages.evals.tests.scripted_table import FakeCellSink
+from packages.evals.tests.writer_host_support import CALLER, WRITER_TEMPLATE, writer_host
+from threetears.evals.actions.report_writing import report_writer_kind
+from threetears.evals.analysis import judge_kind_readings
+from threetears.evals.analysis.analyst.skill import load_skill
+from threetears.evals.analysis.judge_kind_readings import JudgeKindReadings
+from threetears.evals.kernel import (
+    JUDGE_KIND,
+    AuthoredJudgeCase,
+    JudgeKindOverlays,
+    VariantConfig,
+    judge_trial_of,
+    withhold_failure_detail,
+)
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.ops.report_writer.preference import (
+    CasePreference,
+    PairJudgment,
+    case_preference,
+    pair_evidence,
+    preference_rubric,
+)
+from threetears.evals.ops.report_writer.tally import ReportBudget
+from threetears.evals.ops.report_writer.writer_contract import (
+    EDITOR_ROUNDS_MEASURE,
+    MUST_FIX_OPEN_MEASURE,
+    SHOULD_FIX_OPEN_MEASURE,
+    WRITER_KIND,
+    WriterOverlays,
+    writer_scoring_rubric,
+)
+from threetears.evals.ops.report_writer.writer_kind import WriterCase, writer_case_payload, writer_subject_components
+from threetears.evals.providers import Model
+from threetears.evals.run import (
+    EvalRunCostCap,
+    JudgeCaseFreezeReport,
+    BudgetStoppedError,
+    RunnerOptions,
+    execute_run,
+    freeze_judge_cases,
+    judge_kind,
+)
+from threetears.evals.schema import EvalResult, EvalTemplate, EvalTestCase, JudgeEvidence, RubricDim
+from threetears.evals.schema.subject import SubjectSnapshot
+from threetears.evals.testing import RecordedTurns
+
+#: Where the recorded runs live, a directory per run.
+REPORT_DOCS: Final = Path(__file__).parents[1] / "report_docs"
+
+#: The prototypes whose runs are replayed: prototype 5's three rounds each, prototype 4's final pages and drafts.
+PROTOTYPES: Final = ("prototype5", "prototype4")
+
+#: The two case sets this script freezes.
+ABSOLUTE_SET: Final = "writer-opus-abs"
+PAIR_SET: Final = "writer-opus-pair"
+
+#: The editor's item score as the gate's 1-5 scale states it (``writer_scoring_rubric``'s guide).
+EXPECTED: Final = {2: 5, 1: 3, 0: 1}
+
+#: The judges a live run measures: the smoke's flash judge, and Haiku (the smoke's writer) as the cheap Claude reference.
+LIVE_JUDGES: Final = (SMOKE_JUDGE, SMOKE_WRITER)
+
+#: The dry judge's model name: a scripted reader that calls nothing.
+DRY_JUDGE: Final = "dry/scripted-judge"
+
+#: The judge template the cases are frozen into.
+JUDGE_TEMPLATE: Final = EvalTemplate(
+    id="writer-opus-calibration",
+    scope_id=TOYHOST_SCOPE,
+    name="Report writer judge, against the Opus editor",
+    intent="Score a report page on the editor rubric as the Opus editor of its round scored it.",
+    candidate_kind=JUDGE_KIND,
+    created_at=TOYHOST_INSTANT,
+    updated_at=TOYHOST_INSTANT,
+)
+
+
+@dataclass(frozen=True)
+class Page:
+    """One round's page of one recorded run, as the gate's judge reads it, beside the Opus review of that round.
+
+    :ivar run: The recorded run, as ``<prototype>/<directory>``.
+    :ivar round: The editor round whose page this is, from 1.
+    :ivar evidence: The replay's judge evidence: the page and the facts code computed.
+    :ivar measures: The replay's own measures, which say which round it ended on.
+    :ivar review: The Opus review of this round, from ``generation.json``.
+    :ivar editor: The digest of the ``editor.md`` the review was made under.
+    :ivar model: The model the recorded editor ran on.
+    """
+
+    run: str
+    round: int
+    evidence: JudgeEvidence
+    measures: dict[str, bool | float | str]
+    review: dict[str, Any]
+    editor: str
+    model: str
+
+    @property
+    def author(self) -> str:
+        """Who the page's labels are by: the Opus editor, under its own ``editor.md``."""
+        return f"agent:{self.model} report editor @{self.editor}"
+
+    @property
+    def total(self) -> int:
+        """The review's total over the seven items, out of 14."""
+        return sum(int(item["score"]) for item in self.review["items"])
+
+
+@dataclass(frozen=True)
+class LeftOut:
+    """A round whose page is not in the set, and why."""
+
+    run: str
+    round: int
+    why: str
+
+
+def recordings() -> list[Path]:
+    """Every recorded run of :data:`PROTOTYPES`, in order."""
+    return [path.parent for name in PROTOTYPES for path in sorted((REPORT_DOCS / name).glob(f"*/{REPLAY}"))]
+
+
+def _counts(findings: Sequence[dict[str, Any]]) -> tuple[float, float]:
+    return (
+        float(sum(1 for f in findings if f["severity"] == "must_fix")),
+        float(sum(1 for f in findings if f["severity"] == "should_fix")),
+    )
+
+
+class _NoSpans:
+    """A cell's tracing windows when a replay is driven alone: both open nothing."""
+
+    def identity(self) -> contextlib.AbstractContextManager[None]:
+        return contextlib.nullcontext()
+
+    collecting = identity
+
+
+async def replay_round(case_dir: Path, round_: int) -> Page | LeftOut:
+    """Replay one recording through the writer kind until its ``round_``'s page, and pair it with that round's review.
+
+    :param case_dir: The recorded run's directory.
+    :param round_: The round whose page to end on, from 1: the kind is given ``round_ - 1`` revisions.
+    :return: The page, or why it is left out.
+    """
+    run = f"{case_dir.parent.name}/{case_dir.name}"
+    made: dict[str, Any] = json.loads((case_dir / REPLAY).read_text())
+    generation: dict[str, Any] = json.loads((case_dir / "generation.json").read_text())
+    (review,) = [review for review in generation["reviews"] if review["round"] == round_]
+    recording = RecordedTurns.replay(case_dir / RECORDING)
+    fixture = await asyncio.to_thread(writer_host)
+    name = KAIRO if made["snapshot_of"] == "kairo" else made["snapshot_of"]
+    case = EvalTestCase(
+        id=f"{case_dir.name}-r{round_}",
+        template_id=WRITER_TEMPLATE.id,
+        scope_id=CALLER.scope_id,
+        host_payload=writer_case_payload(
+            WriterCase.of(fixture_snapshots(CALLER.scope_id)[name], withhold=made["withhold"])
+        ),
+    )
+    skill = load_skill()
+    kind = report_writer_kind(
+        fixture.host,
+        CALLER,
+        overlays=WriterOverlays(revisions=round_ - 1),
+        models=lambda _effort: RecordedModel(recording, made["model"]),
+        budget=ReportBudget(usd=made["budget_usd"]),
+    )
+    prepared = await kind.prepare(
+        subject_snapshot=SubjectSnapshot(
+            subject_id="the report writer",
+            subject_label="the report writer",
+            components=writer_subject_components(skill),
+            state={},
+        ),
+        variant_config=VariantConfig(candidate_model=made["model"]),
+        world_seed=None,
+        span_window=_NoSpans(),
+        cassettes=None,
+        world=None,
+    )
+    output = await kind.invoke(prepared, case, FakeCellSink())
+    measures = dict(output.host_measures)
+    if output.judge_evidence is None:
+        # The loop's own reason names the session and turn a recording ran out at; the errors only its type.
+        reason = (output.kind_payload or {}).get("reason") or "; ".join(
+            [*output.candidate_errors, *output.infra_errors]
+        )
+        return LeftOut(run, round_, f"the replay stored no page: {reason or 'no reason recorded'}")
+    if measures.get(EDITOR_ROUNDS_MEASURE) != float(round_):
+        return LeftOut(run, round_, f"the replay ended on editor round {measures.get(EDITOR_ROUNDS_MEASURE)}")
+    opened = (measures.get(MUST_FIX_OPEN_MEASURE), measures.get(SHOULD_FIX_OPEN_MEASURE))
+    if opened != _counts(review["findings"]):
+        return LeftOut(run, round_, f"the replay's open findings {opened} are not round {round_}'s review's")
+    return Page(
+        run, round_, output.judge_evidence, measures, review, generation["skill"]["editor"], generation["model"]
+    )
+
+
+async def pages() -> tuple[list[Page], list[LeftOut]]:
+    """Every round's page of every recording, and every round left out with why.
+
+    :return: The pages in recording and round order, and the rounds left out.
+    """
+    found: list[Page] = []
+    left: list[LeftOut] = []
+    for case_dir in recordings():
+        generation = json.loads((case_dir / "generation.json").read_text())
+        for review in generation["reviews"]:
+            page = await replay_round(case_dir, int(review["round"]))
+            if isinstance(page, Page):
+                found.append(page)
+            else:
+                left.append(page)
+    return found, left
+
+
+def absolute_cases(found: Sequence[Page]) -> list[AuthoredJudgeCase]:
+    """One case per page and rubric item: the gate's criterion, the Opus score as its verdict, Opus's reason as its note.
+
+    :param found: The pages.
+    :return: The cases, page by page, in the rubric's order.
+    """
+    rubric = writer_scoring_rubric()
+    cases: list[AuthoredJudgeCase] = []
+    for page in found:
+        items = sorted(page.review["items"], key=lambda item: int(item["n"]))
+        if len(items) != len(rubric):
+            raise ValueError(f"{page.run} round {page.round}'s review scores {len(items)} items, not {len(rubric)}")
+        for dim, item in zip(rubric, items, strict=True):
+            if dim.name != f"{WRITER_KIND}.{str(item['name']).lower().replace(' ', '_')}":
+                raise ValueError(
+                    f"{page.run} round {page.round}'s item {item['n']} is {item['name']!r}, not {dim.name}"
+                )
+            cases.append(
+                AuthoredJudgeCase(
+                    criterion=dim,
+                    output=page.evidence.artifact,
+                    case_material=page.evidence.case_material,
+                    intent=WRITER_TEMPLATE.intent,
+                    expected=EXPECTED[int(item["score"])],
+                    author=page.author,
+                    note=item["reason"],
+                )
+            )
+    return cases
+
+
+def preferred(delta: int) -> int:
+    """The pair verdict for Δ = total(B) − total(A): 5 when B leads by 2 or more, 1 when A does, 3 on a tie."""
+    return 3 + max(-2, min(2, delta))
+
+
+@dataclass(frozen=True)
+class Pair:
+    """Two rounds of one recording, ``a`` read first."""
+
+    a: Page
+    b: Page
+
+    @property
+    def expected(self) -> int:
+        return preferred(self.b.total - self.a.total)
+
+    def case(self, criterion: RubricDim) -> AuthoredJudgeCase:
+        evidence = pair_evidence(self.a.evidence, self.b.evidence)
+        return AuthoredJudgeCase(
+            criterion=criterion,
+            output=evidence.artifact,
+            case_material=evidence.case_material,
+            intent=WRITER_TEMPLATE.intent,
+            expected=self.expected,
+            author=self.a.author,
+            note=(
+                f"{self.a.run}: Report A is round {self.a.round} ({self.a.total} of 14 from the Opus editor), Report B "
+                f"is round {self.b.round} ({self.b.total} of 14)"
+            ),
+        )
+
+
+def pairs(found: Sequence[Page]) -> list[Pair]:
+    """Every two rounds of one recording, in both orders: the earlier first, then swapped.
+
+    :param found: The pages.
+    :return: The pairs.
+    """
+    by_run: dict[str, list[Page]] = {}
+    for page in found:
+        by_run.setdefault(page.run, []).append(page)
+    ordered: list[Pair] = []
+    for run_pages in by_run.values():
+        for a, b in itertools.combinations(sorted(run_pages, key=lambda page: page.round), 2):
+            ordered.extend((Pair(a, b), Pair(b, a)))
+    return ordered
+
+
+def pair_cases(found: Sequence[Page]) -> list[AuthoredJudgeCase]:
+    """The pair cases on ``preference_rubric()``: each pair of rounds in both orders, the swapped one mirrored."""
+    criterion = preference_rubric()
+    return [pair.case(criterion) for pair in pairs(found)]
+
+
+def freeze(host: EvalHost, found: Sequence[Page]) -> dict[str, JudgeCaseFreezeReport]:
+    """Freeze both case sets into :data:`JUDGE_TEMPLATE` on ``host``'s store; synchronous, a store call.
+
+    :param host: The judge host.
+    :param found: The pages.
+    :return: Each case set's freeze, by name.
+    """
+    return {
+        name: _freeze_set(host, name, cases)
+        for name, cases in ((ABSOLUTE_SET, absolute_cases(found)), (PAIR_SET, pair_cases(found)))
+    }
+
+
+def _freeze_set(host: EvalHost, name: str, cases: list[AuthoredJudgeCase]) -> JudgeCaseFreezeReport:
+    host.storage.save_template(JUDGE_TEMPLATE)
+    return freeze_judge_cases(
+        host.storage, template=JUDGE_TEMPLATE, scope_id=TOYHOST_SCOPE, authored=cases, case_set=name
+    )
+
+
+#: Where the built-in prompt names the one key its reply maps.
+_KEY: Final = re.compile(r'single key "([^"]+)"')
+
+
+# parity-with: threetears.evals.schema.CompletionClient
+class FakeDryJudge:
+    """A judge that reads nothing: its score is a digest of the prompt, so the readout runs and measures no signal."""
+
+    async def generate(
+        self, *, system: str, user: str, response_format: dict[str, str] | None = None
+    ) -> ToyJudgeCompletion:
+        match = _KEY.search(system)
+        if match is None:
+            raise ValueError("the built-in judge prompt names no score key")
+        score = 1 + int(hashlib.sha256(user.encode()).hexdigest(), 16) % 5
+        reply = {"reasoning": "dry: a digest of the prompt, not a reading", "criteria_scores": {match.group(1): score}}
+        return ToyJudgeCompletion(
+            content=json.dumps(reply),
+            input_tokens=0,
+            output_tokens=0,
+            cost_usd=0.0,
+            model=DRY_JUDGE,
+            price_source="dry",
+            served_model=DRY_JUDGE,
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
+#: Each provider's key, by the environment variable it is read from.
+_KEYS: Final = {"anthropic": "ANTHROPIC_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
+
+
+def _provider(model: str) -> str:
+    """Where a live judge is sent: OpenRouter for a ``vendor/model`` id, Anthropic's own API for a bare one."""
+    return "openrouter" if "/" in model else "anthropic"
+
+
+def _live_client(keys: dict[str, str]) -> Any:
+    def clients(role: str, model: str | None, *, temperature: float | None = None) -> Model:
+        if role != "judge" or model is None:
+            raise SystemExit(f"writer_calibration.py: a judge arm builds no {role!r} client")
+        provider = _provider(model)
+        return Model(model, provider=provider, api_key=keys[_KEYS[provider]])
+
+    return clients
+
+
+def _keys(judges: Sequence[str]) -> dict[str, str]:
+    wanted = {_KEYS[_provider(judge)] for judge in judges}
+    keys = {name: os.environ.get(name, "") for name in sorted(wanted)}
+    if missing := [name for name, value in keys.items() if not value]:
+        raise SystemExit(f"writer_calibration.py: a live run needs {', '.join(missing)}; --dry needs none")
+    return keys
+
+
+#: What one call of each set reads, against an absolute call: a pair call reads two pages.
+CALL_WEIGHT: Final = {ABSOLUTE_SET: 1, PAIR_SET: 2}
+
+
+@dataclass(frozen=True)
+class Arm:
+    """One judge's run over one case set: the cases, the trials it landed, and why it stopped early, if it did."""
+
+    judge: str
+    case_set: str
+    cases: int
+    trials: int
+    stopped: str | None
+
+
+def arm_caps(frozen: dict[str, JudgeCaseFreezeReport], judges: Sequence[str], cap_usd: float) -> dict[str, float]:
+    """Each case set's share of one judge's part of ``cap_usd``, by the calls it plans weighted by :data:`CALL_WEIGHT`.
+
+    :param frozen: The freezes, by case set.
+    :param judges: The judges, each given an equal part.
+    :param cap_usd: The whole run's cap.
+    :return: Each case set's cap for one judge's arm over it.
+    """
+    weights = {name: len(report.cases) * CALL_WEIGHT[name] for name, report in frozen.items()}
+    total = sum(weights.values())
+    return {name: cap_usd / len(judges) * weight / total for name, weight in weights.items()}
+
+
+async def judge_arm(
+    host: EvalHost, report: JudgeCaseFreezeReport, *, judge: str, k: int, cap_usd: float | None
+) -> tuple[list[EvalResult], Arm]:
+    """One judge's run over one frozen case set, through the engine's runner; its results and what it ran.
+
+    An arm its cap stops keeps what it landed, and says it stopped.
+
+    :param host: The judge host, the cases frozen on its store.
+    :param report: The case set's freeze.
+    :param judge: The judge model.
+    :param k: Trials per case.
+    :param cap_usd: The arm's ceiling on landed spend; ``None`` for a dry arm, which spends nothing.
+    """
+    assert report.case_set is not None
+    case_ids = [case.test_case_id for case in report.cases]
+    run = make_eval_run(
+        id=f"{report.case_set.name}-v{report.case_set.version}-{re.sub(r'[^a-z0-9]+', '-', judge.lower())}",
+        scope_id=TOYHOST_SCOPE,
+        template_id=JUDGE_TEMPLATE.id,
+        candidate_kind=JUDGE_KIND,
+        candidate_model=judge,
+        k_runs=k,
+        test_case_ids=case_ids,
+        overlays=JudgeKindOverlays().model_dump(mode="json"),
+    )
+    cases = await asyncio.to_thread(host.storage.load_test_cases_by_ids, case_ids, TOYHOST_SCOPE)
+    await asyncio.to_thread(host.storage.save_eval_run, run)
+    kind = await asyncio.to_thread(
+        judge_kind,
+        host.storage,
+        host.completion_clients("a judge calibration"),
+        model=judge,
+        scope_id=TOYHOST_SCOPE,
+        failure_describer=withhold_failure_detail,
+    )
+    cap = None if cap_usd is None else EvalRunCostCap(run.id, cap_usd, enabled=True)
+    stopped: str | None = None
+    async with kind:
+        try:
+            await execute_run(
+                host,
+                run=run,
+                template=JUDGE_TEMPLATE,
+                test_cases=cases,
+                judge_service=None,
+                options=RunnerOptions(candidate_kinds={JUDGE_KIND: lambda _cell: kind}),
+                budget_gate=None if cap is None else cap.check,
+                on_cost=None if cap is None else cap.record,
+            )
+        except BudgetStoppedError as cut:  # the arm's cap: what it landed is kept and read, and the stop is reported
+            stopped = str(cut)
+    results = await asyncio.to_thread(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
+    return results, Arm(judge, report.case_set.name, len(case_ids), len(results), stopped)
+
+
+def agreement_rows(readings: JudgeKindReadings) -> list[dict[str, Any]]:
+    """One row per judge and criterion: the cases, the parse rate and the agreement with the Opus editor."""
+    rows: list[dict[str, Any]] = []
+    for reading in readings.readings:
+        agreement = reading.label_agreement
+        rows.append(
+            {
+                "judge": reading.judge_model,
+                "criterion": reading.rubric_dim,
+                "cases": reading.cases,
+                "parse_rate": reading.parse_validity.rate,
+                "kappa": None if agreement is None else agreement.kappa,
+                "weighted_kappa": None if agreement is None else agreement.weighted_kappa,
+                "interval": None if agreement is None else agreement.agreement_interval,
+                "self_kappa": None if reading.self_agreement is None else reading.self_agreement.kappa,
+            }
+        )
+    return rows
+
+
+def _cell(value: Any) -> str:
+    if value is None:
+        return "undetermined"
+    if isinstance(value, float):
+        return f"{value:.2f}"
+    if isinstance(value, tuple | list):
+        return " to ".join(f"{bound:.2f}" for bound in value)
+    return str(value)
+
+
+def readout(rows: Sequence[dict[str, Any]], arms: Sequence[Arm], left: Sequence[LeftOut]) -> Iterator[str]:
+    """The printed readout: agreement with the Opus editor per judge and criterion, each arm's trials, then every
+    round left out."""
+    yield "Agreement with the Opus editor (an agent's labels; no judge profile is recorded from them)."
+    yield ""
+    yield "| Judge | Criterion | Cases | Parse rate | κ | Weighted κ | Weighted κ bounds | Self κ |"
+    yield "|---|---|---|---|---|---|---|---|"
+    for row in rows:
+        yield "| " + " | ".join(_cell(row[key]) for key in row) + " |"
+    yield ""
+    yield f"Each pair of rounds is two {PAIR_SET} cases, one per order, so its bounds count each pair twice."
+    yield ""
+    yield "| Judge | Case set | Cases | Trials | Stopped early |"
+    yield "|---|---|---|---|---|"
+    for arm in arms:
+        yield f"| {arm.judge} | {arm.case_set} | {arm.cases} | {arm.trials} | {arm.stopped or 'no'} |"
+    if left:
+        yield ""
+        yield "| Round left out | Why |"
+        yield "|---|---|"
+        for out in left:
+            yield f"| {out.run} round {out.round} | {out.why} |"
+
+
+@dataclass(frozen=True)
+class Calibration:
+    """What one calibration run found: the pages and the rounds left out, both freezes, the judge host and its arms.
+
+    :ivar found: The pages, in recording and round order.
+    :ivar left: The rounds left out, with why.
+    :ivar host: The judge host the cases are frozen on and the arms ran on.
+    :ivar frozen: Each case set's freeze, by name.
+    :ivar results: Every judge arm's results.
+    :ivar arms: What each judge arm ran.
+    :ivar readings: The arms read per judge and criterion.
+    :ivar read_at: When the run began, in UTC.
+    """
+
+    found: list[Page]
+    left: list[LeftOut]
+    host: EvalHost
+    frozen: dict[str, JudgeCaseFreezeReport]
+    results: list[EvalResult]
+    arms: list[Arm]
+    readings: JudgeKindReadings
+    read_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def summary(self, *, dry: bool) -> dict[str, Any]:
+        """What the run found, as JSON: the pages, the rounds left out, the case sets, the arms and the agreement rows."""
+        rows = agreement_rows(self.readings)
+        return {
+            "dry": dry,
+            "read_at": _iso(self.read_at),
+            "pages": [{"run": p.run, "round": p.round, "total": p.total, "author": p.author} for p in self.found],
+            "left_out": [{"run": out.run, "round": out.round, "why": out.why} for out in self.left],
+            "case_sets": {
+                name: {"version": report.case_set.version if report.case_set else None, "cases": len(report.cases)}
+                for name, report in self.frozen.items()
+            },
+            "arms": [
+                {"judge": a.judge, "case_set": a.case_set, "cases": a.cases, "trials": a.trials, "stopped": a.stopped}
+                for a in self.arms
+            ],
+            "agreement_with_the_opus_editor": rows,
+            "anchor": anchor_rows(self.results, self.frozen[PAIR_SET], self.found),
+            "readout": "\n".join(readout(rows, self.arms, self.left)),
+        }
+
+
+async def calibration(*, dry: bool, k: int, cap_usd: float, judges: Sequence[str]) -> Calibration:
+    """Build the pages, freeze both case sets, and run one judge arm per judge over each.
+
+    :param dry: Run on :class:`FakeDryJudge` instead of ``judges``.
+    :param k: Trials per case.
+    :param cap_usd: The live run's cap: an equal part per judge, split over the case sets by :func:`arm_caps`.
+    :param judges: The live judges.
+    :return: What it found.
+    """
+    read_at = datetime.now(UTC)
+    found, left = await pages()
+    arms = (DRY_JUDGE,) if dry else tuple(judges)
+    clients = judge_clients(dry=dry, judges=arms)
+    host = await asyncio.to_thread(lambda: toyhost_host(clients=clients))
+    frozen = await asyncio.to_thread(freeze, host, found)
+    caps = arm_caps(frozen, arms, cap_usd)
+    results: list[EvalResult] = []
+    ran: list[Arm] = []
+    for judge in arms:
+        for name, report in frozen.items():
+            landed, arm = await judge_arm(host, report, judge=judge, k=k, cap_usd=None if dry else caps[name])
+            results.extend(landed)
+            ran.append(arm)
+    return Calibration(found, left, host, frozen, results, ran, judge_kind_readings(results), read_at)
+
+
+def judge_clients(*, dry: bool, judges: Sequence[str]) -> Any:
+    """The judge host's clients: :class:`FakeDryJudge` for every judge when ``dry``, else each judge's provider."""
+    if dry:
+        dry_judge = FakeDryJudge()
+        return lambda _role, _model, *, temperature=None: dry_judge
+    return _live_client(_keys(judges))
+
+
+# The reread: the judge's own earlier verdicts on the anchor set (the pair set) are its anchor, a test-retest that
+# needs no labels. It detects a judge or version shift, never whether the judge is right.
+
+#: The stored calibration records a reread compares with by default: the newest by name.
+RECORDS: Final = REPORT_DOCS / "writer_calibration"
+
+#: How far a measure may move between two reads of one judge and still hold: flash at temperature 0 measured self κ
+#: 0.95 on ``preferred`` within one read, so one pair of rounds in 21 (0.048) changing side is within its own noise.
+HELD_WITHIN: Final = 0.05
+
+#: A pair of rounds: the recording, its earlier round and its later one.
+type PairKey = tuple[str, int, int]
+
+
+def anchor_rows(
+    results: Sequence[EvalResult], report: JudgeCaseFreezeReport, found: Sequence[Page]
+) -> list[dict[str, Any]]:
+    """The pair set's trials as an anchor a later reread compares with: one row per trial, in the set's order.
+
+    :param results: Judge arm results; those on other case sets are not rows.
+    :param report: The pair set's freeze, its cases in :func:`pairs`' order.
+    :param found: The pages the pairs were made from.
+    """
+    place = {
+        case.test_case_id: (n, pair) for n, (case, pair) in enumerate(zip(report.cases, pairs(found), strict=True))
+    }
+    rows: list[dict[str, Any]] = []
+    for result in sorted(results, key=lambda r: (r.model, place.get(r.test_case_id, (-1,))[0], r.k_iteration)):
+        if result.test_case_id not in place:
+            continue
+        pair = place[result.test_case_id][1]
+        trial = judge_trial_of(result.kind_payload)
+        rows.append(
+            {
+                "judge": result.model,
+                "run": pair.a.run,
+                "first": pair.a.round,
+                "second": pair.b.round,
+                "trial": result.k_iteration,
+                "score": None if trial is None else trial.score,
+                "served_model": None if trial is None else trial.served_model,
+                "temperature": None if trial is None else trial.judge_temperature,
+                "judge_config_id": None if trial is None else trial.judge_config_id,
+                "criterion_digest": None if trial is None else trial.criterion_digest,
+                "cost_usd": result.cost_usd,
+            }
+        )
+    return rows
+
+
+@dataclass(frozen=True)
+class AnchorRead:
+    """One read of the anchor set by one judge, each pair of rounds read in both orders, the later round the candidate.
+
+    :ivar pairs: Each pair of rounds' reading.
+    :ivar served: The models the judge's responses named.
+    """
+
+    pairs: dict[PairKey, CasePreference]
+    served: frozenset[str]
+
+    @classmethod
+    def of(cls, rows: Sequence[dict[str, Any]], judge: str) -> AnchorRead | None:
+        """The judge's read among ``rows``; ``None`` when they hold none of its verdicts."""
+        judged: dict[PairKey, list[PairJudgment]] = {}
+        for row in (row for row in rows if row["judge"] == judge):
+            early, late = sorted((int(row["first"]), int(row["second"])))
+            slot = "B" if row["second"] == late else "A"
+            judged.setdefault((row["run"], early, late), []).append(PairJudgment(slot, row["score"]))
+        served = frozenset(row["served_model"] for row in rows if row["judge"] == judge and row["served_model"])
+        return cls({key: case_preference(j) for key, j in judged.items()}, served) if judged else None
+
+    def preferred(self) -> dict[PairKey, int]:
+        """Each scored pair's side: 1 the later round, -1 the earlier, 0 neither."""
+        return {k: (p.share > 0.5) - (p.share < 0.5) for k, p in self.pairs.items() if p.share is not None}
+
+    def consistent(self) -> tuple[int, int]:
+        """The pairs whose two orders pick the same side, of those scored in both."""
+        both = [p.order_consistent for p in self.pairs.values() if p.order_consistent is not None]
+        return sum(both), len(both)
+
+    def lean(self) -> float | None:
+        """The mean first-slot lean over the pairs scored in both orders, -0.5 to 0.5."""
+        leans = [p.first_slot_bias for p in self.pairs.values() if p.first_slot_bias is not None]
+        return sum(leans) / len(leans) if leans else None
+
+
+def recorded_cost_per_call(stored: dict[str, Any], judge: str) -> float | None:
+    """What one anchor call of ``judge`` cost in the stored record: its anchor rows' mean, else its pair arm's spend at
+    a cost-cap stop over the trials it landed (the only cost an older record kept); ``None`` when it holds neither."""
+    costs = [row["cost_usd"] for row in stored.get("anchor", []) if row["judge"] == judge and row["cost_usd"]]
+    if costs:
+        return float(sum(costs) / len(costs))
+    for arm in stored.get("arms", []):
+        spent = re.search(r"\$([0-9.]+) of \$[0-9.]+ at the stop after (\d+)/", arm.get("stopped") or "")
+        if arm["judge"] == judge and arm["case_set"] == PAIR_SET and spent:
+            return float(spent.group(1)) / int(spent.group(2))
+    return None
+
+
+def cost_note(stored: dict[str, Any], *, judge: str, k: int) -> str:
+    """The line printed before a live reread sends anything: its calls, and their cost at the stored record's rate."""
+    cases = int(stored["case_sets"][PAIR_SET]["cases"])
+    calls = cases * k
+    times = "once" if k == 1 else f"{k} times"
+    sends = f"This reread sends {calls} calls to {judge}, each of the {cases} anchor cases {times}"
+    per_call = recorded_cost_per_call(stored, judge)
+    if per_call is None:
+        return f"{sends}; the stored record holds no cost per call for it."
+    return f"{sends}, about ${calls * per_call:.2f} at the ${per_call:.4f} a call the stored record spent."
+
+
+def _weighted_kappa(rows: Sequence[dict[str, Any]], judges: Iterable[str | None]) -> float | None:
+    names = set(judges)
+    for row in rows:
+        if row["criterion"] == preference_rubric().name and row["judge"] in names:
+            return None if row["weighted_kappa"] is None else float(row["weighted_kappa"])
+    return None
+
+
+def _models(served: frozenset[str]) -> str:
+    return " and ".join(sorted(served))
+
+
+def _listed(names: Sequence[str]) -> str:
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _of(counted: tuple[int, int] | None) -> str | None:
+    return None if counted is None else f"{counted[0]} of {counted[1]}"
+
+
+def _signed(before: float | None, now: float | None) -> str | None:
+    return None if before is None or now is None else f"{now - before:+.3f}"
+
+
+#: The three measures, in the order the reread prints them.
+MEASURES: Final = ("preference", "order consistency", "first-slot lean")
+
+
+@dataclass(frozen=True)
+class Reread:
+    """A judge's new read of the anchor set beside its stored one.
+
+    :ivar judge: The judge asked, as the stored rows name it.
+    :ivar stored: The stored record.
+    :ivar rows: This read's anchor rows.
+    :ivar readings: This read, per criterion, for the agreement with the Opus editor.
+    :ivar arm: What the judge arm ran.
+    :ivar k: The trials asked per case.
+    :ivar read_at: When the read began, in UTC.
+    """
+
+    judge: str
+    stored: dict[str, Any]
+    rows: list[dict[str, Any]]
+    readings: JudgeKindReadings
+    arm: Arm
+    k: int
+    read_at: datetime
+
+    @property
+    def before(self) -> AnchorRead | None:
+        return AnchorRead.of(self.stored.get("anchor", []), self.judge)
+
+    @property
+    def now(self) -> AnchorRead | None:
+        return AnchorRead.of(self.rows, self.judge)
+
+    def changed(self) -> tuple[int, int] | None:
+        """The pairs of rounds whose preferred side differs between the reads, of those both scored."""
+        if self.before is None or self.now is None:
+            return None
+        was, sides = self.before.preferred(), self.now.preferred()
+        shared = was.keys() & sides.keys()
+        return (sum(was[key] != sides[key] for key in shared), len(shared)) if shared else None
+
+    def held(self) -> dict[str, bool | None]:
+        """Whether each of :data:`MEASURES` held within :data:`HELD_WITHIN`; ``None`` where a read has no figure."""
+        before, now, changed = self.before, self.now, self.changed()
+        rates = [
+            None if r is None or not r.consistent()[1] else r.consistent()[0] / r.consistent()[1] for r in (before, now)
+        ]
+        leans = [None if r is None else r.lean() for r in (before, now)]
+        moves = (
+            None if changed is None else changed[0] / changed[1],
+            None if rates[0] is None or rates[1] is None else rates[1] - rates[0],
+            None if leans[0] is None or leans[1] is None else leans[1] - leans[0],
+        )
+        return {
+            # Compared at the printed precision, so a change shown as 0.050 holds under "0.05 or less".
+            name: None if move is None else round(abs(move), 3) <= HELD_WITHIN
+            for name, move in zip(MEASURES, moves, strict=True)
+        }
+
+    def _agreement(self, rows: Sequence[dict[str, Any]], read: AnchorRead | None) -> float | None:
+        """The weighted κ of ``rows`` on this judge's own reading, or one that names no served model, or any model the
+        read's responses named."""
+        return _weighted_kappa(rows, {self.judge, None, *(read.served if read else ())})
+
+    def lines(self) -> Iterator[str]:
+        """The printed reread: the three measures in a table, what "held" means, then a sentence each on the shift, its
+        likely cause and the agreement with the Opus editor. A first anchor prints this read's measures alone."""
+        before, now, changed, held = self.before, self.now, self.changed(), self.held()
+        purpose = "never whether the judge is right"
+        if before is None:
+            yield (
+                f"A reread asks {self.judge} the anchor cases again to detect a judge or version shift, {purpose}; the "
+                f"stored record holds no per-case verdicts from {self.judge}, so this read is its first anchor."
+            )
+        else:
+            yield (
+                f"A reread asks {self.judge} the anchor cases again and compares it with its own stored read of "
+                f"{_when(self.stored.get('read_at'))}: it "
+                f"detects a judge or version shift, {purpose}."
+            )
+        yield ""
+        reads = (now,) if before is None else (before, now)
+        later = [
+            None if r is None else (sum(side == 1 for side in r.preferred().values()), len(r.preferred()))
+            for r in reads
+        ]
+        agree = [None if r is None or not r.consistent()[1] else r.consistent() for r in reads]
+        consistency = [None if a is None else a[0] / a[1] for a in agree]
+        leans = [None if r is None else r.lean() for r in reads]
+        names = (
+            "Pairs of rounds preferring the later round",
+            "Pairs whose two orders pick the same round",
+            "First-slot lean: 0 none, up to 0.5 for Report A at the scale's end every time, down to -0.5 for Report B",
+        )
+        if before is None:
+            yield "| Measure | First read |"
+            yield "|---|---|"
+            for name, value in zip(names, (_of(later[0]), _of(agree[0]), leans[0]), strict=True):
+                yield f"| {name} | {_cell(value)} |"
+        else:
+            ok = {name: None if value is None else ("yes" if value else "no") for name, value in held.items()}
+            flipped = (
+                None if changed is None else f"{changed[0]} of {changed[1]} changed side, {changed[0] / changed[1]:.3f}"
+            )
+            table = (
+                (names[0], _of(later[0]), _of(later[1]), flipped, ok["preference"]),
+                (names[1], _of(agree[0]), _of(agree[1]), _signed(*consistency), ok["order consistency"]),
+                (names[2], leans[0], leans[1], _signed(*leans), ok["first-slot lean"]),
+            )
+            yield "| Measure | Stored read | This read | Change | Held |"
+            yield "|---|---|---|---|---|"
+            for row in table:
+                yield "| " + " | ".join(_cell(value) for value in row) + " |"
+            yield ""
+            yield (
+                f"Held means a measure changed by {HELD_WITHIN:.2f} or less, a set tolerance rather than a measured "
+                "one; for preference the change is the share of the pairs both reads scored that changed side."
+            )
+            moved = [name for name, value in held.items() if value is False]
+            yield "The judge held on all three measures." if not moved else f"The judge moved on {_listed(moved)}."
+            served = (before.served, frozenset() if now is None else now.served)
+            if not all(served):
+                yield "A read names no served model, so a model change is neither named nor ruled out."
+            elif served[0] != served[1]:
+                cause = "the likely cause" if moved else "and the measures held"
+                yield f"Its served model changed from {_models(served[0])} to {_models(served[1])}, {cause}."
+            else:
+                why = ", so no model change explains the shift" if moved else ": no model change"
+                yield f"Its served model is {_models(served[1])} in both reads{why}."
+        yield ""
+        kappa = (
+            self._agreement(self.stored.get("agreement_with_the_opus_editor", []), before),
+            self._agreement(agreement_rows(self.readings), now),
+        )
+        yield (
+            "Agreement with the Opus editor's rubric totals, an agent's labels, as weighted κ on the anchor cases: "
+            f"{_cell(kappa[0])} in the stored read and {_cell(kappa[1])} in this one."
+        )
+        if self.arm.stopped:
+            yield f"This read stopped early: {self.arm.stopped}."
+
+    def settings(self) -> dict[str, Any]:
+        """The judge as this read sent it: the model asked, and every served model, temperature, prompt identity
+        (``judge_config_id``, a ``builtin:`` id naming the built-in prompt by its wording) and criterion digest its
+        trials recorded, with the trials asked per case."""
+
+        def seen(key: str) -> list[Any]:
+            return sorted({row[key] for row in self.rows if row[key] is not None}, key=str)
+
+        return {
+            "model": self.judge,
+            "served_models": seen("served_model"),
+            "temperatures": seen("temperature"),
+            "judge_config_ids": seen("judge_config_id"),
+            "criterion_digests": seen("criterion_digest"),
+            "trials_per_case": self.k,
+        }
+
+    def file_name(self) -> str:
+        """The name ``--out`` writes this read under: its UTC time first, so the newest by name is the newest read."""
+        return f"{self.read_at:%Y%m%dT%H%M%SZ}-reread.json"
+
+    def record(self, of: Path, at: Path) -> dict[str, Any]:
+        """What ``--out`` writes: this read, in the shape a later reread compares with.
+
+        :param of: The stored record this read was compared with.
+        :param at: The directory the record is written to, which ``reread_of`` is relative to.
+        """
+        arm = {"judge": self.arm.judge, "case_set": PAIR_SET, "cases": self.arm.cases, "trials": self.arm.trials}
+        return {
+            "read_at": _iso(self.read_at),
+            "reread_of": os.path.relpath(of.resolve(), at.resolve()),
+            "reread_of_sha256": hashlib.sha256(of.read_bytes()).hexdigest(),
+            "held_within": HELD_WITHIN,
+            "judge_settings": self.settings(),
+            "case_sets": {PAIR_SET: {"cases": self.arm.cases}},
+            "arms": [{**arm, "stopped": self.arm.stopped}],
+            "agreement_with_the_opus_editor": agreement_rows(self.readings),
+            "anchor": self.rows,
+            "readout": "\n".join(self.lines()),
+        }
+
+
+def _iso(at: datetime) -> str:
+    return at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _when(read_at: str | None) -> str:
+    """A stored read's date as the reread prints it, or that the record holds none (an older record)."""
+    if read_at is None:
+        return "an unrecorded date"
+    return f"{datetime.fromisoformat(read_at).astimezone(UTC):%Y-%m-%d %H:%M} UTC"
+
+
+async def reread(
+    stored: dict[str, Any], found: Sequence[Page], *, judge: str, clients: Any, k: int, cap_usd: float | None
+) -> Reread:
+    """Judge the anchor set again on ``judge`` and set the read beside the stored one; nothing is written.
+
+    :param stored: The stored record, as the calibration or an earlier reread wrote it.
+    :param found: The pages the anchor pairs are made from.
+    :param judge: The judge, as the stored rows name it.
+    :param clients: The judge host's clients.
+    :param k: Trials per case.
+    :param cap_usd: The arm's ceiling on landed spend; ``None`` for a judge that spends nothing.
+    """
+    read_at = datetime.now(UTC)
+    host = await asyncio.to_thread(lambda: toyhost_host(clients=clients))
+    report = await asyncio.to_thread(_freeze_set, host, PAIR_SET, pair_cases(found))
+    results, arm = await judge_arm(host, report, judge=judge, k=k, cap_usd=cap_usd)
+    rows = anchor_rows(results, report, found)
+    return Reread(judge, stored, rows, judge_kind_readings(results), arm, k, read_at)
+
+
+#: What ``--reread --help`` says the mode does.
+REREAD_HELP: Final = (
+    "--reread [RECORD] asks one judge (--judge, default the smoke's flash judge) the 42 anchor cases again, every two "
+    f"rounds of one recording in both orders ({PAIR_SET}), and compares its verdicts with its own in RECORD (default "
+    "the newest record in report_docs/writer_calibration, or in a directory named) on three measures: the round each pair prefers, whether "
+    "the two orders pick the same round, and the lean to the page read first. It is a test-retest that needs no "
+    "labels, so it detects a judge or version shift, never whether the judge is right; it names a served-model change "
+    "between the reads as the likely cause, and prints agreement with the Opus editor's rubric totals as a second "
+    "line. Before a live judge is called it prints the calls and their cost at the record's own cost per call. RECORD "
+    "is only read: --out writes the new read to a new directory, named by its UTC time and carrying that time, the "
+    "tolerance in force, the judge's settings as sent and its source relative to itself, in the shape the next reread "
+    "compares with."
+)
+
+
+def stored_record(path: Path) -> Path:
+    """The record ``--reread`` compares with: ``path`` itself, or for a directory the newest ``*.json`` in it by name.
+
+    :raises SystemExit: The directory holds no record.
+    """
+    if not path.is_dir():
+        return path
+    if (newest := max(path.glob("*.json"), default=None)) is None:
+        raise SystemExit(f"writer_calibration.py: {path} holds no stored record to reread")
+    return newest
+
+
+async def _reread_run(stored: dict[str, Any], *, judge: str, clients: Any, k: int, cap_usd: float | None) -> Reread:
+    found, _left = await pages()
+    return await reread(stored, found, judge=judge, clients=clients, k=k, cap_usd=cap_usd)
+
+
+def main(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="writer_calibration.py", description=__doc__.splitlines()[0], epilog=REREAD_HELP
+    )
+    parser.add_argument("--dry", action="store_true", help="a scripted judge, nothing sent")
+    parser.add_argument("--k", type=int, default=2, help="trials per case")
+    parser.add_argument("--cap-usd", type=float, default=10.0, help="the owner's cap for every judge arm together")
+    parser.add_argument("--judge", action="append", help=f"a live judge; default {', '.join(LIVE_JUDGES)}")
+    parser.add_argument("--out", type=Path, help="where the live run's result goes")
+    parser.add_argument(
+        "--reread", nargs="?", const=RECORDS, type=Path, metavar="RECORD", help="reread the anchor set; below"
+    )
+    options = parser.parse_args(list(argv))
+    if not options.dry and options.out is None:
+        parser.error("a live run needs --out")
+    if options.reread is not None and len(options.judge or ()) > 1:
+        parser.error("a reread reads one judge")
+    if options.out is not None:
+        # Made before anything is sent, so a directory already there refuses the run rather than its result.
+        options.out.mkdir(parents=True, exist_ok=False)
+    if options.reread is not None:
+        options.reread = stored_record(options.reread)
+        stored = json.loads(options.reread.read_text(encoding="utf-8"))
+        judge = DRY_JUDGE if options.dry else (options.judge or [SMOKE_JUDGE])[0]
+        clients = judge_clients(dry=options.dry, judges=(judge,))
+        if not options.dry:
+            print(cost_note(stored, judge=judge, k=options.k), flush=True)
+        cap = None if options.dry else options.cap_usd
+        read = asyncio.run(_reread_run(stored, judge=judge, clients=clients, k=options.k, cap_usd=cap))
+        if options.out is not None:
+            record = json.dumps(read.record(options.reread, options.out), indent=2, default=str)
+            (options.out / read.file_name()).write_text(record, encoding="utf-8")
+        print("\n".join(read.lines()))
+        return 0
+    found = asyncio.run(
+        calibration(dry=options.dry, k=options.k, cap_usd=options.cap_usd, judges=options.judge or LIVE_JUDGES)
+    ).summary(dry=options.dry)
+    if options.out is not None:
+        (options.out / "calibration.json").write_text(json.dumps(found, indent=2, default=str), encoding="utf-8")
+    print(found["readout"])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -58,7 +58,7 @@ async def test_an_answer_s_spend_lands_on_each_result_and_on_the_summary() -> No
     assert summary.role_spend("candidate").calls == 3
     assert summary.role_spend("candidate").cost_usd == pytest.approx(sum(tokens) * RATE)
     # $0.00016, shown to three significant figures rather than rounded away.
-    assert "candidate spend: $0.000160 over 3 call(s)" in summary.render()
+    assert "candidate spend: $0.00016 over 3 call(s)" in summary.render()
     for result in off_loop(list_results, host.storage, summary.run_id, SCOPE):
         (row,) = result.usage
         assert (row.role, row.model, row.call_count) == ("candidate", "m-1", 1)
@@ -121,9 +121,9 @@ async def test_a_comparison_tests_the_arms_reported_cost_against_the_control() -
         assert cheaper.cost_usd is not None
         return Answer(cheaper.value, model="m-2", input_tokens=cheaper.input_tokens, cost_usd=cheaper.cost_usd * 10)
 
-    comparison = await Eval(COMPARED_CASES, {"dearer": dearer, "cheaper": priced}, [LABEL], k=2).run(
-        store=":memory:", scope=SCOPE
-    )
+    comparison = await Eval(
+        COMPARED_CASES, {"dearer": dearer, "cheaper": priced}, [LABEL], k=2, name="dearer vs cheaper"
+    ).run(store=":memory:", scope=SCOPE)
     assert comparison.arms["cheaper"].role_spend("candidate").cost_usd == pytest.approx(
         comparison.arms["dearer"].role_spend("candidate").cost_usd / 10  # type: ignore[operator]
     )
@@ -132,7 +132,7 @@ async def test_a_comparison_tests_the_arms_reported_cost_against_the_control() -
     # The candidate's spend, not cost_usd, which sums a judge's spend too: what it cost to measure the arm.
     assert not {reading for reading in by_reading if reading.startswith("Measuring spend")}
     # Priced under a cent per reply on both arms, so the reading is headed per 1,000 replies.
-    cost = by_reading["Production cost ($/1,000 replies)"]
+    cost = by_reading["Production cost, per 1,000 replies"]
     # Two arms: the candidate's figure heads its own column, by its name.
     assert next(column.header for column in tables["comparisons"].columns if column.key == "arm") == "cheaper"
     assert cost["verdict"] == "cheaper better than dearer (lower is better)"

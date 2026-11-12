@@ -1,10 +1,8 @@
-"""The engine's bundle and generator behaviour, driven over the toy host.
+"""The engine's bundle behaviour and what a stored analysis keeps of it, driven over the toy host.
 
-Bundle assembly and generation over a toy bundle are on the toy host's surface, so each engine
-behaviour there owes a toy test. Every test below assembles the toy corpus campaign under the toy
-host's profile, or generates a memo over it with a fixtured completion. The fixtured memo and the
-coordinates it cites live in the toy host's own ``memo`` module, which every toy-host generation
-test shares.
+Bundle assembly over a toy bundle is on the toy host's surface, so each engine behaviour there owes a
+toy test. Every test below assembles the toy corpus campaign under the toy host's profile, or builds the
+analysis a report document over it is linked by.
 
 Pinned here — each class is a property a mutation of the engine turned red:
 
@@ -13,17 +11,11 @@ Pinned here — each class is a property a mutation of the engine turned red:
   alone; intervals at the one level; the shared remainder predicate and measure description; the
   lever spread's spelling.
 - ``kernel/declaration.py``: a refused bar quoted as declared.
-- ``analysis/generator.py``: the surface a generation freezes; the prompt version over the
-  assembled prompt; the billed-cost spelling; one parser for every reference site; prose is not
-  refused; the two functions made public for the reporter's judge.
+- ``analysis/doc_analysis.py``: the surface a stored analysis freezes.
 """
 
 from __future__ import annotations
 
-import copy
-import hashlib
-import json
-from dataclasses import dataclass, field
 from collections.abc import Sequence
 from typing import Any
 
@@ -33,24 +25,15 @@ from threetears.evals.analysis import stats
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.surface import cell_dimension_facts
 from threetears.evals.analysis.bundle.insights import insight_standing
-from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from threetears.evals.analysis.generator import (
-    first_request,
-    generate_analysis,
-    prompt_content_version,
-    refuse_an_undescribable_arm_table,
-)
 from threetears.evals.kernel.numbers import WRITTEN_FROM, format_number
 from threetears.evals.kernel.campaign import EvalAnalysis, EvalInsight
 from threetears.evals.kernel.declaration import BarOverride, refuse_an_undeclarable_design
 from threetears.evals.kernel.metrics import WITHHELD_PARTITION_INCOMPLETE
-from threetears.evals.schema.models import LatencyMetrics, RunCompleteness, utc_now_iso
+from threetears.evals.schema.models import LatencyMetrics, RunCompleteness
 from packages.evals.tests.fixtures.toyhost.campaign import (
     toyhost_aspect_design,
     TOYHOST_NARROW,
-    TOYHOST_WIDE,
     toyhost_bundle,
     toyhost_campaign,
 )
@@ -61,47 +44,14 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     ToyhostStorage,
 )
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_memo import (
-    MODEL,
-    PROMPT,
-    PROMPT_ID,
-    FixturedClient,
-    alias_at,
-    cell_at,
-    memo_payload,
-)
+from packages.evals.tests.toyhost_cells import cell_at
+from packages.evals.tests.writer_host_support import doc_analysis_over
 from packages.evals.tests.aspect_support import with_control
 
 
 def _bundle() -> Any:
     profile = toyhost_profile()
     return toyhost_bundle(profile=profile)
-
-
-async def _generate(
-    bundle: Any, payload: dict[str, Any] | None = None, *, client: Any = None
-) -> tuple[EvalAnalysis, Any]:
-    client = (
-        client
-        if client is not None
-        else FixturedClient(json.dumps(payload if payload is not None else memo_payload(bundle)))
-    )
-    profile = toyhost_profile()
-    analysis, _insights = await generate_analysis(
-        campaign_bundle(bundle),
-        prompt=PROMPT,
-        model=MODEL,
-        client=client,
-        prompt_id=PROMPT_ID,
-        bundle_assembled_at=utc_now_iso(),
-        profile=profile,
-    )
-    return analysis, client
-
-
-def _finding(payload: dict[str, Any]) -> dict[str, Any]:
-    (finding,) = payload["findings"]
-    return finding
 
 
 # =============================================================================
@@ -385,16 +335,16 @@ class TestARefusedBarIsQuotedAsDeclared:
 
 
 # =============================================================================
-# analysis/generator.py
+# analysis/doc_analysis.py
 # =============================================================================
 
 
-class TestAGenerationFreezesTheBundlesSurface:
+class TestAStoredAnalysisFreezesTheBundlesSurface:
     """The stored surface is the bundle's cells, bars and control, never recomputed."""
 
-    async def test_the_surface_carries_the_bundles_cells_and_every_bar(self) -> None:
+    def test_the_surface_carries_the_bundles_cells_and_every_bar(self) -> None:
         bundle = _bundle()
-        analysis, _client = await _generate(bundle)
+        analysis, _ = doc_analysis_over(campaign_bundle(bundle))
 
         surface = analysis.aspects[0].decision_surface
         assert surface is not None
@@ -402,7 +352,7 @@ class TestAGenerationFreezesTheBundlesSurface:
         assert surface.bars == bundle.bar_adjudications
         assert len(surface.bars) == 3, "the toy campaign holds three bars; an empty list would match an empty bundle"
 
-    async def test_the_surface_names_the_declared_control(self) -> None:
+    def test_the_surface_names_the_declared_control(self) -> None:
         # Declared on the campaign and assembled, as a control is: the bundle matches it to its arm once
         # (`design.control_arm`), and the surface reads that match, so patching the declaration onto an
         # already-assembled bundle would reach no reader.
@@ -411,168 +361,6 @@ class TestAGenerationFreezesTheBundlesSurface:
         narrow_key = cell_at(_bundle(), TOYHOST_NARROW).split(":")[0]
         controlled = assemble_context_bundle(with_control(campaign, narrow_key), storage=storage, profile=profile)
 
-        analysis, _client = await _generate(controlled)
+        analysis, _ = doc_analysis_over(campaign_bundle(controlled))
 
         assert analysis.aspects[0].decision_surface.control_variant_key == narrow_key
-
-
-class TestTheGeneratorsReadersArePublished:
-    """The reporter's judge reads what the generator sends, through the generator's own functions.
-
-    Both were renames to a public name; reverting either fails these by ``ImportError`` alone.
-    """
-
-    async def test_the_user_message_is_the_one_the_generator_sent(self) -> None:
-        bundle = _bundle()
-        _analysis, client = await _generate(bundle)
-
-        (call,) = client.calls
-        assert _writer_message(bundle) == call["user"]
-
-    def test_a_bundle_with_one_describable_arm_is_not_refused(self) -> None:
-        refuse_an_undescribable_arm_table(campaign_bundle(_bundle()))
-
-    def test_a_bundle_whose_every_arm_is_undescribable_is_refused_before_any_call(self) -> None:
-        bundle = _bundle()
-        opaque = [
-            entry.model_copy(update={"levels_unavailable": "recorded before levels were kept"})
-            for entry in bundle.variant_index
-        ]
-
-        with pytest.raises(GenerationError, match=r"has no describable arm") as raised:
-            refuse_an_undescribable_arm_table(campaign_bundle(bundle.model_copy(update={"variant_index": opaque})))
-        assert not isinstance(raised.value, SoundnessRefusal)
-
-
-class TestThePromptVersionIsWhatTheModelWasTold:
-    """The version hashes what the model was told, with the host's register included."""
-
-    async def test_the_recorded_version_is_the_hash_of_what_the_model_was_told(self) -> None:
-        """The assembled system prompt AND the contract sent with it — two schemas under one prompt differ."""
-        analysis, client = await _generate(_bundle())
-
-        (call,) = client.calls
-        _, _, sent = first_request(campaign_bundle(_bundle()), PROMPT, toyhost_profile())
-        contract = json.dumps(sent, sort_keys=True, separators=(",", ":"))
-        told = hashlib.sha256((call["system"] + "\n" + contract).encode("utf-8")).hexdigest()[:12]
-        assert analysis.generation.prompt_version == told
-        assert analysis.generation.prompt_version != hashlib.sha256(call["system"].encode("utf-8")).hexdigest()[:12]
-        assert analysis.generation.prompt_version != hashlib.sha256(PROMPT.encode("utf-8")).hexdigest()[:12]
-
-    def test_the_one_derivation_agrees_with_what_the_generator_sends(self) -> None:
-        profile = toyhost_profile()
-        system, _, contract = first_request(campaign_bundle(_bundle()), PROMPT, profile)
-        told = system + "\n" + json.dumps(contract, sort_keys=True, separators=(",", ":"))
-        assert _bundle().time_axis is None, "the toy campaign runs on one day under no build label"
-        assert prompt_content_version(PROMPT, profile) == hashlib.sha256(told.encode("utf-8")).hexdigest()[:12]
-
-
-@dataclass
-class _Completion:
-    content: str
-    cost_usd: float | None
-    stop_reason: str = "end_turn"
-    temperature: float | None = None
-    input_tokens: int = 1000
-    output_tokens: int = 700
-    model: str = MODEL
-    tool_calls: list[Any] = field(default_factory=list)
-    reasoning_tokens: int | None = None
-
-
-class _BilledClient:
-    """Returns the same billed completion for every call."""
-
-    def __init__(self, completion: _Completion) -> None:
-        self._completion = completion
-        self.calls: list[dict[str, str]] = []
-
-    @property
-    def model_name(self) -> str:
-        return MODEL
-
-    async def generate(self, *, system: str, user: str, response_format: Any = None, tools: Any = None) -> _Completion:
-        self.calls.append({"system": system, "user": user})
-        return self._completion
-
-
-class TestTheBilledCostIsSpelledByTheNumberRule:
-    """The cost carried on a failed generation is written as every other reader-facing number is."""
-
-    async def test_a_twice_refused_generation_states_both_calls_cost(self) -> None:
-        client = _BilledClient(_Completion(content="this is not an analysis", cost_usd=1234.5))
-        with pytest.raises(SoundnessRefusal) as raised:
-            await _generate(_bundle(), client=client)
-
-        assert len(client.calls) == 2
-        assert f"${format_number(2469.0)} was billed across both calls" in str(raised.value)
-
-    async def test_a_cut_short_generation_states_its_one_calls_cost(self) -> None:
-        client = _BilledClient(_Completion(content="{", cost_usd=1234.5, stop_reason="max_tokens"))
-        with pytest.raises(GenerationError) as raised:
-            await _generate(_bundle(), client=client)
-
-        assert len(client.calls) == 1
-        assert f"${format_number(1234.5)} was billed on the one call" in str(raised.value)
-
-
-def _misspelt_reading(bundle: Any) -> dict[str, Any]:
-    """The fixtured memo with each evidence reading spelt ``raeding`` — a key that decides what is read."""
-    payload = copy.deepcopy(memo_payload(bundle))
-    for reading in _finding(payload)["evidence"]:
-        reading["raeding"] = reading.pop("reading")
-    return payload
-
-
-class TestEveryReadingSiteIsParsedByTheOneContract:
-    """A key that is no field is refused, and a writer draws nothing: the report's two charts are code's."""
-
-    async def test_a_misspelt_field_is_refused_rather_than_read_as_the_default(self) -> None:
-        bundle = _bundle()
-        with pytest.raises(SoundnessRefusal, match=r"raeding\s+Extra inputs are not permitted"):
-            await _generate(bundle, _misspelt_reading(bundle))
-
-    async def test_the_same_memo_spelt_correctly_is_accepted_in_one_call(self) -> None:
-        bundle = _bundle()
-        payload = _misspelt_reading(bundle)
-        for reading in _finding(payload)["evidence"]:
-            reading["reading"] = reading.pop("raeding")
-
-        analysis, client = await _generate(bundle, payload)
-
-        assert len(client.calls) == 1
-        assert [row.reading for row in analysis.resolutions[0].evidence] == ["measure", "measure"]
-
-    async def test_a_chart_a_writer_adds_to_a_finding_is_refused(self) -> None:
-        """The writer authors findings and recommendations; a chart it types is off-contract, never drawn."""
-        bundle = _bundle()
-        payload = copy.deepcopy(memo_payload(bundle))
-        _finding(payload)["chart"] = {"type": "delta_table", "cells": [alias_at(bundle, TOYHOST_NARROW)]}
-
-        with pytest.raises(SoundnessRefusal, match=r"chart\s+Extra inputs are not permitted"):
-            await _generate(bundle, payload)
-
-
-class TestProseIsNotRefused:
-    """Code checks the structure of the memo, never its sentences."""
-
-    async def test_a_memo_whose_prose_the_removed_gates_refused_is_stored_in_one_call(self) -> None:
-        bundle = _bundle()
-        payload = copy.deepcopy(memo_payload(bundle))
-        # A title naming a level, a rendered table in a finding's body, and a figure the bundle
-        # never computed: the headline gate, the rendered-table gate and the prose fact gate each
-        # would refuse one of these.
-        _finding(payload)["title"] = f"{TOYHOST_NARROW}tok beats {TOYHOST_WIDE}tok on wall-clock by 99999 ms."
-        _finding(payload)["body"] = "| width | ms |\n|---|---|\n| 256tok | 920 |\n| 1024tok | 1420 |"
-
-        analysis, client = await _generate(bundle, payload)
-
-        assert len(client.calls) == 1
-        assert analysis.document.findings[0].title.startswith(f"{TOYHOST_NARROW}tok beats")
-        assert "|---|" in analysis.document.findings[0].body
-        assert analysis.document.findings[0].title == _finding(payload)["title"]
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))

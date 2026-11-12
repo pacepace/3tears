@@ -1,0 +1,1614 @@
+{
+ "schema": "report-input/1",
+ "meta": {
+  "campaign": "Query planner config sweep",
+  "behavior": "Research query planner",
+  "kind": "choice",
+  "design_shape": "factorial",
+  "run_date": "2026-10-23",
+  "provenance": "Synthetic example data from docs/eval-report-kit/references/r2-config-sweep.json",
+  "synthetic": true,
+  "volume_per_month": 4000000
+ },
+ "arms": [
+  {
+   "id": "atlas-m.off.r0",
+   "name": "Atlas-M · reasoning off · no retry",
+   "role": "challenger",
+   "served_model": "Atlas-M",
+   "settings": {
+    "model": "Atlas-M",
+    "reasoning": "off",
+    "retry": 0
+   }
+  },
+  {
+   "id": "atlas-m.off.r1",
+   "name": "Atlas-M · reasoning off · 1 retry",
+   "role": "challenger",
+   "served_model": "Atlas-M",
+   "settings": {
+    "model": "Atlas-M",
+    "reasoning": "off",
+    "retry": 1
+   }
+  },
+  {
+   "id": "atlas-m.low.r0",
+   "name": "Atlas-M · reasoning low · no retry",
+   "role": "challenger",
+   "served_model": "Atlas-M",
+   "settings": {
+    "model": "Atlas-M",
+    "reasoning": "low",
+    "retry": 0
+   }
+  },
+  {
+   "id": "atlas-m.low.r1",
+   "name": "Atlas-M · reasoning low · 1 retry",
+   "role": "challenger",
+   "served_model": "Atlas-M",
+   "settings": {
+    "model": "Atlas-M",
+    "reasoning": "low",
+    "retry": 1
+   }
+  },
+  {
+   "id": "atlas-m.high.r0",
+   "name": "Atlas-M · reasoning high · no retry",
+   "role": "challenger",
+   "served_model": "Atlas-M",
+   "settings": {
+    "model": "Atlas-M",
+    "reasoning": "high",
+    "retry": 0
+   }
+  },
+  {
+   "id": "atlas-m.high.r1",
+   "name": "Atlas-M · reasoning high · 1 retry",
+   "role": "challenger",
+   "served_model": "Atlas-M",
+   "settings": {
+    "model": "Atlas-M",
+    "reasoning": "high",
+    "retry": 1
+   }
+  },
+  {
+   "id": "brisk-s.off.r0",
+   "name": "Brisk-S · reasoning off · no retry",
+   "role": "challenger",
+   "served_model": "Brisk-S",
+   "settings": {
+    "model": "Brisk-S",
+    "reasoning": "off",
+    "retry": 0
+   }
+  },
+  {
+   "id": "brisk-s.off.r1",
+   "name": "Brisk-S · reasoning off · 1 retry",
+   "role": "challenger",
+   "served_model": "Brisk-S",
+   "settings": {
+    "model": "Brisk-S",
+    "reasoning": "off",
+    "retry": 1
+   }
+  },
+  {
+   "id": "brisk-s.low.r0",
+   "name": "Brisk-S · reasoning low · no retry",
+   "role": "challenger",
+   "served_model": "Brisk-S",
+   "settings": {
+    "model": "Brisk-S",
+    "reasoning": "low",
+    "retry": 0
+   }
+  },
+  {
+   "id": "brisk-s.low.r1",
+   "name": "Brisk-S · reasoning low · 1 retry",
+   "role": "challenger",
+   "served_model": "Brisk-S",
+   "settings": {
+    "model": "Brisk-S",
+    "reasoning": "low",
+    "retry": 1
+   }
+  },
+  {
+   "id": "brisk-s.high.r0",
+   "name": "Brisk-S · reasoning high · no retry",
+   "role": "challenger",
+   "served_model": "Brisk-S",
+   "settings": {
+    "model": "Brisk-S",
+    "reasoning": "high",
+    "retry": 0
+   }
+  },
+  {
+   "id": "brisk-s.high.r1",
+   "name": "Brisk-S · reasoning high · 1 retry",
+   "role": "challenger",
+   "served_model": "Brisk-S",
+   "settings": {
+    "model": "Brisk-S",
+    "reasoning": "high",
+    "retry": 1
+   }
+  },
+  {
+   "id": "nano-xs.off.r0",
+   "name": "Nano-XS · reasoning off · no retry",
+   "role": "challenger",
+   "served_model": "Nano-XS",
+   "settings": {
+    "model": "Nano-XS",
+    "reasoning": "off",
+    "retry": 0
+   }
+  },
+  {
+   "id": "nano-xs.off.r1",
+   "name": "Nano-XS · reasoning off · 1 retry",
+   "role": "challenger",
+   "served_model": "Nano-XS",
+   "settings": {
+    "model": "Nano-XS",
+    "reasoning": "off",
+    "retry": 1
+   }
+  },
+  {
+   "id": "nano-xs.low.r0",
+   "name": "Nano-XS · reasoning low · no retry",
+   "role": "challenger",
+   "served_model": "Nano-XS",
+   "settings": {
+    "model": "Nano-XS",
+    "reasoning": "low",
+    "retry": 0
+   }
+  },
+  {
+   "id": "nano-xs.low.r1",
+   "name": "Nano-XS · reasoning low · 1 retry",
+   "role": "challenger",
+   "served_model": "Nano-XS",
+   "settings": {
+    "model": "Nano-XS",
+    "reasoning": "low",
+    "retry": 1
+   }
+  },
+  {
+   "id": "nano-xs.high.r0",
+   "name": "Nano-XS · reasoning high · no retry",
+   "role": "challenger",
+   "served_model": "Nano-XS",
+   "settings": {
+    "model": "Nano-XS",
+    "reasoning": "high",
+    "retry": 0
+   }
+  },
+  {
+   "id": "nano-xs.high.r1",
+   "name": "Nano-XS · reasoning high · 1 retry",
+   "role": "challenger",
+   "served_model": "Nano-XS",
+   "settings": {
+    "model": "Nano-XS",
+    "reasoning": "high",
+    "retry": 1
+   }
+  }
+ ],
+ "aspects": [],
+ "criteria": [
+  {
+   "id": "pass_rate",
+   "kind": "gate",
+   "measure": "pass_rate",
+   "direction": "higher_is_better",
+   "threshold": 97.0,
+   "label": "Pass rate"
+  },
+  {
+   "id": "p95",
+   "kind": "gate",
+   "measure": "latency_ms",
+   "statistic": "p95",
+   "direction": "lower_is_better",
+   "threshold": 600,
+   "label": "Latency budget (p95)"
+  }
+ ],
+ "scoreboard": {
+  "atlas-m.off.r0": {
+   "cases": 1200
+  },
+  "atlas-m.off.r1": {
+   "cases": 1200
+  },
+  "atlas-m.low.r0": {
+   "cases": 1200
+  },
+  "atlas-m.low.r1": {
+   "cases": 1200
+  },
+  "atlas-m.high.r0": {
+   "cases": 1200
+  },
+  "atlas-m.high.r1": {
+   "cases": 1200
+  },
+  "brisk-s.off.r0": {
+   "cases": 1200
+  },
+  "brisk-s.off.r1": {
+   "cases": 1200
+  },
+  "brisk-s.low.r0": {
+   "cases": 1200
+  },
+  "brisk-s.low.r1": {
+   "cases": 1200
+  },
+  "brisk-s.high.r0": {
+   "cases": 1200
+  },
+  "brisk-s.high.r1": {
+   "cases": 1200
+  },
+  "nano-xs.off.r0": {
+   "cases": 1200
+  },
+  "nano-xs.off.r1": {
+   "cases": 1200
+  },
+  "nano-xs.low.r0": {
+   "cases": 1200
+  },
+  "nano-xs.low.r1": {
+   "cases": 1200
+  },
+  "nano-xs.high.r0": {
+   "cases": 1200
+  },
+  "nano-xs.high.r1": {
+   "cases": 1200
+  }
+ },
+ "measures": {
+  "pass_rate": {
+   "label": "Pass rate",
+   "unit": "pct",
+   "higher_is_better": true,
+   "means": "The executed call sequence returns the gold result, or asks for clarification where the gold answer does. Extra calls still pass.",
+   "per_arm": {
+    "atlas-m.off.r0": {
+     "mean": 94.0
+    },
+    "atlas-m.off.r1": {
+     "mean": 96.37
+    },
+    "atlas-m.low.r0": {
+     "mean": 96.57
+    },
+    "atlas-m.low.r1": {
+     "mean": 97.93
+    },
+    "atlas-m.high.r0": {
+     "mean": 97.74
+    },
+    "atlas-m.high.r1": {
+     "mean": 98.63
+    },
+    "brisk-s.off.r0": {
+     "mean": 91.1
+    },
+    "brisk-s.off.r1": {
+     "mean": 94.62
+    },
+    "brisk-s.low.r0": {
+     "mean": 95.27
+    },
+    "brisk-s.low.r1": {
+     "mean": 97.14
+    },
+    "brisk-s.high.r0": {
+     "mean": 96.64
+    },
+    "brisk-s.high.r1": {
+     "mean": 97.97
+    },
+    "nano-xs.off.r0": {
+     "mean": 81.04
+    },
+    "nano-xs.off.r1": {
+     "mean": 88.54
+    },
+    "nano-xs.low.r0": {
+     "mean": 87.92
+    },
+    "nano-xs.low.r1": {
+     "mean": 92.7
+    },
+    "nano-xs.high.r0": {
+     "mean": 91.31
+    },
+    "nano-xs.high.r1": {
+     "mean": 94.75
+    }
+   },
+   "grade": "pass_fail"
+  },
+  "calls_per_task": {
+   "label": "Calls per task",
+   "unit": "calls",
+   "higher_is_better": false,
+   "means": "Tool calls per task, including retries; the minimum is the gold sequence's average.",
+   "per_arm": {
+    "atlas-m.off.r0": {
+     "mean": 1.539
+    },
+    "atlas-m.off.r1": {
+     "mean": 1.599
+    },
+    "atlas-m.low.r0": {
+     "mean": 1.469
+    },
+    "atlas-m.low.r1": {
+     "mean": 1.504
+    },
+    "atlas-m.high.r0": {
+     "mean": 1.43
+    },
+    "atlas-m.high.r1": {
+     "mean": 1.452
+    },
+    "brisk-s.off.r0": {
+     "mean": 1.579
+    },
+    "brisk-s.off.r1": {
+     "mean": 1.668
+    },
+    "brisk-s.low.r0": {
+     "mean": 1.492
+    },
+    "brisk-s.low.r1": {
+     "mean": 1.539
+    },
+    "brisk-s.high.r0": {
+     "mean": 1.442
+    },
+    "brisk-s.high.r1": {
+     "mean": 1.476
+    },
+    "nano-xs.off.r0": {
+     "mean": 1.698
+    },
+    "nano-xs.off.r1": {
+     "mean": 1.888
+    },
+    "nano-xs.low.r0": {
+     "mean": 1.559
+    },
+    "nano-xs.low.r1": {
+     "mean": 1.68
+    },
+    "nano-xs.high.r0": {
+     "mean": 1.479
+    },
+    "nano-xs.high.r1": {
+     "mean": 1.566
+    }
+   },
+   "minimum": 1.38
+  },
+  "cost_per_1k": {
+   "label": "Cost per 1k calls",
+   "unit": "usd_per_1k",
+   "higher_is_better": false,
+   "means": "Measured tokens times list price per 1,000 planner calls, including retries.",
+   "per_arm": {
+    "atlas-m.off.r0": {
+     "mean": 1.0
+    },
+    "atlas-m.off.r1": {
+     "mean": 1.06
+    },
+    "atlas-m.low.r0": {
+     "mean": 1.6
+    },
+    "atlas-m.low.r1": {
+     "mean": 1.655
+    },
+    "atlas-m.high.r0": {
+     "mean": 3.4
+    },
+    "atlas-m.high.r1": {
+     "mean": 3.477
+    },
+    "brisk-s.off.r0": {
+     "mean": 0.18
+    },
+    "brisk-s.off.r1": {
+     "mean": 0.196
+    },
+    "brisk-s.low.r0": {
+     "mean": 0.288
+    },
+    "brisk-s.low.r1": {
+     "mean": 0.302
+    },
+    "brisk-s.high.r0": {
+     "mean": 0.612
+    },
+    "brisk-s.high.r1": {
+     "mean": 0.633
+    },
+    "nano-xs.off.r0": {
+     "mean": 0.03
+    },
+    "nano-xs.off.r1": {
+     "mean": 0.036
+    },
+    "nano-xs.low.r0": {
+     "mean": 0.048
+    },
+    "nano-xs.low.r1": {
+     "mean": 0.054
+    },
+    "nano-xs.high.r0": {
+     "mean": 0.102
+    },
+    "nano-xs.high.r1": {
+     "mean": 0.111
+    }
+   }
+  },
+  "latency_ms": {
+   "label": "Latency",
+   "unit": "ms",
+   "higher_is_better": false,
+   "per_arm": {
+    "atlas-m.off.r0": {
+     "p50": 405.0,
+     "p95": 900.0
+    },
+    "atlas-m.off.r1": {
+     "p50": 405.0,
+     "p95": 1019.0
+    },
+    "atlas-m.low.r0": {
+     "p50": 628.0,
+     "p95": 1395.0
+    },
+    "atlas-m.low.r1": {
+     "p50": 628.0,
+     "p95": 1500.0
+    },
+    "atlas-m.high.r0": {
+     "p50": 1094.0,
+     "p95": 2430.0
+    },
+    "atlas-m.high.r1": {
+     "p50": 1094.0,
+     "p95": 2551.0
+    },
+    "brisk-s.off.r0": {
+     "p50": 135.0,
+     "p95": 300.0
+    },
+    "brisk-s.off.r1": {
+     "p50": 135.0,
+     "p95": 359.0
+    },
+    "brisk-s.low.r0": {
+     "p50": 209.0,
+     "p95": 465.0
+    },
+    "brisk-s.low.r1": {
+     "p50": 209.0,
+     "p95": 513.0
+    },
+    "brisk-s.high.r0": {
+     "p50": 364.0,
+     "p95": 810.0
+    },
+    "brisk-s.high.r1": {
+     "p50": 364.0,
+     "p95": 870.0
+    },
+    "nano-xs.off.r0": {
+     "p50": 63.0,
+     "p95": 140.0
+    },
+    "nano-xs.off.r1": {
+     "p50": 63.0,
+     "p95": 198.0
+    },
+    "nano-xs.low.r0": {
+     "p50": 98.0,
+     "p95": 217.0
+    },
+    "nano-xs.low.r1": {
+     "p50": 98.0,
+     "p95": 275.0
+    },
+    "nano-xs.high.r0": {
+     "p50": 170.0,
+     "p95": 378.0
+    },
+    "nano-xs.high.r1": {
+     "p50": 170.0,
+     "p95": 450.0
+    }
+   }
+  },
+  "outcome": {
+   "label": "Outcome",
+   "unit": "pct",
+   "means": "Share of tasks by outcome: passes, then each failure class.",
+   "per_arm": {
+    "atlas-m.off.r0": {
+     "shares": [
+      81.97,
+      12.03,
+      0.0,
+      2.52,
+      1.02,
+      0.6,
+      1.56,
+      0.3
+     ]
+    },
+    "atlas-m.off.r1": {
+     "shares": [
+      81.97,
+      12.03,
+      2.37,
+      1.76,
+      0.77,
+      0.48,
+      0.47,
+      0.15
+     ]
+    },
+    "atlas-m.low.r0": {
+     "shares": [
+      89.62,
+      6.95,
+      0.0,
+      1.44,
+      0.58,
+      0.34,
+      0.89,
+      0.17
+     ]
+    },
+    "atlas-m.low.r1": {
+     "shares": [
+      89.62,
+      6.95,
+      1.36,
+      1.01,
+      0.44,
+      0.27,
+      0.27,
+      0.09
+     ]
+    },
+    "atlas-m.high.r0": {
+     "shares": [
+      93.83,
+      3.91,
+      0.0,
+      0.95,
+      0.38,
+      0.23,
+      0.59,
+      0.11
+     ]
+    },
+    "atlas-m.high.r1": {
+     "shares": [
+      93.83,
+      3.91,
+      0.89,
+      0.66,
+      0.29,
+      0.18,
+      0.18,
+      0.06
+     ]
+    },
+    "brisk-s.off.r0": {
+     "shares": [
+      76.52,
+      14.58,
+      0.0,
+      3.74,
+      1.51,
+      0.89,
+      2.31,
+      0.44
+     ]
+    },
+    "brisk-s.off.r1": {
+     "shares": [
+      76.52,
+      14.58,
+      3.52,
+      2.62,
+      1.13,
+      0.71,
+      0.69,
+      0.22
+     ]
+    },
+    "brisk-s.low.r0": {
+     "shares": [
+      86.7,
+      8.57,
+      0.0,
+      1.99,
+      0.8,
+      0.47,
+      1.23,
+      0.24
+     ]
+    },
+    "brisk-s.low.r1": {
+     "shares": [
+      86.7,
+      8.57,
+      1.87,
+      1.39,
+      0.6,
+      0.38,
+      0.37,
+      0.12
+     ]
+    },
+    "brisk-s.high.r0": {
+     "shares": [
+      91.81,
+      4.83,
+      0.0,
+      1.41,
+      0.57,
+      0.34,
+      0.87,
+      0.17
+     ]
+    },
+    "brisk-s.high.r1": {
+     "shares": [
+      91.81,
+      4.83,
+      1.33,
+      0.99,
+      0.43,
+      0.27,
+      0.26,
+      0.08
+     ]
+    },
+    "nano-xs.off.r0": {
+     "shares": [
+      60.29,
+      20.75,
+      0.0,
+      7.96,
+      3.22,
+      1.9,
+      4.93,
+      0.95
+     ]
+    },
+    "nano-xs.off.r1": {
+     "shares": [
+      60.29,
+      20.75,
+      7.5,
+      5.57,
+      2.42,
+      1.52,
+      1.48,
+      0.47
+     ]
+    },
+    "nano-xs.low.r0": {
+     "shares": [
+      75.26,
+      12.66,
+      0.0,
+      5.07,
+      2.05,
+      1.21,
+      3.14,
+      0.6
+     ]
+    },
+    "nano-xs.low.r1": {
+     "shares": [
+      75.26,
+      12.66,
+      4.78,
+      3.55,
+      1.54,
+      0.97,
+      0.94,
+      0.3
+     ]
+    },
+    "nano-xs.high.r0": {
+     "shares": [
+      84.01,
+      7.3,
+      0.0,
+      3.65,
+      1.48,
+      0.87,
+      2.26,
+      0.43
+     ]
+    },
+    "nano-xs.high.r1": {
+     "shares": [
+      84.01,
+      7.3,
+      3.44,
+      2.55,
+      1.11,
+      0.7,
+      0.68,
+      0.22
+     ]
+    }
+   },
+   "bins": [
+    {
+     "id": "pass_clean"
+    },
+    {
+     "id": "pass_extra"
+    },
+    {
+     "id": "pass_retry"
+    },
+    {
+     "id": "wrong_args",
+     "name": "Wrong arguments"
+    },
+    {
+     "id": "missing_call",
+     "name": "Missing call"
+    },
+    {
+     "id": "wrong_tool",
+     "name": "Wrong tool"
+    },
+    {
+     "id": "malformed",
+     "name": "Malformed call"
+    },
+    {
+     "id": "timeout",
+     "name": "Timeout"
+    }
+   ]
+  },
+  "extra_calls": {
+   "label": "Extra calls per task",
+   "unit": "pct",
+   "higher_is_better": false,
+   "means": "Share of passing tasks by how many calls they used beyond the minimum.",
+   "per_arm": {
+    "atlas-m.off.r0": {
+     "shares": [
+      87.2,
+      9.2,
+      2.6,
+      1.0
+     ]
+    },
+    "atlas-m.off.r1": {
+     "shares": [
+      87.2,
+      9.2,
+      2.6,
+      1.0
+     ]
+    },
+    "atlas-m.low.r0": {
+     "shares": [
+      92.8,
+      5.2,
+      1.4,
+      0.6
+     ]
+    },
+    "atlas-m.low.r1": {
+     "shares": [
+      92.8,
+      5.2,
+      1.4,
+      0.6
+     ]
+    },
+    "atlas-m.high.r0": {
+     "shares": [
+      96.0,
+      2.9,
+      0.8,
+      0.3
+     ]
+    },
+    "atlas-m.high.r1": {
+     "shares": [
+      96.0,
+      2.9,
+      0.8,
+      0.3
+     ]
+    },
+    "brisk-s.off.r0": {
+     "shares": [
+      84.0,
+      11.5,
+      3.2,
+      1.3
+     ]
+    },
+    "brisk-s.off.r1": {
+     "shares": [
+      84.0,
+      11.5,
+      3.2,
+      1.3
+     ]
+    },
+    "brisk-s.low.r0": {
+     "shares": [
+      91.0,
+      6.5,
+      1.8,
+      0.7
+     ]
+    },
+    "brisk-s.low.r1": {
+     "shares": [
+      91.0,
+      6.5,
+      1.8,
+      0.7
+     ]
+    },
+    "brisk-s.high.r0": {
+     "shares": [
+      95.0,
+      3.6,
+      1.0,
+      0.4
+     ]
+    },
+    "brisk-s.high.r1": {
+     "shares": [
+      95.0,
+      3.6,
+      1.0,
+      0.4
+     ]
+    },
+    "nano-xs.off.r0": {
+     "shares": [
+      74.4,
+      18.4,
+      5.1,
+      2.0
+     ]
+    },
+    "nano-xs.off.r1": {
+     "shares": [
+      74.4,
+      18.4,
+      5.1,
+      2.0
+     ]
+    },
+    "nano-xs.low.r0": {
+     "shares": [
+      85.6,
+      10.4,
+      2.9,
+      1.2
+     ]
+    },
+    "nano-xs.low.r1": {
+     "shares": [
+      85.6,
+      10.4,
+      2.9,
+      1.2
+     ]
+    },
+    "nano-xs.high.r0": {
+     "shares": [
+      92.0,
+      5.8,
+      1.6,
+      0.6
+     ]
+    },
+    "nano-xs.high.r1": {
+     "shares": [
+      92.0,
+      5.8,
+      1.6,
+      0.6
+     ]
+    }
+   },
+   "bins": [
+    {
+     "id": "0"
+    },
+    {
+     "id": "1"
+    },
+    {
+     "id": "2"
+    },
+    {
+     "id": "3+",
+     "name": "3 or more"
+    }
+   ]
+  }
+ },
+ "judged": {},
+ "contrasts": [],
+ "examples": [
+  {
+   "case": "TQ-0418",
+   "stratum": "multihop",
+   "arm": "brisk-s.low.r1",
+   "reason": "Collapsed two hops into one query; returned the budget author, not the chair.",
+   "excerpt": "search(grid budget 2019 chair)",
+   "outcome": "missing_call",
+   "input": "Who chaired the committee that approved the 2019 grid budget?",
+   "expected": "search(committee, grid budget 2019) → lookup(chair)"
+  },
+  {
+   "case": "TQ-0772",
+   "stratum": "datemath",
+   "arm": "brisk-s.low.r1",
+   "reason": "Off-by-one on the window start. The most common wrong-args pattern (9 of 17).",
+   "excerpt": "date_from=2026-12-04, date_to=2027-03-03",
+   "outcome": "wrong_args",
+   "input": "Filings in the 90 days before the March 3 hearing",
+   "expected": "date_from=2026-12-03, date_to=2027-03-03"
+  },
+  {
+   "case": "TQ-1103",
+   "stratum": "disamb",
+   "arm": "brisk-s.low.r1",
+   "reason": "Picked the company without asking. Scored wrong because the gold answer requires clarification.",
+   "excerpt": "search(Mercury pricing)",
+   "outcome": "wrong_tool",
+   "input": "Latest on Mercury's pricing",
+   "expected": "ask_clarify(company or planet?)"
+  },
+  {
+   "case": "TQ-0051",
+   "stratum": "single",
+   "arm": "nano-xs.low.r1",
+   "reason": "Truncated JSON. Retry recovers 70% of these.",
+   "excerpt": "{\"tool\":\"lookup\",\"entity\":\"Bozeman, MT\"",
+   "outcome": "malformed",
+   "input": "Population of Bozeman",
+   "expected": "{\"tool\":\"lookup\",\"entity\":\"Bozeman, MT\"}"
+  }
+ ],
+ "caveats": {
+  "late_criteria": []
+ },
+ "tasks": [
+  {
+   "id": "single",
+   "name": "Single lookup",
+   "share": 0.4,
+   "per_arm": {
+    "atlas-m.off.r0": {
+     "pass_rate": {
+      "mean": 97.2
+     }
+    },
+    "atlas-m.off.r1": {
+     "pass_rate": {
+      "mean": 98.3
+     }
+    },
+    "atlas-m.low.r0": {
+     "pass_rate": {
+      "mean": 98.6
+     }
+    },
+    "atlas-m.low.r1": {
+     "pass_rate": {
+      "mean": 99.2
+     }
+    },
+    "atlas-m.high.r0": {
+     "pass_rate": {
+      "mean": 98.7
+     }
+    },
+    "atlas-m.high.r1": {
+     "pass_rate": {
+      "mean": 99.2
+     }
+    },
+    "brisk-s.off.r0": {
+     "pass_rate": {
+      "mean": 94.3
+     }
+    },
+    "brisk-s.off.r1": {
+     "pass_rate": {
+      "mean": 96.6
+     }
+    },
+    "brisk-s.low.r0": {
+     "pass_rate": {
+      "mean": 97.4
+     }
+    },
+    "brisk-s.low.r1": {
+     "pass_rate": {
+      "mean": 98.4
+     }
+    },
+    "brisk-s.high.r0": {
+     "pass_rate": {
+      "mean": 97.6
+     }
+    },
+    "brisk-s.high.r1": {
+     "pass_rate": {
+      "mean": 98.5
+     }
+    },
+    "nano-xs.off.r0": {
+     "pass_rate": {
+      "mean": 86.8
+     }
+    },
+    "nano-xs.off.r1": {
+     "pass_rate": {
+      "mean": 92.0
+     }
+    },
+    "nano-xs.low.r0": {
+     "pass_rate": {
+      "mean": 91.7
+     }
+    },
+    "nano-xs.low.r1": {
+     "pass_rate": {
+      "mean": 95.0
+     }
+    },
+    "nano-xs.high.r0": {
+     "pass_rate": {
+      "mean": 93.0
+     }
+    },
+    "nano-xs.high.r1": {
+     "pass_rate": {
+      "mean": 95.8
+     }
+    }
+   }
+  },
+  {
+   "id": "multihop",
+   "name": "Multi-hop (2 to 3 calls)",
+   "share": 0.25,
+   "per_arm": {
+    "atlas-m.off.r0": {
+     "pass_rate": {
+      "mean": 90.2
+     }
+    },
+    "atlas-m.off.r1": {
+     "pass_rate": {
+      "mean": 94.1
+     }
+    },
+    "atlas-m.low.r0": {
+     "pass_rate": {
+      "mean": 94.1
+     }
+    },
+    "atlas-m.low.r1": {
+     "pass_rate": {
+      "mean": 96.4
+     }
+    },
+    "atlas-m.high.r0": {
+     "pass_rate": {
+      "mean": 96.6
+     }
+    },
+    "atlas-m.high.r1": {
+     "pass_rate": {
+      "mean": 97.9
+     }
+    },
+    "brisk-s.off.r0": {
+     "pass_rate": {
+      "mean": 87.3
+     }
+    },
+    "brisk-s.off.r1": {
+     "pass_rate": {
+      "mean": 92.3
+     }
+    },
+    "brisk-s.low.r0": {
+     "pass_rate": {
+      "mean": 92.8
+     }
+    },
+    "brisk-s.low.r1": {
+     "pass_rate": {
+      "mean": 95.6
+     }
+    },
+    "brisk-s.high.r0": {
+     "pass_rate": {
+      "mean": 95.5
+     }
+    },
+    "brisk-s.high.r1": {
+     "pass_rate": {
+      "mean": 97.3
+     }
+    },
+    "nano-xs.off.r0": {
+     "pass_rate": {
+      "mean": 74.2
+     }
+    },
+    "nano-xs.off.r1": {
+     "pass_rate": {
+      "mean": 84.4
+     }
+    },
+    "nano-xs.low.r0": {
+     "pass_rate": {
+      "mean": 83.5
+     }
+    },
+    "nano-xs.low.r1": {
+     "pass_rate": {
+      "mean": 90.0
+     }
+    },
+    "nano-xs.high.r0": {
+     "pass_rate": {
+      "mean": 89.3
+     }
+    },
+    "nano-xs.high.r1": {
+     "pass_rate": {
+      "mean": 93.5
+     }
+    }
+   }
+  },
+  {
+   "id": "datemath",
+   "name": "Date and unit math",
+   "share": 0.2,
+   "per_arm": {
+    "atlas-m.off.r0": {
+     "pass_rate": {
+      "mean": 93.7
+     }
+    },
+    "atlas-m.off.r1": {
+     "pass_rate": {
+      "mean": 96.2
+     }
+    },
+    "atlas-m.low.r0": {
+     "pass_rate": {
+      "mean": 96.4
+     }
+    },
+    "atlas-m.low.r1": {
+     "pass_rate": {
+      "mean": 97.8
+     }
+    },
+    "atlas-m.high.r0": {
+     "pass_rate": {
+      "mean": 97.7
+     }
+    },
+    "atlas-m.high.r1": {
+     "pass_rate": {
+      "mean": 98.6
+     }
+    },
+    "brisk-s.off.r0": {
+     "pass_rate": {
+      "mean": 90.8
+     }
+    },
+    "brisk-s.off.r1": {
+     "pass_rate": {
+      "mean": 94.4
+     }
+    },
+    "brisk-s.low.r0": {
+     "pass_rate": {
+      "mean": 95.1
+     }
+    },
+    "brisk-s.low.r1": {
+     "pass_rate": {
+      "mean": 97.0
+     }
+    },
+    "brisk-s.high.r0": {
+     "pass_rate": {
+      "mean": 96.6
+     }
+    },
+    "brisk-s.high.r1": {
+     "pass_rate": {
+      "mean": 97.9
+     }
+    },
+    "nano-xs.off.r0": {
+     "pass_rate": {
+      "mean": 80.5
+     }
+    },
+    "nano-xs.off.r1": {
+     "pass_rate": {
+      "mean": 88.2
+     }
+    },
+    "nano-xs.low.r0": {
+     "pass_rate": {
+      "mean": 87.6
+     }
+    },
+    "nano-xs.low.r1": {
+     "pass_rate": {
+      "mean": 92.5
+     }
+    },
+    "nano-xs.high.r0": {
+     "pass_rate": {
+      "mean": 91.1
+     }
+    },
+    "nano-xs.high.r1": {
+     "pass_rate": {
+      "mean": 94.7
+     }
+    }
+   }
+  },
+  {
+   "id": "disamb",
+   "name": "Ambiguous entity",
+   "share": 0.15,
+   "per_arm": {
+    "atlas-m.off.r0": {
+     "pass_rate": {
+      "mean": 92.2
+     }
+    },
+    "atlas-m.off.r1": {
+     "pass_rate": {
+      "mean": 95.3
+     }
+    },
+    "atlas-m.low.r0": {
+     "pass_rate": {
+      "mean": 95.4
+     }
+    },
+    "atlas-m.low.r1": {
+     "pass_rate": {
+      "mean": 97.2
+     }
+    },
+    "atlas-m.high.r0": {
+     "pass_rate": {
+      "mean": 97.2
+     }
+    },
+    "atlas-m.high.r1": {
+     "pass_rate": {
+      "mean": 98.3
+     }
+    },
+    "brisk-s.off.r0": {
+     "pass_rate": {
+      "mean": 89.3
+     }
+    },
+    "brisk-s.off.r1": {
+     "pass_rate": {
+      "mean": 93.5
+     }
+    },
+    "brisk-s.low.r0": {
+     "pass_rate": {
+      "mean": 94.1
+     }
+    },
+    "brisk-s.low.r1": {
+     "pass_rate": {
+      "mean": 96.4
+     }
+    },
+    "brisk-s.high.r0": {
+     "pass_rate": {
+      "mean": 96.1
+     }
+    },
+    "brisk-s.high.r1": {
+     "pass_rate": {
+      "mean": 97.6
+     }
+    },
+    "nano-xs.off.r0": {
+     "pass_rate": {
+      "mean": 77.8
+     }
+    },
+    "nano-xs.off.r1": {
+     "pass_rate": {
+      "mean": 86.6
+     }
+    },
+    "nano-xs.low.r0": {
+     "pass_rate": {
+      "mean": 85.8
+     }
+    },
+    "nano-xs.low.r1": {
+     "pass_rate": {
+      "mean": 91.4
+     }
+    },
+    "nano-xs.high.r0": {
+     "pass_rate": {
+      "mean": 90.3
+     }
+    },
+    "nano-xs.high.r1": {
+     "pass_rate": {
+      "mean": 94.2
+     }
+    }
+   }
+  }
+ ],
+ "factors": [
+  {
+   "id": "model",
+   "name": "Model",
+   "levels": [
+    {
+     "id": "atlas-m",
+     "name": "Atlas-M"
+    },
+    {
+     "id": "brisk-s",
+     "name": "Brisk-S"
+    },
+    {
+     "id": "nano-xs",
+     "name": "Nano-XS"
+    }
+   ]
+  },
+  {
+   "id": "reasoning",
+   "name": "Reasoning budget",
+   "levels": [
+    {
+     "id": "off",
+     "name": "Off"
+    },
+    {
+     "id": "low",
+     "name": "Low"
+    },
+    {
+     "id": "high",
+     "name": "High"
+    }
+   ]
+  },
+  {
+   "id": "retry",
+   "name": "Retry on failure",
+   "levels": [
+    {
+     "id": "0",
+     "name": "no retry"
+    },
+    {
+     "id": "1",
+     "name": "1 retry"
+    }
+   ]
+  }
+ ],
+ "configs": [
+  {
+   "arm": "atlas-m.off.r0",
+   "levels": {
+    "model": "atlas-m",
+    "reasoning": "off",
+    "retry": "0"
+   }
+  },
+  {
+   "arm": "atlas-m.off.r1",
+   "levels": {
+    "model": "atlas-m",
+    "reasoning": "off",
+    "retry": "1"
+   }
+  },
+  {
+   "arm": "atlas-m.low.r0",
+   "levels": {
+    "model": "atlas-m",
+    "reasoning": "low",
+    "retry": "0"
+   }
+  },
+  {
+   "arm": "atlas-m.low.r1",
+   "levels": {
+    "model": "atlas-m",
+    "reasoning": "low",
+    "retry": "1"
+   }
+  },
+  {
+   "arm": "atlas-m.high.r0",
+   "levels": {
+    "model": "atlas-m",
+    "reasoning": "high",
+    "retry": "0"
+   }
+  },
+  {
+   "arm": "atlas-m.high.r1",
+   "levels": {
+    "model": "atlas-m",
+    "reasoning": "high",
+    "retry": "1"
+   }
+  },
+  {
+   "arm": "brisk-s.off.r0",
+   "levels": {
+    "model": "brisk-s",
+    "reasoning": "off",
+    "retry": "0"
+   }
+  },
+  {
+   "arm": "brisk-s.off.r1",
+   "levels": {
+    "model": "brisk-s",
+    "reasoning": "off",
+    "retry": "1"
+   }
+  },
+  {
+   "arm": "brisk-s.low.r0",
+   "levels": {
+    "model": "brisk-s",
+    "reasoning": "low",
+    "retry": "0"
+   }
+  },
+  {
+   "arm": "brisk-s.low.r1",
+   "levels": {
+    "model": "brisk-s",
+    "reasoning": "low",
+    "retry": "1"
+   }
+  },
+  {
+   "arm": "brisk-s.high.r0",
+   "levels": {
+    "model": "brisk-s",
+    "reasoning": "high",
+    "retry": "0"
+   }
+  },
+  {
+   "arm": "brisk-s.high.r1",
+   "levels": {
+    "model": "brisk-s",
+    "reasoning": "high",
+    "retry": "1"
+   }
+  },
+  {
+   "arm": "nano-xs.off.r0",
+   "levels": {
+    "model": "nano-xs",
+    "reasoning": "off",
+    "retry": "0"
+   }
+  },
+  {
+   "arm": "nano-xs.off.r1",
+   "levels": {
+    "model": "nano-xs",
+    "reasoning": "off",
+    "retry": "1"
+   }
+  },
+  {
+   "arm": "nano-xs.low.r0",
+   "levels": {
+    "model": "nano-xs",
+    "reasoning": "low",
+    "retry": "0"
+   }
+  },
+  {
+   "arm": "nano-xs.low.r1",
+   "levels": {
+    "model": "nano-xs",
+    "reasoning": "low",
+    "retry": "1"
+   }
+  },
+  {
+   "arm": "nano-xs.high.r0",
+   "levels": {
+    "model": "nano-xs",
+    "reasoning": "high",
+    "retry": "0"
+   }
+  },
+  {
+   "arm": "nano-xs.high.r1",
+   "levels": {
+    "model": "nano-xs",
+    "reasoning": "high",
+    "retry": "1"
+   }
+  }
+ ]
+}

@@ -2,7 +2,9 @@
 
 What is here is the rule's two ENDS stated as properties rather than cases, the signed form, and the canary that keeps a
 second implementation from growing back: two formatters in one engine is how one analysis came to
-print a latency as ``1.235e+04`` beside an interval that spelled the same magnitude ``12,346``.
+print a latency as ``1.235e+04`` beside an interval that spelled the same magnitude ``12,346``. The walk that finds
+every site deciding a figure's form outside the rule, and the list of those right for good, are
+``test_one_owner_of_number_forms.py``.
 """
 
 from __future__ import annotations
@@ -10,15 +12,23 @@ from __future__ import annotations
 import ast
 import math
 import re
-from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 import pytest
 
 from threetears.evals.analysis import latency_partition, references, significance
 from threetears.evals.kernel import numbers
-from threetears.evals.kernel.numbers import ABSENT, WHOLE_FROM, WRITTEN_FROM, format_number, format_signed
-from threetears.evals.analysis.report import build as report_build
+from threetears.evals.kernel.numbers import (
+    ABSENT,
+    WHOLE_FROM,
+    WRITTEN_FROM,
+    format_number,
+    format_signed,
+    round_half_even,
+    spell_effect,
+    spell_p,
+)
+from threetears.evals.analysis.report import forms as report_forms
 from threetears.evals.analysis import quantities
 from threetears.evals.schema.models import LatencyMetrics
 
@@ -197,11 +207,79 @@ class TestThePrefixedForm:
         assert not re.search(r"\$[-<>]", format_number(value, prefix="$"))
 
 
+class TestHalfToEven:
+    """The one rounding every decided figure goes through: half to even, on the value as stored."""
+
+    @pytest.mark.parametrize(
+        ("value", "places", "text"), [(0.125, 2, "0.12"), (0.375, 2, "0.38"), (2.5, 0, "2"), (3.5, 0, "4")]
+    )
+    def test_a_tie_rounds_to_the_even_digit(self, value, places, text):
+        assert round_half_even(value, places) == text
+
+    def test_it_rounds_the_stored_value_not_its_shortest_spelling(self):
+        """2.675 is stored a hair under its spelling, so it rounds down, as every other figure on the page does."""
+        assert round_half_even(2.675, 2) == "2.67"
+
+    @pytest.mark.parametrize(("value", "text"), [(-0.04, "0.0"), (-0.0, "0.0"), (0.04, "0.0")])
+    def test_a_value_that_rounds_to_zero_carries_no_sign(self, value, text):
+        assert round_half_even(value, 1) == text
+
+    def test_a_negative_value_keeps_its_sign(self):
+        assert round_half_even(-1.25, 1) == "-1.2"
+
+    def test_no_places_reads_whole(self):
+        assert round_half_even(84.6, 0) == "85"
+
+
+class TestAPValue:
+    """A p-value as APA spells it: under a thousandth as the bound, three decimals below 0.1, two from it up."""
+
+    @pytest.mark.parametrize(
+        ("p", "text"),
+        [
+            (3.6e-169, "< 0.001"),
+            (0.00008342, "< 0.001"),
+            (0.0009996, "< 0.001"),
+            (0.001, "0.001"),
+            (0.0031, "0.003"),
+            (0.0994, "0.099"),
+            (0.1, "0.10"),
+            (0.4996, "0.50"),
+            (1.0, "1.00"),
+            (0.0, "< 0.001"),
+        ],
+    )
+    def test_it_reads_as_apa_reads_it(self, p, text):
+        assert spell_p(p) == text
+
+    @pytest.mark.parametrize("p", [None, math.nan, math.inf])
+    def test_an_absent_p_reads_as_absent(self, p):
+        assert spell_p(p) == ABSENT
+
+
+class TestAnEffectSize:
+    """An effect size or a correlation reads at two decimals, its sign kept."""
+
+    @pytest.mark.parametrize(
+        ("value", "text"), [(0.08475, "0.08"), (0.1228, "0.12"), (-0.194, "-0.19"), (-0.001, "0.00")]
+    )
+    def test_it_reads_at_two_decimals(self, value, text):
+        assert spell_effect(value) == text
+
+    @pytest.mark.parametrize("value", [None, math.nan, -math.inf])
+    def test_an_absent_effect_reads_as_absent(self, value):
+        assert spell_effect(value) == ABSENT
+
+
 class TestThereIsOneImplementation:
     def test_every_surface_that_spells_numbers_holds_the_same_function(self):
-        """The quantities, the references and the report's builder spell their values with it; nothing holds a copy."""
-        for module in (quantities, references, report_build):
+        """The quantities and a page's forms, which spell every figure the report's builder states, spell their values
+        with it; nothing holds a copy. The references spell none themselves: an evidence row's figures are a page's
+        forms' (``PageForms.off_page``), so they hold no spelling function at all."""
+        for module in (quantities, report_forms):
             assert module.format_number is numbers.format_number, module.__name__
+        assert not hasattr(references, "format_number")
+        assert references.PageForms is report_forms.PageForms
 
     def test_no_other_module_defines_a_number_formatter(self):
         """A second ``def format_number`` anywhere in the engine or its surfaces is the defect itself.
@@ -215,127 +293,6 @@ class TestThereIsOneImplementation:
             if any(isinstance(node, ast.FunctionDef) and node.name == "format_number" for node in ast.walk(tree)):
                 defining.append(path.relative_to(_SOURCE_ROOT).as_posix())
         assert defining == ["threetears/evals/kernel/numbers.py"]
-
-
-#: The trees and modules whose every number is shown to a reader: the analysis package -- what the
-#: generator writes from, and the significance and latency-partition modules, whose significance cells and
-#: partition refusals are printed verbatim. A host's own renders (an operator console, a tool surface) are the host's
-#: to walk on the same terms. A spelling of a number anywhere in them either goes through
-#: :func:`~threetears.evals.kernel.numbers.format_number` / :func:`~threetears.evals.kernel.numbers.format_signed` or is
-#: named below as a deliberate fixed spelling. A module sits here by itself, rather than its whole
-#: directory, where the rest of that directory is not read as a report.
-_SPELLING_TREES = ("threetears/evals/analysis", "threetears/evals/ops")
-
-#: What sits inside :data:`_SPELLING_TREES` and is not read as a report, so is not walked: ``report/svg.py`` spells
-#: only a chart's drawing coordinates (to a tenth of a unit), every value it shows a reader going through the rule.
-#: The rule itself (``kernel/numbers.py``) sits outside the trees.
-#: ``out_of_run_spend.py`` is the spend ledger, which spells only dollars, at the four decimals a
-#: per-call price needs.
-_NOT_READ_AS_REPORTS = (
-    "threetears/evals/analysis/report/svg.py",
-    "threetears/evals/analysis/out_of_run_spend.py",
-)
-
-#: Presentation types that choose how many digits a reader sees. ``d`` and ``s`` do not.
-_NUMERIC_TYPES = frozenset("eEfFgGn%")
-
-#: A share of a whole spelled as a percentage (``.0%``) is a different sentence from a measured
-#: value — "37% of it" — and carries its own fixed precision. Exempt by presentation type, since the
-#: type itself says the value is a fraction.
-_PERCENTAGE_TYPE = "%"
-
-#: Sites that spell a number at a deliberate fixed precision, keyed by (module, expression, spec) so
-#: a moved line keeps its exemption and a rewritten expression loses it. Each reason says why the
-#: fixed spelling is the right one there; an entry no site matches any more fails the suite.
-_FIXED_SPELLINGS: dict[tuple[str, str, str], str] = {
-    # A figure inside a memo's sentence is read once, not compared down a column: two significant
-    # figures below 10 are what a sentence can use, and the tables beside it keep the one rule.
-    ("threetears/evals/analysis/prose_refs.py", "value", ".2g"): "a figure in a sentence",
-    ("threetears/evals/analysis/prose_refs.py", "value", ".{}f"): "a figure in a sentence below 1e-4, written out",
-    # Money is spelled in cents from ten cents up, and to three significant figures below.
-    ("threetears/evals/analysis/summary.py", "amount", ".2f"): "dollars, in cents",
-    ("threetears/evals/analysis/summary.py", "amount", ".{}f"): "dollars below ten cents, three figures",
-}
-
-_PRECISION = re.compile(r"\.(\d+|\{\})")
-_PERCENT_DIRECTIVE = re.compile(r"%[-+ #0]*(\d+|\*)?(\.(\d+|\*))?[eEfFgG]")
-_BRACE_FIELD_SPEC = re.compile(r"\{[^{}]*:([^{}]*)\}")
-
-
-def _chooses_digits(spec: str) -> bool:
-    """Whether a format spec decides how many digits a number is written with.
-
-    A precision (fixed or nested), a numeric presentation type, a thousands separator, or a spec
-    built at run time — which cannot be judged here and so is flagged.
-    """
-    if "{}" in spec or _PRECISION.search(spec) or "," in spec or "_" in spec:
-        return True
-    return bool(spec) and spec[-1] in _NUMERIC_TYPES
-
-
-def _joined_spec(spec: ast.JoinedStr) -> str:
-    return "".join(part.value if isinstance(part, ast.Constant) else "{}" for part in spec.values)
-
-
-def _number_spellings(tree: ast.AST) -> Iterator[tuple[int, str, str]]:
-    """Every ``(line, expression, spec)`` in ``tree`` that spells a value with a digit-choosing spec.
-
-    Covers the four ways Python formats a number: an f-string field, the ``format`` builtin,
-    ``str.format`` on a literal, and ``%`` on a literal.
-    """
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FormattedValue) and node.format_spec is not None:
-            spec = _joined_spec(node.format_spec)
-            if _chooses_digits(spec):
-                yield node.lineno, ast.unparse(node.value), spec
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "format"
-            and len(node.args) == 2
-        ):
-            spec_node = node.args[1]
-            spec = spec_node.value if isinstance(spec_node, ast.Constant) and isinstance(spec_node.value, str) else "{}"
-            if _chooses_digits(spec):
-                yield node.lineno, ast.unparse(node.args[0]), spec
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "format"
-            and isinstance(node.func.value, ast.Constant)
-            and isinstance(node.func.value.value, str)
-        ):
-            for spec in _BRACE_FIELD_SPEC.findall(node.func.value.value):
-                if _chooses_digits(spec):
-                    yield node.lineno, ast.unparse(node), spec
-        elif (
-            isinstance(node, ast.BinOp)
-            and isinstance(node.op, ast.Mod)
-            and isinstance(node.left, ast.Constant)
-            and isinstance(node.left.value, str)
-        ):
-            for match in _PERCENT_DIRECTIVE.finditer(node.left.value):
-                yield node.lineno, ast.unparse(node.right), match.group(0)
-
-
-def _modules_under(trees: Iterable[str]) -> list[Path]:
-    """Every module an entry of ``trees`` names — each ``.py`` under a directory, or the file itself."""
-    modules = []
-    for tree_root in trees:
-        root = _SOURCE_ROOT / tree_root
-        assert root.is_dir() or (root.is_file() and root.suffix == ".py"), tree_root
-        modules.extend(sorted(root.rglob("*.py")) if root.is_dir() else [root])
-    excluded = [_SOURCE_ROOT / entry for entry in _NOT_READ_AS_REPORTS]
-    return [module for module in modules if not any(module == ex or ex in module.parents for ex in excluded)]
-
-
-def _spellings_under(trees: Iterable[str]) -> list[tuple[str, int, str, str]]:
-    found = []
-    for path in _modules_under(trees):
-        module = path.relative_to(_SOURCE_ROOT).as_posix()
-        for line, expression, spec in _number_spellings(ast.parse(path.read_text(encoding="utf-8"))):
-            found.append((module, line, expression, spec))
-    return found
 
 
 class TestTheWidenedModulesRenderByTheRule:
@@ -371,67 +328,9 @@ class TestTheWidenedModulesRenderByTheRule:
         assert format_number(overrun) == "1234468"
 
 
-class TestNoSurfaceSpellsANumberItsOwnWay:
-    """The rule has one implementation only if nothing in the reader-facing trees writes digits itself.
-
-    Derived from the source rather than from a function name: a second ``def format_number`` is one
-    way to grow a second rule, and an inline ``f"{value:.4g}"`` is the commoner one — the shape
-    that printed a latency ``1.235e+04`` in a results pivot beside an interval spelling the same
-    magnitude ``12346``. Scoped to :data:`_SPELLING_TREES`; the engine's validation messages outside them are not
-    read as reports and are not walked.
-    """
-
-    def test_a_module_named_by_itself_is_walked(self):
-        """A single-module entry is parsed, not skipped as a tree with nothing under it.
-
-        Asked of the walk's module list rather than of the spellings it found: once a module routes
-        every number through the rule it yields no spelling, and "no spelling" would then read the
-        same whether the module was clean or never opened.
-        """
-        single = "threetears/evals/analysis/reporting.py"
-        assert [path.relative_to(_SOURCE_ROOT).as_posix() for path in _modules_under((single,))] == [single]
-        walked = {path.relative_to(_SOURCE_ROOT).as_posix() for path in _modules_under(_SPELLING_TREES)}
-        assert single in walked
-        # And what _NOT_READ_AS_REPORTS names is inside a walked tree yet not walked.
-        assert not {
-            m for m in walked if m in ("threetears/evals/kernel/numbers.py", "threetears/evals/analysis/report/svg.py")
-        }
-
-    def test_every_spelling_goes_through_the_one_rule_or_is_named_as_fixed(self):
-        offenders = [
-            f"{module}:{line}: {{{expression}:{spec}}}"
-            for module, line, expression, spec in _spellings_under(_SPELLING_TREES)
-            if not spec.endswith(_PERCENTAGE_TYPE) and (module, expression, spec) not in _FIXED_SPELLINGS
-        ]
-        assert not offenders, (
-            "these spell a number with their own precision; route them through format_number / format_signed, "
-            "or name a deliberate fixed spelling in _FIXED_SPELLINGS with its reason:\n  " + "\n  ".join(offenders)
-        )
-
-    def test_every_named_fixed_spelling_still_names_a_site(self):
-        """An exemption nothing matches is one a rewritten line walked out of without anyone deciding."""
-        live = {(module, expression, spec) for module, _line, expression, spec in _spellings_under(_SPELLING_TREES)}
-        assert sorted(set(_FIXED_SPELLINGS) - live) == []
-
-    @pytest.mark.parametrize(
-        ("source", "expected"),
-        [
-            ('f"{value:.4g}"', ("value", ".4g")),
-            ('f"{delta:+.3g}"', ("delta", "+.3g")),
-            ('f"{latency:.0f} ms"', ("latency", ".0f")),
-            ('f"{bound:g}"', ("bound", "g")),
-            ('f"{count:,}"', ("count", ",")),
-            ('f"{value:.{places}f}"', ("value", ".{}f")),
-            ('format(value, ".3f")', ("value", ".3f")),
-            ('"{:.2e}".format(value)', ("'{:.2e}'.format(value)", ".2e")),
-            ('"%.3f" % value', ("value", "%.3f")),
-        ],
-    )
-    def test_the_walk_sees_every_way_python_spells_a_number(self, source, expected):
-        assert [found[1:] for found in _number_spellings(ast.parse(source))] == [expected]
-
-    @pytest.mark.parametrize(
-        "source", ['f"{name}"', 'f"{name!r}"', 'f"{count:d}"', 'f"{label:>10}"', 'f"{format_number(v)}"']
-    )
-    def test_the_walk_leaves_what_chooses_no_digits(self, source):
-        assert list(_number_spellings(ast.parse(source))) == []
+@pytest.mark.parametrize(
+    ("value", "text"),
+    [(30.0, "30"), (0.25, "0.25"), (1e-07, "1e-07"), (1234567.0, "1.23457e+06"), (-2.5, "-2.5"), (-0.0, "-0")],
+)
+def test_a_declared_value_reads_as_its_declarer_wrote_it(value: float, text: str) -> None:
+    assert numbers.spell_declared(value) == text

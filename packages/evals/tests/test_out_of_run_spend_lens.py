@@ -75,13 +75,14 @@ def test_the_lens_lists_a_scopes_calls_and_sums_them_with_the_unpriced_counted_b
 
     assert [row.id for row in report.rows] == [row.id for row in rows[:4]], "the scope's calls, oldest first"
     totals = report.totals
-    assert (totals.n_calls, totals.n_raised, totals.n_unpriced, totals.n_unbounded) == (4, 1, 2, 1)
+    # Ruling of 2026-11-04: the raised call reported no usage, so it is raised alone, never unpriced.
+    assert (totals.n_calls, totals.n_raised, totals.n_unpriced, totals.n_unbounded) == (4, 1, 1, 1)
     assert totals.priced_usd == pytest.approx(0.06), "only the priced calls are summed"
     assert totals.ceiling_usd == pytest.approx(0.14)
     assert (report.by_purpose["variation"].n_calls, report.by_purpose["proposer"].priced_usd) == (3, 0.05)
     assert list(report.by_launch) == [_GROUP] and report.by_launch[_GROUP].n_calls == 3, "a proposal is in no launch"
     text = out_of_run_spend_text(report)
-    assert "total: 4 call(s): $0.0600 reported, 2 unpriced (so at least), 1 raised" in text
+    assert "total: 4 call(s): $0.0600 reported, 1 unpriced (so at least), 1 raised" in text
     assert "TimeoutError" in text
 
 
@@ -132,3 +133,50 @@ def test_the_clis_spend_prints_the_ledger(capsys: pytest.CaptureFixture[str]):
     assert code == 0
     printed = capsys.readouterr().out
     assert f"(launch {_GROUP})" in printed and "total: 3 call(s)" in printed
+
+
+def _totals_text(rows: list[OutOfRunSpend]) -> str:
+    fixture = ops_fixture()
+    for row in rows:
+        fixture.host.eval_host.storage.save_out_of_run_spend(row)
+    return out_of_run_spend_text(scope_out_of_run_spend(fixture.host.eval_host, TOYHOST_SCOPE))
+
+
+def test_a_scope_of_unbounded_calls_alone_counts_them_and_states_no_ceiling() -> None:
+    text = _totals_text(
+        [
+            _row(created_at="2026-10-05T10:00:00+00:00", priced_ceiling_usd=None),
+            _row(created_at="2026-10-05T10:00:01+00:00", priced_ceiling_usd=None),
+        ]
+    )
+
+    assert "total: 2 call(s): $0.0200 reported; 2 admitted unbounded\n" in text, text
+    assert "admitted at up to" not in text, "no call was ceilinged, so no ceiling sum is read as $0"
+
+
+def test_a_mixed_scope_counts_each_way_its_calls_were_admitted() -> None:
+    budgeted = _row(
+        created_at="2026-10-05T10:00:02+00:00",
+        purpose="analysis",
+        template_id=None,
+        launch_group_id=None,
+        calls=2,
+        unpriced_calls=0,
+        raised_calls=0,
+        cost_usd=0.02,
+        priced_usd=0.02,
+        priced_ceiling_usd=None,
+        admitted_by="the report budget of $10.00",
+    )
+    text = _totals_text(
+        [
+            _row(created_at="2026-10-05T10:00:00+00:00", priced_ceiling_usd=0.03),
+            _row(created_at="2026-10-05T10:00:01+00:00", priced_ceiling_usd=None),
+            budgeted,
+        ]
+    )
+
+    assert (
+        "total: 4 call(s): $0.0400 reported; 1 admitted at up to $0.0300, 2 admitted by a report budget, "
+        "1 admitted unbounded\n"
+    ) in text, text

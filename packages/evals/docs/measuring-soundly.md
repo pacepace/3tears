@@ -8,7 +8,7 @@ are worth sweeping; and which practices keep an eval's numbers honest, with what
 
 The second half is practice notes from building the engine against one production host between May and October
 2026: a conversational agent with tools, its three-label classifier, a retrieval sub-agent it calls, and the engine's
-own analysis writer. Each finding is a rule, its reason and an *Evidence:* line; "replicated" means two or more
+own report writer (the retired memo writer until 2026-10, then the analyst and its editor). Each finding is a rule, its reason and an *Evidence:* line; "replicated" means two or more
 independent campaigns or arm pairs showed it. The Evidence lines summarise campaigns run in that private application;
 the campaigns themselves are not published. Every "in simulation" figure is reproducible from the package's
 known-answer suite (`packages/evals/tests/test_sim_*.py` and `test_simulated_*.py`, on
@@ -26,7 +26,8 @@ Two more terms, and a rule:
 - **Shape:** what the engine derives from what ran (`bundle.design.shape`). `one_factor_at_a_time` means each
   arm moves at most one lever off the control. `multi_factor` means some arm moves more than one.
   `undesignated` means no control resolved, so nothing is known to be controlled.
-- Only goal-state checks and judged dimensions decide a pass for pass^k; guardrails take no part.
+- pass^k holds a trial to the pass rate's checks: every goal-state check, the label, each check the host declares
+  and every capability judged dimension. Guardrails take no part.
 
 ## Choose which levers to sweep
 
@@ -56,8 +57,8 @@ other level. The engine does not test the interaction itself. When those two eff
 matters more than either lever. Each `against` is its own Holm family. The bundle's row for each lever
 (`bundle.coverage`) lists in `confounded_by` every other lever that varied across its runs. While that list
 is non-empty, the row is a comparison averaged over the other levers, not a controlled one.
-[`examples/3-invoices/extract.py`](../examples/3-invoices/extract.py) says in its docstring how to name
-the arms of a grid, prompt by reasoning effort.
+[`examples/3-invoices/grid.py`](../examples/3-invoices/grid.py) names the arms of a grid, prompt by reasoning
+effort, and reads the prompt's effect at high effort with `against`.
 
 **The winner of a grid needs a test against the runner-up.** The contrasts test every combination against the
 control, never against each other. To test the leader against the rest, `await comparison.against(leader)`. You
@@ -92,9 +93,9 @@ def classifier(prompt):  # an offline stand-in for a model call under each promp
         return "billing" if "charged" in text or "refund" in text else "bug"
     return classify
 
-comparison = await Eval(CASES, {"v1": classifier("v1"), "v2": classifier("v2")}, ["queue"], k=3).run(
-    store=":memory:", scope="triage"
-)
+comparison = await Eval(
+    CASES, {"v1": classifier("v1"), "v2": classifier("v2")}, ["queue"], k=3, name="triage"
+).run(store=":memory:", scope="triage")
 host = comparison.host
 # A store read, so it runs off the event loop, on the host's executor.
 inspected = await run_blocking(
@@ -150,14 +151,14 @@ campaign = await run_blocking(  # a store write, so it runs off the event loop t
 |---|---|---|
 | `question` | The one thing the campaign asks of its arms, in your words: what would make a candidate the one to adopt. Empty, it asks nothing, and every reading is [exploratory](reading-reports.md#readings-no-question-asked-about-exploratory) though a design is declared. | a confirmatory answer |
 | `arms` | `{label, role, from_run_ids}` each, the control first. The server reads each arm's variant key from its runs and refuses runs of one arm that carry two keys, naming each. The arms decide the [kind](concepts.md#campaign-kind): one arm is a measurement, several with no control a choice (every pair read both ways), a control and candidates a change. | A/B, single changes, grid |
-| `aspects[].margin` | How far, in points of the pass rate, a candidate may fall below the control on this aspect before it is shown worse. A declared aspect states one when the campaign asks a question and names a control; with no control a margin is refused, and the remedy is an absolute bar. | a change |
+| `aspects[].margin` | How far, in points of the pass rate, a candidate may fall below the control on this aspect before it is shown worse. Optional, and never assumed: a question with one is a non-inferiority question, and a question with none a superiority question, its drop read against zero; with no control a margin is refused, and the remedy is an absolute bar. | a change |
 | `aspects[].design.axes` (required) | The levers and levels you meant to compare. Each declared axis gets a row in `bundle.coverage`, `unswept` if it held one level; compare the row's `levels` with yours. | every declared aspect |
 | `aspects[].design.held_fixed` (required) | Whether the cases held the stimulus fixed, and whether the rig was commissioned or found. | every declared aspect |
 | `aspects[].design.merit_axes` | Which axes the question asks about on this aspect: they set the aspect's Holm family. Omitted, the question asks about every axis. | a scoped question |
 | `aspects[].design.intended_repetitions` | The repeats per case you meant each cell to get. A cell that falls short is named in `bundle.short_cells`. | the frontier, and any cell you want checked |
 | `aspects[].design.bars`, `merit_priority` | Thresholds tighter than the host's, and the tie-break order between merit axes. | a bar verdict, a tie-break |
 | `aspects[].design.crossing`, `skipped_cells` | Which combinations of levels (cells) you meant to run: `full`, or `star` (each axis's first level is the centre; cells moving more than one axis from it are skipped), less any `skipped_cells`. `bundle.declared_crossing` then reads a skipped cell as `skipped_by_design`, never a gap, and an unrun cell you meant to run as `not_run`. With neither, no cell is read either way. | a partial grid |
-| `floors` | Lines a candidate is warned for crossing, each `{aspect, clause}` on a declared aspect: `{kind: "rate_drop", max_points, reading?}` or `{kind: "cost_lower"}`, typed, never words. A floor reads a candidate against the control, so a campaign naming none is refused one. A broken floor warns on the page's first screen; no floor decides anything ([declaring them](adopting-a-host.md#declaring-what-a-campaign-asks)). | a warning nobody can miss |
+| `floors` | Lines a candidate is warned for crossing, each `{aspect, clause}` on a declared aspect: `{kind: "rate_drop", max_points, reading?}` or `{kind: "cost_lower"}`, typed, never words. A floor reads a candidate against the control, so a campaign naming none is refused one. A broken floor warns on the page's first screen and never removes an option; read broken on an asked aspect, it caps the candidate's standing in code's dominance read ([declaring them](adopting-a-host.md#declaring-what-a-campaign-asks)). | a warning nobody can miss |
 
 **A criterion set after its readings is said, not demoted; data age is never a defect.** What pre-registration
 guards against is criterion selection: a margin, floor, bar, control or aspect chosen once the readings it judges
@@ -253,12 +254,12 @@ arms = {  # named as k=v pairs: each pair a factor, the first arm the control
     "model=m, effort=high": ROOM(agent(0.002, set())),
     "model=m, effort=low": ROOM(agent(0.0005, {"off-dark-0", "off-dark-1"})),
 }
-rooms = await Eval(ROOMS, arms, ['(state.light == "on") == (state.daylight == "dark")'], k=3).run(
-    store=":memory:", scope="lights"
-)
+rooms = await Eval(
+    ROOMS, arms, ['(state.light == "on") == (state.daylight == "dark")'], k=3, name="lights"
+).run(store=":memory:", scope="lights")
 read = await run_blocking(  # a store read
     rooms.host.blocking_executor, frontier, rooms.host.storage, "lights",
-    list_runs=partial(list_runs, rooms.host), bar=0.8,
+    list_runs=partial(list_runs, rooms.host), bar=0.8, profile=rooms.host.profile,
 )
 for point in read["subjects"][0]["points"]:
     print(point["production_replicating_cost"], point["pass_hat_k"], round(point["pass_hat_k_ci_low"], 2),
@@ -275,9 +276,11 @@ Before you rely on it, check two things:
 - **Every arm must run under one subject.** The frontier never ranks across subjects. On the quick path,
   every arm of one comparison runs under the comparison's subject (its name), so its models and its named arms
   rank on one frontier. On your own host, run every arm under the subject it measures.
-- **pass^k needs goal checks or a judge.** An arm graded by neither, such as a classifier scored only by
-  a field grader, has no pass^k: `pass_hat_k` is `None`, `n_pass_no_criterion` counts its attempts, and no bar
-  is decided on it. Read such an arm from the contrasts.
+- **pass^k needs something to pass.** A goal check, a label, a check the host declares or a judge each is one: a
+  classifier scored only by a field grader has a pass^k, the share of its cases labelled right on every repeat. An
+  arm graded by none of them has no pass^k: `pass_hat_k` is `None`, `n_pass_no_criterion` counts its attempts, and
+  no bar is decided on it. Read such an arm from the contrasts. A host's checks count only where the host's
+  profile is read: the action and the command read it, and a direct `frontier` call takes it as `profile=`.
 
 The same frontier is the `scope_frontier` action and the `frontier` command
 ([Serving](serving.md#frontier)); `scope_frontier` in `threetears.evals.ops` returns it as a
@@ -332,9 +335,10 @@ cases most verdicts are undecided, and that is the finding: the bank cannot tell
 **"No worse by more than the margin" is a claim of safety, so it reads an interval that holds its error rate on
 coarse values.** A rate floor (`RateDrop(max_points=10)`: no pass rate drops by more than 10 points) reads `held`
 only where each rate's bounded interval (the bounded test's, on the 0-1 range, at the nominal 95% and uncorrected)
-keeps the drop within the margin, as a guardrail's `held` does. The t interval the Contrasts table prints overstates
-its confidence on a pass rate's few coarse per-case shares: a candidate that breaks one case in ten leaves most small
-samples agreeing with the control. The price is honest: on seven cases nothing short of a sweep shows a 10-point
+keeps the drop within the margin, as a guardrail's `held` does. A t interval overstates its confidence on a pass
+rate's few coarse per-case shares: a candidate that breaks one case in ten leaves most small samples agreeing with the
+control. So the Contrasts table draws a rate on the bounded interval too, at its family's corrected level, and
+separates it only where that interval excludes zero. The price is honest: on seven cases nothing short of a sweep shows a 10-point
 floor held, and an unclear floor's `To show the floors hold` table says how many cases would.
 *Evidence:* simulated at a true drop of exactly the 10-point margin, 3 repeats per case, 20,000 replicates per row,
 2026-10; how often the t interval read held, against the one tail it states (`tests/test_simulated_switch.py`
@@ -350,7 +354,8 @@ checks the 12-case row at 1,000 replicates: about 14% on the t interval, none on
 
 **A campaign over several aspects tests each candidate once per aspect, so it corrects across them.** Each
 candidate's rows, one per aspect, are one family at α = 0.05, with gains (the change against zero) and drops (the
-change against the aspect's margin) corrected apart by Holm's step-down. Each direction's claim is one-sided, read off
+change against the aspect's margin, or against zero where a question declares none) corrected apart by Holm's
+step-down. Each direction's claim is one-sided, read off
 a two-sided bounded interval, so a candidate's gains and its drops are each shown wrongly at most 2.5% of the time.
 A choice's pairs have no direction, so every pair on every aspect is one family.
 
@@ -381,10 +386,10 @@ lens tools (`runs_compare`, comparison sets) state when two runs' spans did not 
 
 ## Metrics that mislead
 
-**Keep the pass^k conjunction small and reliable.** A trial passes only when every goal-state check passes
-and every judged capability dimension reaches the pass threshold (`compute_pass_hat_k`): 3 of 5 unless the
-host declares another for the behavior (`PassThreshold`, registered with its `BarRegistry`), and every pass^k
-records the threshold it was computed at (`rubric_threshold`). So pass^k collapses to its weakest member, and
+**Keep the pass^k conjunction small and reliable.** A trial passes only when every goal-state check passes, its
+label matches, every check the host declares holds (a guardrail check too) and every judged capability dimension
+reaches the pass threshold (`compute_pass_hat_k`): 3 of 5 unless the host declares another for the behavior
+(`PassThreshold`, registered with its `BarRegistry`), and every pass^k records the threshold it was computed at (`rubric_threshold`). So pass^k collapses to its weakest member, and
 judge noise counts as candidate unreliability. Conjoin checks a competent candidate clears and dimensions
 whose retest agreement you have measured. Ranking and diagnosis are two jobs.
 *Evidence:* agent with tools, 2 campaigns, 2026-07 and 2026-08, one never-clearing dimension held pass^k to 0.0 or 0.2 for every arm, and a strict check set pinned it at 0 for every arm; in simulation (2026-09) a perfect candidate with five dimensions, each falsely failing 5% of the time, shows pass^3 ≈ 0.46.
@@ -483,31 +488,34 @@ skewed, so with only a few past results it is wide on the high side.
 beat a constant.** Lenient judges compress toward the ceiling, where a high exact retest is not reliability.
 The engine labels judged readings with an
 [evidence tier](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers).
-*Evidence:* analysis writer, 6 judges × 5 memos × k=3 × 7 dimensions, 2026-09: two judges ordered memos repeatably (self-ρ 0.80, 0.86), four were lenient (self-ρ −0.12 to 0.39), and a constant 3 landed in band on 29 of 32 human labels. Agent with tools, 2026-10: judges agreed with themselves 66% and 83% exact, and the more consistent sided with the code check at a fifth of the cost. The same judge won on both subjects; replicated.
+*Evidence:* the memo writer, 6 judges × 5 memos × k=3 × 7 dimensions, 2026-09: two judges ordered memos repeatably (self-ρ 0.80, 0.86), four were lenient (self-ρ −0.12 to 0.39), and a constant 3 landed in band on 29 of 32 human labels. Agent with tools, 2026-10: judges agreed with themselves 66% and 83% exact, and the more consistent sided with the code check at a fifth of the cost. The same judge won on both subjects; replicated.
 
 **Give the judge the evidence the candidate acted on, and let code grade what code can check.**
 *Evidence:* retrieval sub-agent, 2026-07, the judge called a tool-grounded answer "fabrication" while scoring its grounding 5, and its "parse errors" vanished once it saw the trace, single campaign.
 
 **Calibrating a judge mostly repairs the apparatus.** Render what the judge reads as a reader sees it. A rule
 folded into a composite 1–5 scale is outweighed by everything else; give it a narrow pass/fail dimension.
-*Evidence:* analysis writer, 5 frozen cases, 3 calibration rounds, 2026-09: the judge scored the layout's field names, then charged re-assembly artifacts to the memo, then truncated as a reasoning judge and was re-billed; single campaign.
+*Evidence:* the memo writer, 5 frozen cases, 3 calibration rounds, 2026-09: the judge scored the layout's field names, then charged re-assembly artifacts to the memo, then truncated as a reasoning judge and was re-billed; single campaign.
 
-## The analysis writer
+## The report writer
 
 **The writer model, not the prompt's form, limits groundedness, and judge noise limits what you can tune.**
 Subtract rubric criteria before adding them. Blind human ratings are a separate measurement from the judge's.
-*Evidence:* analysis writer, a latitude A/B with a pre-stated rule and a 2×2 form × input study, 2026-09: groundedness near 2 in every condition, the latitude arm failing its rule, and judge test–retest noise (0.42–0.46) exceeding every effect ranked; single campaign.
+*Evidence:* the memo writer, a latitude A/B with a pre-stated rule and a 2×2 form × input study, 2026-09: groundedness near 2 in every condition, the latitude arm failing its rule, and judge test–retest noise (0.42–0.46) exceeding every effect ranked; single campaign.
 
 **Code renders every number, and the model's prose references them.** A deterministic gate over prose never
-converges. The verdict line and every count on a report are code's; a recommendation names the findings it rests
-on; a finding's title stating a null its finding established none of is the prompt's rule to prevent, not a phrase code refuses
-([Having a model write the analysis](reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence)).
-Never build a prompt's worked example from real output: it fossilises that output's errors.
-*Evidence:* analysis writer, 2026-07 to 2026-09, 10 of 10 checkable claims in two production memos were false, a prose fact gate grew to 4,099 lines in 33 days and was deleted, and an example taken from a real memo had its false claim reproduced near-verbatim; single program.
+converges. The verdict line and every count on a report are code's, every figure in its prose is a key code
+resolves, and whether a claim overstates its evidence is the editor's to catch, not a phrase code refuses
+([the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence)).
+Never build a prompt's worked example from real output: it fossilises that output's errors. The analyst's reasoning
+notes come from real campaigns, so they carry the same risk: check a note's claims against its evidence as you would
+a report's, and run a campaign blind, with its own note withheld, before reading its report as evidence of the skill.
+*Evidence:* the memo writer, 2026-07 to 2026-09, 10 of 10 checkable claims in two production memos were false, a prose fact gate grew to 4,099 lines in 33 days and was deleted, and an example taken from a real memo had its false claim reproduced near-verbatim; single program. The Kairo round 2 reasoning note (2026-10) called cost a lead "none of the caveats touch" while a confound sat on that very contrast; a blind report on the campaign made the same error, and its editor scored it down for it.
 
-**Runs are cheap; the memo is the bill.** A refused generation is billed and stores nothing. Price analyses
-like runs ([Spend outside any run](cost-and-budgets.md#spend-outside-any-run)).
-*Evidence:* three campaigns, ≈ $34 in total, 2026-09: over 99% of the classifier campaign's spend was memo generation and ≈ $9.4 bought refused or discarded generations; only the multi-turn agent campaign's runs dominated (≈ $11 of $17).
+**Runs are cheap; the report is the bill.** A write that stores nothing is still billed. Give the report a budget
+that covers a revision, since one that runs out keeps only its last reviewed draft
+([a campaign report](cost-and-budgets.md#spend-outside-any-run)).
+*Evidence:* the report writer, 2026-10 to 2026-11. In the acceptance runs an Opus report took 36–47 turns and $3.6–6.1, the analyst's and the editor's together. Six earlier campaigns under a $4 cap each cost $11.33, and the two that needed a revision ended over budget with their first reviewed draft stored. On Sonnet, rung 5's recording wrote 14 reports at about 12.4 turns and $0.49 a report for the writer; the 14-report recording cost $7.56 with its judge. Under the memo writer (2026-09), over 99% of a classifier campaign's spend was its reports, and only a multi-turn agent campaign's runs outweighed them (≈ $11 of $17).
 
 ## How an eval program drifts
 

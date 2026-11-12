@@ -3,14 +3,14 @@
 A trial is one case run once on one arm, and it ends in exactly one state: **lost** to the test setup (the harness
 faulted it, or the judge could not tell on a dimension it needs), **failed** by the candidate (its model failed, or a
 check or a judged dimension failed it), or **passed**. A judge that could not tell on one dimension does not lose a
-trial a failed check has already decided. The census counts every trial, the rows carry what a reader drills into,
-capped with the lost and failed kept first, and the writer reads the rows without the excerpts.
+trial a failed check has already decided. The census counts every trial, and the rows carry what a reader drills into,
+capped with the lost and failed kept first.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
+from functools import cache
 from typing import Any
 
 import pytest
@@ -18,8 +18,6 @@ import pytest
 from threetears.evals.analysis.bundle import trials as trials_module
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmScoreboard
-from threetears.evals.analysis.campaign_bundle import WRITER_EXCERPT_CHARS, build_campaign_user_message
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema import EvalResult, EvalTrace, GoalStateOutcome, JudgedArtifact, JudgeEvidence
 from threetears.evals.schema.models import eval_trace_doc_id
@@ -50,21 +48,23 @@ def _result(case: str, k: int, **update: Any) -> EvalResult:
     return make_eval_result(test_case_id=case, k_iteration=k, **update)
 
 
-#: Every way a trial ends, one result each, on one arm.
-RESULTS = [
-    _result("case-a", 1),
-    _result("case-a", 2, goal_state_outcomes=[GoalStateOutcome(expression="state.done == true", passed=False)]),
-    _result("case-b", 1, candidate_error="model refused"),
-    _result("case-b", 2, infra_error="simulator crashed"),
-    _result("case-c", 1, judge_cannot_tell={"conversation.tone": "the transcript is empty"}, rubric_scores=[]),
-    _result(
-        "case-c",
-        2,
-        judge_cannot_tell={"conversation.tone": "the transcript is empty"},
-        rubric_scores=[],
-        goal_state_outcomes=[GoalStateOutcome(expression="state.done == true", passed=False)],
-    ),
-]
+@cache
+def _results() -> list[EvalResult]:
+    """Every way a trial ends, one result each, on one arm; built on first use, as a result stamps its id and clock."""
+    return [
+        _result("case-a", 1),
+        _result("case-a", 2, goal_state_outcomes=[GoalStateOutcome(expression="state.done == true", passed=False)]),
+        _result("case-b", 1, candidate_error="model refused"),
+        _result("case-b", 2, infra_error="simulator crashed"),
+        _result("case-c", 1, judge_cannot_tell={"conversation.tone": "the transcript is empty"}, rubric_scores=[]),
+        _result(
+            "case-c",
+            2,
+            judge_cannot_tell={"conversation.tone": "the transcript is empty"},
+            rubric_scores=[],
+            goal_state_outcomes=[GoalStateOutcome(expression="state.done == true", passed=False)],
+        ),
+    ]
 
 
 def _bundle(results: list[EvalResult], traces: dict[str, EvalTrace] | None = None) -> AnalysisContextBundle:
@@ -84,7 +84,7 @@ def _bundle(results: list[EvalResult], traces: dict[str, EvalTrace] | None = Non
 
 
 def test_every_trial_ends_in_one_state_and_names_why() -> None:
-    bundle = _bundle(RESULTS)
+    bundle = _bundle(_results())
     ended = [(trial.case_id, trial.repeat, trial.state, trial.cause) for trial in bundle.trials]
     assert ended == [
         ("case-a", 1, "passed", None),
@@ -100,7 +100,7 @@ def test_every_trial_ends_in_one_state_and_names_why() -> None:
 
 
 def test_the_census_counts_every_trial_and_never_a_score() -> None:
-    (board,) = _bundle(RESULTS).scoreboard
+    (board,) = _bundle(_results()).scoreboard
     assert (board.ran, board.usable, board.passed) == (6, 4, 1)
     assert board.lost == {"infra": 1, "judge_cannot_tell": 1}
     assert board.failed == {"check": 2, "model_failed": 1}
@@ -114,7 +114,7 @@ def test_a_census_whose_parts_do_not_make_its_whole_is_refused() -> None:
 
 
 def test_the_exclusions_are_the_kernels_count_and_the_census_reads_the_same_classification() -> None:
-    bundle = _bundle(RESULTS)
+    bundle = _bundle(_results())
     (exclusions,) = bundle.exclusions
     # The bundle's exclusions are `trial_exclusion`'s, counted once by the assembler: both can't-tell trials are
     # left out of the measures needing every dimension, the one a failed check decided included.
@@ -212,7 +212,7 @@ def test_a_bundle_whose_kept_trials_record_no_trace_reads_none() -> None:
         run_ids=[run.id],
         created_by="test:fixture",
     )
-    members = [result.model_copy(update={"eval_run_id": run.id, "scope_id": run.scope_id}) for result in RESULTS]
+    members = [result.model_copy(update={"eval_run_id": run.id, "scope_id": run.scope_id}) for result in _results()]
     storage = _TracedStorage([run], {run.id: members}, traces={})
 
     assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
@@ -222,33 +222,14 @@ def test_a_bundle_whose_kept_trials_record_no_trace_reads_none() -> None:
 
 def test_the_trials_are_capped_with_the_lost_and_failed_kept_first(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(trials_module, "MAX_TRIALS", 3)
-    bundle = _bundle(RESULTS)
+    bundle = _bundle(_results())
     assert [trial.state for trial in bundle.trials] == ["failed", "lost", "lost"]
     assert bundle.trials_omitted == 3
     assert bundle.scoreboard[0].ran == 6, "the census counts every trial, kept or not"
 
 
-def test_the_writer_reads_the_flagged_trials_and_only_the_tail_of_what_their_judge_saw() -> None:
-    bundle = _bundle(RESULTS)
-    payload = json.loads(_writer_message(bundle).removeprefix("CAMPAIGN BUNDLE (JSON):\n"))
-    assert "package_version" not in json.dumps(payload)
-    (aspect,) = payload["aspects"]
-    assert [trial["state"] for trial in aspect["trials"]] == [
-        trial.state for trial in bundle.trials if trial.state != "passed"
-    ]
-    for trial in aspect["trials"]:
-        assert not {"first_input", "error_words", "result_id"} & trial.keys()
-        assert {"trial", "state", "cause"} <= trial.keys()
-        assert len(trial.get("excerpt", "")) <= WRITER_EXCERPT_CHARS + 1
-
-
 def test_the_build_is_carried_and_left_out_of_the_fingerprint() -> None:
-    bundle = _bundle(RESULTS)
-    assert bundle.schema_version == 64
+    bundle = _bundle(_results())
+    assert bundle.schema_version == 66
     assert bundle.package_version is not None
     assert bundle.model_copy(update={"package_version": "9.9.9"}).fingerprint() == bundle.fingerprint()
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))

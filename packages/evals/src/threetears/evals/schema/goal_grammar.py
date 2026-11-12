@@ -194,8 +194,12 @@ class DSLError(ValueError):
     """Raised when a DSL expression is malformed or disallowed."""
 
 
-#: Root names allowed at the head of a path. Anything else parses as a DSL error.
-_ALLOWED_ROOTS = frozenset({"state", "variation", "it"})
+#: The root a path into the cell's end state starts at (``state.<dimension>``).
+WORLD_ROOT = "state"
+
+#: Root names allowed at the head of a path: the end state, a case parameter (``variation``) and the element a generator
+#: binds (``it``). Anything else parses as a DSL error.
+PATH_ROOTS = frozenset({WORLD_ROOT, "variation", "it"})
 
 
 #: Roots that address INSIDE a value rather than naming one, so extraction reports nothing under
@@ -210,7 +214,7 @@ _ADDRESSES_WITHIN_A_VALUE = frozenset({"it"})
 #: through: the expression would parse, extract to nothing, and let a vocabulary check report
 #: clean over paths nobody resolved — a false negative in a detector, which is the failure this
 #: package refuses everywhere else.
-_EXTRACTED_ROOTS = _ALLOWED_ROOTS - _ADDRESSES_WITHIN_A_VALUE
+_EXTRACTED_ROOTS = PATH_ROOTS - _ADDRESSES_WITHIN_A_VALUE
 
 
 #: DSL builtin function names — recognized in Call nodes.
@@ -300,7 +304,7 @@ def _validate(tree: ast.AST) -> None:
                 # A builtin is not a value: used as one it would parse here and fail only at evaluation.
                 raise DSLError(f"{node.id} is a DSL function, not a value: call it ({node.id}(...)).")
             # Allowed: root names (state/variation/it), builtins, or loop targets.
-            if node.id in _ALLOWED_ROOTS or node.id in _BUILTINS:
+            if node.id in PATH_ROOTS or node.id in _BUILTINS:
                 continue
             # A Name inside a generator's comprehension target is bound — but
             # for that we need to know context; checked separately below.
@@ -313,7 +317,7 @@ def _validate(tree: ast.AST) -> None:
             if not isinstance(node.func, ast.Name) or node.func.id not in _BUILTINS:
                 func_repr = getattr(node.func, "id", None) or ast.dump(node.func)
                 raise DSLError(f"Unknown function call: {func_repr!r}")
-            if node.func.id in _ACTION_BUILTINS and not (
+            if node.func.id in ACTION_BUILTINS and not (
                 node.args
                 and all(
                     isinstance(arg, ast.Constant) and isinstance(arg.value, str) and "." in arg.value
@@ -398,9 +402,7 @@ def speaks_the_goal_language(expression: str) -> bool:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError:
         return False
-    return all(
-        node.id in _ALLOWED_ROOTS or node.id in _BUILTINS for node in ast.walk(tree) if isinstance(node, ast.Name)
-    )
+    return all(node.id in PATH_ROOTS or node.id in _BUILTINS for node in ast.walk(tree) if isinstance(node, ast.Name))
 
 
 @dataclass(frozen=True)
@@ -719,7 +721,7 @@ def _is_text_comparand(node: ast.AST, it_binding: TextOperand | None) -> bool:
 
 
 #: The builtins whose string arguments name a ``tool.action``.
-_ACTION_BUILTINS = frozenset(
+ACTION_BUILTINS = frozenset(
     {"called_before", "called_after", "call_count", "last_call_was", "calls", "refused", "refused_count"}
 )
 
@@ -729,7 +731,7 @@ REFUSAL_BUILTINS = frozenset({"refused", "refused_count"})
 
 
 #: Every builtin that reads the cell's call ledger: the action builtins, and ``passed()``.
-_LEDGER_BUILTINS = _ACTION_BUILTINS | {"passed"}
+_LEDGER_BUILTINS = ACTION_BUILTINS | {"passed"}
 
 
 def referenced_actions(expression: str) -> tuple[tuple[str, str], ...]:
@@ -746,7 +748,7 @@ def referenced_actions(expression: str) -> tuple[tuple[str, str], ...]:
     """
     named: list[tuple[str, str]] = []
     for node in ast.walk(parse(expression).body):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _ACTION_BUILTINS):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ACTION_BUILTINS):
             continue
         for argument in node.args:
             if isinstance(argument, ast.Constant) and isinstance(argument.value, str) and "." in argument.value:
@@ -857,8 +859,11 @@ def parse_tool_action(spec: Any) -> tuple[str, str]:
 
 
 __all__ = [
+    "ACTION_BUILTINS",
     "FIRE_PREDICATES",
+    "PATH_ROOTS",
     "REFUSAL_BUILTINS",
+    "WORLD_ROOT",
     "TextOperand",
     "parse_tool_action",
     "text_operand",

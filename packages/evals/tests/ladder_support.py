@@ -1,9 +1,13 @@
 """Run a ladder rung under ``examples/<n>-<name>/`` as its reader runs it: from its own directory, offline.
 
 A rung names its cases, its recording and its store by paths relative to the directory it is run from, as a reader
-runs it (``cd examples/3-invoices && python extract.py``). A test copies the rung into its own temporary directory
+runs it (``cd examples/3-invoices && python compare.py``). A test copies the rung into its own temporary directory
 and runs it there, so the run's store, report and ``__pycache__`` never land in the checkout, and takes every
 provider key and ``RECORD`` out of the environment, so a model built on a recording can only replay it.
+
+A rung's files import their siblings by name (``from invoice import Invoice``, ``from guardrail import invoices``), and
+a module once imported is the process's: a sibling an earlier test imported would serve this test's run from its own
+model, whose replay serves each recorded call once. So each copy evicts every module named after a file it holds.
 """
 
 from __future__ import annotations
@@ -21,8 +25,7 @@ from typing import Any
 
 import pytest
 
-#: The examples directory.
-EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+from packages.evals.tests.example_loader import EXAMPLES
 
 #: Every variable a model reads a key from, and the switch that asks for a recording to be made again.
 _LIVE_VARIABLES = ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "RECORD")
@@ -30,6 +33,12 @@ _LIVE_VARIABLES = ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", 
 
 def offline_copy(rung: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Copy ``examples/<rung>`` into ``tmp_path``, make it the working directory and ``sys.path``'s head, offline.
+
+    The one copy every rung test runs from. A run's leftovers in the checkout (``.evals/``, ``report/``,
+    ``__pycache__``) are not copied. ``sys.path`` is changed through the monkeypatch, which gives the process its path
+    back when the test ends: loading a rung's file puts its directory there for the process, and a test's copy must
+    not stay there for the tests after it. Every module named after one of its files is evicted
+    (:func:`evict_siblings`), so its files import this copy's siblings.
 
     :param rung: The rung's directory name, ``"3-invoices"``.
     :ptype rung: str
@@ -46,7 +55,20 @@ def offline_copy(rung: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.chdir(copy)
     monkeypatch.syspath_prepend(str(copy))
+    evict_siblings(copy, monkeypatch)
     return copy
+
+
+def evict_siblings(copy: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop from ``sys.modules`` every module named after a Python file in ``copy``, so its files import this copy's.
+
+    :param copy: A rung's copied directory.
+    :ptype copy: Path
+    :param monkeypatch: The test's monkeypatch.
+    :ptype monkeypatch: pytest.MonkeyPatch
+    """
+    for path in copy.glob("*.py"):
+        monkeypatch.delitem(sys.modules, path.stem, raising=False)
 
 
 def load(path: Path, name: str, monkeypatch: pytest.MonkeyPatch) -> ModuleType:

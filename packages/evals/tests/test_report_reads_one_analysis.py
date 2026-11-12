@@ -17,9 +17,9 @@ import pytest
 from threetears.evals.analysis import AnalysisContextBundle, campaign_report, record_campaign_call, serialize_report
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import ValidationFailedError
-from threetears.evals.ops import analysis_generate
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture, OpsFixture
+from packages.evals.tests.report_support import stored_plan_analysis
 from packages.evals.tests.off_loop import off_loop
 
 #: When every archived copy was written: before the generated analysis, so the live one is the newest.
@@ -88,9 +88,7 @@ class _CountingStore(InMemoryDocumentStore):
 async def _generated(store: InMemoryDocumentStore) -> tuple[OpsFixture, EvalAnalysis]:
     """The toy campaign over ``store``, and the one analysis generated of it."""
     fixture = off_loop(ops_fixture, store=store)
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
-    assert (await settled(fixture.host, job.job_id)).state == "completed"
-    (analysis,) = off_loop(fixture.host.eval_host.storage.list_analyses_by_campaign, fixture.campaign.id, TOYHOST_SCOPE)
+    analysis, _ = await stored_plan_analysis(fixture.host.eval_host, fixture.campaign)
     return fixture, analysis
 
 
@@ -118,7 +116,8 @@ async def test_the_report_reads_one_analysis_document_however_many_are_archived(
     store.analyses_read = 0
     page = off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE)
 
-    assert (page.basis, page.analysis_id) == ("analysis", analysis.id)
+    # A planned analysis reads as the code-only page standing in for it (test_report_read_doc.py).
+    assert (page.basis, page.unread_analysis_id) == ("code_only", analysis.id)
     assert store.analyses_read == 1
 
 
@@ -205,9 +204,9 @@ async def test_each_fold_names_its_bundle_by_the_fingerprint_checked_once(monkey
     hashed: list[str] = []
     fingerprint = AnalysisContextBundle.fingerprint
 
-    def counted(bundle: AnalysisContextBundle, *, like: str | None = None) -> str:
+    def counted(bundle: AnalysisContextBundle) -> str:
         hashed.append(bundle.aspect)
-        return fingerprint(bundle, like=like)
+        return fingerprint(bundle)
 
     monkeypatch.setattr(AnalysisContextBundle, "fingerprint", counted)
     page = off_loop(campaign_report, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE)

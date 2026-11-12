@@ -49,7 +49,7 @@ def _page(
         label: build_code_only_report(bundle, assembled_at=ASSEMBLED_AT, campaign_name="support")
         for label, bundle in bundles.items()
     }
-    return build_campaign_report(campaign, readings, reports, None, call=call)
+    return build_campaign_report(campaign, readings, reports, call=call)
 
 
 def _call(measured: MeasuredAspect, **fields: Any) -> CampaignCall:

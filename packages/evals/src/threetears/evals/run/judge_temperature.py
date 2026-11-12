@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, field_validator
 
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.judge_temperature import (
     DEFAULT_TEMPERATURE_REPEATS,
@@ -135,8 +136,8 @@ class JudgeTemperatureEstimate(EvalBaseModel):
 
     def render(self) -> str:
         """The estimate in a line: what would be re-judged, the most it costs, the cap, and whether it would start."""
-        ceiling = "unpriceable" if self.ceiling_usd is None else f"${self.ceiling_usd:.4f}"
-        cap = "none enforced" if self.cap_usd is None else f"${self.cap_usd:.2f}"
+        ceiling = "unpriceable" if self.ceiling_usd is None else f"${round_half_even(self.ceiling_usd, 4)}"
+        cap = "none enforced" if self.cap_usd is None else f"${round_half_even(self.cap_usd, 2)}"
         verdict = "would start" if self.would_start else f"would be refused: {self.refusal}"
         return (
             f"estimate: judge temperature comparison on run {self.run_id} (judge {self.judge_model}) — "
@@ -633,7 +634,7 @@ async def _ask(
         answers.cases,
         repeats,
         answers.calls_made,
-        "unpriced" if answers.cost_usd is None else f"${answers.cost_usd:.6f}",
+        "unpriced" if answers.cost_usd is None else f"${round_half_even(answers.cost_usd, 6)}",
     )
     return answers
 

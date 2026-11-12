@@ -33,12 +33,13 @@ this whole layer exists to avoid — the slot is shared, the word is not.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal
 
 from pydantic import Field, TypeAdapter, computed_field, field_validator, model_validator
 
+from threetears.evals.kernel.numbers import spell_declared
 from threetears.evals.schema.campaign_upgrade import aware_instant
 from threetears.evals.schema.base import CoreShapeModel, EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import RefusedInput
@@ -57,6 +58,7 @@ from threetears.evals.kernel.metrics import (
     is_code_graded,
     is_latency_measure,
     list_metrics,
+    reads_as_rate,
     rule_rates,
 )
 from threetears.evals.schema.models import (
@@ -67,6 +69,7 @@ from threetears.evals.schema.models import (
     EvalTemplate,
     RubricScale,
     declared_name,
+    rubric_dim_scale,
     utc_now_iso,
 )
 
@@ -109,6 +112,19 @@ class SweptAxis(EvalDocumentModel, CoreShapeModel):
             "and neither can become an arm. The refusal carries the host's own vocabulary as its remedy."
         ),
     )
+    reader_name: str | None = Field(
+        default=None,
+        min_length=1,
+        # Presentation only: written only when set, and left out of every fingerprint (AXIS_PRESENTATION_FIELDS).
+        exclude_if=lambda name: name is None,
+        description=(
+            "What a reader calls this lever: the words every page names it by, in an arm's name, a setting, a factor "
+            "and the production check (`prompt`, never `callable.prompt`). Stored on every campaign: a create or "
+            "update that gives none takes the name the host declares for the lever (`Sweepable.reader_name`, a kind "
+            "field's `title`, which every host lever must declare). No part of any variant key, "
+            "measurement context or fingerprint, so renaming a lever splits no history and stales no analysis."
+        ),
+    )
     values: list[SweepableValue] = Field(
         min_length=1,
         description=(
@@ -119,6 +135,17 @@ class SweptAxis(EvalDocumentModel, CoreShapeModel):
     rationale: str = Field(
         default="", description="Why this axis is in the campaign. Optional, and the first thing a reader wants."
     )
+
+    @field_validator("reader_name")
+    @classmethod
+    def _a_reader_name_says_something(cls, name: str | None) -> str | None:
+        """Refuse a blank reader name: a page would print nothing for the lever.
+
+        :raises ValueError: The name is only whitespace.
+        """
+        if name is not None and not name.strip():
+            raise ValueError("an axis's reader_name is the words a page names the lever by, and this one is blank")
+        return name
 
     @field_validator("values", mode="before")
     @classmethod
@@ -682,12 +709,33 @@ class AspectDesign(EvalDocumentModel, CoreShapeModel):
             "is refused when the design is declared."
         ),
     )
+    measure_order: list[str] = Field(
+        default_factory=list,
+        # Written only when stated, so a design stating none is stored as it was before the field.
+        exclude_if=lambda order: not order,
+        description=(
+            "The measures this aspect's graders read, by key, in the order the host listed its graders: where a "
+            "guardrail warns, the campaign page's lead reads the first of them a contrast tested that is no cost. "
+            "Empty = no order stated, and the lead reads the classifier's accuracy where the aspect has one, else the "
+            "pass rate. It changes no reading."
+        ),
+    )
 
     @field_validator("merit_axes")
     @classmethod
     def _each_axis_once(cls, axes: list[MeritAxis] | None) -> list[MeritAxis] | None:
         """Refuse an axis named twice: the list is a set of axes an answer moves, and a repeat says nothing."""
         return None if axes is None else _each_merit_axis_once(axes)
+
+    @field_validator("measure_order")
+    @classmethod
+    def _each_measure_once(cls, order: list[str]) -> list[str]:
+        """Refuse a blank measure, or one named twice: the list is an order, and a repeat says nothing."""
+        if any(not measure.strip() for measure in order):
+            raise ValueError("measure_order names a blank measure; name each measure by its key")
+        if duplicates := sorted({measure for measure in order if order.count(measure) > 1}):
+            raise ValueError(f"measure_order names {', '.join(duplicates)} more than once; name each measure once")
+        return order
 
     @model_validator(mode="after")
     def _axes_and_bars_are_keyed_too(self) -> AspectDesign:
@@ -790,6 +838,17 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
             "without one is dated by the build accepting it, the only predicate it can have been read under."
         ),
     )
+    short_name: str | None = Field(
+        default=None,
+        # Presentation only: written only when declared, so an arm naming none is stored as it was before the field.
+        exclude_if=lambda name: name is None,
+        description=(
+            f"What a page prints for this arm in tight places (a chart's labels, a table cell, a sentence), at most "
+            f"{DECLARED_NAME_CHARS} characters; the label is printed once beside it. It is no other arm's label or "
+            "short name. None = the page computes one from what differs from the control. No part of any identity, "
+            "key or fingerprint, so naming an arm changes no reading."
+        ),
+    )
     named_at: str | None = Field(
         default=None,
         description=(
@@ -833,6 +892,18 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
         return value
 
     @model_validator(mode="after")
+    def _a_short_name_is_short(self) -> CampaignArm:
+        """Refuse a short name that is blank or longer than :data:`~threetears.evals.schema.models.DECLARED_NAME_CHARS`.
+
+        :return: The validated arm.
+        :rtype: CampaignArm
+        :raises ValueError: The short name is blank or too long.
+        """
+        if self.short_name is not None:
+            declared_name(self.short_name, what=f"arm {self.label!r}")
+        return self
+
+    @model_validator(mode="after")
     def _the_pre_image_is_the_arm_s_own(self) -> CampaignArm:
         """The lever map, under this build's predicate, digests to the arm's key.
 
@@ -869,26 +940,61 @@ def resolve_control_arm(arm: CampaignArm | None) -> ResolvedControl:
     return _resolve_control_key(arm.variant_key, arm.levers, arm.identity_version)
 
 
+#: The fields of an arm that say only how a page prints it: the one list every reader that must not see them reads. A
+#: campaign bundle's fingerprint leaves them out of its arms and its declaration's arms, and an aspect bundle's leaves
+#: them out of its declared control, so naming an arm stales no analysis and moves no reporter case.
+ARM_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"short_name"})
+
+
+#: The fields of a declared axis that say only how a page prints it: the one list every reader that must not see them
+#: reads. An aspect bundle's fingerprint leaves them out of its declared design's axes, and a campaign bundle's out of
+#: its declaration's, so naming a lever stales no analysis and moves no reporter case.
+AXIS_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"reader_name"})
+
+
+#: The fields of a level (:class:`~threetears.evals.schema.values.SweepableValue`) that say only how a page prints it:
+#: its ``display``, which a campaign's declaration may name in place of the host's (``"current text"`` for a prompt's
+#: digest). A level's identity is its ``content_hash``. An aspect bundle's fingerprint leaves them out of every level
+#: its variant index, its coverage and its declared design carry, and a campaign bundle's out of its declaration's, so
+#: naming or renaming a level stales no analysis and moves no reporter case (owner ruling, 2026-11-11).
+LEVEL_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"display"})
+
+
 #: The fields of an aspect that say only how a page prints it: the one list every reader that must not see them reads.
 #: A bundle carries them under the same names and leaves them out of its fingerprint, and a campaign bundle's
 #: fingerprint leaves them out of its declaration's aspects.
 ASPECT_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"short_name"})
 
 
-def printed_aspect_name(label: str, short_name: str | None) -> str:
+#: The labels the quick path gives the one aspect of a campaign it declares, by what its eval grades
+#: (``quick/contract.py``, ``quick/one_call.py``): the engine's words for the work, which name nothing a reader asked.
+ENGINE_ASPECT_LABELS: frozenset[str] = frozenset({"classify", "score"})
+
+
+def printed_aspect_name(label: str, short_name: str | None, *, campaign: str | None = None) -> str:
     """What a page prints for an aspect: its declared short name, else its whole label, never a shortening of it.
 
     The one statement of the rule: the campaign's uniqueness check and every page part
-    (:func:`~threetears.evals.analysis.report.campaign.names.aspect_name`) read it.
+    (:func:`~threetears.evals.analysis.report.campaign.names.aspect_name`) read it. A label the engine gave
+    (:data:`ENGINE_ASPECT_LABELS`) with no short name gives way to the campaign's name where the caller has it, so no
+    page heads a section, a fold or a title with the engine's word for the work. A name cut at its cap or written as a
+    question is no name for an aspect, so the label stands beside one.
 
     :param label: The aspect's label.
     :ptype label: str
     :param short_name: Its declared short name, or None.
     :ptype short_name: str | None
+    :param campaign: The campaign's name, which an engine-given label gives way to; None keeps the label.
+    :ptype campaign: str | None
     :return: The name a page prints.
     :rtype: str
     """
-    return short_name if short_name is not None else label
+    if short_name is not None:
+        return short_name
+    # Only a whole name that names the campaign: never one cut at the cap (``…``) or one that asks a question.
+    if campaign and label in ENGINE_ASPECT_LABELS and not campaign.rstrip().endswith(("…", "?")):
+        return campaign
+    return label
 
 
 class Aspect(EvalDocumentModel, CoreShapeModel):
@@ -933,9 +1039,10 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
         allow_inf_nan=False,
         description=(
             "How far, in points of a 0-100 pass rate, a candidate may fall below the control here before it is "
-            "shown worse. None = no margin declared, which only an aspect upgraded from a campaign stored without "
-            "one holds: its readings are shown better or unclear, never shown worse, and the page says no margin "
-            "was declared."
+            "shown worse: the author's own, which a non-inferiority question declares. None = no margin declared: "
+            "under a question a superiority one, its drop read against zero (shown better, shown worse or not "
+            "separated); asked nothing, its readings are shown better or unclear, never shown worse, and the page "
+            "says no margin was declared."
         ),
     )
     design: AspectDesign | None = Field(
@@ -1002,10 +1109,12 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
 class Floor(EvalDocumentModel, CoreShapeModel):
     """A line a candidate is warned for crossing on one aspect: a typed clause, read on that aspect's readings.
 
-    A floor only WARNS, and loudly: a broken floor is the first thing on the campaign's page, the writer must address
-    it, and a recorded call that adopts the arm anyway names it as overridden (:attr:`CampaignCall.floors_overridden`).
-    It never blocks. A stored decision rule reads back as floors on its one aspect, one per clause. A floor's
-    :attr:`key` is unique within its campaign, which the campaign holding the floors enforces.
+    A floor WARNS, and loudly: a broken floor is the first thing on the campaign's page, the writer must address it,
+    and a recorded call that adopts the arm anyway names it as overridden (:attr:`CampaignCall.floors_overridden`).
+    It never blocks or removes an option. Read broken on an asked aspect, it caps the candidate's standing in code's
+    dominance read (:mod:`~threetears.evals.analysis.report_decision`). A stored decision rule reads back as floors on
+    its one aspect, one per clause. A floor's :attr:`key` is unique within its campaign, which the campaign holding the
+    floors enforces.
     """
 
     aspect: str = Field(min_length=1, description="The label of the aspect whose readings this floor is read on.")
@@ -1262,7 +1371,7 @@ def resolve_bar_name(
         :class:`UnreadableBarName`.
     :rtype: BarName | UnreadableBarName
     """
-    # A check's published measure name reads as the check itself: the bundle and a memo cite a check
+    # A check's published measure name reads as the check itself: the bundle and a report cite a check
     # as `goal_state:<check>`, and a bar declared by that name holds the same check to the threshold.
     if (check := goal_check_of(name)) is not None:
         name = check
@@ -1285,7 +1394,7 @@ def resolve_bar_name(
         return BarName(
             name,
             "judged",
-            describe_rubric_dim(name, scale="ordinal" if name in RESERVED_DIM_IDS else rubric_dimensions[name]),
+            describe_rubric_dim(name, scale=rubric_dim_scale(name, rubric_dimensions)),
         )
     if name in goal_state_checks:
         # The check's RATE, which is what a bar on it reads — not the check's boolean observation.
@@ -1389,10 +1498,39 @@ def _refuse_unreadable_guardrail_margins(design: AspectDesign, template: EvalTem
         low, high = SCALES[dim.scale].value_range
         if entry.margin >= high - low:
             raise DesignRefused(
-                f"a guardrail margin of {entry.margin!r} on '{entry.dimension}', scored {low:g} to {high:g}, is as "
+                f"a guardrail margin of {entry.margin!r} on '{entry.dimension}', scored {spell_declared(low)} to {spell_declared(high)}, is as "
                 "wide as its scale, so every arm would hold whatever it did",
-                remedy=f"declare a margin narrower than {high - low:g}",
+                remedy=f"declare a margin narrower than {spell_declared(high - low)}",
             )
+
+
+def _refuse_unread_measure_order(design: AspectDesign, template: EvalTemplate | None, profile: HostProfile) -> None:
+    """Refuse a ``measure_order`` entry naming no measure the aspect's results can carry: the host's measures and the
+    engine's, the template's judged dimensions and its goal-state checks. A page's lead reads the first entry a
+    contrast tested, so an entry naming nothing would pass the lead to the next, or to the pass rate, without a word.
+
+    :raises DesignRefused: An entry names no such measure, naming it and every name the aspect declares.
+    """
+    if not design.measure_order:
+        return
+    rubric = [dim.name for dim in template.rubric] if template is not None else []
+    checks = list(template.goal_state_checks) if template is not None else []
+    known = {*rubric, *checks}
+    if stray := [
+        name
+        for name in design.measure_order
+        if name not in known and profile.measures.get(name) is None and name not in METRIC_DESCRIPTORS
+    ]:
+        declared = sorted({*profile.measures.names, *rubric, *checks})
+        raise DesignRefused(
+            f"measure_order names {', '.join(map(repr, stray))}, which no grader of this aspect reads, so the page's "
+            "lead could not read it",
+            remedy=(
+                f"list measures this aspect declares, or an engine measure such as accuracy: {', '.join(declared)}"
+                if declared
+                else "list the engine's measures, such as accuracy; this host and template declare none of their own"
+            ),
+        )
 
 
 def decision_readings(template: EvalTemplate | None, profile: HostProfile) -> list[str]:
@@ -1401,7 +1539,8 @@ def decision_readings(template: EvalTemplate | None, profile: HostProfile) -> li
     A goal-state check of the template, by its verbatim text; a judged dimension of the template on the pass/fail
     scale and the capability axis, by its name (a boundary dimension is a guardrail, held on its own); and each check
     measure the host's catalogue describes (:func:`~threetears.evals.kernel.metrics.rule_rates`: a boolean with a
-    better end, either end, or a pass/fail scorer or grader), by its key. Exactly the rates
+    better end, either end, or a pass/fail scorer or grader), by its key. Each is a rate by the one predicate a family
+    contrast's interval reads too (:func:`~threetears.evals.kernel.metrics.reads_as_rate`). Exactly the rates
     :func:`~threetears.evals.analysis.report.decision.rule_readings` gives a rule, which reads the same function.
 
     :param template: The campaign's template; None when it names none that could be read.
@@ -1413,7 +1552,11 @@ def decision_readings(template: EvalTemplate | None, profile: HostProfile) -> li
     """
     checks = sorted(template.goal_state_checks) if template is not None else []
     dims = (
-        sorted(dim.name for dim in template.rubric if dim.scale == "pass_fail" and dim.axis == "capability")
+        sorted(
+            dim.name
+            for dim in template.rubric
+            if reads_as_rate("judged", dim.name, value_range=SCALES[dim.scale].value_range) and dim.axis == "capability"
+        )
         if template is not None
         else []
     )
@@ -1451,6 +1594,53 @@ def _refuse_unreadable_floor_readings(
             "unset to read every pass rate" + ("" if template is not None else f". {NO_TEMPLATE_REMEDY}")
         ),
     )
+
+
+def name_declared_axes(design: AspectDesign, profile: HostProfile) -> AspectDesign:
+    """The design with each axis its author named none for named as the host names the lever
+    (:meth:`~threetears.evals.kernel.host.sweepables.SweepableRegistry.reader_name_of`): what a create or an update
+    stores, so every page names the lever from the campaign. An axis the author named keeps its name. The host names
+    every lever it declares (its registry refuses one it does not), so an axis left unnamed is one the gate
+    (:func:`refuse_an_undeclarable_design`) refuses as no lever of the host's.
+
+    :param design: An aspect's design, as its author declared it.
+    :ptype design: AspectDesign
+    :param profile: The host whose levers it declares.
+    :ptype profile: HostProfile
+    :return: The design, its axes named.
+    :rtype: AspectDesign
+    """
+    named = [
+        axis
+        if axis.reader_name is not None or not (name := profile.sweepables.reader_name_of(axis.axis_id) or "").strip()
+        else axis.model_copy(update={"reader_name": name})
+        for axis in design.axes
+    ]
+    return design if named == list(design.axes) else design.model_copy(update={"axes": named})
+
+
+def lever_names_of(levers: Iterable[str], designs: Iterable[AspectDesign], profile: HostProfile) -> dict[str, str]:
+    """What every page calls each lever, by id: the name a declared axis stores for it (the first design's that
+    declares it), else the name the host declares (:meth:`~threetears.evals.kernel.host.sweepables.SweepableRegistry.
+    reader_name_of`); a lever neither names is left out, and a page reads its id as words. The one rule a bundle's
+    ``lever_names`` and a derived arm's label read.
+
+    :param levers: The levers to name, by id; a declared axis is named whether or not it is among them.
+    :ptype levers: Iterable[str]
+    :param designs: The declared designs whose axes store names, in the order their names win.
+    :ptype designs: Iterable[AspectDesign]
+    :param profile: The host whose lever declarations name the rest.
+    :ptype profile: HostProfile
+    :return: Lever id to reader name, sorted by id.
+    :rtype: dict[str, str]
+    """
+    stored: dict[str, str] = {}
+    for design in designs:
+        for axis in design.axes:
+            if axis.reader_name is not None:
+                stored.setdefault(axis.axis_id, axis.reader_name)
+    named = {lever: name for lever in levers if (name := profile.sweepables.reader_name_of(lever)) is not None}
+    return dict(sorted((named | stored).items()))
 
 
 def refuse_an_undeclarable_design(
@@ -1538,6 +1728,8 @@ def refuse_an_undeclarable_design(
         priority asks about latency in a design that does not declare ``measure_latency``, naming each and
         the setting to turn on; or a floor's ``RateDrop`` names a reading :func:`decision_readings` does
         not offer.
+    :raises DesignRefused: A ``measure_order`` entry names no measure the host, the engine or the template declares,
+        naming it and every name the aspect declares.
     """
     _refuse_unreadable_floor_readings(floors, template, profile)
     # ASK the profile rather than re-deriving from its registry. `HostProfile.controllable` is
@@ -1572,6 +1764,7 @@ def refuse_an_undeclarable_design(
     rubric = {dim.name: dim.scale for dim in template.rubric} if template is not None else {}
     checks = list(template.goal_state_checks) if template is not None else []
     _refuse_unreadable_guardrail_margins(design, template)
+    _refuse_unread_measure_order(design, template, profile)
     resolved = {
         override.measure_id: resolve_bar_name(
             override.measure_id, rubric_dimensions=rubric, goal_state_checks=checks, measures=profile.measures
@@ -1784,7 +1977,9 @@ __all__ = [
     "aware_instant",
     "axis_in_question_scope",
     "decision_readings",
+    "lever_names_of",
     "mechanism_measure_names",
+    "name_declared_axes",
     "refuse_an_undeclarable_design",
     "resolve_bar_name",
     "resolve_control_arm",

@@ -1,23 +1,30 @@
-"""A frontier as an operator reads it, and the exclusion lines every lens's text shares.
+"""A frontier as an operator reads it, the exclusion lines every lens's text shares, and a judge's tier as a host
+prints it off any page.
 
 Here rather than with the other lens renderings in :mod:`threetears.evals.ops` because the command
 line prints a frontier too, and :mod:`threetears.evals.quick` sits beside ``ops`` rather than above it.
-One rendering, so both surfaces carry the same caveats: what was left out, and why.
+One rendering, so both surfaces carry the same caveats: what was left out, and why. The tier sentence sits here
+rather than with :mod:`~threetears.evals.analysis.agreement`, which a page's forms import: an off-page sentence is
+printed in the off-page forms, and this module may import them.
 """
 
 from __future__ import annotations
 
 
+from threetears.evals.analysis.agreement import tier_sentence_in
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.depth import times
 from threetears.evals.analysis.depth_reading import SubjectDepth, subject_depth
 
 
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
+from threetears.evals.analysis.report.forms import PageForms, Printed
+from threetears.evals.analysis.report.unit_once import interval_beside
 from threetears.evals.analysis.report.verdict import MIN_CASES
 
 
 from threetears.evals.analysis.reporting import ProjectionExclusions
+from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier
 from threetears.evals.analysis.lenses.frontier import (
     PASS_HAT_K_CELL_READING,
     FrontierPoint,
@@ -43,16 +50,30 @@ def _contestant(model: str, variant_key: str) -> str:
     return f"{model} · {short_digest(variant_key)}"
 
 
-def _pass_hat_k_text(k: int, value: float, n_cases: int, low: float | None, high: float | None) -> str:
+def _pass_hat_k_text(
+    k: int, value: float, n_cases: int, low: float | None, high: float | None, forms: PageForms
+) -> str:
     """A point's pass^k: a rate over :data:`MIN_CASES` or more cases, else only the case count it rests on.
 
     Below the floor no figure is printed, count or interval: pass^k averages fractional per-case estimates, so no count
     of cases passed was observed.
     """
     if n_cases < MIN_CASES:
-        return f"pass^{k} over {n_cases} case(s), too few to state as a rate (a rate needs {MIN_CASES})"
-    interval = f" [{format_number(low)}, {format_number(high)}]" if low is not None and high is not None else ""
-    return f"pass^{k} {format_number(value)}{interval} over {n_cases} case(s)"
+        return (
+            f"pass^{k} over {forms.count(n_cases).text} case(s), too few to state as a rate (a rate needs {MIN_CASES})"
+        )
+    interval = (
+        f" ({interval_beside(_pass_k(low, forms).digits, _pass_k(high, forms).digits)})"
+        if low is not None and high is not None
+        else ""
+    )
+    return f"pass^{k} {_pass_k(value, forms).text}{interval} over {forms.count(n_cases).text} case(s)"
+
+
+def _pass_k(value: float | None, forms: PageForms) -> Printed:
+    """A pass^k of the trials' pass, as every surface prints one (:meth:`PageForms.pass_k`): a point's, its interval's
+    ends, its model's, its reading at the common depth, a cell's own and the bar it is read against alike."""
+    return forms.pass_k(TRIAL_PASS_NAME, value, kind="trial")
 
 
 #: The frontier text's depth lines, each one template: a subject's place, a contestant's delivered depth, the cases it
@@ -74,25 +95,29 @@ def _depth_lines(subject: SubjectFrontier) -> list[str]:
     return depth.lines()
 
 
-def _point_depth(point: FrontierPoint, subject: SubjectFrontier) -> str | None:
-    """One contestant's delivered depth, and its pass^k at the subject's common depth where it differs from ``k``."""
+def _point_depth(point: FrontierPoint, subject: SubjectFrontier, forms: PageForms) -> str | None:
+    """One contestant's delivered depth, and its pass^k at the subject's common depth where it differs from ``k``, its
+    figures as ``forms`` states them."""
     if point.depth is None:
         return None
-    said = POINT_DEPTH.format(times=times(point.depth), cases=point.depth.cases)
+    said = POINT_DEPTH.format(times=times(point.depth), cases=forms.count(point.depth.cases).text)
     if point.n_cases_short_of_k:
-        said += POINT_SHORT.format(short=point.n_cases_short_of_k, k=subject.k)
+        said += POINT_SHORT.format(short=forms.count(point.n_cases_short_of_k).text, k=subject.k)
     if (model := point.model_pass_hat_k) is not None:
-        said += POINT_MODEL.format(k=model.k, value=format_number(model.pass_hat_k), assumes=model.assumes)
+        said += POINT_MODEL.format(k=model.k, value=_pass_k(model.pass_hat_k, forms).text, assumes=model.assumes)
     if subject.common_depth is not None and subject.common_depth != subject.k and point.common_pass_hat_k is not None:
         said += POINT_COMMON.format(
-            k=subject.common_depth, value=format_number(point.common_pass_hat_k), cases=point.n_common_cases
+            k=subject.common_depth,
+            value=_pass_k(point.common_pass_hat_k, forms).text,
+            cases=forms.count(point.n_common_cases).text,
         )
     return said
 
 
 def frontier_text(result: FrontierResult) -> str:
     """A frontier as text: each subject's variants, best pass^k first, with each one's axes and the verdict."""
-    bar = "no bar, so no verdict" if result.bar is None else f"bar {format_number(result.bar)} on pass^k"
+    forms = PageForms.off_page()
+    bar = "no bar, so no verdict" if result.bar is None else f"bar {_pass_k(result.bar, forms).text} on pass^k"
     lines = [
         f"frontier, {bar}: {len(result.subjects)} subject(s) over {result.n_results} result(s), "
         f"{result.n_filtered_out} filtered out",
@@ -116,21 +141,26 @@ def frontier_text(result: FrontierResult) -> str:
         for point in subject.points:
             quality = (
                 _pass_hat_k_text(
-                    point.k, point.pass_hat_k, point.n_pass_cases, point.pass_hat_k_ci_low, point.pass_hat_k_ci_high
+                    point.k,
+                    point.pass_hat_k,
+                    point.n_pass_cases,
+                    point.pass_hat_k_ci_low,
+                    point.pass_hat_k_ci_high,
+                    forms,
                 )
                 if point.pass_hat_k is not None
                 else f"no pass^k ({point.pass_hat_k_unmeasured_reason or 'no case scored that deep'})"
             )
             cleared = f", bar {point.bar_decision}" if point.bar_decision is not None else ""
             cost = (
-                f"{format_number(point.production_replicating_cost, prefix='$')} per result (n={point.n_cost}"
+                f"{forms.lone(point.production_replicating_cost, money=True).text} per result (n={point.n_cost}"
                 + (", partial" if point.cost_is_partial else "")
                 + ")"
                 if point.production_replicating_cost is not None
                 else "cost unobserved"
             )
             latency = (
-                f"{format_number(point.mean_total_ms)} ms (n={point.n_latency})"
+                f"{forms.lone(point.mean_total_ms).text} ms (n={point.n_latency})"
                 if point.mean_total_ms is not None
                 else "latency unobserved"
             )
@@ -149,9 +179,9 @@ def frontier_text(result: FrontierResult) -> str:
                 f"- {_contestant(point.model, point.variant_key)}: {quality}{cleared}; {cost}; {latency}"
                 + (f"; {standing}" if standing else "")
             )
-            if (depth := _point_depth(point, subject)) is not None:
+            if (depth := _point_depth(point, subject, forms)) is not None:
                 lines.append(f"  {depth}")
-            cell_lines = [line for cell in point.pass_hat_k_cells for line in pass_hat_k_cell_lines(cell)]
+            cell_lines = [forms.said(line) for cell in point.pass_hat_k_cells for line in pass_hat_k_cell_lines(cell)]
             if cell_lines and not said_reading:
                 lines.append(f"  {PASS_HAT_K_CELL_READING}")
                 said_reading = True
@@ -180,7 +210,22 @@ def frontier_text(result: FrontierResult) -> str:
     return "\n".join(lines)
 
 
+def tier_sentence(tier: JudgeEvidenceTier) -> str:
+    """One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it.
+
+    Off any page, as a host prints it (a console, a lens): :func:`~threetears.evals.analysis.agreement.tier_sentence_in`
+    in an off-page surface's own forms. A page states it in its own forms, through ``tier_sentence_in``.
+
+    :param tier: The tier as decided.
+    :ptype tier: JudgeEvidenceTier
+    :return: The sentence (``tier_sentence_in``).
+    :rtype: str
+    """
+    return tier_sentence_in(tier, PageForms.off_page())
+
+
 __all__ = [
     "exclusion_lines",
     "frontier_text",
+    "tier_sentence",
 ]

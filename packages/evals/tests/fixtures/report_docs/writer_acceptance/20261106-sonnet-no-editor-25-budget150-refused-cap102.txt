@@ -1,0 +1,46 @@
+START 2026-11-06T21:02:52Z
+Traceback (most recent call last):
+  File "<frozen runpy>", line 203, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/opt/3tears/.claude/wt/evals-reset/packages/evals/tests/fixtures/writer_cases/writer_acceptance.py", line 883, in <module>
+    sys.exit(main(sys.argv[1:]))
+             ~~~~^^^^^^^^^^^^^^
+  File "/opt/3tears/.claude/wt/evals-reset/packages/evals/tests/fixtures/writer_cases/writer_acceptance.py", line 854, in main
+    found = asyncio.run(
+        acceptance(
+    ...<13 lines>...
+        )
+    )
+  File "/opt/python/cpython-3.14.6-linux-aarch64-gnu/lib/python3.14/asyncio/runners.py", line 205, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/opt/python/cpython-3.14.6-linux-aarch64-gnu/lib/python3.14/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/python/cpython-3.14.6-linux-aarch64-gnu/lib/python3.14/asyncio/base_events.py", line 719, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/opt/3tears/.claude/wt/evals-reset/packages/evals/tests/fixtures/writer_cases/writer_acceptance.py", line 793, in acceptance
+    result, report, read = await _measured(
+                           ^^^^^^^^^^^^^^^^
+    ...<10 lines>...
+    )
+    ^
+  File "/opt/3tears/.claude/wt/evals-reset/packages/evals/tests/fixtures/writer_cases/writer_acceptance.py", line 714, in _measured
+    result = await WriterEval(
+             ^^^^^^^^^^^^^^^^^
+    ...<13 lines>...
+    ).run()
+    ^^^^^^^
+  File "/opt/3tears/.claude/wt/evals-reset/packages/evals/src/threetears/evals/harness/writer_eval.py", line 699, in run
+    return await self._run(host, cases, turns, where)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/3tears/.claude/wt/evals-reset/packages/evals/src/threetears/evals/harness/writer_eval.py", line 746, in _run
+    await self._refuse_judging_past_its_part(host, template_id, cases=len(on_side) * self.k)
+  File "/opt/3tears/.claude/wt/evals-reset/packages/evals/src/threetears/evals/harness/writer_eval.py", line 811, in _refuse_judging_past_its_part
+    raise ValueError(
+    ...<4 lines>...
+    )
+ValueError: an arm's 25 report(s) at $1.50 and its 350 judge call(s) (25 case(s) x 7 dimension(s) x 2 attempts), priced at $0.0101 each before any page is read (google/gemini-3.8-flash's output cap and 2048 prompt tokens), come to $41.05, above the arm's $40.80 part of max_cost_usd $102.00; raise max_cost_usd, or lower budget_usd or the judge's max_tokens
+exit 1
+END 2026-11-06T21:03:01Z

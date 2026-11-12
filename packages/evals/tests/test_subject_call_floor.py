@@ -97,10 +97,11 @@ _JUDGE_FLOOR_USD = _JUDGE_REQUEST_USD * JUDGE_CALL_ATTEMPTS
 class _PricedClient:
     """A client that prices every request at one figure, and records what it priced and what it was sent."""
 
-    def __init__(self, role: str, model: str | None, usd: float | None) -> None:
+    def __init__(self, role: str, model: str | None, usd: float | None, *, estimate: bool = False) -> None:
         self.role = role
         self.model_name = model or "default"
         self.usd = usd
+        self.estimate = estimate
         self.priced: list[tuple[str, str, Any]] = []
         self.calls: list[tuple[str, str]] = []
         self.closed = 0
@@ -108,6 +109,9 @@ class _PricedClient:
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         self.priced.append((system, user, response_format))
         return self.usd
+
+    def ceiling_is_estimate(self) -> bool:
+        return self.estimate
 
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
         self.calls.append((system, user))
@@ -137,6 +141,7 @@ class _Subject:
         conversation: ConversationSpec | None = None,
         judged_artifact: JudgedArtifact = JudgedArtifact.DOCUMENT,
         judge: JudgeDeclaration = "builtin",
+        estimate: bool = False,
     ) -> None:
         self.storage = EvalStorage(InMemoryDocumentStore())
         self.template = _template(conversation, judge)
@@ -145,7 +150,7 @@ class _Subject:
         self.launched: list[LaunchRequest] = []
 
         def clients(role: str, model: str | None, **_: Any) -> _PricedClient:
-            client = _PricedClient(role, model, judge_usd if role == "judge" else simulator_usd)
+            client = _PricedClient(role, model, judge_usd if role == "judge" else simulator_usd, estimate=estimate)
             self.clients.append(client)
             return client
 
@@ -404,6 +409,28 @@ async def test_a_cap_above_the_floor_is_admitted_and_launched() -> None:
 
     runs = await subject.launch(0.6)
     assert len(runs) == 1 and len(subject.launched) == 1, "admitted and launched"
+
+
+async def test_a_floor_on_estimated_rates_is_admitted_and_its_run_says_its_cap_was_checked_against_estimates() -> None:
+    subject = off_loop(_Subject, estimate=True)
+
+    arm = await subject.estimate(0.6)
+    assert arm.outcome == "admitted" and arm.plan.call_ceiling.estimate is True, "an estimate admits the arm"
+    estimated = await subject.ops_estimate(0.6)
+    assert estimated.call_ceiling_estimate is True
+
+    [run] = await subject.launch(0.6)
+    stored = off_loop(subject.storage.load_eval_run, run.id, TOYHOST_SCOPE)
+    assert stored is not None and stored.cap_checked_on_estimates is True
+
+
+async def test_a_floor_on_guaranteed_rates_leaves_the_run_s_estimate_flag_unset() -> None:
+    subject = off_loop(_Subject)
+
+    [run] = await subject.launch(0.6)
+    stored = off_loop(subject.storage.load_eval_run, run.id, TOYHOST_SCOPE)
+    assert stored is not None and stored.cap_checked_on_estimates is None
+    assert "cap_checked_on_estimates" not in stored.to_dict()
 
 
 async def test_a_floor_the_host_cannot_raise_a_cap_to_names_the_hosts_operator() -> None:

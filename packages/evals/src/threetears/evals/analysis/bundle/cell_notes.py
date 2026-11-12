@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from threetears.evals.analysis.contention import contended_latency_sentence
 from threetears.evals.analysis.cells import Cell
 from threetears.evals.kernel.declaration import AspectDesign
-from threetears.evals.schema.models import EvalResult
+from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.kernel.result_condition import delivered_a_turn
 from threetears.evals.kernel.surface import (
     CellFacts,
@@ -78,7 +78,7 @@ def _short_cells(cells: list[Cell], design: AspectDesign | None) -> list[ShortCe
 _HOW_TO_REPORT_SPEND = "A quick candidate reports its spend by returning an Answer."
 
 
-def _cost_unmeasured(results_by_cell: dict[_CellKey, list[EvalResult]]) -> tuple[list[CellCoordinate], str | None]:
+def _cost_unmeasured(results_by_cell: dict[_CellKey, list[ResultView]]) -> tuple[list[CellCoordinate], str | None]:
     """Name every cell where no result observed spend, with the one sentence that says what that means.
 
     A cell is listed when it holds a result storing a ``cost_usd`` and no result in it observed spend
@@ -93,7 +93,7 @@ def _cost_unmeasured(results_by_cell: dict[_CellKey, list[EvalResult]]) -> tuple
     spend" would be the wrong reason.
 
     :param results_by_cell: Each cell's results, from :func:`_results_by_cell`.
-    :ptype results_by_cell: dict[_CellKey, list[EvalResult]]
+    :ptype results_by_cell: dict[_CellKey, list[ResultView]]
     :return: The unmeasured cells in coordinate order, and the sentence — None when there are none.
     :rtype: tuple[list[CellCoordinate], str | None]
     """
@@ -120,12 +120,12 @@ def _cost_unmeasured(results_by_cell: dict[_CellKey, list[EvalResult]]) -> tuple
 
 
 def _latency_contended(
-    results_by_cell: dict[_CellKey, list[EvalResult]], contended_ids: Collection[str], *, declared: bool = False
+    results_by_cell: dict[_CellKey, list[ResultView]], contended_ids: Collection[str], *, declared: bool = False
 ) -> tuple[list[CellCoordinate], str | None]:
     """Name every cell whose latency read under concurrency was left out, with the one sentence that says so.
 
     :param results_by_cell: Each cell's results, from :func:`_results_by_cell`.
-    :ptype results_by_cell: dict[_CellKey, list[EvalResult]]
+    :ptype results_by_cell: dict[_CellKey, list[ResultView]]
     :param contended_ids: The results whose latency
         :func:`~threetears.evals.analysis.contention.withhold_contended_latency` removed before anything read them.
     :ptype contended_ids: Collection[str]

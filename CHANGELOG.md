@@ -6,6 +6,3819 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: names leave the evidence (bundle shape 66, campaign bundle shape 4; every stored analysis is regenerated once)
+
+**Changed:** names are presentation, never evidence (owner ruling, 2026-11-11). The bundle an analysis is frozen over,
+and every fingerprint and digest taken over it, carries ids and structured facts only, and a page applies every name
+when it is rendered. A derived arm's label is frozen with its levers spelled by their ids read as words (`chunk tokens
+1024tok, retriever top k 3`) and printed with their stored names (`Chunk size 1024tok, retrieval depth 3`), where it
+was frozen with the names. `AliasedFactors.sentence` and `FactorPairScan.completeness` are removed: a page words the
+lockstep-group sentence, the pair scan's completeness and each co-varying pair from the facts the bundle keeps, every
+factor by its reader name where they printed raw ids (`chunk_tokens and retriever_top_k co-vary` now reads `Chunk size
+and retrieval depth co-vary`). One rule names a lever across a campaign: the first of its declared axes to store a name,
+in aspect order, else the host's, so every aspect, a derived arm and every table name it alike; a campaign bundle whose
+aspects name one lever apart is refused. So renaming a lever moves no aspect bundle fingerprint, evidence digest or
+campaign bundle fingerprint, and a page built now prints the new name.
+
+The same holds for a measure and a level. A measure's `reader_name` and `reader_prose` stay in the bundle's measure
+catalog, outside every fingerprint (`MEASURE_PRESENTATION_FIELDS`); a trial's failed check holds its measure's key
+(`TrialCheck.name`) and each judged dimension its id (`TrialJudgement.dim`, `TrialRow.judged`, `__outcome__` where it
+held `outcome`); a campaign's readings hold each measure by its key alone (`MeasureReading.name` is removed) and each
+bar's decision (`BarStatus.decision`, from the bundle's verdict) where they held a reason naming the measure
+(`BarStatus.reason` is now a method a page words with the measure's name; `missed_reason` is gone), and each floor's
+decision as facts (`FloorStatus.decision`, a `FloorDecision`: which reason applies, the rate by its key, the counts and
+figures) where it held a reason quoting the measure's reader name (`FloorStatus.reason` is now a method a page words
+with the rate's name, `floor_subject`). A derived arm spelled from several levers carries its spelling in the campaign
+bundle (`CampaignBundle.arm_spellings`, an `ArmSpelling`: each lever by id and its level), which a page prints it by,
+never by reading its frozen label's text back; a spelling that does not spell its label is refused. A page's trial
+record prints its checks and judged dimensions in types of its own (`PrintedCheck`, `PrintedJudgement` on
+`TrialBlock`), so a bundle's key where a page's name belongs is a type error. A level's
+`display`, the name a campaign's declaration gives it or the host's, stays where a page reads it and is outside every
+fingerprint wherever the bundle carries the level (`LEVEL_PRESENTATION_FIELDS`: the variant index, the coverage, the
+declared design and the campaign's declaration); a declared crossing's cell holds each level's content hash
+(`DeclaredCellCoverage.levels`, named on the page through `AnalysisContextBundle.level_name`); and the decision surface,
+the scoreboard and the time axis order their arms by the host's display, never a declared name. A test case's label, the
+name its author gave it, rides on each trial (`TrialRow.case_label`) outside every fingerprint,
+the bundle holding and ordering the case by its id. So renaming a measure, a level or a
+test case moves no fingerprint or digest and stales no analysis; a page built now prints the new name, and a stored
+analysis's page the names it was frozen with. Every page reads as it did. A judge's identity is untouched: a rubric
+criterion's wording keys its judge profile (`criterion_digest`) as before, and the trial keeps the criterion the judge
+was asked.
+
+**Regenerate once:** the bundle shape moves from 65 to 66 and the campaign bundle shape from 3 to 4, and no earlier
+shape of either is read, as stored or otherwise (bundle 64 and campaign bundle 2 were): every stored analysis is listed
+as needing regeneration, its report reads code-only, and every door says why (`holds an evidence bundle of shape 65,
+frozen before names left the evidence: ...`, or `holds evidence of shape 3 ... frozen before names left the readings`).
+Generate each again with `analysis_generate`; nothing is migrated. The code that read older evidence is removed: a
+fingerprint of an earlier version is never computed again (`fingerprint(like=...)`, `evidence_digest(like=...)` and
+`fingerprint_digest(like=...)` are gone), so one stored under it reads as not reproducing, and the page line for
+evidence read as stored (`stored_shape_line`, `DocPage.stored_shape`) is gone with the set of shapes it named. The
+regenerable version stays 13.
+
+### evals: every lever carries a declared, stored reader name (durable v17)
+
+**Changed:** a host declares what a reader calls each lever, and every page names a lever by that name, never by its
+id. `Sweepable.reader_name` is required of every fixed lever, `Sweepable.member_reader_name` of every open family, and
+`title=` of every kind contract's overlay field; a registry or contract without one is refused where it is declared,
+naming the lever and how to declare it (`lever chunk_tokens has no reader_name — an arm's name, a setting or a factor
+would print its id; declare Sweepable(reader_name=...) with the words a reader calls it`). A campaign stores the name
+on each declared axis (`SweptAxis.reader_name`): the author's, else the host's, and the quick path's is the factor as
+its author wrote it (`prompt`, never `callable.prompt`). The production-check sentence, settings, factor columns,
+lever-effect rows, coverage lines and computed arm names read it through one source (`lever_reader_name` over the
+bundle's and the report input's `lever_names`), as do a campaign's title, its listing line and the "Adopt ..." of its
+recorded call, the line under a campaign page's heading, and a figure key's refusal naming an arm's setting. So a page
+rebuilt from the store names every lever a campaign's declared axis names as the page built in process did; a lever
+no declared axis names is named as the host reading the store declares it (its id read as words where that host
+declares none). A family's `member_reader_name` that names a member with no words is refused where it is asked,
+naming the family and the member. A campaign export records each lever's `reader_name` with its declaration.
+
+**Durable v17 (a major):** the v16 step names each stored axis that has none from its id, once (the id read as words,
+less the quick path's `callable.` prefix). Every other durable type passes through unchanged. A build before this one
+refuses what this one writes, so a fleet does not roll back past it.
+
+**Not identity:** the name enters no variant key, measurement context, host declarations digest or fingerprint, so a
+rename splits no history and stales no analysis (names left the evidence, bundle shape 66, below). A report input's
+`lever_names` enters its `report_input_digest`, as its other presentation fields do.
+
+**Hosts:** add `reader_name=` to every lever `Sweepable`, `member_reader_name=` to every open family, and `title=` to
+every overlay field, before upgrading (MIGRATIONS.toml).
+
+### evals: a replay serves each cell its own recorded answer, and a model shared between evals is named as the cause
+
+**Fixed:** replaying an eval twice could print different repeat numbers (rung 3e's c02 malformed reply on repeat 3,
+then repeat 1). A run's cells start in an order shuffled by its fresh id, several at once, and a replay served a
+prompt's recorded answers in the order they were asked. Inside a cell, repeat `i` is now served the recorded call of
+index `i`. `CellIdentity` gains `k_iteration` (default `None`), the cell's repeat, which the run loop sets.
+
+**Fixed:** that still left two askers of one prompt in one repeat to the order they asked in: two arms giving the same
+answer send their judge the same prompt, and a follow-up can be asked by several cells. A recording now notes on each
+call the cell it was made for (recording format 3: a `cell` member holding the arm's subject and contestant identity,
+the case, the repeat, and how many times that cell had asked the prompt before), and a replay serves a cell the call
+recorded for that very cell, in any order, on every replay. `CellIdentity` gains `variant_key` (default `None`), the
+arm's contestant identity, which the run loop sets. A format-2 line, which noted no cell, is still read: it is served
+by repeat index and then the first call left, as before, so the claim holds for it only while each repeat asks a
+prompt once. Every shipped recording replays the same under that fallback: replayed, rungs 0 to 4 ask each recorded
+prompt once per repeat, except rung 2's four judge-example prompts, graded outside any cell, whose two recorded calls
+each are identical; rung 5's judge recording holds one call per prompt. Nothing was re-recorded. A recording made in format 1 is still refused.
+
+**Fixed:** in a format-3 recording, a cell the recording names nowhere (its arm, case or eval renamed since recording)
+was served the first call left in recorded order, which turned on the order cells asked in and could take a call
+recorded for another cell. It now stands for the one recorded cell that asked the prompt at its repeat and shares its
+subject, arm or case, for the rest of the replay, so a renamed arm replays its own calls on every replay. Where several
+recorded cells fit it is refused as ambiguous, in any order; where the one that fits has asked as itself, it is refused
+too, so no cell is served a call recorded for a cell that asked as itself. A cell the recording names is served its own
+calls and nothing else: one asking a prompt more often than recorded is refused, where it was served another's.
+
+**Fixed:** recording numbered a cell's asks of a prompt as their answers landed, a replay as they were asked, so two
+concurrent asks of one prompt by one cell could replay swapped. Both number an ask when it is asked; a replay serves a
+cell's asks in number order, so the gap an ask whose call failed leaves is never seen.
+
+**Fixed:** a `Model` shared by two evals in one process (or one eval run twice) serves the second nothing, since a
+replay serves each recorded call once per model; the second eval's calls were refused as "the code asks it more often
+than it did when it was recorded" with a remedy to re-record, which spends money on a recording that is whole. The
+refusal now names the eval whose run took the calls and says to build a `Model` per eval, never to record again.
+`Eval.run` marks its extent as one eval's run (`threetears.evals.kernel.eval_scope`, no root), which the replay reads.
+`Model`'s docstring states the rule.
+
+### evals: a judge's examples are ledgered, judged as the run's answers are, and never cost the eval its result
+
+**Fixed:** the paid judge calls that grade `Judge(examples=...)` are made after the arms, outside any run, and were
+written nowhere. Each is now written to the out-of-run spend ledger (`OutOfRunSpend`, purpose `judge`, stamped with
+the template) as it is made, and the page's sentence states what they cost, as the print does.
+
+**Fixed:** an example is judged exactly as a run's answer is: its case less `id`, `stratum` and `world`, and on a
+classifier eval without the label the case expects. The authored judge case seeded from it carries the same evidence.
+
+**Fixed:** with `max_cost_usd` set, an eval whose arms' spend went unpriced graded no example and said the cost cap
+stopped it. It now says the arms spent what nobody priced, which the cap cannot bound, and stops for that reason, as an
+enforcing run's cap stops at unpriced spend. The cap is read before each example's call against landed spend, as a
+run's is before each cell, so the call that crosses it lands whole; the line now says the eval went over, with what it
+landed against its cap. `Eval.max_cost_usd`'s docstring says the examples draw on it too.
+
+**Fixed:** a grading of the examples that fails (the template gone from the store, a judge config the scope will not
+build or a host with no completion clients, a judge completion that breaks the protocol) is contained and stated on
+the reading ("not graded in full, since the grading failed ..."), and the eval files its campaign and returns its
+result, where the arms' spent results were lost. The example the grading failed on keeps the verdicts it was given, so
+one already graded wrong reads as a miss beside them, never as "not graded". Only those conditions are contained: any
+other error (an engine bug) reaches the caller.
+
+### evals: a shutdown lets an expiry already running finish, within the shutdown's own timeout
+
+**Fixed:** a graceful shutdown cancelled a lease expiry partway through: its record, already let go, was skipped by the
+shutdown's pass, its job never stopped and its fault never written, so it later read lost by lapse with no cause. An
+expiry now runs in a task of its own, shielded from the renewal that found the lease lapsed, and a shutdown lets it
+finish within the shutdown's timeout: it writes why it stopped (a fault naming the failed renewal) and then the record
+lost with the shutdown's cause, so the record ends at once with both. An expiry still running when the timeout ends is
+cancelled, its job stopped and its cause logged; its record then reads lost once its lease lapses.
+
+**Fixed:** a shutdown waited for those writes before it cancelled a single job: the held jobs' losses with no bound at
+all, then the expiries for up to two leases and a renewal interval (140 s at the default 60 s lease), far past
+`EvalJobManager.shutdown`'s 5 s timeout. A degraded store at SIGTERM kept live runs making model calls until the pod
+was killed. `EvalJobManager.shutdown(timeout)` now bounds the whole shutdown by `timeout`: the held jobs' losses are
+written together, and the jobs are cancelled once they land or once half the timeout has passed, whichever is first;
+the expiries under way get what is left. `JobLeases.shut_down` takes `within=` (the bound) and `then=` (called when
+the losses are written or their half has passed: where the caller cancels its jobs).
+
+**Fixed:** an expiry's failure after the renewal awaiting it was cancelled went unretrieved; each expiry now retrieves
+and logs what it raised itself. An expiry left running past a shutdown made a new lease pool after the shutdown had
+closed the last one, which nothing closed; none makes a store call after the shutdown has ended.
+
+### evals: an unnamed comparison is refused
+
+**Changed:** a quick-path `Eval` with several arms and neither `name=` nor a cases file is refused when it is written
+(`name this eval (name="invoices"): its name is where its runs are kept, ...`). It was named by its arms joined with
+` vs ` (`model=a, prompt=v1 vs ...`), a title of raw keys that was also where its runs were kept, so adding, renaming
+or dropping an arm moved them and split the comparison's history. One arm, a runner named by its function, and an
+eval over a cases file are named as before.
+
+**Hosts:** pass `name=`. To keep reading a comparison already stored under its arms' name, pass that name: the arms
+joined by ` vs `, in order. Pre-release, no shim (MIGRATIONS.toml).
+
+### evals examples: rung 3 is one idea a file
+
+**Changed:** `examples/3-invoices/extract.py` taught six ideas at once; it is now a file each, numbered as steps of
+rung 3: `compare.py` (3a: two arms, a control and a verdict), `margin.py` (3b: a margin, so a reading can come out
+equivalent, fixed before the run from what the decision is for), `guardrail.py` (3c: a guardrail decided on its own;
+the old file's eval, still named `invoices`, without the 5-point margin on `total` it carried, which is 3b's idea),
+`ci.py` (3d: the gate in CI) and `grid.py` (3e: two levers at once, read by one lever with `Result.against`); 3f is
+`--write-report` over `compare.py`. The answer's shape and the two prompts move to `invoice.py`, which declares no
+eval and builds no `Model`; every other file builds its own (`grid.py` two, one per effort) but `ci.py`, which runs
+`guardrail.py`'s eval. Rung 4's `agent.py` and `serve.py` are 4a and 4b. The grid's high-effort cells replay a new
+recording, `recordings/invoices-high.jsonl` (180 calls, $0.0188). Rung 5's frozen `3-invoices` case is the pre-split
+campaign (frozen 2026-11-03: no question, the 5-point margin on `total`), which no rung-3 file declares now; it is
+not refrozen. The grid's arm names moved package code: see the next entry.
+
+**Readers:** a link to `extract.py`, or to the ladder's `#rung-3-two-prompts-compared` or
+`#rung-4-an-agent-graded-on-the-world-it-leaves`, is dead: link `guardrail.py` (the same eval, less the margin),
+`#rung-3a-two-prompts-compared` or `#rung-4a-an-agent-graded-on-the-world-it-leaves` instead.
+
+### evals: a factor arm reads by its declared factors everywhere
+
+**Fixed:** an eval whose arms are named as `k=v` factors (`"prompt=v1, effort=low"`) labelled only its control on
+the campaign, by its raw key, and every other arm by its variant's levers: the page and the verdict line read
+`Callable effort high, callable prompt v1` (the engine's kind as a word, the factors in sorted order) while the print
+read `prompt=v1, effort=low`. Every surface now names a factor arm by its factors, in the order the eval declares
+them (`Prompt v1, effort low`): the campaign's arm labels, the verdict line, the contrast rows, the scoreboard, the
+misses, the guardrail lines and `against()`'s default name. `Result.arm_labels` (new) holds each such arm's name by
+variant key; `contrast_rows` and `report_cell_labels` take `arm_labels=` as `aspect_verdict` already did
+(`quick/result.py`, `analysis/report/build.py`). An arm named plainly is unchanged.
+
+### evals: a judge is checked on its examples in the run
+
+**Added:** `Judge(examples=[Example(...)])` on the quick path now grades each example `k` times as part of the eval's
+run, through the same judge call its answers are graded by, where it only stored the examples for a host's judge
+campaign. `Result.judge_examples` holds each example's verdicts, how many were graded as they must be on every repeat,
+the misses, and the judge's spend on them. The print says it in one line plus a line per miss (`judge: 3 of 4 examples
+graded as they must be on every one of 2 repeats ($0.0010 over 8 call(s))`), and the page in one sentence under Design &
+provenance, beside the judge's calibration and never pooled into it. The calls count against the eval's cost cap.
+
+**Hosts:** a judge with no examples makes no extra call; its print and page are unchanged. A recorded judge needs its
+examples' calls in its recording; rung 2's recording gains them (8 calls, $0.00086).
+
+### evals: the retired per-1,000 money mark is removed
+
+**Removed:** the per-1,000 money mark (`$8/1000` for $0.008), retired on 2026-11-07, which the package kept only so a
+chart or form a report stored with it still drew: the chart kit's `usdpk` format, `MoneyForm.per_thousand`, and
+`PER_THOUSAND` and `PER_THOUSAND_MARK` in `threetears.evals.kernel.numbers`. Money per 1,000 replies is unchanged: the
+count is said in the header or the axis title, never on the amount.
+
+**Hosts:** a stored chart that names `usdpk` in a format field is refused on read, and the kit throws on it; write
+`usd` and say the count in the axis title. No page the package writes moves but for the kit's text it embeds.
+
+### evals: a broken floor caps an option's standing, and an uncalibrated judge's gain raises nothing
+
+**Changed:** code's dominance read (`options_dominance`, `decision_at`, `asked_standing`) gave a candidate the standing
+`shown_better` on any improved contrast on an asked aspect, before reading its floors or its judge: an arm whose pass
+rate broke its floor across the whole interval, and that cost more, read as a tradeoff on one uncalibrated judged
+score. Now a floor read `broken` on an asked aspect caps the candidate at `not_shown_no_worse`, and its `why` names
+the floor; an `unclear` floor caps nothing, and a floor still removes no option. An `improved` contrast on a judged
+dimension whose judge the input states uncalibrated (tier and calibration undetermined or insufficient, the reading
+`judge_uncalibrated` makes) is set aside: it raises nothing, `why` names it, and `AskedStanding.set_aside` (new) lists
+it; the candidate's other improvements count as before. Only those two states set an improvement aside:
+hosts often make a judge ad hoc, without the hours of human rating calibration takes, and a judge measured and found
+short (`separation`, `incidental`) still counts. A floor-margin sweep reads the cap at each margin. The
+editor's `adoption` fact names a recommended candidate a broken floor caps, and an improvement set aside.
+
+**Hosts:** a stored call can read differently on regeneration: a capped candidate that costs more than the control is
+now dominated by it, so a former tradeoff reads as a decision for the control.
+
+### evals: pass^k fails a trial on every check the census fails it on
+
+**Fixed:** pass^k read only goal checks, the judged capability dimensions and candidate failures, while the
+scoreboard also failed a trial on a host's check (a boolean measure with a better end, a pass/fail scorer, a label
+that did not match), so an arm that passed 2 of 180 trials on the scoreboard could read a high pass^k beside it, under
+a label naming the check. Both now read one list of what a trial failed, `kernel.scoring.failed_checks` (new): pass^k
+on the frontier, in a run's summary and in two runs compared fails the attempt the census fails. A label and a host's
+check are each a pass^k criterion (`has_pass_criterion`, which the census's `no_criterion` reads too), so a classifier
+graded on its label alone, or an arm held by such a check alone, has a measured pass^k where it read unmeasured: the
+share of its cases right on every repeat, its pass^1 its pass rate. An arm with nothing to check still reads
+unmeasured, never 0. A measure with no better end, or a numeric one that is no pass/fail scorer, still fails nothing.
+`compute_pass_hat_k`, `pool_pass_hat_k`, `pool_pass_hat_k_attempts` and `has_pass_criterion` take a required
+`catalog`, the descriptors of the measures the results carry, which `kernel.scoring.measure_catalog_of` (new) builds
+from a host's measure registry. `compare_two_runs` takes the host's `profile`, and its arm row names each such check
+(`pass_checks_{a,b}`, new), as the compared label now does. `analysis.style.check_held` (new) is the one wording of
+such a check: the pass rule names the value that passes (`Never topped up is false`), and a trial's Why cell now the
+value that failed it (`check: Never topped up is true`) where it printed the raw expression (`` `top_up_never is True`
+``). A judge's can't-tell disclosure says a failed check, not only a sub-bar dimension, can still fail the trial in
+pass^k. The `count.failures` key and the counts family now describe every trial the pass rule failed.
+`CaseResult.missed_because` (and `EvalSummary.misses`) reads the trial's state: a miss is a trial the pass rule failed,
+its reasons the candidate's failure, else each failed check in its pass rule's words and each judged dimension under
+the bar. It listed a passed trial whose directed scorer read 0 and left out a 1–5 judged score under the bar.
+
+**Hosts:** a pass^k figure on an arm held to such a check moves down to the scoreboard's pass rate; a stored report or
+verdict that cited the old figure misstates it. A host calling the pass^k functions passes `catalog=`
+(`measure_catalog_of(results, profile.measures)`). A classifier arm's pass^k, unmeasured before, is now a figure.
+`CaseResult.of` drops `higher_is_better`: the catalog says which measures are checks. A miss reason on a host check
+reads `Short score is 0` where it read `short gave 0`.
+
+### evals: the pass rule names every check that fails a trial, and count.failures counts failed trials
+
+**Fixed:** an aspect held to a host's check (a boolean measure with a better end, a pass/fail scorer or a label match)
+fails a trial on the check's other value, but its pass rule named only "every goal check" and the rubric level, so an
+arm failing nearly every trial on the check read as passing everything the analyst could see. The rule now names each
+check that is no goal check, by the name the page gives its measure and the value it must hold to pass (`Never topped
+up is false`): in the rule's label (`aspects.<aspect>.pass_rule`, and `pass_threshold_label`'s new `checks`), in its
+sentence (`.description`, which now says "every goal check passed" where it said "every check passed"), in
+`PassRule.named_checks` (new) and in the analyst overview's aspect row (`checks`, new). An aspect held to such checks
+alone no longer reads "no criterion".
+
+`count.failures.<aspect>.<arm>` (and `FailedTrials.failed`) counted trials scoring a nought on one campaign-wide judged
+dimension, and read 0 where 178 of 180 trials failed on a check. It now counts every trial the pass rule failed, for any
+cause, the scoreboard's `failed` on that aspect. The examples are still noughts on the primary judged dimension where
+the snapshot names one; `examples_list`'s `pool` and the keys' own text say they are no sample of every failure.
+
+**Hosts:** a stored report that cites `count.failures` re-reads the trials its run failed, which is the scoreboard's
+count and can be far above what it read before; a sentence that read it as noughts on one dimension now misstates
+it. A pass rule's label and sentence change wording wherever a check besides goal checks is in force. No key is
+renamed and nothing stored is migrated.
+
+### evals: an MCP client reads a report from structured content alone
+
+**Fixed:** over MCP, `report_read` returned no page to a client that shows a result's structured content in place of
+its text (Claude Code's does): the transport sent the report's `body` as the text block and left it out of the
+structured content, and a code-only report's structured content held nothing readable. A result's structured content
+is now the result model's JSON whole for every action, `report_read`'s `body` included; the text block is unchanged.
+`Action.text_field` and `ActionOutcome.text_field`, which declared the field to leave out, are removed.
+
+**Hosts:** a host's own `Action` that declared `text_field` drops it. An MCP client now gets `report_read`'s body in
+its structured content too, beside the same body as text, so that call's reply carries the body twice.
+
+### evals: a table cell holding a number carries its decided text
+
+**Changed:**
+- `TableCell` loses `decimals`, `signed` and `per_thousand`. A cell holding a number carries the text its page's forms
+  decided (`value_text`), and a cell with an interval carries its ends' (`low_text`, `high_text`, new); a cell built
+  without them is refused, naming the cell. A glyph's title and the line under its table print those texts, so a
+  glyph states its own cell's precision (`-1.0 pts, interval -3.6 to +1.6`, where a column's first row set it) and
+  the line its interval once (`Each column drawn from 24 to 84%`, where it read `23.8% to 84%`).
+- An outcome bar's note prints the share that passed in the pass rate's one form (`85% passed · 765 of 897`, where it
+  read `85.3%` beside the scorecard's `85%`; `OutcomeBar.passed_text`, new).
+- Money writes `$` on each end of an interval (`$20 ($16 to $25)`): the one stated exception to writing a unit once
+  (docs/design.md, number policy rule 3).
+
+**Hosts:** a report's JSON no longer carries `decimals`, `signed` or `per_thousand` on a cell, and every number cell
+carries `value_text`; print it, as before. A host that builds a `TableCell` with a number passes its `value_text`. A
+cell with a `level` also carries `level_text`, which its `value_text` opens with (`23.0% · +2.5 pts`). A `TableCell` is
+frozen: change one with `model_copy`, carrying the new texts.
+A stratum id two aspects name differently prints by each aspect's own name (a collision is keyed per aspect), and a
+declared `Judged.label` wins on every surface.
+
+### evals: a take-up never compares the host's disclosure or the engine's build
+
+**Fixed:** `job_resume` no longer refuses a take-up when a run's disclosure moved. `EvalRun.run_disclosure` is printed
+as given and never compared, but a take-up held it equal, so a host disclosing a reading that moves (a one-minute
+load, a build after a deploy) had nearly every resume refused. The run keeps the disclosure its launch stated; a
+holding records none of its own. Nor does it refuse one across an engine upgrade (`package_version`, `package_rev`)
+or a moved `cap_checked_on_estimates`, which is about admission under the cost cap: the run keeps the launch's build,
+the only one it records, and reads admitted on estimates when either holding was. A resumed run can therefore span
+engine builds, so the framing its judge is sent may change mid-run, and no judge-prompt digest records it.
+
+**Hosts:** a resume after a restart, a deploy or an upgrade of 3tears-evals is taken up whatever the host's
+disclosure reads now. A run resumed across an upgrade names only its launch's engine build; launch again for a run
+measured under one build throughout. Nothing stored changes.
+
+### evals: the mint imports only the profile factory its operator names
+
+**Changed:** `python -m threetears.evals.harness mint` requires `--host module:callable` and never imports the
+`built_by` a profile declaration names. The `campaign_export` action takes `built_by` from its caller, which can be a
+host's chat agent, and the mint runs in the operator's environment, so a profile naming a module chose the code the
+mint ran. `built_by` is now provenance: the export still records it, the mint checks it is text, and nothing imports
+it.
+
+**Fixed:** a `<VARIABLE>_FALLBACKS` entry that is not a variable's name (a spare key pasted in place of its variable)
+is refused by its position in the list, never printed.
+
+**Hosts:** pass `--host` to every mint, naming the factory the declaration's `built_by` named (or the export's
+`--host`). A mint without it is refused as a malformed command line (exit 2). Nothing exported or stored changes.
+
+### evals: the writer's editor clears more reports, its analyst turns are priced at an 8,192-token cap, and the acceptance gate discloses the finished pairs
+
+Owner rulings of 2026-11-09, after run 5 (32 cases, Sonnet 5.5, $1.50 a report) finished 9 of 64 reports. Read over
+its 177 recorded reviews, the clearing rule and the turn ceiling, not the writing, kept the rest from finishing.
+
+**Changed:**
+- **Clearing rule.** A `should_fix` first raised in round 1 no longer blocks a report from being stored finished: it
+  is still sent back while revisions remain, then listed open on a finished page. Every `must_fix` still blocks, and so
+  does a finding first raised in round 1 as a `must_fix` that a later review carries at `should_fix` (downgraded is
+  not resolved). The 11-of-14 bar with no item at 0 is unchanged. `Review.blocking` applies it; the new
+  `ReportFinding.raised_as` keeps the severity a finding was first raised with where a later review carries it at
+  another, and is stored only then. Over run 5's recordings the rule finishes 15 of 32 shipped reports (was 8) and 4
+  of 32 candidate reports (was 1); no stored page changes, only the ending. `editor.md` states the rule, so the
+  shipped skill's digest moves (unmeasured entry in `PROMOTIONS.toml`).
+- **The analyst's output cap is 8,192 tokens** (`AnalystLimits().session.max_tokens`, was 32,000; run 5's largest
+  reply in 748 turns was 5.8k). Each turn is admitted on its prompt's bound plus this cap, so on Sonnet 5.5 every
+  analyst turn's ceiling falls by about $0.24: run 5's refused revision turns, priced $0.97 to $1.03, price $0.73 to
+  $0.79, inside the $0.86 to $1.01 their reports had left. The budget is still a hard ceiling. A reply that reaches
+  the cap is a bounce, as before. The editor's cap stays 32,000: no refusal rested on it.
+- **Acceptance gate** (`writer_acceptance.py`, two editors): "the preference over pairs both finished" is disclosed
+  with its pair count and no longer decides PASS or FAIL. "Both arms stored a page on every case" is unchanged.
+
+**Hosts:** a stored report reads exactly as before: its `ending` and `draft` are stored, never re-derived. New reports
+finish more often, since a round-1 `should_fix` left open no longer makes a draft. A host that builds `WriterLimits()`
+gets the 8,192-token analyst cap (it was 32,000). Recorded replies at a stated effort stay under 6,000 tokens; a host
+whose writer sets no effort (the provider's default) or a thinking budget of 8,192 or more, and sees replies cut at the
+cap (a cut reply counts as a bounce), restores the old cap with `AnalystLimits(session=SessionLimits(max_tokens=32_000))`. A request ceiling derived from the
+output cap (`writer_ceiling_s`) falls with it.
+
+### evals: a writer verdict never rests on a reading the two arms' editors decide
+
+**Fixed:** with a candidate whose `editor.md` differs from the control's, the writer eval's promotion sentence named
+an editor-decided reading as its reason ("Keep the control: headline-answers is shown worse than shipped on Must-fix
+findings open."), which the acceptance table reports not compared. The sentence now names only readings the comparison
+counts (`writer_contract.uncompared_readings`, which the table reads too), e.g. "Keep the control: headline-answers
+was not shown better than shipped; on the primary reading the evidence cannot tell them apart."; the decision itself
+is unchanged, and so is every sentence when the arms share an editor. `writer_promotion(..., one_editor=)`,
+`WriterPromotion.one_editor` and `WriterResult.one_editor` carry the fact. The writer eval sets it, counting one editor
+only when `editor.md`, the editor's model and the effort all match; a caller that passes nothing, the
+`writer_promotion` action included, gets one editor only when the arms ran the same skill.
+
+**Hosts:** a `writer_promotion` action over arms whose skills differ now leaves each editor's own readings out of its
+`why`, and returns `one_editor: false`.
+
+### evals: a host's fraction reads as a rate on every table, and an interval writes its unit once beside its figure
+
+A production re-shoot of the number forms above found tables that read one measure apart.
+
+**Fixed:**
+- A host's fraction on 0 to 1 that declares no unit (`value_range=(0, 1)`) reads in percent on a measurement's
+  scorecard (`30%`, `0 to 70%`; it read `0.3`, `0 to 0.7`), as its aspect's page and the written page read it. One
+  test decides it for every page, `reads_as_share`.
+- A measure reads at one precision in the scorecard's matrix and the fold under it (`0.10` in both; the fold read
+  `0.1`).
+- A chart of two arms compared on a corrected contrast heads its interval with the family's joint guarantee (`95%
+  intervals (adjusted for 10 comparisons)`), where it read the per-interval `99.5%`.
+- A table glyph's title carries its change's sign, as its cell does (`+0.2, interval -1.2 to +1.6`; it read `0.2`).
+- A mean's spread reads at the mean's precision: `$3.33 ± $0.09`, where it read `$0.088`.
+- The quick console reads a 0-to-1 grader in percent, as the page does (`Fields found: 38% (12 trials)`; it read
+  `mean 0.375`), and rung 5's readings table reads a host's share as a rate.
+- A change chart's values table (diverging bars, a forest, a dot strip) names the unit its changes are in whatever
+  it draws (strata, contrasts, readings): `-23 pts`, never `-23`. A difference heatmap is not yet one of them: its
+  cells stay bare and its caption names the unit (`in points`).
+
+**Changed:**
+- **An interval writes its unit once.** Beside its figure, on the figure alone: a tooltip reads `85% (80 to 89)` and
+  `+10 pts, -29 to +58`, a glyph's title `+10 pts, interval -45 to +60` (they read `85% (80 to 89%)` and `... to +58
+  pts`). Standing alone in a table's column, after its high end (`80 to 89%`). A chart's values table writes the unit
+  its values are read in where its format names none (`+10 pts`, `-29 to +58 pts`; it read `+10`, `-29 to +58`).
+  Money keeps `$` on each end.
+- **A cost per reply reads per 1,000 replies on an aspect's page** (per 1,000,000 where that is under a cent), the
+  ruler the scorecard and the written page state it on: `Cost per 1,000 replies $20`, never `$0.020` beside `$20`.
+  The scoreboard's head reads `Cost per 1,000 replies`, and a bar on the scorecard names its count (`Measuring spend,
+  all roles, per 1,000 replies`).
+
+**Hosts:** a chart's `lo_text` and `hi_text` carry no unit but money's `$` (kit/API.md), so the shipped `kit.js`
+joins a tooltip as `85% (80 to 89)`; a host that prints the ends alone adds the unit after the high end. A pinned
+aspect page or quick line that read a cost per reply reads it per 1,000 replies. The report input now states a
+`share` unit for every unit-less fraction on 0 to 1 and every unit-less boolean that isn't a check, and a measure that
+reaches it through code's readings alone (a measurement's) now carries its declared unit, whatever it is (`share`,
+`usd`, `ms`). A written page renders the report input its snapshot froze, so a
+stored report whose input predates this change prints such a measure as a bare fraction (`0.3`) until the host
+generates the report again; that covers every input frozen over the readings path, whenever it was frozen, not only
+those before 2026-11-09. Generating it again moves the frozen input's digest, for every readings-path measure that
+declares a unit (`usd` and `ms` too, not only a share), so its snapshot id changes, and a scheduled mint of its
+writer case is refused as moved evidence until the host retires the case and mints it again.
+
+### evals: every figure reads at its measure's precision, in one form across the campaign (number forms C5b)
+
+The number policy (`packages/evals/docs/design.md`, The number policy; owner rulings of 2026-11-08 and 2026-11-09)
+replaces the number forms the entry "a chart says what it compares" lists below. Every page's figures move once.
+
+**Changed:**
+- **One precision per measure, on every page of a campaign.** A measure reads at one count of decimals on the written
+  page, the code page and every aspect page, set by the narrowest 95% interval among the figures a reader compares:
+  each arm's level and each comparison's change. A pooled figure (the code page's campaign-wide pass rate) prints at
+  that form and never sets it. Kairo reads `85%` and `-8 pts`, `-13 to -2` (it read `85.3%` and `-7.6`,
+  `-12.9 to -1.8`); the scaled campaign's scorecard reads `21% · 23% · +2 pts` (it read `20.5% · 23.0% · +2.5 pts`).
+  A rate or a change in points never goes past one decimal, except an end that would round onto zero, 0% or 100%,
+  which takes just enough digits to stay off it (`-15 to -0.03 pts`; `99.7%`, never `100%`). A judge's preference
+  share keeps off even the same way: `49.7%`, never `50%`.
+- **One interval form, `low to high`, the unit written once,** on every page and in `interval_text` (`0.05 to 0.45`,
+  where it wrote `[0.05, 0.45]`), so the code page's `$75 [$73, $77]` reads `$75`, `$73 to $77`. The kit
+  (`kit.js` and its `docs/eval-report-kit/kit/` copy) and the static page join a tooltip's interval the same way: a
+  forest's reads `-8 (-13 to -2)` (was `-8 [-13, -2]`), a line point's `85% (80 to 89%)` (was `85% (80%–89%)`),
+  money `$1.89 ($1.76 to $2.03)`.
+- **A heading states what a family's intervals hold at together:** a chart's head `95% intervals (adjusted for 16
+  comparisons)`, a column's `95% interval (adjusted for 16 comparisons)`, where both read `99.7% (95% across 16
+  comparisons)`. The per-interval level (`99.69%`) is printed in Method and the glossary, as stored, and
+  `{family.level}` is the key that cites it. `weakest.interval` reads `the 95% interval, adjusted for 16 comparisons`,
+  or `the 95% interval` where nothing is adjusted (it read `the multiplicity-corrected 99.69% interval` and `the plain
+  95% interval, uncorrected`).
+- **Figures that are not measurements keep fixed forms:** a p-value `< 0.001`, else three decimals below 0.1 and two
+  at or above (`0.005`, `0.11`, `0.50`, `1.00`; it read `< 0.000001`, `0.4996`, `1`); an effect size or a
+  correlation two decimals (`0.08`, `0.12`; it read `0.08475`, `0.1228`); a declared margin as declared (`-15 pts`,
+  it read `-15.0 pts`); an exact zero whole, with its unit (`0 notices`).
+- **Rung 5** reads a rate in its readings table as a percent with its counts (`43% (3 of 7)`, it read `0.43`) and a
+  judged score to a tenth at seven cases (`4.7`, where it read two decimals). Its judge is recorded again over the new pages
+  (112 calls, $0.64); the writer's turns replay unchanged.
+
+**Added:**
+- The figure-key filter `signed`. A criterion's `gap` and `weakest.margin` print their bare magnitude by default, at
+  the measure's change precision, since the prose around them says the direction (`inside the margin`); `|signed`
+  prints the `+`, in any unit.
+- A settle row's `level` and the `weakest.interval` key resolve to their level as a number (the analyst serves `value`
+  0.95, `kind` `number`, `scale` `share`), and `reads` says the words (`95% one-sided`).
+- `CostQualityPoint.pass_rate_text` and `pass_rate_interval_text`: a cost and quality chart's pass rate and its
+  interval as the page decided them, bare (the column holds the `%`), and left out where no page decided them.
+- Every chart the package emits names its format's digits, its measure's decimals (`pct:0`, `+num:1`, `ms:0`; it
+  named `pct`, `+num:0`, `ms`). A gate matrix's and a lattice's cells carry `cost_text` (`$4.60 per 1,000
+  conversations`, where the kit drew `$5`), and rung 5's preference strip carries its shares' text and names `pct:0`.
+
+**Hosts:** every page's text moves once. A host pinning a rendered page, its text, a served chart's JSON (a tooltip,
+a cost, a `fmt`) or rung 5's CLI updates its match once, and Discodon re-shoots its pages once, on its first pin past
+this entry. A host that re-renders the package's chart JSON with the shipped `kit.js` prints the package's text and
+joins; with an older copy it prints each value's text but joins a tooltip's interval the old way, so take the new
+kit. A host's own chart, without text fields, draws its values as before and its tooltips in the new join, each end
+in its `fmt` (`80% to 89%`). A host that read a settle row's `level` or `weakest.interval` words from `value` reads
+them from `reads`. The new fields are additive. One input changes: a host measure on 0 to 1 that declares no unit
+and no grade enters the report input with the new unit `share` (it held none), so every page reads it as a rate
+(`78%`, never `0.78`). That moves the input's digest for such a campaign: its snapshot id changes, and a scheduled
+mint of its writer case is refused as moved evidence until the host retires the case and mints it again. A host
+writing its own report input declares a fraction with `unit: "share"`. Nothing else stored changes: a stored report
+renders in the new forms, one citing `weakest.interval` with the new words, and one citing a gap or `weakest.margin`
+with no `+`, as before.
+
+### evals: a table's labels read in one register, a stratum by one name, and a chart's labels clear its lines (number forms C5c)
+
+**Changed:**
+- A judged dimension's row on a table (contrasts, statistics, by stratum, all cases, guardrails, bars, unasked
+  readings) prints starting with a capital, as a measure's does: `Outcome (judged, 1–5)`, where it read
+  `outcome (judged, 1–5)`. Only the printed label moves: the cell's value, `Result.contrasts()` and its `reading`
+  lookup, and every sentence keep `outcome (judged)`.
+- A stratum with no declared name prints as its id humanized (`edge case` for `edge_case`) in a By stratum header,
+  a case's Stratum cell, the thin-stratum note and a summary's stratum lines, where it printed the id.
+  `Result.strata()` still keys each stratum by its declared name, else its id.
+- A chart's vertical lines (zero line, reference line, axis, grid) stop short of its head, a reference label, a
+  group's heading and a bar's note, and a scatter's reference lines stop short of a point's label, in the kit and on
+  the static page; a group heading wider than a phone's chart wraps. A dot strip's interval is drawn in its arm's
+  colour at full strength (3:1, where it was 1.6:1). A table holds an interval's ends on one line.
+
+**Hosts:** a host matching a rendered page's judged row or stratum header updates the match once; a host keying on
+`Result.strata()`, `Result.contrasts()` or a table's cell values changes nothing. The kit script a default-mode page
+inlines moved again, so a host allowing it by a CSP hash recomputes the hash. `scripts/check.py` now fails a label a
+line crosses, a chart's line mark under 3:1 and an interval broken across lines.
+
+### evals: one module decides every figure's form (number forms C1 to C3)
+
+**Changed:**
+- `analysis/report/forms.py` (`PageForms`, internal to the report package, not host contract) now decides every
+  figure the written page, the code page, the charts, the tables and the off-page surfaces print, each keyed by its
+  measure. The move reproduces today's text: every golden and rung 5's pins are byte-identical.
+- A figure key's criterion value, low/high and gap, `weakest.value`, `weakest.margin` and a settle `distance` now
+  resolve at their measure's decimals (gap, margin and distance at its change set), so they read as the table does.
+  On a rate nothing moves; on another measure with contrasts the decimals can (s2's turn time: 673.3 to 673 ms).
+
+**Added:**
+- Every value a written page's chart draws reaches the kit as decided text: a row, point or cell carries `value_text`,
+  `lo_text` and `hi_text` (and, by kind, `values_text`, `x_text`, `y_text`, `from_text`, `to_text`, `latency_text`,
+  `low_text`, `high_text`, `detail_text`, `matrix_text`; a reference or a stacked bar's segment `value_text`).
+  `kit.js` and the static page print it as it is wherever they would format the value, and the chart's values table
+  prints the same text (kit/API.md). Each value's text is the one its chart drew before; how an interval's ends are
+  joined, and a matrix's costs, move with the number policy (number forms C5b, above). A heatmap cell's count still
+  draws by `n_fmt`, a count's fixed form.
+- A table cell carries the text its page decided for its number, `TableCell.value_text`: set on every rate and money
+  cell a table's column rule spells, and on an aspect page's level and change cells, and printed by every serializer
+  in place of spelling `value`. A copy that changes what the number is spelled from (`value`, `unit`, `decimals`,
+  `signed`, `level`, `per_thousand`) drops it. The page's ledger holds each such cell under the measure it states a
+  figure of, on the written and the aspect pages. The texts are what each cell prints today, so no page's text moves.
+
+**Hosts:** a report's table cells, dumped as JSON, gain `value_text` where the page decided the number's text, and
+leave it out elsewhere, as before; a host that prints a cell itself may print `value_text` where it is set. A report block
+stored with it is refused by an earlier 3tears-evals, which knows no such field. A stored report that cites one of
+those criterion, weakest or settle keys on a non-rate measure renders
+it at the new decimals; no other text changes. A written page's `data-chart` JSON, and a JSON report's chart blocks,
+gain the additive text fields above: a host that re-renders the package's chart JSON with the shipped kit prints the
+package's text for every value, and a host-authored chart without them draws as before, each value formatted by its
+`fmt`. Tick labels are still the kit's. Nothing to change in host code.
+
+### evals: a provider key whose credit is spent fails over to the next key the environment names
+
+**Added:**
+- `<VARIABLE>_FALLBACKS` (`ANTHROPIC_API_KEY_FALLBACKS=ANTHROPIC_API_KEY_LUMENS,ANTHROPIC_API_KEY_3`) names, in order,
+  the variables a `Model` reading its provider's key from the environment tries when a key's credit is spent
+  (Anthropic's 400 credit-balance notice, or a 402). The same request is resent on the next key, which the refused
+  call left unbilled. A spent key is never sent again in the process by any model, two calls refused at once move to
+  the same next key, and each switch is logged once at WARNING naming the two variables, never a key. With every key
+  spent, the account failure stands as before, naming every variable tried. A name the environment does not set, the
+  primary itself or a name given twice is refused when the model is built. No other failure fails over, and a key
+  passed as `api_key=` never does. A tool turn's `resent_after` lists each resend on the next key.
+- `ProviderError.credit_spent` says whether an answer is that refusal.
+- `providers.wire.fallback_key_variables(variable)` is the one reader of a `_FALLBACKS` list, for the client and
+  for a script checking it before launch.
+- The writer acceptance script refuses, through that reader, a `_FALLBACKS` list the client would refuse before
+  launch, prints how many fallbacks each key has, and builds its judge on the environment's key, so the judge fails
+  over too.
+
+**Hosts:** opt-in. Nothing changes unless a `_FALLBACKS` variable is set. No key or variable name enters a recording,
+a completion or a stored document.
+
+### evals: the engine exports a campaign for the mint, for every host
+
+**Added:**
+- `ops.campaign_export(host, scope_id, campaign_id, built_by=...)` returns a `CampaignExport`: the campaign's closure
+  (every stored document its links reach, verbatim, in `(doc_type, id)` order), the host's profile declaration
+  (`host_declarations_digest` and `built_by`) and a manifest (what reasoned on the campaign, every document type
+  counted, the links the scope does not hold). `CampaignExport.files()` gives the three files the mint reads. The
+  closure reads results' judge identities with the package's `judge_config_of` and computes the digest with
+  `host_declarations_digest`, so no host keeps a copy of either.
+- `python -m threetears.evals.harness export --host module:callable --scope SCOPE --campaign ID --out DIR` writes
+  `documents.json`, `profile.json` and `manifest.json`, which `mint` reads. Exits 0, 2 when refused, 3 when the
+  factory raises.
+- The `campaign_export` action (read): the same export for the caller's scope, paged by whole documents for a large
+  closure. Joined, the pages' documents are the single call's.
+- The action is bounded: it counts each kept document as canonical JSON as it gathers the closure, reads documents by
+  id or by field no more than 16 whole at a time (ids first, then the documents in chunks), and refuses the moment the
+  total passes `OpsHost.campaign_export_max_bytes` (default 16,000,000), naming the bytes reached and the ceiling, with
+  the command line and `campaign_export` as the remedy. Three small types (rubric dims, launches, judge profiles) are
+  read whole, one read each, and only the documents kept from them are counted. A refused call holds at most the
+  ceiling and one chunk, besides those three whole-type reads.
+  `campaign_export(..., max_bytes=...)` takes the same ceiling; the function and the command line hold none unless one
+  is passed. `OpsHost.reading(..., campaign_export_max_bytes=...)` sets it on a reading host.
+- `EvalStorage.stored_documents` reads the engine's documents of one type as stored, never hydrated, the store's
+  `exclude` passed through.
+
+**Fixed:**
+- The mint refused an export of a quick eval's campaign: its runs name no template, and the mint required one.
+  It now requires a template only where a run names one.
+- The export refused every campaign whose runs a configured judge scored, for "not a recorded judge identity" on a
+  run: it read the run's `judge_config_ids`, the bare config ids the launch commits to, as a result's
+  `<config id>@<sha12>`. It now reads each document in its own type's form and refuses a value in the other's, naming
+  the form that type records.
+
+**Hosts:** `OpsHost.campaign_export_max_bytes` (new, default 16,000,000) counts canonical JSON, not heap: a decoded
+document takes 3 to 5 times its JSON, so a host serving actions sets it at a tenth of its serving process's headroom or
+less. A closure past it is refused by the action and exported with the command line instead. A host that exported its campaigns with its own closure exports with the
+package's: the command, the action, or `campaign_export`. Its manifest names a report document
+`report <id>: <campaign name>`, never by its headline. A case re-minted from a new export records that name in `minted`, so its file differs from one minted from
+an export that named the headline; its snapshot is the same. `ReasonedOn` is defined beside the export now and is
+still imported from `threetears.evals.harness`. A campaign export refused for "not a recorded judge identity" on a run
+is re-run unchanged; nothing stored needs repair.
+
+### evals: a chart says what it compares, and one value reads in one form on every surface
+
+The owner's presentation rulings of 2026-11-08 are stated in `packages/evals/docs/design.md` (Presentation rulings).
+
+**Changed:**
+- A change chart names its zero as the control it is measured from (`no change vs P · September`), carries the
+  control's level (in the zero label, a group's head or the row's note) and says which way is better
+  (`← worse · better →`; cost reads better to the left). The margin band is named.
+- Changes per stratum, task, lever, comparison and configuration draw as dots with their intervals; a row with no
+  interval is an open mark. Bars are kept for magnitudes from zero, and a log axis draws dots, labelled where its scale
+  puts its ticks.
+- No label is cut: bars, forests, dot strips, range bars, line-chart end labels and the static matrix wrap a long
+  label, and a bar's note is printed whole, wrapped to two lines, where it once fell back to the chart's rounded value
+  (`-8` for `-7.6 pts worse`). Every scatter mark is named; configurations the input does not order are not joined.
+- An outcome bar draws each arm's trials as shares of 100%, its note the share passed and its counts
+  (`20% passed · 167 of 836`), titled `Outcomes, share of each arm's trials`. A code page's chart titles say what
+  they compare and in what unit.
+- Number forms: a judged score reads at two decimals with its scale (`(1–5)`); a change in points at one decimal,
+  signed, a zero as `0.0 pts`; any other measured figure at two significant figures of its set's least figure. A set
+  (an interval's ends, a column, an axis, a chart's labels) reads at one precision (`[-27.9, 100.0] pts`, where it read
+  `100`), on the scorecard as in the Full results and the keys the prose cites; a figure under a millionth reads
+  `< 0.000001`, and float residue no longer spells a column to eighteen places. A level under 100 never reads `100%`.
+- A choice's pairs table signs every change (`+15.0`), as the rest of the page does.
+- A count a written report spells in words opens its sentence with a capital ("Ten conversations…"). A model name or
+  arm id is held whole in running text, never broken at its hyphen. A Method entry's caveat line and the report's
+  "Written by" line set apart from the paragraph above them.
+- The writer-eval Scorecard opens on the candidate's share of the judge's preference against even (50%), and its
+  table prints both shares, which sum to 100; the Difference column is gone.
+- `evals quick`'s exit line repeats the page's lead, so an interval's ends read at one precision there too
+  (`between 63.3 and 100.0 points worse`).
+
+**Hosts:** a host pinning a rendered page, a page's text or a served chart's JSON updates its match. Chart JSON gains
+`better`, `dots` and `log` on bars, `better` on a forest, `better`, `zero_label` and a row's `short_label` and `note`
+on a dot interval (whose `hollow` row is also a change with no interval), and `tag` on a scatter point; an outcome bar's values are percent
+shares (`fmt` `pct`, domain 0 to 100) where they were trial counts. Every page's number forms move as above, and the
+writer-eval Scorecard has no Difference column. Nothing stored changes.
+
+### evals: a report page reads quiet: five type sizes, readable contrast, ruled tables and one colour per meaning
+
+**Changed:**
+- Text reads at 4.5:1 or more on every ground in both themes, and an axis and an arm's colour at 3:1. The quiet text
+  colour (`--muted`) is darker in light (`#5f6774`) and a step lighter in dark (`#8a93a1`); `scripts/check.py` computes
+  contrast in both themes and fails a page under it.
+- Five type sizes, 12, 14, 16, 20 and 28 px, and nothing between. A code page's title and a written headline over 90
+  characters set at 20 px; a short headline keeps 28.
+- Tables are ruled, never boxed: no frame border, no header fill, a rule under the header, headers in `--ink-2` at the
+  table's size and weight 600 (they were small capitals in the faint text colour). A table sits on its page's ground,
+  not a white panel. A header term's dotted underline marks its first header on the page; later ones keep the link.
+- Arms take blue, magenta, teal, indigo and violet, none within 40 degrees of hue of pass, warn or fail; an outcome
+  bar draws "passed" in ink, so green on a page is a status pill alone. A tag's letter and a difference cell's figure
+  take whichever ink reads best on their own fill.
+- A verdict line sets its decisions in bold and its figures and guardrails regular, and links the undecided reading
+  once, inline (after the line where it cannot stand whole in one piece of it).
+- A scatter's y title sits above the plot, never under a mark.
+
+**Hosts:** every page's colours move: the arm palette, "passed" drawn in `--ink-2`, table headers in `--ink-2` at
+weight 600, and the `--host-color-muted` default (`#5f6774` light, `#8a93a1` dark) for a host that sets none. The kit
+declares two new tokens, `--ground` (the ground a table sits on) and `--on-accent` (text on the accent); a host sets
+neither. `DisclosureBlock.emphasis` (new, default empty) names the phrases of a line's text to set in bold; a lead a
+caller supplies to `build_campaign_report(lead=...)` renders without bold unless it sets them, and one that names a
+phrase its text does not say, says out of order, or cuts a code span is refused.
+
+### evals: a definition reset carries live cases the corpus does not carry into the new revision
+
+**Added:**
+- `run.reset_definitions(..., carry_live_cases=True)`, and `carry_live_cases` on the `definitions_reset` action. A
+  judge template, or a template the corpus gives cases, whose revision holds live cases the corpus does not carry
+  (cases frozen from people's ratings, an operator's own) was reset only under `overwrite_customized`, which left them
+  out of the new revision. Under the new flag the new revision holds the corpus's cases written afresh and a copy of
+  each such case, its content, payload, labels, stratum and name unchanged. The old revision is archived as before,
+  and the corpus's case sets are minted over the new one. The template then reads `current`, and the same reset again
+  writes nothing. Results of the two revisions still never pool.
+- `EvalTestCase.carried_from` names the case a copy was carried from (durable v16.9, additive).
+- `DefinitionReset.carried` maps each source case to its copy. `DefinitionReset.stranded_case_sets` names, one line
+  each, every case set outside the corpus whose newest version lists cases of a revision the reset archived: it is
+  not minted again and still points there.
+
+**Changed:**
+- The refusal for live cases the corpus does not carry names `carry_live_cases` as the remedy first (it keeps them
+  all) and `overwrite_customized` second (it leaves them on the archived revision).
+- Under `carry_live_cases` alone, a corpus case of such a template reading `unknown` is refused: a carried case may be
+  an unrecorded seeding of it. Supplied `seeded_digests` answer it, or `overwrite_customized`.
+- A judge-case freeze names a case a reset carried into its template, by the identity it derives a case's id from
+  (source, dimension and content), as the stored case.
+
+**Hosts:** for every caller, with or without the flag: a reset of any template now fills
+`DefinitionReset.stranded_case_sets`, and `render()` prints its lines before the drift summary. The refusal for live
+cases the corpus does not carry has a new reason and remedy text. A host matching either text must update the match.
+A corpus case's own predecessor that the drift read finds (a case the host's seed stored under its name, recording no
+seed) is no longer counted among those live cases: it is that case's old copy, refused as `unknown` unless
+`overwrite_customized` writes over it. Only under `carry_live_cases=True`: the cases are copied into the new revision,
+and `carried` is filled. The flag never accepts a `customized` or `unknown` definition; that still needs
+`overwrite_customized`, and the two together write the corpus over it and carry the cases. A freeze of the same labels,
+results or authored cases into the new revision (`freeze_judge_cases`, `judge_cases_freeze`) names the copy rather
+than storing the case again, so a repeated calibration freeze after a carry adds nothing. Re-mint each case set the
+result names in `stranded_case_sets` over the copies (`carried` maps old ids to new) if it should follow the new
+revision. During a rolling deploy, a pod before v16.9 reads a carried copy and keeps its `carried_from` on write; it
+does not know the copy's identity, so a freeze run on such a pod adds the case again beside the copy.
+
+### evals: a report's scales, links, header rows, dashes and appendix read as one page
+
+**Changed:**
+- A glyph scale of levels never runs below zero where its measure cannot: a column of counts that all read 0 is drawn
+  from 0 to 1 (it was -1 to 1), and money floors at $0, its whisker stopped at the track. A difference still reads
+  either side of zero, and so does a level whose own interval reaches below zero: its measure is not declared
+  non-negative (`MetricDescriptor.nonnegative`), which a host's count should declare.
+- A glossary term is never linked inside a measure's or a column's name, in the line under a table or any other line
+  (`ran` in `Turns that ran over budget`); a name that is the term's own words still links it.
+- A header row sets every label from the top. In a frame that scrolls anyway, a long header takes two lines at most
+  (`--head`, the width that does), so it no longer sets the whole row's height by wrapping at the floor.
+- Every arm by measure says why a dash stands where an arm recorded nothing on a figure another arm holds:
+  `— (not recorded)` beside a candidate's `0 items`. A dash where no arm read the figure stays bare.
+- A Method term whose text prints a caveat's own words (`{caveats.latency}`) no longer repeats the caveat's label
+  under them; the review findings left open read at the appendix's type size and measure.
+- Design & provenance's row labels (Test setup's disclosures, Criteria set late's criteria) start with a capital, as
+  every other row label does. A code-only scorecard's column of measured figures (neither a rate nor money) reads at
+  one precision, two significant figures of its smallest figure but zero (`2.7` beside `0`, where it read `2.737`).
+
+**Hosts:** a match on a Test setup or Criteria set late row label, on a scorecard figure's digits, or on an Every arm
+by measure dash must take the new text.
+
+### evals: a report page fits a host's frame first, and says when a table still runs past it
+
+**Changed:**
+- A table cell of words wraps at its spaces, so a table narrows to its frame before it scrolls; the aim is that a
+  code-only scorecard and a written report's tables fit a host's 1104 px frame. A number column, an id, a pill and a
+  hyphenated word outside prose hold their line; inside a frame that scrolls anyway a cell keeps its line. An interval
+  glyph gives way to its column between 4.5em and its full width.
+- A table still wider than its frame fades its right edge, over every cell, headers and highlighted rows included,
+  until it is scrolled to its end; the frame's own scroll drives the fade, with no script.
+- A pinned label the column's floor would set in more than three lines (a long aspect label with no short name) gets
+  the width that sets it in three, up to the cap.
+- A written report's first screen reads at one measure: the masthead, the callouts under it (a draft's line), the
+  headline, the lede and the confidence share the prose column; the cards and tables keep the page's width. The HTML
+  masthead's first line is the campaign's name; the Markdown masthead keeps the kind first.
+- A turned Every arm by measure heads each row with its figure (`<th scope="row">`), so a goal check named there links
+  its Checks entry, a hyphenated check name included. Every measure name a written report prints, in its tables and
+  its charts' titles and series alike, starts with a capital.
+- The nav names an aspect by its declared short name, one line, cut with an ellipsis; its fold keeps the full label.
+  A fold's "·" binds to the words after it. The line under a glyph table names the columns each range is drawn for.
+  The verdict line links no term of art but the undecided reading.
+- `scripts/check.py` renders at 1104 px too, and fails a table that overflows its frame with no cue and a first screen
+  read at more than one measure.
+
+### evals: the writer calibration script rereads its judge's anchor cases to catch a judge change
+
+`writer_calibration.py --reread`, a test-fixture script no host imports, asks one judge the 42 anchor pair cases
+again and compares its verdicts with its own stored read on preference, order consistency and first-slot lean,
+naming a served-model change as the likely cause: it tells a judge or version shift, never whether the judge is right,
+and costs about $0.67 to $1.34 a read at flash's recorded rate.
+
+### evals: the writer gate launches its cases in batches under a rule to stop, and runs under its spend cap
+
+**Added:**
+- Under `stop_when="separated"`, every arm launches `WriterEval(batch_size=...)` cases at a time (4 unless told), in the
+  bet's order, each batch a run of every arm in the one campaign. The pass after each batch asks only the new pairs and
+  keeps the answers it has. The arms stop launching once every candidate's preference separates, or at the last case. At
+  the last case the side-by-side reading equals one batch of every case, and the gated readings do too when every
+  batch run stored a page. `never` launches every case at once, as before.
+- Each candidate settles at its own stop. Its gated readings and guardrails are read once, there, on the cases launched
+  by then, and the page says how many.
+- An improved stop whose guardrails are not shown held goes on to the last case. Its pass says the readings had a second
+  look (`PairwiseStopping.past_the_stop`). Only a template that declares a guardrail reaches this path; the writer
+  template declares none.
+- The spend cap is a budget the run runs under. Each batch reserves its worst case (reports at `budget_usd`, judging and
+  pairs at the judge's floor) against what each part's recorded spend leaves, and its runs run under that reservation.
+  The first batch that does not fit is not launched, and the run stops at the spend cap, saying so once with the spend
+  and the reservation. Only a spend cap that cannot admit the first batch is refused, naming the smallest that would.
+  The engine checks a run's cap between cells, so cells running at the crossing finish past it (#1111).
+- `PairwiseStopping.stopped_on` says why a pass read no further: `separated`, `all_cases` or `spend_cap`.
+- `StoppingRule` records `batch_size` and `order`, the planned cases in the order the bet reads them, so a later read
+  replays that order. A rule stored without one derives it as before.
+- `WriterEval(fewest_cases=...)` takes the fewest side cases the author asks for. A side with fewer runs, and its floor
+  line says it is under them (`resolution_line(fewest=...)`): a disclosure, never a refusal.
+- `summarize_runs` (provisional) reads one arm's batches as one summary. It sums cases, results, spend and ceilings, and
+  refuses runs that differ in template, model, repeats, judge or overlays. A batched arm's summary states its part of
+  the cap as its ceiling.
+- `held_out_batch_name` names a batch's one-launch case set for the held-out set version it is cut from. A second run on
+  the same set reuses that set.
+- `WriterResult.launch_line` and `WriterPairwise.cases_read` are new, as is the pass's `outside_run_ids`.
+
+**Changed:**
+- The promotion read accepts a case run from a batch set only as a case of the held-out set version its name gives, when
+  that version lists every case of the batch. Any other one-launch set is refused as before.
+- The pass accepts an arm under several rigs only when each pair's two runs read one rig.
+- A batch run that stored no page, on either arm or both, stays out of the campaign's gated readings. The pass reads its
+  pairs, a missing page losing its pair or tying it, and a disclosure says so once with the counts.
+- `bet_order` is the package's own shuffle over the seeded generator's bits, the same orders as before, pinned by test,
+  so it no longer rides on `random.shuffle`'s algorithm.
+- The acceptance script's trial writes on Sonnet 5.5 at a $1.50 report budget (a dry run's cap is $30 unless told). It
+  takes `--batch-size`, and a live run under 10 held-out cases runs and says so instead of being refused. The floor line
+  prints once, before anything is bought, dry or live.
+- An unseparated stop says every look was consistent with no preference.
+
+**Hosts:** every entry of `PROMOTIONS.toml` now requires `monthly_envelope_usd`; a host loading that file in its old
+shape must add it. Pass `batch_size` and `fewest_cases` to `WriterEval` as needed. A run that once refused a spend cap
+too small for every case now runs and stops at the spend cap. A stored pass report or stopping rule still reads, every
+new field defaulted.
+
+### evals: a goal check is named by what it tests in every header and lead, its expression in the glossary
+
+**Changed:** every table header, reading row and lead names a goal check by the display name its template declares
+(`EvalTemplate.goal_check_names`), else by what it tests, read off its expression alone: `state.refund.amount <= ...`
+is `Refund amount check` (and so is `state.order.total > 0 and state.refund.amount <= ...`: a guarded check is
+named by what its guard lets through), `call_count("discord.send_message") >= 1 or call_count("discord.reply") >= 1`
+is `Send message or reply check`, `field_accuracy >= 0.92` is `Field accuracy check`. A check reading two subjects
+joins them by its `and` or `or`; one reading more (the production `call_count(...) >= 1 or ...` over three calls),
+or naming nothing a reader can read, is `Goal check`. A name is built from identifiers only: a call's action is read
+from a literal that is a dotted name, never from other text, so no literal's markup reaches a page. An expression
+keeps its name on every aspect and run where none of the checks named beside it would share that name; two that would
+are numbered (`Ticket status check 1`, `Ticket status check 2`), so a sibling check added in a later run can move a
+number. A path under a case parameter (`variation.expected`) is what a check holds the end state to, not what it
+tests, so `variation.expected == state.answer` is `Answer check`, as its mirror is; the action builtins and roots are
+read from the goal grammar's own sets (`ACTION_BUILTINS`, `PATH_ROOTS`, `WORLD_ROOT`, new in
+`threetears.evals.schema.goal_grammar`). A trial's failed-check cell says `check:` only where a name does not say it
+is one. A production campaign headed a table, and led its page, with a four-line `call_count(...) >= 1 or ...`. The
+page's glossary defines each check's name by its expression, whole, on one line, once ("Goal check: The goal check
+`( call_count(...) >= 1 or ... )`, which code runs on every trial."), and says which aspect a name holds on where one
+name stands for different expressions; a check's entry has an id of its own (`g-check-...`), which its Markdown row
+carries too. A check's column header links its own row, the one link that lands inside the closed Glossary, and every
+link to a check carries one hover
+("Code runs this goal check on every trial; the glossary states it in full."), never the host's text. The Markdown
+glossary sets an expression in a span no backtick inside it can close. The Design & provenance `Checks` legend this
+replaces is gone. A column whose aspects name one check apart is headed by each name (`Total right / Sum right
+(%)`); two columns whose checks share a name each name their aspects. A trial's failed-check cell, an unproven check's
+line and a floor's sentence name the check the same way; a trial's record prints the name beside the expression it
+failed. A report document's own tables, and the evidence record laid out after them, name a check the same way
+(`input_check_name`, new, provisional), the record through it on the report input the bundle gives, so both name over
+one set of checks, and the document's appendix lists its `Checks` after Method, each name defined by its expression
+once, its headers linking there; the report writer's recorded judge was recorded again over the named pages, and the
+text it reads (`doc_page_text`) carries no Checks list. This reverses the earlier rule that an undeclared check is
+printed by its whole expression (owner ruling, 2026-11-07).
+
+**Hosts:** `AnalysisContextBundle.named_checks()` (new) gives every check's name by expression, the checks a floor or
+a bar names included, and `AnalysisContextBundle.check_name` returns a name for every goal check, declared or not,
+where it returned None for an undeclared one. `style.check_names`, `style.check_definition`, `style.GOAL_CHECK` and
+`style.CHECK_LINK_TITLE` are new. `measure_name(goal_check_key)` with no `declared` returns the check's subject name,
+where it returned the expression as code. `Report.glossary`, `Report.check_glossary` and their `CampaignReport` twins
+(new) are what the serializers print, and `DocPage.checks` (new, `DocCheck`) what a report document's page lists.
+A host pinning a header, a lead or the provenance legend that printed a check's expression updates its match.
+Nothing stored changes: the campaign's readings keep a check's expression in their frozen words, and the writer's
+report input keeps its label.
+
+### evals: the report page fits a host's frame without crushing its key column
+
+**Fixed:** a table's pinned key column holds a floor (8rem, or 30% of the frame) as well as its cap, and wraps at its
+words, never inside one: production's 0.93 frame drew `Rea/din/g`, `Q/u/e/s/ti/o/n` and a code-only scorecard's aspect
+name one letter a line, at 1104 px as well as 688, while the table measured as fitting. Only an id-like cell (an
+expression, a digest, a run longer than the floor holds) is classed `unbroken` and breaks anywhere; the second pinned
+column of a two-key table pins where the first ends and has a floor of its own. Each table frame isolates its cells'
+stacking, so the sticky section links paint over a pinned cell scrolled beneath them. Under 700 px the headings are a
+step smaller and tighter (a 148-character headline takes four lines at 688 px, where it took six). `scripts/check.py`
+fails a pinned cell under its floor, a word in one broken across lines (but an id-like cell's) and a pinned cell
+painted over the nav. A per-reply cost's name on a code page reads `Production cost, per 1,000 replies`, as a report
+document's page spells it, where it read `Production cost ($/1,000 replies)`. A gate matrix's or options table's pill
+for an undecided reading reads `Cannot tell apart`; a chart's note and the corrected-comparisons verdict on a written
+page still read `not separated` until rung 5's judge is recorded again, since the text it replays against prints both.
+
+**Hosts:** `CampaignLine.outcome_short` reads `Cannot tell apart` where no candidate is shown better, some reading is
+undecided and none is shown worse (it read `No candidate improved`, which a reader took for a decided no);
+`CampaignLine.verdict_short` read off a draft report is marked `Draft: ` as its headline is (`Draft: Keep <arm>`). A
+host pinning either, a scorecard's money header or a reading name updates its match; see MIGRATIONS. Nothing stored
+changes.
+
+### evals: each name once, each term defined, each heading once, one order on every replay
+
+**Changed:** a code page, an aspect page and a report document's page head with the campaign's name (its `<title>`
+too); what the page compares and on what is the line under the question (`v1 vs v2 · billing, tone`). A listing
+title (`CampaignLine.title`, `AnalysisLine.title`) names each part once: no arm the name already names, no measure
+that is the name (`triage`, never `triage · classify (triage)`). An aspect the quick path labelled `classify` or
+`score` is called by the campaign's name wherever a page names it, unless the name is cut at its cap or asks a
+question; a fold named as its page heads `Evidence`, and a fold heads its methods `Aspect methods`, so no heading
+prints twice. The criteria-set-late line names what was set late (`The aspect, control and margin on X were set
+after the results there existed, …`) and is the one flagged caveat; untimed results, latency, request settings and
+an uncalibrated judge are plain lines under it; criteria set at one time on the same aspects share one row. No prose
+carries `key=value`, an execution-mode id or a bundle digest: the judge's settings read as words, judges that read
+alike are one line naming their dimensions, the settings an arm left unchecked are listed once for the arms they
+cover (`every arm left unchecked whether …`) and each arm's own moves follow (`arm v2 set model to …`), the latency
+detail drops the execution mode's id, Methods carries an `Evidence` row and a `Fingerprint` cell where it printed
+`Bundle v2:…, shape 65`, and no cell prints `grader(…)` or a tool name (`(read it with result_get)` goes). A lever
+run at one level reads `One model ran, so this page says nothing of changing the model.` where it read `unswept`.
+Every glossary term a page defines is linked where the page first uses it in prose; the first screen's
+judge line links `judged score`, which states the 1 to 5 scale once; the glossary defines `cost per 1,000 replies`
+and `measuring spend, all roles`, as the headers name them. A table in a section of its own name is titled by the
+section's heading alone. A case row's trial ids read in their own order (`T7 T8 T9`), its marks repeat by repeat with
+ties in id order. A host's world state in what a case asked prints as a count (`World state: 2 parts (music,
+discord)`) and a fold titled by the case, never open JSON. A report document's masthead dates `Run 14 Mar 2026` and
+names an aspect once; an editor's finding prints a figure key as its value, a key that names no figure here in
+words, and a claim's id as `claim 2`; the text the editor and the judge read keeps the masthead and the findings as
+stored, so recorded reviews replay. A settle table's `Settles` cell reads `today's estimate clears the line`, never
+the enum's word. A measurement's fold opens on its pass rate as a count, never a bare `measured`.
+
+**Hosts:** a campaign listing lists a report document by its own headline, a draft's marked `Draft: …`;
+`CampaignLine.question_short` holds the question whole or nothing, never a cut (read `question` where it is empty),
+and `question_short()` is removed from `threetears.evals.ops.analysis`. `TrialBlock.first_input` no longer carries
+a host's world state: it is `TrialBlock.world`, its parts' names `world_parts` (both new). Additive:
+`CampaignAspectFold.name` and `heading`, `DocFinding.words` and `said`. A host pinning a report's first line, a
+listing title, the late line's words, a judge's methods line, the Methods `Bundle` row, a fold's heading or a
+rendered masthead date updates its match; see MIGRATIONS. Nothing stored changes.
+
+### evals: a column's percentages read whole, one amount reads one way on a page, and undecided arms share one clause
+
+**Changed:** a table's column of percentages reads in whole percents (`60%`, `63%`), one decimal for the whole column
+only where whole percents would print two of its values or an interval's ends alike, or a value at a half cannot
+decide its whole percent (`87.5%`); an exact zero reads `0%`, so `0.0%` and `0%` never stand on one page; a confidence
+level keeps its digits (`99.69%`), and a table an analysis computes (compare, settle, levers) prints each figure as its
+key reads it. `spell_dollars` and `dollars_text` spell an amount alone in the money form, two significant figures and
+cents from ten cents up (`$0.020`, which read `$0.0200`), so a written page's byline reads as its table does. An
+aspect's line names its undecided arms in one clause (`the evidence cannot tell v2, v3 or v4 apart from production`),
+then its decided ones. Money from $1 to under $10 reads in cents, total or rate (`$1.90`, never `$1.9`).
+
+**Hosts:** a host calling `dollars_text` reads amounts under ten cents to two significant figures (`$0.012`, which
+read `$0.0123`). A percent `TableCell` may now carry `decimals` (0 or 1), its column's precision; `even_precision`
+gains `percents=`; `percent_columns`, `percent_places`, `percent_at` and `respell_percents` are new.
+
+### evals: money reads two significant figures per amount, and an undecided reading says "cannot tell apart" everywhere
+
+**Changed:** owner rulings Q2 and Q3 (2026-11-07). A chart's note, a Change table, the corrected-comparisons verdict,
+the writer eval's side-by-side table, the promotion readout and its sentence say the glossary's `cannot tell apart`
+(a sentence: `the evidence cannot tell lead-first and shipped apart`), never `not separated`; a stored reason keeps its
+stored words and a page rewords it. Money reads by one count of significant figures per set, not one count of decimals
+(this replaces the 2026-10-27 reading of #993): each amount to two (`$0.0080` beside `$0.11`, never `$0.1100`; `$3.48`,
+never `$3.477`); a total to cents whatever its size (`$1,208.00`, which read `$1,208`); a rate to its two figures at
+every magnitude, whole dollars from $10 (`$75 [$73, $77]`, never `$74.89`) and rounded into the dollars from $100
+(`$120` for $123); a third figure only for an interval whose two ends would read alike, for that
+interval alone, and for a cost per 1,000 where two would leave the month printed beside it more than half a percent
+off (`$0.302 per 1,000 calls` beside `$1,208.00 a month`). A values table never pads money. A forest's values table
+reads each figure at its unit's precision (`-3.0 | -5.8 to +1.1`, which read `-3.010 | -5.815 to +1.136`). A bars
+table's money interval reads in the bar's form (`$0.020 | [$0.019, $0.021]`, which read `[$0.01858, $0.02142]`).
+Rung 5's judge was recorded again over the pages as they now print.
+
+**Hosts:** a page's money and its undecided reading read as above; a host matching `not separated`, `Not separated`
+or a padded amount updates its match. `money_form` lost `intervals=` and gained `rate=` and `reconciles=`;
+`money_ruler` lost `intervals=` and gained `rate=` and `reconciles=`; `MoneyForm` gained `figures`, `at_most`, `rate`,
+`reconciles`, `places`, `places_of` and `spell_ends`, and its `decimals` is now the set's largest amount's (what a chart's
+ticks are written to); `money_columns` gained `reconciles=`. A report JSON's money cell carries the
+`decimals` its own figures need, negative where a rate rounds into the dollars (`-1` for `$120`). Nothing stored
+changes shape.
+
+### evals: figures read in one money form at one precision, and charts read cold
+
+**Changed:** money reads one form per figure type at two significant figures (`money_form`, `money_ruler`; owner
+defaults Q3 and Q4 of 2026-11-07). The per-1,000 mark (`$4.13/1000`) is retired: money per reply reads per 1,000
+replies with the count in its header or axis (`Production cost ($/1,000 replies)`, `Cost per 1,000 replies ($)`), the
+scorecard's money columns included; a total reads plain dollars (`Test cost | v1 $0.0041; v2 $0.0063`, which read
+`$4.13/1000`), cents from a dollar up and whole dollars from $10 (`$1,208`), as before. A set takes one decimal more only where two figures would print an
+interval's ends alike (`$0.045 [$0.045, $0.045]` reads `$0.0451 [$0.0448, $0.0453]`). A money standard error reads in dollars to its own two significant figures
+(`$0.046 ± $0.0074`, which read `± 0.007414`). A rate other than the pass rate (an accuracy, a classifier's
+precision) reads in percent beside it with its count (`90 (81 of 90 trials, 30 cases)` under `Accuracy (%)`, which read
+`0.9`). The line under a table of interval glyphs states the data's own ends in the cells' form, a rate's within 0 to
+100 and every span with its unit (`Each column drawn from -1.5 to 25.9 pts and from $0.031 to $0.10`, which read
+`-2.835 to 27.26` and `$0.00002043 to $0.00002371`); each glyph's title reads as its cells do, a score's or a count's ends read to two
+significant figures (`-0.31 to 0.12`), and a glyph under a margin runs its track past the margin's ends and ticks
+them beside its zero tick. A forest's end label is its note, wrapped where it does not fit, never the axis's coarser
+number. A change chart against the control names its zero line with
+the control (`P · September`, the kit data's new `zero_label` on `forest`, `bars` and `diverging_bars`). A campaign's cost/quality scatter draws each arm's two
+intervals as whiskers (the kit's new `x_lo`, `x_hi`, `y_lo`, `y_hi` and the scatter's `level`) and sets both axes to
+the data, its ticks in the chart's money form. One arm carries one tag and one colour on the code page, every aspect's
+page and the report document's page: the campaign's declared arms first (`campaign_arm_tags` takes `arms` and
+`label_of`), the order the report input lists them in. The quick print states rates in percent with their trials
+(`Accuracy: 90%, 81 of 90 trials`, `precision 100% (15 of 15 trials over 5 cases, [43.8%, 100%])`, never `mean 0.9` or
+`CI 0.4377-1`), names the failed trials it counts (`top misses (5 of 28 failed trials)`), names the judge's labels sheet
+by its file name, never its path, and spells each arm's total spend as the page's test cost.
+
+**Hosts:** a reader of a host's code page, aspect page and quick print sees every amount above in its new form, and no
+`/1000` anywhere a page writes; a host matching `$…/1000`, `mean 0.…` or `top misses (n of m)` in a page or a print
+updates its match. The report JSON's money cells never carry `per_thousand` (the entries above remove it, with the
+kit's `usdpk` format and the cells' `decimals`, outright). `ChartBlock` gains an optional `level`
+(the cost/quality chart's interval level), and the kit's chart data gains `zero_label` and the scatter points'
+interval ends; nothing stored changes shape. An arm's letter tag and colour now follow the campaign's declared arm
+order on every page, so a page rendered after this change can tag and colour an arm differently from one rendered before
+it (Kairo's `A` and `B` swap on its code page); a host that shows or caches tags (a listing) reads them anew.
+`money_form` lost its `marked=` keyword and gained `intervals=`; `money_columns` lost `marked=`; `money_ruler` gained
+`intervals=`; `campaign_arm_tags` gained `arms=` and `label_of=`. A figure key spelling a cost per reply under a cent
+with `usd` now carries its count (`+$0.49 per 1,000 replies`, which read `+$0.49/1000`). The cost/quality chart's
+values table writes each cost with its dollar sign under `Cost per 1,000 replies`, and the full print
+(`render(full=True)`) writes its figures as the quiet print does.
+
+### evals: the report page fits the host that frames it
+
+**Changed:** every table scrolls inside its own frame with a shadow at an edge while more lies past it and its first
+column sticky, wrapping within a third of the frame (an unbroken expression or model id breaks anywhere rather than run
+over the next column), its headers wrapping, so it reads in a 688 px host frame (the static page too: the stylesheet
+draws the shadow); a chart's values table wraps its cells of words. A table whose row is told apart by two columns
+keeps both in view, the first held at its cap and the second pinned where it ends: By stratum (`Stratum` and `Reading`,
+or `Arm` and `Reading`) and the contrasts over two or more candidates (`Reading` and `Arm`). It declares so on
+`TableBlock.key_columns` (new, `1` or `2`, default `1`), which HTML frames `tbl keys-2`. The To settle table leads with the arm and both counts (`Arm`, `If no difference`, `If as observed`), then
+the aspect, what settling shows and `Why unclear`, which wraps. By stratum states a cell of one case run once as its
+count (`1 case`) and never `1 trials`, and past six strata lays a stratum per row with the arms as columns; where every stratum holds under the cases a stratum needs, one line says so
+(`Every stratum holds 1 to 2 cases; a stratum is read alone from 10 cases.`) and no cell repeats `too few cases to read
+alone`. A written report's page (HTML and Markdown) lays Every arm by measure out the way with fewer columns: a figure per row
+and an arm per column where the arms are fewer than the figures, as Every stratum is (`parts.full_results.laid_out`; the page's text, which the editor and a writer eval's judge read,
+keeps an arm per row, so rung 5's recorded judge replays as recorded); its
+rerun-size (settle) table holds four columns (`Arm`, `Against`, `Settles it 4 runs in 5`, `The same, one-sided`, each
+size with what it counts) and no longer prints the half-the-time sizes, the trial and repeat columns, how often a run
+reads the other side or the note explaining that column (`settle_cases` still carries every figure, citable by key).
+A written report's masthead reads a count of one singular (`vs 1 candidate`, `× 1 repeat`), and its cards wrap with the
+last row stretching, so a short card leaves no empty cell. `docs/eval-report-kit/scripts/check.py` checks 688 px beside
+1200 and 390, and fails a table that scrolls with its first column.
+
+**Hosts:** the page reads seven tokens and declares none: `--host-font-body`, `--host-font-mono`, `--host-color-text`,
+`--host-color-muted`, `--host-color-surface`, `--host-color-link` and `--host-color-accent`, each with the page's own
+value (light and dark) as its fallback, so a host's value wins in either theme; secondary text, rules, the sunken tint
+and the accent's wash mix from them by `color-mix`, and the arm, outcome, status and scale colours stay the page's.
+`--host-accent` is retired: a host that set it sets `--host-color-accent`. The page opens with exactly one
+`<html lang="en">` tag, right after the doctype, which a host rewrites to stamp `data-theme` (which wins over the
+reader's colour scheme) and an inline `style` with its tokens. The fonts are no longer fetched: the three Google Fonts
+links are gone, the faces are IBM Plex where installed, then the system's, each stack ending in a generic family, so a
+policy needs no `style-src`/`font-src` for the Google hosts. A host matching `Needed, one-sided`, `A fresh run reads
+the other side` or the To settle column order updates its match. `docs/adopting-a-host.md` (Fitting the report page to
+the host) states the contract. Nothing stored changes.
+
+### evals: one result, one sentence: the undecided reading says what it means, on every surface
+
+**Changed:** a contrast the evidence leaves undecided reads `the evidence cannot tell v2 and v1 apart` in a sentence
+and `cannot tell apart` in a table cell, defined once in the glossary (`style.CANNOT_TELL_APART`,
+`style.cannot_tell_apart`) and linked from the lead, its first use; never "not separated" or "nothing separated",
+which a first-time reader took for "the same". The aspect page's verdict line and the quick print's first line print
+`verdict.verdict_line`'s text, and the exit line opens with its lead. A campaign page leading on a measure a contrast
+tested says the same decision and figures (`verdict.led_sentences`); one leading on an aspect's pass-rate row says
+the row's own, in the same form (`scorecard.row_sentence`, `scorecard.row_figures`). After the decision come the
+figures, a measure's in its own verb (only the pass rate's trials "passed"; a classifier's accuracy "was right
+on" them; any other counted reading "was met on" them, never "held", which is a guardrail's decision), and what the
+interval allows, its level left to the table's header: `Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was
+right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or
+17.8 better.` A row no worse than its margin but below the control on its whole interval opens on the scorecard
+cell's term, then says so (`qwen3.8-flash against September no worse than the margin, though below September. … The
+interval puts qwen3.8-flash between 3.4 and 10.8 points worse.`), and a row left unclear against its margin states its To settle row's count (`If the arms
+differ as observed, settling it takes 233 cases in all (the To settle table).`); no lead counts cases otherwise. One
+arm: `agent passed 31 of 36 trials on 12 cases.`, the aspect page and the print adding `Cases that failed a trial:
+r08, r09, r10.`. The aspect page's verdict drops `Declared question:`. An undecided guardrail reads what it means for
+the decision first, in the verdict line, the aspect page's contrasts and the campaign's warning alike (`v2 may do worse
+than v1 on the No invented total score guardrail.`), the warning then counting the cases that could fail it (`Of the 30
+cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.`). The setup gate opens `The test setup
+failed: it measured the setup instead of the models.` Each measure keeps one name on page, aspect page, print and exit
+line: the print names measures as the page does (`Accuracy`, `Number score`, never `currency` or `number`); the overall
+pass rate is `Pass rate` in every table; a classifier's `Label matched` is left out wherever its `Accuracy` is read; a
+judged dimension is `answer grounded (judged)` on the page and in the print (`answer grounded (judged), scored
+pass/fail: mean 1 …`), never `answer.grounded`, and a reserved judge axis `outcome (judged)`, never `__outcome__`. A
+goal check a candidate that did nothing could pass reads alike on the page and in the print (`unproven: no control
+shows it can tell acting from doing nothing; a candidate that did nothing might pass it, so it is not shown to measure
+the behaviour`), the print adding what the launch measured (`at launch one passed it in 12 of 12 case(s)`); `NOT A
+MEASUREMENT` goes. `build_code_only_report` takes the aspect's `measure_order`, which its verdict line leads on.
+
+**Hosts:** a reader of a host's code page, aspect page, quick print or exit line sees `the evidence cannot tell v2 and
+v1 apart` (`cannot tell apart` in a cell) where it read `v2 and v1 not separated` or `nothing separated v2 from v1`; a
+guardrail decision cell reading `undecided: v2 may be worse than v1 by more than the margin` where it read `undecided:
+not shown held, so not known to be safe`; a judged dimension headed `answer grounded (judged)` where it read
+`answer.grounded (judged)`. `CampaignLine.outcome_short` for a choice the evidence tells no pair apart in reads `Cannot
+tell apart` where it read `Not separated` (MIGRATIONS.toml). The lead, the print's first line and the `exit 4:` line
+are worded anew and carry their figures, and the print's measure and dimension lines are named as the page names them.
+A host matching any of those strings, or reading `Verdict.words` for "not separated", updates its match. The writer
+page's chart notes and pills keep "not separated" until rung 5's judge recording is made again. Nothing stored
+changes.
+
+### evals: an export of named runs past one page's ceiling is paged, not refused
+
+**Changed:** `scope_export` with `export_run_ids` whose runs hold more than `EXPORT_PAGE_RESULTS` (1,000) results
+pages them as it pages the scope, where two or more named runs past it were refused (owner ruling: run reads are
+incremental, with no per-run ceiling). The pages hold the named runs alone, archived ones included: whole runs oldest
+first, and a named run past the ceiling by its cases, as one named run alone already was. `export_after_run_id` is
+taken with `export_run_ids` whenever it is one of the named runs; one naming a run outside them is refused, naming it
+and the runs named. The ceiling itself is unchanged: it bounds one response, not what an export reads.
+
+**Hosts:** a host exporting two or more named runs reads them page by page instead of catching the refusal: each
+page's `page.named_run_ids` (an existing field, now set on every page of a named export) lists the named runs, and the
+page text names the call that reads the next (`export_after_run_id`, `export_run_ids` again, and
+`export_after_case_id` inside a run). A named export within the ceiling is whole and unpaged, as before. The help for
+`export_run_ids`, the `scope_export` action and `ops.scope_export` says named runs page as the scope does.
+
+### evals: a stored report renders across a shape bump that added only optional fields
+
+**Changed:** a report whose evidence was assembled at aspect bundle shape 64 renders whole on this build (shape 65)
+where it was hidden behind the code-only page and the line to regenerate. The earlier shapes a build reads as stored
+are declared in one set in `threetears.evals.analysis.bundle.schema` (`{64}`), private to it: a shape joins when
+every field the bumps since added is optional and no stored figure changes meaning, and its figures render as they
+were written, never recomputed or migrated. 64 qualifies: 65 added `FamilyComparison.interval_basis` and
+`LateCriterion.aspect` and `.reading`, each optional, and a shape-64 contrast names the test its interval was drawn
+by. A bundle of any other earlier shape is refused as before.
+
+**Added:** the page says what it is in one line, first under its masthead (`DocPage.stored_shape`, provisional, left
+out of the document when empty) and first on the code-only page of the analysis by its id: "This report was written
+on an earlier build. Its rate contrasts were read on the t interval; the current build draws them on a bounded
+interval, so a separation shown here may read today as one the evidence cannot tell apart. Regenerating would redraw
+them." `analyses_list` lists such an analysis as written, the same line after its verdict, and `needs_regeneration` is
+None; the JSON form names the shape in `aspects[].bundle_schema_version`.
+
+**Hosts:** a host no longer regenerates an analysis written over shape-64 evidence to read it: `report_read` renders
+its written report whole with the one line above, `analyses_list` and `campaigns_list` report it `written` (the line
+after `AnalysisLine.verdict`, and last in `CampaignLineReport.caveats`, never in the headline), and its findings
+count. A host that matched the regenerate line to offer "generate again" for such an analysis sees the
+stored-shape line instead; regenerating stays a deliberate act.
+
+### evals: a campaign's listing leads with its report's own headline, and no arm is named by a cut prompt
+
+**Changed:** `campaigns_list` lists a report document its editor passed by that document's own headline
+(`CampaignLine.report.headline`), every figure key written out as its page prints it; a draft by its own headline marked
+`Draft: `; a retired writer's analysis and a document that no longer reads are listed by code's verdict alone. Code's warnings (each bar an arm misses,
+each floor a candidate breaks) and its line on when criteria were set leave the headline for a new list beside it,
+`CampaignLine.report.caveats`. A document whose snapshot no longer reads is listed by code's verdict and as needing
+regeneration. At render time only, every code-written surface (the campaign and aspect pages, the report document's
+page, the listing) names an arm the same way: its label where a person gave one; a computed name holding a level too
+long to print by its lever alone (`Extractor instructions`); the empty level of a text lever as `no system prompt`,
+never `(none)` (an empty number lever, such as a default temperature, keeps its placeholder). Where two arms would then
+read alike, a surface adds the tag it prints the arm by (`Extractor instructions (B)`): the code page its charts' tag,
+the report document's page and the listing the document's, so one listing line never names an arm two ways, and a
+figure key never tags it twice. An analyst's own caveat label prints its figure keys written out, a strict build
+refuses one that does not resolve, and the store gate reads an arm by the name its page prints. Nothing stored
+changes: a bundle's frozen labels, its fingerprint and census order, and a report snapshot's input are as before. No
+golden moves. `threetears.evals.analysis.analysis_verdict` (provisional) is removed: `AnalysisLine.verdict` is the line
+it returned.
+
+**Hosts:** `report.headline` of a passed document is now its own headline, never prefixed by a warning. A host that
+showed `headline` must show `report.caveats` (new, additive, a list of strings, empty with none) beside it to keep
+the warnings. `AnalysisLine.verdict` keeps its shape (the caveats, then code's verdict). `AnalysisLine.verdict` and
+code's headline name a declared arm by its label, and every computed name follows the page. A host calling
+`analysis_verdict` reads `AnalysisLine.verdict` instead. Recorded in `MIGRATIONS.toml`.
+
+### evals: the writer gate's pairwise judge may stop once its preference separates, and every run states its floor
+
+**Added:** the bounded test takes `planned_n`, the cases its bet is fixed for before the first: its order
+(`bet_order(N)`) and every stake are set by N, so a reading over the first k cases is a prefix of one bet and holds α
+at any stop. At k = N it equals the fixed-n reading exactly; without `planned_n` nothing changes. A writer eval
+declares a stopping rule as it starts, before any arm launches: `stop_when="separated"` judges the planned cases (the
+held-out ids, recorded on the rule) in the bet's order and stops at the first after which the preference separates,
+either way. `"never"`, the default, is the reading before this change exactly, the same as a pass given no rule. A
+rule declared after the arms' first result, or with no time, keeps its verdict and says so; cases found off the plan
+are said, never refused. The pass's report records the rule, where it stopped and the preference after each case (p
+and interval), and one sentence the page prints. Every writer eval states its resolution floor before launch and on
+its page: the smallest share, held on every case, that the gate's own test separates at its cases
+(`smallest_separable_move`), rounded up: 0.89 at 7 cases, 0.73 at 11, 0.60 at 25. Given an earlier run on the same
+case files, the line adds what that run projected would settle. It is a disclosure, never a refusal.
+
+**Changed:** the stop reads the primary alone, and the gated readings and guardrails are one fixed-n read, at the stop
+(batched launches, below). `docs/design.md` no longer says sequential testing stays out; `judges-and-calibration.md`
+gains the stopping rule and the floor.
+
+**Hosts:** declare a rule with `WriterEval(stop_when="separated")`, or the acceptance script's `--stop-when
+separated`; carry an earlier run's projection with `WriterEval(prior=WriterPrior(case_names=..., cases_to_settle=...))`
+or `--prior <acceptance.json>`. `WriterResult` gains `cases` and `resolution`, `WriterPromotion` gains
+`stopping_line`, and the pass's job result gains `stopping` and each pair `reached`, all defaulted, so a stored report
+still reads; no schema'd document changes, so no schema minor moves. The `writer_pairwise` engine action takes no rule
+and reads every case, as `never` does. `threetears.evals.harness` exports `StopWhen` and `WriterPrior`, and the
+types `WriterPairwise.stopping` reaches (`PairwiseStopping`, `StoppingRule`, `PairwiseLook`), provisional.
+
+### evals: a campaign's first screen says what the page is: a lead on every page, its rates with their counts
+
+**Changed:** every code-written campaign page opens on a lead, not only one where a guardrail warns: a comparison on its
+first measure's reading, a choice on its pairs, one arm measured on its pass rate as a count (`reply passed 40 of 40
+trials on 20 cases.`). A comparison that asks no question says so once, as what it is (`Exploratory comparison.`), and
+its readings no longer each say ", a lead". Every rate in the scorecard's matrix carries the count it is computed over
+(`100 (40 of 40 trials, 20 cases)`). A judge not yet calibrated against people's labels is a report-wide caveat on the
+first screen (`Judged scores on score are directional until people's labels calibrate the judge.`), its detail a row of
+Design & provenance. The cost's provider routing leaves the first screen for one Design & provenance row (an aspect's
+own page: its methods). How the intervals were read moves from the scorecard to the page's methods.
+`build_campaign_report(lead=...)`, and `campaign_report(lead=...)` for a code-only page, take the blocks a caller states
+its own answer in, which replace code's lead in place, directly after the question line. The package's tests hold every
+first screen to the rule.
+
+**Removed:** the lines stating an absence: `No recommendation was written: …`, `No call is recorded yet: …` (the call
+prints once recorded), `No question was declared, so every reading is a lead.`, `One arm is measured, so nothing is
+compared …`, `No floor was declared on …` and `No declared question asks about these readings …`; with them
+`NO_RECOMMENDATION` and `NO_CALL` (`analysis.report.campaign_page`).
+
+**Hosts:** a reader of a host's campaign page sees a lead sentence under the title on every page and no line saying
+what the page lacks; a report-wide caveat line for an uncalibrated judge where one graded; no cost-routing line on the
+first screen. In the HTML, `id="caveat-cost"` is gone and `id="caveat-judge"` is new. In the report JSON, a rate cell's
+`flag` in the scorecard's matrix now carries its count (`40 of 40 trials, 20 cases`, before any other mark). A host
+matching any removed line, or importing `NO_RECOMMENDATION` or `NO_CALL`, stops: nothing replaces them. Nothing
+stored changes.
+
+### Tests: a freeze no longer imports a lazy name under freezegun's fake clock, and a leaked freeze blames its test
+
+**Fixed:** freezegun's `start()` reads every attribute of every loaded module after it has swapped in its fake
+`date`, so in a process that had imported `threetears.evals` without reading `Model`, a core test's freeze imported
+the providers under the fake. A pydantic `date` field there cannot build on `FakeDate`, so `start()` raised with the
+clock already frozen, and every later test in the process read it (the testament pool interleaves packages; a
+per-package shard never did). A repo-wide test plugin, `tests/clock_isolation.py`, resolves every loaded lazy
+`threetears` name before each test, fails a test that leaves a freeze it started running at its teardown, and fails
+each test after it that would run on that freeze at setup, naming the test that leaked it. A freeze enclosing a
+group of tests on purpose (a class decorator, a class- or module-scoped fixture) passes.
+
+**Hosts:** a suite that freezes the clock with freezegun after `import threetears.evals` and before reading a lazy
+name (`Model`, `Eval`, ...) gets the same raise, and a freezegun `start()` that raises leaves the process frozen.
+Resolve the names you use (or import them from their modules) on the real clock before you freeze
+([adopting a host](packages/evals/docs/adopting-a-host.md#freezing-the-clock-in-your-suite)).
+
+### evals: the writer eval's page opens on its answer, its side-by-side tables are rows with columns, and a replay reads its criteria as declared
+
+**Changed:** a writer eval's page (`WriterResult.page`, `report.html`, `report.md`) leads, under its question, on one
+sentence per candidate, as the campaign page's lead (`campaign_report(lead=...)`), so the page carries one answer: its
+promotion reading and the judge's side-by-side preference ("Undecided, so shipped stays: across 7 held-out cases the
+judge gave lead-first 68% of its preference over shipped (50% is even), too few cases to tell from an even split; about
+39 cases would settle it."), with the promotion's own sentence after it where the preference alone does not explain the
+decision. Its Scorecard opens with the side-by-side tables and each candidate's promotion sentence. The side-by-side
+table in the print, in `pairwise.md` and on the page is two tables of rows with columns: the preference, a row per
+candidate and the pairs it reads (every pair, then both pages finished), and the judge's checks, a row per candidate.
+Four figures change form: the share (`0.6786` reads `68` under `Share (%)`), the difference and its interval (`0.3571`,
+`-0.2762 to 1` read `36`, `-28 to 100` in points), order consistency (`0.8571 (6 of 7)` reads `86% (6 of 7)`) and the
+first-slot lean (`0.07143` reads `7` in points). Each is read to whole points, with more decimals only where an
+interval's end would print as 0 or cross zero, or two figures would print alike. What a pass spent and the held-out
+cases to settle print as before.
+
+**Fixed:** a writer eval files its campaign dated when its arms launched (`create_campaign`'s `declared_at`), as an
+`Eval` does, in place of when it was filed, after its results existed. Its page no longer says its criteria (the
+aspect, the control, a margin) were set after the results, on a replay of a declared eval or a recording run.
+
+**Hosts:** a host reading a writer eval's print or `pairwise.md` by its key-and-value rows (`| share | 0.6786 |`)
+reads the preference table's columns instead (`| lead-first | every pair | not separated | 68 | 36 | -28 to 100 |`),
+the share, difference, interval, order consistency and lean in percent or points as above. An absent cell in those
+tables prints `—` (an em dash) where it printed `-`. A writer eval's campaign filed before this release keeps its
+late-criteria lines; running the eval again files it dated at launch.
+
+### evals: a writer case is minted from a host's read-only export
+
+**Added:** `writer_case_from_export` (`threetears.evals.harness`, provisional) freezes one campaign of a host's export
+into a portable writer case, over a store in memory, writing nothing to the host's store. `python -m
+threetears.evals.harness mint` writes the case file from three files: the campaign's documents as stored, the host's
+profile declaration (`built_by`, the factory of its live profile, and `host_declarations_digest`, which the live
+profile must match), and a manifest of the analyses, reports and insights that reasoned on the campaign. Each note of
+the analyst skill holding one's id or name is withheld, and the case file records why (`WriterCaseFile.minted`, a
+`CaseMint` of `WithheldNote`s and the unmatched `ReasonedOn`s; omitted from a case minted otherwise, so no committed
+case moves). An export missing a document the freeze reads is refused by its type. The case is frozen at `--as-of`,
+or at the moment the campaign's evidence was complete, and the insight ledger is read as it stood then, so the same
+export writes the same bytes. `writer_case_freeze` gains its first caller. The courier's capture mints the committed
+held-out courier case. `python -m threetears.evals.harness FILE --write-report MODEL` is unchanged.
+
+**Hosts:** to mint from production, export each campaign's closure (at least the campaign, its runs, their results
+and traces, the templates and test cases they ran, every insight on its subject and the analyses that minted them),
+your profile declaration with `built_by` as `module:callable`, and the manifest; run the mint in your own environment.
+See "Minting a case from a production export" in `packages/evals/docs/serving.md`. Hosts compute and invert the
+digest with the package's own function: `threetears.evals.analysis.host_declarations_digest`, and
+`threetears.evals.schema.judge_config_of` and `is_builtin_judge_config_id`, all three now host-contract. Nothing stored
+changes.
+
+### evals: MIGRATIONS.toml ships in the wheel
+
+**Hosts:** MIGRATIONS.toml ships in the wheel at threetears/evals/MIGRATIONS.toml
+
+### evals: a report budget that cannot admit one turn is refused before any is bought; one under two is warned
+
+**Added:** a dollar budget under a report's first-turn ceiling cannot admit even one turn of the two a report takes
+(the analyst's submission and the editor's review), so it is refused at $0, naming the ceiling and the budget that
+admits the turn (`ReportBudget.first_turn_refusal`). `WriterEval` refuses it once, before the store opens, pricing each
+arm's analyst and editor first turns at their output caps and texts on the rates Anthropic publishes; every report's
+budget refuses its own first turn on the real ceiling, so `report_write` ends `over_budget` with nothing sent. Nothing
+above that ceiling is refused: the cap holds back the next turn's ceiling against what was actually spent, so whether a
+second turn fits turns on what the first really cost. A `WriterEval` budget under two of the analyst's first-turn
+ceiling launches with one warning line among its disclosures, citing the recorded Sonnet 5.5 runs (at $0.75, 16 of 50
+reports stored a page; at $1.00, 17 to 22 of 22; at $1.50, 99 of 100); on any other model the line says no
+acceptance run is recorded on it.
+
+**Changed:** a report that still runs out ends saying how many turns it was admitted and how many turns its whole
+budget admits at the ceiling that stopped it. A writer eval adds, for an arm whose reports ended over budget with no
+page, how many did and what the reports of its run that stored a page needed: what they spent, plus one turn's ceiling.
+The writer acceptance's first criterion is now "both arms stored a page on every case", read off the pairwise pass's
+pairs rather than off cells that completed, and its readout's first table counts the cases with two pages to compare
+and the ties a page missing on both sides made.
+
+**No soft budget.** The cap stays a cap: no turn is admitted on an average of what turns have cost, none is reserved
+at one, and no policy floor is set above what the arithmetic proves.
+
+**Hosts:** a host launching a report with a dollar budget below one turn's ceiling is refused before spending, naming
+the budget that admits the turn; a writer eval under two first-turn ceilings is warned, not refused. A budget in tokens
+and turns is unchanged.
+
+### evals: 26 declared names only Discodon's tests import go provisional
+
+**Changed:** the declared surface (`host-contract` and `stable`) drops from 514 names to 488. The 24 names the hold-back
+ledger held for Discodon's tests alone go provisional: nothing outside the package imports them except Discodon's tests,
+which assert against the package's definition and accept that a provisional name may move. `CampaignBundle` and
+`testing.ReaderSample` go with them, since only those names' signatures reached them. `MIN_CASES` is the one
+host-contract name; the rest were stable. `MIGRATIONS.toml`'s notes list each by root. Nothing is removed, nothing
+warns, and nothing stored changes.
+
+**Hosts:** nothing to change: every name still imports from its root.
+
+### evals: a report block no longer carries `finding` or `rests_on`
+
+**Removed:** the `finding` and `rests_on` fields of every report block (`ChartBlock`, host-contract, with no deprecation
+cycle under the owner's 2026-11-03 exception for the reset's deletions; `TableBlock`, `TrialBlock` and
+`DisclosureBlock`), with their `finding_number` and `rests_on_numbers` properties and the two page checks that refused
+any value in them. No page has held a finding since the memo writer was retired, nothing filled either field, and no
+serializer printed one. No printed page moves.
+
+**Hosts:** stop setting the two fields; a block naming either is refused as an unknown key, as before it was refused by
+the page. Discodon reads neither. Nothing stored carries a block, so nothing stored changes.
+
+### evals: the memo-era page models leave: the text block, the recommendation and the empty page fields
+
+**Removed:** `TextBlock`, `TextRole` and `Fact` (`threetears.evals.analysis`), the block of an author's words no page
+has held since the memo writer was retired, with the serializers' branches for it; `ReportBlock` is a table, a chart, a
+trial or a disclosure. `Recommendation`, `FloorOverride`, `BehindOn` and `BarMissed` (`threetears.evals.kernel`). The
+fields every page left empty: `Report.basis` and `.finding_count` (host-contract), `ReportSource.analysis_id` and
+`.generator_model`, `CampaignReport.finding_count`, `.recommendation`, `.recommended_variant_key` and `.plan_page`,
+and `CampaignAspectFold.summary`. `CampaignReport.basis` and `.analysis_id` stay. A block naming a finding is refused on
+both pages, as on every page built since the memo. No printed page moves.
+
+**Changed:** `campaign.json` and `report_read(format="json")` are `CAMPAIGN_JSON_SHAPE` 6: `recommendation`, always
+null, leaves the object. The arms a report document recommends are its `report_doc.doc.recommends`.
+
+**Hosts:** stop reading or setting the removed fields and the JSON's `recommendation`: each read an empty value.
+Nothing stored changes.
+
+### evals: the retired generations' shims and the in-cell cost cap's names are removed
+
+**Removed:** the 19 names the retired analysis reporter kind, report planner and memo writer left a host (12 from
+`threetears.evals.analysis`, 7 from `threetears.evals.ops`); `StyleProfile`, `ToneRegister`, `HostProfile.style` and
+`HostProfile.caveat_kinds`; the in-cell cost cap's `CostCapReached`, `CellReservation`, `CellSink.reserve` and
+`CellSink.cost_cap_reached`; and `Ceilings.generation_ceiling_s`. The module `__getattr__` hooks that served them go
+too. These names, all but `EVAL_REPORT_PLAN_DEFAULT`, which no release exported, were live in v0.90.0 and v0.91.x, the
+host-contract `REPORTER_KIND_CONTRACT`, `EVAL_ANALYSIS_GEN_DEFAULT`, `analysis_gen_request_settings_for`,
+`generate_analysis`, `CostCapReached`, `HostProfile.style`, `HostProfile.caveat_kinds`, `CellSink.reserve`,
+`CellSink.cost_cap_reached` and `Ceilings.generation_ceiling_s` among them, and no release carried their deprecation, so
+removing them breaks the host-contract cycle in [stability
+tiers](packages/evals/docs/adopting-a-host.md#stability-tiers). The owner approved the exception on 2026-11-03, for
+every deletion of the evals reset, and Discodon, the only production host, confirmed on 2026-11-06 that it drops every
+import on its re-pin branch before it moves its pin. A host still importing one breaks on upgrade and ports by the Hosts
+line. `MIGRATIONS.toml` records each name. The declared surface drops from 535 names to 514: `KnownReasoningEffort`
+(`threetears.evals.schema`) goes provisional, since only `analysis_gen_request_settings_for`'s signature reached it.
+Nothing stored changes shape or version, and no printed page changes.
+
+**Hosts:** a host that still imports one changes it as follows. The reporter kind's names: delete the kind's
+registration, launcher and template check, and evaluate the report writer with the `report_writer` kind
+(`writer_template_create`, `writer_case_mint`); a host that named the kind's string writes `"analysis_reporter"` itself.
+`generate_analysis`: call `analysis_generate`. `EVAL_ANALYSIS_GEN_DEFAULT`, `EVAL_REPORT_PLAN_DEFAULT`,
+`analysis_gen_request_settings_for`: drop the slot and the client policy. `StyleProfile`, `ToneRegister`, `style=`,
+`caveat_kinds=`: drop them. `CostCapReached`: drop the `except` clause. `reserve`, `cost_cap_reached`,
+`CellReservation`: call `sink.add_spend(source, cost)` once a call returns. `generation_ceiling_s`: use
+`Ceilings().writer_ceiling_s`.
+
+### evals: the report input names the report, not the memo, and sixteen names nothing called are removed
+
+**Changed:** a report input's `meta.kind_means`, the sentence the analyst reads for what a campaign's kind asks of
+its report, names the report where it named the retired memo, and the choice kind's sentence no longer names the
+memo's `behind_on` field. The meaning is unchanged.
+
+**Removed:** `analysis_bundle`, `cell_label`, `get_campaign_view`, `list_analyses` and `list_analysis_attempts`
+(`threetears.evals.analysis`); `CONFIDENCE_TIERS`, `CampaignView` and `HOST_PRODUCED_MEASURES`
+(`threetears.evals.kernel`); `ObligationRow` and `obligation_rows` (`threetears.evals.kernel.host`); and six that no
+root exported: `campaign_evidence_digest`, `in_writer_terms`, `analysis_rulers`, `REFERENCE_MARK`, `read_as_declared`
+and `MIN_PAIRS_FOR_DETERMINISTIC_GAP`. Nothing in the package called any of them. `MIGRATIONS.toml` says where a host
+goes for each of the ten a root exported, and for `campaign_evidence_digest`, which the 0.75.0 notes taught; the other
+five leave with the snapshot.
+
+**Hosts:** a report snapshot frozen from now has a new content address (`report_input_digest`, and so a new snapshot
+id) for the same evidence, since `kind_means` is part of the input. A stored snapshot keeps its text and its id, and
+reads as before.
+
+### evals: an eval declares its question, the page leads on the grader listed first, and a measurement's money carries its form
+
+**Added:** `Eval(question=...)`, the one sentence a comparison answers, as `WriterEval(question=)` takes it (a blank one
+is refused). It is filed as the campaign's question: the page quotes it under the title in place of `No question was
+declared, so every reading is a lead.`, and the readings it asks about read as asked (no ", a lead"). Its measure is
+the first grader. `Eval(margin=...)`, optional and only beside a question, is the author's own margin in the measure's
+units, as `grader(margin=)` is (`0.05` is 5 points of the pass rate): it makes the question a non-inferiority one, so
+the pass rate reads shown worse, no worse than the margin, or neither. A margin with no question, or outside 0 to 1, is
+refused where the eval is written. `Result.question` and `Result.margin` carry them; `Result.against(...)` asks them
+again, or asks a `question=` (and `margin=`) of runs already read, which is never refused: the page then says once that
+its criteria were set after the results there existed. `AspectDesign.measure_order` (durable v16.8, written only when stated) holds the
+measures an eval's graders read, in the order listed; `Eval` files it from `Result.grader_readings`.
+
+**Changed:** where a guardrail warns, a campaign page's lead reads the first measure in the design's `measure_order`
+that a contrast tested and that is no cost: the same measure the printed first line leads on, whether a question is
+declared or not (where the page read the classifier's accuracy, or the pass rate). A campaign stating no order, every
+one filed before this version, leads on the classifier's accuracy where the aspect reads one and it asks no question,
+else on its pass rate (one asking a question leads on its pass rate). This sentence is the lead rule; the two entries below describe the surfaces it reads on. A measurement's scorecard prints each money
+measure (`Measuring spend, all roles`, `Production cost`) in one form chosen from all its figures, intervals included:
+`$0.022/1000` where a figure is under a cent, never `0.0003` or `0`. Rung 3 (`examples/3-invoices/extract.py`) declares its question, and the ladder shows it.
+A question alone is a superiority question and files no margin: the package never picks one. `create_campaign` no
+longer refuses a declared aspect with no margin under a question of a control; such an aspect's pass rate is read
+against zero both ways (shown better, shown worse, or `not separated` on the page), its drop Holm-corrected as a gain
+is across the candidate's aspects; the pass rate joins every asked question's family, margin or none, so `gate()`,
+`campaign_verdicts` and a writer promotion read it as the page does. An aspect asked nothing with no margin is still
+never shown worse, and a question asked of a control with no margin counts as a declared criterion (no `nothing_declared` caveat), whose candidate shown worse never stands shown no worse. `WriterEval(margin=)` defaults
+to `None` (was 5.0): its question is a superiority question unless its author writes a margin; the recorded writer
+runs replay to the same verdicts.
+
+**Hosts:** declaring a question on an existing eval moves its figures: the question is unscoped, so every reading
+joins the question's family with the pass rate, its intervals are corrected together and a verdict can change (rung
+3's `Number score` interval moves from `[-7.2, 34.8]` to `[-7.8, 35.4]` pts). A campaign asking a question with no
+margin can now read a candidate "shown worse" on its pass rate where before it could not (its drop is read against
+zero), and an undecided row there reads "not separated", so a host's stored page text pinned on that may move; its
+pass rate now joins its family, so its adjusted figures move and `gate()` can fail on a pass rate shown worse. A host wanting a
+non-inferiority reading writes the margin itself: `margin` on the aspect, in points, or
+`Eval(question=..., margin=0.05)`. A design's `measure_order` naming a measure no
+grader of the aspect reads is refused at the declaration gate, naming every measure it does declare. A script parsing
+the first line of a comparison reads the lead on the first grader (the printed-lines entry below); a host
+matching a page's first screen sees the question in place of the no-question line where one is declared, and the lead
+on the first grader in `measure_order`. A host matching a measurement's scorecard
+reads money cells with `$` and the per-1,000 mark. An older pod reading a campaign at durable v16.8 keeps
+`measure_order` and leads as before.
+
+### evals: a campaign page leads on its question's reading, and an undecided guardrail says what leaves it undecided
+
+**Changed:** where a guardrail warns on a campaign's page, the first screen states its lead first, under the question,
+as the verdict line: one sentence per candidate, naming the reading and both arms, in the aspect page's words
+(`Accuracy: v2 and v1 not separated, a lead.`; set as decided, without ", a lead", where the campaign asks a question).
+Which measure it reads is the lead rule the entry above states once: the first grader's. Cost never leads, and the guardrail's warning follows the lead rather than taking its place. A page no
+guardrail warns on is unchanged and leads on its scorecard.
+
+An undecided guardrail says how many cases each arm failed it on, and that the cases are too few to decide it: `v2 is
+not yet shown safe on the no invented total guardrail on classify: v2 failed it on 1 of 30 cases and v1 on 1, a case
+counted once however many of its trials failed it, too few cases to show v2 within its 2-point margin or beyond it.`
+Where neither arm failed it, the line says so. The counts print only where the arm's line names one guardrail check
+(one guardrail, on one aspect, under one test setup), the guardrail is a pass/fail measure with a declared margin read
+on a bounded interval, and, where an arm failed it, the evidence holds every trial, none left out past its cap. Every
+other guardrail line is as it was. The ladder's rung 3 shows the new first screen and says what the no-question line
+means.
+
+**Hosts:** a host reading the first screen sees the lead first, then the guardrail's warning with its counts. A host
+matching the old warning exactly finds it as the start of the new sentence, up to the colon.
+
+### evals: the quick print leads on the question, and its miss, judge and spend lines say what a host needs
+
+**Changed:** four lines of an eval's quiet print. A comparison's first line leads on its first grader, whatever its kind
+(a field, the classifier's accuracy, a function, a judged dimension), followed by what else separated, cost last; with
+no grader tested (guardrails alone) it says `nothing separated v2 from v1 but cost` before the cost reading. A cost
+reading never leads on its own, and a guardrail an arm breached or is undecided on is named after the lead (`invoices:
+Accuracy: v2 and v1 not separated; nothing else separated; guardrail No invented total score undecided for v2`). A
+classifier miss prints the graded field's value (`answered label 'in_character', expected 'out_of_character'`), not the
+whole answer object; an answer without the field, or one JSON could not hold (stored as its repr), prints cut at 120
+characters, a mapping as compact JSON without its `id`; a reason spanning lines prints on one. An uncalibrated judge's
+next step says how many rows `to_label.csv` holds per dimension and, below the calibrated tier's floor of 20, how many
+more judged answers each dimension needs. `total spend` splits by role when more than one role spent (`total spend:
+$0.0168, the results' cost (candidate $0.00175, judge $0.0151)`), each role's dollars read off its usage rows. A
+guardrail field listed before the classifier no longer takes its name: the classifier's reading line, its misses and
+`Result.labels()` read the classifier, and `Result.labels("<guardrail field>")` counts that field rather than returning
+the classifier's matrix. `Result` gains a defaulted field, `grader_readings`: each grader's measure in the order listed.
+Nothing stored changes, and no page changes.
+
+**Hosts:** a script that parses the first line of a comparison reads the new lead; a test asserting a rung's first
+line (or the judge's next-step line) takes the new words.
+
+### evals: a rung file imports the modules beside it
+
+**Changed:** `python -m threetears.evals FILE` (and `python -m threetears.evals.harness FILE`, which loads through it)
+puts a Python eval file's directory first on `sys.path` before the file loads, as `python FILE` does, and leaves it
+there for the process, so `from router_adapter import ...` beside a rung file works at module level and inside a
+runner that imports when it is called. `load_evals` called as a library function does the same to its caller's
+process. A directory already on `sys.path` is not added again, nothing is taken off it, and a TOML file is unchanged.
+A module is imported once per process, so siblings in two directories need distinct names.
+`tests/test_quick_eval_files.py` holds it.
+
+**Hosts:** nothing to change. App code pasted into several rung files can move to one module beside them.
+
+### evals: a TOML eval's runner sends the app's system message, prompt file, `max_tokens` and effort
+
+**Added:** `[runner]` takes `prompt_file` (a file named relative to the TOML whose text is the prompt, in place of
+`prompt`), `system` or `system_file` (the system message, sent as written), `max_tokens` and `effort` (as `Model` takes
+them, and refused as it refuses them, naming the file). A file's text is read each time the eval loads; the placeholder
+check, the first line a judge reads, and the recording's key all see that text, so an edit to the app's prompt file is a
+prompt the recording does not hold, as an edit to an inline prompt is. A refusal of the runner's shape (not a table, an
+unknown key, both forms of one text, no prompt) names every key it takes, and every error `Model` raises while the
+runner is built (`no key for openrouter` among them) now starts with the file's name and `runner:`. The keys are listed
+as a table in the examples' README, rung 0, linked from the package README.
+
+**Hosts:** nothing to change.
+
+### evals: the page's models and serializers stop laying out a memo
+
+**Changed:** `TextRole` (itself removed later in this release, see the memo-era page models entry) no longer admits
+`override`, `what_changed`, `how_sure` or `means`, the four roles only the retired memo writer wrote, and both serializers
+drop the lines that laid them out. No page this version builds held
+one, so no printed page changes. The memo-era fields those models kept (`basis`, `finding_count`, `recommendation`,
+`CampaignAspectFold.summary` and the rest) leave in this release (see the memo-era page models entry). Messages
+reword: the remedy for an analysis of several aspects names `get_analysis` as reading the analysis, a double brace in
+report prose is refused as the retired figure reference, and the import-time word check and the code-only
+recommendation refusal name the page, not the memo. Nothing stored changes.
+`tests/test_retired_vocabulary.py` holds the page's modules to no identifier or string naming the memo, the
+`"memo"` section literal aside.
+
+**Hosts:** nothing to change: `TextBlock` and `TextRole` leave in this release (the memo-era page models entry), so no host builds one.
+
+### evals: 18 declared names nothing outside the package imports go provisional
+
+**Changed:** the declared surface (`host-contract` and `stable`) drops from 553 names to 535. A name goes provisional
+when nothing outside the package imports it, no shipped page teaches it, and no declared signature reaches it. Ports a
+host implements, version constants and one-minor shims stay declared. The 18 names are the `Known*` origin
+vocabularies that no declared signature takes, with their value tuples and `REASONING_EFFORTS`; `report_markdown`,
+`format_signed`, `GLOSSARY` and `GATE_TOKENS`; `declared_names`; and `ANTHROPIC_MIN_THINKING_BUDGET`.
+`MIGRATIONS.toml`'s notes list each by root. Nothing is removed, nothing warns, and nothing stored changes.
+`tests/test_guide_names_are_declared.py` now reads every shipped page, and holds a declared name that a page names
+in prose to its tier.
+
+**Hosts:** nothing to change. A host that binds one of these names sends its import list to have it declared again.
+
+### evals: no call in a cell is priced before it is made
+
+**Changed:** the run's cost cap is read between cells, and no engine path reserves a call against it: `CappedCompletion`, the judge phase, the judge kind and the quick path's
+kind count each call's cost with `add_spend` when it returns, so no call in a cell is priced before it is made; a
+client's unusable `price_ceiling` no longer fails a call there, and launch pricing still refuses it.
+`MAX_GENERATION_CALLS` is gone. Nothing stored changes shape or version.
+
+**Hosts:** count a call's cost with `sink.add_spend(source, cost)` once it returns.
+
+### evals: the modules that outlived the retired writers are named for what they hold now
+
+**Changed:** the surviving modules move, unchanged in behaviour, by `git mv`: the chart vocabulary
+`threetears.evals.kernel.report_plan` is `threetears.evals.kernel.chart_query` (`ChartQuery`, `ChartSpec`,
+`ChartReference`, `PlannedChart`, `PlanChartKind`, `ReferenceKind`); `threetears.evals.analysis.report_prose_checks` is
+`threetears.evals.analysis.report_doc_prose`; and `threetears.evals.analysis.report.campaign.memo_blocks` is
+`threetears.evals.analysis.report.campaign.answer_blocks`. The parts' block section constant `PLANNED_SECTION` is
+`WRITER_SECTION`; its value, the section literal `"memo"`, is unchanged on every page and document. The figure-key
+grammar's `planner=` argument, which only the retired planner's prompt passed, is removed.
+`analysis_generate`'s and `analysis_estimate`'s `model` argument is described as the report writer's model. The test
+fixtures split by subject: `tests/fixtures/report_plans/` becomes `tests/fixtures/report_inputs/` (the r1 to r5 inputs,
+the Kairo round 2 bundle and the helpers that read them) and `tests/fixtures/writer_cases/` (the writer's exporter,
+dev command line and live lanes). No root's names, no stored field, document type or version changes, and that
+description is the only served text that moves. `tests/test_retired_vocabulary.py` holds identifiers to the one vocabulary.
+
+**Hosts:** nothing to do: none of the moved modules is a public root. A script importing one by its module path
+imports it from its new path.
+
+### evals: the memo page is retired; a stored memo is held as JSON
+
+**Removed:** the memo page: `build_report` (one aspect's memo page), the memo blocks of the campaign page (the writer's
+summary, recommendation and whys, findings and their trace, next steps and each aspect's summary) and of the aspect
+page, and the memo writer's view (`build_campaign_user_message`, `CAMPAIGN_MESSAGE_CHARS_PER_ASPECT`;
+`threetears.evals.analysis`). The memo's models leave `threetears.evals.kernel` (`AuthoredCampaignAnalysis`,
+`Finding`, `EvidenceRef`, `Caveat`, `NextStep`, `AspectSummary`), with the contract the memo writer was sent
+(`authored_schema`, `response_format`, `validate_authored`, `count_slots`, `SLOT_BUDGET`). `build_campaign_report`
+takes no memo, recommended key, resolutions or trial ids. The `paid` pytest marker and the `THREETEARS_EVALS_PAID*`
+gate in `scripts/test.sh`, orphaned with `evals-paid.yml`, are gone.
+
+**Changed:** `EvalAnalysis.document` is a stored memo as the JSON it was stored as, never validated as a memo and never
+read; a memo analysis reads through every door as code's page with the memo writer's line. An aspect's page of a
+stored analysis is code's (`build_code_only_report` over `analysis_bundle`). The Coverage fold, which joined a memo's
+findings and next steps to the levers, leaves every page; a page lists each thin or unswept lever under Not tested. `Recommendation` and the
+models it nests leave in this release with `CampaignReport.recommendation`, which no page fills. Nothing
+stored changes shape or version.
+
+**Hosts:** read an analysis with `report_read` or `analysis_report`, never `build_report`.
+
+### evals: the memo writer is retired; a memo analysis reads as code's page with the retired writer's line
+
+**Removed:** the memo writer's modules (`generator`, `gen_prompt` and its rules ledger, `generation_round`,
+`prose_refs`), and with them `first_request`, `prompt_content_version` and `CallAdmission`
+(`threetears.evals.analysis`) and `ANALYSIS_GEN_PROMPT` (`threetears.evals.kernel`). `SEED_PROMPTS` no longer seeds
+`eval_analysis_gen`. The memo writer's recorded paid lane and its CI workflow (`evals-paid.yml`) go with it.
+`GenerationTally` moved to `analysis/generation_tally.py` and stays exported; what a stored analysis keeps of each
+aspect is built in `analysis/doc_analysis.py`.
+
+**Changed:** a memo analysis reads, through `report_read` (every form), `campaign_report`, `analysis_report` by id and
+`analyses_list`, as code's page with one line on its first screen: "written by a retired report writer (the memo
+writer); regenerate with analysis_generate to read a report over it". `needs_regeneration` carries the line, and the
+listing counts no findings for it. Nothing stored changes shape or version.
+
+**Hosts:** drop the `eval_analysis_gen` slot; regenerate a memo analysis with
+`analysis_generate` to read a report over it.
+
+### evals: the report plan's checks, facts and models are retired; a stored plan is held verbatim
+
+**Removed:** the plan checks (`analysis/report_plan_checks.py`: `validate_plan`, `classify`, `spine`,
+`raised_warnings`, `implied_disclosures`, `OPTION_COLUMN_FAMILIES`), the planner's facts
+(`analysis/report_plan_facts.py`: `plan_facts`, `complete_plan`, `PlanFacts`, `FactCaveat`), `PlanRefusal`, and every
+plan model in `kernel/report_plan.py` (`ReportPlan`, `PlannedReport`, `PlanStructure`, `PlanProse` and their parts).
+None shipped in a final release, and no public root exported them. The planner's fixtures, rubric, calibration
+records and scoring dataset go too, and `docs/eval-report-kit/schema/report-plan.schema.json` with them.
+
+**Changed:** `kernel/report_plan.py` holds only the chart vocabulary a block and a report document's evidence read
+(`ChartQuery`, `ChartReference`, `PlannedChart`, `ChartSpec`, `PlanChartKind`, `ReferenceKind`). `FactArm` and
+`fact_arms` move unchanged to `analysis/report_arms.py`; the document page computes its masthead itself, with the
+same words. `EvalReportPlan.plan` is held verbatim and no longer checked as a plan on read, so a stored plan still
+reads and `drop_derived` still sweeps it; nothing stored changes shape or version.
+
+**Hosts:** nothing to change.
+
+### evals: the planned page is retired; a planned analysis reads as code's page with the retired writer's line
+
+**Removed:** the planned page and its two forms (`PlannedPage`, `PageAnswer`, `PageClause`, `PageConfidence`,
+`PageExplore`, `PageFlag`, `PageOptions`, `PageSection`, `PageTerm`, `planned_page_html`, `planned_page_markdown`, from
+`threetears.evals.analysis`), its builder, and every
+read of a stored plan (`save_report_plan` and `load_report_plan` on `AnalysisStore` and `EvalStorage`,
+`get_report_plan`, `report_plan_of`). `EvalReportPlan` and `ReportPlanProvenance` leave `threetears.evals.kernel`.
+None shipped in a final release. The chart resolvers, the arms' look, the words and the tables the report document's
+page and the analyst's blocks draw with move, unchanged, from `analysis/report/plan_page/` to `analysis/report/parts/`.
+
+**Changed:** a planned analysis reads, through `report_read` (every form), `campaign_report`, `analysis_report` by id
+and `analyses_list`, as code's page with one line on its first screen: "written by a retired report writer (the
+report planner); regenerate with analysis_generate to read a report over it". `needs_regeneration` carries the line,
+and the listing counts no findings for it. `analysis_report` no longer refuses one whose plan stopped resolving.
+`CampaignReport.plan_page` is always null and leaves in this release. `drop_derived` and `analysis_delete` still
+sweep a stored plan; nothing stored changes shape or version.
+
+**Hosts:** drop any read of `plan_page` or of a stored plan; regenerate a planned analysis with `analysis_generate`.
+
+### evals: the report planner's generation path is retired; a generation is the report writer's
+
+**Removed:** `prepare_analysis_generation`, `run_analysis_generation`, `estimate_analysis_generation`,
+`PreparedGeneration` and `BudgetedGenerator` (`threetears.evals.analysis`), the planner's modules and the report
+input's planner view. `analysis_generate` already ran the report writer; nothing else generated with the planner.
+
+**Changed:** the `eval_report_plan` prompt slot is retired: `SEED_PROMPTS` no longer seeds it and no generation
+reads it. A stored planned analysis still reads, as the code-only page with the regenerate line, and nothing stored
+changes shape or version.
+
+**Hosts:** drop the `eval_report_plan` and `eval_analysis_gen` slot declarations; a stored override of either is
+inert. Drop the memo writer's client policy. Delete any call to the five removed names.
+
+### evals: the analysis reporter kind is retired; a stored reporter template reads as data and is refused at launch
+
+**Removed:** the analysis reporter kind's module, and with it `AS_RECORDED_MODEL`, `ReporterLabel`, `ReporterCase`,
+`LabelCriterion`, `LabelDirection`, `LabelVerdict`, `LABEL_BANDS`, `PreparedReporter`, `WriterMessageCheck` and
+`render_memo_as_written` (`threetears.evals.analysis`). The report writer is evaluated by the `report_writer` kind.
+
+**Changed:** a stored `analysis_reporter` template and its cases list as data, and a launch or estimate of one is
+refused as a template whose kind the host has no launcher for. Nothing stored changes shape or version.
+
+**Hosts:** delete the reporter kind's registration, its launcher and its tests before re-pinning.
+
+### evals: the analysis reporter's cases are retired; the report writer is evaluated by the report_writer kind
+
+**Removed:** the analysis reporter's case bank, curation and calibration read (`freeze_reporter_case`,
+`reporter_case_bank`, `reporter_calibration`, `set_reporter_case_archived` and their types in
+`threetears.evals.analysis`), its case operations in `threetears.evals.ops` (`reporter_case_freeze`,
+`reporter_cases_list`, `reporter_case_archive` and their types), and the three `evals` tool actions of the same
+names. The report writer is evaluated by the `report_writer` kind instead: `writer_template_create`,
+`writer_case_mint`, `writer_pairwise` and `writer_promotion`.
+
+**Changed:** a stored `analysis_reporter` template and its cases stay readable as data, and nothing stored changes
+shape or version. The reporter judge cases a host seeded are not carried over, since their labels quoted memo and
+plan passages; mint writer cases from the same campaigns instead.
+
+**Hosts:** delete the reporter kind's registration, its launch entry and its template check, and drop any call to the
+three actions. Optionally, before upgrading, archive the reporter cases with `reporter_case_archive` on the current
+build.
+
+### evals: a writer turn the provider failed costs nothing, is sent again once, and no longer stops a capped run
+
+**Fixed:** a report writer turn answered `anthropic 520: the response body is not JSON` stored its result with
+`cost_usd` null, as spend nothing could price, so a capped run stopped after that one result. A writer campaign on
+2026-11-04 lost both arms this way, at $0.67 of a $32 cap. A turn whose reply never came reported no usage, and a
+provider failing it with a 5xx bills none. It is now counted as an unanswered call (`unanswered_lost`), so the
+result's cost is the sum of the priced turns before it, and the run goes on to its next cell. A reply whose usage
+nothing could price is still unpriced spend, and still stops a capped run.
+
+**Changed:** a tool turn the provider fails with a 5xx that is no decline or gateway timeout, or whose connection
+was never made, is sent again once after a wait, within the request's time bound
+(`DeclinedRetry.turn_failure_attempts`, default 2). A turn cut in flight is not sent again, since it may have been
+served. The reply names what each resend followed
+(`TurnReply.resent_after`), and a turn recording keeps it, so a replay shows the turn was sent twice. A completion's
+failure is still never sent again. `report_writer.unpriced_turns` now counts only replies nothing priced. A
+report's generation record does not carry the resend, so a live run with no recording shows it only in the WARNING
+log.
+
+The out-of-run ledger agrees with the result: a report row's `unpriced_calls` no longer counts a turn whose reply
+never came. `raised_calls` counts that turn alone, and it adds nothing to the row's `cost_usd` or tokens. A one-call
+row that raised, and a generation attempt's `unpriced_calls`, follow the same rule. A gateway's timeout (504, 524) is
+not resent, since the provider may have served the turn.
+
+### evals: the report writer's skills and settings as objects under test (#1009, wave 1)
+
+**Added:** the report writer runs as a candidate kind, `report_writer`, whose levers are the analyst skill (by content
+digest), the reasoning effort and the editor's revisions. Each arm writes over frozen writer cases with no stored side
+effects. A fixed scoring judge scores every page on the editor's seven rubric items, held fixed for the whole
+campaign. Four engine actions on the `evals` tool let a host run it:
+- `writer_template_create` creates a writer template seeded with the scoring rubric.
+- `writer_case_mint` freezes a case from one of the host's campaigns, analyses or snapshots into a dev or held-out set.
+  The split goes by group, so a new case never moves an old one between sets.
+- `writer_case_archive` retires a case or restores it.
+- `writer_promotion` answers promote, keep or undecided for one candidate arm of a held-out campaign, from the
+  engine's corrected verdicts. It never records anything: a person promotes.
+
+A host enables the kind by registering `launchable_report_writer_kind` with `WRITER_KIND_CONTRACT` and
+`WRITER_KIND_MEASURES` on its profile, and a `ModelFamily` hook so a judge from the writer's own model family is
+refused. A writer cell's deadline is the writer's own, not the 600 s default. `write_report` takes an optional
+`skill`, the shipped skill when unset. Every shipped skill digest has an entry in
+`analysis/analyst/skill/PROMOTIONS.toml`, measured or unmeasured, and a test refuses a shipped digest with none.
+
+**Changed:** the in-loop editor reads its rubric from the editor text its session started with. Its pass bar is the
+shipped share of the top score (11 of 14) at that rubric's item count, rounded up, and a review states it
+(`Review.pass_total`). The shipped skill reviews exactly as before. A refusal for a host that launches no such kind
+names what the operator registers in its reason; its remedy names none of the host's setup (no registry, contract or
+`launchable_*` name), only, where one helps meanwhile, the actions a caller can take. The `evals` tool's served bytes
+move with the four new actions, so a host pinning that tool's schema sees it change.
+
+### evals: a late criterion names what it applies to; a paired compare row states its cases
+
+**Changed:** on a page with more than one aspect, or more than one late criterion of a kind, a late criterion's caveat
+label reads `<criterion> on <measure> in <aspect>`, `<criterion> on <aspect>` or `<criterion> on <measure>`, where it
+read the criterion alone. A late floor carries its aspect and reading (`LateCriterion.aspect` and `.reading`, on the
+bundle and the report input, left out when unset), so a reading holding a slash is named whole. A report input built
+before them names a late floor's aspect by its floors' reads. `arms_compare` rows gain `ComparisonRow.cases`: the
+cases a paired row's contrast read, whether it paired them and an unpaired test's control cases, as cited figures. A
+paired row whose contrast states its cases has `counted_unstated` False and is never marked `may_be_narrow`. Its basis
+text says it is paired over that many cases, or unpaired over each side's. A host pinning these rendered lines sees
+them change.
+
+### evals: a rate's contrast is drawn on its bounded interval
+
+**Changed:** a comparison on a rate carries the bounded interval at its family's corrected level. A rate is the pass
+rate, a check's or a goal check's pass rate, accuracy, or a judged dimension scored pass or fail. It reads improved or regressed only where that interval excludes zero. Its p values are still the t
+test's, so no adjusted p moves and the family's error rate holds. A campaign's reading of the pass rate uses the same
+method, so its 95% interval now sits inside its contrast's. A rate the t test separated may now read not separated.
+Other measures keep the t interval. The aspect bundle shape moves from 64 to 65. A stored analysis at 64 is read as
+stored: its report renders whole, its rate contrasts on the t interval they were drawn on, and its first line says so.
+
+**Added:** each corrected comparison names how its interval was drawn (`FamilyComparison.interval_basis`, `bounded` or
+`t`). A comparison whose adjusted p is under alpha while its interval reaches zero says why it is not separated
+(`not_separated_reason`), and the report's verdict carries that reason. One predicate says what a rate is
+(`threetears.evals.kernel.metrics.reads_as_rate`), read by the contrasts, the floors and the readings a floor may name.
+
+### evals: a directed boolean measure is compared between arms on its rate per case
+
+**Changed:** a boolean measure with a better end on a merit axis is in its comparison family now. It is tested on its
+rate per case, the share of a case's repeats held True, paired by case, as the pass rate is. Its delta is in points of
+a share. The rate tested is the rate each cell reports. A host declaring such a measure (Kairo's `top_up_never`, for
+one) sees a new comparison per arm and a wider correction across the family once its bundles are assembled again, so a
+stored adjusted p, interval or verdict may move. A boolean guardrail is held on its rate per case too. Undirected
+booleans, text and categorical measures stay out of every family. A host with no such measure sees no change.
+
+### evals: a multi-aspect report shows every aspect; each aspect states how a trial passes; contrasts state their cases
+
+**Changed:** with more than one aspect, the arms table gives each aspect a column group (pass rate with passes over
+usable trials, cost, trials usable), the options table splits the plan's pass-rate and cost columns per aspect, and the
+by-measure table has a row per aspect and arm. A single-aspect page reads as before. The cost uplift is still the lead
+aspect's alone.
+
+**Added:** each aspect on the report input carries `pass_rule` (a `PassRule`: the criteria in force, the threshold and
+its pass^k label, the judged dimensions that count, the boundary ones left out, the checks that fail a trial alone, and
+`no_criterion`, the trials that passed with nothing to fail them), plus `graded_by` and a one-sentence `description`.
+A contrast carries `n_cases` (and `control_n_cases` where an unpaired test read a different number), `paired` and
+`pairing_r`. The analyst cites them as figure keys. Contrasts were already per case, so no figure changes. Every new
+field is left out when unset, so a stored input digests as before. A snapshot frozen again from a campaign whose
+aspects state a pass rule has a new content address, so it is a new snapshot. The planner's grammar lists none of the
+fields only an analyst's input states, so its prompt version moves from 9c77dc447b89 to 925c6cf80a45, and a host
+calibrating the reporter kind sees the new plans in a group of their own.
+
+### evals: a host measure whose value does not fit its declared type is refused before the result is written
+
+**Changed:** a run (and a witnessed cell) refuses a host measure whose value does not fit its declared data type,
+before any judge is paid for, with a `ValueError` that names the measure and both types. A number is never coerced to
+a boolean. A mismatch already stored is still kept out of the statistics, and its entry in the bundle's unreported
+observations now says why, e.g. `top_up_never (declared boolean, recorded as a number; dropped, not pooled)`. A measure
+described with no data type is read as numeric, so text or a bool under one is refused too, since a run's summary
+states it as a mean and range of numbers; a name nobody describes is not checked. `assemble_completed_cell` takes `measures=` and makes the same refusal itself.
+A measure declared with a better end or as a diagnostic and no data type is now refused where it is registered
+(`MeasureRegistrationError`, naming it): no bundle would have carried it. Declare its data type.
+
+### evals: a should_fix first raised after round 1 gets a revision; a finished page counts its open findings at the top
+
+**Changed:** a should_fix finding new in a later review now gets one more revision while the writer's revision budget
+remains. It still never blocks, so the page is stored finished, never as a draft for it. A round-1 finding still open
+after the last revision still makes a draft. A finished page with findings open says so under its title ("2 review
+findings open, listed at the end."), in markdown, HTML and text.
+
+### evals: served chart data, SVG coordinates and interval glyphs round computed floats to twelve figures
+
+**Changed:** a served page's chart data (the JSON in each chart's `data-chart` attribute) gives every float to 12
+significant figures (`round_floats`), as the page's JSON form and every fingerprint already did. The static page's
+chart SVG and every interval glyph round each coordinate to 12 figures before writing it to a tenth of a px. So none
+of them varies any more with the last bits of a computed value, which differ between platforms' maths libraries. The
+numbers a reader sees are unchanged. A coordinate that sat exactly on a twentieth of a px now rounds the same way on
+every platform. A page can still differ between platforms in the bundle fingerprint it prints, where a value falls on
+a 12th-figure rounding boundary (#1062).
+
+### evals: each reader's read budget is measured; the bundle and pivot refuse sooner
+
+**Changed:** the read tier's one budget of 50,000 results is replaced by one per reader, each the bytes per result
+that reader holds at its peak against the memory one call may take (measured 2026-10-30 with tracemalloc on the
+hot-path corpus at 1x and 2x; each budget is set by the worst of the paths a host runs, the SQLite store with and
+without its narrowed reads and the memory store without them; `packages/evals/scripts/measure_read_budgets.py`
+re-measures):
+
+| Reader | Budget (results) | Bytes per result | Set by | Allowance |
+|---|---|---|---|---|
+| `history`, `frontier`, `comparison_sets`, the regression watch (`READING_BUDGET`) | 66,003 | 4,067 | SQLite, reads hidden | 256 MiB |
+| `detectable_effects`, a launch estimate's planning block (`PLANNING_READ_BUDGET`) | 37,010 | 7,253 | SQLite, reads hidden | 256 MiB |
+| `pivot` (`PIVOT_READ_BUDGET`) | 27,108 | 39,609 | SQLite | 1 GiB |
+| a campaign's bundle, so `report_read` and every analysis (`BUNDLE_READ_BUDGET`) | 28,116 | 38,189 | SQLite, reads hidden | 1 GiB |
+| `program_budget`, `orphaned_runs` (`SPEND_READ_BUDGET`) | 105,196 | 10,207 | SQLite, reads hidden | 1 GiB |
+
+What a host sees: a history, a frontier, a comparison grouping or a regression watch over a scope of up to 66,003
+results is now answered where it was refused past 50,000, and `program_budget` and `orphaned_runs` over a scope of
+up to 105,196. The spend lenses read no result, but they hold their one grouped read whole before folding it: 1,683
+bytes a result on a store offering grouped reads (SQLite), 10,207 on the engine's grouping of a store without them
+(Discodon's today), which sets their budget. Past it they refuse as the other readers do, before reading anything,
+saying no narrower call exists and where to read the spend a page at a time.
+
+**Changed, tighter:** a pivot past 27,108 results, and a campaign's bundle past 28,116 (its report, `report_read`, an
+analysis), are now refused where they were answered up to 50,000. A host with a campaign or a pivot scope between
+those figures and 50,000 narrows it (a pivot to one subject; a campaign to fewer runs, archived members or one aspect),
+as the refusal's remedy says. The planning block of a launch estimate past 37,010 earlier results says it cannot
+estimate, where it read up to 50,000; the estimate is still priced.
+
+**Changed:** `READ_TIER_ROW_BUDGET` stays, as the readings readers' budget (66,003, where it was 50,000), and is still
+the record count past which an `eval.read_tier` line is a WARNING: a pivot or an export now warns past 66,003 projected
+records, where it warned past 50,000. A refusal's text is unchanged but for its figure;
+its log line now ends `over result_budget=<figure>`, where it ended `over READ_TIER_ROW_BUDGET=<figure>`, and the
+regression watch's ERROR line reads `past its read budget of <figure>`. No remedy cites an issue number.
+
+**Changed (provisional):** `reads.hold_to_read_budget` and `reads.narrowed_read_disclosure` take a keyword-only
+`budget`. The planning read reads its runs' readings in the store's own order across them, so on the engine's path
+every run's keys are one call. All five are constants of `threetears.evals.analysis.reads`; `READING_BUDGET`, `PLANNING_READ_BUDGET` and
+`BUNDLE_READ_BUDGET` are exported from `threetears.evals.analysis` (provisional).
+
+### evals: the campaign bundle reads its results as readings, and its kept trials whole by id
+
+**Changed:** `assemble_context_bundle` reads a campaign's results through `iter_result_readings`, so it holds each
+result as its compact reading: about 2.7 KB a result where it held 25.4 KB, and a code-only `report_read` of the
+hot-path campaign peaks at 134 MiB where it peaked at 191 (248 MiB where 374 at twice the cases). The trials the
+bundle keeps (at most 500) are read whole, by id, in one more call, for the judge's reasons and "could not tell" notes,
+without the verbatim fields. The bundle, its fingerprint and every page are byte-identical.
+
+**Changed (provisional):** `CampaignReadStore`, and so `AnalysisStore`, names `iter_result_readings` and
+`load_eval_results(..., elide=())` where it named `query_eval_results_by_runs`. On `EvalStorage` the results are one
+store call over a store that offers `ResultReadings`, else one key read per run plus one read per 1,000 results.
+`EvalStorage.load_eval_results` takes a keyword-only `elide`.
+
+**Fixed:** a reading carries a usage row's `unanswered_reasons` and a second judge's `config_ids`, which each arm's
+census and the judge-change reading read.
+
+### evals: EvalStorage's reads of readings and groups take the store's path when the store offers it
+
+**Added:** `EvalStorage.iter_result_readings` and `result_groups` read on the store's path (`store`) when the store
+offers `ResultReadings`: one `iter_narrowed` call, with the verbatim fields (`world_events`, `kind_payload`) and the
+judge's prose (`judge_reasoning`, each score's `reasoning`, a re-judge's `cannot_tell` notes) left out, its rows
+hydrated a page at a time; or one `grouped` call. A store without it is read on the engine's path, as before. A store
+that offers the capability and fails raises a `StorageError` (503), as a store failing on the engine's path does,
+and is never read again on the engine's path; a grouping `grouped` refuses (`TypeError`, `ValueError`) is raised as
+it is on both paths. The readings
+and the groups are the same on both paths, in the same order. A store-path read of several runs holds its readings
+until the store's last row, to hand them out run by run; `iter_result_readings(..., in_store_order=True)` instead hands
+them out a page at a time in the store's order across the runs, on both paths (one key read for every run on the
+engine's path), for a reader that folds page by page and never depends on the order across runs. Each store call is
+counted when it is made, so one that raises is counted too.
+
+**Changed:** on the engine's path, the reads by id leave out the verbatim fields and the judge's prose outside a list
+(`judge_reasoning`, and the transcript and outcome scores' `reasoning`), which no reading carries: 8.7 KB shipped per
+result instead of 10.2 KB on the hot-path campaign (5.0 KB on the store's path). `result_groups` on the engine's path
+reads every run's keys in one call, in the store's order, so a grouping across runs hands its `values` in the order a
+capable store does, and reads by id only the top-level fields its paths name (`keep`).
+
+**Changed:** the `eval.read_tier` line's `path=` and `store_calls=` are filled by these reads: the path that served them
+(`store`, `engine`, or `engine+store` when both served one call) and the store calls they made, each counted when it is
+made. They stay empty for a call that makes none of these reads.
+
+### evals: the aggregates, the regression watch and the planning read read compact readings
+
+**Changed:** `pivot`, `history`, `frontier`, `comparison_sets`, the regression watch's history and judged tiers, and a
+launch's planning block (`detectable_effects`) read each result as its compact reading (`EvalStorage.iter_result_readings`)
+where they read whole results; `program_budget` and `orphaned_runs` read each result's spend figures (its run,
+`cost_usd`, its re-judges' `cost_usd` and `cost_roles`) off a grouped read's values (`EvalStorage.result_groups`), never
+hydrating a result. Every answer is unchanged, to the byte; the read budgets are set per reader from measurement (the
+entry above). A narrowed read (one
+subject's runs) reads its runs one after another, as before; the watch's judged tiers over one subject's runs now read
+them so too, where they read them in one read in the store's order. The planning read's store calls on the engine's
+path are one key read of every run, in the store's order across them, and one read by id per 1,000 results, where it
+read each run's keys in a call of its own; its refusal past the read budget on what the read returned now comes once
+the read is walked. The `eval.read_tier` line of each aggregate gains `path=` (`store` or `engine`) and `store_calls=`,
+after `elapsed_ms`.
+
+**Changed (provisional), host contract:** a host lever reader receives readings, not `EvalResult`s.
+`SweepableReader`, `ResidualReader` and `ProductionDepartureReader` take `Sequence[ResultView]`, as do
+`SweepableRegistry.read_all`, `resolve_levers`, `production_footing`, `read_role_pins` and `read_residual`. A reading
+carries only the attributes the engine's readers are measured to read (no judge prose, no `world_events`, no
+`kind_payload`); a reader reading another raises `AttributeError`. A reader annotated `Sequence[EvalResult]` should be
+retyped to `Sequence[ResultView]` (`threetears.evals.kernel`) to pass a strict typecheck.
+`planning_readings` takes the runs' results as one iterable, in any order across runs, where it took a mapping by run.
+`LensStore` gains `iter_result_readings` and `result_groups`, which `EvalStorage` has.
+
+**Added (provisional):** `threetears.evals.analysis.lenses.program_budget.SpendView`, a result as the spend lenses read
+it, and `ResultSpend`, the figures read off a stored row; `compute_program_budget` and `compute_orphaned_runs` take any
+`SpendView`.
+
+### evals: a compact reading of each stored result, and EvalStorage reads of readings and groups
+
+**Added (provisional):** `threetears.evals.kernel.ResultReading`, a stored result as the engine's readers
+read it: exactly the attributes they access, under the same names, copied from the hydrated `EvalResult` and never
+recomputed, without the judge's prose (`judge_reasoning`, each score's `reasoning`; the "cannot tell" notes are carried
+as the dimensions they name). It holds at most a fifth of a result's bytes (measured 3.4 KB against 28.9 KB at a
+production shape). `ResultView` is the protocol an `EvalResult` and a `ResultReading` both satisfy; the scoring,
+condition, usage and score-projection rules now take it. Two `EvalStorage` reads hand them out, on the engine's path
+as below, or on the store's when the store offers it (the entry above):
+`iter_result_readings(run_ids | None, scope_id)` (the results' keys, one read per run named or one for the scope, then
+one `get_many` per 1,000 results, each page hydrated as every read hydrates it and dropped once its readings are built)
+and `result_groups(run_ids | None, scope_id, by=, measures=)` (the `ResultReadings.grouped` answer over the same rows).
+Each says the path that served it and the store calls it made. A host store needs nothing new. `ResultView`,
+`ResultReading`, `SharedValues`, the views and readings of a result's record lists (`ScoreView` and `ScoreReading`,
+`UsageView` and `UsageReading`, and the rest), `ReadingsRead`, `GroupsRead` and `ReadPath` are exported from
+`threetears.evals.kernel`.
+
+**Changed:** the bundle's measure walk reads each model type's fields that can hold a number or text, but never the
+judge's prose: a score's `reasoning` and a result's `judge_reasoning`. A host that declares no measure of either name
+sees no change; the walk read the prose and dropped it as undescribed text. A host that declares a measure named
+`reasoning` or `judge_reasoning` no longer has the judge's text pooled into it. Before, `judge_reasoning` pooled the
+judge's narration (beside any value the host reported on `host_measures`), and `reasoning` pooled a score's reasoning where the host
+reported none in the cell (or was listed under `unreported_observations` when two judged scores of a result both held one). Each now pools only
+the values the host reports on `host_measures`, and the judge's prose is neither pooled nor listed unreported.
+
+### evals: a refusal reaches the caller as a 422 refusal, never as an exception; a stored bundle's shape is checked first
+
+**Fixed:** a lower layer's refusal (`RefusedInput`, or a subclass such as `PivotError` or `DesignRefused`) that an
+operation did not translate escaped `MountedTool.call` as an exception, which a host's transport serves as a 500. The
+dispatcher now refuses it as `validation_failed` (422), with its fault, its remedy and the parameters its raiser named,
+and logs one WARNING naming the action and the function that raised it, since the operation should have translated it.
+Anything else a handler raises still propagates. `campaign_record` over an analysis frozen at a bundle shape this build
+no longer reads, and `reporter_case_freeze` over a planned analysis whose bundle or plan no longer reads, now refuse 422
+naming `analysis_generate`; `report_read` refuses 422 where a memo's page refuses what it is laid out over (a bundle of
+another shape still reads code-only, led by the regenerate line). Putting a stored analysis's bundle back together
+checks every aspect's shape before it reads any, so an analysis whose later aspect no longer reads is refused
+without first rebuilding its earlier aspects' bundles.
+
+### evals: a bundle assembly and a report read each log where their time went; every aggregate logs its read
+
+**Added:** each campaign bundle assembly and each `report_read` logs one `eval.read_tier` line at INFO, whether the call
+returned or raised, with `lens=assemble_context_bundle` or `lens=report_read`:
+
+`eval.read_tier lens=<lens> scope_id=<scope> campaign_id=<campaign> runs_in= results_in= store_ms= hydrate_ms= fold_ms=
+render_ms= elapsed_ms= path= store_calls=`, plus `raised=<exception class>` when the call raised.
+
+- `store_ms`, `hydrate_ms`, `fold_ms` and `render_ms` are milliseconds by phase, and add up to `elapsed_ms`, the
+  call's wall time. A phase not measured is left empty (`store_ms=`), never written as zero.
+- A bundle's read of its results as readings (`iter_result_readings`) charges its store calls to `store_ms` and its
+  rebuilding of results to `hydrate_ms`; `fold_ms` covers the folds and the assembly's other store reads (its runs,
+  its kept trials, its insights). A nested line's charges reach the enclosing line too, so a code-only report line
+  carries its bundle's `store_ms` and `hydrate_ms`. On a bundle line `render_ms` is empty. On a report line `render_ms` is serializing the report in its form (with `include_sessions`, the
+  transcripts' read too), and `fold_ms` is the rest: finding and building the report, its bundle assemblies on the
+  code-only path, and reading its analysis.
+- `runs_in` is the runs a bundle's aspects summarise (a run belongs to one aspect) and `results_in` the results they
+  produced. A report line sums its assemblies' counts, and leaves both empty when it assembled none (a report
+  document's page draws its stored snapshot). A report read on the code-only path also logs its bundle's own line, before its own.
+- `path` and `store_calls` say which read path served the call's reads of readings and groups, and how many store
+  calls those reads made (the store-path entry above); both are empty when the call made no such read.
+
+`comparison_sets`, `frontier`, `history`, `program_budget` and `orphaned_runs` now log the `eval.read_tier` line that
+`pivot` and `export_results` log (`lens`, `scope_id`, `runs_in`, `results_in`, `elapsed_ms`). They project no score
+records themselves, so their line has no `records_out` and is always INFO. A frontier or history its lens refuses after
+the read carries `refused=true`.
+
+### evals: an optional readings capability for a document store, with its own conformance kit
+
+**Added:** `ResultReadings`, an optional capability a `DocumentStore` may offer beside its methods, detected with
+`isinstance` as `StoreClock` is. `iter_narrowed` yields the rows `by_doc_type` would return for the same predicates, in
+its order, from one backend call, with `exclude` applied and `exclude_in_items` dropping paths inside each object item
+of a list field (`narrow_items`, beside `omit_paths`, is that rule). `grouped` groups those rows by scalar paths and
+answers `count`, `count_null`, `sum_int`, `min`, `max` and `values` (`[row_id, value]` pairs in stored order, each
+value exactly as this store's own reads return it, every double to its last bit; SQLite reads an integer of 2**63
+or more back as a float) per group (`GroupMeasure`). It has no float measure: a reader adds the values itself, in order. The in-memory and SQLite
+stores offer it. `fold_groups(rows, *, by, measures)` is the grouped read's rules as one function, for a store that
+groups rows in Python; the in-memory store and the engine's grouping of a store without the capability both fold
+through it. All four names are provisional.
+
+`RoutedDocumentStore` offers it when every store a type is placed in does, and sends each read whole to the one store
+its type is placed in. `bridge_async_store` offers it when the async store offers `AsyncResultReadings` (provisional,
+exported from `threetears.evals.schema`), the same reads awaited: `iter_narrowed` is an async iterator, streamed to
+the engine a batch at a time, and `grouped` is awaited. Each combines with the store's clock as before, and neither
+offers the capability through a method that raises.
+
+`threetears.evals.testing.RESULT_READINGS_CONFORMANCE_CASES` proves a store that offers it, one
+`ResultReadingsConformanceCase` per rule, failures reported as `StoreConformanceFailure`. Each case also takes a hook
+installer: the store calls the hook once per query it issues (a statement, or a cursor opened, never a page fetched
+from one), so the kit can count queries and make the backend fail. The SQLite store streams a narrowed read of a file
+on a read-only connection of its own, so a read left part way never blocks a write, and needs nothing newer than
+JSON1 and an aggregate `FILTER` (SQLite 3.30).
+
+**A host need not implement it.** A store without it is read through the port's own methods, with the same answers.
+
+### evals: a judge-kind launch overlaying a stored judge config no longer fails on the event loop
+
+**Fixed:** `launchable_judge_kind`'s launch built the judge kind on the event loop, and building it reads each
+`overlays.config_ids` entry from the store, which refuses a call on the loop's thread (`StoreCalledOnEventLoop`). So a
+judge campaign naming a production judge config failed as its launch job started, while its price check (which built
+the kind off the loop) passed. The launch now builds the kind off the loop too. A launch with no config overlay read
+nothing and was never affected.
+
+### evals: the read tier's aggregates read results without their verbatim fields
+
+**Fixed:** `pivot`, `history`, `frontier`, `program_budget`, `orphaned_runs` and `comparison_sets` read every result
+they aggregate whole, held only to the read tier's row budget, and a row is not its bytes: a result's world event log
+and its kind's payload are most of them, and no aggregate reads either. Their read, whole-scope or narrowed to a
+subject's runs, now asks the store to leave both out, and every answer is the one a read shipping them gives; so do an
+export's reads of a scope, of named runs and of a page of whole runs, whose rows are the same projection's (a run too
+large for one page is read a page at a time by id, each page whole). A host reader those results reach (a sweepable's `read`, a
+residual or production reader) sees both fields as none.
+
+**Changed (a host's own lens store):** the `LensStore` port's `query_eval_results` and `query_eval_results_by_run` take
+a keyword-only `elide`, as `EvalStorage`'s and `ResultStore`'s do, and the aggregates and exports pass it, so a host
+that implements either port itself must accept it. `EvalStorage.query_eval_results_by_run`'s `run_id` and `scope_id`
+are now positional-only, as the ports declared them.
+
+### evals: a campaign's bundle and a regression watch's judged tiers read results without their verbatim fields
+
+**Fixed:** `assemble_context_bundle` read every result of a campaign's runs whole in its one store read, and a 41-run
+campaign's report was part of what killed a 2 GB pod (2026-10-30). A result's world event log (`world_events`) and its
+kind's payload (`kind_payload`) are most of its bytes, and no reading of the bundle reads either, so the read now asks
+the store to leave both out: it stays one store call, and the bundle is the one a whole read gives. A regression
+watch's judged tiers read their results the same way, over a subject's runs or the whole scope. The measure walk no
+longer reads a world's event log either: it pooled each event's `turn` into a measure a host declares as `turn` where a
+result did not report one itself.
+
+**Changed (a host's own read store):** the `CampaignReadStore` port's `query_eval_results_by_runs` takes a keyword-only
+`elide`, the fields the store leaves out of each result (each reads as none), and the bundle passes it, so a host that
+implements the port itself rather than handing over `EvalStorage` must accept it. `EvalStorage.query_eval_results_by_runs`
+and `EvalStorage.query_eval_results` take it too. The verbatim fields are `run_pages.VERBATIM_RESULT_FIELDS`, public
+now.
+A store conformance case (`projection.exclude_with_field_in`) checks `exclude` beside `field_in` and an equality
+filter, the shape of that read.
+
+### evals: a launch estimate's planning block reads its template's history a page at a time
+
+**Fixed:** `detectable_effects`, the planning block every launch estimate carries, held every result of every earlier
+run of the template at once to read their variances. A host's history of dozens of runs of hundreds of results, each
+tens of kilobytes, was most of a 2 GB pod (2026-10-30). It now walks each run a page at a time and keeps of each result
+only its per-case values; the readings, and so every detectable difference, are unchanged. The read budget is counted
+off the runs' stored keys as well as their matrices, both before any result is read. `planning_readings` takes each
+run's results as an iterable, read once.
+
+### evals: a static page hides a drawn chart's table, as the default page does
+
+**Changed:** a static page (`report_read(static=True)`) draws each chart as inline SVG on the server, and its table of
+values stayed in sight under the picture, so every drawn chart showed twice. That table is now visually hidden beside
+its drawing, read by a screen reader, as the kit's drawn chart's table is on the default page (owner ruling
+2026-10-29). A chart the server does not draw (a report's interval rows, a gate matrix, a lattice, example cards)
+still shows its table under its one line saying so. The rule ships in the drawings' stylesheet (`CHART_STYLE`), so
+the default page is unchanged.
+
+### evals: the name caps are in the schema, and a campaign's line says when its report is a draft
+
+**Added:** the JSON schema states each declared name's cap (`maxLength`), so a host's form can read it: a campaign's
+name (`CampaignDefinition.name`, `CampaignChanges.name` and the `campaign_create` / `campaign_update` parameters, 32)
+and an arm's and an aspect's `short_name` as a campaign's definition declares them (`ArmDefinition`,
+`AspectDefinition`, 32). The stored campaign's shape is unchanged. The operations still enforce the campaign name's cap with their remedy,
+and the validators the short names'. `CampaignLineReport.draft` says whether the campaign's reported analysis is a draft,
+as `AnalysisLine.draft` does, so a campaign list can show it without listing analyses.
+
+### evals: an unanswered call never unprices a cell's cost
+
+**Fixed:** `RoleUsageLedger.add_unanswered` on a key no `add` reached (a lost call names no served model, and its host
+may name no price source) made a row of its own with no dollars, and a cell's blended cost read that row as an
+unpriced call, so one lost call made the whole `EvalResult.cost_usd` None (owner ruling 2026-10-27: unanswered calls
+add nothing to cost and never unprice it). The ledger's rows now fold such counts into the row of the same model,
+provider, unit, actor and purpose that counts answered calls, beside its `call_count`, where the unanswered census
+reads them as one share. A model that answered nothing keeps a row of its own (`RoleUsage.answers_nothing`, new),
+which the blended cost and the run summary's tallies leave out: its spend stays unreported, never 0.
+
+### evals: a memo over a bundle shape this build no longer reads falls back to the code-only page; a campaign line maps its aspects to their runs
+
+**Changed:** `report_read` and the campaign's report no longer refuse a campaign whose newest analysis is a memo frozen
+over a bundle of another shape (a memo frozen at shape 60 on a build reading 64): the page is the code-only page over
+the campaign's evidence as it stands, in markdown, html, static html and json, led by the one regenerate line with the
+bundle's shape after it, as a report plan's or an unreadable report document's already was. `campaigns_list` and
+`analyses_list` already listed it as needing regeneration. `analysis_report` by id still refuses. Only a bundle of
+another shape falls back: a memo's page that refuses what it is laid out over (an aspect with no page, a page keyed by
+a label the campaign does not hold, readings of another campaign) still raises `RefusedInput` to the caller.
+
+**Added:** `CampaignLine.aspect_runs`, each aspect's label to the ids of its runs in the campaign's order.
+
+### evals: a scatter's y-axis title is an obstacle to its point labels
+
+**Fixed:** a `scatter_frontier` or `gate_scatter` chart draws its y-axis title inside the plot, bottom left, and its
+point labels did not avoid it: at phone width a point near the origin put its label ("M") on the title ("Pass rate"),
+which the render check reported as an overlap. The kit (`kit.js`, in the package and in `docs/eval-report-kit`, byte
+for byte) and the static SVG port now both leave the title's box to the label placer. The five reference pages in
+`docs/eval-report-kit/references/` are rebuilt with `scripts/build.py`, which inlines the kit: only that kit line moves.
+### evals: after round 1, only a carried-over finding or a must_fix sends a report back; the editor marks what each finding continues
+
+**Changed:** owner ruling 2026-10-29 (option 3), after the re-recorded acceptance runs showed each later review
+raising new should_fix findings, so four of seven ended drafts. Round 1 is unchanged: every finding sends a revision.
+From round 2, a finding blocks clearance when it is a `must_fix`, new or old, or when it continues a finding an
+earlier review raised, of any severity; a `should_fix` first raised in that review blocks nothing. It is stored with
+the report and listed open on the page, and alone it neither sends a revision nor makes the report a draft. A report
+is a draft only when a blocking finding is open at the end (`Review.blocking`; `Review.clears` is the passing scores
+and no blocking finding; `Review.passes` is unchanged).
+
+**Added:** code tells a carried finding from a new one by structure, never by comparing text. Each finding gets a
+stable id where it is first raised (`f<round>.<n>`) and keeps it while it stays open: `ReportFinding.id` and
+`ReportFinding.since` (the round it was first raised; `""` and `0` on a finding stored before). The editor is given
+the previous review's findings by id, and from round 2 marks each of its findings with the id it continues or
+`"new"` (`continues`), and lists the earlier ids now resolved (`resolved`). Every earlier finding is accounted for
+exactly once, continued or resolved, or the answer is asked for again naming what is missing. `Review.resolved` holds
+them, and the stored review records `resolved` and `blocking` (by id). The editor's rubric explains the marking and
+what blocks; the revision request marks each blocking finding. `EvalReportDoc.draft` is every ending but `stored`,
+plus a `stored` document carrying a finding with no id (stored before this). The skill's digest moves with it.
+
+**Fixtures:** the hand-scripted `hand-revise` recording's round-2 review lists its round-1 finding as resolved
+(edited as data). The seven `prototype5` recordings predate the marking: each round-2 review there names no
+`continues`, so the replays drift until they are recorded again.
+
+### evals: a campaign listing carries what a list page shows, a title code builds and a short verdict; a campaign's name is a capped qualifier that moves no fingerprint
+
+**Added:** `CampaignLine` (`campaigns_list`, and every operation returning a campaign's line) carries `created_at`,
+`question` and `question_short` (at most `QUESTION_SHORT_CHARS`, 100, cut at a word, an ellipsis marking the cut),
+the declared `arms` (`CampaignLineArm`: label, short name, role), the recorded `call` (`CampaignLineCall`: arm and
+reason), `verdict_short` (code's few words: `Keep <arm>` for the control and `Adopt <arm>` for a candidate, from the
+recorded call or else the report's recommendation; `No call` for a report recommending none; None with neither),
+`outcome_short` (what the evidence says in a few words, read by code off the report's frozen readings by their kind,
+never from the writer's prose or the headline's text, and distinct from the decision: the answer leads, a change's
+`<arm> improved`, `<N> candidates improved` or `No candidate improved` (whether the candidates are equal, not separated
+or worse), a choice's `<arm> ahead`, `Arms differ` or `Not separated`, a measurement's `Measured`, or `No readings yet`
+where the readings hold no row; a floor the answer's arms broke or a bar they miss only qualifies it, floor first
+(`1017 improved, broke a floor and missed a bar`, `2 candidates improved, 1 broke a floor`), counted past 48
+characters (`, 2 warnings`), and a warning on an arm the answer does not name changes nothing; None with no report or
+one this build cannot read), `report_state` (`none`, `written` or `needs_regeneration`), `report` (`CampaignLineReport`: the analysis id, code's
+verdict line as `headline`, why it needs regeneration, when and on what model it was generated, its attempt's
+`cost_usd`, None while any call is unpriced, and `unpriced_calls`) and `feeds` (for an exploratory campaign, the
+declared campaigns holding any of its runs). A report needs regeneration when this build cannot read it, when it is a
+report plan, or when the campaign holds other runs than it was written over: the runs it held then are the ones the
+report read and the ones its frozen bundle names as not resolving or archived, so a run id that never resolved does not
+read as a move. Each line reads its campaign's reported analysis and attempts once, and puts its frozen bundle back
+together once for the headline, the title, `verdict_short`, `outcome_short` and the report's state
+(`analysis_verdict` takes it as `bundle=`). One analysis that does not read back together (a corrupt record) lists its
+report as needing regeneration, with why, and fails neither the listing nor the write that lists the campaign. A write
+(create, update, runs added or removed, archive) reads the scope's other campaigns only for an exploratory campaign,
+the one kind `feeds` names any for. `verdict_short` finds the arm by the call's or recommendation's variant key (by
+label only where no key matches) and prints it as the title does (`careful`, never `candidate=careful`).
+
+**Changed:** a campaign's name is at most `CAMPAIGN_NAME_CHARS` (32) characters when it is created or renamed, refused
+past it with the remedy to put the detail in its question or description; a name stored longer still reads and lists.
+The quick path (`Eval.run`, `Result.against`) holds its campaign to the cap too: an eval's name past 32 characters is
+cut at a word there, an ellipsis marking the cut, and kept whole in the campaign's description and as `Result.name`.
+
+**Changed:** a campaign's name is presentation: a campaign bundle's fingerprint is version 3
+(`v3:`), which leaves the name out (`CAMPAIGN_PRESENTATION_FIELDS`), as it leaves
+out an aspect's and an arm's short names. Renaming a campaign moves no version 3 fingerprint.
+
+**Fingerprints:** no stored fingerprint moves. A campaign fingerprint stored in version 2 (`v2:`) or 1 (unprefixed)
+is computed again in its own version, the name included, so every analysis and reporter case keeps reproducing; a
+campaign renamed after one was frozen over it reads as other evidence against that one until it is frozen again,
+which then records version 3. A new freeze records version 3. An aspect's own bundle fingerprint is unchanged.
+
+**Changed:** `CampaignLine.title`, code's name for what a campaign compares: `<arms> · <measure> (<name>)`. The arms
+are its declared arms' short names (else labels), control first, joined ` vs `, past three `<control> vs N
+candidates`; a campaign declaring none names its runs' distinct candidate models (a provider's path trimmed), or
+`<model>, N variants` where its runs vary something else (each model's lever maps counted apart, so two models each run
+at two settings are `4 variants`), and a judge campaign counts its judges, whether or not it has a report. The measure is its
+aspects' printed names, past two `N aspects`. No call, recommendation or verdict enters it. With it, a campaign's
+name is a qualifier: at most 32 characters (`CAMPAIGN_NAME_CHARS`, the declared-name cap).
+
+**Changed:** the title heads a campaign wherever a page heads one, built by code on every read and never stored
+(`threetears.evals.analysis.campaign_title`: `campaign_title` moved there with its helpers, `declared_title` over a
+frozen bundle's resolved arms, `named_title`, `report_input_title`). `AnalysisLine.title` (`analyses_list`) is built from
+the campaign bundle frozen with the analysis, the stored campaign's title where that bundle cannot be read. The first
+line of a campaign's page, of an aspect's own page, and the `<title>` of a planned page and of a report document's
+page is the title, in place of the campaign's name (or, on an aspect's page, the name with the question it asks);
+nothing else on a page moves.
+### evals: a model's providers are its model rows', and a cost is the provider routing's: an analyst rule, an editor's must_fix and fact
+
+**Fixed:** an arm's pricing (`ArmPricing`, copied to the report input's `Pricing`) named a tool the model called as a
+provider of the model: a production page printed "served by searxng", the web-search API a candidate called, metered as
+an `external` usage row. `providers` now reads the model rows alone (every role but `external`); the external rows'
+providers are `tool_providers` (new, written only when one names a provider), and the options table prints them beside
+who served the model as tool spend ("served by DeepInfra; tool spend at searxng"). The tool spend stays in the cost and
+its calls in the priced share. The analyst's `campaign_overview` gives each arm's `served_by` and `tool_spend`, left
+out where its pricing names none.
+
+**Changed:** a cost is the provider routing's, not the model's (owner, 2026-10-25, restated 2026-10-29), as the
+priced page's caveat line already said. The analyst skill makes it a rule: a cost comparison between models names the
+provider each was served by and never ranks models on cost alone as if the cost were the model's, and says the routing
+is unknown where an arm's pricing names no provider. The editor's rubric treats a claim that ranks models by cost with no
+provider named as must_fix, and the editor is handed `cost_served_by` (new): where the document's prose compares two
+arms' costs or more, one fact naming those fields and, for each arm compared, the providers its pricing names, that it
+names none, or that the input states no pricing, and its tool spend apart. Which arms' costs a key reads is
+`figure_keys.cost_arms` (new), the reading the partly-priced note beside a cost already used. The skill's digest moves
+with it; the recorded prototype5 replays still pass. The shipped reasoning notes (Kairo, r1, r3, r4) and their index
+no longer state a cost as the model's: each cost comparison is this run's routing's, and since no note's snapshot
+names a provider, each says the routing is unknown; their reasoning is unchanged.
+### evals: a static report page draws its charts as inline SVG
+
+**Changed:** the static page (`report_read(..., static=True)`, `report_html(report, static=True)`,
+`campaign_report_html(report, static=True)`, and a planned or document page asked for static) draws its charts again.
+It showed each chart as its table alone, since the kit draws charts with its script and the static page carries none,
+so a host serving it under `default-src 'none'` or in an empty `sandbox` saw no graphics at all. Each chart is now
+drawn on the server as inline SVG by the kit's own geometry and colour tokens (bars, diverging bars, forest, lines,
+scatter, gate scatter, dot interval, range bars, heatmap, difference heatmap, confusion; an outcome bar and a
+cost/quality chart as the kit's bars and scatter), at three widths the stylesheet picks between by the chart's own
+width, with each mark's tooltip as its `<title>`, and no script, event attribute or URL. Each chart's table of values
+stays under it. A chart the kit lays out as HTML (a gate matrix, a lattice, example cards) and a report's interval
+rows say in one line that they are shown as their table, as does a chart given no row (a forest or dot interval chart
+with `rows: []`), and a small multiple given none is a card saying so. The default page is unchanged, byte for byte.
+### evals: five rendering defects on a production report page: examples read as fields, the worst case on the corrected interval, a recorded scale, one printed name, no blank cost
+
+**Fixed:** the examples table's Details column no longer prints a case's input as truncated JSON: an input or expectation
+that is a JSON object (a world, a payload), whole or cut where the snapshot was frozen, reads as its first four key and
+value pairs (`Input · city: Oslo`), each key by its reader name and each long value cut at a word; any other text stays
+one field as written, a text opening on `{` that reads as no pair ("{customer}
+asked for a refund") included. The weakest margin (`Margin`, `weakest.*`, Watch) takes a
+reading's worst case from the multiplicity-corrected interval of the arm's pass-rate contrast wherever the input holds
+one, not the plain 95% interval, so Kairo's reads -12.6 (gap 2.4) where it read
+-10.8 (gap 4.2); a floor keeps its own nominal interval. `weakest.interval` (new key) says which interval the worst case
+is read on, the planner's facts line and the editor's `weakest_not_in_watch` fact name it, and a plan page's Watch that
+cites the weakest margin carries code's line saying so, after the planner's text (`PageSlot.note`, new), so the text
+the judge reads stays the planner's alone. A judged dimension no judge tier covers (the reserved dual-score
+axes `outcome` and `transcript` among them) keeps the scale the bundle froze beside its scores, so a pass/fail one
+reads as a pass rate and never as a 1 to 5 mean. `reader_name("measure", ...)` names a goal check with no declared
+name as every table header and chart does (its expression as a code span), where it had printed the bare expression as a
+gate row's label. An arms (options) table's cost column no longer leaves a cell blank: an arm the page's cost source
+lacks but the scoreboard prices per reply shows that cost in the column's form, and an arm with no known cost reads
+`unpriced`.
+
+**Fingerprints:** no stored document, bundle or report input changes. Rendered text moves where a margin is read on the
+corrected interval: the Kairo fixtures' weakest margin (-10.8 to -12.6, gap 4.2 to 2.4), s1's weakest margin (now v4's
+billing reading, which its Watch names), and one scored run plan's R7 quote.
+### evals: report pages stay inside a phone's width, and a chart's values table keeps every panel's columns
+
+**Fixed:** a report page no longer scrolls sideways at 390 px. Prose (a list item, paragraph, figure caption or fold
+summary) wraps a long unbroken token such as a dotted metric path, which had pushed the kairo page to 412 px. A
+heatmap, difference heatmap or confusion chart sits in a `.tbl` frame with its values table, so a grid of eighteen
+columns scrolls inside its frame instead of widening the page (the r2 page, 398 px). A small-multiples chart's values
+table now holds every panel's columns, the widest panel's first, each panel's cells under their own column and the rest
+empty: a forest panel with a Note column beside one without gave rows longer than the header (the r4 reference's
+"aspects" chart), and a bars panel with a Note column beside one with an interval column was refused (the r2 plan's
+"Calls per task"). Layout only; no page's words move.
+### evals: the report writer revises until its editor's review is clean, and a report stored with findings open is a draft
+
+**Changed:** a review clears a report only when it passes on its scores with no finding open: a `should_fix` now sends
+the report back while revisions remain, as a `must_fix` always did (owner ruling 2026-10-29, after a stored Discodon
+report was served as finished with six of its own editor's should-fix findings open: a lede that misstated an arm's
+result, a cost column with no dollar figures, a claim with no evidence behind it). `Review.clears` is the passing
+scores and no finding. The revision request says the review holds findings left open and asks for every one,
+must_fix and should_fix alike, to be resolved. A loop that ends `stored` stores no finding; `stored_with_findings` and
+`over_budget` keep their findings as before.
+
+**Added:** a stored report document says whether it is a draft, decided by code from its ending and its review's
+structured findings, never from prose: `EvalReportDoc.draft` (a property, not a stored field), true for every ending
+but `stored` and for a `stored` document carrying a finding, as a build before this one stored them. A draft's page
+says so first, under its masthead, in one line of code's ("Draft: its editor's review left 6 findings open.", or "...
+did not pass it." where its review failed on its scores alone), in every format, static HTML included, with its
+findings listed in the appendix where the page already listed them. The flag is carried typed: `DocPage.draft`,
+`build(..., draft=)`, `AnalysisLine.draft` (so a host's list of analyses can show "draft"), `ReportDocument.draft`
+(on `report_read`'s result), and `draft` in the JSON form's `report_doc`. `doc_page.words.DRAFT_OPEN` and
+`DRAFT_UNCLEARED` hold the line's words, and `doc_page.model.draft_line(page)` writes it.
+
+**Added:** the editor is handed one more computed fact, `high_over_open`: the confidence's form is
+`high_if_immaterial`, so the page reads "High, if the caveats below aren't material", over caveats it leaves open,
+none of which code proves immaterial, named by count and id. Code writes the form's words and checks only that the
+form matches its caveats, so whether the high stands is the editor's: its rubric now makes a high over an open caveat
+the page does not stand behind (one that could plausibly be material, or whose clause does not say what would make it
+matter and why the call holds until then) a must_fix, and says every finding left open sends the report back and a
+report stored with one open is served as a draft. The analyst skill's list of the facts the editor weighs names it.
+The skill's digest moves with it.
+
+**Fixtures:** the hand-scripted `hand-pass` recording's editor review no longer carries its one should_fix finding
+(edited as data, so the run still clears in round 1). The seven `prototype5` acceptance recordings are not re-recorded
+and now drift: in six, round 1's review passed with should_fix findings and the loop now asks for a revision the
+recording does not hold; in `r2-with-its-gates-read-in-each-task`, round 3's review left one should_fix open, so the
+run now ends `stored_with_findings` where it recorded `stored`. They need a live re-record.
+
+### evals: Discodon's W4 adoption findings: unanswered calls through the ledger, a turn cap on a dollar budget, the report writer's port declared
+
+**Added:** `RoleUsageLedger.add_unanswered(model=, served_model=, price_source=, ..., retried=, lost=, reasons=)` counts
+a role's unanswered calls on the row `add` keys on the same fields (model, served model, provider, unit, price source,
+and the simulator's actor and purpose), so a host no longer
+builds a `RoleUsage` row by hand for them. The counts sit beside the row's `call_count` and spend and never in them;
+`None` leaves a count uncounted, 0 counts none; reasons need a count beside them, count at least one call each and
+never outnumber the counts, refused at the call. A ledger that counts none builds its rows as before.
+
+**Changed:** a dollar budget may carry a turn cap (`ReportBudget(usd=10.0, turns=60)`), which admits by both; dollars
+with tokens are still refused. `writer_ceiling_s(limits, request_s=, turns=)` takes the budget's turn cap: under one
+smaller than every turn the limits allow, the ceiling is that many turns, each at the dearer role's request ceiling.
+Dollars bound what a report spends and never how many turns it sends, so without a cap the ceiling is the limits'
+worst case at the host's full request ceiling, which at Discodon's floors (298 turns at 3,530 s) came to about 12
+days and stopped nothing. `analysis_estimate`'s `max_calls` counts the cap where it is fewer.
+
+**Changed:** `analyst_tools(writes=False)`'s description no longer offers the freeze it does not carry, and a mounted
+tool whose actions are all reads but one appends a note says so: "It is not marked read-only: capability_gap stores
+the note it is given, and nothing else it carries writes." A mount whose gap note stores nothing (the report
+writer's) says nothing of it, and is marked read-only.
+
+**Changed:** the report writer's port is declared stable (owner-approved, declared ceiling 541 -> 557): the
+providers' `Pricer` and `AnthropicPublishedRates`; the ops' `ReportBudget`, `WriterLimits`, `AnalystLimits`,
+`EditorLimits` and `SessionLimits`; `actions.analyst_tools`; the schema's `ToolTurnClient`, `TurnCeiling`,
+`TurnMessage`, `TurnReply`, `TurnToolSpec`, `ThinkingBinding` and `ToolResultClearing`; and `schema.RunDisclosure`,
+which `LaunchHost.run_disclosure` returns: the names Discodon's adoption binds to. The block and price types these
+take in turn (`TurnText`, `TurnToolUse`, `TurnThinking`, `TurnToolResult`, `TurnReplyRefused`, `CallPrice`) stay
+provisional for now.
+
+**For hosts (Discodon):** drop the sixteen names from your provisional exemptions; build the unanswered rows with
+`add_unanswered`; declare a turn cap on the report budget and pass it as `writer_ceiling_s(..., turns=)`. The core
+measures `unanswered_retried` and `unanswered_lost` (added with the unanswered calls, below) refuse a host measure of
+either name in `MeasureRegistry`, and a kind's `host_measures` under either name stop the run before judging; rename
+a host measure that used either.
+
+### evals: analyst skill round 2: the Kairo review's findings, the misfits' and the planner re-record's, in the skill and the editor
+
+**Changed:** the analyst skill and the report editor's rubric carry what the W3 acceptance runs' reviews found, as
+general guidance: every caveat code attaches to the evidence a claim rests on is carried beside it with its likely
+direction, measured telemetry included, and no finding is called immune to the caveats while one could move it; the
+deciding measure's coverage is stated; a claim about a gap draws the gap, its percent on the same basis; a caption
+describes only what its block draws; a count written as a word comes from a key; a saving is written as its size with
+its direction in words; one measure keeps one name; a rerun is sized at the size that settles four times in five;
+Watch cites code's weakest margin by its keys and names every thin leg a route rests on; a headline and its own block
+never disagree. The editor treats a page its own evidence contradicts, a sign that contradicts its sentence, and an
+immunity line a caveat on its evidence could move as must_fix. The Kairo reasoning note no longer says the caveats
+leave cost untouched. The skill's digest moves with it.
+
+**Added:** the editor is handed one more computed fact, `caveat_not_carried`: a caveat code attaches to a contrast a
+claim's evidence reads that neither the claim nor the confidence carries (a method-reach caveat landed on a Method term
+counts as carried). Evidence reads a contrast when a block names the contrast's measure for its arm, or reads the
+contrasts source with no measure named, or when a key in the claim names its arm and measure. A block that reads every
+reading of an aspect without naming the contrast's measure does not count as reading it, and a caveat the confidence
+carries satisfies the fact even where its clause calls the finding untouched; the editor's must_fix rule (a finding
+called immune while a caveat on its evidence could move it) covers what the fact misses. Like every fact it never
+refuses and is the editor's to weigh. `contrasts_list` and the fact name a contrast's figures and its confounds through
+one shared pair, `analysis.analyst.facts.contrast_key` and `confound_caveat_id` (new, provisional).
+
+**Changed:** an analyst submission is checked in one pass by the store gate's checker, its validity included, so one
+bounce carries every verdict, each with its remedy, where a validity fault used to bounce alone, without its remedy,
+and cost a bounce of its own. The tally still counts that bounce as `validity`.
+
+**Changed:** on a report document's page, caveats that share a label beside one claim or Method term print that label
+once, saying how many carry it, in words, and the arms their records name (`A run fell short of its usable
+measurements — two of them, on qwen3.8-flash (A)`), where the label printed once per caveat; Markdown, text and HTML
+print the same line.
+
+A host needs no code change.
+
+### evals: the report view serves the stored report document, and reads code-only, never refused, what it no longer reads
+
+**Changed:** `report_read` (and `campaign_report`, the command line's `report`, the quick path's page) lays out the
+campaign's newest analysis by what wrote it. A `doc` analysis, the one `analysis_generate` stores now, is the page its
+stored report document draws on its own snapshot, its made line at its foot, read as a stored document is: a figure
+that no longer resolves prints `—`, a block that no longer draws prints its values or its caption, with one note to
+regenerate. Markdown, HTML and the static HTML (no `<script>`, no `<link>`, no URL: it serves under Discodon's
+`REPORT_HTML_POLICY` unchanged) are that page; the JSON form is the campaign's JSON, every member it carried, plus
+`report_doc`: the stored document, its id, its snapshot, its ending, its findings, its made line and its generation
+record (sessions by digest, turns and ref, never a transcript), `null` on any other page. Every `plan` analysis (the
+report planner's) and a report document this version no longer reads (its version, its model, a snapshot gone or
+holding no bundle) read as the code-only page with one line on its first screen, "written in a shape this version no
+longer reads; regenerate with analysis_generate", never refused; no planner page is reached from the report read (the
+planner's page stays for the reporter kind, and for `analysis_report` by id). That line is one constant
+(`report.campaign.memo_blocks.NO_LONGER_READS`), which `ReportDocument.needs_regeneration` (new) and the analysis
+listing's `needs_regeneration` print byte for byte: the listing now sets it on every `plan` analysis, and leads with it
+where a plan or document no longer reads, the reason after it in parentheses. A memo analysis reads as before.
+`ReportDocument.plan` is replaced by `doc` (the stored `report-doc/1` JSON for a `doc` analysis), with no alias; a
+host reading only `.body` (Discodon) changes nothing. `ReportDocument.analysis_id` names the analysis a code-only
+page stands in for, `basis` reading `code_only` there. Such a stand-in never reads as a campaign never analysed: its
+`needs_regeneration` (the JSON body's new member too, `null` on every other page) is the line, then why in parentheses.
+A document's page carries no memo `recommendation`: the arms its document recommends are `report_doc.doc.recommends`.
+With `trials="all"`, a document's page is followed, closed, by an "Evidence record": each aspect's fold as the
+code-only page draws it, every failed or lost trial's record in it, the document above it as stored; `trials="table"`
+lays out the document alone. Every document's readings and folds are laid out over the campaign as its snapshot
+declared it, so a version written before the campaign relabelled or gained an aspect reads as written.
+
+**Added:** `report_read(report_doc_id=, include_sessions=)` and the action's two arguments: `report_doc_id` reads one
+of the campaign's stored report documents, any version (`analysis.service.report_doc_report`; one of another campaign
+or of none is refused as not found, the campaign checked as soon as the record loads, before its snapshot is read),
+and `include_sessions` adds, to the JSON form's `report_doc`, `sessions`: every
+session that wrote it, by name, each its stored `eval_report_session` whole (the audit read, #977). A Markdown or HTML
+page never holds a transcript, so `include_sessions` with either is refused, saying to ask for `json`; a read without
+it loads no session. `CampaignReport` gains `doc_page`, `report_doc` and `unread_analysis_id`;
+`analysis.report_doc_store.read_report_doc` reads a stored document back as its page.
+
+**Fixed:** `analysis_generate`'s attempt, ending after its report document is stored and before its analysis is (a
+failure or a cancel), names the document and that `delete_report_doc` removes it, since no analysis links it; the
+error raised where the snapshot holds no bundle names the stored document again. The out-of-run ledger's totals line
+counts each way its calls were admitted (`1 admitted at up to $0.0300, 2 admitted by a report budget, 1 admitted
+unbounded`), and a scope whose calls were all unbounded no longer reads "admitted at up to $0.0000". The ledger keeps
+its four decimals (`:.4f`, the spend ledger the number rule exempts), so every figure on the line reads one way.
+
+### evals: a computed lever arm name reads one way on every surface; the arms key names settings in words; the kit writes a per-1,000 tick
+
+**Changed:** an arm name the engine computes from an arm's levers is capitalised where it is made, so every surface
+prints `Fanout 2` (owner, 2026-10-28: "people might think Fanout 1 is different from fanout 1"): the document's page
+(prose, the arms key, the options table, a chart's labels), the plan page, the campaign page (its call lines, its own readings and
+every aspect's fold), a code-only page, and quick's contrast rows. It applies to a derived campaign arm (one no arm of
+the campaign's declaration names) and to a name a code-only page spells from the levers, when it opens on a lever's
+name; a level value (`careful`), a model's name, a label a person gave and a declared short name print as written.
+The arm's id (the campaign's derived label), its variant key and the `axis=level` names are unchanged, so figure keys
+and stored documents still name arms by id, and prose typing the id stands, since it differs from the printed name
+only in case. **For a host:** a served campaign page's `readings` print the name too (`arm_label`, `control_label`,
+`first_label`, `second_label`, `ahead_label` and each `reason`, by the arm's variant key); the readings a bundle
+freezes, and its fingerprint, keep the label they were read under. quick's `contrasts()` rows key `contrast` and
+`control` by the printed name (`Callable prompt v2, model a`, where it read `callable prompt v2, model a`). A campaign
+with derived lever arms gets a new report input digest and snapshot id; one whose arms are named or named by model
+does not.
+
+**Changed:** the arms key's Configuration column names each setting in words: the name the report input declares for
+it (a factor's: r2 reads `Atlas-M · Reasoning budget low · Retry on failure 1`), else the package's reader name
+(`fanout 1 · research timeout 30s · reply limit 45s`, where it read `research_timeout 30s · reply_limit 45s`). A
+computed arm name reads the same one source (`style.lever_reader_name`), so the two columns name a lever alike. The
+model and every value read as written.
+
+**Changed:** a chart of totals under a cent (a run's trials' cost) reads per 1,000 with the mark, `$8.00/1000`, on its
+ticks, its labels and its values table, as a key and a table write it; it read in dollars to its least total's
+decimals (`$0.00048`). The chart kit gains a `usdpk` format (dollars per 1,000 with the mark) for it. A set that counts
+something still moves its count and never carries the mark beside it, at 1,000,000 included. `money_ruler` loses its
+`marked` parameter, which never shipped. **For a host that allows the kit's inline script by hash:** `kit.js` changed,
+so its hash moved; re-read it from the package (`analysis/report/kit/kit.js`). A host serving the static page, which
+carries no script, needs nothing.
+
+**Fixed:** what the misfit reviews of the W3 acceptance runs found on the page. A values table no longer prints a Note
+that only restates its row's value (`+2` beside `+2`, `+0.8 pts` beside `+0.8`); a note that says more (`worse`) stays.
+A count key groups its thousands (`4,000,000 a month`, where it read `4000000`). The levers block
+lists the four arms two settings cross once where its two readings agree (`reasoning effect, across retry` beside
+`retry effect, across reasoning`, one difference of differences, both within), by the first setting's reading, and
+both where their verdicts differ, so a reversal one reading shows is never hidden. The full gate grid reads a cell the input holds no
+figure for as `Unknown (no figure)`, where it read `Fails (no figure)`, as the page reads it everywhere else.
+
+### evals: the analyst's capability gaps are stored durably, and `analyst_gaps_list` digests them as issue text
+
+**Added:** `capability_gap` (on the `evals_analyst` tool, the analyst's cut and the editor's) takes `kind`:
+`missing`, the default, is the call as it was (a capability no tool gave); `suspect` is a result that looks wrong,
+and names what reproduces it: `figure_keys` (the keys whose readings look wrong) and `calls` (each tool call as it was
+sent, its `action` and its other arguments), at least one of them. A gap is a note, never a transcript: `need`,
+`why` and `workaround` hold at most 2,000 characters each, `figure_keys`, `calls` and `claim_ids` at most 20 each (a
+key or claim id at most 500 characters, a call at most 2,000 as JSON), and a call past a bound is refused with its
+remedy. Each gap is stored as one record of a new durable
+document type, `eval_analyst_gap` (`EvalAnalystGap`, durable v16.7), under an id derived from the call (the snapshot,
+kind, need and why; a `missing` gap keeps the id `capability_gap` always returned), so a replay, a retried write or the
+same call made twice stores it once (`EvalStorage.save_analyst_gap`, create-only; `list_analyst_gaps(scope_id,
+since=)` reads them back). A gap is durable: `drop_derived` never sweeps it, and a core reset keeps it. Where it is
+stored depends on the mount, never on anything the model sets. `capability_gap` stays a `read` action, so a read-only
+mount carries it, and it is the one read that appends a record (`Action.appends`): a tool carrying it reports
+`readOnlyHint` false and `idempotentHint` true, and only a tool that carries it says so in its description (the plain
+read-only `evals` tool says a read changes no evaluation data and nothing more). Called through any mount (Claude Code over MCP, the dev
+command line), the call stores the gap at once, with its snapshot and caller; its result says `recorded_in: store`.
+Inside a report write, the writer's own mount stores nothing (`recorded_in: write`), and `report_write` stores every
+gap its sessions noted when it ends, on every ending, a `ReportNotStored` included: each names the snapshot, the report
+it stored (or none), the session's role and name, the model and the session's transcript digest. Code adds two
+notices to the same store, from what the write already holds: `unresolved_key`, a figure key a draft cited that does
+not resolve on its snapshot and sent the draft back, with the key and the bounce's verdicts at its field; and
+`editor_score`, a rubric item the editor scored 0 or 1, with its score and reason and whether that review held a
+`must_fix` finding (evidence only: a finding names a claim and never a rubric item, so such a notice is never ranked as
+linked to one). A notice's id carries its session's transcript digest, so a byte-for-byte replay names the notices it
+named before and a second paid write on the same snapshot gets its own. `ReportWritten` gains `gaps` (every record the write made) and `gaps_not_stored` (why the store
+refused them or they could not be read, logged at error level; the report and its record stand either way), and
+`analysis_generate`'s job notes it on its attempt's `faults`, which `job_poll` shows, without changing the ending. A write that crashes
+before its end loses its gaps, as it loses the write. The analyst skill's tool table names `kind` and what a suspect
+gap carries, and the editor's tool list says it may note a gap, which is stored and never sent to the analyst.
+
+**Added:** `analyst_gaps_list` (a read action on the `evals` tool, `since=` an ISO 8601 time with its offset, read
+against each record's own time) returns the scope's gaps as a digest. Gaps group by kind and need, the need compared
+with its case, spacing and punctuation set aside, and with the ids the engine mints (a snapshot's, a gap's, a UUID, a
+digest) and the figure keys the grammar reads (braced, backticked or a dotted path in a family's form) read as one; any
+other word, an action's name, a model id, a version or a ratio included, keeps two needs apart. No model reads them, so
+a paraphrase is a group of its own. Groups rank `suspect` first, then those that came with a `must_fix` finding, then the rest; within
+each, the larger count, then the later last seen. Each group carries its count, first and last seen, snapshots,
+reports and record ids, and an issue title and body with the evidence (a suspect gap's keys and calls, a key notice's
+verdicts, an editor notice's item and reason), never the caller's identity, and every `@` followed by a zero-width
+space so a quoted name pings no one; the needs are what a model wrote, so a host reads them before filing on a public
+tracker. One digest reads at most 1,000 records, newest first: a window holding more is refused, naming a later
+`since`. The engine calls neither GitHub nor a scheduler. A host needs no code:
+the new type routes by its facts in `DOC_TYPE_FACTS` (origin `record`, lifecycle `durable`). A host may run a
+scheduled job that calls `analyst_gaps_list(since=)` and posts the digest, filing each group's issue with its own
+credentials. During a rolling deploy, a pod before durable v16.7 never reads a gap, and its operator wipe of durable
+documents leaves them in place.
+
+### evals: money reads one form per figure type, tiny amounts per 1,000 (#993), and each arm's cost sits beside its quality
+
+**Changed:** money is spelled one way per set, never per value (owner ruling of 2026-10-27, which supersedes the W2c
+rule of three significant figures from $0.10 to $1), and one owner states every set: `cost_unit.money_ruler`, which
+every chart, table and figure key of the report document and the planned page reads its scale, form and count from,
+and the code-only report's money rulers, tables, means and intervals too (its ± spreads and margin lines keep the
+number rule; a cost there drawn per 1,000,000 replies is headed `($/1,000,000 replies)`, where it read
+`($/1,000 replies)`). A set is every amount of one figure type a table or chart shows, across its rows and columns:
+a column of arms by measure, and in a table of slices by arm (Full results' strata, tasks and cells) each measure's
+every row across the arms, so r1's tasks read `$58.00 | $24.00 | $4.60 | $8.90`, where a row read `$58 | $24 | $4.60 |
+$8.90`; the code-only report's two arms' means in one row, a contrast's change and its interval's ends (`$0.47 |
+[$0.35, $0.60]`, where it read `$0.51 | [$0.4107, $0.606]`), and its projected costs (`$0.92` beside `$11.00`, where
+it read `$2.3` beside `$27`); and the campaign page's cost/quality chart, its tips and its table (`$4.00 [$3.60,
+$4.40] per 1,000 replies` beside `$0.80`, where a tip read `$4` beside `$0.8`, and a cost under a cent per reply is no
+longer spelled per reply). The code-only report's Methods row states a partly priced total as one (`cheaper candidate
+$0.063 (21 of 24 trials priced)`), as every other surface does. A set's form is chosen from the amounts
+themselves: whole dollars where the least is $10 or more (`$7,560`); else cents, with more decimals only where the
+least amount needs them for two significant figures (`$0.030` beside `$3.477`, so r2's `$0.302` reads alike in prose
+and in its tables). Where an amount is under a cent the ruler moves instead: money per reply is stated per 1,000
+replies, and a set under a cent per 1,000 per 1,000,000 (r3's keys read `$180.00 per 1,000,000 turns`), the words
+replacing the label's own count, never stacked beside it (`Cost per 1,000,000 calls`, never `Cost per 1k calls, per
+1,000,000 calls`). A chart says what its dollars are per in a line under it and in its titles, and draws its ticks
+and notes to the same decimals (the kit's `usd:<decimals>`), never with the per-1,000 mark beside the count it states. A
+set still under a cent per 1,000,000 moves no further: it reads at that count, to the decimals its least amount needs
+for two significant figures (`$0.0030` under `($/1,000,000 replies)`), never with the per-1,000 mark beside the count,
+so no amount carries two scales. A total (a run's cost, a month's) counts nothing and is never scaled; a bare key or a
+table or chart of totals under a cent writes the per-1,000 mark instead (`$8.00/1000` for $0.008), a chart on its
+ticks too (the kit's `usdpk` format). A gate's reason and a gate row's line state money on the
+criterion's ruler (the measure's every arm and the line), the count named once in the criterion's name (`Cost budget,
+per 1,000,000 calls $1.060 > $0.302`). A chart's lines name what its dollars are per by the measure's reader name,
+never a code key (`Cost per 1,000 replies, in dollars.`, where the scoreboard's key once showed). A change reads on the ruler of the amounts it compares,
+never scaled because an interval end sits near zero, to the precision of the change itself and of its widest
+interval: Kairo's production-cost contrast now reads `+$0.49 per 1,000 replies`, where it read `+$0.492` on an
+interval $0.64 wide, and a $0.40 change between monthly totals of $1,208 reads `+$0.40`, never `$0`. An unknown
+amount reads `unpriced`, never `$0`. The single-value helpers `dollars_text`, `format_number` and `spell_dollars`
+read exactly as before, so a host printing one amount sees no change. `numbers.spell_price`, which never shipped, is
+removed.
+
+**Added:** the report document's options table puts each arm's quality beside its cost: its pass rate (passes over
+usable trials), then its cost per run, or per 1,000 runs where the column reads per 1,000 (the header says which),
+then what priced it. Beside the cost: the uplift on the control's, the priced share of the calls the cost counts
+(`all 897 calls priced`) and the unanswered calls, as before. An arm only part of whose calls were priced states
+`850 of 897 calls priced` in place of a cost, which would be a smaller total read as whole; an arm none of whose
+calls were priced reads `unpriced`; and no uplift is read against a partly priced control (`no uplift: the control
+has 850 of 897 calls priced`). Everywhere else such an amount is stated, its figure keys (`cost_per_1k`, a cost
+uplift or gap), a chart's bars, dots, points and lattice tiles, and a task matrix's costs say the priced share beside
+it. The new "Priced by" column names each arm's price sources and the providers that served its calls. They come from
+a new optional `ScoreboardRow.pricing` on the report input (price sources, serving providers, calls and priced
+calls), left out of the document while unset so every stored input digests as it did. The bundle's census fills it
+from each arm's stored production usage rows (see the next entry). Token-metered calls record no upstream serving provider yet (#1010). Monthly figures
+still appear only where the campaign declares a volume.
+
+### evals: each arm's pricing is read off its usage rows and moves no fingerprint; a run says which build launched it and what its host disclosed
+
+**Added:** the bundle's census reads how each arm's production cost was priced (`ArmScoreboard.pricing`, an
+`ArmPricing`: the price sources its priced rows name, the providers its rows name, the calls counted and priced) off
+the usage rows of the roles a production deployment pays for, never the judge's. The report input copies it into
+`ScoreboardRow.pricing`, so the options table's "Priced by" column and priced share are filled on a real campaign
+(#1011). **The price source is no part of any fingerprint** (owner ruling, 2026-10-28): `AnalysisContextBundle.
+fingerprint`, `evidence_digest`, `CampaignBundle.fingerprint` and `campaign_evidence_digest` leave each arm's pricing
+out, so every stored analysis and reporter case fingerprints as it did, and two bundles over the same runs priced by
+different sources share a fingerprint. A report snapshot's content address (`report_input_digest`) does include it, so
+two inputs priced differently are two snapshots. The document of a bundle over runs with production usage rows, and
+the memo writer's message over it, now carry the pricing.
+
+**Added:** a run records which build launched it: `EvalRun.package_version` (the installed 3tears-evals version) and
+`EvalRun.package_rev` (the git commit its installer recorded in the distribution's `direct_url.json`, written for an
+install from a git URL; `None` for a wheel from an index, an editable or local-directory install, or no metadata, never
+a guess). A run that pins a simulated user records `EvalRun.simulator_prompt_digest`, the content address of what the
+simulated user is told, beside `simulator_asked_settings`: it moves with an actor's policy or intent, the scheduler, the
+round's cap or any of the engine's own words its calls carry (prompts, reply formats, the scheduler's repair).
+
+**Added:** a host may disclose what it knows about each launch (its machine, that machine's load, how it measures
+latency) by setting `LaunchHost.run_disclosure`, a callable returning a `RunDisclosure` (`values`, each by the host's
+own name, and `statements`, in its own words). The launch stamps it on every run of every kind, the engine's judge kind
+included, as `EvalRun.run_disclosure`; the bundle carries it on each run summary's `RunApparatus.run_disclosure`, the
+report input on its rig (`RunRig.disclosure`), and `campaign_overview` on the rig row, by run (`RigRow.disclosed`). It
+is a disclosure, never a coordinate: it is in no identity, context key, cell, confound or apparatus class, and runs
+that disclose different machines share one rig row. It is evidence the bundle carries, so a run carrying one moves
+its bundle's fingerprint and a snapshot's id. A disclosure callable that fails, or returns no `RunDisclosure`, refuses
+the launch naming `LaunchHost.run_disclosure`. Every new field is left out of its document when unset, so a run,
+bundle or input with none stores and digests as before. Core schema v15.11.
+
+**Added:** an analyst's examples carry every judged dimension's reason (`Example.reasons` on the report input, by
+dimension, the primary's among them, and `reasons` on `examples_list`'s rows), where `reason` is the primary
+dimension's alone. Only the analyst's input (`analyst_input`, what a snapshot is frozen from) carries them: a
+planner's input and every stored input read and digest as before. A snapshot frozen from a campaign whose trials were
+judged on any dimension now has another content address, so it is a new snapshot. `Example.expected` stays unset: no
+trial the bundle holds carries an expected answer.
+
+### evals: `analysis_generate` writes the report with the analyst and the report editor, on the host's model and budget
+
+**Changed:** a generation no longer runs the report planner. Its job freezes the campaign's evidence and runs the
+report writer (`write_report`) on the client the host returns for the new `analyst` completion role, which both the
+analyst and the report editor use. Every turn is admitted against the host's report budget
+(`AnalysisGeneration.report_budget`, a `ReportBudget` read from host config as each generation starts), the only
+admission on the report: no caller can raise it, and the out-of-run cap is not read. The loop is held to
+`AnalysisGeneration.limits` (`WriterLimits()` by default), passed through unchanged, and the job is bounded by
+`budget_s`, which a host derives from the same limits with `Ceilings().writer_ceiling_s(limits, request_s=...)` plus
+its headroom. A stored report is linked by an analysis whose `basis` is `doc` and whose `report_doc_id` names the
+document; its recommended variant is set when the document recommends exactly one arm, and each claim marked durable
+becomes an insight that later campaigns read as a prior. A report that stores nothing ends the job failed or refused
+with its ending and reason, and the attempt keeps the turns' count and cost, a turn in flight when the writing stopped
+counted as sent and unpriced. The report's spend is ledgered once under `analysis`: one row stating every turn sent,
+its priced share and its unpriced turns apart, and that the report budget admitted them, its total unpriced when any
+turn was, never $0 (new optional `OutOfRunSpend` fields, core v15.10). Provenance is the analyst skill's digest, not the
+planner's prompt id. Until the report view lands, `report_read` of a `doc` analysis serves the code-only page over
+its frozen evidence, its first screen saying the report is stored as report document `<id>`. The planner stays for the reporter kind.
+
+**Hosts must change** (`packages/evals/MIGRATIONS.toml` has the port): `AnalysisGeneration` drops `prompt_id`,
+`resolve_prompt` and `max_output_tokens` and takes `report_budget`, `limits`, `budget_s` and `preparation_budget_s`;
+a host factory adds an `analyst` row, and a client wrapper forwards `turn_session` and `turn_pricing_refusal` (and
+wraps the session client `turn_session` returns). A client that is not a turn model, or a host with no report budget,
+is refused before anything is frozen or sent, saying what to set. `threetears.evals.ops` exports, provisional,
+`ReportBudget`, `WriterLimits` and the limits it holds (`AnalystLimits`, `EditorLimits`, `SessionLimits`) for a host
+building its own, and `ReportWriter`, the opaque type of `analysis_generate`'s `writer` (the action hands its job one;
+a host calling the operation directly passes `actions.report_writing.campaign_report_writer(caller)`). `analysis_estimate` states the budget and the most
+turns the writer can send, makes no call, and says it does not check the campaign's evidence, which the job checks
+when it freezes it. The jobs conformance kit counts a turn model's turns as requests.
+
+### evals: the pricing port: the host prices a call, the engine bounds it; a report budget in tokens and turns
+
+**Why.** The engine cannot know what a host pays, so the host owns prices and the engine owns the arithmetic (owner,
+2026-10-28). W3's `Pricer` answered rates alone; a host also needs to price what a call actually cost from the reply
+(OpenRouter's reported cost, a bring-your-own-key upstream's charge, cache writes split by lifetime), to say when its
+rates are only an estimate, and to write a report on a model nothing prices.
+
+**Changed (provisional, `threetears.evals.providers`; none of it was in a final release):** `Pricer` is the host's
+port, asked for every `Model` call, a completion and a tool turn alike (every client the engine ships), with two
+halves.
+- **Before a call**, `rates_for(model, *, provider)` answers `HostRates(rates, guaranteed)`: the `ModelRates` the call
+  is billed at, and whether the host guarantees them. The model computes the bound from them with its own arithmetic
+  (`price_ceiling`, `turn_price_ceiling`), so a host writes none. Rates that are not guaranteed (an OpenRouter route
+  whose upstream may bill otherwise) still bound and admit the call, and a report's dollar budget says it was
+  checked against an estimate. `None` leaves the call to the catalogue route, its bound and its price both:
+  OpenRouter's reported cost for an OpenRouter call, else the catalogue row.
+- **After a call**, `price(model, *, provider, usage, served_provider)` answers `CallPrice(usd, source,
+  unpriced_reason)`. `usage` is the reply's raw usage block exactly as the wire returned it (OpenRouter's `cost`,
+  `is_byok` and `cost_details.upstream_inference_cost`; Anthropic's `cache_creation` split by lifetime), and
+  `served_provider` the upstream OpenRouter routed to. An unpriced call is `usd=None` with its reason, never `0`.
+  `providers.wire.usage_counts(provider, usage)` reads a usage block's tokens exactly as the engine does.
+
+A call no pricer answers rates for is priced as before: OpenRouter's reported figure for an OpenRouter call, else the
+catalogue's row, and `AnthropicPublishedRates` stays the default for a model handed neither a pricer nor a catalogue,
+now implementing both halves. The default reproduces every recorded completion's and turn's `cost_usd`,
+`price_source` and bound byte for byte. `ModelRates` no longer carries a `source`: the price's source is `CallPrice`'s.
+`PriceSource` and its two `OPENROUTER_REPORTED*` words are unchanged. Only rates a pricer guarantees bound a call
+exactly: Anthropic's published rates for a direct call, and a host's `guaranteed=True`. A bound from OpenRouter's
+catalogue row is always an estimate, since OpenRouter may route a call to an endpoint priced otherwise and a
+bring-your-own-key upstream bills at its own rates, so a cap checked against one says so; no dollar figure moves.
+
+`ToolTurnClient.turn_price_ceiling` answers a `TurnCeiling(usd, estimate)` (new, `threetears.evals.schema`), so a
+wrapper forwarding it carries the estimate through; a turn recording writes `"estimate": true` beside a ceiling that is
+one, and reads every recording made before as it was.
+
+**Added:** a report's budget takes one of two forms, declared by the host: `ReportBudget(usd=)` as before, or
+`ReportBudget(tokens=, turns=)` (either cap, or both) for a model nothing prices, such as a local model or a
+subscription. A token and turn budget admits each turn by a bound on its tokens and by the turns sent, never by its
+price, so `report_write` asks for no price before it starts and the report is written, tallied unpriced; its made line
+says `unpriced (N turns, none of them priced)`, never `$0`. Both forms at once, or neither, are refused when the budget
+is built. An admission refusal still sends nothing. Each tallied turn records `admitted_on_estimate`, each sum counts
+them and lists the pricer's `unpriced_reasons`, and the made line of a report whose dollar budget admitted turns on an
+estimate says `its budget checked against estimated rates on K of N turns`. Run launches keep their dollar rule.
+
+**A host's own client** (one that is not a `Model`) needs no pricer: it prices its own calls. Its `price_ceiling` is
+the bound its calls are held to, and its completions' `cost_usd` and `price_source` are recorded as reported; a
+missing cost reads `unpriced`, never `$0`.
+
+**Added: a run's cap says when it was checked against estimates.** `Model.ceiling_is_estimate()` (and the lease a
+`Clients` role hands out) says whether the model's price ceilings are built on rates its pricer does not guarantee,
+and `kernel.ceiling_is_estimate(client)` reads it beside `call_ceiling`. The engine's own `price_largest_call`
+pricers (judge kind, reporter, `price_subject_call_floor`) set the new `CallCeiling.estimate` from it; an arm whose
+largest call is bounded on an estimate is still admitted, its estimate says `its cap is checked against estimated
+rates` (`ArmEstimate.call_ceiling_estimate`, left out of the JSON while false), its run records
+`EvalRun.cap_checked_on_estimates` (core v15.9, left out of the document when unset), and its summary's spend cap
+line ends `, checked against estimated rates`. A host wrapping a `Model` forwards `ceiling_is_estimate` beside
+`price_ceiling`, or its runs read as checked against guaranteed rates; a host building its own `CallCeiling` sets
+`estimate=` the same way.
+
+**Added:** `RoleUsage.unpriced_reasons` (core v15.9): each distinct reason a pricer gave for a call it could not price,
+beside a `cost_usd` of `None`, left out of the document when unset, so every stored row and digest is unchanged. A host
+that builds `RoleUsage` itself need not set it.
+
+**Removed, never released:** `Pricer.rates_for` answering a bare `ModelRates`, and `ModelRates.source`.
+
+### evals: a report's sessions are stored as their own documents, so listing reports loads none
+
+**Changed (stored shape):** the report writer stored every session it ran (the analyst's and each review round's)
+whole inside the report document's `generation`, so `list_report_docs` loaded every transcript; the Kairo record was
+253,272 bytes, 180 KB of them sessions. Each session is now its own derived, regenerable document,
+`eval_report_session` (`EvalReportSession`: the report it belongs to, its name, its transcript digest, its turns and
+its JSON exactly as the session wrote it, with W3's elided tool results still marked), stored under an id its report
+and name give (`report_session_id`). The report's `generation` record (format 2) names each session by
+`{digest, turns, ref}` and holds no message; the Kairo record is 38,120 bytes. `EvalStorage.save_report_doc` takes
+the report's `sessions` and writes them before the report, so a stored report never names a session that was not
+written (a write that fails part way leaves only sessions no report names, which `drop_derived` sweeps);
+`EvalStorage.load_report_sessions(report_doc_id, scope_id, name=)` reads them back, all or one by name;
+`delete_report_doc` and `drop_derived` remove them with their report; `list_report_docs` reads none. The store gate
+`store_report_doc` takes `report_doc_id` (minted by `new_report_doc_id` before anything is written) and the
+`sessions`, and `generation_record` takes `report_doc_id` (`None` for a record held only in memory). A stored
+session (format 3) keeps each message as its JSON text, so a store that hands object keys back in another order (a
+Postgres `jsonb` column, shortest key first) cannot change what a resume sends again: a session reloaded from any
+store and resumed sends the request an uninterrupted one sends, byte for byte, tool-call arguments in the order they
+were sent and every thinking block, signature included, as the reply carried it. A paid run that stores nothing, or
+whose store refuses, still keeps every session in memory: `ReportWritten.generation` holds each inline (`session`,
+`ref` None), as before. `ReportNotStored.report_doc_id` (new) names the id the report was minted under, so a host
+removes any session written before the store failed with `delete_report_doc(report_doc_id, scope_id)` alone. Report documents and their sessions get their own version,
+`REPORT_DOC_SCHEMA_VERSION` (14); a report document written before (version 13) is refused on read by its version,
+with the step to clear it (`EvalStorage.drop_derived`) and write the report again. The shared
+`REGENERABLE_SCHEMA_VERSION` stays at 13, so analyses, insights, judge profiles, plans and snapshots read as before.
+A host stores no report documents yet, so nothing stored is dropped. Discodon needs no code: the new type routes by
+its facts in `DOC_TYPE_FACTS`; only its test that lists every eval doc type gains `eval_report_session`.
+
+### evals: reader prose may not type a lever arm's id the page prints by another name
+
+**Fixed:** a planner's plan and an analyst's report document could type an arm's internal id above Full results (or
+the appendix) and pass their checks: Discodon's production plans had readers see "fanout-1 answers" where the page
+names the arm "fanout 1", and only a judge caught it. Neither check held arms to the rule: `validate_plan` let every
+arm id through as a name the reader is shown, and the report document's invariant 5 read an arm id as an id only by
+an underscore, dot, colon, slash, equals sign, bracket or quote (never a hyphen), and let the arm's alias exempt it,
+though an input built from a run sets every arm's alias to its id. Both now share one rule (`internal_ids`): an arm's
+id is internal where it differs, case-folded, from the name the page prints for the arm (`{arm:<id>}`'s name: its
+short name, else its alias, else its id; `figure_keys.printed_arm_name`, new) and from its served model, and holds an
+id mark, a hyphen or a digit. A model arm whose id is its served model (`deepseek/deepseek-v4.1-flash`) still stands,
+as does an id its printed name differs from only in case (`open-70b`, "Open-70B"), a plain-word id, and an ordinary
+hyphenated word ("cost-per-reply"), which is no arm's id. A plan refusal names the printed name and the `{arm:<id>}`
+key; a document verdict names the printed name, as before.
+
+### evals: the remaining readers of a whole run walk it a page at a time
+
+**Fixed:** the readers v0.81.0 left reading every stored result of a run at once (its "Still read whole" list, under "a
+run's stored results are read a page at a time, never whole") now walk it a page at a time, with no ceiling on the run
+(#998; owner, 2026-10-27: "Fix reads, drop ceiling"). Each makes one read of the run's result keys and reads its results
+by id, `RUN_RESULTS_PAGE` at a time, in the order the store keeps them (`iter_stored_results`, new in
+`threetears.evals.kernel.run_pages`, beside `iter_keyed_results`, which pages any keys in a reader's order), the order a
+whole read handed them out in, so every figure is the one that read gave.
+Checked against the previous build on two runs of 75 shuffled results: `runs_compare`,
+`runs_bisect`, the `run_summary` lens and `results_list` are byte for byte its output. A reader that must hold every
+result to fold it into figures keeps it without its two verbatim fields, `world_events` and `kind_payload`
+(`without_payloads`, `results_without_payloads`), which grow without bound with what a cell
+did and which no figure reads.
+
+- **Two runs side by side:** `compare_two_runs` and `bisect_runs` (so `runs_compare` and `runs_bisect`, operations
+  and actions) hold each run's results without their verbatim fields. The pair disclosures' measurement window reads
+  the runs' keys alone, which carry when each result was stored: `measurement_window` takes keys as well as results.
+- **A run written lost** with no completeness of its own counts what it stored as it walks it, keeping nothing:
+  `reconstruct_completeness` takes any iterable of results. A stored row whose key (id, case, `k`, model, when
+  stored) cannot be read refuses the walk's key read with `UnreadableResultKey` (new, a `StorageError`,
+  exported from `threetears.evals.kernel` (provisional), so a host calling the key read catches it by name), and
+  the run is still written lost, its completeness unknown and why written on it, as for a result this build cannot reconstruct. A store that fails to answer is not caught: nothing is written, and the
+  next read settles the run. `LeaseStore` now reads results through
+  `RunResultsStore` (the key read and the read by id) in place of `query_eval_results_by_run`.
+- **The witnessed judge ceiling** keeps each saved cell's id and judge spend. **Changed:** `WitnessedJudging.spent`
+  takes `(result id, judge spend)` pairs, where it took the run's results.
+- **`results_list`** sorts the run's keys (case, repeat, id): unfiltered, it reads only the page's results;
+  filtered by `condition`, it reads every result a page at a time to count the matches and keeps the page's rows.
+  **`list_results`** reads the run a page at a time and returns the list as before; it takes a `RunResultsStore`.
+- **`delete_run`** reads the run's result ids (`query_eval_result_ids_by_run`), as `delete_unreadable_run` does,
+  where it reconstructed every result; that read now leaves out what the key read leaves out, so it ships each
+  result's scalars, never its row. **Changed:** a run this build reads whose result it cannot reconstruct is now
+  deleted with that result, where the delete was refused; `CurationStore` declares
+  `query_eval_result_ids_by_run` in place of `query_eval_results_by_run`.
+- **The `run_summary` lens** (no engine caller), **a reporter calibration** (`reporter_calibration`; `AnalysisStore`
+  gains the key read and the read by id in place of `query_eval_results_by_run`) and **a campaign arm's variant key**
+  (which reads the run's keys and its first result by id; `CampaignStore` likewise) read the run a page at a time.
+- **The judge passes:** a judge repeat (`collect_repeatable`, so the judge temperature comparison too) and a second
+  judge pass read the run's keys, refuse a named result that is not the run's from them, read only the named results
+  when results are named, and plan each result without its verbatim fields (each write reads the result again). A
+  judge case freeze from runs, and a judge profile's readout (`judge_kind_readings` keeps each trial's result without
+  its verbatim fields once the trial is read) walk their runs a page at a time. The jobs conformance kit's
+  cancelled-before-its-cells stage reads the run's result ids alone.
+- **A host's reader** handed a run's results by a comparison, a bisection or `run_summary` (a sweepable's `read`, its
+  `row_columns`, `production_footing`) now reads them without `world_events` and `kind_payload`: a host reads its
+  kind's payload as the cell ends, into the measures it reports. Discodon's readers read neither.
+- **Not converted, and why:** a campaign's bundle (`assemble_context_bundle`) is not paged (owner): its port promises
+  one store call per read however large the campaign (`CampaignReadStore`, `test_bundle_store_reads`). It is held to the
+  read budget instead (the next entry), until the store computes its aggregates (#996). The scope aggregates (bounded by
+  the read budget, SQL pushdown #996) and the export of several runs a page (bounded by `EXPORT_PAGE_RESULTS`) are
+  bounded already, and so, with the bundle, are the two readers over many runs #998 did not list,
+  `detectable_effects` and `RegressionWatch`'s judged tiers (the next entry). `quick`'s calibration, labelling rows
+  and arm variants read each arm's results through `list_results`, which pages its reads but returns every result; a
+  `quick` run is the caller's own, in memory.
+
+### evals: a campaign's bundle, a launch's planning block and a regression watch's judged tiers are refused past the read budget
+
+**Changed:** `assemble_context_bundle` (so every analysis generation and campaign report) read every result of the runs
+it assembles in one batch, however many: a campaign past what one process holds was read whole. It is held to
+`READ_TIER_ROW_BUDGET` (50,000) as the aggregates are (owner, 2026-10-28, under the aggregates' 2026-10-27 "refuse now,
+SQL later"), and is not paged, since its port promises one store call per read. Before any result is read, the runs it
+reads (the aspect's unarchived member runs, and its archived ones when a declared control may be among them) are
+estimated as the aggregates estimate them, off the batch run read it already makes: each run's matrix (cases × k), or
+the cells it recorded persisting when those are more, with no further read. Past the budget it is refused
+(`VALIDATION_FAILED`, `details` `runs`, `results_estimated` and `result_budget`, one WARNING line `eval.read_tier
+lens=assemble_context_bundle ... refused`), and the remedy names how to narrow: a campaign of fewer member runs,
+archiving the members it need not read, or, where the call takes one, an aspect that reads fewer runs. A read that
+returns more than the budget (results their runs' matrices did not promise) is refused too, `details` adding
+`results_returned`. A campaign at the budget or under assembles as before, in the same store calls.
+`hold_to_read_budget` (new, `threetears.evals.analysis.reads`) is that check, for a reader outside the aggregates that
+holds a set of runs' results whole. The store computing the bundle's aggregates and a bounded sample of its trials'
+evidence, so a campaign of any size assembles in flat calls, memory and reply size, is #996.
+
+**Changed:** the two other readers that hold many runs' results at once are held to the same budget the same way.
+`detectable_effects`, the planning block a launch estimate (`launch_estimate`, the `launch_estimate` action) carries,
+read every earlier run of its template whole: it now estimates them off the run listing it already reads and refuses
+past the budget before reading a result, naming archiving the template's earlier runs it need not read (it leaves
+archived runs out), or a template with fewer. A launch estimate is not refused with it: the price does not depend on the
+block, so past the budget by the runs' matrices, or by their stored keys, the block reads none of their results and says why in its `cannot_estimate` (the budget, what the runs hold, and the same
+remedy), and the arms' prices, the total and the verdict are returned as within it. `detectable_effects` called on its
+own still refuses. A regression watch's judged tiers, read over the run's subject when its history read that subject
+alone, are held to the budget off the run listing they already read (the history it reads first refuses on the same runs
+and estimate, so this is the same bound held where the read is made); the watch's hook logs it at ERROR as it logs the
+history's refusal. Each refuses a read that returned more than the budget too.
+
+### evals: a model's pricing is a dependency the host injects; the report writer can no longer start unpriceable
+
+**Why.** The first live paid report run ended `over_budget` before it sent a turn: a model recording its turns
+(`turn_recording=`) handed the session a wrapper with no `refresh_prices`, the engine's `getattr`-based refresh
+skipped it in silence, OpenRouter's catalogue was never read, no turn had a price ceiling, and the budget refused the
+first one. The engine cannot know what a host pays (a deal, BYOK, a subscription, a local model), so the host
+supplies prices; the package ships a default only for standalone and development use (owner, 2026-10-28).
+
+**Added (provisional; replaced before release by the pricing port above; `threetears.evals.providers`):**
+`Model(..., pricer=...)` takes a `Pricer`, whose
+`rates_for(model, provider=)` answers the `ModelRates` a call is billed at (base input, five-minute and one-hour cache
+writes, cache reads, output, an optional long-prompt tier, and the `price_source` to write), or `None` to leave the
+call to OpenRouter's catalogue. A call the pricer answers is priced and bounded from its rates and reads no catalogue;
+`Model.refresh_prices()` reads nothing for it. A derived model, and so every `Clients` role built from a template
+`Model`, keeps the template's pricer, and `Clients.load_prices()` asks no catalogue row for a role priced by one.
+`AnthropicPublishedRates` is the default: Anthropic's published rates for Fable 5.1 and 5, Mythos 5.1 and 5, Opus 5.5,
+5 and 4.5 to 4.8, Sonnet 5.5, 5, 4.6 and 4.5, Haiku 5.5 (with its long-prompt tier above 100,000 tokens) and Haiku 4.5,
+read from https://platform.claude.com/docs/en/about-claude/pricing on 2026-10-28, `price_source`
+`anthropic-published:2026-10-28`, for a direct Anthropic call; every other call it leaves to the catalogue. It is
+given only to a model handed neither a `pricer` nor a `catalogue`: a developer's
+`Model("claude-opus-5-5", provider="anthropic", api_key=...)`, such as `analyst_cli.py write` builds.
+
+**Unchanged: every existing run's pricing.** A model handed a catalogue and no pricer (every `Clients` model, and a
+host that builds its own with `catalogue=`, as Discodon does) is priced from that catalogue exactly as before, so no
+recorded cost, golden, digest or `price_source` value moves, and `PriceSource` is unchanged. A host replaces the
+default by handing each model its own pricer.
+
+**Changed (host-visible, port):** `ToolTurnClient` gains `async refresh_prices()`, which the report writer's session
+awaits through the port before each turn's price ceiling, so no wrapper can drop it; `RecordedTurns`' sessions
+forward it and `turn_price_ceiling` to the live client while recording, and read nothing while replaying. A host's
+own turn client adds it. `TurnModel` gains `async turn_pricing_refusal()`: `Model` brings its prices up to date and
+answers why a turn could not be bounded, or `None` (always `None` for a model whose turns replay).
+
+**Added:** `report_write` (and so `write_report`) asks before it freezes or sends anything, and refuses a model whose
+turns cannot be bounded, e.g. `ValueError("the report was not started, and nothing was frozen, sent or spent: its
+$20.00 budget admits each turn on its price ceiling, and no turn on 'claude-opus-9' can be bounded before it is sent:
+the default pricer answers no rates for it, and the price catalogue it leaves the call to cannot bound it (...).
+Anthropic's published rates as 3tears-evals ships them (read 2026-10-28 from ...) do not list 'claude-opus-9': use a
+model they list (...), or hand the model a pricer with the host's own rates (Model(..., pricer=...))")`. The refusal
+names what prices the model: the shipped rates are offered only when the default pricer is the one in use; a host's
+pricer answering no rates, or a host's catalogue that could not be read, is too old, or holds no row for the model, is
+named as such (a catalogue that could not be read says naming another model will not help). A model that sends no
+turn at all (its route or settings) is raised as the model words it, before anything is frozen, without the budget's
+lead-in.
+`ReportBudget`'s refusal of a turn it cannot bound stays as the backstop. `analyst_cli.py write` refuses such a model
+the same way before it writes anything under `--out`.
+
+### evals: `report_check`, the analyst's check of a whole draft before it submits
+
+**Added (host-visible, on the `evals_analyst` tool):** a `report_check` action in the analyst's blocks workflow. Any
+host mounting `analyst_tools()` serves it; the `evals` tool, the read-only tools and the editor's cut
+(`analyst_tools(role="editor")`) serve exactly the bytes they served before. It takes `snapshot_id` and `doc`, the
+draft `report-doc/1` document as a JSON object (or its JSON text), with `limit` and `offset` over the page's lines. It
+returns every verdict `check_report_doc` finds, on the draft and on its strict-built page's text above the appendix,
+with a page that does not build as one more verdict, at the field the strict build stopped at, then the page as
+text: the `doc_page_text` of `build(doc, input, strict=True)`, the same function the editor's message is written by. A result
+always fits one result's budget. The verdicts come first, grouped by check and remedy so each remedy is stated once
+(`VerdictGroup`), as many as fit from `verdict_offset`; those that do not are named by `verdicts_unread_from`, and the
+result then holds no page line, so no verdict is ever cut unsaid. Where every verdict fits, the page's lines from
+`offset` fill the rest, `unread_from` naming where the unread ones start. A result's `progress` says which of each it
+holds and the call that reads on, so a next call never writes the draft back (as `figure_keys_check` pages its keys). A `doc` that is not JSON or not a `report-doc/1` document is refused as the call,
+naming every field at fault, with the recovery line's example a draft that validates. It is a read: it stores nothing,
+makes no model call, and the same draft on the same snapshot returns byte-identical results. The analyst skill's
+SKILL.md names it (step 5 and the tools table), so `load_skill().digest` moves.
+
+**Exported (provisional, not re-exported from a root), each with this action as its first production caller:**
+`analysis.report_doc_checks.check_report_doc` and `DocVerdict`; `analysis.report.doc_page.build.build`;
+`analysis.report.doc_page.text.doc_page_text` and `above_appendix_text`; `analysis.report_doc_checks.InvariantNumber`;
+and the new `ops.analyst.report_check`, `DraftChecked` and `CHECK_LINES`, and `actions.analyst_render.BLOCKS_WORKFLOW`
+(was `_BLOCKS_WORKFLOW`).
+
+### evals: the report writer's editor, rounds, store gate and entry point
+
+**Added (provisional, not yet exported from a root):** `actions.report_writing.write_report(host, caller, *, model,
+budget, snapshot_id= | campaign_id= | analysis_id=, withhold=(), limits=None)` writes a campaign report from a frozen
+snapshot and stores it. It freezes the evidence first (unless handed a snapshot), so the two tools it mounts read
+only: `evals_analyst` on the analyst's cut (`analyst_tools(writes=False)`) and on the editor's
+(`analyst_tools(role="editor")`), each bound to the host and caller, described with its catalogue primer, and
+re-derivable, so a stored session drops result bodies it can read again. The caller passes the model (`Model(id,
+provider="anthropic", api_key=...)`); nothing reads an environment variable. It returns `ReportWritten`: the ending,
+the stored `EvalReportDoc`, the loop's outcome, the generation record and the stored page built strict. A paid run
+never loses its record: when the store gate or the store refuses the document, `ReportNotStored` is raised from the
+cause, carrying that `ReportWritten` (tally, reviews, sessions) with nothing stored. `write_report` only mounts the
+tools and calls the operation, `ops.report_writer.write.report_write(host, scope_id, *, created_by, model, budget,
+analyst_mount, editor_mount, ...)`, which does the freezing, the writing and the storing (actions reach analysis only
+through ops), and which defines `ReportWritten` and `ReportNotStored`; `actions.report_writing` names both too.
+`write_report` stays out of `__all__` until the analysis job (W4) calls it (`tests/test_report_writer_exports.py`).
+
+- `ops.report_writer.editor`: `review_report` runs one review in a fresh session whose system text is `editor.md`.
+  Its one user message is the page as a reader sees it (`doc_page_text` over a strict `build`), the document's
+  `omitted`, the computed facts (`editor_facts`) labelled as facts to weigh, and from round 2 its earlier findings.
+  Its signature takes nothing of the analyst's session. The answer is read from its last fenced JSON block: seven items
+  keyed by `n` and named as the rubric names them, each scored 0 to 2 with a reason, and findings `{claim, severity,
+  finding}`. `Review` adds the scores up and says whether they pass (no 0, at least `PASS_TOTAL` = 11); a total the
+  editor writes is never read. An unreadable answer (a cut reply, or a tool call after its calls ran out, included) is asked
+  for once more; a second ends `review_failed`. A review has 40 tool calls (`EditorLimits`). A client failure is the
+  round's `failed` ending, contained at error level. Every round's session comes back on `EditorOutcome.session`,
+  whatever the ending, and is stored as `generation["sessions"]["editor-<n>"]` beside the analyst's, re-derivable
+  result bodies dropped, so it resumes sending what the uninterrupted session would.
+- `ops.report_writer.loop`: `write_rounds` drafts, reviews and revises in the analyst's own conversation, at most two
+  revisions (`WriterLimits`), and ends `stored`, `stored_with_findings`, `over_budget` (the last reviewed document,
+  with its review's findings, or nothing), `refused`, `review_failed` or `failed` (the client's failure, contained;
+  the tally keeps every turn). `TurnModel` is what it takes as the model: its id and a client per named session.
+- `analysis.report_doc_store`: `doc_verdicts` is the one checker, the analyst's and the store's: the invariants over
+  the strict page's above-appendix text, a strict build's refusal as a verdict. `store_report_doc` re-runs it on the
+  page as it will be read and refuses a document with any verdict. `generation_record` is the stored `generation`:
+  the model, the skill digests, the tally, every review as code scored it, and every session (the analyst's and each
+  review round's) as a stored value. `made_line` writes the page's made line from a stored record (models, served
+  models, cost, skill digest, date), the one place it is written.
+- `tests/fixtures/report_plans/analyst_cli.py write`: the dev command line that writes a report live over a fixture
+  snapshot and records it, the one route that reads `ANTHROPIC_API_KEY`; with no key, or into a recording already
+  made, it is refused with what to do instead. When the store refuses its report it still writes the recording's
+  `replay.json` and `generation.json`, then raises. `test_report_writer_replay.py` replays every recording that has a
+  `replay.json` beside it (the ending and why, whether it was stored), its tools run live, and holds it to its ending,
+  rounds, tally sums and every turn consumed; it refuses a recording of a run that ended `failed`, naming why.
+
+These join `__all__` with the writing loop as their caller: `editor_facts` and `EditorFact`; `load_skill`; the
+analyst session's `AnalystSession`, `AnalystLimits`, `AnalystOutcome`, `InvariantCheck`, `SubmissionFault` and
+`ANALYST_SESSION`; and the session's `ToolOutcome`. `analyst_tools` gains its production caller. `check_report_doc`,
+`DocVerdict` and `InvariantNumber`, `doc_page.build.build`, `doc_page.text.doc_page_text` and `above_appendix_text`,
+already exported with `report_check`, gain the store gate, the editor and the report writer as callers.
+
+**Changed:** `report_check` and the writing loop share one checker: `report_check` checks a draft through
+`analysis.report_doc_store.doc_verdicts_and_page` (new, exported: `doc_verdicts` with the strict page it built), so a
+page that does not build is reported at the field it stopped at, under that field's check, in both.
+
+### evals: the claims renderer draws a report document's page
+
+**Added (provisional, not yet exported from a root):** `analysis/report/doc_page`, the page a `report-doc/1` document
+draws. `build(doc, report_input, *, strict, findings=(), made="")` lays out code's masthead; the headline, lede and
+flag with every figure key written out; the confidence in code's form words, each caveat by code's label (the
+analyst's for an `analyst:` one) then its clause or code's checked line; the decision entries titled by their slot
+word alone; an options table of every arm with its settings, served model and cost (the unanswered-calls mark kept),
+the recommended arms marked and set apart; the claims in the document's order, each evidence block completed and drawn
+exactly as `block_render` draws it and each with the labels of the caveats the document lands beside it; explore as a
+table of prose rows; next steps; and an appendix of the arms key, every table the input holds, what was left out and
+why, Method under its own heading (each term with its landed caveats' labels), the editor's findings left open (by
+severity, and the claim by its place, linked) and the made line.
+Nothing reads `story`: the page is byte-identical whatever it says. `doc_page_html`, `doc_page_markdown`,
+`doc_page_text` (the whole page as text, every block as its values table and each claim by its id: the editor's input
+and `report_check`'s output) and `above_appendix_text` (what a reader reads above the appendix, every block's values,
+each chart's title, which its values table prints as its caption, and every string its drawn chart shows a reader,
+example cards left out: the page half of the no-internal-id invariant) write it. Generation builds strict and
+refuses, by field path, a key that does not resolve, a block that does not complete or draw, an unproved `checked`, an
+unassigned caveat or an arm the input lacks; a stored document read with `strict=False` degrades instead: such a key
+prints `—`, a block that no longer draws prints as a table of its values or its caption alone, and the page carries one
+note to regenerate. The four entry points stay out of their modules' `__all__` until the writing loop, `report_check`
+and the report read call them (`tests/test_doc_page_exports.py` pins them).
+
+The planned page's parts gain plan-free forms beside them, its own bytes unchanged: `plan_page.tables.arms_table`
+(every arm, `recommends` marked) and `plan_page.full_results.every_table` (every table the input holds a row of).
+`analysis.analyst.blocks.values_table`, the values table `block_render` returns, is public for the page text. From
+`kernel.report_doc`, `ReportDoc`, `Evidence`, `DocCaveat`, `ReportFinding` and `is_analyst_caveat` join `__all__` with
+the renderer as their caller. The page uses the kit's existing classes, and its one script is the kit's, so its
+content security policy is the planned page's.
+
+**Changed:** the kit, for the 390 px render check on the acceptance pages. A reference line's label (a floor, budget
+or margin) is drawn to the right of its line where it fits, else to its left, else wrapped at its spaces to the wider
+side, on every kind that draws one; forest's narrow-width special case (the label at the plot's foot) gives way to it.
+A computed tick count steps down until no two tick labels touch. A lattice's tiles keep a 6.5rem floor and its row
+headers one line, and a lattice too wide scrolls in a `.tbl` frame, as a table does. `kit.js` and `kit.css` are
+inlined in every default-mode HTML page, planned and reference pages included, so their text (and the script's hash)
+changed: a host allowing the kit by a CSP hash it computed from an earlier wheel recomputes it from this one. A
+`static=True` page carries no script and is unaffected by the script's change.
+
+### evals: tool turns over Anthropic's Messages API, recorded and replayed per session
+
+**Added (provisional):** the tool-turn port, `threetears.evals.schema.ToolTurnClient`:
+`turn(system=, messages=, tools=, max_tokens=) -> TurnReply` and `turn_price_ceiling(...)`, which bounds a turn
+before it is sent (`None`, never a lower figure, when the catalogue cannot price it). Messages are `TurnMessage`s of
+`TurnText`, `TurnThinking`, `TurnToolUse` and `TurnToolResult` blocks (`TurnBlock`, read back by `block_from_json`), and
+tools are `TurnToolSpec`s; each block's JSON is the block as the Messages API writes it. A `TurnReply` carries its
+blocks, its stop reason in a turn's words (`TurnStopReason`: `tool_use` kept, the cap named `max_tokens`), its input,
+output, cache-read and cache-write tokens, and its cost with `price_source`; a count or cost nothing reported is
+`None`, never `0`, and `pricing_failure` says why.
+
+`Model.turn` sends one tool turn to Anthropic over httpx, no SDK: the tool definitions, `tool_result` blocks (with
+`is_error` only on a refusal), three `cache_control` breakpoints (the system prompt, the last tool, the last
+message), every thinking block sent back exactly as its reply carried it, and the model's own effort or thinking
+budget. Any other route is refused before anything is sent, naming the one that works, as are settings the provider
+would refuse: a temperature, a thinking budget on a model that takes none (Claude 5 models, Opus 4.7 and 4.8), and
+`effort="none"` on one that cannot have thinking disabled (Opus 5.5, Sonnet 5.5, the Fable 5 and Mythos 5 families).
+Both rules are facts in the client's one per-model table, which a completion's negotiation reads too, so a completion
+asked a budget on those models sends its effort word instead; a model the table does not cover is sent the setting as
+given, and the provider's refusal comes back to the caller. `Model.turn_price_ceiling` bounds a turn from the
+catalogue's rates.
+
+`threetears.evals.testing.RecordedTurns` keeps a tool-calling loop's replies alone, per named session and in order,
+with the session's snapshot id held as `{snapshot}` and written back on replay; no request bytes are kept, so a replay
+runs with its tools live. Each price ceiling a session answered is kept for the turn it bounded and replayed, so an
+ending a budget forced replays as recorded; costs replay as recorded. A session asked one turn more than it holds is
+refused naming the session and the turn, and `unconsumed()` names the turns a replay left; the remedy is to the code
+or the recorded reply. A turn recording is never recorded again: one that exists always replays, whatever `RECORD`
+says, and `RecordedTurns.record` refuses one. `Model(turn_recording=)` replays the file when it exists and records it
+live when it does not, and `Model.turn_session(name, snapshot=)` hands out a session's client (the model itself when
+there is no recording); with a recording set, `Model.turn` refuses and names `turn_session`.
+
+### evals: the report writer's analyst session, its budgets, its tally, and sessions stored and resumed
+
+**Added (internal to `ops`, no public-root name):** `threetears.evals.ops.report_writer`, the analyst half of the
+in-package writing loop (plan §4.2 steps 1 to 3). `AnalystSession.start(...)` takes the model's turn client, the
+`evals_analyst` tool mounted for the analyst (`ToolMount`: name, description, input schema, `rederivable`, and
+`call(arguments)` bound to its host and caller), the analyst's `SkillText`, the frozen snapshot's id, its arm and
+caveat ids, the invariants' checker (`InvariantCheck`, injected), the report's `Tally` and its `ReportBudget`.
+`draft()` briefs the analyst (the snapshot id, how to submit, the `report-doc/1` JSON schema and the snapshot's
+`campaign_overview`) and runs until a reply that calls no tool holds one fenced JSON document that passes its shape,
+its validity on the snapshot and the invariants; `revise(request)` is the next round in the same conversation. A
+fault sends the submission back with every fault found (a bounce; a reply cut at its output cap is one too), at most
+3 a round, then the round ends `refused` with the faults. Plan §4.3's limits hold before anything is sent: 100 tool
+calls for the draft and 30 a revision, a warning 10 before the end, then "submit now", then a hard stop
+(`over_budget`); 12,000 characters a tool result; and the report's dollar budget admits every turn on the client's
+price ceiling, a refusal sending nothing. The session's history is append-only: no message is changed once sent,
+since on models that bind a thinking block to its conversation (Opus 5.5 among them) an edited earlier turn
+invalidates every later thinking block and the provider refuses the request. Old tool results are cleared by the
+provider instead (server-side context editing): every turn asks for it once the input passes 150k tokens, keeping the
+latest 12 tool calls, and only when at least 36k tokens can be cleared at once. The `Tally` records each turn's role,
+round, model, served model, tokens (cache reads and writes included), cost (`None` when unpriced, never `0`) and
+price source, with sums by role and round; it is the stored report's `generation`. A session is a stored value
+(`to_json`): the model it runs on, the skill text's digest, every message in order with thinking blocks exactly as returned, every tool
+call and result, a result body dropped only where the tool can re-derive it from the frozen snapshot and recorded
+with its sha256; `AnalystSession.resume(...)` re-derives those bodies, refuses a changed model, skill text, tool or
+body (and a malformed record, with a `ValueError`), and sends exactly what the uninterrupted session would, including
+for a session stored mid-round. The loop reads no environment variable.
+
+**Added (provisional):** `threetears.evals.schema.TurnReplyRefused(message, reply=)`, raised by a turn client that
+was answered (and billed) but refuses the reply; it carries the reply, so the loop tallies the turn's cost before the
+refusal goes on. `RecordedTurns` raises one (still a `RecordingRefused`) for a reply holding the literal `{snapshot}`.
+`threetears.evals.schema.ToolResultClearing(trigger_input_tokens=, keep_tool_uses=, clear_at_least_input_tokens=)`
+is server-side clearing of old tool results; the tool-turn port's `turn(..., clearing=)` takes it, and `Model.turn`
+sends it as `context_management: {"edits": [{"type": "clear_tool_uses_20250919", "trigger": {"type":
+"input_tokens", ...}, "keep": {"type": "tool_uses", ...}, "clear_at_least": {"type": "input_tokens", ...}}]}` with
+`anthropic-beta: context-management-2025-06-27`; `RecordedTurns` passes it to the client it records through. A turn
+with no clearing sends the body it always did.
+
+**Added (provisional):** `threetears.evals.schema.ThinkingBinding(prefix_mismatch_behavior="error" | "drop_block")`,
+the provider's check that a replayed thinking block's conversation is unchanged. The tool-turn port's
+`turn(..., binding=)` takes it, and `Model.turn` sends it as `thinking.block_binding` with `anthropic-beta:
+thinking-binding-controls-2026-08-01` where the turn sends adaptive or budgeted thinking. A model that cannot turn
+thinking off (Claude Opus 5.5, say) is sent `{"type": "adaptive"}` to carry it when built with no effort, which is what
+it runs anyway; a turn with thinking disabled sends none, nor does one with no thinking on a model that may then not
+think. Setting it opts the turn into the check on any account. `RecordedTurns` passes it to the client it records
+through; a recording holds replies only, so recordings made before it replay unchanged. Every analyst and editor turn
+that thinks sends `"error"`: the history is append-only, so a turn whose history changed under a thinking block is the
+provider's 400, never answered without the reasoning. A turn with no binding sends the body it always did.
+`TurnReply` gains `sent_binding` (the behaviour the request carried, or `None`) and `input_transformations` (the
+response's report of blocks dropped or let through, as the provider wrote it, or `None` when it sent none), and the
+report writer's tally keeps both on every turn, so a stored report shows each turn was checked. A reply recorded
+before them reads both as `None`.
+
+**Changed:** `kernel.report_doc` now exports `ReportDoc`, `report_doc_validity` and `report_doc_json_schema`, and
+`analysis.analyst.skill` exports `SkillText`, each with its first production caller in the analyst session.
+
+### enforcement, evals: a version with a PEP 440 local label reads as its public version
+
+**Changed:** the API-growth gate, the lockstep smoke check and 3tears-evals' release-tag reader read a version
+carrying a PEP 440 local label (`0.80.0+analyst.1`, as an integration line's pins between releases carry) as its
+public part, the release it builds on. `threetears-release` still refuses to bump, sync or verify a labelled version,
+and its `verify` names a labelled smoke assertion against a plain release. The report-kit analyst line declared
+`0.80.0+analyst.N` for its Discodon pins (owner ruling, 2026-10-27); folded into develop, every package declares the
+plain release again.
+
+### evals: the analyst skill ships in the package, and each role's system text is assembled from it
+
+**Added (provisional):** the analyst skill is package data under `threetears/evals/analysis/analyst/skill/`
+(`SKILL.md`, its five modules, the reasoning notes and their `exemplars/INDEX.md`), and ships in the wheel; it was
+read from `docs/eval-report-kit/analyst/`, which now only points at the package. A new `editor.md` there is the report
+editor's system text: ANALYST.md §7's rubric (7 items scored 0 to 2; a pass is no 0 and at least 11 of 14), the
+findings it returns (`must_fix` or `should_fix`, by claim), and the fenced JSON review it answers with; code adds up
+the scores. `threetears.evals.analysis.analyst.skill` (new) reads it: `load_skill()` returns an `AnalystSkill`, which
+refuses a skill that is not whole (a module missing, a note the index does not name or names without a file) and has
+a `digest` over every Markdown file. `AnalystSkill.analyst(withhold=())` is the analyst's system text as a `SkillText`
+(`text`, `files`, `exemplars`, `digest`): the role file and its modules, then the whole index and every note, as the
+prototype runs read them. `withhold` (a collection of note file names; a bare string is refused) leaves out a note and
+its index row, as a blind run does. Nothing about a campaign chooses which notes its analyst reads; each index row's
+new Structure column records the campaign its note came from, for readers. `AnalystSkill.editor()` is the editor's
+text. A `README.md` beside the skill holds its maintainers' notes, which reach no system text; ANALYST.md's Appendix A
+now points at the shipped Kairo note rather than repeating it. The module's `__all__` stays
+empty until the report writer's sessions call these names, and `tests/test_analyst_skill_exports.py` lists them.
+
+### evals: a chart of readings prints the level of the interval it draws
+
+**Fixed:** a forest (or diverging bars) of readings draws each reading's `within_interval`, at the nominal level with no
+correction, but printed the gain interval's Holm step-down level (`gain_confidence`): one candidate printed `97.5%`
+over an interval drawn at 95%, two candidates at different steps were refused for mixing interval levels the drawn
+intervals did not mix, and a reading with a `within_interval` but no gain fields was refused for stating no level. A
+chart of readings, its values table and a reading's `level` key (`reading.<arm>.level`) now print the nominal level
+(`stats.INTERVAL_LEVEL`), and a hand-built input needs no gain fields for a reading's chart to draw. What reads the gain
+interval (a reading's spread, two arms apart on a pass rate, the campaign scorecard) keeps its own level.
+
+### evals: the report editor's facts, what code computes about a report document for the editor to weigh
+
+**Added (provisional):** `threetears.evals.analysis.report_doc_facts` (new): `editor_facts(doc, report_input)` returns
+the interpretive findings of ruling 1 as `EditorFact`s, `{kind, path, fact, figures}`: one sentence stating a
+computed truth, its figures written as the page writes their keys, with those keys listed. A fact never refuses,
+never blocks storage and never says what to conclude; the writing loop hands them to the report editor. The kinds:
+a recommended arm missing a declared gate or guardrail figure (`gate_failed`); a warning code raises on a recommended
+arm that no figure key in the document names (`warning_unanswered`); a call that differs from `options_dominance`'s
+reading of code's call (`call_vs_dominance`); a weakest margin no Watch entry cites a key naming, said to be on an
+arm the document recommends or not (`weakest_not_in_watch`); a recommended candidate whose switch the evidence does not support as the report plan's
+adoption check read it (`adoption`); a recommended candidate's loss settled past the margin on an aspect the campaign
+does not ask about, the other side of #980's `unsettled:<aspect>` (`settled_loss_unasked`); an undecided option's
+inferred miss, as `options_dominance` hands it to the analyst, where no key in the document names that read
+(`undecided_implied`); and a count written in words
+with no key, `four of five` but not `one arm` (`count_in_words`). Every condition reads the snapshot's figures and
+what the document names; none reads `story` or the eval's kind, so the facts are byte-identical when only `story`
+changes. A sentence is built from its text and the keys code builds, each key written out on its own, so a brace in
+a label, a name or an id the snapshot holds is written as it is and never read as a key. The module's `__all__` stays
+empty until the writing loop's editor turn calls these names, and `tests/test_report_doc_facts_exports.py` lists them.
+
+**Fixed:** `analysis.analyst.cited.cite` and `cite_written` spell a figure from what its key resolved to rather than
+rendering `{key}` back through the prose parser, so a figure whose ids carry a brace (a floor's key, a cell's row) no
+longer refuses, and with it `options_dominance` and the gate reads on such a snapshot. Every other figure reads as
+before.
+
+### evals: the report document's invariants, as code verdicts
+
+**Added (provisional):** `threetears.evals.analysis.report_doc_checks.check_report_doc(doc, report_input,
+above_appendix_text="")` returns every verdict code proves against a `report-doc/1` document on its snapshot, each a
+`DocVerdict` of `invariant` (0 for validity, which runs first, then 1 to 6), field `path`, `fault` and `remedy`.
+Numbers come through figure keys (every key renders; no typed digit outside keys but the snapshot's names, percentile
+labels, a cost's unit such as `per 1k`, and the document's own claim ids, matched in their own case and never an id
+made of digits alone, which reads as a number; no unit doubled after a key that prints it); every evidence block
+completes, passes the chart rules and draws as `block_render` draws it; every report-wide or scoped caveat code
+assigns, stated or implied, lands where its reach allows (a method-level one may land anywhere or not at all), each
+once in the confidence, checked immaterial only where `caveat_materiality` proves it, and once it lands there it may
+be named again beside a claim or in Method; the confidence form matches its open caveats; no internal id (an aspect,
+measure, criterion, task or stratum id, an arm id printed by another name, a caveat id, a slot word, an example's
+trial or case id, or one of the document's claim ids; an example's and a claim's id matched in its own case) is typed
+above the appendix, in the prose or in the rendered page's text above the appendix when given (the claims
+renderer's, example cards left out), so a claim id may be typed only in what was left out and in Method; and Method
+holds an item. Nothing interpretive is a verdict, and no check reads `story`. The module exports nothing until its
+callers land (the store, the `report_check` action, the writing loop); the names are pinned in
+`tests/test_report_doc_exports.py`, which now covers both report-document modules. `kernel.report_doc` exports
+`ReportDoc`, `DecisionSlotWord`, `is_analyst_caveat`, `report_doc_validity` and `report_doc_prose(doc)`, which yields
+each prose field's concrete path and text, in document order: the one walk of a document's prose,
+which the invariants and the editor's facts both read, so they scan the same text.
+
+**Changed:** the report plan's typed-digit, doubled-unit and internal-id checks moved to
+`threetears.evals.analysis.report_prose_checks` (`literal_faults`, `unit_faults`, `internal_ids`, `typed_ids`,
+`reads_as_id`), shared by the plan's checks and the document's; the plan's refusals are unchanged. Three converted
+prototype documents were mended for faults the invariants find (r1 of the third prototype lists the borderline gate
+caveat code now assigns, r3 no longer doubles a multiple's unit, s1 no longer types its fixture name), each recorded
+in its prototype's README.
+
+### evals: the report document, `report-doc/1`, and its stored form `eval_report_doc`
+
+**Added (provisional):** `threetears.evals.kernel.report_doc` holds the report document an analyst writes from a
+frozen snapshot, `ReportDoc` (`report-doc/1`): its story, headline, lede and optional flag, the arms it `recommends`
+(only arms it recommends: a tradeoff's lean stays in prose, and an empty list is valid),
+its confidence (a form, and caveats each open with `material_if` or `checked: "immaterial"`), 1 to 8 decision entries
+from a ten-word slot vocabulary, 1 to 12 claims each with 1 or 2 evidence blocks (a block kind over a filled
+`ChartQuery`, its reference line and emphasis beside it), the claims' and method items' caveats, a claim's `durable`
+mark, and up to 3 explore rows, the omitted list, up to 6 next steps and 1 to 12 method items. A caveat code does not
+assign is named `analyst:<slug>`, carries its own label, and is declared once in the confidence.
+`report_doc_validity(doc, arms=, caveats=)` names what a well-shaped document cites that its snapshot does not hold,
+reading the caveat ids of `analysis.report_decision.every_caveat`, the stated and implied caveats in one list, which
+`caveats_list` now pages too. `report_doc_json_schema()` is the schema an analyst writes against, written out as
+`docs/eval-report-kit/schema/report-doc.schema.json`, and `report_doc_prose(doc)` walks every prose field by path,
+the three not typed model prose among them, for a check over a document's prose to read. The module exports only
+`EvalReportDoc` until its other names gain production callers (the invariants, the claims renderer, the writing loop);
+`tests/test_report_doc_exports.py` lists them and goes red when one gains a caller unexported. `EvalReportDoc`
+(`threetears.evals.kernel`, doc type `eval_report_doc`, derived and regenerable) stores one document as JSON beside its
+snapshot, how its writing ended (`stored`, `stored_with_findings`, `over_budget`), the editor's unresolved findings and
+the loop's tally. Reads are strict: every change to the document's shape ships with a regenerable bump, and a
+document from an older version is refused by its version before its body is read, with the remedy to drop and write
+it again. `EvalStorage.save_report_doc`, `load_report_doc`, `list_report_docs` and `delete_report_doc` keep
+it, a stored one is never written over, and `drop_derived` sweeps it. `kernel.report_plan`'s chart and reference-line
+kinds are public as `PlanChartKind` and `ReferenceKind`, which the document's evidence reads. The eighteen prototype report
+documents are converted to `report-doc/1` (`tests/fixtures/report_docs/prototype*/<name>/doc.json`), and ANALYST.md §5
+describes the document, with the reviewing role named the editor throughout.
+
+### evals: the calls nobody answered, a run's rig and a background model's served name reach the report input; a rubric scale is never assumed
+
+**Added:** a usage row counts its own calls that went unanswered, beside its `call_count` and its spend and never
+inside them: `RoleUsage.unanswered_retried` (this row's calls a forced tool choice was refused on, then answered
+unforced in the same call), `unanswered_lost` (this row's calls sent and never answered, so the turn ended in error; a
+connect failure, an open circuit and an auth or payment failure are not counted) and `unanswered_reasons` (this row's
+unanswered calls by the host's reason word, word to count, each at least 1). Each is None when not counted and left out
+of the stored row when unset; reasons need a count beside them and never outnumber it. A kind's rows pass through
+`CandidateTelemetry` unchanged, and no cost reading reads them. The bundle sums them per arm and role
+(`ArmScoreboard.unanswered`, `RoleUnanswered`: retried, lost, reasons, the answered calls, the share of every call
+sent, and the trials that counted none); the report input copies them (`ScoreboardRow.unanswered`, `Unanswered`); the
+keys `calls.unanswered.<arm>` (retried and lost together) and `.retried`, `.lost`, `.calls`, `.share`, `.reasons`,
+`.uncounted`, with an `aspects.<aspect>.` form, read them, a share over several roles derived, and the bare count and
+the share refused as not counted where a role counted only one kind; the analyst's overview cites them on the arm's
+row, and the options table flags them on the cost cell ("1 call unanswered"), only where any went unanswered.
+
+**Added:** a run's apparatus reaches the bundle and the report input: each run summary carries `apparatus`
+(`threetears.evals.analysis.RunApparatus`: `effective_judges`, `judge_asked_settings`, `judge_temperature`,
+`simulator_model`, `measure_latency`, `arm_schedule`, `cell_concurrency`, `rubric_scales`, and the results by
+`execution_mode`), and the report input lists each run's (`apparatus`, the report-input part `RunRig`, with
+`RequestSettings`) by run, arm and aspect. `campaign_overview` shows the rigs as paged rows, one per rig naming each
+run measured with it beside the arm it ran (`RigRow`; the runs' execution modes summed). A run that recorded nothing past a serial run pinning and
+declaring nothing carries none.
+
+**Added:** `AsyncDelivery.served_model`, the model the work's responses named, folded into the `inner_agent` row's
+`served_model` (refused on a substituted entry). Core schema minor 15.8.
+
+**Fixed:** a rubric dimension's scale is read off what was recorded, never assumed
+(`threetears.evals.schema.rubric_dim_scale`): a trial's row showed a dimension the judge could not tell on as
+`ordinal` whatever its scale, so a pass/fail one read as 1 to 5; it now reads its run's `rubric_scales`, a reserved
+dual-score axis reads 1 to 5 by construction, and a dimension with no recorded scale is refused.
+
+**Fingerprints:** a stored bundle, a frozen report input and every committed fixture keep their bytes and digests:
+each new field is left out of its document when unset. A bundle assembled again over runs that now carry an apparatus
+does not: almost every launched run does (any run with a rubric, a pinned judge or a latency declaration), so its
+fingerprint moves, and a reporter-bank case or an analysis that pinned a memo written before this change reports that
+it does not reproduce. Re-freeze those cases over the re-assembled bundle. A usage row that counted unanswered calls
+moves its bundle's fingerprint the same way.
+
+**For hosts (Discodon's handover):** the counts go per usage row, beside that row's `call_count`, never a cell's or a
+role's total repeated on each row: a cell whose candidate calls ran on several clients reports each client's row with
+its own `unanswered_retried` and `unanswered_lost`. A `kind_payload` mirror counted per cell, summed over its clients,
+moves onto the rows it was summed from. Reasons are a map of word to count (`{"timeout": 2}`), each at least 1, never
+more than the row's counts, and set only beside a count; a list of distinct words is no longer the shape. Leave a count
+None where it was not counted: 0 says it was counted and none went unanswered. The fields a host writes are
+`RoleUsage.unanswered_retried`, `RoleUsage.unanswered_lost`, `RoleUsage.unanswered_reasons` and
+`AsyncDelivery.served_model`, all additive and optional. `unanswered_retried` and `unanswered_lost` are now core
+measures (`METRIC_DESCRIPTORS`, beside `call_count`), so the measure walk reads them as described, never as a lost
+measurement: a host can no longer declare a measure by either name, and a kind's `host_measures` or covariates under
+either name are dropped as engine-owned.
+
+### evals: an overall that is the plain mean of its cells reads an interval derived from theirs
+
+**Added:** an arm's overall figure that states no interval, and is by the numbers the input states the unweighted mean
+of one measure's target-matrix cells, each stating its own spread (a balanced accuracy beside its cells' accuracies),
+gets the interval derived from theirs: standard error `sqrt(sum(se_i^2)) / k` at the cells' stated level, the cells read
+as independent because the target matrix partitions the cases (`threetears.evals.analysis.cell_mean`). Its key is
+`overall_interval.<measure>.<arm>.<field>` (`mean`, `se`, `half_width`, `interval`, `low`, `high`, `level`, `of`,
+`cells`, `weights`, `basis`), every figure marked derived; `measure_read` by arm lists it in a row's `derived`
+(`FigureRow.derived`). A gate on the figure reads it (`CriterionFigure.derived`; `criteria.<criterion>.<arm>.low` and
+`.high` read its ends, marked derived, and a borderline reason says `derived interval`), so `point_estimate:<criterion>`
+is no longer implied there. An arm's overall spread reads the same standard error (`spread.<arm>.<measure>.overall.*`,
+basis naming the cells; one case's spread is it times the root of the overall's count), so `settle_cases` and
+`compare.*` read it too: a borderline on the derived interval gets its settling sizes. A chart computes no interval for
+such an overall, since its note would call it binomial. Nothing is derived where any cell states no spread, the figure
+is no plain mean of its cells, the cells do not cover the matrix once each, or their level is unstated or differs from
+the one the overall states. An overall that a case-weighted mean of its cells fits as well as the plain one (close
+figures, or near-equal counts) derives from the wider of the two standard errors, `sqrt(sum((w_i se_i)^2))` with `w_i`
+each cell's share of the cases, and says so (`overall_interval.<measure>.<arm>.weights`, and its `basis`). A cell figure
+that is no number is absent for its own arm. The analyst's principles say that confidence reads the method and the
+evidence's variance, never the result alone.
+
+### evals: blocks print computed changes as their keys read them, name each line by its criterion, and page what fits
+
+**Fixed:** a compare or lever chart printed its values and interval ends at a float's four figures (`-2.163 to
+-0.03699`, `+0.83`); in points they now read as the rows' keys and notes do (`-2.2 to -0.03699`, `+0.8`): a chart of
+what an analysis computes is spelled at its quantity's precision (`ChartBlock.unit` carries it for a kit chart). A lever
+chart drew a rate's effect, which its key states as a share, a hundredth of its size (`-0.0295` for `-2.9` points); it
+draws in points. A lever move printed a setting's value as a float (`→ 1.0`); it ends at the value as the input states
+it (a declared level's name, `→ 1 retry`, else the value, whole if whole). Two interactions of different moves read
+alike (`at X less at Y`); an interaction is labelled by its two moves, `(X → Low) less (Y → Low)`, in the chart and the
+table, and the caption speaks of interactions only where one is drawn. The settle table printed counts with a decimal
+(`617.0`): a table's bare numbers read alike within their column only. A plain table leaves out a source's column
+that is a dash in every row (a settle table's trial columns on a design that repeats no case); a measure the query
+names keeps its column. The settle note said "Each bar" on a table; it names the column it explains. A line at a
+declared criterion read "floor 90%" whatever the criterion; it is named by its reader name and declared kind
+(`Overall accuracy gate, at least 90%`), and an overall criterion drawn on each task's, stratum's or cell's figures
+says `overall`. A bar chart's values table named an arm without the letter tag every other block prints
+(`P · Production`).
+
+**Added:** a compare chart or table whose row may have too narrow an interval (`ComparisonRow.may_be_narrow`) says
+so once, naming each arm's trials and cases (`nested`). A settle table's row whose estimate sits on its line prints
+"none settles it at today's estimate" for its sizes, and its `what_would` once beneath.
+
+**Changed:** `block_render` sizes each page by its text, at most `limit` rows that fit one result (nine example cards
+that fit are one page, where the cells' character count stopped at six). Every paged analyst result says how much of
+the whole it holds before any `next:` line: `all 77 shown`, `rows 1 to 6 of 9 shown; 3 follow`, `none to show`.
+
+### evals: analyses say how far they reach: a sweep that stops short, an estimate on its line, an aspect's pass rate, a contrast's correction and unit, and an arm as any result prints it
+
+**Added:** `decision_sensitivity` names each side of a caller's range past which the call or a routable task's pick
+changes (`Sensitivity.unswept`: the nearest such flip by its key, each such flip by its key in `past`, a page's worth
+with `more_past` saying whether more lie beyond, the call past it, and whether that side loosens the line; a flip
+exactly on the range's end counts as past it where the change lies just beyond, and every flip's `call_changes` reads
+the side past the range too), and each arm a cross-cutting task's gate holds back from every per-task pick, with the gates it fails
+there by their keys and the tasks whose own gates it passes (`Sensitivity.barred`); a margin sweep over an aspect with
+no reading of a candidate says code never reads that candidate against a margin. `settle_cases` settles two arms apart
+on an aspect's pass rate (`measure_key` `passed`; keys `settle.passed.<aspect>.<arm>.<other>.<field>`), paired on the
+aspect's reading where one pairs a candidate with the control, else on each arm's binomial spread from its own trials,
+each row citing the arms' usable trials and cases and a basis naming the count it rests on, per arm (a paired row's
+difference is the reading's own change, which its basis says need not equal the two pooled rates' difference). `arms_compare` rows say what
+their interval counts (`counts`, `counted_unstated`) and mark one that may be too narrow where trials nest in fewer
+cases (`may_be_narrow`, `nested`), with a note saying, once, that such intervals may be too narrow if they count
+trials nested in cases (a paired row's unit is unstated, so it may already be over the cases). Every analyst action names an arm by its id, as
+`arm:<id>`, or as the key `{arm:<id>}` (`actions.params.written_arm`).
+
+**Changed:** an estimate exactly on its line is answered rather than refused: `settles` reads `on_the_line`,
+`wrong_side` one half, no size is read, and `what_would` says what would settle it and the call that sizes it
+(`separation.wrong_side_share` returns one half at a distance of zero).
+
+**Fixed:** a paired comparison's basis said "corrected within its family" whatever its family said; it now reads the
+family's own correction (not corrected where it says none, unstated where it says nothing). The planner prompt and
+the decision's docstrings read it the same way.
+
+### evals: a multiple keeps its unit, a price its third figure; the key check pages without repeating the keys; a borderline gate's caveat and a bound on a cost some trials did not report
+
+**Fixed:** `{cost.gap.<a>.<b>.multiple|int}` printed "21", dropping the unit; a multiple now reads with "times" under
+every filter it takes, and its own spelling rounds to what a ratio supports (`numbers.spell_multiple`: whole from ten
+up, one decimal from one to ten, two significant figures below). Figure-key money keeps a third significant figure
+from ten cents to a dollar (`numbers.spell_price`): "$0.30 per 1,000 calls" beside "$1,208 a month" at 4,000,000 calls
+now reads "$0.302", so a reader's product reaches the monthly figure. `count.failures` and the scoreboard's `failed`
+each say in their key text that they count a failure differently, and how.
+
+**Changed:** `figure_keys_check` is sized to one result but no longer a paged action: a page never writes the keys
+back. It carries a `progress` line (which of the keys sent it read, and where the unread ones start, or that all N are
+read), and `KeysChecked.next_offset` is now `unread_from`: send the same keys with that offset.
+
+**Added:** the implied caveat `borderline:<criterion>`, for a gate or guardrail a surviving option clears on its
+point estimate while the figure's interval reaches past the line, citing the line and each clearance.
+`cost.unreported.<arm>.<field>`: `missing` (trials run less the cost's observations), `free` (the cost per 1,000 with
+each counted at nothing, the least the mean can be) and `at_p95` (each at the arm's own 95th percentile, a what-if:
+the snapshot holds no highest cost), refused where the page's cost is not read off one measure's observations.
+
+### evals: a comparison says what pairs it, and the settle table says what its sizes count
+
+**Added:** `ComparisonRow.paired_with` on `arms_compare`'s rows: `arm:<id>` where a contrast pairs the two arms, else null; `figure_keys.pairing_contrast` is the one rule for what pairs two arms, read by the compare keys, `arms_compare` and the compare block's level.
+
+**Changed:** the settle table heads its sizes "Needed, one-sided" and "Needed, two-sided", says what they count in a "Sizes count" column (cases where the figure states them, else trials or observations), gives "Today" in that unit, and shows trials needed on both sides on a repeated design (row fields: `today` replaces `today_cases`; `counted` and `trials_needed_two_sided` are new). The `settle_cases` description says the same.
+
+### evals: blocks print levels as stated, label what they draw, draw the intervals the tools compute, and draw what compare, settle and levers read
+
+**Fixed:** a reading's, pair's, spread's, compare's and lever's level key printed in whole percents (97.5% and 98.33%
+both read 98%); a level now prints as the input states it (`Figure.level`). A confusion block's values table printed
+the first panel's labels over every panel and dropped an arm panel's axis; it now reads a row per cell (panel, true
+label, predicted label, share) and names each panel's axis. A goal check named only by its expression heads a table's
+column as that expression set as code. Money on a chart has one spelling by each amount's size, grouped: a bar's label
+read `$8400` beside ticks of `$5,000.00`; kit.js `fmt.usd` groups in en-US and puts the sign before the dollar sign
+(reference pages rebuilt). A price step carries its options' tags as its short label for a narrow chart.
+
+**Added:** `spread.<arm>.<key>.<where>.interval`, `.low` and `.high` (the interval an arm's spread gives at its level,
+a rate's ends held to none to all; none for a rate of none or all; `separation.spread_interval`). A dot strip, bars or
+table of arms' figures none of which states an interval, where some is a pass/fail rate with a count, is completed at
+`95% computed` and draws those intervals, with a note; stored charts draw as stored. New chart sources (a stored-plan
+schema addition): `bar_reads` (an arm against an absolute bar with its interval and line; dot strip, table),
+`compare` (`arms_compare`'s rows, the query's first arm less its second; dot strip, diverging bars, table), `settle`
+(`settle_cases`' rows; bars, table) and `levers` (`lever_effects`' effects and interactions; dot strip, diverging bars,
+table). A configs query on an input with no configs reads the grid its arms' settings make (`report_rows.config_grid`),
+so a lattice draws on a factorial campaign that recorded no configs.
+
+### evals: an analyst's examples say what they are a sample of; settle sizes cases and reaches margins, floors and uncounted slices; keys for confusion cells, two arms' costs, pairs and shared cases
+
+**Added:** a snapshot's report input counts each slice's failed trials (`ReportInput.failed_trials`, per aspect, arm and
+stratum) and, for each two aspects, the cases both ran and those only one ran (`ReportInput.case_overlap`, by stored
+case id), and each example carries the start of what its case asked. A planner's input and a bare one leave them
+unset, and they read as not known. `examples_list` says, per aspect and arm, how many failures it kept of how many the
+run had (`kept_from`); `campaign_overview` says whether each aspect ran the same cases as each later one. Keys:
+`count.examples`, `count.failures` (and per `<aspect>.<arm>[.<stratum>]`), `count.pairs`, `count.arm_pairs`,
+`overlap.<aspect>.<aspect>.<same|shared|only_first|only_second>`, `confusion.<axis>.<arm>.<expected>.<predicted>`, and
+`cost.gap.<arm>.<arm>.<per_1k|monthly|multiple>`. An example card names its aspect where the input holds more than one.
+A capped aspect's failures are counted only where every failure was kept: where the cap kept a trial that passed and
+the primary judged dimension decides pass (a capability dimension). Fields an input does not count are left out of its
+document, so a planner's input and a bare one digest as before; freezing a campaign's evidence writes a new snapshot
+id.
+
+**Changed:** `settle_cases` sizes cases on a repeated design, each case run as often as today (one case's spread is its
+mean's over its repeats), and gives the trials that takes beside each size (`trials_needed` and its siblings;
+`spread.*.cases`, `spread.*.repeats`, and `repeats` on `settle.criteria.` keys, on the criterion's aspect). Before, a size on a repeated design counted trials read as independent. With one
+arm and nothing named it reads every margin a reading of the arm is read against and every floor read on it, beside
+its criteria; `against` (`margin:<aspect>`, `floor:<aspect>/<floor>`) names one, keyed `settle.margin.*` and
+`settle.floor.*`. `settle_cases` and `arms_compare` take `assumed_cases`, a what-if count for a slice whose figure states
+none (a number, or `share` for the arm's own distinct cases times the slice's traffic share, and its trials times the
+share on a repeated design), keyed `assumed.<cases>.*`. A binomial spread's basis names where its count was read (its
+own, the slice's stated cases, or the arm's scoreboard). On a repeated design a pass/fail rate's binomial spread is read
+on its distinct cases, each counted once: the widest its repeats allow, since the snapshot holds no per-case outcomes,
+so an interval or a size read from it is never narrower than the cases support (read as independent trials it would
+be the root of the repeats narrower); the basis and the settle result say so, and settle rows carry today's `cases`
+beside `trials_needed` and `repeats`. A binomial spread is read only on a share of counted trials: a measure graded
+pass/fail, a plain `accuracy` or `match`, or a pass/fail judged dimension; a mean of shares graded by class label under
+another name (a balanced accuracy) reads none, so no interval or settle size is computed on it. A count is cited as
+the whole number it is.
+### evals: a criterion reads its own aspect's figures; a gate with no figure is unknown, not a fail; the analyst chooses how bars read
+
+**Fixed:** a bar declared on one aspect read the lead aspect's figure in every reader of criteria. On a campaign with a
+bar per aspect on one measure, the second aspect's bar read the first's figure (95% where the aspect held 60%), so the
+gate check, the margins, `criteria.<criterion>.<arm>.*`, `count.failing`, `settle_cases` and a block's criterion line
+all read the wrong side of the line. `Criterion.aspect` (optional) names the aspect a criterion reads, the report input
+built from a bundle sets it on every bar, and each reader takes that aspect's figures: the lead's from the by-arm maps,
+another's from `by_aspect`, none in a task or cell. A chart narrowed to one aspect (`query.aspect`) draws that aspect's
+criterion line. The options table prints no column for a criterion on another aspect, since its columns print the lead
+aspect's figures. `criteria.<criterion>.aspect` names the aspect read, and `settle.criteria.` keys gain `n`, `counts`
+and `basis` on the criterion's aspect. An input whose criteria name no aspect dumps as before (the field is left out),
+so its digest and snapshot id do not move. A campaign input built from a bundle with bars changes, and so does its
+snapshot id on a re-freeze.
+
+**Changed:** a gate with no figure for an option at a place it reads is unknown there, not a fail. A gate finding says
+`unknown` (`GateFinding.status`, the analyst's `GateRead.status`, which said `no_figure`); the gate check still does
+not pass the option, so pages and the planner's survivors read as before. `options_dominance` lists an option no gate
+figure fails, with a gate it has no figure for, as `undecided` (its unknown places, and any fact its figures over every
+case imply, labelled inferred and never a verdict), apart from the removed. A removed option lists its unknown places
+apart from the figures it fails on. `count.failing` counts figures that miss only; `count.unknown.<criterion>.<arm>`
+counts places with no figure, `count.failed.<arm>` gates missed on a figure, and `count.undecided` the undecided
+options. A sweep names the options with no figure where its criterion reads, settle refuses a criterion with no figure
+for the arm as unknown there, and the weakest-margin refusal names the undecided options. `price_tradeoff` lists an
+undecided option off the frontier as `undecided` with its unknown places (`OffFrontier.unknown`), never as removed by
+the gates, and labels a what-if on one undecided.
+
+**Added:** `bars_as` (`warnings`, the default, or `gates`) on `options_dominance`, `decision_sensitivity` and
+`settle_cases`: the analyst's choice of reading the declared bars as gates, never code's. Read as gates, a bar removes an
+option that misses it and its threshold moves the call in a sweep; read as warnings, each survivor lists the bars and
+floor criteria it misses or borders (`warnings`), and a bar's sweep lists where each arm's figure crosses it. Each
+result says which reading it took; each settle row says whether its criterion gates.
+
+### evals: a block over several aspects shows each one, or is refused naming a block per aspect
+
+**Fixed:** a contrasts table or change chart over a query naming no aspect kept one aspect's contrast of an arm on a
+measure and dropped the other's, with no aspect named. Each is kept now, under the measure's words naming its aspect
+(`pass rate, on tone`) wherever a measure's contrasts sit on more than one aspect. Diverging bars over contrasts asked
+for panels by aspect draw a panel per aspect.
+
+**Fixed:** panels by aspect over measures, judged figures, the scoreboard or readings, with no aspect named, read one
+aspect's rows (the lead's, or the one asked aspect's readings) and showed them as all of them. Where the input holds
+those rows on more than one aspect, the block is refused at `query.aspect`, listing each aspect (`held_aspects`), and
+one block per aspect naming it draws that aspect's rows.
+
+### evals: a check's measure is a pass rate in the report input
+
+**Fixed:** the report input built from a campaign's bundle gave no measure a grade (`Measure.grade`), so a goal-state
+check's pass rate (`goal_state:<expression>`) read as a bare number on the plain scale. Pages and analyst tools printed
+it as `0.65`, not `65%`, and refused the `pct` filter. Points filters, intervals, settle and compare in points, and block
+units were all off on it, and a price per point on it was 100 times too high: a gain of 0.2 was read as 0.2 points,
+not 20. A measure's grade is now read off what the measure is. `pass_fail` covers every goal-state family measure, a
+check by its descriptor (a boolean with a better end, or a measure declared `pass_fail`) and a measurement's pass rate
+(`passed`). `class_label` covers `match` and `accuracy`. Every other measure still has no grade. A campaign input
+carrying such measures (every one with goal-state checks) changes, and so does its snapshot id on a re-freeze. Stored
+inputs and snapshots still validate, since `grade` is optional.
+
+### evals: a prices block draws an unbounded price as open above, a values table pads no digit a number was never rounded to
+
+**Fixed:** a price step whose gain's interval reaches zero was drawn with no interval at all, beside steps with one, so
+the least certain price read as the firmest. It now keeps the low end it states: bars draw a whisker capped at the low
+end and opening into a chevron at the axis's end, the values table and tooltip write `from $X up, no upper bound`, and a
+note names each open step. A prices block reads paired intervals wherever every step states a paired low end. The
+kit's `bars` row takes `lo` without `hi` as an interval open above (`kit/API.md`); `hi` without `lo` is refused.
+
+**Fixed:** a block's values table padded every number to the most decimals a peer held, so `1240` beside `1.655` read
+`$1,240.000`. Padding now stops at the significant figures the number rule rounded the number to: none from 1,000 up.
+
+**Fixed:** a price within a slice whose cost is the slice's own measure is per what that measure counts
+(`per 1,000 conversations`), not per the page's cost basis. A gate matrix's task costs are likewise per what the task
+cost measure counts: `task_costs` returns `TaskCosts`, a dict that also names the measure it read.
+
+### evals: settle says which side it settles, its sidedness and what it counts; a lever reads its interval as compare does
+
+**Fixed:** a `settle_cases` row against a line says which side today's estimate is on (`settles`: `clears`, or
+`misses`, where its sizes would confirm the miss rather than show the line cleared). Its `level` is a text that carries
+its sidedness (`95% one-sided`; a two-arm row's `95% two-sided`), and beside the one-sided sizes it gives the sizes at
+which the two-sided interval a page prints clears (`cases_needed_two_sided`, `cases_needed_two_sided_80`). Each row
+says what its count, and so its sizes, count (`count_of`: cases, trials where a repeated case counts again, or
+observations), read from the new `spread.<arm>.<measure>.<where>.counts` key.
+
+**Fixed:** `compare.*` and the price keys' gain axis pair a candidate with the control only by a contrast on the lead
+aspect (or one naming no aspect), so another aspect's contrast on the same measure key is never read as the overall
+paired difference.
+
+**Changed:** a lever effect's interval is the one `arms_compare` reads for the same two arms at the same place (a
+pairing contrast's overall, else the two arms' own spreads, a pass/fail rate's binomial spread from its count among
+them), so an effect has an interval wherever a comparison does; `lever.*` keys gain `level` and `basis`, an
+interaction's `level`. `levers_effects` lists the rows with an interval first, and finds an interaction of one move
+between the same two values however the arms are ordered.
+
+### evals: the analyst's texts say what the snapshot's cost counts, and a prices block reads its money and its refusals plainly
+
+**Fixed:** no analyst-tool text says a cost is per reply where the snapshot's cost counts something else. Static
+texts (action details, result field descriptions, the figure-key families and grammar) say per 1,000 of what the cost
+counts; `price_tradeoff`'s notes and a prices chart's note use the snapshot's own phrase (`per 1,000 conversations`).
+The scoreboard's per-reply cost still reads per 1,000 replies. The planner's grammar section changes with it.
+
+**Changed:** a block's values table groups money's thousands (`$1,239`), and a prices table states a month's prices in
+whole dollars where every one on the axis is $10 or more. A prices block on a gain axis whose frontier holds one option
+or none is refused saying so, with `price_tradeoff` on that axis and the axes whose frontier takes a step as the remedy;
+one keeping no two neighbouring frontier options in `query.arms` says that. The report-plan schema copy lists the
+`prices` source.
+
+### evals: the analyst compares any two arms, sizes the run that would settle a reading, and stops reading cost alone as dominance
+
+**Added:** two actions on the analyst tool's analyses (the editor's cut carries both). `arms_compare` reads the first
+of two arms minus the second on one measure, overall and in each task, cell and stratum where both state a mean, with
+an interval: the contrast's own where one states one arm against the other (paired), else the two arms' own spreads
+combined as independent; it refuses a measure neither arm states a spread for, naming `measure_read`.
+`settle_cases` gives the cases a design needs for an interval centred on today's estimate to clear its line (one arm
+against each declared criterion reading it, one criterion, or a `hypothetical_line`) or zero (two arms), half or four
+in five such designs clearing, and how often a run of today's size reads the wrong way.
+
+**Added:** figure-key families `spread.<arm>.<measure>.<where>.<field>`, `compare.<arm>.<arm>.<measure>.<where>.<field>`,
+`settle.<arm>.<arm>.<measure>.<where>.<field>`, `settle.criteria.<criterion>.<arm>.<where>.<field>` and
+`settle.hypothetical.<line>.<arm>.<measure>.<where>.<field>` (a help page, `figure_keys.separation`), where `<where>`
+is `overall`, `task.<task>`, `cells.<row>.<column>` or `strata.<stratum>`; `separation_wheres` and
+`criterion_wheres` list the places. The arithmetic is `threetears.evals.analysis.separation`. The planner's grammar
+section grows by these lines.
+
+**Changed:** `options_dominance` makes no dominance call where cost is the only axis the snapshot declares (no gate,
+guardrail, control, asked aspect or ranking rule): no option is dominant or dominated, code's call is a tradeoff and
+`code_call.withheld` says why, where it named the cheapest option. It names the declared axes (`weighs`, from the new
+`report_decision.weighed_axes`) and each survivor's `dominated_with_axes`. The planner's `allowed_modes` is unchanged.
+`decision_sensitivity` reads each routable task's pick beside the call (`Segment.picks`, `Sensitivity.declared_picks`,
+`picks_hold`, `Flip.picks_change`), cuts segments where either changes, and sweeps `hypothetical:<measure>` (or
+`/<statistic>`), a gate the snapshot does not declare, marked `hypothetical`.
+
+### evals: the analyst's facts surface intervals, implied caveats, more examples, and lever effects
+
+**Changed:** `measure_read` with no `statistics` reads every statistic the snapshot holds on the measure read that
+way, its interval (`ci` or `half_width`) among them, where it read only the mean, its `ci` and `n`; `statistics` is
+now optional. Its result names what it holds (`held`), what a narrower read left out (`not_shown`) and the intervals'
+`level`. A measure held only within slices is refused by arm, naming where it is held. `campaign_overview`'s measure
+rows gain `statistics` (what each way of reading holds), and `arms_without` lists only the arms holding a measure
+nowhere, so a measure held per cell or stratum no longer reads as missing on every arm.
+
+**Added:** `implied_caveats(report_input)` and `ImpliedCaveat` in `report_decision`: the caveats what a report input
+holds implies, each with a stable id and `matters_if`: `judge_unstated`, `judge_partly_uncalibrated`, `no_control`,
+`nothing_declared`, `point_estimate:<criterion>` and `best_of_n`. `caveats_list` and the overview list them after the
+stated ones (`source`: stated or implied). They are not plan caveat ids: `report_caveats`, the planner and stored plans
+are unchanged.
+
+**Changed:** a snapshot's report input is built by `analyst_input(bundle)`: up to three failed
+trials per aspect, arm and stratum and 96 in all, each excerpt centred on the passage the
+judge's reason quotes, else the reply's end. `report_input` gains `per_slice` and `excerpt`; its defaults keep the
+planner's input as it was. `examples_list` returns the judge's reason whole. A freeze of unchanged evidence now builds
+a different input, so it writes a new snapshot beside any stored one.
+
+**Added:** `levers_effects` (analyses workflow, on the analyst's and the editor's cuts): what each setting the arms
+vary does to a measure, read only between two arms whose settings differ in it alone, with an interval recovered from
+the two arms' own intervals as if independent, and each interaction across another setting with a verdict (reverses,
+differs, within, no_interval). Arms that isolate no setting are refused. New figure keys:
+`lever.<setting>.<from>.<to>.<measure>[.<place>].<field>` and the interaction form
+`lever.<setting>.<from>.<to>.<measure>[.<place>].vs.<from>.<to>.<field>`, with `arm_settings` and `lever_of` in
+`figure_keys`. The figure-key grammar gains a `levers` group, so the planner's prompt text changes with it.
+
+### evals: the analyst checks its keys, counts by key, and prices per slice, pooled and as a what-if
+
+**Added:** `figure_keys_check` on the analyst tool, for both roles: each key a report cites (a path with any filters,
+braced or not, or `arm:<id>`) read on the snapshot as the page prints it (`key|filters = reads`), with the family form
+it reads by and the filters its figure takes; or why it reads nothing (unstated or refused) and what to write instead.
+`figure_keys` gains `key_form`, `KeyForm`, `figure_filters` and `FILTER_SPELLINGS`; `cited` gains `WrittenFigure` and
+`cite_written`.
+
+**Added:** count keys: `count.<what>` (arms, aspects, tasks, strata, cells, configs, gates, criteria, surviving),
+`count.passing.<criterion>`, `count.places.<criterion>`, `count.failing.<criterion>.<arm>`, `count.failed.<arm>`,
+`count.levels.<factor>`, `count.frontier.<gain>` and `count.steps.<gain>`; and the `words` filter, which spells a
+count from zero to twenty as its word. `report_margins` gains `criterion_misses`, `criterion_passes`
+and `surviving_arms`.
+
+**Added:** `price_tradeoff` prices within one task, stratum or cell (`slice_filter`; keys
+`task.<task>.price.<from>.<to>.<gain>.<field>`, and the same under `strata.` and `cells.`, with `cost_basis`), carries
+an unpaired interval on every move whose options state their own half-widths (`gain_interval_unpaired`,
+`per_point_low_unpaired`, `per_point_high_unpaired` and their monthly forms; `Price.unpaired`), pools a gain axis held
+only per slice (`pooled.<measure>.<arm>.<field>`, `pooled_figures`, by traffic share or equal weights stated as a
+caveat), and prices a gated option as a labelled what-if (`what_if`, never a recommendation). The frontier is
+`figure_keys.price_frontier` (`PriceFrontier`), the one rule the tool, the counts and the new `prices` chart source
+read. `prices` is a `ChartQuery.source`: `bars` and `table` draw the frontier's steps at their price per point.
+
+**Changed:** `price_tradeoff` pages its frontier and steps with its options (the frontier first, cheapest first), and
+states the whole frontier's size on every page (`frontier_options`, `frontier_steps`), so a wide frontier keeps a page
+within one result.
+
+### evals: a report says what a cost counts, and a block's values say what the input holds
+
+**Changed:** a cost reads per what its measure counts, never per reply by default. A `usd_per_1k` or `usd_per_1m`
+measure is per what its label names after the count (`Cost per 1k conversations`: `per 1,000 conversations`); money per
+one thing and the scoreboard's reply cost stay per reply. Where a label names no count, the phrase says the unit is not
+stated. `figure_keys.cost_basis(report_input)` names what the page's cost counts and whether the input says. The dollar
+filters, the gate matrix and lattice, the options and Full results cost columns, a plain table's money column, the one
+cost basis check and the digit rule read it, and prose may write the input's own count phrase whole.
+
+**Added:** the `usd_whole` figure-key filter: a monthly or other large amount to the whole dollar, thousands grouped;
+refused under $10.
+
+**Changed:** `block_render` echoes the `reference_line` and `emphasis` it drew, which sit outside the query. A plain
+table over measures, slices or cells is wide: a row per arm (or place), a column per measure, each interval in a column
+of its own at the chart's level. A heatmap's values carry each cell's interval, and a chart over tasks, cells or configs
+states the level of the intervals its figures carry. A block's values read at one precision among the cells that read
+alike (`charts.even_precision`). A scatter's table names each point by its reader name. Where nothing is gated, a
+lattice tile carries no pill and a gate matrix cell no word. Bars over a magnitude spanning more than ten times draw on a
+log axis (one rule, `look.log_spread`, for every chart; the kit's bars take `log`). The options table says what each
+option runs: its settings and served model.
+
+### evals: the report analyst's tool, evals_analyst, over a frozen report snapshot
+
+**Added:** `analyst_actions()` and `analyst_tools(prefix="evals", *, writes=True, role="analyst")`: one tool,
+`<prefix>_analyst`, that a campaign's report analyst investigates the campaign through, on a cut of its own, so the
+`evals` tool and its parameters stay the engine's. Its actions: `report_snapshot_freeze` (the one write), the facts
+(`campaign_overview`, `readings_list`, `contrasts_list`, `measure_read`, `examples_list`, `caveats_list`), the analyses
+(`options_dominance`, `decision_sensitivity`, `measure_breakdown`, `price_tradeoff`), the blocks (`block_catalog`,
+`block_render`) and `capability_gap`, which stores nothing. Every read takes a `snapshot_id` and returns each figure by
+the figure key that names it (`key = reads`). `writes=False` leaves the freeze out; `role="editor"` cuts the tool to
+the facts, the analyses and the gap note.
+
+**Added:** `EvalReportSnapshot` (`eval_report_snapshot`), a new stored document type: one campaign's report input
+frozen whole, with the bundle it was built from, its id derived from the campaign and the input's digest. It is
+derived and regenerable: `report_snapshot_freeze` makes it (from a campaign, or from a stored analysis's bundle),
+`EvalStorage.drop_derived` sweeps it, a regenerable bump refuses it on read, and freezing the same evidence again
+writes a fresh one in place of a stored one that no longer reads or no longer matches its digest
+(`SnapshotFrozen.replaced`). A freeze that finds the same evidence frozen soundly names that snapshot (`reused`), whose
+source, analysis and bundle are the earlier freeze's, as `SnapshotFrozen.note` says. `EvalStorage` gains
+`save_report_snapshot`, `load_report_snapshot` and `delete_report_snapshot`; `require_evidence(bundle, campaign_id,
+scope_id)` refuses a campaign that resolves no runs, for a freeze as for a generation.
+
+**Added:** a figure the input leaves unstated is refused as `UnstatedFigure`, a subclass of `UnresolvableReference`,
+which a listing reads as absent. `gate_findings(report_input, arm, ...)` returns the gate check's failing and
+borderline figures as data (`GateFinding`); `gate_check` reads its reasons off them, unchanged. The analyst cites each
+gate figure by its keys (`GateRead`): a survivor's `borders`, a removed option's `gates` (with `breached`
+guardrails), and a gated option's `gates` off `price_tradeoff`'s frontier. Each judged dimension in the overview cites
+its judge's tier, model, calibration, calibration ratings and agreement (`MeasureRow.judge`).
+
+**Added:** `ToolSpec.left_out`, required with `workflows`: one line saying why a cut tool's role goes without its cut's
+other workflows. A call naming a left-out action is refused with it, never sent to another tool, and a remedy needing
+one is served as it.
+
+**Changed:** every analyst result that grows with a campaign is paged and, without a `limit`, sized to one result:
+`campaign_overview` (its rows by section, the campaign's own figures on every page), `caveats_list`,
+`options_dominance` (options in the snapshot's arm order), and `decision_sensitivity` (each page holds the segments
+starting at its flips), `measure_breakdown` and `price_tradeoff`, whose `limit` is now optional.
+
+### evals: money is grouped by thousands
+
+**Changed:** `dollars_text` groups whole dollars from $1,000 up (`$7,560.00`) and writes a negative amount's sign
+before the dollar sign (`-$1,234.50`, where it wrote `$-1234.50`). Every rendered money figure of $1,000 or more moves:
+on pages, in judge text and in tool text. A host pinning rendered text, or a recording keyed on it, sees the change.
+
+### evals: a refused call carries its corrected call as fields
+
+**Added:** a refusal whose call has a corrected form carries `Recovery` (`ActionOutcome.recovery`): the `parameters`
+at fault, the ones the action `accepted`, an `example` call, the `valid_values` or the action that lists them
+(`valid_values_from`), and the help call that explains (`see`), each present only where it applies. It covers no
+action, an unknown action or help topic, an undeclared parameter, a value that does not validate, and an engine
+refusal whose raiser named its parameters. Over FastMCP a refused call's structured content gains `recovery` beside
+`ending` and `refusal`, and its text ends with the same fields as compact JSON (`recovery: {...}`), since a client may
+forward only the text. A not-found, a conflict or a raised call carries none, and reads as before. `RefusedInput` and
+`ValidationFailedError` take optional `parameters`, `valid_values` and `valid_values_from`
+(`ValidationFailedError.refusing(refused)` carries a lower layer's whole); the analyst's tools fill them for an
+unknown arm, aspect, stratum, measure, failure class, axis, sweep, gain axis or block field, naming the values the
+snapshot holds, or `block_catalog` for a block.
+
+### evals: a server mount_fastmcp builds hands its client a primer
+
+**Added:** `catalogue_primer(tools)` writes what a client reads before its first call: how to get help, every reference
+topic, one line per tool, and the rules every call is held to (long work is a job to poll, a destructive action
+echoes what it destroys, a refusal's recovery line, and each tool's own `ToolSpec.constraints`, new, which its help
+index also lists). It is held to 1,800 characters, inside what one client was measured to deliver
+whole, and refused past it. `mount_fastmcp(host, ...)` passes it as the instructions of the server it builds; a host
+with its own server passes `instructions=catalogue_primer(...)` there.
+
+### evals: help serves reference topics, and the analyst tool's figure_keys is the whole grammar
+
+**Added:** `HelpTopic` and `ToolSpec.topics`: a reference page `help topic='<name>'` serves beside the actions' pages,
+listed under "Reference" in the help index. The analyst tool serves `figure_keys`, the figure-key grammar the planner
+is taught, which `block_catalog`'s `figure_key_forms` are read from; each names the other. A tool with no topics
+reads its help exactly as before.
+
+### evals: an analyst page names the call to the next
+
+**Changed:** every analyst listing (`readings_list`, `contrasts_list`, `measure_read`, `examples_list`,
+`decision_sensitivity`, `measure_breakdown`, `price_tradeoff`, `block_render`) is a paged action (`Action.paged`,
+new): while a page follows, its text ends `next: action='…', …, offset=N`, the arguments the caller sent with the
+offset advanced, and its structured result carries the same call as `next` beside `next_offset`; the last page
+carries neither, and no `next_offset`. A page sized to one result counts that line in its 12,000 characters.
+
+### evals: the editor's evals_analyst is a cut of the analyst's, and the in-process loop calls the same tool
+
+**Added:** `ToolSpec.workflows` cuts a tool to some of its cut's workflows; `analyst_tools(prefix, role="editor")`
+is `<prefix>_analyst` with the facts, the analyses and the gap note, and no blocks or freeze. The in-process loop
+mounts the same `MountedTool` an MCP client is served (its `name`, `description`, `input_schema()` and `call()`), so
+`ActionTool`, `action_tools`, `analyst_toolset` and `editor_toolset` are gone, with the `standalone` refusal dialect.
+
+### evals: a tool's idempotent hint is read off its actions
+
+**Changed:** `idempotentHint` is true for a tool whose every action is a read or a write declared idempotent
+(`Action.idempotent`, new; `report_snapshot_freeze` is): a read-only tool and `evals_analyst` now say so, where every
+tool said false. `ToolHints` gains `idempotent`. `evals` and `evals_admin` still say false.
+
+### evals: figure keys for every figure the report analyst cites, and a figure held on two aspects is named by its aspect
+
+**Added:** the figure-key grammar keys a contrast, a measure's and a judged dimension's figures, the scoreboard, the
+flip margin and the contrast family on any one aspect (`aspects.<aspect>.contrast|measure|judged|scoreboard|flip_margin|family.…`);
+any statistic of a judged figure (`judged.<dimension>.<arm>.<statistic>`); an aspect's pair readings, floors and bars
+(`aspects.<aspect>.pair|floor|bar.…`, a floor with its derived `held_above` and `broken_at`); an arm's figure within a
+stratum (`strata.<stratum>.<arm>.<measure>.<statistic>`, and on one aspect) and a target-matrix cell
+(`cells.<row>.<column>.…`), each with the derived `vs_control`, as tasks now have; a stratum's loss share on any
+measure (`strata.<stratum>.loss_share.<candidate>.<measure>`); and a criterion's figure for an arm at each place it
+reads (`criteria.<criterion>.<arm>[.<place>].value|low|high|gap`). A contrast also reads its `level`, `materiality`
+and `reason`. `Figure` gains `derived`, true for a figure computed from the input's point figures. The planner's
+prompt carries the larger grammar, so its prompt version changes.
+
+**Changed:** an unqualified key whose figure the input holds on more than one aspect is refused, naming the
+`aspects.<aspect>.` key for each: `contrast.<arm>.<measure>.…` held on two aspects (which read the first one), any
+`strata.<stratum>.…` whose id two aspects hold (which was refused as reading two ways), and `family.…` with several
+families. A stored plan written against a multi-aspect input with such a key now refuses its page with the existing
+"generate the analysis again (`analysis_generate`)" remedy.
+
+### evals: the reporter judge reads the page's arms key
+
+**Fixed:** `render_plan_for_judge` omitted the arms key the planned page shows, so an arm written `{name} ({tag})`
+read to the reporter judge as an unexplained handle. Where the plan's page shows an arms key, the judged text now
+leads with that key (the page's own `arms_key` table, tag, name and role), then the plan's JSON; a plan whose page
+shows no key judges as before. A plan reporter case frozen before this change keeps its stored text.
+
+### evals: a planned analysis's page is the page its report plan draws
+
+**Changed:** the campaign's page for an analysis the report planner wrote is now the report kit's page, built from
+the stored plan and the report input rebuilt from the analysis's frozen bundle: the masthead, headline, lede, flag,
+confidence and decision, the answers to the warnings on the recommended arm, the options table and summary charts,
+the arms key, the evidence sections, the explore part (a static table of where each reading flips, where the plan's
+control moves the margin), Full results (every table the plan lists) and Method. Each aspect's fold follows Method in
+one closed appendix ("Evidence record"), so `trials=` and each trial's stored result read as before. This is the
+`body` of `report_read` (Markdown and HTML, default and `static=True`) for a `plan` analysis; its JSON is unchanged,
+and the content of memo and code-only pages is unchanged byte for byte (the kit script a default HTML page inlines
+changed, below). `CampaignReport` gains `plan_page` (a `PlannedPage`, set
+only on a planned analysis's page, which then holds no blocks of its own). A stored plan whose figure key or chart no
+longer resolves against its frozen evidence refuses the page with the existing "generate the analysis again
+(`analysis_generate`)" remedy. `report_decision.margin_sensitivity` (with `MarginSensitivity` and `CandidateMargin`)
+is public: each reading's flip margin, and whether the call holds at every margin. The interim first-screen blocks
+(`analysis.report.campaign.plan_blocks`) are removed. A chart over measures in more than one unit draws each in its
+own panel, in its own unit and format, where its kind panels by measure (a heatmap's matrix, a dot strip's strip, bars
+in panels by slice); any other such chart, and a chart of strata or tasks naming no measure where its kind draws one,
+is refused when the plan is generated, by the rule the page draws by, so no page draws one measure on another's
+scale. That rule is now the plan checks' only unit rule, over every source (GENERATOR §5.2, one unit per axis): a dot
+strip, or bars in panels by aspect, over measures or judged dimensions in two units is accepted and drawn a panel per
+unit, where the checks refused it; a share and a percent count as one unit, both drawn as a percent, each figure at
+its own scale on every kind that draws several measures on one axis (bars, a difference heatmap, a strip per arm,
+range bars); and a chart of
+contrasts whose changes are in more than one unit drawn (a rate's change in points beside a score's or a latency's) is
+refused by the checks and the page alike, where the checks compared each contrast's declared unit. A contrast's
+unit is one reading for the checks' spine, their stored unit and the page (`charting.contrast_unit`): an ordinal
+judged dimension's change is a score change, where the checks called every judged change points. A stored chart
+whose rows state several units stores an empty `unit`. A stored plan with a chart the page now refuses (a chart over
+tasks, strata or cells in several units on one axis, or a chart of contrasts mixing a rate's change with a score's)
+refuses its page with the "generate the analysis again" remedy, and generating it again writes one that draws. No
+stored shape moves.
+
+**Changed:** the kit's dot strip (`dot_interval`, in `kit.js`) needs an interval `level` only where its rows carry
+intervals: a strip of points alone draws with none, where it was refused. The script is inlined in every default-mode
+HTML page, memo and code-only pages included, so its text (and its hash) changed: a host allowing the kit by a CSP
+hash it computed from an earlier wheel recomputes it from this one. A `static=True` page carries no script and is
+unaffected.
+
+**Changed:** every chart a report plan names must draw on the plan's own input. When a plan is generated, code draws
+each summary chart and each section's chart through the page's own resolvers
+(`analysis.report.plan_page.drawable.undrawn_charts`, called by `complete_plan`), and a chart the page cannot draw is
+refused there, at its field path with the page's reason, for the planner's repair round, never stored. Before, such a
+plan passed the checks and was stored, and its page then refused with "generate the analysis again", which wrote the
+same plan again. Stored plans are read as before.
+
+**Changed:** names the report planner and its checks made public on this branch, which nothing outside their modules
+used, are private: in `kernel.report_plan` the planner's parts of the flag, options, chart reference, section and
+answer, the structure call's section, control, explore, claim and caveat landing, the prose item, and both contract
+names (`STRUCTURE_SCHEMA_NAME`, `PROSE_SCHEMA_NAME`); `plan_assembly.ProseSlot`; `planned_analysis.PlannedAnalysis`,
+`planned_analysis` and `planned_insights`; `figure_keys.margin_name` (and `NAMED_KINDS`, removed);
+`report_margins.MarginKind`; `report_plan_checks.SPINE_KINDS`; `report_plan_facts.ARMS_KEY_CHARS` and `FactWeakest`;
+and `plan_prompt.PLAN_PROMPT_CHAR_BUDGET` and `PLAN_PROMPT_RULE_BUDGET`, now the contract
+`tests/test_plan_prompt_budget.py` declares (15,500 characters, 13 rules). `plan_recommended_arm` moves from
+`planned_analysis` to `kernel.report_plan`. The planner's two contracts keep every field; the private parts' `$defs`
+names gain a leading underscore, so a recording of the planner's calls is recorded again. None of these was in a
+release.
+
+**Added:** a caveat kind, `unsettled:<aspect>` (#980): a surviving candidate's reading on an aspect declaring a margin,
+asked or not, whose interval allows both a loss past the margin and a change short of it. It is report-wide when the
+option code's decision names is among those candidates, and scoped otherwise; a plan recommending such a candidate
+(a ranking rule's pick included) may not state a plain `high` while it is open, and states `high_if_immaterial` with
+its `material_if` clause, or `low`. Code never proves it immaterial. `report_decision.unsettled_arms` is public, and
+the plan's caveat and flag id patterns accept the new kind, so every stored plan still reads. A flag disclosing one weakens the
+measures that aspect's contrasts read.
+
+### evals: a static report page, for a host whose policy runs and loads nothing
+
+**Added:** `report_html` and `campaign_report_html` take `static: bool = False`. So do `serialize_report` and
+`report_read`, and the `report_read` action takes an optional `static` field. With `static=True` the HTML page
+carries no `<script>` and no `<link>`, so a host can serve it under `default-src 'none'; style-src 'unsafe-inline'`.
+Its text is set in the system faces the kit's stylesheet names after each Plex face, and every chart is shown as its
+table of values. The default page is unchanged, byte for byte: the kit's one inlined script draws the charts and it
+links the Google Fonts stylesheet. Markdown and JSON are the same either way. No stored shape moves.
+
+### evals: a routed document store starts without a relocation when a release adds a document type
+
+**Fixed:** a `RoutedDocumentStore` whose placement record predates a registered document type read that type as if
+it were kept in the record's store for unregistered types, so a release adding a type placed anywhere else refused to
+start (`RouteChanged`) until `relocate` ran with every process stopped: an outage step for a type with no documents.
+`eval_report_plan` (derived, regenerable) hit it on every host keeping unknowns with its evidence. A registered type
+the record does not name is now new to the stores: placed by the route, recorded, and not counted as moved. The record
+lists every type registered when it was written and the engine writes only registered types, so no earlier start
+wrote one. A host that rolled back and ran an older build's `relocate` relocates again once the newer build is back,
+and during a rolling deploy an older pod restarting after a newer one has started refuses to start. A type the record names still refuses to
+start when its placement moved, as do a changed `unregistered` store, disagreeing records, swapped stores and stores
+with no record. The one assumption, documented on the router: no host keeps its own documents under an `eval_*` name
+the engine registers. See `packages/evals/MIGRATIONS.toml`.
+
+### evals: the report planner writes a campaign's analysis, in place of the memo writer
+
+**Changed:** a generation is written by the report planner (`threetears.evals.analysis.planner`), not the memo
+writer. It writes a report plan in two calls, a structure then its prose, each repaired at most once, and code checks
+the plan (`validate_plan`) before it is stored. What a host must do:
+
+- **Register the planner's prompt.** `AnalysisGeneration.prompt_id` now defaults to `eval_report_plan`
+  (`REPORT_PLAN_PROMPT`). Seed that slot from `threetears.evals.analysis.EVAL_REPORT_PLAN_DEFAULT` and make
+  `resolve_prompt` return it. A host whose resolution still returns the memo writer's seed (`EVAL_ANALYSIS_GEN_DEFAULT`)
+  is refused before anything is sent: preparation raises `ValidationFailedError` and `generate_report_plan` raises
+  `RefusedInput`, each naming the prompt to register. The writer's prompt (`eval_analysis_gen`) stays registered for
+  memo reporter cases. The planner seed moved this release (its rule 9: the first evidence section draws the spine code
+  gives, and no section repeats a summary chart), so push it to the `eval_report_plan` store (`eval_prompt_reset`).
+- **Give a generation room for four calls.** `MAX_GENERATION_CALLS` goes from 2 to 4 (the structure, its repair, the
+  prose, its repair), which doubles `generation_ceiling_s`. A host that fixed `AnalysisGeneration.budget_s` below the
+  new ceiling cancels a repair mid-flight, after its calls were billed, and the attempt ends `timed_out`. The package
+  cannot check it when the config is built: the per-request ceiling is the host's client's. Derive `budget_s` from
+  `Ceilings().generation_ceiling_s` again.
+- **Storage.** A new regenerable document type, `eval_report_plan` (`EvalReportPlan`), holds each planned analysis's
+  plan. `AnalysisStore` gains `save_report_plan`, `load_report_plan` and `delete_report_plan`; `EvalStorage` implements
+  them over any `DocumentStore`, so only a host with its own `AnalysisStore` writes them. `EvalAnalysis.document` is now
+  optional (None for a planned analysis), and `EvalAnalysis` gains `report_plan_id` and `basis` (`memo` or `plan`).
+  Memo analyses read and render as before.
+- **The read surface.** `AnalysisLine` gains `basis` and `report_plan_id`, and its `needs_regeneration` is also set
+  for a planned analysis whose stored plan this build no longer reads (or whose plan was deleted apart from it).
+  `ReportDocument` gains `analysis_basis` and `plan`. `report_read`, `campaign_report` and `analysis_report` refuse
+  such an analysis with `RefusedInput`, naming `analysis_generate`, as they refuse an analysis frozen over a bundle of
+  another shape.
+- **Rolling deploys.** A pod built before the planner cannot read a planned analysis, so `analyses_list` and
+  `campaign_report` fail there outright. Upgrade every pod before the first planned analysis is generated.
+- **Reporter calibration.** `ReporterCalibration.rating_agreement` is now nullable: it is null when a run spans more
+  than one calibration group (kind version and prompt version), and each group's agreement is in `groups`.
+
+**Changed (the plan checks):** the shape's spine chart is code's fact (`report_plan_checks.spine`), handed to the
+planner, and a plan whose first evidence section is not it is refused. A recommended or lean option that does not
+survive the gates and guardrails is refused in every mode. A candidate a corrected contrast on an asked aspect
+separates (improved, regressed or equivalent) is no longer forced to a no call by an unclear pass-rate reading. See
+`packages/evals/MIGRATIONS.toml`.
+
+### evals: the reporter eval judges report plans
+
+**Added:** a reporter case may judge a report plan (`ReporterCase.kind_version` 2; durable v16.6). `reporter_case_freeze`
+accepts an analysis the report planner wrote, of a campaign of one aspect or several, and freezes the bundle frozen
+with it, the report input built from it, the plan in key form and the planner's prompt version. The judge reads the
+plan as `render_plan_for_judge` renders it (the planner's part of the plan, every figure key written out by the
+renderer the campaign's page uses) against what the planner read (`plan_user_message`). Memo cases are stored, read
+and judged as before. Receipts gain `kind_version`, `report_input_digest` and `planner_prompt_version`; calibration
+groups cases by kind version and prompt version and never pools agreement across groups. A generating reporter launch
+over a plan case is refused. See `packages/evals/MIGRATIONS.toml`.
+
+### evals: a template may declare the display name a page prints for each stratum
+
+**Added:** `EvalTemplate.stratum_names` (a stratum id to its name, each at most 32 characters, never blank, one per
+stratum; durable v16.5) is what a page prints for a stratum: the report input's `Stratum.name` (so a figure key's
+`strata.<id>.name` and a plan's stratum labels print it), and an aspect page's stratum columns and cases table. A
+stratum naming none prints as its id. It rides `AnalysisContextBundle.stratum_names`, written only when declared, and
+is settable through `template_update` like `goal_check_names`, which leaves the template's `updated_at`. It is in no
+digest or fingerprint and no bundle shape moves. See `packages/evals/MIGRATIONS.toml`.
+
+### evals: an arm may declare the short name a page prints for it
+
+**Added:** `CampaignArm.short_name` (at most 32 characters, no other arm's label or short name; durable v16.4) is
+what a campaign's page prints for an arm where space is tight: each outcome bar's short label, the cost/quality
+chart's point, and `{arm:<id>}` in a report plan's prose, through the report input's new `Arm.short_name`. A declared
+name wins over the arm's label and over the short name a page computes from what differs from the control, so only an
+arm declaring none takes the computed one. `campaign_create` takes `short_name` on each arm, adoption carries it, and
+`campaign_update` takes `arm_short_names`, which stays editable once runs have joined. No identity, digest or
+fingerprint moves. See `packages/evals/MIGRATIONS.toml`.
+
 ## v0.95.0 -- 2026-11-07
 
 ### enforcement: five epoch-discipline gates, each with a list that only shrinks

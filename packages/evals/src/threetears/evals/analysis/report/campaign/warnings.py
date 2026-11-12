@@ -1,67 +1,60 @@
 """What warns on a campaign's page, for every kind, under its question and answer: one plain line per arm for the bars
 it misses, then one per arm for the floors it breaks, then one per arm and decision for the guardrails it is not
-shown safe on. Each line says what the warning means for the arm, names the aspects it holds on, and leaves the
-figures to the tables below. A bar's or a floor's line is followed at once by the writer's why where the memo
-recommends that arm over it: each only warns, and this is where it warns."""
+shown safe on. Each line says what the warning means for the decision first, names the aspects it holds on, and
+leaves the figures to the tables below, but for one: an undecided guardrail on a pass/fail check then says how many
+cases could fail it and how many each arm failed it on, too few to settle it, so a reader never reads the sample's
+size as a defect. Each guardrail is named as the page names its measure everywhere
+(:func:`~threetears.evals.analysis.report.verdict.guardrail_name`). Each only warns, and this is where it
+warns."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
 from threetears.evals.analysis.arms import short_digest
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import BarStatus, CampaignReadings, FloorStatus
-from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.report.campaign.common import as_written, named_arms
+from threetears.evals.analysis.report.campaign.common import named_arms
 from threetears.evals.analysis.report.campaign.names import AspectNames
-from threetears.evals.analysis.report.model import DisclosureBlock, Fact, Report, ReportBlock, TextBlock
-from threetears.evals.analysis.style import humanize
-from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.verdict import GUARDRAIL_SAID, guardrail_name
+from threetears.evals.analysis.report.model import DisclosureBlock, Report, ReportBlock
 from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.surface import GuardrailCheck
 
 __all__ = ["bar_warnings", "campaign_warnings", "floor_line", "floor_warnings", "guardrail_warnings", "listed", "where"]
 
 
-def bar_warnings(
-    readings: CampaignReadings, memo: AuthoredCampaignAnalysis | None, *, names: AspectNames
-) -> list[ReportBlock]:
+def bar_warnings(readings: CampaignReadings, *, names: AspectNames) -> list[ReportBlock]:
     """One line per arm missing a bar, for every kind: ``Adopting alpha overrides the 2 bars it misses on answers.``,
-    or for a measurement, whose bars are its standard, ``solo falls short of the bar on clarity.``; each followed at
-    once by the writer's why where the memo recommends that arm below a bar (``bars_missed``).
+    or for a measurement, whose bars are its standard, ``solo falls short of the bar on clarity.``
 
     :param readings: What code read off the campaign.
     :ptype readings: CampaignReadings
-    :param memo: The writer's memo; None where none was written.
-    :ptype memo: AuthoredCampaignAnalysis | None
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
-    :return: The lines, each arm's whys after its line.
+    :return: The lines.
     :rtype: list[ReportBlock]
     """
-    recommendation = memo.recommended() if memo is not None else None
-    answers: dict[tuple[str, str], list[ReportBlock]] = {}
-    if recommendation is not None:
-        for missed in recommendation.bars_missed:
-            if why := as_written(missed.why):
-                answers.setdefault((missed.aspect, missed.measure), []).append(_why(why, recommendation.arm))
-    blocks: list[ReportBlock] = []
-    for arm, statuses, text in _bar_lines(readings, names):
-        blocks.append(DisclosureBlock(section="warnings", source="bar", text=text))
-        if recommendation is not None and arm == recommendation.arm:
-            blocks += [why for status in statuses for why in answers.pop((status.aspect, status.measure), [])]
-    return blocks
-
-
-#: How a guardrail's line says what it means for an arm, by the guardrail's decision, the breached first.
-_GUARDRAIL_WORDS: dict[str, str] = {"breached": "breaches", "undecided": "is not yet shown safe on"}
+    return [DisclosureBlock(section="warnings", source="bar", text=text) for *_, text in _bar_lines(readings, names)]
 
 
 def guardrail_warnings(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    reports: Mapping[str, Report],
+    *,
+    names: AspectNames,
+    forms: PageForms,
 ) -> list[ReportBlock]:
     """One line per arm and decision naming each guardrail it is not shown safe on with the aspects that guardrail
-    holds on, after the broken floors: ``v2 is not yet shown safe on the no invented total guardrail on classify and
-    the polite guardrail on tone.`` Each guardrail is paired with its own aspects, never with another's. A guardrail
-    only warns: no line says an arm is not adopted.
+    holds on, after the broken floors, what it means for the decision first: ``v2 may do worse than v1 on the No
+    invented total score guardrail on classify and the Polite guardrail on tone.`` Each guardrail is paired with its
+    own aspects, never with another's, and named as the page names its measure. A guardrail only warns: no line says
+    an arm is not adopted. A line naming one undecided pass/fail check then says what leaves it undecided
+    (:func:`_undecided_bound`): ``v2 may do worse than v1 on the No invented total score guardrail on classify, by
+    more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle
+    it.``
 
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
@@ -71,74 +64,140 @@ def guardrail_warnings(
     :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
+    :param forms: The page's forms.
+    :ptype forms: PageForms
     :return: The lines, the breached before the undecided, each arm in the order first met.
     :rtype: list[ReportBlock]
     """
     labels = readings.arm_labels()
     blocks: list[ReportBlock] = []
-    for decision, words in _GUARDRAIL_WORDS.items():
-        # Each arm's guardrails, each with the aspects it holds on, in the order first met.
+    for decision, words in GUARDRAIL_SAID.items():
+        # Each arm's guardrails, each with the aspects it holds on, in the order first met; and each arm's checks.
         by_arm: dict[str, dict[str, list[str]]] = {}
+        checks_of: dict[str, list[tuple[GuardrailCheck, AnalysisContextBundle, str]]] = {}
         for aspect in campaign.aspects:
             bundle = reports[aspect.label].bundle
             arms_named = named_arms(bundle, labels)
+
+            def label(key: str) -> str:
+                return arms_named[key].label if key in arms_named else short_digest(key)
+
             for check in bundle.guardrails.checks:
                 if check.decision != decision:
                     continue
-                key = check.contrast.variant_key
-                arm = arms_named[key].label if key in arms_named else short_digest(key)
-                aspects = by_arm.setdefault(arm, {}).setdefault(humanize("dimension", check.name), [])
+                arm = label(check.contrast.variant_key)
+                named = guardrail_name(bundle, check.name, check.reading)
+                aspects = by_arm.setdefault(arm, {}).setdefault(named, [])
                 if aspect.label not in aspects:
                     aspects.append(aspect.label)
+                checks_of.setdefault(arm, []).append((check, bundle, label(check.control.variant_key)))
         total = len(campaign.aspects)
         for arm, by_dimension in by_arm.items():
             each = [
                 f"the {dimension} guardrail on {where([names(label) for label in aspects], total)}"
                 for dimension, aspects in by_dimension.items()
             ]
-            blocks.append(
-                DisclosureBlock(
-                    section="warnings", source="guardrails", text=f"{arm} {words} {listed(each)}.", term="guardrail"
-                )
-            )
+            # One undecided check on the line says what bounds it; a line naming several leaves each count to its
+            # aspect's guardrails table, since one sentence carries one count.
+            bound = None
+            if decision == "undecided" and len(checks_of[arm]) == 1:
+                ((check, bundle, control),) = checks_of[arm]
+                bound = _undecided_bound(check, bundle, arm=arm, control=control, forms=forms)
+            said = words.format(arm=arm, control=readings.control_label, named=listed(each))
+            text = f"{said}{bound}." if bound else f"{said}."
+            blocks.append(DisclosureBlock(section="warnings", source="guardrails", text=text, term="guardrail"))
     return blocks
 
 
-def floor_warnings(
-    readings: CampaignReadings, memo: AuthoredCampaignAnalysis | None, *, names: AspectNames
-) -> list[ReportBlock]:
+def _undecided_bound(
+    check: GuardrailCheck, bundle: AnalysisContextBundle, *, arm: str, control: str, forms: PageForms
+) -> str | None:
+    """What leaves one undecided guardrail undecided, where it is a pass/fail check read on a declared margin: the
+    margin the arm may be worse than the control by, then how many cases could fail it and how many each arm failed
+    it on, too few to settle it: ``, by more than its 5-point margin. Of the 30 cases that could fail it, neither arm
+    failed any, too few to settle it``.
+
+    The counts are read off the readings: a case an arm failed it on is one where a trial of that arm failed the
+    check (``TrialRow.failed_checks``), and an arm whose every value is the check's good end failed it on none. None
+    where those cannot be read: a judged dimension or a measure that is no pass/fail check, no bounded interval (on a
+    reading with no declared range a hold is never read, whatever the cases), no declared margin, or failed trials
+    beyond the bundle's cap.
+
+    :param check: The undecided guardrail check.
+    :ptype check: GuardrailCheck
+    :param bundle: The aspect's bundle it was read on.
+    :ptype bundle: AnalysisContextBundle
+    :param arm: The arm checked, by name.
+    :ptype arm: str
+    :param control: The control, by name.
+    :ptype control: str
+    :param forms: The page's forms, which state the margin as declared.
+    :ptype forms: PageForms
+    :return: The words, opening with the comma that follows the guardrail's name, or None.
+    :rtype: str | None
+    """
+    descriptor = bundle.measure_catalog.get(check.name)
+    if (
+        check.reading != "measure"
+        or descriptor is None
+        or not descriptor.pass_fail
+        or check.interval_basis != "bounded"
+        or not check.margin_declared
+        or check.margin <= 0
+    ):
+        return None
+    good = 1.0 if check.higher_is_better else 0.0
+    cases = check.contrast.n_cases
+    head = (
+        f", by more than its {forms.declared(check.margin * 100).text}-point margin. Of the {cases} cases that could "
+        "fail it"
+    )
+    tail = "too few to settle it"
+    if check.control.mean == good and check.contrast.mean == good:
+        return f"{head}, neither arm failed any, {tail}"
+    if bundle.trials_omitted:
+        return None
+
+    def failed(key: str) -> int:
+        # A trial holds each check it failed by its measure's key, never by the name a page prints for it.
+        return len(
+            {
+                trial.case_id
+                for trial in bundle.trials
+                if trial.arm == key and any(failure.name == check.name for failure in trial.failed_checks)
+            }
+        )
+
+    # A count of cases, never of trials: with repeats it can run against the per-trial rates the tables show.
+    return (
+        f"{head}, {arm} failed {failed(check.contrast.variant_key)} and {control} failed "
+        f"{failed(check.control.variant_key)}, {tail}"
+    )
+
+
+def floor_warnings(readings: CampaignReadings, *, names: AspectNames, forms: PageForms) -> list[ReportBlock]:
     """One line per candidate breaking a floor, naming the aspects it breaks one on: ``Adopting v2 overrides the
-    10-point floor it breaks on billing.``; each followed at once by the writer's why, where the memo recommends the
-    arm over a floor it breaks. Which rate broke it, and the interval it broke on, are the aspect's floors table's.
+    10-point floor it breaks on billing.`` Which rate broke it, and the interval it broke on, are the aspect's floors
+    table's.
 
     :param readings: What code read off the campaign.
     :ptype readings: CampaignReadings
-    :param memo: The writer's memo; None where none was written.
-    :ptype memo: AuthoredCampaignAnalysis | None
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
-    :return: The lines, each arm's whys after its line.
+    :param forms: The page's forms, which state each margin.
+    :ptype forms: PageForms
+    :return: The lines.
     :rtype: list[ReportBlock]
     """
-    recommendation = memo.recommended() if memo is not None else None
-    overrides: dict[str, list[ReportBlock]] = {}
-    if recommendation is not None:
-        for override in recommendation.floors_overridden:
-            if why := as_written(override.why):
-                overrides.setdefault(override.floor, []).append(_why(why, recommendation.arm))
-    blocks: list[ReportBlock] = []
-    for arm, statuses, text in _floor_lines(readings, names):
-        blocks.append(DisclosureBlock(section="warnings", source="floor", text=text))
-        # The why answers the recommended arm's breaking of the floor, never another arm's breaking of the same one.
-        if recommendation is not None and arm == recommendation.arm:
-            for key in dict.fromkeys(status.floor for status in statuses):
-                blocks += overrides.get(key, [])
-    return blocks
+    return [
+        DisclosureBlock(section="warnings", source="floor", text=text)
+        for *_, text in _floor_lines(readings, names, forms)
+    ]
 
 
-def campaign_warnings(readings: CampaignReadings, names: AspectNames) -> list[str]:
+def campaign_warnings(readings: CampaignReadings, names: AspectNames, *, forms: PageForms) -> list[str]:
     """What warns on a campaign's page of its bars and floors, as code words it: each arm missing a bar, then each
-    candidate breaking a floor — never the writer's why beside them, nor the guardrail lines after.
+    candidate breaking a floor — never the guardrail lines after.
 
     The page's own warnings are these lines, so whatever repeats them (an analysis's listing line) says what its page
     says, word for word.
@@ -147,10 +206,15 @@ def campaign_warnings(readings: CampaignReadings, names: AspectNames) -> list[st
     :ptype readings: CampaignReadings
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
+    :param forms: The forms of the surface the lines are printed on, which state each margin: the page's, or an
+        off-page surface's (:meth:`~threetears.evals.analysis.report.forms.PageForms.off_page`) for a listing.
+    :ptype forms: PageForms
     :return: The lines, in the page's order; none where no bar is missed and no floor broken.
     :rtype: list[str]
     """
-    return [text for *_, text in _bar_lines(readings, names)] + [text for *_, text in _floor_lines(readings, names)]
+    return [text for *_, text in _bar_lines(readings, names)] + [
+        text for *_, text in _floor_lines(readings, names, forms)
+    ]
 
 
 def _bar_lines(readings: CampaignReadings, names: AspectNames) -> list[tuple[str, list[BarStatus], str]]:
@@ -186,7 +250,7 @@ _FLOOR_LINE = {
 }
 
 
-def floor_line(arm: str, margins: Sequence[float | None], where: str) -> str:
+def floor_line(arm: str, margins: Sequence[float | None], where: str, *, forms: PageForms) -> str:
     """The line a page warns of the floors one candidate breaks in, on a campaign's page and an aspect's own alike:
     ``Adopting v2 overrides the 10-point floor it breaks on billing.``, the floors' margin said where they share one
     (a cost floor has none). Which rate broke it, and the interval it broke on, are the floors table's.
@@ -197,6 +261,8 @@ def floor_line(arm: str, margins: Sequence[float | None], where: str) -> str:
     :ptype margins: Sequence[float | None]
     :param where: Where the floors are broken, as :func:`where` says it.
     :ptype where: str
+    :param forms: The page's forms, which state the margin as declared.
+    :ptype forms: PageForms
     :return: The line.
     :rtype: str
     """
@@ -204,18 +270,20 @@ def floor_line(arm: str, margins: Sequence[float | None], where: str) -> str:
     margin = next(iter(shared)) if len(shared) == 1 else None
     form = "one" if len(margins) == 1 else "other"
     return _FLOOR_LINE[(form, margin is not None)].format(
-        arm=arm, margin=format_number(margin) if margin is not None else "", where=where
+        arm=arm, margin=forms.declared(margin).text if margin is not None else "", where=where
     )
 
 
-def _floor_lines(readings: CampaignReadings, names: AspectNames) -> list[tuple[str, list[FloorStatus], str]]:
+def _floor_lines(
+    readings: CampaignReadings, names: AspectNames, forms: PageForms
+) -> list[tuple[str, list[FloorStatus], str]]:
     """Each candidate breaking a floor, with the floors it breaks and its line: the floors' margin where they share
     one, as a cost floor has none."""
     total = len(readings.aspects)
     lines = []
     for arm, statuses in _by_arm(readings.broken_floors()).items():
         on = where([names(label) for label in dict.fromkeys(status.aspect for status in statuses)], total)
-        lines.append((arm, statuses, floor_line(arm, [status.margin for status in statuses], on)))
+        lines.append((arm, statuses, floor_line(arm, [status.margin for status in statuses], on, forms=forms)))
     return lines
 
 
@@ -225,11 +293,6 @@ def _by_arm[Status: (BarStatus, FloorStatus)](statuses: Sequence[Status]) -> dic
     for status in statuses:
         found.setdefault(status.arm_label, []).append(status)
     return found
-
-
-def _why(why: str, arm: str) -> ReportBlock:
-    """The writer's why for recommending ``arm`` over what the line before it warns of, as written."""
-    return TextBlock(section="warnings", role="override", body=why, facts=[Fact(name="Arm", value=arm)])
 
 
 def where(names: Sequence[str], total: int) -> str:
