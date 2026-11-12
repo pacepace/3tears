@@ -1544,8 +1544,13 @@ def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, lo
     for node in strings:
         if id(node) not in docstrings and id(node) not in pieces:
             _apply_ddl(catalog, str(node.value), f"{relative}:{node.lineno}", local=local)
+    parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     for joined, written in formatted:
-        _apply_ddl(catalog, written, f"{relative}:{joined.lineno}", local=local)
+        # an f-string of a loop's or a function's own names, each bound to literals where it is written: one DDL a
+        # binding (``f"... {table}_draft_owner_idx ON {table} ..."`` for each table its callers pass); else its
+        # template, the names unknown (C4)
+        for text in _instances(joined, values, tree, parents) or [written]:
+            _apply_ddl(catalog, text, f"{relative}:{joined.lineno}", local=local)
     # DDL written as a ``.format(...)`` template: its placeholders filled from the module's constants (C4)
     for call in calls:
         layout = (
@@ -1562,6 +1567,136 @@ def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, lo
                 filled = ""
             if filled:
                 _apply_ddl(catalog, filled, f"{relative}:{call.lineno}", local=local)
+
+
+def _instances(joined: ast.JoinedStr, values: _Values, tree: ast.Module, parents: dict[int, ast.AST]) -> list[str]:
+    """the texts an f-string is once each name it interpolates that the module does not know is bound to a literal:
+    by a ``for`` over a literal tuple or list around it, or, for its function's own parameter, by every call of the
+    function in the module passing a literal (or a name a literal loop around that call binds). Empty when any such
+    name stays unbound, or when it names nothing unknown (its one text is :meth:`_Values.text`'s).
+
+    :param joined: the f-string
+    :ptype joined: ast.JoinedStr
+    :param values: the module's known values
+    :ptype values: _Values
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param parents: each node's parent, by id
+    :ptype parents: dict[int, ast.AST]
+    :return: the texts, one a binding
+    :rtype: list[str]
+    """
+    unknown = {
+        part.value.id
+        for part in joined.values
+        if isinstance(part, ast.FormattedValue) and isinstance(part.value, ast.Name) and values.text(part.value) is None
+    }
+    if not unknown:
+        return []
+    bindings = _bindings(joined, unknown, values, tree, parents, 0)
+    texts: list[str] = []
+    for binding in bindings:
+        if not unknown <= binding.keys():
+            return []
+        texts.append(
+            "".join(
+                str(part.value)
+                if isinstance(part, ast.Constant)
+                else (
+                    binding[part.value.id]
+                    if isinstance(part, ast.FormattedValue)
+                    and isinstance(part.value, ast.Name)
+                    and part.value.id in binding
+                    else (values.text(part.value) if isinstance(part, ast.FormattedValue) else None) or "{}"
+                )
+                for part in joined.values
+            )
+        )
+    return texts
+
+
+def _bindings(
+    node: ast.AST, names: set[str], values: _Values, tree: ast.Module, parents: dict[int, ast.AST], depth: int
+) -> list[dict[str, str]]:
+    """each literal binding of ``names`` where ``node`` is written: the ``for`` loops over literal tuples around it,
+    then its function's calls in the module (each argument a literal, or bound the same way where the call is
+    written). Empty when a name is bound by anything else.
+
+    :param node: where the names are read
+    :ptype node: ast.AST
+    :param names: the names to bind
+    :ptype names: set[str]
+    :param values: the module's known values
+    :ptype values: _Values
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param parents: each node's parent, by id
+    :ptype parents: dict[int, ast.AST]
+    :param depth: how many calls were followed
+    :ptype depth: int
+    :return: the bindings
+    :rtype: list[dict[str, str]]
+    """
+    found: list[dict[str, str]] = [{}]
+    left = set(names)
+    current = parents.get(id(node))
+    while current is not None and left and depth <= 3:
+        loops: list[ast.For | ast.AsyncFor | ast.comprehension] = (
+            [current]
+            if isinstance(current, ast.For | ast.AsyncFor)
+            else list(current.generators)
+            if isinstance(current, ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp)
+            else []
+        )
+        for loop in loops:
+            if isinstance(loop.target, ast.Name) and loop.target.id in left:
+                items = values.texts(loop.iter)
+                if items is None:
+                    return []
+                found = [{**binding, loop.target.id: item} for binding in found for item in items]
+                left.discard(loop.target.id)
+        if isinstance(current, ast.FunctionDef | ast.AsyncFunctionDef):
+            arguments = [*current.args.posonlyargs, *current.args.args]
+            keyword_only = [arg.arg for arg in current.args.kwonlyargs]
+            parameters = {arg.arg for arg in arguments} | set(keyword_only)
+            if not left <= parameters:
+                return []
+            calls = [
+                call
+                for call in ast.walk(tree)
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == current.name
+            ]
+            each: list[dict[str, str]] = []
+            for call in calls:
+                given: dict[str, ast.expr] = {arg.arg: value for arg, value in zip(arguments, call.args, strict=False)}
+                given.update({keyword.arg: keyword.value for keyword in call.keywords if keyword.arg})
+                defaults = dict(
+                    zip(
+                        [arg.arg for arg in arguments][len(arguments) - len(current.args.defaults) :],
+                        current.args.defaults,
+                        strict=True,
+                    )
+                )
+                literal: dict[str, str] = {}
+                pending: dict[str, str] = {}
+                for name in left:
+                    argument = given.get(name, defaults.get(name))
+                    text = values.text(argument) if argument is not None else None
+                    if text is not None:
+                        literal[name] = text
+                    elif isinstance(argument, ast.Name):
+                        pending[name] = argument.id
+                    else:
+                        return []
+                outer = _bindings(call, set(pending.values()), values, tree, parents, depth + 1) if pending else [{}]
+                if not outer:
+                    return []
+                each.extend({**literal, **{name: bound[source] for name, source in pending.items()}} for bound in outer)
+            if not each:
+                return []
+            return [{**binding, **call_binding} for binding in found for call_binding in each]
+        current = parents.get(id(current))
+    return found if not left else []
 
 
 def _unique_columns(node: ast.expr, values: _Values, *, named_first: bool) -> tuple[str, ...]:

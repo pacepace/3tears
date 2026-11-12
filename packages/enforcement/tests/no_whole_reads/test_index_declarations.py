@@ -113,6 +113,73 @@ def test_a_wrong_entry_is_reported(tmp_path: Path, line: str, kind: str) -> None
     assert any(kind in f for f in findings), findings
 
 
+_TABLE = '    UP = "CREATE TABLE IF NOT EXISTS datasources (id UUID PRIMARY KEY, kind TEXT, status TEXT, customer_id UUID)"\n'
+
+#: an index named by an f-string of a builder's parameter, each table the module's calls pass (hub v019's shape)
+_BY_CALLS = (
+    _TABLE
+    + """
+    def _by_kind_sql(table: str) -> str:
+        return f"CREATE INDEX IF NOT EXISTS {table}_by_kind ON {table} (kind)"
+
+    STATEMENTS = (_by_kind_sql("datasources"),)
+"""
+)
+
+#: the same f-string in a loop over a literal tuple
+_BY_LOOP = (
+    _TABLE
+    + """
+    TABLES = ("datasources",)
+
+    def statements() -> list[str]:
+        out = []
+        for table in TABLES:
+            out.append(f"CREATE INDEX IF NOT EXISTS {table}_by_kind ON {table} (kind)")
+        return out
+"""
+)
+
+#: a builder called from a loop over literals: the call's argument is the loop's name
+_BY_LOOPED_CALLS = (
+    _TABLE
+    + """
+    def _by_kind_sql(table: str) -> str:
+        return f"CREATE INDEX IF NOT EXISTS {table}_by_kind ON {table} (kind)"
+
+    STATEMENTS = [_by_kind_sql(name) for name in ("datasources",)]
+"""
+)
+
+#: the loop iterates what only run time knows
+_BY_RUN_TIME = (
+    _TABLE
+    + """
+    def statements(tables: list[str]) -> list[str]:
+        return [f"CREATE INDEX IF NOT EXISTS {table}_by_kind ON {table} (kind)" for table in tables]
+
+    STATEMENTS = statements(load_tables())
+"""
+)
+
+
+@pytest.mark.parametrize("migration", [_BY_CALLS, _BY_LOOP, _BY_LOOPED_CALLS], ids=["calls", "loop", "looped-calls"])
+def test_an_f_string_index_name_bound_to_literals_is_declared_by_its_line(tmp_path: Path, migration: str) -> None:
+    """Flips if an index whose name an f-string builds from a name bound only to literals (a builder's calls, a loop
+    over a literal tuple) is not seen, so its ledger line is refused as stale and its read stays whole."""
+    findings = _findings(tmp_path, _LINE, migration=migration)
+    assert _index(findings) == [], findings
+    assert not [f for f in findings if "Digest.refresh_active" in f], findings
+
+
+def test_an_f_string_index_name_bound_at_run_time_stays_unknown(tmp_path: Path) -> None:
+    """Flips if an f-string index name over a loop of run-time values is read as a concrete index (its line accepted,
+    its read keyed)."""
+    findings = _findings(tmp_path, _LINE, migration=_BY_RUN_TIME)
+    assert any("index-ledger-stale" in f for f in findings), findings
+    assert any("in Digest.refresh_active: non-key-where datasources" in f for f in findings), findings
+
+
 def test_an_index_declared_inline_and_in_the_ledger_is_declared_twice(tmp_path: Path) -> None:
     """Flips if an index carrying its comments beside its DDL may be declared in the ledger too."""
     findings = _findings(tmp_path, _LINE, migration=_INLINE)
