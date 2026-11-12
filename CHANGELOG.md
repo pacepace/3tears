@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a negative value on a measure declared non-negative is named
+
+**Added:** `AnalysisContextBundle.negative_values` (a list of `NegativeValues`: measure, arm, the number of results, and
+up to `NEGATIVE_VALUE_IDS_SHOWN` result ids), written only when a result recorded a value below zero on a measure
+declared `nonnegative`. A page's methods says so in one line per measure and arm ("Parcels sent, alpha: 3 results
+recorded a negative value on a measure declared non-negative (a host bug); they are drawn at 0."), the report input
+carries the same line in `caveats.unreported`, and assembly logs a WARNING naming the measure and the first ids. The
+clamp is unchanged: a negative value is still drawn at 0, and nothing is refused at store time.
+
+The bundle shape stays 66 and the campaign bundle's 4. A bundle with no such result is byte for byte what it was, so no
+stored analysis is staled; one with such a result fingerprints differently, since the count is evidence it read.
+
 ### tests wait for events, not fixed sleeps; four production changes came with it
 
 **Added:**
