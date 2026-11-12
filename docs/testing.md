@@ -88,12 +88,12 @@ can't take a run, it exits 2 naming the key instead of running the suite on your
 
 `-x`, `--maxfail`, `--lf`, `--ff`, `--sw` and `-n` need one local pytest process, and `-s`,
 `--capture=no`, `--pdb` and `--trace` need this terminal (testament runs those here whatever the
-manifest says), so the pool can't take them either. With only named test files (`.py` files or node ids) the run goes local with them;
-any wider run (a package, a directory) is refused, exit 2, with how to run it. A run gated by an
-environment variable (`RECORD`, `THREETEARS_LIVE_*`) stays local, since
-its tests would skip on runners without it. Any other run goes local only with `TESTAMENT=off` and
-a stated reason, `TESTAMENT_OFF_REASON="..."`, which `test.sh` prints; without the reason it
-refuses and exits 2.
+manifest says), so the pool can't take them either. With only named test files (`.py` files or
+node ids) the run goes local with them; any wider run (a package, a directory) is refused, exit 2,
+with how to run it. A run gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`) stays
+local, since its tests would skip on runners without it. Any other run goes local only with
+`TESTAMENT=off` and a stated reason, `TESTAMENT_OFF_REASON="..."`, which `test.sh` prints; without
+the reason it refuses and exits 2.
 
 ### When the pool is down
 
