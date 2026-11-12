@@ -306,7 +306,8 @@ the root's per-test reset of process-wide state.
 
 ## The integration suite
 
-`./scripts/test-integration.sh` runs the integration tests, and `check-all.sh` runs it. `test.sh`
+`./scripts/test-integration.sh` runs the integration tests, and `check-all.sh` runs it where the pool is
+reachable (elsewhere it fails, saying the suite did not run). `test.sh`
 excludes them with `-m "not integration"`. They run on the testament pool: the paths in
 `.testament.toml`'s `[suites.integration]`, against Postgres, NATS and S3 started as child processes
 in the pool's container (`threetears.core.testing.services`, under `THREETEARS_TEST_SERVICES=process`;
@@ -327,7 +328,7 @@ The evals render tests are not here. They need headless Chromium, not Docker, so
 `ci.yml` and `release.yml` (above).
 A local run without Chromium skips them; `-m "not browser"` leaves them out.
 
-**Run them before any PR** (`check-all.sh` does). Cross-pod behaviour lives entirely there.
+**Run them before any PR** (`check-all.sh` does, where the pool is reachable). Cross-pod behaviour lives entirely there.
 `project-state.yaml` lists this as the third declared test command, so recorded evidence that omits
 it covers two suites out of three.
 
