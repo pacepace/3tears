@@ -604,6 +604,8 @@ module = [
     "threetears.core.keyed.changed",
     "threetears.datasources.export_read",
     "threetears.datasources.partitioned_export",
+    # and Arrow's memory pool in a serving process (the system allocator, release_unused)
+    "threetears.core.arrow_pool",
     # and the CPU-quota helper, which sizes pyarrow's thread pools
     "threetears.core.utils.cpu_quota",
     # and the shared-memory Arrow store, which writes and maps Arrow IPC files
