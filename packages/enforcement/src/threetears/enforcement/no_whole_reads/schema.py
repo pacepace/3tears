@@ -76,6 +76,10 @@ MAX_PLAIN_INDEXES: Final[int] = 3
 #: the purpose of a unique index no read uses: it enforces a constraint, proven by a test that a duplicate is refused
 CONSTRAINT_PURPOSE: Final[str] = "constraint"
 
+#: the prefix of a purpose naming a foreign key the index serves (``fk:<constraint>``): the database's own lookup of the
+#: referencing rows when a parent row is deleted or its key changed, proven by a plan test of that lookup
+FK_PURPOSE: Final[str] = "fk:"
+
 #: the shortest reason the rule accepts
 MIN_REASON: Final[int] = 30
 
@@ -145,6 +149,12 @@ _NOT_A_COLUMN: Final[re.Pattern[str]] = re.compile(
     r"^(?:CONSTRAINT|UNIQUE|CHECK|FOREIGN|EXCLUDE|LIKE|PRIMARY)\b", re.IGNORECASE
 )
 _INCLUDE: Final[re.Pattern[str]] = re.compile(r"^\s*INCLUDE\s*\(", re.IGNORECASE)
+#: a table item or ``ADD`` action declaring a foreign key: its name (when given) and its referencing columns follow
+_FK_ITEM: Final[re.Pattern[str]] = re.compile(rf"^(?:CONSTRAINT\s+({_IDENT})\s+)?FOREIGN\s+KEY\s*\(", re.IGNORECASE)
+_ADD_FK: Final[re.Pattern[str]] = re.compile(
+    rf"\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?{_QNAME}\s+ADD\s+(?:CONSTRAINT\s+({_IDENT})\s+)?FOREIGN\s+KEY\s*\(",
+    re.IGNORECASE,
+)
 _DDL_COMMENT: Final[re.Pattern[str]] = re.compile(r"--\s*(purpose|plan_test|reason)\s*:\s*(.+?)\s*$", re.IGNORECASE)
 _DDL_HINT: Final[re.Pattern[str]] = re.compile(r"\b(?:CREATE|ALTER|DROP)\b", re.IGNORECASE)
 
@@ -284,6 +294,7 @@ class _DeclaredTable:
     :ivar tenant_columns: its tenant and partition columns beyond :data:`TENANT_COLUMNS` (a ``Column(...,
         partition=True)``, a collection's ``tenancy = tenant_column(...)``): a key prefix of only these is no key
     :ivar indexes: its indexes by name
+    :ivar foreign_keys: its foreign keys' referencing columns by constraint name
     :ivar origins: ``<path>:<line>`` of each declaration
     :ivar threetears: whether 3tears declares it: a ``TableSchema``, a collection class, a table list, a relation the
         repo's config declares, or any declaration in 3tears' own sources (a dependency); never a SQLAlchemy ``Table``
@@ -295,6 +306,9 @@ class _DeclaredTable:
     unique_keys: list[tuple[str, ...]] = field(default_factory=list)
     tenant_columns: set[str] = field(default_factory=set)
     indexes: dict[str, _DeclaredIndex] = field(default_factory=dict)
+    #: each declared foreign key's name onto its referencing columns, in order (an unnamed one by Postgres' default
+    #: name, ``<table>_<columns>_fkey``)
+    foreign_keys: dict[str, tuple[str, ...]] = field(default_factory=dict)
     origins: list[str] = field(default_factory=list)
     threetears: bool = False
 
@@ -475,6 +489,26 @@ class SchemaCatalog:
         key = tuple(column.lower() for column in key)
         if key and "?" not in key and key not in entry.unique_keys:
             entry.unique_keys.append(key)
+
+    def add_foreign_key(self, table: str, name: str, columns: tuple[str, ...], origin: str) -> None:
+        """record a table's foreign key: its name and referencing columns (an index on them may serve it).
+
+        :param table: the bare table
+        :ptype table: str
+        :param name: the constraint's name; empty for an unnamed one, which takes Postgres' default name
+        :ptype name: str
+        :param columns: the referencing columns, in order
+        :ptype columns: tuple[str, ...]
+        :param origin: where it is declared
+        :ptype origin: str
+        :return: nothing
+        :rtype: None
+        """
+        columns = tuple(column.lower() for column in columns)
+        if not columns or "?" in columns:
+            return
+        named = name.strip('"').lower() if name else f"{table}_{'_'.join(columns)}_fkey"
+        self._entry(table, origin).foreign_keys[named] = columns
 
     def add_index(self, index: _DeclaredIndex) -> None:
         """record an index of a table, merging a second declaration of the same name (the purpose of either wins).
@@ -722,7 +756,7 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
     :ptype text: str
     :return: ``("table", (name, key))``, ``("index", (name, table, columns, include, unique, notes))``,
         ``("drop_index", name)``, ``("drop_table", name)``, ``("drop_column", (table, column))``,
-        ``("rename_table", (old, new))``,
+        ``("rename_table", (old, new))``, ``("foreign_key", (table, name, columns))``,
         ``("rename_index", (old, new))``
     :rtype: Iterator[tuple[str, Any]]
     """
@@ -738,6 +772,10 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
                 inner, _ = _paren_body(item, item.index("("))
                 unique = tuple(_column_of(part) for part in _split_top(inner))
                 events.append((match.start(), "unique", (match.group(1), unique)))
+            elif (fk := _FK_ITEM.match(item.strip())) is not None:
+                inner, _ = _paren_body(item, item.index("(", fk.end() - 1))
+                referencing = tuple(_column_of(part) for part in _split_top(inner))
+                events.append((match.start(), "foreign_key", (match.group(1), fk.group(1) or "", referencing)))
             elif _NOT_A_COLUMN.match(item) is None and _INLINE_PK.search(item):
                 key = (_column_of(item.split()[0]),)
             elif _NOT_A_COLUMN.match(item) is None and _INLINE_UNIQUE.search(item):
@@ -746,6 +784,10 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
     for match in _ADD_UNIQUE.finditer(text):
         inner, _ = _paren_body(text, match.end() - 1)
         events.append((match.start(), "unique", (match.group(1), tuple(_column_of(p) for p in _split_top(inner)))))
+    for match in _ADD_FK.finditer(text):
+        inner, _ = _paren_body(text, match.end() - 1)
+        referencing = tuple(_column_of(part) for part in _split_top(inner))
+        events.append((match.start(), "foreign_key", (match.group(1), match.group(2) or "", referencing)))
     for match in _ADD_PK.finditer(text):
         inner, _ = _paren_body(text, match.end() - 1)
         events.append((match.start(), "table", (match.group(1), tuple(_column_of(p) for p in _split_top(inner)))))
@@ -909,7 +951,11 @@ def _apply_ddl(catalog: SchemaCatalog, text: str, origin: str, *, local: bool) -
             # applied by the caller's own migration): the module's template, as a ``TableSchema(name=<parameter>)``
             _template_ddl(catalog, kind, payload, origin, local=local)
             continue
-        if kind in {"table", "unique"}:
+        if kind == "foreign_key":
+            table = bare_table(payload[0])
+            if table is not None:
+                catalog.add_foreign_key(table, payload[1], payload[2], origin)
+        elif kind in {"table", "unique"}:
             table = bare_table(payload[0])
             if table is not None and kind == "table":
                 catalog.add_key(table, payload[1], origin)
@@ -1432,6 +1478,10 @@ def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, lo
                 columns = _unique_columns(element, values, named_first=True)
                 if table is not None and columns:
                     catalog.add_unique(table, columns, origin)
+            for element in values.elements(_keyword(call, "foreign_keys")):
+                name, columns = _foreign_key(element, values)
+                if table is not None and columns:
+                    catalog.add_foreign_key(table, name, columns, origin)
         elif final == "Table" and call.args and values.text(call.args[0]) is not None:
             table = bare_table(values.text(call.args[0]) or "")
             if table is None:
@@ -1446,6 +1496,9 @@ def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, lo
             if key:
                 catalog.add_key(table, key, origin)
             for element in call.args[1:]:
+                name, referencing = _foreign_key(element, values)
+                if referencing:
+                    catalog.add_foreign_key(table, name, referencing, origin)
                 columns = _unique_columns(element, values, named_first=False)
                 if columns:
                     catalog.add_unique(table, columns, origin)
@@ -1534,6 +1587,33 @@ def _unique_columns(node: ast.expr, values: _Values, *, named_first: bool) -> tu
         return values.texts(named) or ()
     texts = [values.text(argument) for argument in node.args[1 if named_first else 0 :]]
     return tuple(text for text in texts if text is not None) if texts and None not in texts else ()
+
+
+def _foreign_key(node: ast.expr, values: _Values) -> tuple[str, tuple[str, ...]]:
+    """the name and referencing columns a foreign-key call declares: SQLAlchemy's ``ForeignKeyConstraint([columns],
+    [references], name=...)`` in a ``Table``, 3tears' ``ForeignKeyDef(local_cols=(...), ...)`` in a ``TableSchema``'s
+    ``foreign_keys`` (unnamed: Postgres names it).
+
+    :param node: an expression
+    :ptype node: ast.expr
+    :param values: the module's known values
+    :ptype values: _Values
+    :return: its name (empty when unnamed) and columns; no columns when it is no such call or a column is unknown
+    :rtype: tuple[str, tuple[str, ...]]
+    """
+    if not isinstance(node, ast.Call):
+        return "", ()
+    final = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", None)
+    if final == "ForeignKeyConstraint":
+        written = _keyword(node, "columns") or (node.args[0] if node.args else None)
+    elif final == "ForeignKeyDef":
+        written = _keyword(node, "local_cols") or (node.args[0] if node.args else None)
+    else:
+        return "", ()
+    columns = values.texts(written) if written is not None else None
+    name_node = _keyword(node, "name")
+    name = (values.text(name_node) or "") if name_node is not None else ""
+    return name, tuple(columns or ())
 
 
 def _add_site(catalog: SchemaCatalog, index: _DeclaredIndex) -> None:
@@ -1886,6 +1966,38 @@ def _template_index_findings(catalog: SchemaCatalog, definitions: set[str]) -> l
     return findings
 
 
+def _fk_purpose_findings(where: str, table: _DeclaredTable | None, site: _DeclaredIndex, constraint: str) -> list[str]:
+    """what is wrong with an index's ``fk:<constraint>`` purpose: the constraint must be a foreign key its table
+    declares, and the index must lead with exactly that key's referencing columns (the lookup the database makes of the
+    referencing rows when a parent row is deleted or its key changed).
+
+    :param where: the index, as findings name it
+    :ptype where: str
+    :param table: its table's declaration, when the catalog has one
+    :ptype table: _DeclaredTable | None
+    :param site: the index
+    :ptype site: _DeclaredIndex
+    :param constraint: the constraint the purpose names
+    :ptype constraint: str
+    :return: findings
+    :rtype: list[str]
+    """
+    referencing = table.foreign_keys.get(constraint.strip('"').lower()) if table is not None else None
+    if referencing is None:
+        return [
+            f"{where}: index-fk-unknown -- purpose fk:{constraint} names no foreign key "
+            f"{site.table or 'its table'} declares: name the constraint (``fk:<constraint name>``) whose referencing "
+            "rows the index finds"
+        ]
+    lead = tuple(column.lower() for column in site.columns[: len(referencing)])
+    if len(lead) < len(referencing) or set(lead) != set(referencing):
+        return [
+            f"{where}: index-fk-mismatch -- leads with {list(site.columns[: len(referencing)])}, not the referencing "
+            f"columns {list(referencing)} of {constraint}: the database's lookup of the referencing rows would not use it"
+        ]
+    return []
+
+
 def _index_site_findings(
     catalog: SchemaCatalog,
     repo_root: Path,
@@ -1928,6 +2040,9 @@ def _index_site_findings(
             "the read that uses it"
         )
     for entry in () if constraint else purposes(purpose):
+        if entry.startswith(FK_PURPOSE):
+            findings.extend(_fk_purpose_findings(where, table, site, entry[len(FK_PURPOSE) :].strip()))
+            continue
         if "::" not in entry or entry not in definitions:
             findings.append(
                 f"{where}: index-purpose-unknown -- purpose {entry!r} names no function the walk found; give "

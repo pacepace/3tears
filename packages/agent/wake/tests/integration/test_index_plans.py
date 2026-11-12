@@ -407,3 +407,32 @@ async def test_webhook_refusals_sub_time(conn: asyncpg.Connection) -> None:
     assert not rest, captured.asked
     plan = await explain_statement(conn, sql, *args)
     assert plan_uses_index(plan, "idx_webhook_refusals_sub_time"), plan.plan
+
+
+async def test_wake_schedules_context_from(conn: asyncpg.Connection) -> None:
+    """Flips if deleting a schedule stops finding the wakes that take their context from it through
+    idx_wake_schedules_context_from: the foreign key's ``ON DELETE SET NULL`` would read every schedule of the agent
+    schema per deleted one."""
+    upstream = await conn.fetchval("SELECT schedule_id FROM agent_wake_schedules LIMIT 1")
+    await conn.execute(
+        "UPDATE agent_wake_schedules SET context_from_schedule_id = $1 WHERE schedule_id IN"
+        " (SELECT schedule_id FROM agent_wake_schedules WHERE schedule_id <> $1 LIMIT 3)",
+        upstream,
+    )
+    await conn.execute("ANALYZE agent_wake_schedules")
+    constraint = await conn.fetchrow(
+        "SELECT confdeltype, (SELECT array_agg(a.attname ORDER BY a.attnum) FROM pg_attribute a"
+        " WHERE a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)) AS columns"
+        " FROM pg_constraint c WHERE c.conname = 'agent_wake_schedules_context_from_fk'"
+        " AND c.connamespace = current_schema()::regnamespace"
+    )
+    # the database's own action for a deleted parent: ON DELETE SET NULL of the referencing column
+    assert constraint is not None and constraint["confdeltype"] == "n", constraint
+    assert list(constraint["columns"]) == ["context_from_schedule_id"], constraint
+    # the statement Postgres' referential-integrity trigger writes for it (ri_triggers.c, RI_PLAN_SETNULL_ONDELETE)
+    sql = (
+        "UPDATE ONLY agent_wake_schedules SET context_from_schedule_id = NULL"
+        " WHERE $1 OPERATOR(pg_catalog.=) context_from_schedule_id"
+    )
+    plan = await explain_write(conn, sql, upstream)
+    assert plan_uses_index(plan, "idx_wake_schedules_context_from"), plan.plan

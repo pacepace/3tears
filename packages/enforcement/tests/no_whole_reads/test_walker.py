@@ -1698,6 +1698,92 @@ def test_a_unique_index_no_read_uses_may_serve_a_proven_constraint(
         assert any(message in finding for finding in findings), findings
 
 
+_FK_DDL = """
+    UP = (
+        "CREATE TABLE schedules (conversation_id UUID, schedule_id UUID, context_from_schedule_id UUID,"
+        " PRIMARY KEY (conversation_id, schedule_id), UNIQUE (schedule_id),"
+        " CONSTRAINT schedules_context_from_fk FOREIGN KEY (context_from_schedule_id)"
+        " REFERENCES schedules(schedule_id) ON DELETE SET NULL)"
+    )
+    INDEX = (
+        "-- purpose: PURPOSE\\n"
+        "-- plan_test: tests/test_plans.py::test_a_deleted_parent_finds_its_children\\n"
+        "CREATE INDEX idx_schedules_context_from ON schedules (COLUMNS) WHERE context_from_schedule_id IS NOT NULL"
+    )
+"""
+
+_FK_SQLALCHEMY = """
+    from sqlalchemy import Column, ForeignKeyConstraint, Index, MetaData, String, Table
+
+    METADATA = MetaData()
+    schedules = Table(
+        "schedules",
+        METADATA,
+        Column("conversation_id", String, primary_key=True),
+        Column("schedule_id", String, primary_key=True),
+        Column("context_from_schedule_id", String),
+        ForeignKeyConstraint(
+            ["context_from_schedule_id"],
+            ["schedules.schedule_id"],
+            name="schedules_context_from_fk",
+        ),
+        Index(
+            "idx_schedules_context_from",
+            "COLUMNS",
+            info={
+                "purpose": "PURPOSE",
+                "plan_test": "tests/test_plans.py::test_a_deleted_parent_finds_its_children",
+            },
+        ),
+    )
+"""
+
+_FK_ALTER = """
+    UP = (
+        "CREATE TABLE schedules (conversation_id UUID, schedule_id UUID, context_from_schedule_id UUID,"
+        " PRIMARY KEY (conversation_id, schedule_id))"
+    )
+    LATER = (
+        "ALTER TABLE schedules ADD CONSTRAINT schedules_context_from_fk FOREIGN KEY (context_from_schedule_id)"
+        " REFERENCES schedules(schedule_id)"
+    )
+    INDEX = (
+        "-- purpose: PURPOSE\\n"
+        "-- plan_test: tests/test_plans.py::test_a_deleted_parent_finds_its_children\\n"
+        "CREATE INDEX idx_schedules_context_from ON schedules (COLUMNS)"
+    )
+"""
+
+
+@pytest.mark.parametrize("source", [_FK_DDL, _FK_SQLALCHEMY, _FK_ALTER], ids=["ddl", "sqlalchemy", "alter"])
+@pytest.mark.parametrize(
+    ("purpose", "columns", "message"),
+    [
+        ("fk:schedules_context_from_fk", "context_from_schedule_id", None),
+        ("fk:schedules_skill_fk", "context_from_schedule_id", "index-fk-unknown"),
+        ("fk:schedules_context_from_fk", "conversation_id", "index-fk-mismatch"),
+    ],
+)
+def test_an_index_may_serve_a_declared_foreign_key_led_by_its_referencing_columns(
+    tmp_path: Path, source: str, purpose: str, columns: str, message: str | None
+) -> None:
+    """Flips if an index serving a foreign key (purpose ``fk:<constraint>``, the database's lookup of the referencing
+    rows when a parent is deleted) is refused when its table declares that key and the index leads with its
+    referencing columns, or accepted when the constraint is not a foreign key of its table or the index leads with
+    other columns."""
+    _plans(
+        tmp_path,
+        "def test_a_deleted_parent_finds_its_children(plan):\n"
+        "    assert plan_uses_index(plan, 'idx_schedules_context_from')\n",
+    )
+    module = source.replace("PURPOSE", purpose).replace("COLUMNS", columns)
+    findings = [f for f in no_whole_reads_findings(_config(tmp_path, {"schedules.py": module})) if ": index-" in f]
+    if message is None:
+        assert findings == [], findings
+    else:
+        assert any(message in finding for finding in findings), findings
+
+
 _QUOTED = """
     from threetears.core.collections.schema_backed import TableSchema
 

@@ -265,6 +265,11 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
             "idx_wake_schedules_context_from",
             "context_from_schedule_id",
             postgresql_where=sa_text("context_from_schedule_id IS NOT NULL"),
+            info={
+                "purpose": "fk:agent_wake_schedules_context_from_fk",
+                "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_schedules_context_from",
+                "reason": "agent_wake_schedules carries five indexes: a deleted schedule's downstream wakes, set NULL",
+            },
         ),
         Index(
             "idx_wake_schedules_agent_status",
