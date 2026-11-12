@@ -321,6 +321,28 @@ _LOST_AFTER_A_FAILURE = (2, _envelope(2, error="connection_lost", retryable=True
 _FORBIDDEN = (2, _envelope(2, error="forbidden"))
 _UPGRADE = (2, _envelope(2, error="upgrade_required"))
 _NOTHING_COLLECTED = (5, _envelope(5, counts={}))
+
+
+def _unavailable(error: str, *, retryable: bool, counts: dict[str, int] | None = None) -> tuple[int, dict[str, object]]:
+    """testament 0.46's ending for a run the pool could not serve: exit 75 and verdict ``unavailable``.
+
+    :param error: its error.code
+    :ptype error: str
+    :param retryable: its error.retryable
+    :ptype retryable: bool
+    :param counts: its report.counts
+    :ptype counts: dict[str, int] | None
+    :return: the exit status and the envelope
+    :rtype: tuple[int, dict[str, object]]
+    """
+    envelope = _envelope(75, error=error, retryable=retryable, counts=counts)
+    envelope["verdict"] = "unavailable"
+    return 75, envelope
+
+
+_LOST_75 = _unavailable("connection_lost", retryable=True)
+_STORE_FULL_75 = _unavailable("store_full", retryable=False)
+_LOST_75_AFTER_A_FAILURE = _unavailable("connection_lost", retryable=True, counts={"passed": 3, "failed": 1})
 _NO_ENVELOPE = (1, None)
 
 
@@ -344,6 +366,10 @@ class TestTheRunsOutcome:
             pytest.param([_UPGRADE], "failed", 1, 1, id="upgrade-required"),
             pytest.param([_NOTHING_COLLECTED], "failed", 1, 1, id="nothing-collected"),
             pytest.param([_NO_ENVELOPE], "failed", 1, 1, id="no-envelope"),
+            pytest.param([_LOST_75, _PASSED], "passed", 0, 2, id="exit-75-lost-then-passed-on-the-retry"),
+            pytest.param([_LOST_75, _LOST_75], "unreachable", 0, 2, id="exit-75-lost-twice"),
+            pytest.param([_STORE_FULL_75], "unreachable", 0, 1, id="exit-75-store-full-is-not-retried"),
+            pytest.param([_LOST_75_AFTER_A_FAILURE], "failed", 1, 1, id="exit-75-after-a-test-failed"),
         ],
     )
     def test_the_outcome(
