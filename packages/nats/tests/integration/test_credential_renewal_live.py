@@ -60,6 +60,7 @@ from threetears.nats import (
     decode_auth_request,
     generate_account_seed,
 )
+from threetears.nats.credential_renewal import REAUTH_MARGIN_SECONDS
 from threetears.nats.kv_watch import KvKeyUpdate
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
 
@@ -80,12 +81,15 @@ _CALLS_SUBJECT = "pod.calls"
 _POD_OUT = "podout.seq"
 #: what the pod sends on _POD_OUT to prove the admin's subscription is registered, before its sequence
 _PROBE = b"probe"
+#: the longest request the pod declares, and so how long the replaced connection's old halves stay in
+#: their groups and the connection after them. Small, so the renewal retires its connection within seconds.
+_LONGEST_REQUEST_SECONDS = 2.0
 #: the TTL the pod schedules its renewal against, and the TTL the responder mints. Long enough that
-#: the credential never actually expires during the test; the renewal fires early because the
-#: schedule subtracts its margins and the longest request from it.
-_TTL_SECONDS = 100
-#: the longest request the pod declares. Small, so the renewal fires within seconds.
-_LONGEST_REQUEST_SECONDS = 5.0
+#: the credential never actually expires during the test, and safely above the shortest TTL a renewal
+#: carries the longest request across (:func:`~threetears.nats.credential_renewal.unsafe_renewal_reason`):
+#: the schedule subtracts its margins and the longest request from it, so each renewal fires two seconds
+#: after its connection's connect, and the replaced connection is held the whole longest request.
+_TTL_SECONDS = REAUTH_MARGIN_SECONDS + int(_LONGEST_REQUEST_SECONDS) + 2
 #: how long the callout resolver holds the renewal's authorization open.
 _WINDOW_SECONDS = 1.5
 _WAIT = 20.0

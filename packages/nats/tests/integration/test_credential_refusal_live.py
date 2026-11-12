@@ -30,6 +30,7 @@ from datetime import timedelta
 
 import pytest
 
+import threetears.nats.client as client_module
 from threetears.nats import (
     AuthCalloutRequest,
     AuthCalloutResponder,
@@ -63,6 +64,12 @@ _QUERY_SUBJECT = "svc.query"
 _TTL_SECONDS = 100
 #: the server's wait for a callout answer: short, so an unreachable callout refuses promptly.
 _CALLOUT_TIMEOUT_SECONDS = 2
+#: the bound on opening a renewal's successor where a renewal is EXPECTED to run out of it, in place of the
+#: shipped :data:`~threetears.nats.credential_renewal.REAUTH_CONNECT_TIMEOUT_SECONDS` (10s): longer than the
+#: server's callout timeout, so each such renewal meets the server's refusal before its bound ends it, as with
+#: the shipped bound, and a test waits seconds for it rather than ten per renewal. Where a renewal must be
+#: ended by something other than its bound (an abandon), the shipped bound stays in force.
+_EXPECTED_TO_RUN_OUT_SECONDS = 2 * _CALLOUT_TIMEOUT_SECONDS + 1
 
 
 class _ScriptedResolver(PrincipalResolver):
@@ -209,7 +216,7 @@ async def _query(pod: NatsClient) -> bytes:
     return await pod.request_raw(subject=Subject.raw(_QUERY_SUBJECT), payload=b"q", timeout=timedelta(seconds=5))
 
 
-async def test_a_superseded_pod_stops_serving_at_once() -> None:
+async def test_a_superseded_pod_stops_serving_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """the refusal names this runner: every connection is closed within moments, not at expiry."""
     async with _stack() as stack:
         pod = stack.pod
@@ -220,7 +227,11 @@ async def test_a_superseded_pod_stops_serving_at_once() -> None:
         stack.resolver.refuse_with = CredentialRefusal(
             reason=CredentialRefusalReason.SUPERSEDED, pod_id=_POD, identity_generation="g-6"
         )
-        with pytest.raises(Exception):  # noqa: B017,PT011 -- nats-py's refusal type is not ours to pin
+        with (
+            monkeypatch.context() as bound,
+            pytest.raises(Exception),  # noqa: B017,PT011 -- nats-py's refusal type is not ours to pin
+        ):
+            bound.setattr(client_module, "REAUTH_CONNECT_TIMEOUT_SECONDS", _EXPECTED_TO_RUN_OUT_SECONDS)
             await pod.renew_connection(retire_after=timedelta(seconds=30))
         await asyncio.sleep(1.0)
         assert not pod.is_closed, "a refusal for another runner closed this one"
@@ -246,8 +257,9 @@ async def test_a_superseded_pod_stops_serving_at_once() -> None:
             await asyncio.wait_for(renewal, timeout=2.0)
 
 
-async def test_an_unreachable_callout_keeps_the_pod_serving() -> None:
+async def test_an_unreachable_callout_keeps_the_pod_serving(monkeypatch: pytest.MonkeyPatch) -> None:
     """no refusal arrives: the pod keeps its valid connection, healthy, and keeps retrying."""
+    monkeypatch.setattr(client_module, "REAUTH_CONNECT_TIMEOUT_SECONDS", _EXPECTED_TO_RUN_OUT_SECONDS)
     async with _stack() as stack:
         pod = stack.pod
         await pod.abandon_on_refusal(inbox_prefix=_INBOX, is_mine=_is_this_runner)
