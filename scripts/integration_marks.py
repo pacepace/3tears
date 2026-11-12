@@ -1,14 +1,16 @@
 """Which test files mark a test ``integration``: the one reading both of its users share.
 
 ``scripts/test-integration.sh`` runs it (``python3 -I scripts/integration_marks.py PATH...``) to learn whether a
-local path still holds an integration test once the suite's paths are left out, and
+local path still holds an integration test once the suite's paths are left out, and (``--process-only PATH...``)
+which of the suite's modules run only where the services are child processes, and
 ``tests/enforcement/test_integration_suite_selection.py`` loads it to hold the pool's and the laptop's lists to every
 integration test in the tree. A test counts as marked when ``pytest.mark.<name>`` appears in a decorator or a
 ``pytestmark`` assignment, at module or class level: the word in a docstring or a string is no mark.
 
-Standard library only, and no syntax newer than the oldest ``python3`` that runs it: the script may find a system
-interpreter older than the tree's. A file that interpreter cannot parse is reported as marked, not dropped: keeping
-a path pytest then runs costs a collection, and dropping one would let a test run nowhere.
+Standard library only, and no syntax newer than Python 3.11: the script runs whatever ``python3`` is on PATH, which
+may be older than the tree's, and refuses one older than 3.11 (it reads ``.testament.toml`` with ``tomllib``). A file
+that interpreter cannot parse or decode is reported as marked, not dropped: keeping a path pytest then runs costs a
+collection, and dropping one would let a test run nowhere.
 """
 
 from __future__ import annotations
@@ -53,16 +55,21 @@ def file_marks(path: Path) -> set[str] | None:
     """
     try:
         return marks(ast.parse(path.read_text(encoding="utf-8")))
-    except SyntaxError:
-        # NOSILENT: an unreadable file is answered as one (None), and the caller keeps it rather than drops it
+    except (SyntaxError, ValueError):
+        # NOSILENT: newer syntax, or bytes that aren't UTF-8 (UnicodeDecodeError is a ValueError) or hold a null
+        # byte: an unreadable file is answered as one (None), and the caller keeps it rather than drops it
         return None
 
 
-def integration_files(roots: list[str]) -> Iterator[Path]:
-    """Every ``test_*.py`` under ``roots`` (files or directories) that marks a test ``integration``, or can't be read.
+def marked_files(roots: list[str], mark: str, *, keep_unreadable: bool) -> Iterator[Path]:
+    """Every ``test_*.py`` under ``roots`` (files or directories) that marks a test ``mark``.
 
     :param roots: the paths
     :ptype roots: list[str]
+    :param mark: the mark's name
+    :ptype mark: str
+    :param keep_unreadable: whether a file this interpreter cannot read counts as marked
+    :ptype keep_unreadable: bool
     :return: the files, in order
     :rtype: Iterator[Path]
     """
@@ -72,10 +79,30 @@ def integration_files(roots: list[str]) -> Iterator[Path]:
             if "__pycache__" in path.parts:
                 continue
             applied = file_marks(path)
-            if applied is None or "integration" in applied:
+            marked = keep_unreadable if applied is None else mark in applied
+            if marked:
                 yield path
 
 
+def integration_files(roots: list[str]) -> Iterator[Path]:
+    """Every ``test_*.py`` under ``roots`` that marks a test ``integration``, or can't be read (kept, not dropped).
+
+    :param roots: the paths
+    :ptype roots: list[str]
+    :return: the files, in order
+    :rtype: Iterator[Path]
+    """
+    return marked_files(roots, "integration", keep_unreadable=True)
+
+
 if __name__ == "__main__":
-    for found_path in integration_files(sys.argv[1:]):
+    if sys.version_info < (3, 11):
+        sys.exit(f"integration_marks.py needs Python 3.11 or later, not {sys.version.split()[0]}")
+    # `--process-only PATH...`: the files marking a test `process_only`, which run only where the services are
+    # child processes (an unreadable one is not listed: leaving a test in the run is the safe side here)
+    if sys.argv[1:2] == ["--process-only"]:
+        listed = marked_files(sys.argv[2:], "process_only", keep_unreadable=False)
+    else:
+        listed = integration_files(sys.argv[1:])
+    for found_path in listed:
         print(found_path)

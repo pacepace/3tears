@@ -9,8 +9,8 @@ hold what only the process route needs: a batch killed at its timeout leaves ser
 the next start sweeps; a missing binary fails a run that requires its services; and the eight
 batches a pool container runs at once each start their own clusters without colliding.
 
-They run where the services run as processes, and skip elsewhere (``THREETEARS_REQUIRE_SERVICES=1``
-makes that skip a failure on the pool).
+They run where the services run as processes, the pool's integration suite; the ``process_only`` marker
+deselects them anywhere else (``tests/require_services.py``).
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import os
 import resource
 import signal
 import socket
@@ -40,26 +39,18 @@ import pytest
 from threetears.core.testing.fixtures import NATS_TEST_IMAGE
 from threetears.core.testing.services import (
     RunningNats,
-    require_services,
     running_nats,
     running_postgres,
     running_s3,
 )
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.process_only]
 
 _PG_IMAGE = "pgvector/pgvector:pg16"
 #: the other nats-server release the tests pin (the lame-duck pair and the forger harness run it)
 _OLDER_NATS_IMAGE = "nats:2.12.6-alpine"
 _JETSTREAM = "jetstream {}\n"
 _SERVICE_ROOT = Path("/tmp/threetears-svc")  # noqa: S108 - the documented root the sweep works in
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _process_mode() -> None:
-    """run only where the services start as processes (before any session service starts)."""
-    if os.environ.get("THREETEARS_TEST_SERVICES") != "process":
-        require_services("these tests check process-mode services, and THREETEARS_TEST_SERVICES is not 'process'")
 
 
 def _accepts(uri: str) -> bool:
@@ -139,6 +130,24 @@ async def test_two_nats_servers_at_once_keep_separate_stores() -> None:
         # the same stream name on the second server starts empty: its store is its own
         assert await _stream_count(second, publish=1) == 1
         assert await _stream_count(first, publish=0) == 3
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        pytest.param("jetstream { store_dir: /tmp/js-store }\nport: 4222\n", id="store_dir"),
+        pytest.param('jetstream {\n  storedir = "/tmp/js-store"\n}\n', id="storedir"),
+        pytest.param("jetstream { store: /tmp/js-store, max_file_store: 1G }\n", id="store"),
+        pytest.param("# store_dir: /tmp/js-store\njetstream {}\n", id="commented-out"),
+    ],
+)
+async def test_two_servers_configured_with_one_store_keep_separate_stores(config: str) -> None:
+    """the per-test configurations all name ``/tmp/js-store``, in any of nats' spellings; each server's becomes its
+    own. A store named only in a comment names none: the servers get stores of their own all the same."""
+    with running_nats(config, image=NATS_TEST_IMAGE) as first, running_nats(config, image=NATS_TEST_IMAGE) as second:
+        assert await _stream_count(first, publish=2) == 2
+        assert await _stream_count(second, publish=1) == 1
+        assert await _stream_count(first, publish=0) == 2
 
 
 @pytest.mark.parametrize("image", [NATS_TEST_IMAGE, _OLDER_NATS_IMAGE])

@@ -14,7 +14,8 @@ stop serving" from "the callout is down, try again". The ruling (Q16, 2026-09-30
 Both run against a real nats-server with config-mode ``auth_callout`` and the real
 :class:`~threetears.nats.AuthCalloutResponder` serving the callout through ``handle_request``.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -29,7 +30,6 @@ from datetime import timedelta
 
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats import (
     AuthCalloutRequest,
     AuthCalloutResponder,
@@ -211,9 +211,6 @@ async def _query(pod: NatsClient) -> bytes:
 
 async def test_a_superseded_pod_stops_serving_at_once() -> None:
     """the refusal names this runner: every connection is closed within moments, not at expiry."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     async with _stack() as stack:
         pod = stack.pod
         await pod.abandon_on_refusal(inbox_prefix=_INBOX, is_mine=_is_this_runner)
@@ -251,9 +248,6 @@ async def test_a_superseded_pod_stops_serving_at_once() -> None:
 
 async def test_an_unreachable_callout_keeps_the_pod_serving() -> None:
     """no refusal arrives: the pod keeps its valid connection, healthy, and keeps retrying."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     async with _stack() as stack:
         pod = stack.pod
         await pod.abandon_on_refusal(inbox_prefix=_INBOX, is_mine=_is_this_runner)

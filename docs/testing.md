@@ -352,8 +352,9 @@ integration tests fail rather than skip. A native build passes.
 
 They need credentials or tools this repo does not ship: the Redshift live tests
 (`OTS_REDSHIFT_PASSWORD`), the live Claude CLI batch (below), and one deliberate manual
-microbenchmark. (The backup suites need `pg_dump`/`pg_restore`/`psql` 16, which the pool's image
-carries; they run there.) Anything else is a test turned off by accident. When reporting
+microbenchmark. A local run of the backup suites (`TESTAMENT=off`, off the pool) also skips them
+without `pg_dump`/`pg_restore`/`psql` on PATH; any major from 16 up works there, since the test
+server follows the client's major. On the pool the image carries 16, and a missing tool fails. Anything else is a test turned off by accident. When reporting
 results, state the pass count AND the remaining skips with their reasons -- "integration green"
 on its own is not a report.
 

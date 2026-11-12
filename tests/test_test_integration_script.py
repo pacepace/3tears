@@ -172,6 +172,7 @@ def _run(
     testament_exit: int = 0,
     uv_exit: int = 0,
     script: str = "test-integration.sh",
+    old_python: bool = False,
 ) -> _Run:
     """Run a staged script with recording stand-ins for ``uv`` and, optionally, ``testament``.
 
@@ -189,6 +190,8 @@ def _run(
     :ptype uv_exit: int
     :param script: the staged script to run, ``test-integration.sh`` or ``test.sh``
     :ptype script: str
+    :param old_python: whether the ``python3`` on PATH is one older than 3.11 (a stand-in that fails the check)
+    :ptype old_python: bool
     :return: what the run did
     :rtype: _Run
     """
@@ -206,7 +209,11 @@ def _run(
     python = shutil.which("python3")
     assert python is not None
     (bin_dir / "python3").unlink(missing_ok=True)
-    (bin_dir / "python3").symlink_to(python)
+    if old_python:
+        (bin_dir / "python3").write_text("#!/bin/sh\nexit 1\n")
+        (bin_dir / "python3").chmod(0o755)
+    else:
+        (bin_dir / "python3").symlink_to(python)
     result = subprocess.run(
         ["bash", str(repo / "scripts" / script), *args],
         cwd=repo,
@@ -335,6 +342,33 @@ class TestWhatCountsAsAnIntegrationTest:
         run = _run(repo, ["broken"])
         assert run.returncode == 0, run.stderr
         assert run.call("uv") == ["run", "pytest", "packages/broken", "-m", "integration"]
+
+    def test_a_file_that_is_not_utf8_is_kept_not_a_crash(self, repo: Path) -> None:
+        """a file whose bytes don't decode is kept too.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        (repo / "packages" / "latin" / "tests").mkdir(parents=True)
+        (repo / "packages" / "latin" / "tests" / "test_bytes.py").write_bytes(b"# caf\xe9\ndef test_y():\n    pass\n")
+        run = _run(repo, ["latin"])
+        assert run.returncode == 0, run.stderr
+        assert run.call("uv") == ["run", "pytest", "packages/latin", "-m", "integration"]
+
+    def test_a_python_older_than_3_11_is_refused(self, repo: Path) -> None:
+        """the manifest is read with tomllib: an older ``python3`` stops the run, naming the floor.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["scheduled-jobs"], old_python=True)
+        assert run.returncode == 2
+        assert run.calls == []
+        assert "python3 3.11 or later" in run.stderr
 
     def test_the_words_in_a_docstring_are_no_mark(self, repo: Path) -> None:
         """a module that only mentions ``pytest.mark.integration`` holds no integration test: nothing runs.
@@ -581,6 +615,44 @@ class TestWhenThePoolRouteIsNotTaken:
         run = _run(repo, ["core"], testament=False)
         assert run.returncode == 0, run.stderr
         assert run.call("uv") == ["run", "pytest", _CORE_DIR, "-m", "integration"]
+
+    @pytest.mark.parametrize(
+        ("env", "testament"),
+        [
+            pytest.param({"TESTAMENT": "off", "TESTAMENT_OFF_REASON": "the pool is down"}, True, id="off-with-reason"),
+            pytest.param({}, False, id="no-testament"),
+        ],
+    )
+    def test_a_process_only_module_is_left_out_here_and_kept_on_the_pool(
+        self, repo: Path, env: dict[str, str], testament: bool
+    ) -> None:
+        """a suite module marked ``process_only`` checks child processes, which testcontainers can't stand in for:
+        a run taken off the pool does not name it; the pool still runs it.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param env: extra environment for the run
+        :ptype env: dict[str, str]
+        :param testament: whether a ``testament`` is on PATH
+        :ptype testament: bool
+        :return: nothing
+        :rtype: None
+        """
+        module = "packages/nats/tests/process/test_two_nodes_process_live.py"
+        (repo / module).parent.mkdir(parents=True)
+        (repo / module).write_text(
+            "import pytest\n\npytestmark = [pytest.mark.integration, pytest.mark.process_only]\n\n\n"
+            "def test_y() -> None:\n    pass\n"
+        )
+        manifest = repo / ".testament.toml"
+        manifest.write_text(manifest.read_text().replace(f'"{_SUITE_DIR}/"]', f'"{_SUITE_DIR}/", "{module}"]'))
+        off = _run(repo, ["-rs"], testament=testament, env=env)
+        assert off.returncode == 0, off.stderr
+        local = off.call("uv")
+        assert local is not None and _SUITE_DIR in local
+        assert module not in local
+        on = _run(repo, ["-rs"])
+        assert on.call("testament") == [*_POOL, _SUITE_FILE, _SUITE_DIR, module, "-rs"]
 
     def test_off_without_a_reason_is_refused(self, repo: Path) -> None:
         """TESTAMENT=off needs a stated reason, as test.sh's does.

@@ -22,7 +22,8 @@ parks the renewal's authorization until the test has published into the window, 
 under load holds a real renewal for a few hundred milliseconds. That is the window the old
 renewal -- a reconnect of the one connection -- spent disconnected.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -44,7 +45,6 @@ import nats
 import nats.aio.client
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats import (
     AuthCalloutRequest,
     AuthCalloutResponder,
@@ -180,9 +180,6 @@ def _server_config(account_pub: str) -> str:
 
 async def test_a_renewal_loses_nothing_in_flight(caplog: pytest.LogCaptureFixture) -> None:
     """requests, owed replies, subscriptions and a KV watch all ride through a renewal intact."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     account_seed = generate_account_seed()
     gate = asyncio.Event()
     resolver = _GatedResolver(gate)
@@ -509,9 +506,6 @@ async def _stress(*, establish: Any = None, second_subscription: bool = False) -
     renewals is what this test exists to see, so it drives many renewals, with a short hold, under a
     publisher that never pauses.
     """
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     account_seed = generate_account_seed()
     previous_ns = get_default_namespace()
 

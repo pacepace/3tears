@@ -89,3 +89,39 @@ def test_without_the_flag_skips_are_skips(pytester: pytest.Pytester, monkeypatch
     monkeypatch.delenv("THREETEARS_REQUIRE_SERVICES", raising=False)
     result = _session(pytester)
     result.assert_outcomes(passed=1, skipped=7, xfailed=1)
+
+
+_PROCESS_ONLY = """
+import pytest
+
+pytestmark = [pytest.mark.integration, pytest.mark.process_only]
+
+
+def test_a_process_mode_check():
+    pass
+"""
+
+
+def _named_session(pytester: pytest.Pytester) -> pytest.RunResult:
+    """a session that names the process-only module itself, as an off-pool run of the suite's paths does."""
+    pytester.makeconftest('pytest_plugins = ["tests.require_services"]')
+    pytester.makeini("[pytest]\nmarkers =\n    integration: needs a service\n    process_only: process mode only\n")
+    pytester.makepyfile(test_two_nodes=_PROCESS_ONLY, test_other="def test_other():\n    pass\n")
+    return pytester.runpytest_inprocess(
+        "-p", "no:cacheprovider", "-p", "no:asyncio", "test_two_nodes.py", "test_other.py"
+    )
+
+
+def test_outside_process_mode_a_process_only_test_is_deselected_even_when_named(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("THREETEARS_TEST_SERVICES", raising=False)
+    result = _named_session(pytester)
+    # deselected, not skipped: nothing reads like a pass
+    result.assert_outcomes(passed=1, deselected=1)
+
+
+def test_in_process_mode_a_process_only_test_runs(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("THREETEARS_TEST_SERVICES", "process")
+    result = _named_session(pytester)
+    result.assert_outcomes(passed=2)

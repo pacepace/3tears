@@ -222,6 +222,10 @@ dev-dependencies = [
 [tool.ruff]
 line-length = 120
 target-version = "py314"
+# scripts/integration_marks.py runs under whatever python3 is on PATH (3.11 or later), not the
+# workspace's 3.14: the formatter must not write 3.14-only syntax there (unparenthesised
+# multi-exception `except`). tests/test_integration_marks_script.py parses it as 3.11.
+per-file-target-version = { "scripts/integration_marks.py" = "py311" }
 
 [tool.ruff.lint]
 # F as well as SLF, enabled 2026-07-27 after an undefined name reached a RUNNING container.
@@ -425,6 +429,7 @@ markers = [
     # test that starts a container or reads a credential to its marker.
     "docker: drives a Docker daemon itself (testcontainers, docker exec); runs locally, never on the testament pool",
     "secrets: reads a credential from the environment (a warehouse password, an API key or token); runs locally only",
+    "process_only: checks the test services started as child processes (THREETEARS_TEST_SERVICES=process, the testament pool); deselected anywhere else",
     # Opts a test out of the scrape suite's autouse offline-robots fixture, for the few whose
     # subject IS the real default fetcher. Without the opt-out that builder was patched
     # suite-wide and never executed, so the code binding a robots read to the configured exit

@@ -18,7 +18,8 @@ against a real nats-server running config-mode ``auth_callout`` and the real
   configured lifetime is a day, so the connection is still serving after the minted lifetime has
   passed.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -31,7 +32,6 @@ from typing import Any
 import nats
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats import (
     AuthCalloutRequest,
     AuthCalloutResponder,
@@ -138,9 +138,6 @@ def _server_config(account_pub: str) -> str:
 
 async def test_the_server_reports_the_minted_lifetime_and_the_renewal_runs_on_it() -> None:
     """the pod believes a day, the hub mints 40s; the pod learns 40s and is still serving after it."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     account_seed = generate_account_seed()
     resolver = _Resolver()
     responder = AuthCalloutResponder(

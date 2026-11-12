@@ -26,8 +26,8 @@ comes from is decided in one order:
 - NATS: the image tag ``nats:<version>-alpine`` names the binary; a version the image lacks is a
   missing service. The server reads the test's configuration, and the command line moves its client
   and monitoring ports to free ones (``-p -1 -m -1``, read back from a ports file) and, when the
-  configuration enables JetStream, its store into the service's own directory (``-sd``), so two
-  servers never share ``/tmp/nats/jetstream``.
+  configuration enables JetStream, its store into the service's own directory (``-sd``, or the
+  configuration's own ``store_dir`` rewritten to it), so two servers never share a store.
 - S3: ``python -m moto.server`` on a socket this process binds first and hands it, so what answers
   is that server and no other; ready once it answers an HTTP request, with the bucket created as
   the container route creates it.
@@ -113,6 +113,54 @@ _PG_SETTINGS: tuple[str, ...] = (
 )
 
 _NATS_ROOT = Path("/opt/nats")
+#: a configured JetStream store directory, with its value, in each spelling nats-server reads: ``store_dir:
+#: /tmp/js-store``, ``storedir = "x"``, ``store x``. Only as a key: not inside a name (``max_file_store``), a
+#: subject (``kv.store.get``) or a quoted string.
+_STORE_DIR = re.compile(r"""(?<![\w."'$-])(?:store_dir|storedir|store)(?:\s*[:=]\s*|\s+)(?:"[^"]*"|'[^']*'|[^\s,}]+)""")
+
+
+def _code_of(line: str) -> str:
+    """the part of a nats-server configuration line before its comment (``#`` or ``//``, outside quotes).
+
+    :param line: one line
+    :ptype line: str
+    :return: the line up to its comment
+    :rtype: str
+    """
+    quote = ""
+    for index, char in enumerate(line):
+        if quote:
+            quote = "" if char == quote else quote
+        elif char in "\"'":
+            quote = char
+        elif char == "#" or line.startswith("//", index):
+            return line[:index]
+    return line
+
+
+def _own_store(config: str, store: Path) -> tuple[str, bool]:
+    """``config`` with every JetStream store it names, outside comments, made ``store``.
+
+    The per-test configurations name the same store (``/tmp/js-store``), and nats-server refuses ``-sd``
+    beside a configured one, so a named store is rewritten rather than overridden.
+
+    :param config: the server configuration
+    :ptype config: str
+    :param store: this server's own store directory
+    :ptype store: Path
+    :return: the configuration, and whether it named a store
+    :rtype: tuple[str, bool]
+    """
+    named = False
+    lines: list[str] = []
+    for line in config.splitlines(keepends=True):
+        code = _code_of(line)
+        rewritten, count = _STORE_DIR.subn(f'store_dir: "{store}"', code)
+        named = named or count > 0
+        lines.append(rewritten + line[len(code) :])
+    return "".join(lines), named
+
+
 _NATS_TAG = re.compile(r"(?:docker\.io/)?(?:library/)?nats:(\d+\.\d+\.\d+)(?:-alpine)?")
 
 #: the soft open-files limit a process-mode service start raises this process to (and its servers inherit)
@@ -797,12 +845,14 @@ def _nats_process(config: str | None, image: str) -> Iterator[RunningNats]:
         argv = [str(server), "-a", "127.0.0.1", "-p", "-1", "-m", "-1", "--ports_file_dir", str(ports_dir)]
         argv += ["-P", str(directory / "nats.pid")]
         if config is not None:
+            store = directory / "jetstream"
+            config, named_a_store = _own_store(config, store)
+            if not named_a_store and any(re.match(r"\s*jetstream\b", _code_of(line)) for line in config.splitlines()):
+                # the server's own store, never the shared default /tmp/nats/jetstream
+                argv += ["-sd", str(store)]
             conf = directory / "nats.conf"
             conf.write_text(config, encoding="utf-8")
             argv += ["-c", str(conf)]
-            if re.search(r"^\s*jetstream\b", config, re.MULTILINE):
-                # the server's own store, never the shared default /tmp/nats/jetstream
-                argv += ["-sd", str(directory / "jetstream")]
         log_path = directory / "nats.log"
         child = _spawn(argv, log_path=log_path)
         try:

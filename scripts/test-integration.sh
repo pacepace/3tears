@@ -41,8 +41,7 @@ cd "$REPO_ROOT"
 LOCAL_DIRS=(
     packages/datasources/tests/integration/test_redshift_driver_live.py
     packages/datasources/tests/integration/test_transaction_redshift_live.py
-    packages/epoch/tests/integration/test_generation_grants_live.py
-    packages/nats/tests/integration
+    packages/nats/tests/integration/test_lame_duck_handover_live.py
     packages/scrape/tests/integration/test_operator_pipe_sidecar.py
     packages/search/tests/test_searxng_live_scoring.py
 )
@@ -84,8 +83,8 @@ EXTRA_ARGS=("$@")
 # the integration suite's paths, from the manifest (the one list of what runs on the pool)
 SUITE_PATHS=()
 if [ -f .testament.toml ]; then
-    if ! command -v python3 >/dev/null 2>&1; then
-        echo "test-integration.sh: reading .testament.toml needs python3 (3.11 or later, for tomllib)" >&2
+    if ! command -v python3 >/dev/null 2>&1 || ! python3 -I -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+        echo "test-integration.sh: reading .testament.toml needs python3 3.11 or later (tomllib) on PATH" >&2
         exit 2
     fi
     listed="$(python3 -I -c '
@@ -164,14 +163,24 @@ elif [ "${TESTAMENT:-}" = "off" ]; then
     pool_route=""
 fi
 if [ -z "$pool_route" ] && [ ${#POOL[@]} -gt 0 ]; then
-    # a suite path inside a local directory is run by that directory, not named on its own: named, pytest
-    # would collect it past a conftest that leaves it out (core's process-services checks, off the pool)
+    # Off the pool the suite's paths run here, less the modules marked `process_only` (they check what only
+    # process mode has, a cluster of child processes, and testcontainers can't stand in for it): a module named
+    # on its own is collected, and tests/require_services.py would deselect it, so it is not named at all. A
+    # suite path inside a local directory is run by that directory, not named twice.
+    PROCESS_ONLY=()
+    listed="$(python3 -I scripts/integration_marks.py --process-only "${POOL[@]}")"
+    while IFS= read -r file; do
+        [ -n "$file" ] && PROCESS_ONLY+=("$file")
+    done <<<"$listed"
     for pool_path in "${POOL[@]}"; do
-        inside=""
+        skip=""
         for path in ${LOCAL+"${LOCAL[@]}"}; do
-            [ "$pool_path" != "$path" ] && under "$pool_path" "$path" && inside=1
+            [ "$pool_path" != "$path" ] && under "$pool_path" "$path" && skip=1
         done
-        [ -n "$inside" ] || LOCAL+=("$pool_path")
+        for file in ${PROCESS_ONLY+"${PROCESS_ONLY[@]}"}; do
+            [ "$pool_path" = "$file" ] && skip=1
+        done
+        [ -n "$skip" ] || LOCAL+=("$pool_path")
     done
     POOL=()
 fi

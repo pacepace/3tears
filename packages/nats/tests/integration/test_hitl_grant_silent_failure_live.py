@@ -27,7 +27,8 @@ allow-lists read back out of the signed claim) is the one
 reason for not using the session-scoped ``nats_container`` fixture: a shared container cannot carry a
 per-test ``authorization`` block.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -39,7 +40,6 @@ import logging
 
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats import IncomingMessage, NatsClient, Subjects, set_default_namespace
 from threetears.nats.subject_permissions import Principal, PrincipalPermissions, build_permissions
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
@@ -203,9 +203,6 @@ async def test_hitl_grant_delivers_and_its_absence_is_a_silent_dead_subscription
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """with tool namespaces the owner-routed message arrives; without them nothing does, silently."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     set_default_namespace(_NS)
     family = Subjects.hitl_forward_family(_OWNED_NODE)
     subject = Subjects.forward_scoped(family, _SESSION_KEY)

@@ -16,6 +16,12 @@ A test skipped by an unconditional ``@pytest.mark.skip`` stays a skip: that is a
 the test, visible in every report, not a service gone missing. A ``skipif`` gets no such pass,
 since its condition is usually the environment the flag says is there. Without the flag nothing
 changes.
+
+**``process_only``.** A test marked ``process_only`` checks what only process mode has (the services
+themselves, a cluster of child processes). Outside ``THREETEARS_TEST_SERVICES=process`` -- CI's
+integration job, a laptop's testcontainers run -- it is deselected, whatever named it, rather than
+run against the wrong services or skipped. ``scripts/test-integration.sh`` reads the same marker to
+leave such modules out of a run it takes off the pool.
 """
 
 from __future__ import annotations
@@ -27,6 +33,28 @@ import pytest
 
 #: the flag the pool's integration suite sets
 REQUIRE_SERVICES_ENV = "THREETEARS_REQUIRE_SERVICES"
+
+#: the variable that selects the services' process mode, and its value
+SERVICES_ENV = "THREETEARS_TEST_SERVICES"
+PROCESS_MODE = "process"
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """deselect every ``process_only`` test outside process mode.
+
+    :param config: the session's config
+    :ptype config: pytest.Config
+    :param items: the collected tests, narrowed in place
+    :ptype items: list[pytest.Item]
+    :return: None
+    :rtype: None
+    """
+    if os.environ.get(SERVICES_ENV) == PROCESS_MODE:
+        return
+    deselected = [item for item in items if item.get_closest_marker("process_only") is not None]
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = [item for item in items if item.get_closest_marker("process_only") is None]
 
 
 #: the directory part every package's integration tests live under

@@ -28,7 +28,8 @@ credential the server enforces either way. Mirrors
 session-scoped ``nats_container`` fixture -- a shared container cannot carry a per-test
 ``authorization`` block.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -43,7 +44,6 @@ from datetime import timedelta
 import nats
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats import NatsClient, Subjects, forward, serve_owner, set_default_namespace
 from threetears.nats.subject_permissions import Principal, PrincipalPermissions, build_permissions, kv_key_scope_for
 from threetears.scrape.operator_session import operator_session_lease
@@ -186,9 +186,6 @@ async def _connect_raw(
 
 
 async def test_granted_family_round_trips_and_foreign_family_is_refused() -> None:
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     set_default_namespace(_NS)
     granted_family = Subjects.hitl_forward_family(_GRANTED_NODE)
     foreign_family = Subjects.hitl_forward_family(_FOREIGN_NODE)
@@ -253,9 +250,6 @@ async def test_granted_family_round_trips_and_foreign_family_is_refused() -> Non
 async def test_tool_pod_can_open_the_bucket_its_display_claim_uses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     # The namespace the grants render under. KVLease no longer reads it -- its default is a bare
     # suffix and the transport applies the prefix -- so this is set for the SUBJECT builders, exactly as a
     # deployed pod does; the wrapper then layers its own namespace prefix over it.
@@ -330,9 +324,6 @@ async def _violations_from(
 
 async def test_pipe_stream_grants_admit_a_pods_own_half_and_refuse_every_other() -> None:
     """the stream subjects a pod actually uses are admitted; a peer's and the caller's are not."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     set_default_namespace(_NS)
     nonce = "3f2b1c"
     own_down = Subjects.pipe(_GRANTED_NODE, _POD_ID, nonce, "down")
@@ -365,9 +356,6 @@ async def test_pipe_stream_grants_admit_a_pods_own_half_and_refuse_every_other()
 
 async def test_pipe_stream_grants_let_the_hub_front_every_pod_on_the_callers_half() -> None:
     """the hub reaches every pod's stream, and still only from the caller's side."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     set_default_namespace(_NS)
     nonce = "9a7e40"
     pod_down = Subjects.pipe(_GRANTED_NODE, _POD_ID, nonce, "down")

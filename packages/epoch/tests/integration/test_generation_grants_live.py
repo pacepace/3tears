@@ -13,7 +13,8 @@ themselves, through ``NatsClient``, as an agent pod and as a tool pod minted by 
 As in ``threetears.nats``'s live grant tests, the minted allow-lists are applied as config-mode
 ``authorization`` permissions: the grant strings are what is under test.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -29,7 +30,8 @@ from datetime import timedelta
 import pytest
 
 from threetears.core.exceptions import GenerationUnavailableError
-from threetears.core.testing.containers import check_docker_available
+from threetears.core.testing.fixtures import NATS_TEST_IMAGE
+from threetears.core.testing.services import running_nats
 from threetears.epoch import EpochGenerationReader, EpochGenerationSource
 from threetears.nats import NatsClient
 from threetears.nats.subject_permissions import Principal, PrincipalPermissions, build_permissions
@@ -107,10 +109,8 @@ def _nats_with_auth(config_text: str) -> Iterator[str]:
     :return: the server's URI, yielded
     :rtype: Iterator[str]
     """
-    from threetears.core.testing.fixtures import nats_server, nats_server_uri  # noqa: PLC0415
-
-    with nats_server(config=config_text) as container:
-        yield nats_server_uri(container)
+    with running_nats(config_text, image=NATS_TEST_IMAGE) as server:
+        yield server.uri
 
 
 def _permissions(principal: Principal) -> PrincipalPermissions:
@@ -162,9 +162,6 @@ async def _connect(uri: str, *, user: str, password: str, inbox_prefix: str | No
 @pytest.mark.parametrize("principal", [Principal.AGENT_POD, Principal.TOOL_POD, Principal.REGISTRY])
 async def test_a_pod_follows_a_generation_and_cannot_advance_it(principal: Principal) -> None:
     """the reader binds, reads and watches under the pod's grant; the pod's own advance is refused."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     permissions = _permissions(principal)
     pub_allow, sub_allow = _minted_allow_lists(permissions)
 

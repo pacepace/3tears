@@ -26,8 +26,8 @@ scenario C — downgrade rolls back the most-recent migration
     apply both, downgrade one step, assert the second migration's
     changes are reverted and its bookkeeping row is gone.
 
-the suite is guarded by ``@pytest.mark.integration`` and skips if
-Docker is unavailable.
+the suite is guarded by ``@pytest.mark.integration``. Without a Postgres
+(no Docker, off the pool) it skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
