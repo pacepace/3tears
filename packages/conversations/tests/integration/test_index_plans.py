@@ -124,7 +124,8 @@ async def _resumed_page(conn: asyncpg.Connection, by: dict[str, Any], sort: str)
         limit=_PAGE,
         cursor=first.next_cursor,
     )
-    (sql, args), *rest = captured.asked
+    # keyset_page asks the server's version once (a YugabyteDB probe) before its page: the page is the read
+    (sql, args), *rest = [asked for asked in captured.asked if 'FROM "conversations"' in asked[0]]
     assert not rest, captured.asked
     return sql, args
 
