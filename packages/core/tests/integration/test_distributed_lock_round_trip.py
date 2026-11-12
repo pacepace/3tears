@@ -114,9 +114,11 @@ async def test_ttl_expires_orphaned_lock(nats_container: str) -> None:
             ):
                 pass  # pragma: no cover
 
-        # After TTL expiry the key auto-deletes and the lock is winnable.
-        # 1s ttl + a small grace window for the broker reaper.
-        await asyncio.sleep(1.5)
+        # After TTL expiry the key auto-deletes and the lock is winnable: wait for the broker's reaper to remove it.
+        deadline = asyncio.get_running_loop().time() + 10.0
+        while await bucket.get(key="orphan") is not None:
+            assert asyncio.get_running_loop().time() < deadline, "the orphaned key never expired"
+            await asyncio.sleep(0.05)
         async with nats_distributed_lock(
             nc,
             "orphan",
@@ -267,7 +269,7 @@ async def test_a_bucket_an_old_release_created_is_used_as_it_stands(nats_contain
             dataclasses.replace(
                 build_kv_stream_config(
                     bucket="locktest-legacy-locks",
-                    ttl_seconds=2,
+                    ttl_seconds=1,
                     history=1,
                     storage_type=StorageType.MEMORY,
                     direct=None,
@@ -279,13 +281,13 @@ async def test_a_bucket_an_old_release_created_is_used_as_it_stands(nats_contain
         assert not before.config.allow_msg_ttl
 
         async with nats_distributed_lock(
-            nc, "legacy", bucket_name="legacy-locks", ttl=timedelta(seconds=2), heartbeat=timedelta(milliseconds=400)
+            nc, "legacy", bucket_name="legacy-locks", ttl=timedelta(seconds=1), heartbeat=timedelta(milliseconds=200)
         ) as hold:
-            await asyncio.sleep(3)  # past the bucket's max_age: only renewals keep the entry
+            await asyncio.sleep(2)  # past the bucket's max_age by as much again: only renewals keep the entry
             hold.raise_if_lost()
         after = await js.stream_info("KV_locktest-legacy-locks")
         assert after.config.max_age == before.config.max_age
         async with nats_distributed_lock(
-            nc, "legacy", bucket_name="legacy-locks", ttl=timedelta(seconds=2), heartbeat=timedelta(milliseconds=400)
+            nc, "legacy", bucket_name="legacy-locks", ttl=timedelta(seconds=1), heartbeat=timedelta(milliseconds=200)
         ):
             pass
