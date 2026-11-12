@@ -55,6 +55,44 @@ from threetears.core.config import DefaultCoreConfig
 
 pytestmark = pytest.mark.integration
 
+#: the backends waiting, directly or behind another waiter, on a lock the given backend holds.
+_WAITING_ON = """
+WITH RECURSIVE waiting(pid) AS (
+    SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))
+    UNION
+    SELECT a.pid FROM pg_stat_activity a JOIN waiting w ON w.pid = ANY(pg_blocking_pids(a.pid))
+)
+SELECT count(*) FROM waiting
+"""
+
+#: how long the lock-wait check gives the waiting statements to reach the lock before it fails.
+_LOCK_WAIT_DEADLINE_SECONDS = 30.0
+
+
+async def _until_waiting_on(url: str, holder_pid: int, waiters: int) -> None:
+    """return once ``waiters`` backends wait on a lock ``holder_pid`` holds; fail past the deadline.
+
+    Asked on a connection of its own: the statements waiting hold the test pool's connections, and the
+    holder's open transaction would read one cached snapshot of ``pg_stat_activity`` for its whole life.
+
+    :param url: the database to ask
+    :ptype url: str
+    :param holder_pid: the backend holding the lock
+    :ptype holder_pid: int
+    :param waiters: how many waiting backends to wait for
+    :ptype waiters: int
+    :return: nothing
+    :rtype: None
+    """
+    deadline = asyncio.get_running_loop().time() + _LOCK_WAIT_DEADLINE_SECONDS
+    watcher = await asyncpg.connect(url)
+    try:
+        while (seen := await watcher.fetchval(_WAITING_ON, holder_pid)) < waiters:
+            assert asyncio.get_running_loop().time() < deadline, f"{seen} of {waiters} statements reached the lock"
+            await asyncio.sleep(0.01)
+    finally:
+        await watcher.close()
+
 
 def _new_uuid() -> UUID:
     """Return a fresh UUIDv7 cast to stdlib ``UUID``."""
@@ -846,7 +884,7 @@ class TestAUseIsCountedOnce:
             )
             for _ in range(2)
         ]
-        await asyncio.sleep(0.5)  # both statements have started and wait on the row
+        await _until_waiting_on(url, blocker.get_server_pid(), 2)  # both wait on the row
         assert not any(task.done() for task in reports)
         await held.commit()
         await blocker.close()
