@@ -243,6 +243,38 @@ def _past_marks(order: Sequence[Sort], marks: Sequence[str | None], *, by_row: b
     return f"({expanded})"
 
 
+def _after_ranges(sort: Sort, mark: str | None) -> list[str]:
+    """the rows after ``mark`` in one sort column, as conditions each an index takes as one range (no ``OR``): its
+    values past the mark, and its NULLs where they follow (ascending NULLs last after a value); none where nothing
+    follows (ascending, after a NULL)."""
+    column = sort.sorted_by
+    if mark is None:
+        return [f"{column} IS NOT NULL"] if sort.descending else []
+    beyond = f"{column} {'<' if sort.descending else '>'} {mark}"
+    return [beyond, f"{column} IS NULL"] if sort.nullable and not sort.descending else [beyond]
+
+
+def _seek_legs(
+    order: Sequence[Sort], values: Sequence[Any], first: int
+) -> tuple[list[tuple[str, Sequence[Sort]]], list[Any]]:
+    """the rows after the cursor as legs each an index reads as one range with no filter beside it: for each sort
+    column, the columns before it equal to the cursor's and the column past it (``c1 = $1 AND c2 < $2``, then
+    ``c1 < $1``), its NULLs a leg of their own where they follow; each leg in the whole sort's order. And the
+    parameters, numbered from ``first``, every leg shares.
+
+    For YugabyteDB, which pushes a page's ``LIMIT`` down to storage only when no condition is left to filter after
+    the index read: the one-condition expansion (``c1 <= $1 AND (c1 < $1 OR (c1 = $1 AND c2 < $2))``) leaves its
+    ``OR`` as a filter, so each page read a whole fetch (1,024 rows) for a page of 9; and the row comparison is
+    rechecked the same way. Each leg reads at most its ``LIMIT``, so a page of ``n`` reads at most
+    ``n + 1`` rows a leg (two legs for a sort of two columns)."""
+    marks, params = _marks(order, values, first)
+    legs: list[tuple[str, Sequence[Sort]]] = []
+    for depth in reversed(range(len(order))):
+        equal = [_same(sort, mark) for sort, mark in zip(order[:depth], marks[:depth], strict=True)]
+        legs.extend((" AND ".join([*equal, after]), order) for after in _after_ranges(order[depth], marks[depth]))
+    return legs, params
+
+
 def _past(
     order: Sequence[Sort],
     values: Sequence[Any],
@@ -380,6 +412,8 @@ def page_statement(
     visible: Sequence[Fragment],
     where: Sequence[Fragment],
     lock: Lock | None,
+    *,
+    seek_legs: bool = False,
 ) -> tuple[str, list[Any]]:
     """one page's statement: ``rows`` rows past ``past`` (the last row's sort values, as text where cast; the first
     page when None), and its parameters.
@@ -404,6 +438,10 @@ def page_statement(
     :ptype where: Sequence[Fragment]
     :param lock: the row lock taken; none when None
     :ptype lock: Lock | None
+    :param seek_legs: step past ``past`` by legs each one range of the index with nothing left to filter
+        (:func:`_seek_legs`, YugabyteDB), when no row lock is taken and the sort's lead is never NULL (a NULLable lead
+        splits at its NULLs instead, :func:`_nullable_lead_legs`)
+    :ptype seek_legs: bool
     :return: the statement, and its parameters
     :rtype: tuple[str, list[Any]]
     """
@@ -418,6 +456,11 @@ def page_statement(
     if past is not None and order[0].nullable and lock is None:
         split, past_params = _nullable_lead_legs(order, past, len(params) + 1, by_row=by_row)
         legs = [(condition, leg_order) for condition, leg_order in split]
+        params += past_params
+    elif past is not None and seek_legs and lock is None:
+        # a lead that is never NULL, on YugabyteDB: one leg a column, each one range of the index (_seek_legs)
+        seeks, past_params = _seek_legs(order, past, len(params) + 1)
+        legs = [(condition, leg_order) for condition, leg_order in seeks] or [("FALSE", order)]
         params += past_params
     elif past is not None:
         past_condition, past_params = _past(order, past, len(params) + 1, by_row=by_row)

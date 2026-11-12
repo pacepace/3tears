@@ -37,13 +37,18 @@ _ROWS = 6000
 
 
 class _Captured:
-    """a connection that runs nothing and records each statement asked of it."""
+    """a connection that records each statement asked of it and runs none of them over ``conversations``; any other
+    (keyset_page's one question of the server's version) goes to ``real``, when given, so the page is spelled as it
+    is on the session's database (YugabyteDB's expansion, not PostgreSQL's row comparison)."""
 
-    def __init__(self) -> None:
+    def __init__(self, real: asyncpg.Connection | None = None) -> None:
         self.asked: list[tuple[str, tuple[Any, ...]]] = []
+        self._real = real
 
     async def fetch(self, sql: str, *args: Any) -> list[Any]:
         self.asked.append((sql, args))
+        if self._real is not None and 'FROM "conversations"' not in sql:
+            return list(await self._real.fetch(sql, *args))
         return []
 
 
@@ -114,7 +119,7 @@ async def _resumed_page(conn: asyncpg.Connection, by: dict[str, Any], sort: str)
     columns = ("conversation_id", sort)
     first = await keyset_page(conn, "conversations", columns=columns, by=by, order=order, limit=_PAGE)
     assert first.next_cursor is not None, first
-    captured = _Captured()
+    captured = _Captured(conn)
     await keyset_page(
         captured,
         "conversations",

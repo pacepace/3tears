@@ -20,10 +20,12 @@ caller string reaches an ``ORDER BY``. Each sort column says its SQL type, so th
 
 **How a page steps past its cursor.** A sort of one direction with no nullable column, on PostgreSQL (or an
 in-process DuckDB or SQLite): the row comparison ``(c1, c2) > ($1, $2)``, which PostgreSQL seeks its index by.
-Otherwise the lexicographic expansion over the sort columns, each in its own direction (``c1 > $1 OR (c1 = $1 AND
-c2 > $2)``), led by a range on the first column when it is not nullable (``c1 >= $1``): YugabyteDB seeks a hashed
-bucket by the lead and filters the rest in storage (:mod:`threetears.core.keyset`), where a row comparison would read
-the bucket from its start; PostgreSQL plans the expansion as a bitmap scan and a sort. Which database it is comes
+On YugabyteDB (no row lock): a ``UNION ALL`` of legs, each an equality prefix of the cursor and one range
+(``c1 = $1 AND c2 > $2``, then ``c1 > $1``), so each leg is one range of the index with nothing left to filter and
+YugabyteDB pushes its ``LIMIT`` to storage: the one-condition forms (the expansion's ``OR``, the row comparison's
+recheck) read a whole fetch, 1,024 rows, for a page of 9. Otherwise the lexicographic expansion over the sort
+columns, each in its own direction (``c1 > $1 OR (c1 = $1 AND c2 > $2)``), led by a range on the first column when
+it is not nullable (``c1 >= $1``); PostgreSQL plans the expansion as a bitmap scan and a sort. Which database it is comes
 with no round trip (:func:`~threetears.core.backends.dialect.known_on_yugabyte`).
 
 **The cursor is opaque**: base64 of the last row's sort values as text, each with a null flag. A cursor that does not
@@ -106,7 +108,10 @@ async def keyset_page(
     check_page(table, columns, order, limit)
     past = None if cursor is None else cursor_values(order, cursor)
     by_row = past is not None and await _steps_by_row(conn, order)
-    sql, params = page_statement(table, columns, by, order, limit + 1, past, by_row, visible, where, lock)
+    legs = past is not None and lock is None and await _seeks_by_legs(conn)
+    sql, params = page_statement(
+        table, columns, by, order, limit + 1, past, by_row, visible, where, lock, seek_legs=legs
+    )
     return KeyPage.cut(order, [dict(row) for row in await conn.fetch(sql, *params)], limit)
 
 
@@ -124,6 +129,18 @@ async def _steps_by_row(conn: Any, order: Sequence[Sort]) -> bool:
     if isinstance(named, Dialect):
         return named in {Dialect.POSTGRES, Dialect.DUCKDB}
     return not await known_on_yugabyte(conn)
+
+
+async def _seeks_by_legs(conn: Any) -> bool:
+    """whether a page past a place steps by legs each one range of its index (:func:`page_statement`'s
+    ``seek_legs``): on YugabyteDB, which pushes a page's ``LIMIT`` to storage only with nothing left to filter. An
+    in-process DuckDB or SQLite, or a reader naming its dialect (a warehouse), never is; an asyncpg connection says
+    so with no round trip (:func:`~threetears.core.backends.dialect.known_on_yugabyte`)."""
+    if isinstance(conn, ThreadedDuckDB | ThreadedSQLite | InlineDuckDB):
+        return False
+    if isinstance(getattr(conn, SQL_DIALECT_ATTRIBUTE, None), Dialect):
+        return False
+    return await known_on_yugabyte(conn)
 
 
 async def keyset_rows(
@@ -174,14 +191,18 @@ async def keyset_rows(
     rows: list[dict[str, Any]] = []
     past: list[Any] | None = None
     by_row: bool | None = None
+    legs = False
     while True:
-        sql, params = page_statement(table, columns, by, order, page + 1, past, bool(by_row), visible, where, None)
+        sql, params = page_statement(
+            table, columns, by, order, page + 1, past, bool(by_row), visible, where, None, seek_legs=legs
+        )
         answered = await conn.fetch(sql, *params)
         rows.extend(dict(row) for row in answered)
         if len(answered) <= page:
             return rows
         if by_row is None:
             by_row = await _steps_by_row(conn, order)
+            legs = await _seeks_by_legs(conn)
         last = rows[-1]
         past = next_past(order, last)
 
