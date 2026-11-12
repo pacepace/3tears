@@ -2453,6 +2453,51 @@ def test_a_forwarder_s_key_parameters_are_judged_by_what_each_call_site_passes(t
     assert ("save_named", "calls-whole-read _fenced_unread") in found, found
 
 
+_LOCAL_MAPPINGS = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import AnyOf, Sort, counts_by, keyset_page
+
+    FIRES = "fires"
+    FIRES_SCHEMA = TableSchema(name=FIRES, primary_key=("conversation_id", "fire_id"), columns=[])
+
+
+    async def latest(pool, conversation_id, schedule_id, statuses=None):
+        by: dict = {"conversation_id": conversation_id, "schedule_id": schedule_id}
+        if statuses is not None:
+            by["status"] = AnyOf(list(statuses))
+        return await keyset_page(pool, FIRES, columns=["fire_id"], by=by, order=[Sort("fire_id", cast="uuid")], limit=1)
+
+
+    async def counted(pool, conversation_id, webhook=None):
+        by: dict = {} if webhook is None else {"webhook_id": webhook}
+        return await counts_by(pool, FIRES, column="conversation_id", values=AnyOf([conversation_id]), by=by)
+
+
+    async def by_schedule(pool, schedule_id, statuses=None):
+        by = {"schedule_id": schedule_id}
+        if statuses is not None:
+            by["conversation_id"] = statuses
+        return await keyset_page(pool, FIRES, columns=["fire_id"], by=by, order=[Sort("fire_id", cast="uuid")], limit=1)
+
+
+    async def popped(pool, conversation_id, schedule_id):
+        by = {"conversation_id": conversation_id, "schedule_id": schedule_id}
+        by.pop("conversation_id")
+        return await keyset_page(pool, FIRES, columns=["fire_id"], by=by, order=[Sort("fire_id", cast="uuid")], limit=1)
+"""
+
+
+def test_a_local_mapping_built_by_literal_keys_is_judged_by_each_shape_it_can_take(tmp_path: Path) -> None:
+    """Flips if a by= mapping the function binds once to a literal (or either arm of a conditional) and adds literal
+    keys to stays unknown (``latest``, ``counted``: keyed), if a key added only under a condition is read as always
+    there (``by_schedule``: without it the read is off the key), or if a mapping changed any other way (``popped``)
+    is judged rather than unknown."""
+    found = _symbols(_config(tmp_path, {"pkg/fires.py": _LOCAL_MAPPINGS}))
+    assert not any(function in {"latest", "counted"} for function, _ in found), found
+    assert ("by_schedule", 'non-key-where "fires"') in found, found
+    assert ("popped", "unknown-predicate keyset_page(by)") in found, found
+
+
 _RENAMED_VIEWS = """
     def make(db):
         db.execute("CREATE VIEW offices AS SELECT p.race AS office_key, p.state FROM lsf_rows AS p")

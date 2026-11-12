@@ -2136,6 +2136,10 @@ class _ModuleWalk(ast.NodeVisitor):
                 )
             # a module constant declaring a change relation (``_CHANGED = keyed.change_relation("changed")``), or a
             # name the function binds once to a step (``step = semi(...)``): the call itself, judged where it is made
+            # a mapping the function binds once and adds literal keys to (``by = {...}``; ``by["status"] = ...``): each
+            # shape it can take, judged in turn (:func:`_branch_calls`)
+            if isinstance(value, ast.Name) and (shaped := self._local_mapping(value.id)) is not None:
+                return _mapped(shaped, literal)
             declared = self._module_values.get(value.id) if isinstance(value, ast.Name) else None
             if isinstance(declared, ast.Call) and _final(declared) == "change_relation":
                 return declared
@@ -2629,6 +2633,87 @@ class _ModuleWalk(ast.NodeVisitor):
         # a builder takes no connection: its relation is its first argument
         place = 0 if name in BUILDER_CALLS else 1
         return len(node.args) > place and holds(node.args[place])
+
+    def _local_mapping(self, name: str) -> ast.expr | None:
+        """the shapes a mapping the enclosing function binds to ``name`` can take: bound once to a literal mapping (or
+        a conditional of two), then only given keys by ``name[<string>] = value``; a key given in the function's own
+        body is always there, one given under a condition or loop either there or not. None when the function binds
+        or changes ``name`` any other way (``name.pop(...)``, ``del name[...]``, a second binding), reads it through
+        an attribute, or one given key is no string.
+
+        :param name: the name
+        :ptype name: str
+        :return: the shapes as a conditional of mappings (or the one mapping), or None
+        :rtype: ast.expr | None
+        """
+        function = self._function_node
+        if function is None:
+            return None
+        env = self._envs[-1]
+        bound: list[ast.expr] = []
+        given: list[tuple[str, ast.expr, bool]] = []
+        top = {id(statement) for statement in function.body}
+        for node in _own_nodes(function.body):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id == name:
+                        if node.value is None or len(targets) != 1:
+                            return None
+                        bound.append(node.value)
+                    elif (
+                        isinstance(target, ast.Subscript)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == name
+                    ):
+                        key = _constant_text(target.slice, env)
+                        if key is None or len(targets) != 1 or node.value is None:
+                            return None
+                        given.append((key, node.value, id(node) in top))
+            elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == name:
+                return None
+            elif isinstance(node, (ast.Delete, ast.AugAssign)) and any(
+                isinstance(each, ast.Name) and each.id == name for each in ast.walk(node)
+            ):
+                return None
+        # a store other than the one binding (a loop target, ``del``, a walrus) leaves it no one shape
+        stores = [
+            node
+            for node in _own_nodes(function.body)
+            if isinstance(node, ast.Name) and node.id == name and not isinstance(node.ctx, ast.Load)
+        ]
+        if len(bound) != 1 or len(stores) != 1 or name in _function_bindings(function, {}).parameters:
+            return None
+        value = bound[0]
+        arms = [value.body, value.orelse] if isinstance(value, ast.IfExp) else [value]
+        if not all(isinstance(arm, ast.Dict) and None not in arm.keys for arm in arms):
+            return None
+        always = [(key, put) for key, put, at_top in given if at_top]
+        every = [(key, put) for key, put, _ in given]
+
+        def shaped(arm: ast.expr) -> ast.expr:
+            assert isinstance(arm, ast.Dict)
+            shapes = {
+                ast.unparse(made): made
+                for made in (
+                    ast.Dict(
+                        keys=[*arm.keys, *(ast.Constant(key) for key, _ in added)],
+                        values=[*arm.values, *(put for _, put in added)],
+                    )
+                    for added in (always, every)
+                )
+            }
+            *rest, last = shapes.values()
+            chained: ast.expr = last
+            for shape in reversed(rest):
+                chained = ast.IfExp(test=ast.Constant(True), body=shape, orelse=chained)
+            return chained
+
+        # a conditional binding keeps its test, so an arm its callers never take is folded away as where it is
+        # written in the call (:meth:`_none_folded`)
+        if isinstance(value, ast.IfExp):
+            return ast.IfExp(test=value.test, body=shaped(value.body), orelse=shaped(value.orelse))
+        return shaped(value)
 
     def _bound_step(self, name: str) -> ast.Call | None:
         """the step (or change relation, or derived select) the enclosing function binds ``name`` to once, if it does.
@@ -4831,6 +4916,21 @@ def _site_values(
         return list(passed)
     texts = _texts_of(passed, named[1])
     return [None] if texts is None else list(texts)
+
+
+def _mapped(shaped: ast.expr, literal: Callable[[ast.expr], ast.expr]) -> ast.expr:
+    """each mapping of a conditional of mappings (:meth:`_ModuleWalk._local_mapping`) with its keys as literals.
+
+    :param shaped: the mapping, or a conditional of them
+    :ptype shaped: ast.expr
+    :param literal: what writes a mapping's known keys as literals
+    :ptype literal: Callable[[ast.expr], ast.expr]
+    :return: the same shape, keys as literals
+    :rtype: ast.expr
+    """
+    if isinstance(shaped, ast.IfExp):
+        return ast.IfExp(test=shaped.test, body=_mapped(shaped.body, literal), orelse=_mapped(shaped.orelse, literal))
+    return literal(shaped)
 
 
 def _qualified_names(tree: ast.Module) -> dict[int, str]:
