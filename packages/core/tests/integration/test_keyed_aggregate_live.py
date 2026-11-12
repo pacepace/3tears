@@ -24,7 +24,12 @@ pytestmark = pytest.mark.integration
 
 _ROWS = 40_000
 _START = datetime(2026, 10, 1, tzinfo=UTC)
-_LOW, _HIGH = _START + timedelta(days=12), _START + timedelta(days=14)
+#: a metrics window: most of the table's days, so a tenant set's rows in it are read through its own index, never
+#: the window's every tenant
+_LOW, _HIGH = _START + timedelta(days=2), _START + timedelta(days=28)
+
+#: a narrow window of every tenant, read through the window's own index
+_NARROW_LOW, _NARROW_HIGH = _START + timedelta(days=12), _START + timedelta(days=14)
 
 
 @pytest.fixture
@@ -117,20 +122,23 @@ async def test_every_tenant_s_window_is_read_through_the_window_s_index(conn: as
     """Flips if a window of every tenant (the platform's own metrics) reads the whole table, or its two edges (a
     window split at a rollup) are AND-ed rather than OR-ed."""
     recording = _Recording(conn)
-    split = _LOW + timedelta(hours=20)
+    split = _NARROW_LOW + timedelta(hours=20)
     (counted,) = await aggregate_keyed(
         recording,
         "usage",
         aggregates={"requests": Count()},
-        ranges=[Range("date_created", _LOW, _LOW + timedelta(hours=2)), Range("date_created", split, _HIGH)],
+        ranges=[
+            Range("date_created", _NARROW_LOW, _NARROW_LOW + timedelta(hours=2)),
+            Range("date_created", split, _NARROW_HIGH),
+        ],
     )
     expected = await conn.fetchval(
         "SELECT count(*) FROM usage WHERE (date_created >= $1 AND date_created < $2) OR "
         "(date_created >= $3 AND date_created < $4)",
-        _LOW,
-        _LOW + timedelta(hours=2),
+        _NARROW_LOW,
+        _NARROW_LOW + timedelta(hours=2),
         split,
-        _HIGH,
+        _NARROW_HIGH,
     )
     assert counted["requests"] == expected
     ((sql, params),) = recording.sent
