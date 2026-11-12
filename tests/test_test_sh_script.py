@@ -858,6 +858,22 @@ class TestWhenThePoolGivesNoVerdict:
         last = run.stderr.strip().splitlines()[-1]
         assert 'docs/testing.md, "When the pool is down"' in last
         assert "An agent stops here and tells the person" in last
+        assert "no package or whole-suite rerun with TESTAMENT=off" in last
+
+    def test_an_integration_run_names_its_one_package_local_route(self, repo: Path) -> None:
+        """after an integration run the closing line names the route the runbook allows, not the unit ban.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["--suite", "integration"], testament_exit=2)
+        assert run.returncode == 2
+        last = run.stderr.strip().splitlines()[-1]
+        assert "An agent stops here and tells the person" in last
+        assert "one at a time on a machine with Docker, only if the person agrees" in last
+        assert "no package or whole-suite rerun" not in last
 
     def test_a_test_failure_passes_through_without_it(self, repo: Path) -> None:
         """a failing test (exit 1) is the code's, not the pool's: no runbook line.

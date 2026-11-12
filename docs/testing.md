@@ -157,9 +157,10 @@ and variables → Actions → Variables*) and re-run the checks. Delete it when 
   run exits 2. Run named files with `TESTAMENT=off TESTAMENT_OFF_REASON="..."`, or upgrade (above)
   and enrol (`testament login --console <the pool's console address>`).
 
-**Agents** stop and tell the person. They never rerun a package or the whole suite with
-`TESTAMENT=off`, never run `ci-unit-tests.sh` or raw `pytest`, and never edit `.testament.toml`.
-Named test files under `TESTAMENT=off` are fine.
+**Agents** stop and tell the person. They never rerun a unit-suite package or the whole unit suite
+with `TESTAMENT=off`, never run `ci-unit-tests.sh` or raw `pytest`, and never edit `.testament.toml`.
+Named test files under `TESTAMENT=off` are fine. The integration suite's local route above (one
+package at a time, on a machine with Docker) is for the person to choose: an agent asks first.
 
 ### CI on the testament pool
 

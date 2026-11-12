@@ -256,7 +256,13 @@ if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}
     # env_build_failed, machine_not_set_up, bad_manifest). Say so last, where a long run's reader
     # looks, since the banner above has scrolled away.
     if [ "$pool_status" -eq 2 ]; then
-        echo "test.sh: testament gave no verdict (exit 2). If the pool, this machine's key or its testament release stopped the run, docs/testing.md, \"When the pool is down\", says how to go on. An agent stops here and tells the person: no package or whole-suite rerun with TESTAMENT=off." >&2
+        # the unit suite never reruns wide here; the integration suite may, one package at a time on a
+        # machine with Docker, when the person agrees (CLAUDE.md, docs/testing.md "When the pool is down")
+        rerun="no package or whole-suite rerun with TESTAMENT=off"
+        if [ "$SUITE" = "integration" ]; then
+            rerun="an integration package may run here through testcontainers, one at a time on a machine with Docker, only if the person agrees"
+        fi
+        echo "test.sh: testament gave no verdict (exit 2). If the pool, this machine's key or its testament release stopped the run, docs/testing.md, \"When the pool is down\", says how to go on. An agent stops here and tells the person: ${rerun}." >&2
     fi
     exit "$pool_status"
 fi
