@@ -30,8 +30,8 @@ To run everything but evals, select by testament area: `./scripts/test.sh --not-
 `tests/enforcement/`), `core`, `agent` and `platform` (every other package and the repo-level
 `tests/test_*.py`). `--area NAME` runs one; both repeat. `test.sh` passes them to testament ahead of
 the pytest selection, and they combine with a package or test paths. Only the pool knows the
-areas, so a run that would go local (`TESTAMENT=off`, `-m`, an environment gate, CI, no testament)
-refuses them and exits 2. On the pool an area costs what its folder does: `--area core` collected
+areas, so a run that would go local (`TESTAMENT=off`, an environment gate, a flag that keeps it
+local, CI, no testament) refuses them and exits 2; a `-m` goes to the pool with them. On the pool an area costs what its folder does: `--area core` collected
 the same 5,223 tests as `packages/core/tests/` in about the same time (31 s against 30 s), so a
 package run stays a path, which also works locally.
 
@@ -58,8 +58,9 @@ error into `hitl.py` that passed lint, mypy, and the entire workspace suite.
 `./scripts/test.sh` with no package, and CI, run the unit suite under pytest-xdist as
 `-n 4 --dist loadgroup`. The root `conftest.py` puts every test in its package's xdist group, so
 each package runs in one worker in its usual order, and packages run side by side. A
-single-package run (`./scripts/test.sh core`) stays serial. Pass `-n 0` to run the whole suite
-serially, for a debugger or to rule out the parallel run.
+single-package run (`./scripts/test.sh core`) stays serial. On the local route (`TESTAMENT=off`, or
+no testament) pass `-n 0` to run the whole suite serially, for a debugger or to rule out the
+parallel run; on the pool route `test.sh` refuses `-n` on anything wider than named test files.
 
 On GitHub's runners CI runs the same thing as parallel shards, through
 `./scripts/ci-unit-tests.sh --shard <name>`: `evals-1` to `evals-8`, `core` (with datasources),
@@ -75,14 +76,78 @@ tests. pytest-split cuts evals into eight runs of about equal recorded duration,
 only cost balance, never a test.
 
 Where `testament` is installed (outside CI), `test.sh` hands the run to its
-runners instead (testament 0.44.0 or later: an older client refuses the manifest's `[areas]` and
-runs nothing), and none of the above applies: testament distributes the tests itself, `-n`,
-`-x`, `--maxfail` or `--lf` make it run locally, and a package run there skips its integration
-tests (`.testament.toml` selects `-m "not integration"`). Two kinds of run never go to the pool:
-one gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`, `THREETEARS_EVALS_PAID*`),
-whose tests would skip on runners without it, and one that passes its own `-m`. Any other run
-goes local only with `TESTAMENT=off` and a stated reason, `TESTAMENT_OFF_REASON="..."`, which
-`test.sh` prints; without the reason it refuses and exits 2.
+runners instead (testament 0.45.1 or later: an older client refuses the manifest's
+`fallback` key and runs nothing; upgrade with
+`uv tool install --force --python 3.14 git+ssh://git@github.com/brookstalley/testament@v<version>`,
+where `testament status --json` names the pool's `coordinator_version`), and none of the above applies. Testament distributes the tests itself, and a run
+there leaves out the integration and `loop_timing` tests (`.testament.toml` selects
+`-m "not integration and not loop_timing"`; CI runs `loop_timing` serially on its own runner). A
+`-m` given to `test.sh` narrows that selection: testament sends `-m "(<manifest's>) and
+(<yours>)"`. The manifest is `fallback = "pool-only"` (testament 0.45.1 or later): when the pool
+can't take a run, it exits 2 naming the key instead of running the suite on your machine.
+
+`-x`, `--maxfail`, `--lf`, `--ff`, `--sw` and `-n` need one local pytest process, and `-s`,
+`--capture=no`, `--pdb` and `--trace` need this terminal (testament runs those here whatever the
+manifest says), so the pool can't take them either. With only named test files (`.py` files or node ids) the run goes local with them;
+any wider run (a package, a directory) is refused, exit 2, with how to run it. A run gated by an
+environment variable (`RECORD`, `THREETEARS_LIVE_*`) stays local, since
+its tests would skip on runners without it. Any other run goes local only with `TESTAMENT=off` and
+a stated reason, `TESTAMENT_OFF_REASON="..."`, which `test.sh` prints; without the reason it
+refuses and exits 2.
+
+### When the pool is down
+
+The rule while the pool can't take runs: **CI's GitHub shards gate the unit suite, and a PR's
+author runs everything else locally.** Nobody runs the whole unit suite on a laptop.
+
+**How it shows.** `./scripts/test.sh` exits 2 and ends with "testament gave no verdict". Testament
+names the cause:
+- `coordinator_unreachable`, `no_runner`, `connection_lost`, `batches_lost` or `env_build_failed`:
+  the pool;
+- `machine_not_set_up`: this machine has no key; `unauthorized` or `revoked`: its key was revoked;
+- `bad_manifest` with "a key it doesn't know may need a newer one": this machine's testament is
+  older than 0.45.1.
+
+`testament run --probe` and `testament status` say whether the pool answers.
+
+**Iterating.** Name the files and run them here:
+`TESTAMENT=off TESTAMENT_OFF_REASON="pool down" ./scripts/test.sh core packages/core/tests/test_x.py`.
+On a machine with room for it (not the laptop), a package works the same way.
+
+**Before a PR.** Run `./scripts/check-all.sh`. With the pool down it still runs lint, typecheck,
+the mcp 1.x, OpenTelemetry-floor and sidecar suites, then fails at the end with "Unit suite NOT
+run". That line is expected only when the testament error above it is one of the pool or machine
+causes listed here; any other exit 2 (a `TESTAMENT=off` with no reason, `path_not_found`, a crash
+in the code under test) is yours to fix. Every other check above it must be green. Run
+`./scripts/test-integration.sh -rs` as always. Push: CI's `route` job finds the pool down and runs
+the unit suite on the GitHub shards, and their verdict is the unit gate. To run the whole unit
+suite yourself anyway, use a machine with more memory than a 16 GB CI runner, run it the way CI
+does (`TESTAMENT_OFF_REASON="pool down" ./scripts/ci-unit-tests.sh`, in sessions), and expect
+hours. Never `TESTAMENT=off ./scripts/check-all.sh`: its one session over every package is the run
+that OOM-killed four workers on 16 GB.
+
+**CI.** CI takes the shards on its own when its probe fails, when the client can't be installed,
+or when the run is lost. One case stays red instead: the pool answers the probe and then fails
+every run for its own reasons, for example `env_build_failed` on every branch, or a manifest
+refused after the probe. Then set the repo variable `TESTAMENT_CI` to `off` (*Settings → Secrets
+and variables → Actions → Variables*) and re-run the checks. Delete it when the pool is back.
+
+**Releasing.** Unchanged: `release.yml` runs the GitHub shards and never uses the pool.
+
+**On another machine.**
+- With no testament installed, `test.sh` runs locally, as it always has, and so does
+  `check-all.sh`'s unit step: one session over every package, the run that OOM-killed four workers
+  on 16 GB. On such a machine run the unit suite as CI does instead,
+  `TESTAMENT_OFF_REASON="no pool here" ./scripts/ci-unit-tests.sh`, and the rest of `check-all.sh`'s
+  steps by hand (`lint.sh`, `typecheck.sh`, `test-mcp-v1.sh -q`, `test-otel-floor.sh -q`,
+  `test-sidecar.sh`).
+- With testament installed but not enrolled, holding a revoked key, or older than 0.45.1, every
+  run exits 2. Run named files with `TESTAMENT=off TESTAMENT_OFF_REASON="..."`, or upgrade (above)
+  and enrol (`testament login --console <the pool's console address>`).
+
+**Agents** stop and tell the person. They never rerun a package or the whole suite with
+`TESTAMENT=off`, never run `ci-unit-tests.sh` or raw `pytest`, and never edit `.testament.toml`.
+Named test files under `TESTAMENT=off` are fine.
 
 ### CI on the testament pool
 
@@ -128,8 +193,9 @@ that ran and why in both. `tests/test_ci_unit_pool_script.py` pins the script's 
 (*Settings → Secrets and variables → Actions → Variables*); delete it to go back. The secret stays.
 
 **What the pool runs.** `testament run --fresh --no-cache --no-fallback -- -m "not loop_timing"`.
-`.testament.toml` selects `packages/` and `tests/` with `-m "not integration"`, the same tests
-`ci-unit-tests.sh` partitions, less the `loop_timing` ones (below). `--fresh` runs every batch in a container started cold from the project's image (one
+`.testament.toml` selects `packages/` and `tests/` with `-m "not integration and not loop_timing"`:
+the tests `ci-unit-tests.sh` partitions, less the `loop_timing` ones (below), which this `-m`
+names again. `--fresh` runs every batch in a container started cold from the project's image (one
 per runner, removed when the run ends), so nothing an earlier run left in a warm container reaches
 the required check; it costs a cold start and a full `[setup]` (`uv sync`) on each runner it
 reaches. `--fresh` does not turn off the cache, so `--no-cache` makes every test run rather than
@@ -143,9 +209,9 @@ serving an earlier passing result on the same tree. Every difference from the sh
   (#1140). The pool run passes `-m "not loop_timing"`, which testament narrows the manifest's
   expression with rather than replacing it, and the same `unit (testament pool)` job then runs them
   serially on its own runner (`./scripts/ci-unit-tests.sh --loop-timing`), as the `rest` shard
-  does. When the pool is lost mid-run it skips that step, since the shards run them. A local
-  `test.sh` pool run still sends them to the pool; `./scripts/ci-unit-tests.sh --loop-timing` runs
-  them serially here.
+  does. When the pool is lost mid-run it skips that step, since the shards run them. The manifest
+  leaves them out of every pool run too, so a local `test.sh` pool run never meets them;
+  `./scripts/ci-unit-tests.sh --loop-timing` runs them serially here.
 - **The environment.** The pool's image (`docker/testament.Dockerfile`: `python:3.14` slim, a
   pinned uv) with `uv sync --frozen --extra vision`; the shards use `ubuntu-latest`, the latest uv
   and `uv sync --extra vision` (not frozen).
@@ -221,8 +287,9 @@ the root's per-test reset of process-wide state.
 `./scripts/test-integration.sh` runs the integration tests. `test.sh` excludes them with
 `-m "not integration"`, and `check-all.sh` does not run them either: they spin real NATS and
 Postgres containers and need Docker, so folding them into the default gate would break it
-wherever Docker is absent. **CI cannot run them at all -- GitHub Actions has no Docker -- so
-nothing but a developer, locally, ever executes them.**
+wherever Docker is absent. **CI runs only part of them:** its `integration` job covers core,
+nats, epoch, scheduled-jobs and agent/acl against Postgres and NATS services, so the rest of the
+packages are executed by nothing but a developer, locally.
 
 The evals render tests are not here. They need headless Chromium, not Docker, so they carry the
 `browser` marker and run in the unit suite: on the testament pool and on CI's evals shards (above).

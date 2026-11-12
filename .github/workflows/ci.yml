@@ -60,8 +60,8 @@ jobs:
         run: ./scripts/ci-unit-pool.sh route
 
   # The suite on the testament pool: .testament.toml selects what ci-unit-tests.sh runs (packages/
-  # and tests/, -m "not integration"), all but the loop_timing tests, which run serially on this
-  # job's own runner after it. Its outcome is passed, failed or unreachable; the last runs the
+  # and tests/, -m "not integration and not loop_timing"); the loop_timing tests run serially on
+  # this job's own runner after it. Its outcome is passed, failed or unreachable; the last runs the
   # shards below, whose verdict `check` then reads.
   unit-pool:
     name: unit (testament pool)

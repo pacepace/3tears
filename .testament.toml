@@ -3,11 +3,18 @@
 # The command and selection mirror test.sh's whole-suite run, minus `-n 4 --dist loadgroup`:
 # testament distributes the tests itself. The selection holds the evals render tests (the `browser`
 # marker): the image carries headless Chromium for them, and the env below makes a launch that fails
-# fail those tests rather than skip them.
+# fail those tests rather than skip them. The event loop's wall-clock tests (`loop_timing`) stay
+# off the pool: beside other batches a bound on the code becomes a bound on the runner's load. CI
+# runs them serially on GitHub's runner (scripts/ci-unit-tests.sh --loop-timing).
+#
+# `fallback = "pool-only"`: when the pool can't take a run, it fails (exit 2, naming this key)
+# rather than running the suite on the submitting machine. A local run is a choice, made with
+# TESTAMENT=off and a TESTAMENT_OFF_REASON (scripts/test.sh). Needs testament 0.45.1 or later.
 manifest_version = 2
 name = "3tears"
 executor = "container"
-command = ["uv", "run", "--frozen", "pytest", "-m", "not integration"]
+fallback = "pool-only"
+command = ["uv", "run", "--frozen", "pytest", "-m", "not integration and not loop_timing"]
 default_selection = ["packages/", "tests/"]
 env_inputs = ["uv.lock", ".python-version"]
 batch_timeout_s = 1800

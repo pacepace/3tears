@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,8 +30,8 @@ _SCRIPT = _REPO_ROOT / "scripts" / "test.sh"
 
 _EVALS_FILE = "packages/evals/tests/test_transport.py"
 
-#: a stand-in executable: writes its own name and then each argument, one per line
-_RECORDER = '#!/bin/sh\n{{ basename "$0"; printf "%s\\n" "$@"; }} > "{calls}"\n'
+#: a stand-in executable: writes its own name and then each argument, one per line, and exits ``code``
+_RECORDER = '#!/bin/sh\n{{ basename "$0"; printf "%s\\n" "$@"; }} > "{calls}"\nexit {code}\n'
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="test.sh is bash; none on this host")
 
@@ -77,7 +78,14 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
-def _run(repo: Path, args: list[str], *, testament: bool = True, env: dict[str, str] | None = None) -> _Run:
+def _run(
+    repo: Path,
+    args: list[str],
+    *,
+    testament: bool = True,
+    env: dict[str, str] | None = None,
+    testament_exit: int = 0,
+) -> _Run:
     """Run the staged script with recording stand-ins for ``uv`` and, optionally, ``testament``.
 
     :param repo: the miniature repo root
@@ -88,6 +96,8 @@ def _run(repo: Path, args: list[str], *, testament: bool = True, env: dict[str, 
     :ptype testament: bool
     :param env: extra environment for the run
     :ptype env: dict[str, str] | None
+    :param testament_exit: the exit status the ``testament`` stand-in returns
+    :ptype testament_exit: int
     :return: what the run did
     :rtype: _Run
     """
@@ -97,7 +107,7 @@ def _run(repo: Path, args: list[str], *, testament: bool = True, env: dict[str, 
     calls.unlink(missing_ok=True)
     for name in ("uv", "testament") if testament else ("uv",):
         stand_in = bin_dir / name
-        stand_in.write_text(_RECORDER.format(calls=calls))
+        stand_in.write_text(_RECORDER.format(calls=calls, code=testament_exit if name == "testament" else 0))
         stand_in.chmod(0o755)
     result = subprocess.run(
         ["bash", str(repo / "scripts" / "test.sh"), *args],
@@ -341,7 +351,6 @@ class TestTestamentOffNeedsAReason:
         ("args", "env", "testament"),
         [
             pytest.param(["core"], {"RECORD": "1"}, True, id="env-gate"),
-            pytest.param(["core", "-m", "slow"], {}, True, id="dash-m"),
             pytest.param(["core"], {"CI": "true"}, True, id="ci"),
             pytest.param(["core"], {}, False, id="no-testament"),
         ],
@@ -427,7 +436,6 @@ class TestAreasGoToTestament:
             pytest.param(["--not-area", "evals"], {}, False, id="no-testament"),
             pytest.param(["--not-area", "evals"], {"CI": "true"}, True, id="ci"),
             pytest.param(["--not-area", "evals"], {"RECORD": "1"}, True, id="env-gate"),
-            pytest.param(["--not-area", "evals", "-m", "slow"], {}, True, id="dash-m"),
             pytest.param(
                 ["--not-area", "evals"], {"TESTAMENT": "off", "TESTAMENT_OFF_REASON": "debugging"}, True, id="off"
             ),
@@ -451,3 +459,248 @@ class TestAreasGoToTestament:
         assert run.returncode == 2
         assert run.argv == []
         assert "--area and --not-area select on the testament pool" in run.stderr
+
+
+class TestDashMGoesToThePool:
+    """testament narrows the manifest's marker expression by a ``-m`` given here, so ``-m`` no longer keeps a run local."""
+
+    def test_a_package_run_with_dash_m(self, repo: Path) -> None:
+        """the ``-m`` rides after the package's tests, for testament to AND with the manifest's own.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core", "-m", "slow"])
+        assert run.returncode == 0, run.stderr
+        assert run.argv == ["testament", "run", "--", "packages/core/tests/", "-m", "slow"]
+
+    def test_with_areas(self, repo: Path) -> None:
+        """areas and ``-m`` together reach testament.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["--not-area", "evals", "-m", "slow"])
+        assert run.returncode == 0, run.stderr
+        assert run.argv == ["testament", "run", "--not-area", "evals", "--", "-m", "slow"]
+
+    def test_a_local_whole_suite_run_keeps_the_callers_marks(self, repo: Path) -> None:
+        """on the local route the caller's ``-m`` is the selection, as before.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["-m", "slow"], env={"TESTAMENT": "off", "TESTAMENT_OFF_REASON": "debugging"})
+        assert run.returncode == 0, run.stderr
+        assert run.argv[:4] == ["uv", "run", "pytest", "packages/"]
+        assert run.argv[-2:] == ["-m", "slow"]
+
+
+class TestFlagsThatNeedOneLocalProcess:
+    """``-x``, ``--maxfail``, ``--lf``, ``-n`` and their kin: the pool can't take them, and the manifest is pool-only.
+
+    A run naming only test files runs here with them; a wider one is refused rather than load this machine.
+    """
+
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            pytest.param(["-x"], id="x"),
+            pytest.param(["-vx"], id="bundle"),
+            pytest.param(["--maxfail", "2"], id="maxfail"),
+            pytest.param(["--maxfail=2"], id="maxfail-joined"),
+            pytest.param(["--lf"], id="lf"),
+            pytest.param(["--last-failed"], id="last-failed"),
+            pytest.param(["-n", "4"], id="xdist"),
+            pytest.param(["-n4"], id="xdist-joined"),
+            pytest.param(["--numprocesses=auto"], id="numprocesses"),
+            pytest.param(["--ff"], id="failed-first"),
+            pytest.param(["--sw"], id="stepwise"),
+            pytest.param(["--sw-skip"], id="stepwise-skip"),
+            pytest.param(["-xvs"], id="bundle-x-first"),
+            pytest.param(["-xrs"], id="bundle-before-a-value"),
+            pytest.param(["-s"], id="no-capture"),
+            pytest.param(["-vs"], id="no-capture-bundle"),
+            pytest.param(["-srx"], id="no-capture-before-a-value"),
+            pytest.param(["--capture=no"], id="capture-no"),
+            pytest.param(["--capture", "no"], id="capture-no-apart"),
+            pytest.param(["--pdb"], id="pdb"),
+            pytest.param(["--trace"], id="trace"),
+        ],
+    )
+    def test_a_package_run_is_refused(self, repo: Path, flags: list[str]) -> None:
+        """a whole package with such a flag runs nothing, and says how to run it.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param flags: the flags given
+        :ptype flags: list[str]
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core", *flags])
+        assert run.returncode == 2
+        assert run.argv == []
+        assert "needs one local pytest process" in run.stderr
+        assert "name the files" in run.stderr
+
+    def test_a_directory_is_wider_than_named_files(self, repo: Path) -> None:
+        """a directory selection with ``-x`` is refused too.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["evals", "packages/evals/tests", "-x"])
+        assert run.returncode == 2
+        assert run.argv == []
+
+    @pytest.mark.parametrize(
+        "selection",
+        [pytest.param([_EVALS_FILE], id="file"), pytest.param([f"{_EVALS_FILE}::test_y"], id="node-id")],
+    )
+    def test_named_test_files_run_here_with_them(self, repo: Path, selection: list[str]) -> None:
+        """named files with ``-x`` run locally, exactly as named, and say why.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param selection: the named tests
+        :ptype selection: list[str]
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["evals", *selection, "-x"])
+        assert run.returncode == 0, run.stderr
+        assert run.argv == ["uv", "run", "pytest", *selection, "-x"]
+        assert "running locally, not via testament: -x needs one local pytest process" in run.stderr
+
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            pytest.param(["-rx"], id="report-chars"),
+            pytest.param(["-rsx"], id="report-chars-with-s"),
+            pytest.param(["-vv"], id="verbose"),
+            pytest.param(["--capture", "sys"], id="capture-sys"),
+            pytest.param(["-p", "no:randomly"], id="plugin"),
+        ],
+    )
+    def test_flags_that_keep_nothing_local_go_to_the_pool(self, repo: Path, flags: list[str]) -> None:
+        """``-rx`` asks for a report of xfails, not a stop at the first failure; these go to the pool.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param flags: the flags given
+        :ptype flags: list[str]
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core", *flags])
+        assert run.returncode == 0, run.stderr
+        assert run.argv[:2] == ["testament", "run"]
+
+    def test_areas_with_a_local_flag_are_refused(self, repo: Path) -> None:
+        """named files with ``-x`` run here, where no areas exist, so an area flag beside them is refused.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["evals", _EVALS_FILE, "--area", "evals", "-x"])
+        assert run.returncode == 2
+        assert run.argv == []
+        assert "-x keeps this run local; name test files instead" in run.stderr
+
+    @pytest.mark.parametrize(
+        ("env", "testament"),
+        [
+            pytest.param({"TESTAMENT": "off", "TESTAMENT_OFF_REASON": "debugging"}, True, id="off-with-reason"),
+            pytest.param({"RECORD": "1"}, True, id="env-gate"),
+            pytest.param({"CI": "true"}, True, id="ci"),
+            pytest.param({}, False, id="no-testament"),
+        ],
+    )
+    def test_a_chosen_local_run_keeps_them(self, repo: Path, env: dict[str, str], testament: bool) -> None:
+        """a run already going local takes the flag as it always did.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param env: extra environment for the run
+        :ptype env: dict[str, str]
+        :param testament: whether a ``testament`` is on PATH
+        :ptype testament: bool
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core", "-x"], testament=testament, env=env)
+        assert run.returncode == 0, run.stderr
+        assert run.argv == ["uv", "run", "pytest", "packages/core/tests/", "-x"]
+
+
+class TestTheManifest:
+    """the pool's own settings that this script's routing relies on."""
+
+    def test_the_pool_is_pool_only_and_leaves_out_integration_and_loop_timing(self) -> None:
+        """a pool outage fails rather than run the suite here, and neither local-only kind reaches a runner.
+
+        :return: nothing
+        :rtype: None
+        """
+        manifest = tomllib.loads((_REPO_ROOT / ".testament.toml").read_text())
+        assert manifest["fallback"] == "pool-only"
+        command = manifest["command"]
+        marks = command[command.index("-m") + 1]
+        assert "not integration" in marks and "not loop_timing" in marks
+
+
+class TestWhenThePoolGivesNoVerdict:
+    """testament's exit 2 means it gave no verdict on the tests; the last line says where to go on."""
+
+    @pytest.mark.parametrize("args", [pytest.param(["core"], id="package"), pytest.param([], id="whole-suite")])
+    def test_exit_2_ends_with_the_runbook_and_keeps_its_status(self, repo: Path, args: list[str]) -> None:
+        """the status passes through, and the closing line names the runbook and the agents' rule.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param args: the script's arguments
+        :ptype args: list[str]
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, args, testament_exit=2)
+        assert run.returncode == 2
+        last = run.stderr.strip().splitlines()[-1]
+        assert 'docs/testing.md, "When the pool is down"' in last
+        assert "An agent stops here and tells the person" in last
+
+    def test_a_test_failure_passes_through_without_it(self, repo: Path) -> None:
+        """a failing test (exit 1) is the code's, not the pool's: no runbook line.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core"], testament_exit=1)
+        assert run.returncode == 1
+        assert "gave no verdict" not in run.stderr
+
+    def test_the_banner_points_at_the_runbook_not_at_a_local_run(self, repo: Path) -> None:
+        """the line printed before the run no longer offers TESTAMENT=off as the way past the pool.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core"])
+        banner = run.stderr.strip().splitlines()[0]
+        assert banner.startswith("test.sh: via testament, pool only")
+        assert "When the pool is down" in banner and "TESTAMENT=off" not in banner

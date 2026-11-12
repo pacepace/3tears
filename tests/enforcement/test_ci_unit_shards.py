@@ -289,7 +289,8 @@ def test_loop_timing_runs_once_serially_and_only_where_it_should(
     uv.chmod(0o755)
     result = subprocess.run(
         ["bash", str(_SCRIPT), *args],
-        env={"PATH": f"{uv.parent}:/usr/bin:/bin"},
+        # as GitHub Actions runs it: CI is always set there (outside CI the script wants a stated reason)
+        env={"PATH": f"{uv.parent}:/usr/bin:/bin", "CI": "true"},
         capture_output=True,
         text=True,
         timeout=60,

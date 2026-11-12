@@ -5,8 +5,8 @@
 #   ./scripts/ci-unit-pool.sh run     run the suite on the pool; say whether it passed, failed, or was lost
 #
 # The same tests `./scripts/ci-unit-tests.sh` runs on GitHub's runners: .testament.toml selects
-# packages/ and tests/ with -m "not integration", and the pool spreads them over its runners, so
-# GitHub's job only waits, all but the loop_timing tests (`-m`, below). docs/testing.md, "CI on the
+# packages/ and tests/ with -m "not integration and not loop_timing", and the pool spreads them
+# over its runners, so GitHub's job only waits; the loop_timing tests run apart (`-m`, below). docs/testing.md, "CI on the
 # testament pool", lists every difference.
 #
 # THE ROUTE (`route`, writes pool=true|false and why=<text> to $GITHUB_OUTPUT). The shards run,
@@ -35,9 +35,10 @@
 # --no-fallback: never testament's own local fallback, which would run the whole suite in one
 #   session on this one runner (ci-unit-tests.sh's header: that OOMs its workers, and takes ~2 h).
 #   ci.yml falls back to the GitHub shards instead, as below.
-# -m "not loop_timing": the event loop's wall-clock tests stay off the pool. testament narrows the
-#   manifest's own expression with it, never replaces it (the client sends
-#   -m "(not integration) and (not loop_timing)"). On a shared runner they run beside other batches,
+# -m "not loop_timing": the event loop's wall-clock tests stay off the pool. The manifest's own
+#   expression already leaves them out; this says so again where CI depends on it, and testament
+#   narrows, never replaces (the client sends -m "(not integration and not loop_timing) and (not
+#   loop_timing)"). On a shared runner they run beside other batches,
 #   and a bound on the code becomes a bound on the machine (#1140; run 43087460269: two of them
 #   22 ms late). ci.yml's `unit (testament pool)` job runs them after this, serially on its own
 #   runner (`ci-unit-tests.sh --loop-timing`), unless the pool was lost and the shards run them.

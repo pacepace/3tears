@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### testing: the pool is the only route, and the laptop runs tests only on purpose
+
+**Changed:** `.testament.toml` sets `fallback = "pool-only"` (testament 0.45.1 or later). A pool
+that can't take a run now fails it, exit 2, instead of running the whole suite on the
+submitting machine. The pool's selection also leaves out `loop_timing`, which CI already runs
+serially on its own runner, so a developer's pool run no longer meets those wall-clock flakes.
+
+`scripts/test.sh` sends a run that passes `-m` to the pool, where testament ANDs it with the
+manifest's own expression; it used to keep every `-m` run local. `-x`, `--maxfail`, `--lf`,
+`--ff`, `--sw` and `-n` need one local pytest process, and `-s`, `--pdb` and `--trace` need the
+terminal: a run that names only test files goes local with them, and a package or directory run
+is refused (exit 2) with how to run it, where it used to run the whole package on this machine. CLAUDE.md's example was such a run
+(`test.sh core -v -x`).
+
+When testament gives no verdict (exit 2: the pool down, no key on this machine, a client older than
+0.45.1), `test.sh` says so last and points to docs/testing.md's new "When the pool is down": CI's
+GitHub shards gate the unit suite meanwhile, and the author runs everything else locally.
+`check-all.sh` runs every suite that doesn't use the pool and then fails with "Unit suite NOT run",
+instead of stopping at the unit step. `ci-unit-tests.sh` outside CI asks for a
+`TESTAMENT_OFF_REASON` before running the unit suite on the machine it is on (`--loop-timing`
+excepted). CLAUDE.md tells agents to stop and tell the person rather than run a package or the
+suite locally.
+
+**Fixed (docs):** docs/testing.md said CI runs no integration tests; its `integration` job runs
+core, nats, epoch, scheduled-jobs and agent/acl. Its testament floor is now 0.45.1, with the
+upgrade command.
+
 ### tests: the evals render tests run on the testament pool
 
 **Changed:** the 73 evals render tests (headless Chromium through playwright, no Docker) carry a new `browser` marker
@@ -3852,6 +3879,7 @@ name wins over the arm's label and over the short name a page computes from what
 arm declaring none takes the computed one. `campaign_create` takes `short_name` on each arm, adoption carries it, and
 `campaign_update` takes `arm_short_names`, which stays editable once runs have joined. No identity, digest or
 fingerprint moves. See `packages/evals/MIGRATIONS.toml`.
+
 
 ## v0.95.0 -- 2026-11-07
 

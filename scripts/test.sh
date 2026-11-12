@@ -113,21 +113,72 @@ fi
 
 # Where testament is installed (see .testament.toml), it runs the tests on its runners instead,
 # outside CI and unless TESTAMENT=off. It distributes the tests itself, so no `-n 4`, and its
-# manifest command carries `-m "not integration"`, so a package run there skips integration tests.
+# manifest command carries `-m "not integration and not loop_timing"`, so a run there skips those.
+# A `-m` given here narrows that expression (testament sends `-m "(<manifest's>) and (<yours>)"`).
 #
-# Two kinds of run stay local, because the pool would quietly change them. A run gated by an
-# environment variable (RECORD, THREETEARS_LIVE_*) would reach runners that
-# do not have it, so its tests would skip -- and a skip reads like a pass. And a run that selects
-# with `-m` would meet the manifest's own `-m "not integration"`, where pytest keeps only one.
+# A run gated by an environment variable (RECORD, THREETEARS_LIVE_*) stays local, because it
+# would reach runners that do not have it, so its tests would skip -- and a skip reads like a pass.
 local_only=""
 if env | grep -E '^(RECORD|THREETEARS_LIVE_[A-Z_]*)=' >/dev/null; then
     local_only="an environment gate is set"
 fi
+# a local run's own -m replaces the whole-suite run's `-m "not integration"` (pytest keeps the last)
+user_marks=""
 for arg in ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}; do
     case "$arg" in
-        -m | -m*) local_only="-m selects the tests" ;;
+        -m | -m*) user_marks=1 ;;
     esac
 done
+
+# Flags that keep a run on this machine: they need one local pytest process (stop at the first
+# failure, rerun the last failures, step through, xdist) or this terminal (`-s`, `--pdb`,
+# `--trace`). The pool can't honour them: the manifest's `fallback = "pool-only"` refuses the first
+# kind, and testament runs the second here whatever the manifest says. A run that names only test
+# files (no package-wide or directory selection) runs locally with them; any wider run is refused,
+# since that would load this machine with a whole package.
+#
+# A short-option bundle (`-vxs`, `-xrs`) is read letter by letter up to the first option that takes
+# a value (`-r`, `-k`, ...), whose value is the rest of the bundle: `-rx` reports xfails, it is no -x.
+bundle_keeps_local() {
+    local rest="${1#-}" c
+    while [ -n "$rest" ]; do
+        c="${rest:0:1}"
+        case "$c" in
+            x | s | n) return 0 ;;
+            v | q | l) ;;
+            *) return 1 ;;
+        esac
+        rest="${rest:1}"
+    done
+    return 1
+}
+needs_local_process=""
+capture_value=""
+for arg in ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}; do
+    if [ -n "$capture_value" ]; then
+        capture_value=""
+        [ "$arg" = "no" ] && needs_local_process="--capture no"
+        continue
+    fi
+    case "$arg" in
+        -x | --exitfirst | --maxfail | --maxfail=* | --lf | --last-failed | --ff | --failed-first | \
+            --sw | --stepwise | --sw-skip | --stepwise-skip | -n | -n* | --numprocesses | --numprocesses=* | \
+            -s | --capture=no | --pdb | --trace)
+            needs_local_process="$arg"
+            ;;
+        --capture) capture_value=1 ;;
+        -[!-]*)
+            bundle_keeps_local "$arg" && needs_local_process="$arg"
+            ;;
+    esac
+done
+only_files=""
+if [ ${#TEST_PATHS[@]} -gt 0 ]; then
+    only_files=1
+    for path in "${TEST_PATHS[@]}"; do
+        [[ "${path%%::*}" == *.py ]] || only_files=""
+    done
+fi
 #
 # Anything else goes to the pool. TESTAMENT=off takes it local only with a stated reason
 # (TESTAMENT_OFF_REASON), because an unexplained local run is usually a slow run that need not be:
@@ -142,12 +193,35 @@ fi
 if command -v testament >/dev/null 2>&1 && [ -n "$local_only" ]; then
     echo "test.sh: running locally, not via testament: ${local_only}" >&2
 fi
-if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}" != "off" ] && [ -z "$local_only" ]; then
-    echo "test.sh: via testament (integration tests run only locally; TESTAMENT=off with TESTAMENT_OFF_REASON runs it here)" >&2
-    if [ -n "$PACKAGE" ] && [ ${#TEST_PATHS[@]} -eq 0 ]; then
-        exec testament run ${AREA_ARGS+"${AREA_ARGS[@]}"} -- "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}" != "off" ] && [ -z "$local_only" ] &&
+    [ -n "$needs_local_process" ]; then
+    if [ -z "$only_files" ]; then
+        echo "test.sh: ${needs_local_process} needs one local pytest process or this terminal, so the pool can't take this run, and it is wider than named test files: name the files (\`./scripts/test.sh <package> <test file> ${needs_local_process}\`), drop the flag to run it on the pool, or run it here on purpose with TESTAMENT=off TESTAMENT_OFF_REASON=\"...\"" >&2
+        exit 2
     fi
-    exec testament run ${AREA_ARGS+"${AREA_ARGS[@]}"} -- ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+    if [ ${#AREA_ARGS[@]} -gt 0 ]; then
+        echo "test.sh: --area and --not-area select on the testament pool, and ${needs_local_process} keeps this run local; name test files instead" >&2
+        exit 2
+    fi
+    echo "test.sh: running locally, not via testament: ${needs_local_process} needs one local pytest process or this terminal, and the run names only test files" >&2
+    exec uv run pytest ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+fi
+if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}" != "off" ] && [ -z "$local_only" ]; then
+    echo "test.sh: via testament, pool only (integration tests run locally with test-integration.sh, loop_timing tests in CI; if the pool is down: docs/testing.md, \"When the pool is down\")" >&2
+    pool_status=0
+    if [ -n "$PACKAGE" ] && [ ${#TEST_PATHS[@]} -eq 0 ]; then
+        testament run ${AREA_ARGS+"${AREA_ARGS[@]}"} -- "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || pool_status=$?
+    else
+        testament run ${AREA_ARGS+"${AREA_ARGS[@]}"} -- ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || pool_status=$?
+    fi
+    # testament exits 2 when it gave no verdict on the tests: the pool, the machine or the manifest
+    # stopped it (coordinator_unreachable, no_runner, connection_lost, batches_lost,
+    # env_build_failed, machine_not_set_up, bad_manifest). Say so last, where a long run's reader
+    # looks, since the banner above has scrolled away.
+    if [ "$pool_status" -eq 2 ]; then
+        echo "test.sh: testament gave no verdict (exit 2). If the pool, this machine's key or its testament release stopped the run, docs/testing.md, \"When the pool is down\", says how to go on. An agent stops here and tells the person: no package or whole-suite rerun with TESTAMENT=off." >&2
+    fi
+    exit "$pool_status"
 fi
 
 if [ ${#AREA_ARGS[@]} -gt 0 ]; then
@@ -170,7 +244,7 @@ else
     # four workers, one package per worker (the root conftest marks each test with its package's
     # xdist group). a single-package run above stays serial. pass `-n 0` to run serially, e.g.
     # under a debugger.
-    if [ -n "$local_only" ]; then
+    if [ -n "$local_only" ] || [ -n "$user_marks" ]; then
         # the caller selects with -m or sets an environment gate: run exactly what was asked
         uv run pytest packages/ tests/ -m "not integration" -n 4 --dist loadgroup ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
     else
