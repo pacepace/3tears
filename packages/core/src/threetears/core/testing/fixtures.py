@@ -25,12 +25,15 @@ exactly once and we want to keep it that way.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import contextlib
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Final
 
 import os
 
+import asyncpg
 import pytest
 
 from threetears.core.testing.containers import check_docker_available, stagger_container_start
@@ -46,6 +49,7 @@ __all__ = [
     "SEARXNG_FIXTURE_ENGINES",
     "SEARXNG_IMAGE",
     "SEARXNG_STATIC_DIR",
+    "check_engine",
     "require_searxng_static_dir",
     "db_container",
     "db_image",
@@ -56,6 +60,7 @@ __all__ = [
     "nats_system_account",
     "s3_container",
     "s3_credentials",
+    "server_engine",
     "searxng_container",
 ]
 
@@ -162,6 +167,12 @@ def nats_system_account() -> bool:
 #: exactly as before.
 _POSTGRES_URL_ENV = "THREETEARS_TEST_POSTGRES_URL"
 _NATS_URL_ENV = "THREETEARS_TEST_NATS_URL"
+#: the engine a run means its database to be (``yugabyte`` or ``postgres``): set, the session's server is checked
+#: against it before any test runs, and a run pointed at the other engine (or at none, so a local Postgres container
+#: would stand in) stops. A YugabyteDB plan test whose fixture quietly reached Postgres passes on Postgres's plan and
+#: is reported green on YugabyteDB; this makes that impossible.
+_ENGINE_ENV: Final = "THREETEARS_TEST_ENGINE"
+_ENGINES: Final[frozenset[str]] = frozenset({"yugabyte", "postgres"})
 _SEARXNG_URL_ENV = "THREETEARS_TEST_SEARXNG_URL"
 
 #: the NATS image a test server runs: an -alpine tag, for the shell that writes its configuration inside
@@ -172,6 +183,53 @@ _NATS_CONF_ENV = "NATS_CONF"
 _WRITE_NATS_CONF_AND_SERVE = (
     f'printf "%s" "${_NATS_CONF_ENV}" > /tmp/nats.conf || exit 1; exec nats-server -c /tmp/nats.conf'
 )
+
+
+def server_engine(url: str) -> str:
+    """the engine the server at ``url`` is: ``yugabyte`` when its ``version()`` says ``-YB-``, else ``postgres``.
+
+    Asked on a thread of its own, so a session fixture asks it whether or not an event loop runs.
+
+    :param url: an asyncpg connection URL
+    :ptype url: str
+    :return: ``yugabyte`` or ``postgres``
+    :rtype: str
+    """
+
+    async def version() -> str:
+        conn = await asyncpg.connect(url)
+        try:
+            return str(await conn.fetchval("SELECT version()"))
+        finally:
+            await conn.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        answered = pool.submit(asyncio.run, version()).result()
+    return "yugabyte" if "-YB-" in answered else "postgres"
+
+
+def check_engine(url: str | None) -> None:
+    """stop the session when the run names the engine it means (``THREETEARS_TEST_ENGINE``) and its database is
+    another: the server at ``url`` another engine, or no ``url`` for YugabyteDB (a local Postgres container would
+    stand in). Nothing is asked when the run names none.
+
+    :param url: the URL the run points at (``THREETEARS_TEST_POSTGRES_URL``), None when it points at none
+    :ptype url: str | None
+    :return: nothing
+    :rtype: None
+    """
+    expected = os.environ.get(_ENGINE_ENV)
+    if expected is None:
+        return
+    if expected not in _ENGINES:
+        pytest.exit(f"{_ENGINE_ENV}={expected!r}: name one of {sorted(_ENGINES)}", returncode=2)
+    if url is None:
+        if expected == "yugabyte":
+            pytest.exit(f"{_ENGINE_ENV}=yugabyte names no server: set {_POSTGRES_URL_ENV}", returncode=2)
+        return
+    server = server_engine(url)
+    if server != expected:
+        pytest.exit(f"{_ENGINE_ENV}={expected} but {_POSTGRES_URL_ENV} reaches {server}", returncode=2)
 
 
 @pytest.fixture(scope="session")
@@ -197,6 +255,7 @@ def db_container(db_image: str) -> Iterator[str]:
     :rtype: Iterator[str]
     """
     provided = os.environ.get(_POSTGRES_URL_ENV)
+    check_engine(provided)
     if provided:
         # An externally-managed Postgres (a CI service container). Yielded as-is: normalising
         # is testcontainers' suffix problem, not this one's.
