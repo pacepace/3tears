@@ -118,7 +118,7 @@ async def _resumed_page(conn: asyncpg.Connection, by: dict[str, Any], sort: str)
     await keyset_page(
         captured,
         "conversations",
-        columns=("conversation_id",),
+        columns=columns,
         by=by,
         order=order,
         limit=_PAGE,
