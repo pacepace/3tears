@@ -292,41 +292,23 @@ def _past(
     return _past_marks(order, marks, by_row=by_row), params
 
 
-def _nullable_lead_legs(
-    order: Sequence[Sort], values: Sequence[Any], first: int, *, by_row: bool
-) -> tuple[list[tuple[str, Sequence[Sort]]], list[Any]]:
-    """the rows after the cursor of a sort led by a NULLable column, as one or two bounded legs, each a range of
-    the same ``(lead, rest...)`` index, with the order each leg reads in (the whole sort); and the parameters,
-    numbered from ``first``, both legs share.
+def _chained(statements: Sequence[str], order: Sequence[Sort], rows: int) -> str:
+    """the page from legs that follow one another in the sort (every row of a leg before every row of the next), each
+    leg asking only the rows the legs before it left short of ``rows``: ``WITH l0 AS (<leg> LIMIT rows), l1 AS (<leg>
+    LIMIT rows - (SELECT count(*) FROM l0)), ...``, then the legs in the sort's order.
 
-    The one-condition form (``lead > $v OR lead IS NULL OR (lead = $v AND ...)``) gives the lead no bound an index
-    can start from: a resumed page reads the index from its start (1,872 rows scanned for a page of 21). Split at
-    the NULLs instead:
-
-    - ascending (NULLs last), a value mark: ``lead >= $v AND (lead > $v OR (lead = $v AND rest-past))``, then every
-      NULL lead (``lead IS NULL``, by the rest);
-    - ascending, a NULL mark: only the NULLs past it, ``lead IS NULL AND rest-past``;
-    - descending (NULLs first), a value mark: ``lead <= $v AND (lead < $v OR (lead = $v AND rest-past))``;
-    - descending, a NULL mark: the NULLs past it (``lead IS NULL AND rest-past``), then every value
-      (``lead IS NOT NULL``).
-    """
-    marks, params = _marks(order, values, first)
-    head, mark = order[0], marks[0]
-    rest, rest_marks = order[1:], marks[1:]
-    column = head.sorted_by
-    rest_past = _past_marks(rest, rest_marks, by_row=by_row)
-    # every leg orders by the whole sort, the lead too (constant on a NULL leg): the order the (lead, rest) index
-    # holds, so the NULLs are read as its range too, never through another index of the rest filtered for NULLs
-    if mark is None:
-        nulls = f"{column} IS NULL AND ({rest_past})"
-        if not head.descending:
-            return [(nulls, order)], params
-        return [(nulls, order), (f"{column} IS NOT NULL", order)], params
-    within = f"({column} {'<' if head.descending else '>'} {mark} OR ({column} = {mark} AND ({rest_past})))"
-    values_leg = f"{column} {'<=' if head.descending else '>='} {mark} AND {within}"
-    if head.descending:
-        return [(values_leg, order)], params
-    return [(values_leg, order), (f"{column} IS NULL", order)], params
+    Each leg's ``LIMIT`` is known when its scan starts (YugabyteDB hands it to storage), so the page reads at most
+    ``rows`` rows (and a leg's read-ahead) in all, however many legs it has; a leg the ones before it filled asks
+    none and is never read. Every leg answering in full would read ``rows`` a leg."""
+    names = [f"l{index}" for index in range(len(statements))]
+    ctes = []
+    for index, statement in enumerate(statements):
+        head, _, _ = statement.rpartition(" LIMIT ")
+        found = " - ".join(f"(SELECT count(*) FROM {name})" for name in names[:index])
+        ctes.append(f"{names[index]} AS ({head} LIMIT {rows}{' - ' + found if found else ''})")
+    union = " UNION ALL ".join(f"SELECT * FROM {name}" for name in names)
+    outer = _order_by([replace(sort, expression=f"u.{quote_identifier(sort.column)}") for sort in order])
+    return f"WITH {', '.join(ctes)} SELECT * FROM ({union}) AS u ORDER BY {outer} LIMIT {rows}"
 
 
 def _order_by(order: Sequence[Sort]) -> str:
@@ -414,6 +396,7 @@ def page_statement(
     lock: Lock | None,
     *,
     seek_legs: bool = False,
+    chain_legs: bool = True,
 ) -> tuple[str, list[Any]]:
     """one page's statement: ``rows`` rows past ``past`` (the last row's sort values, as text where cast; the first
     page when None), and its parameters.
@@ -439,9 +422,12 @@ def page_statement(
     :param lock: the row lock taken; none when None
     :ptype lock: Lock | None
     :param seek_legs: step past ``past`` by legs each one range of the index with nothing left to filter
-        (:func:`_seek_legs`, YugabyteDB), when no row lock is taken and the sort's lead is never NULL (a NULLable lead
-        splits at its NULLs instead, :func:`_nullable_lead_legs`)
+        (:func:`_seek_legs`, YugabyteDB), when no row lock is taken; a sort led by a NULLable column steps so on every
+        engine
     :ptype seek_legs: bool
+    :param chain_legs: each leg asks only the rows the legs before it left short (:func:`_chained`); a reader whose
+        engine may not take a ``LIMIT`` read from a subquery (a warehouse) passes False, and each leg asks a page
+    :ptype chain_legs: bool
     :return: the statement, and its parameters
     :rtype: tuple[str, list[Any]]
     """
@@ -450,15 +436,14 @@ def page_statement(
     for fragment in where:
         conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
-    # the rows past the cursor: one condition; or, for a sort led by a NULLable column (and no row lock, which a
-    # UNION cannot take), one or two legs bounded where an index can start (_nullable_lead_legs)
+    # the rows past the cursor: one condition, or legs (below)
     legs: list[tuple[str | None, Sequence[Sort]]] = [(None, order)]
-    if past is not None and order[0].nullable and lock is None:
-        split, past_params = _nullable_lead_legs(order, past, len(params) + 1, by_row=by_row)
-        legs = [(condition, leg_order) for condition, leg_order in split]
-        params += past_params
-    elif past is not None and seek_legs and lock is None:
-        # a lead that is never NULL, on YugabyteDB: one leg a column, each one range of the index (_seek_legs)
+    if past is not None and lock is None and (seek_legs or order[0].nullable):
+        # one leg a sort column (a NULLable column's NULLs a leg of their own), each one range of the index with
+        # nothing left to filter, in the sort's order, each asking only what the legs before it left short
+        # (_seek_legs, _chained): on YugabyteDB, whose LIMIT reaches storage only with no filter left; and for a sort
+        # led by a NULLable column on every engine, whose one-condition form gives the lead no bound an index can
+        # start from (a UNION takes no row lock)
         seeks, past_params = _seek_legs(order, past, len(params) + 1)
         legs = [(condition, leg_order) for condition, leg_order in seeks] or [("FALSE", order)]
         params += past_params
@@ -490,8 +475,10 @@ def page_statement(
         statements.append(f"SELECT {selected} FROM {relation(table, 't')}{clause}{by_clause} LIMIT {rows}")
     if len(statements) == 1:
         sql = statements[0]
+    elif chain_legs:
+        sql = _chained(statements, order, rows)
     else:
-        # each leg a range of the index in its own order; the page is the first rows of both, in the sort's order
+        # a reader whose engine may not take a LIMIT read from a subquery (a warehouse): each leg asks a whole page
         union = " UNION ALL ".join(f"({statement})" for statement in statements)
         outer = _order_by([replace(sort, expression=f"u.{quote_identifier(sort.column)}") for sort in order])
         sql = f"SELECT * FROM ({union}) AS u ORDER BY {outer} LIMIT {rows}"

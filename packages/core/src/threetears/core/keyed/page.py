@@ -108,9 +108,20 @@ async def keyset_page(
     check_page(table, columns, order, limit)
     past = None if cursor is None else cursor_values(order, cursor)
     by_row = past is not None and await _steps_by_row(conn, order)
-    legs = past is not None and lock is None and await _seeks_by_legs(conn)
+    legs = past is not None and lock is None and await _seeks_by_legs(conn, order)
     sql, params = page_statement(
-        table, columns, by, order, limit + 1, past, by_row, visible, where, lock, seek_legs=legs
+        table,
+        columns,
+        by,
+        order,
+        limit + 1,
+        past,
+        by_row,
+        visible,
+        where,
+        lock,
+        seek_legs=legs,
+        chain_legs=_chains_legs(conn),
     )
     return KeyPage.cut(order, [dict(row) for row in await conn.fetch(sql, *params)], limit)
 
@@ -131,16 +142,28 @@ async def _steps_by_row(conn: Any, order: Sequence[Sort]) -> bool:
     return not await known_on_yugabyte(conn)
 
 
-async def _seeks_by_legs(conn: Any) -> bool:
-    """whether a page past a place steps by legs each one range of its index (:func:`page_statement`'s
+async def _seeks_by_legs(conn: Any, order: Sequence[Sort]) -> bool:
+    """whether a page past a place in ``order`` steps by legs each one range of its index (:func:`page_statement`'s
     ``seek_legs``): on YugabyteDB, which pushes a page's ``LIMIT`` to storage only with nothing left to filter. An
     in-process DuckDB or SQLite, or a reader naming its dialect (a warehouse), never is; an asyncpg connection says
-    so with no round trip (:func:`~threetears.core.backends.dialect.known_on_yugabyte`)."""
+    so with no round trip (:func:`~threetears.core.backends.dialect.known_on_yugabyte`). Nothing is asked where the
+    answer changes no statement: a sort of one column never NULL is one leg either way, and a sort led by a NULLable
+    column steps by legs on every engine."""
+    if order[0].nullable or len(order) == 1:
+        return False
     if isinstance(conn, ThreadedDuckDB | ThreadedSQLite | InlineDuckDB):
         return False
     if isinstance(getattr(conn, SQL_DIALECT_ATTRIBUTE, None), Dialect):
         return False
     return await known_on_yugabyte(conn)
+
+
+def _chains_legs(conn: Any) -> bool:
+    """whether a page's legs each ask only what the legs before it left short (:func:`page_statement`'s
+    ``chain_legs``, a ``LIMIT`` read from a subquery): every engine but a reader naming a warehouse's dialect, which
+    may not take one."""
+    named = getattr(conn, SQL_DIALECT_ATTRIBUTE, None)
+    return not isinstance(named, Dialect) or named in {Dialect.POSTGRES, Dialect.DUCKDB, Dialect.YUGABYTE}
 
 
 async def keyset_rows(
@@ -194,7 +217,18 @@ async def keyset_rows(
     legs = False
     while True:
         sql, params = page_statement(
-            table, columns, by, order, page + 1, past, bool(by_row), visible, where, None, seek_legs=legs
+            table,
+            columns,
+            by,
+            order,
+            page + 1,
+            past,
+            bool(by_row),
+            visible,
+            where,
+            None,
+            seek_legs=legs,
+            chain_legs=_chains_legs(conn),
         )
         answered = await conn.fetch(sql, *params)
         rows.extend(dict(row) for row in answered)
@@ -202,7 +236,7 @@ async def keyset_rows(
             return rows
         if by_row is None:
             by_row = await _steps_by_row(conn, order)
-            legs = await _seeks_by_legs(conn)
+            legs = await _seeks_by_legs(conn, order)
         last = rows[-1]
         past = next_past(order, last)
 

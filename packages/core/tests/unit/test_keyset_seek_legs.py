@@ -47,6 +47,11 @@ _ORDERS: dict[str, Sequence[Sort]] = {
         Sort("label", cast="text", nullable=True),
         Sort("id", cast="integer"),
     ),
+    "label asc nullable, id asc": (Sort("label", cast="text", nullable=True), Sort("id", cast="integer")),
+    "label desc nullable, id desc": (
+        Sort("label", cast="text", descending=True, nullable=True),
+        Sort("id", cast="integer", descending=True),
+    ),
     "stamp asc, label desc nullable, id desc": (
         Sort("stamp", cast="timestamptz"),
         Sort("label", cast="text", descending=True, nullable=True),
@@ -55,7 +60,7 @@ _ORDERS: dict[str, Sequence[Sort]] = {
 }
 
 
-def _page(conn: duckdb.DuckDBPyConnection, order: Sequence[Sort], past: list[Any] | None, legs: bool) -> list[tuple]:
+def _page(conn: duckdb.DuckDBPyConnection, order: Sequence[Sort], past: list[Any] | None, legs: bool) -> list[tuple[Any, ...]]:
     sql, params = page_statement(
         "r", ["stamp", "label", "id"], {"tenant": 1}, order, _LIMIT + 1, past, False, (), (), None, seek_legs=legs
     )
@@ -67,7 +72,7 @@ def test_every_resumed_page_answers_the_expansion_s_rows(conn: duckdb.DuckDBPyCo
     """Flips if a page past any row, by legs, answers other rows (or another order) than the expansion."""
     order = _ORDERS[name]
     sql, params = page_statement("r", ["stamp", "label", "id"], {"tenant": 1}, order, 1000, None, False, (), (), None)
-    every = [tuple(row) for row in conn.execute(sql, params).fetchall()]
+    every: list[tuple[Any, ...]] = [tuple(row) for row in conn.execute(sql, params).fetchall()]
     assert len(every) == 30
     for row in every:
         past = next_past(order, dict(zip(("stamp", "label", "id"), row, strict=True)))
@@ -99,3 +104,18 @@ def test_the_legs_are_ranges_with_nothing_left_to_filter() -> None:
     assert 't."stamp" = $2::text::timestamptz AND t."id" < $3::text::integer' in sql, sql
     assert 't."stamp" < $2::text::timestamptz' in sql, sql
     assert params == [1, "2026-01-01 00:03:00+00", "7"]
+
+
+def test_each_leg_asks_only_what_the_legs_before_it_left_short() -> None:
+    """Flips if a later leg asks a whole page again (a page past a cursor among many ties of a NULLable lead read
+    ties + a page a leg on YugabyteDB, 44 rows for a page of 21 against the bound 43), or the legs stop being read in
+    the sort's order."""
+    order = _ORDERS["label asc nullable, id asc"]
+    sql, _ = page_statement(
+        "r", ["label", "id"], {"tenant": 1}, order, 9, ["l2", "7"], False, (), (), None, seek_legs=True
+    )
+    assert sql.startswith("WITH l0 AS ("), sql
+    assert 't."label" = $2::text AND t."id" > $3::text::integer' in sql.split("l1 AS (")[0], sql
+    assert "LIMIT 9 - (SELECT count(*) FROM l0))" in sql, sql
+    assert "LIMIT 9 - (SELECT count(*) FROM l0) - (SELECT count(*) FROM l1))" in sql, sql
+    assert 't."label" IS NULL' in sql.split("l2 AS (")[1], sql

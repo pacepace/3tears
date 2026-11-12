@@ -2,10 +2,11 @@
 
 The one-condition form (``lead > $v OR lead IS NULL OR (lead = $v AND id > $w)``) gives the lead no bound an index can
 start from, so a resumed page read the ``(tenant, label, id)`` index from the tenant's start: 1,872 rows scanned for a
-page of 21 on the hub's api_keys. Split at the NULLs (:func:`threetears.interfaces.keyed.page.page_statement`), each
-leg is an ``Index Cond`` range of the same index and a page scans at most ``2 * (limit + 1) + 1`` rows. The rows are
-the old form's, at every mark position (a value, the last value, the first NULL, a NULL, the last row), both
-directions.
+page of 21 on the hub's api_keys. As legs (:func:`threetears.interfaces.keyed.page.page_statement`), each an
+``Index Cond`` range of the same index, each asking only what the legs before it left short, a page scans at most
+``2 * (limit + 1) + 1`` rows, however many ties of the lead the cursor sits among. The rows are the old form's, at
+every mark position (a value, the last value, the first NULL, a NULL, the last row), both directions, few ties and
+many.
 
 On the session's ``db_container`` (PostgreSQL), or YugabyteDB through ``THREETEARS_TEST_POSTGRES_URL``; a schema of
 its own.
@@ -33,9 +34,11 @@ _ROWS = 5000
 _LIMIT = 20
 
 
-@pytest.fixture
-async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
-    """a table of labelled rows by tenant, every fifth label NULL, its ``(tenant, label, id)`` index analyzed."""
+@pytest.fixture(params=[997, 23], ids=["few-ties", "many-ties"])
+async def conn(db_container: str, request: pytest.FixtureRequest) -> AsyncIterator[asyncpg.Connection]:
+    """a table of labelled rows by tenant, every fifth label NULL, its ``(tenant, label, id)`` index analyzed; the
+    labels ``i % 997`` (a few rows a label) or ``i % 23`` (about 170 a label: a cursor sits among many ties)."""
+    spread = request.param
     schema = f"nullable_{uuid.uuid4().hex[:10]}"
     connection = await asyncpg.connect(db_container)
     try:
@@ -46,9 +49,10 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
         )
         await connection.execute("CREATE INDEX nl_label ON nl (tenant, label, id)")
         await connection.execute(
-            "INSERT INTO nl SELECT t, i, CASE WHEN i % 5 = 0 THEN NULL ELSE 'l' || lpad((i % 997)::text, 4, '0') END "
+            "INSERT INTO nl SELECT t, i, CASE WHEN i % 5 = 0 THEN NULL ELSE 'l' || lpad((i % $2)::text, 4, '0') END "
             "FROM generate_series(1, 4) t, generate_series(1, $1) i",
             _ROWS,
+            spread,
         )
         await connection.execute("ANALYZE nl")
         yield connection
