@@ -100,6 +100,27 @@ a page still loading a font after 15 s fails that render, naming the fonts. It l
 DejaVu, the faces the package's pages draw in on the dev box. The testament image runs it at build and CI's evals
 shards before their tests.
 
+### evals: a run's judging never takes it past its cost cap (core v15.12) (#1111)
+
+**Fixed:** a run's cost cap was read only between cells, so a cell already running when spend crossed the cap went
+on to judge, and a run under a $2.67 cap ended at $7.04. The engine now admits each cell's judge phase against the cap
+before paying for any of its calls: the phase's price ceiling, every attempt included, must fit what the run has spent
+(its recorded cells and its running ones) beside what the phases already admitted hold. A phase that does not fit
+waits while another holds, and is set aside once none does. A judge that cannot price its calls is asked one call at a
+time while the run is within its cap. So judging never takes a run past its cap, or past it by more than one call when
+the judge cannot price. A candidate's own calls are still never refused inside a cell.
+
+A cell whose judging was set aside asks the judge nothing and is never scored low: each dimension carries a judge
+error naming the cap, which leaves the cell out of every reading, and a re-judge takes it up from the evidence it
+stored. The first such cell stops the run (`budget_stopped`, no new cell starts), and the stop record counts the cells
+(`BudgetStop.cells_not_judged`, core minor v15.12). The stop line ends "N cells not judged, as the cap had too little
+left for their judging".
+
+A batched writer eval's runs now end within each batch's reservation, so an arm stays within its part, and every batch
+the spend leaves room for launches. The batched launch loop logs each batch it launches and what it reserved
+(`eval.writer_batch_launch`), what each run spent and how it ended (`eval.writer_batch_ran`), and a stop at the spend
+cap (`eval.writer_batch_cap_stop`).
+
 ### evals: a seed reads each template revision's cases once (#1148)
 
 **Fixed:** the seed read every stored case of a template revision again for each corpus case of it, to fill names on

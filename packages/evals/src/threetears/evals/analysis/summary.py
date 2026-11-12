@@ -169,9 +169,11 @@ def budget_stop_line(stops: Sequence[BudgetStop]) -> str:
     Every figure is read off the records, which were taken from the counters, so no number on the line is
     parsed from or rounded through prose. Money reads as ``$`` (:func:`dollars_text`) and the metered calls as
     counts, through the one number rule (:func:`~threetears.evals.kernel.numbers.format_number`). A run both ceilings stopped at one boundary reads both, in the order given, and says the
-    cells that never started once, since a boundary has one. For example::
+    cells that never started once, since a boundary has one, and then the cells that ran but were not judged, when
+    the cost cap set any aside. For example::
 
         stopped by its metered-call ceiling: 40 of 40 at the stop, 47 once 3 running cells finished (+7); 12 cells not started
+        stopped by its cost cap: $1.80 of $2.67 at the stop, $2.10 once 3 running cells finished (-$0.57); 0 cells not started; 2 cells not judged, as the cap had too little left for their judging
 
     :param stops: The run's ``budget_stops``, at least one.
     :ptype stops: Sequence[BudgetStop]
@@ -210,7 +212,11 @@ def budget_stop_line(stops: Sequence[BudgetStop]) -> str:
         segment = f"{unpriced}{show(stop.landed_at_stop)} of {show(stop.ceiling)} at the stop, {settled}"
         segments.append(f"stopped by {what}: {segment}" if position == 0 else f"by {what}: {segment}")
     not_started = max(stop.cells_not_started for stop in stops)
-    return f"{'; '.join(segments)}; {_plural(not_started, 'cell')} not started"
+    line = f"{'; '.join(segments)}; {_plural(not_started, 'cell')} not started"
+    not_judged = sum(stop.cells_not_judged for stop in stops)
+    if not_judged:
+        line += f"; {_plural(not_judged, 'cell')} not judged, as the cap had too little left for their judging"
+    return line
 
 
 #: How one measure came out over a run, as the summary states it: ``measured`` (a mean), ``not_a_number`` (it is

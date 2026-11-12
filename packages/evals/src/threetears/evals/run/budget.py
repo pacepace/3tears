@@ -13,11 +13,16 @@ ONE run:
   the spend of the cells already recorded, and stops GRACEFULLY when it trips: no new cell starts, the
   cells already running finish, their results stay persisted and the run is marked ``budget_stopped`` (a
   distinct, honest terminal status, not an infra ``failed``) by raising :class:`BudgetStoppedError`, which the
-  job manager translates. The run may land past the cap by up to the width's worth of cells.
-- Never inside a cell. The cap refuses no call a cell is making (a cell only counts its spend, through
-  :meth:`~threetears.evals.kernel.candidate_kind.CellSink.add_spend`): a refusal inside a cell contaminates
-  whichever cell happened to ask once the cap was spent, so a looping cell is bounded by the cell timeout,
-  not by the cap.
+  job manager translates.
+- Never against a candidate's call. The cap refuses no call a cell's candidate is making (a cell only counts
+  its spend, through :meth:`~threetears.evals.kernel.candidate_kind.CellSink.add_spend`): a refusal there
+  contaminates whichever cell happened to ask once the cap was spent, so a looping cell is bounded by the cell
+  timeout, not by the cap, and a run may land past the cap by what its running cells' candidates go on to spend.
+- Before each cell's judging. Judging is the engine's own spend, so the engine asks the cap before paying for
+  any of a cell's judge calls: the phase's price ceiling must fit what the run has spent, landed and running,
+  beside what the phases already admitted hold. A cell it cannot admit is set aside unjudged (excluded, never
+  scored low; a re-judge takes it up) and the run stops there, so judging never takes a run past its cap, or
+  past it by more than one call when the judge cannot price its calls.
 - :class:`AccountExhaustedError` is the account-side twin: the provider account behind the
   run refused a candidate call (out of credit, or the key refused), so the run stops after
   that cell and is marked ``exhausted``. Nothing configures it; a cell observes it.
@@ -70,8 +75,8 @@ class BudgetStoppedError(Exception):
     """Raised by :func:`~threetears.evals.run.runner.execute_run` when a per-run ceiling stops the run.
 
     Signals that a ceiling (the cost cap, the metered-call ceiling, or both) was reached by what the
-    recorded cells landed, so no new cell started, and that the run stopped gracefully once the cells
-    already running had finished. Already-delivered results are persisted *before*
+    recorded cells landed, or that the cost cap had too little left for a running cell's judging, so no new cell
+    started, and that the run stopped gracefully once the cells already running had finished. Already-delivered results are persisted *before*
     this is raised (each cell saves its result as it completes), so nothing
     produced is lost. The job manager catches it, marks the run
     ``budget_stopped`` — a distinct, honest terminal status, never an infra
@@ -152,7 +157,11 @@ def _stop_reason(stops: Sequence[BudgetStop]) -> str:
             segments.append(f"its cost cap: {figures}")
         else:
             segments.append(f"its metered-call ceiling: {stop.landed_at_stop} of {stop.ceiling} at the stop")
-    return f"stopped by {'; by '.join(segments)}"
+    not_judged = sum(stop.cells_not_judged for stop in stops)
+    set_aside = (
+        f"; {not_judged} cell(s) not judged, as the cap had too little left for their judging" if not_judged else ""
+    )
+    return f"stopped by {'; by '.join(segments)}{set_aside}"
 
 
 class AccountExhaustedError(Exception):
@@ -365,15 +374,16 @@ class EvalRunCostCap:
         """Report whether the run may proceed, and on what numbers if it may not.
 
         The gate :func:`~threetears.evals.run.runner.execute_run` calls before each cell, with nothing
-        pending: it reads what has LANDED, the spend of the cells already recorded, and never the spend of the
-        cells still running. Nothing is recorded here: a cell's whole spend is recorded once, by
+        pending: it reads what has LANDED, the spend of the cells already recorded. Before a cell's judging it is
+        asked again with the running cells' spend and the judge phases' price ceilings pending, so judging is paid
+        for only while it fits. Nothing is recorded here: a cell's whole spend is recorded once, by
         :meth:`record`, when its result lands.
         It returns the observation rather than a bare boolean because the run loop is where the stop is
         raised and the cap is the only thing that knows the ceiling and the spend — a ``False`` there
         reaches the operator as an unattributed assertion.
 
-        :param pending_usd: Spend to count beside what is recorded. The engine passes none (``0.0``): the cap is
-            read against landed spend. ``None`` is spend that could not be priced, which breaches an enforcing
+        :param pending_usd: Spend to count beside what is recorded: none (``0.0``) between cells, which reads the
+            cap against landed spend; the running cells' spend and the judging to admit, before a judge phase. ``None`` is spend that could not be priced, which breaches an enforcing
             cap as an unpriced result does.
         :ptype pending_usd: float | None
         :return: ``None`` while the run is within its cap counting that spend (including when enforcement

@@ -88,6 +88,11 @@ A judge that cannot price a call yet (its rates unread) is not checked here; a p
 refused with nothing spent once its pages are written, and the result says so and exits 1, as it does for a pass that
 stops before its last pair.
 
+Once a page is written its judging is priced in full, page and all, and the engine admits it against what the run's
+cap has left before any call is paid for: a case whose judging does not fit is set aside unjudged, never scored low,
+and stops its run there (a re-judge takes it up). So the floor decides only what a launch is refused on, and an arm's
+judging never takes it past its part.
+
 **The job budget sets how many cases an arm may run.** A writer cell's deadline is a whole report: every turn its
 budget allows at the request ceiling, and its page's judging after. The engine gives an arm's job a budget sized as
 if its cells ran one after another and clamps it at its ceiling, and the host refuses an arm whose cells, two at a
@@ -220,8 +225,11 @@ from threetears.evals.harness.writer_turns import WriterTurns, writer_turns
 from threetears.evals.run import quote_launch, start_run
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import DECLARED_NAME_CHARS, CaseSetRef, EvalResult, utc_now_iso
 from threetears.evals.schema.turns import TurnCeiling
+
+log = get_logger(__name__)
 
 #: The model the recorded writer acceptance runs wrote on, whose figures :data:`_RECORDED_BUDGETS` states.
 _RECORDED_MODEL: Final = "claude-sonnet-5-5"
@@ -1110,6 +1118,19 @@ class WriterEval:
                     f"{forms.money_total(reserve).text} against the {forms.money_total(max(left, 0.0)).text} left of "
                     f"{whose}."
                 )
+                log.warning(
+                    "eval.writer_batch_cap_stop scope=%s batch=%d/%d launched_cases=%d planned_cases=%d spent_usd=%.4f "
+                    "next_reserve_usd=%.4f left_usd=%.4f part=%s",
+                    self.scope_id,
+                    index + 1,
+                    len(batches),
+                    len(launched),
+                    len(planned),
+                    total,
+                    reserve,
+                    left,
+                    whose,
+                )
                 break
             ref = case_set
             if batch is not None and len(batches) > 1:
@@ -1127,15 +1148,40 @@ class WriterEval:
             for arm in [arm for arm in self.arms if arm not in held]:
                 ran_cases[arm] += planned if batch is None else batch
             # A batch's runs each run under the batch's own reservation, which its arm's spend so far leaves room
-            # for; one batch of every case runs under the whole part, as it always has. The engine checks a run's cap
-            # between cells, so cells running at the crossing finish past it, and the last batch can take an arm past
-            # its part by what they go on to spend (an unbatched run overshoots the same way: #1111).
+            # for; one batch of every case runs under the whole part, as it always has. The engine admits each cell's
+            # judging against its run's cap and stops the run at a cell it cannot admit, so a batch's judging never
+            # takes it past its reservation, nor an arm past its part.
             reservation = costs.arm(size) if len(batches) > 1 else share
+            log.info(
+                "eval.writer_batch_launch scope=%s batch=%d/%d cases=%d arms=%s reserve_usd=%.4f",
+                self.scope_id,
+                index + 1,
+                len(batches),
+                size // self.k,
+                ",".join(arms),
+                reservation,
+            )
             ran = await self._launch_batch(host, template_id, ref, dict.fromkeys(arms, reservation), arms)
             for arm, run_id in ran.items():
                 run_ids[arm].append(run_id)
-                spent[arm] += await run_blocking(
+                run_spent, status, stopped = await run_blocking(
                     eval_host.blocking_executor, self._spent, eval_host, run_id, reservation
+                )
+                spent[arm] += run_spent
+                log.info(
+                    "eval.writer_batch_ran scope=%s batch=%d/%d arm=%s run=%s status=%s spent_usd=%.4f "
+                    "reserve_usd=%.4f arm_spent_usd=%.4f arm_part_usd=%.4f stopped=%s",
+                    self.scope_id,
+                    index + 1,
+                    len(batches),
+                    arm,
+                    run_id,
+                    status,
+                    run_spent,
+                    reservation,
+                    spent[arm],
+                    share,
+                    stopped or "-",
                 )
             # A batch run that stored no page judged nothing, so it records no judge and would read as a second setup
             # beside the runs that did, on either arm: it stays out of the campaign's readings, said once, and the pass
@@ -1276,10 +1322,12 @@ class WriterEval:
             ),
         )
 
-    def _spent(self, host: EvalHost, run_id: str, reservation: float) -> float:
-        """What a run spent, as its results recorded it; its reservation when any of it went unpriced. Blocking."""
-        cost = summarize_run(host, run_id, self.scope_id).total_cost_usd
-        return reservation if cost is None else cost
+    def _spent(self, host: EvalHost, run_id: str, reservation: float) -> tuple[float, str, str | None]:
+        """What a run spent, as its results recorded it (its reservation when any of it went unpriced), its status,
+        and why a designed stop ended it, if one did. Blocking."""
+        summary = summarize_run(host, run_id, self.scope_id)
+        cost = summary.total_cost_usd
+        return (reservation if cost is None else cost), summary.status, summary.stopped_because
 
     async def _launch_batch(
         self, host: OpsHost, template_id: str, case_set: CaseSetRef, parts: Mapping[str, float], arms: Sequence[str]

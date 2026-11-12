@@ -382,7 +382,14 @@ CORE_SCHEMA_VERSION: int = 15
 #:   so a run setting none is stored byte for byte as before. None is in any identity, context or variant key, cell or
 #:   confound; the disclosure is carried into the bundle, so a run setting one moves its bundle's fingerprint.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 11
+#: - **v15.12** — a run's cost cap admits each cell's judge phase before any of its calls is paid for, and the run
+#:   records the cells it set aside: ``BudgetStop.cells_not_judged`` (default 0: none set aside, a metered-call stop,
+#:   or stored before the field existed) counts the cells that ran but whose judging the cap had too little left
+#:   for. Such a cell is stored as any cell whose judging did not finish: each of its dims carries a judge error that
+#:   names the cap, which excludes it from every reading and which a re-judge takes up. In no identity, key or
+#:   digest. An older build reads the cell as excluded by its judge errors, and the record without the count.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 12
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

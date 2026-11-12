@@ -2445,22 +2445,27 @@ calls (``max_metered_calls``). Closed: a new currency changes how an older build
 
 
 class BudgetStop(EvalBaseModel, CoreShapeModel):
-    """One per-run ceiling that stopped a run between cells: the numbers it was stopped on, from the counters.
+    """One per-run ceiling that stopped a run: the numbers it was stopped on, from the counters.
 
-    A ceiling never refuses a call inside a cell. It is read between cells, against what has LANDED — the
-    cells already recorded — and once landed amount reaches it no new cell starts. The cells already running
-    finish, so the run ends past the ceiling by up to the width's worth of cells; that overshoot is
+    A ceiling never refuses a candidate's call inside a cell. It is read between cells, against what has LANDED —
+    the cells already recorded — and once landed amount reaches it no new cell starts. The cells already running
+    finish, so the run can end past the ceiling by what their candidates go on to spend; that overshoot is
     ``landed_final - ceiling``, derived (:attr:`overshoot`) and never stored, and every figure here is a
-    counter's reading, never parsed from prose. A run stopped by both ceilings at one boundary carries one
-    record for each (``EvalRun.budget_stops``).
+    counter's reading, never parsed from prose. The cost cap also admits each cell's judge phase before any of its
+    calls is paid for, so judging never takes the run past it; a cell whose judging it could not admit is set
+    aside unjudged, and the first such cell stops the run as a crossing does. A run stopped by both ceilings at
+    one boundary carries one record for each (``EvalRun.budget_stops``).
 
     :ivar currency: What the ceiling counts.
     :ivar ceiling: The ceiling, in the currency.
-    :ivar landed_at_stop: The landed amount when the stop was decided, which is when the next cell would have
-        started. Dollars are the priced spend of the recorded cells.
+    :ivar landed_at_stop: The landed amount when the stop was decided: when the next cell would have started, or
+        when the cost cap first set a cell's judging aside. Dollars are the priced spend of the recorded cells.
     :ivar landed_final: The landed amount once the cells in flight at the stop had finished and been recorded.
     :ivar cells_in_flight: Cells running when the stop was decided.
     :ivar cells_not_started: Cells of the matrix that never started because of the stop.
+    :ivar cells_not_judged: ``cost_usd`` only: cells that ran but whose judging the cap had too little left for, so
+        nothing judged them. Each is excluded through its dims' judge errors, which name the cap, and a re-judge
+        takes it up. Zero for ``metered_calls``, and on a record stored before the field existed.
     :ivar unpriced_results: ``cost_usd`` only: recorded results whose spend could not be priced. An enforcing
         cap cannot count against what it cannot price, so any of these stops the run on their own, whatever
         ``landed_at_stop`` says. Zero for ``metered_calls``.
@@ -2474,6 +2479,11 @@ class BudgetStop(EvalBaseModel, CoreShapeModel):
     landed_final: int | float = Field(ge=0, description="The landed amount once the in-flight cells finished.")
     cells_in_flight: int = Field(ge=0, description="Cells running when the stop was decided.")
     cells_not_started: int = Field(ge=0, description="Cells that never started because of the stop.")
+    cells_not_judged: int = Field(
+        default=0,
+        ge=0,
+        description="Cost stops only: cells that ran but whose judging the cap had too little left for.",
+    )
     unpriced_results: int = Field(
         default=0, ge=0, description="Cost stops only: recorded results whose spend could not be priced."
     )
@@ -4233,7 +4243,8 @@ class EvalRun(CoreDocumentModel):
             "ceiling (origin None); a run the ceiling stopped is visible either way through the budget_stopped "
             "status and budget_stops. The cap is read between cells against the spend of the cells already "
             "recorded: once that reaches it no new cell starts, and cells already running finish, so a run may "
-            "land past it by up to the width's worth of cells."
+            "land past it by what their candidates spend. Each cell's judging is admitted against it before any "
+            "judge call is paid for, so judging never takes the run past it."
         ),
     )
     max_cost_usd_origin: StoredCostCapOrigin | None = Field(
@@ -4479,10 +4490,12 @@ class EvalRun(CoreDocumentModel):
         description=(
             "The per-run ceilings that stopped this run between cells, one record per ceiling, each with the "
             "counters' numbers: the ceiling, what had landed when the stop was decided and once the cells in "
-            "flight finished, how many were running and how many never started. Both the cost cap and the "
-            "metered-call ceiling are read between cells against what has landed; neither refuses a call inside a "
-            "cell, so the cells running at the stop finish whole and the run may land past a ceiling by up to the "
-            "width's worth of cells. Both are recorded when both tripped at the same boundary. Written with the "
+            "flight finished, how many were running, how many never started and how many ran but were not judged. "
+            "Both the cost cap and the metered-call ceiling are read between cells against what has landed; neither "
+            "refuses a candidate's call inside a cell, so the cells running at the stop finish and the run may land "
+            "past a ceiling by what they add. The cost cap also admits each cell's judging before it is paid for, "
+            "and stops the run at the first cell whose judging it sets aside. Both are recorded when both tripped at "
+            "the same boundary. Written with the "
             "``budget_stopped`` status. None on a run no ceiling stopped, including a run stopped by its wall-clock "
             "budget (``budget_stop_reason``) and one whose writer predates the field."
         ),
