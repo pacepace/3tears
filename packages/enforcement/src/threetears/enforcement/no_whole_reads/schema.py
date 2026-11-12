@@ -310,6 +310,8 @@ class SchemaCatalog:
     templates: dict[str, _DeclaredTable] = field(default_factory=dict)
     #: whether only tables 3tears declares are data tables (``NoWholeReadsConfig.threetears_tables_only``)
     threetears_only: bool = False
+    #: what is wrong with the index declarations ledger's lines (:mod:`.declarations`)
+    ledger_findings: list[str] = field(default_factory=list)
     #: while True, every table a declaration touches is marked as 3tears' (:attr:`_DeclaredTable.threetears`)
     marking: bool = False
 

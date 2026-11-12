@@ -84,6 +84,7 @@ from typing import Final
 import threetears
 
 from threetears.enforcement.common import dotted
+from threetears.enforcement.no_whole_reads.declarations import DECLARATIONS_NAME, apply_index_declarations
 from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, SchemaCatalog, collect_schema, index_findings
 from threetears.enforcement.no_whole_reads.use_the_helper import statement_counts, statement_findings
 from threetears.enforcement.no_whole_reads.walker import (
@@ -182,6 +183,10 @@ class NoWholeReadsConfig:
         a table only a SQLAlchemy ``Table`` or the repo's own migration DDL declares is no data table, and a relation
         named at run time counts only when it resolves to a 3tears one. For a repo that keeps a side database of its
         own, unchecked; off by default, every declared or written relation a data table
+    :ivar frozen_migrations: repo-relative globs (``fnmatch``) of the repo's frozen migrations: shipped and
+        checksum-tracked, so their text is never edited again (the boundary moves forward each release). Only an index
+        whose DDL is in one may be declared in the index declarations ledger (``<ledger_dir>/_index_declarations.txt``,
+        :mod:`~threetears.enforcement.no_whole_reads.declarations`) instead of by comments beside its DDL
     :ivar consumer_purposes: path prefixes of the repos that read this repo's tables through its declarations (the
         hub's ``src/aibots/hub/``): an index purpose under one names a consumer's read, which keys that read in the
         consumer's own gate (its indexes are the dependency's there); here such an entry is neither unknown nor unused.
@@ -210,6 +215,7 @@ class NoWholeReadsConfig:
     public_forwarders: bool = False
     threetears_tables_only: bool = False
     consumer_purposes: tuple[str, ...] = ()
+    frozen_migrations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -379,6 +385,10 @@ def _schema_of(config: NoWholeReadsConfig) -> SchemaCatalog:
             catalog.add_key(produced_relation(entry), key, "NoWholeReadsConfig.relation_producers")
     catalog.marking = False
     catalog.threetears_only = config.threetears_tables_only
+    # an index in a frozen migration is declared in the ledger; applied before the walk credits its purpose's read
+    catalog.ledger_findings = apply_index_declarations(
+        catalog, config.ledger_dir / DECLARATIONS_NAME, config.frozen_migrations
+    )
     return catalog
 
 
@@ -552,6 +562,7 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
             line = f"no_whole_reads accepts source-gap {exemption.path} :: {exemption.function}: {exemption.reason}"
             sys.stderr.write(f"{line}\n")
             warnings.warn(line, _WholeReadAccepted, stacklevel=2)
+    findings.extend(scan.schema.ledger_findings)
     findings.extend(
         index_findings(
             scan.schema,
