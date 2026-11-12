@@ -1784,6 +1784,74 @@ def test_an_index_may_serve_a_declared_foreign_key_led_by_its_referencing_column
         assert any(message in finding for finding in findings), findings
 
 
+_TIE_PARENT = (
+    "CREATE TABLE parents (conversation_id UUID, parent_id UUID, PRIMARY KEY (conversation_id, parent_id),"
+    " UNIQUE (parent_id))"
+)
+_TIES = {
+    "ddl": f"""
+        P = {_TIE_PARENT!r}
+        C = (
+            "CREATE TABLE children (conversation_id UUID, child_id UUID, parent_id UUID,"
+            " PRIMARY KEY (conversation_id, child_id),"
+            " CONSTRAINT children_parent_fk FOREIGN KEY (conversation_id, parent_id)"
+            " REFERENCES parents (conversation_id, parent_id) ON DELETE CASCADE)"
+        )
+    """,
+    "alter_not_valid": f"""
+        P = {_TIE_PARENT!r}
+        C = "CREATE TABLE children (conversation_id UUID, child_id UUID, parent_id UUID, PRIMARY KEY (conversation_id, child_id))"
+        FK = (
+            "ALTER TABLE children ADD CONSTRAINT children_parent_fk FOREIGN KEY (conversation_id, parent_id)"
+            " REFERENCES parents (conversation_id, parent_id) ON DELETE CASCADE NOT VALID"
+        )
+    """,
+    "sqlalchemy": f"""
+        from sqlalchemy import Column, ForeignKeyConstraint, MetaData, Table
+        P = {_TIE_PARENT!r}
+        CHILDREN = Table(
+            "children",
+            MetaData(),
+            Column("conversation_id", primary_key=True),
+            Column("child_id", primary_key=True),
+            Column("parent_id"),
+            ForeignKeyConstraint(
+                ["conversation_id", "parent_id"], ["parents.conversation_id", "parents.parent_id"], name="children_parent_fk"
+            ),
+        )
+    """,
+    "foreign_key_def": f"""
+        from threetears.core.collections.schema_backed import ForeignKeyDef, TableSchema
+        P = {_TIE_PARENT!r}
+        CHILDREN = TableSchema(
+            name="children",
+            primary_key=("conversation_id", "child_id"),
+            columns=[],
+            foreign_keys=(
+                ForeignKeyDef(local_cols=("conversation_id", "parent_id"), ref_table="parents", ref_cols=("conversation_id", "parent_id")),
+            ),
+        )
+    """,
+}
+
+
+@pytest.mark.parametrize("source", sorted(_TIES))
+def test_a_foreign_key_records_what_it_references(tmp_path: Path, source: str) -> None:
+    """Flips if a foreign key's target (the referenced table and columns) is lost from the catalog for any of the ways
+    one is declared, so a column it ties to the partition column (``parent_id``: its referenced column alone is unique,
+    so one value fixes the conversation) is not found, or one it does not tie is."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "tables.py").write_text(textwrap.dedent(_TIES[source]), encoding="utf-8")
+    catalog = collect_schema(tmp_path, (tmp_path / "src",))
+    children = catalog.tables["children"]
+    # 3tears' ForeignKeyDef names no constraint: Postgres' default name
+    name = "children_conversation_id_parent_id_fkey" if source == "foreign_key_def" else "children_parent_fk"
+    assert children.references == {name: ("parents", ("conversation_id", "parent_id"))}
+    assert catalog.tied_columns("children", "conversation_id") == frozenset({"parent_id"})
+    assert catalog.tied_columns("children", "child_id") == frozenset()
+    assert catalog.tied_columns("parents", "conversation_id") == frozenset()
+
+
 _QUOTED = """
     from threetears.core.collections.schema_backed import TableSchema
 

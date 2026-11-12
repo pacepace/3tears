@@ -21,8 +21,10 @@ from pathlib import Path
 # the walker lives in a support module beside both test modules, under a public name, so this
 # meta-test exercises exactly the function the enforcement test runs.
 from packages.core.tests.enforcement.partition_column_walker import (  # type: ignore[import-not-found]
+    tied_columns,
     violations_in_file,
 )
+from threetears.enforcement.no_whole_reads.schema import collect_schema
 
 __all__: list[str] = []
 
@@ -152,3 +154,104 @@ class TestPartitionWalkerExemption:
         strict, deferred = violations_in_file(target)
         assert strict == []
         assert deferred == []
+
+
+#: the parent: a schedule per conversation, its id unique on its own
+_PARENT_DDL = (
+    "CREATE TABLE agent_wake_schedules (conversation_id UUID NOT NULL, schedule_id UUID NOT NULL, "
+    "PRIMARY KEY (conversation_id, schedule_id), UNIQUE (schedule_id))"
+)
+#: the parent with no unique id of its own: only the pair is a key
+_PARENT_PAIR_ONLY_DDL = (
+    "CREATE TABLE agent_wake_schedules (conversation_id UUID NOT NULL, schedule_id UUID NOT NULL, "
+    "PRIMARY KEY (conversation_id, schedule_id))"
+)
+_CHILD_DDL = (
+    "CREATE TABLE wake_fires (conversation_id UUID NOT NULL, fire_id UUID NOT NULL, schedule_id UUID, "
+    "webhook_subscription_id UUID, PRIMARY KEY (conversation_id, fire_id))"
+)
+#: the composite key tying a fire's schedule to its conversation, added NOT VALID as an expand step
+_PAIR_FK_DDL = (
+    "ALTER TABLE wake_fires ADD CONSTRAINT wake_fires_schedule_conversation_fk "
+    "FOREIGN KEY (conversation_id, schedule_id) REFERENCES agent_wake_schedules (conversation_id, schedule_id) "
+    "ON DELETE CASCADE NOT VALID"
+)
+#: a key on the schedule alone: it fixes the schedule, not the conversation the fire is stored in
+_SCHEDULE_FK_DDL = (
+    "ALTER TABLE wake_fires ADD CONSTRAINT wake_fires_schedule_fk "
+    "FOREIGN KEY (schedule_id) REFERENCES agent_wake_schedules (schedule_id)"
+)
+#: a composite key over other columns
+_OTHER_PAIR_DDL = (
+    "CREATE TABLE webhook_subscriptions (conversation_id UUID NOT NULL, subscription_id UUID NOT NULL, "
+    "PRIMARY KEY (conversation_id, subscription_id), UNIQUE (subscription_id))",
+    "ALTER TABLE wake_fires ADD CONSTRAINT wake_fires_subscription_conversation_fk "
+    "FOREIGN KEY (conversation_id, webhook_subscription_id) "
+    "REFERENCES webhook_subscriptions (conversation_id, subscription_id)",
+)
+_COUNT_BY_SCHEDULE = "SQL = 'SELECT COUNT(*) FROM wake_fires WHERE schedule_id = $1 AND actual_fired_at > $2'\n"
+
+
+def _tied(tmp_path: Path, *statements: str) -> dict[str, frozenset[str]]:
+    """the tied columns a migration of ``statements`` declares, read through the no_whole_reads catalog.
+
+    :param tmp_path: the tree root
+    :ptype tmp_path: Path
+    :param statements: the DDL, in order
+    :ptype statements: str
+    :return: table onto its tied columns
+    :rtype: dict[str, frozenset[str]]
+    """
+    body = "".join(f"S{n} = {statement!r}\n" for n, statement in enumerate(statements))
+    _write(tmp_path / "src" / "pkg" / "migrations" / "v001.py", body)
+    return tied_columns(collect_schema(tmp_path, (tmp_path / "src",)))
+
+
+class TestPartitionWalkerForeignKeyTie:
+    """a read bound by a column a declared foreign key ties to the partition column reads one partition.
+
+    Ruling 2026-11-12 (wake fire count): the key must cover the column AND the partition column, onto a table where
+    the column's referenced column alone is unique. Anything less stays a violation.
+    """
+
+    def test_tied_column_read_passes(self, tmp_path: Path) -> None:
+        """the composite key onto a unique schedule id: a count bound by ``schedule_id`` passes."""
+        tied = _tied(tmp_path, _PARENT_DDL, _CHILD_DDL, _PAIR_FK_DDL)
+        assert tied == {"wake_fires": frozenset({"schedule_id"})}
+        target = _write(tmp_path / "src" / "pkg" / "mod.py", _COUNT_BY_SCHEDULE)
+        assert violations_in_file(target, tied) == ([], [])
+
+    def test_unique_column_without_the_key_stays_red(self, tmp_path: Path) -> None:
+        """the schedule id is unique on the parent, but the only key is on it alone: still a violation."""
+        tied = _tied(tmp_path, _PARENT_DDL, _CHILD_DDL, _SCHEDULE_FK_DDL)
+        assert tied == {}
+        target = _write(tmp_path / "src" / "pkg" / "mod.py", _COUNT_BY_SCHEDULE)
+        strict, _ = violations_in_file(target, tied)
+        assert len(strict) == 1
+        assert "conversation_id" in strict[0]
+
+    def test_key_on_other_columns_stays_red(self, tmp_path: Path) -> None:
+        """a composite key ties the subscription, not the schedule: a read by schedule is still a violation."""
+        tied = _tied(tmp_path, _PARENT_DDL, _CHILD_DDL, *_OTHER_PAIR_DDL)
+        assert tied == {"wake_fires": frozenset({"webhook_subscription_id"})}
+        target = _write(tmp_path / "src" / "pkg" / "mod.py", _COUNT_BY_SCHEDULE)
+        strict, _ = violations_in_file(target, tied)
+        assert len(strict) == 1
+
+    def test_key_onto_a_non_unique_column_stays_red(self, tmp_path: Path) -> None:
+        """the parent's schedule id is unique only with its conversation: one id may span conversations."""
+        tied = _tied(tmp_path, _PARENT_PAIR_ONLY_DDL, _CHILD_DDL, _PAIR_FK_DDL)
+        assert tied == {}
+        target = _write(tmp_path / "src" / "pkg" / "mod.py", _COUNT_BY_SCHEDULE)
+        strict, _ = violations_in_file(target, tied)
+        assert len(strict) == 1
+
+    def test_tied_column_not_bound_stays_red(self, tmp_path: Path) -> None:
+        """naming the tied column without binding it to a value reads every partition."""
+        tied = _tied(tmp_path, _PARENT_DDL, _CHILD_DDL, _PAIR_FK_DDL)
+        target = _write(
+            tmp_path / "src" / "pkg" / "mod.py",
+            "SQL = 'SELECT COUNT(*) FROM wake_fires WHERE schedule_id IS NOT NULL'\n",
+        )
+        strict, _ = violations_in_file(target, tied)
+        assert len(strict) == 1

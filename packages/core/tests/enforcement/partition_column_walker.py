@@ -10,12 +10,18 @@ reaching into the other's private helpers.
 from __future__ import annotations
 
 import ast
+import functools
 import re
+from collections.abc import Mapping
 from pathlib import Path
+
+from threetears.enforcement.no_whole_reads.schema import SchemaCatalog, collect_schema
 
 __all__ = [
     "PACKAGE_SRC_ROOTS",
     "PARTITIONED_TABLES",
+    "repo_tied_columns",
+    "tied_columns",
     "violations_in_file",
     "walk_python_files",
 ]
@@ -214,6 +220,47 @@ def _collect_string_literals(tree: ast.AST) -> list[tuple[str, int]]:
     return results
 
 
+def tied_columns(catalog: SchemaCatalog) -> dict[str, frozenset[str]]:
+    """each partitioned table's columns whose bound value fixes its partition column, through a declared foreign key.
+
+    A key whose referencing columns hold both ``c`` and the partition column, onto a table where ``c``'s referenced
+    column alone is unique, ties ``c`` to the partition: every row with one ``c`` references the one parent row, so it
+    holds that row's partition value. A read bound by ``c`` reads one partition. The keys are read from the catalog
+    the no_whole_reads gate builds from the migrations (the same one an index's ``fk:`` purpose is judged against).
+
+    :param catalog: the schema catalog
+    :ptype catalog: SchemaCatalog
+    :return: table onto its tied columns (tables with none left out)
+    :rtype: dict[str, frozenset[str]]
+    """
+    tied = {table: catalog.tied_columns(table, column) for table, column in PARTITIONED_TABLES.items()}
+    return {table: columns for table, columns in tied.items() if columns}
+
+
+@functools.cache
+def repo_tied_columns() -> Mapping[str, frozenset[str]]:
+    """:func:`tied_columns` over the walked packages' own declarations.
+
+    :return: table onto its tied columns
+    :rtype: Mapping[str, frozenset[str]]
+    """
+    roots = tuple(root for root in PACKAGE_SRC_ROOTS if root.exists())
+    return tied_columns(collect_schema(_REPO_ROOT, roots))
+
+
+def _binds(literal: str, column: str) -> bool:
+    """whether ``literal`` binds ``column`` to a value: ``column = ...`` (``= $1``, ``= ANY(...)``) or ``column IN``.
+
+    :param literal: SQL string literal
+    :ptype literal: str
+    :param column: the column
+    :ptype column: str
+    :return: whether it is bound
+    :rtype: bool
+    """
+    return re.search(rf"(?<![\w]){re.escape(column)}\s*(?:=(?!=)|IN\b)", literal, re.IGNORECASE) is not None
+
+
 def _is_exempt(literal: str) -> bool:
     """true iff ``literal`` is in :data:`_EXEMPT_LITERAL_FRAGMENTS`.
 
@@ -225,7 +272,7 @@ def _is_exempt(literal: str) -> bool:
     return any(fragment in literal for fragment, _ in _EXEMPT_LITERAL_FRAGMENTS)
 
 
-def violations_in_file(path: Path) -> tuple[list[str], list[str]]:
+def violations_in_file(path: Path, tied: Mapping[str, frozenset[str]] | None = None) -> tuple[list[str], list[str]]:
     """return ``(strict_violations, deferred_violations)`` found in ``path``.
 
     strict violations cover tables NOT in :data:`_DEFERRED_TABLES`;
@@ -237,6 +284,9 @@ def violations_in_file(path: Path) -> tuple[list[str], list[str]]:
 
     :param path: source file under inspection
     :ptype path: Path
+    :param tied: each table's columns a foreign key ties to its partition column (:func:`tied_columns`): a literal
+        binding one reads one partition; None takes the walked packages' own (:func:`repo_tied_columns`)
+    :ptype tied: Mapping[str, frozenset[str]] | None
     :return: ``(strict_violations, deferred_violations)`` -- two parallel
         lists of human-readable messages
     :rtype: tuple[list[str], list[str]]
@@ -253,6 +303,7 @@ def violations_in_file(path: Path) -> tuple[list[str], list[str]]:
         tree = ast.parse(source, filename=str(path))
     except SyntaxError:
         return [], []
+    tied = repo_tied_columns() if tied is None else tied
     strict_violations: list[str] = []
     deferred_violations: list[str] = []
     for literal, lineno in _collect_string_literals(tree):
@@ -282,6 +333,9 @@ def violations_in_file(path: Path) -> tuple[list[str], list[str]]:
             # -- this is the dynamic-scope-clause caveat; the
             # CollectionRegistry primitive enforces the static
             # signature contract elsewhere)
+            if any(_binds(literal, column) for column in tied.get(table, ())):
+                # bound by a column a declared foreign key ties to the partition column: one partition's rows
+                continue
             if partition_col not in literal and "__PLACEHOLDER__" not in literal:
                 msg = (
                     f"{path}:{lineno}: SQL touches partitioned table "

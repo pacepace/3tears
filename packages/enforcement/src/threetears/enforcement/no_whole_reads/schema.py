@@ -155,6 +155,8 @@ _ADD_FK: Final[re.Pattern[str]] = re.compile(
     rf"\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?{_QNAME}\s+ADD\s+(?:CONSTRAINT\s+({_IDENT})\s+)?FOREIGN\s+KEY\s*\(",
     re.IGNORECASE,
 )
+#: what a foreign key references, after its referencing columns: the referenced table and the ``(`` of its columns
+_REFERENCES: Final[re.Pattern[str]] = re.compile(rf"^\s*REFERENCES\s+{_QNAME}\s*\(", re.IGNORECASE)
 _DDL_COMMENT: Final[re.Pattern[str]] = re.compile(r"--\s*(purpose|plan_test|reason)\s*:\s*(.+?)\s*$", re.IGNORECASE)
 _DDL_HINT: Final[re.Pattern[str]] = re.compile(r"\b(?:CREATE|ALTER|DROP)\b", re.IGNORECASE)
 
@@ -311,6 +313,8 @@ class _DeclaredTable:
         partition=True)``, a collection's ``tenancy = tenant_column(...)``): a key prefix of only these is no key
     :ivar indexes: its indexes by name
     :ivar foreign_keys: its foreign keys' referencing columns by constraint name
+    :ivar references: what each foreign key references, by constraint name: the referenced bare table and its columns,
+        in the order of the referencing ones (a key whose target is not written, or not literal, has none)
     :ivar origins: ``<path>:<line>`` of each declaration
     :ivar threetears: whether 3tears declares it: a ``TableSchema``, a collection class, a table list, a relation the
         repo's config declares, or any declaration in 3tears' own sources (a dependency); never a SQLAlchemy ``Table``
@@ -325,6 +329,7 @@ class _DeclaredTable:
     #: each declared foreign key's name onto its referencing columns, in order (an unnamed one by Postgres' default
     #: name, ``<table>_<columns>_fkey``)
     foreign_keys: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    references: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
     origins: list[str] = field(default_factory=list)
     threetears: bool = False
 
@@ -514,8 +519,16 @@ class SchemaCatalog:
         if key and "?" not in key and key not in entry.unique_keys:
             entry.unique_keys.append(key)
 
-    def add_foreign_key(self, table: str, name: str, columns: tuple[str, ...], origin: str) -> None:
-        """record a table's foreign key: its name and referencing columns (an index on them may serve it).
+    def add_foreign_key(
+        self,
+        table: str,
+        name: str,
+        columns: tuple[str, ...],
+        origin: str,
+        referenced: tuple[str, tuple[str, ...]] | None = None,
+    ) -> None:
+        """record a table's foreign key: its name and referencing columns (an index on them may serve it), and what it
+        references when that is written.
 
         :param table: the bare table
         :ptype table: str
@@ -525,6 +538,9 @@ class SchemaCatalog:
         :ptype columns: tuple[str, ...]
         :param origin: where it is declared
         :ptype origin: str
+        :param referenced: the referenced table (as written) and its columns, in the referencing columns' order; None
+            when unknown
+        :ptype referenced: tuple[str, tuple[str, ...]] | None
         :return: nothing
         :rtype: None
         """
@@ -532,7 +548,45 @@ class SchemaCatalog:
         if not columns or "?" in columns:
             return
         named = name.strip('"').lower() if name else f"{table}_{'_'.join(columns)}_fkey"
-        self._entry(table, origin).foreign_keys[named] = columns
+        entry = self._entry(table, origin)
+        entry.foreign_keys[named] = columns
+        target = bare_table(referenced[0]) if referenced is not None else None
+        target_columns = tuple(column.lower() for column in referenced[1]) if referenced is not None else ()
+        if target is not None and len(target_columns) == len(columns) and "?" not in target_columns:
+            entry.references[named] = (target, target_columns)
+        else:
+            entry.references.pop(named, None)
+
+    def tied_columns(self, table: str, column: str) -> frozenset[str]:
+        """the columns of ``table`` whose bound value fixes ``column``'s through a declared foreign key: a key whose
+        referencing columns hold both ``c`` and ``column``, onto a table where ``c``'s referenced column alone is unique
+        (its primary key, or a declared ``UNIQUE``). Every row with that ``c`` references the one parent row, so it
+        holds that row's ``column`` value.
+
+        :param table: the bare table
+        :ptype table: str
+        :param column: the column (a partition column)
+        :ptype column: str
+        :return: the tied columns
+        :rtype: frozenset[str]
+        """
+        entry = self.tables.get(table)
+        if entry is None:
+            return frozenset()
+        column = column.lower()
+        tied: set[str] = set()
+        for name, referencing in entry.foreign_keys.items():
+            target = entry.references.get(name)
+            if column not in referencing or target is None:
+                continue
+            parent = self.tables.get(target[0])
+            if parent is None:
+                continue
+            unique = {key for key in [*parent.primary_keys, *parent.unique_keys] if len(key) == 1}
+            for own, referenced in zip(referencing, target[1], strict=True):
+                if own != column and (referenced,) in unique:
+                    tied.add(own)
+        return frozenset(tied)
 
     def add_index(self, index: _DeclaredIndex) -> None:
         """record an index of a table, merging a second declaration of the same name (the purpose of either wins).
@@ -684,6 +738,8 @@ class SchemaCatalog:
             merged.primary_keys.extend(key for key in entry.primary_keys if key not in merged.primary_keys)
             merged.unique_keys.extend(key for key in entry.unique_keys if key not in merged.unique_keys)
             merged.indexes.update(entry.indexes)
+            merged.foreign_keys.update(entry.foreign_keys)
+            merged.references.update(entry.references)
             merged.origins.extend(entry.origins)
             merged.threetears = merged.threetears or entry.threetears
         for site in self.sites:
@@ -812,7 +868,7 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
     :ptype text: str
     :return: ``("table", (name, key))``, ``("index", (name, table, columns, include, unique, notes))``,
         ``("drop_index", name)``, ``("drop_table", name)``, ``("drop_column", (table, column))``,
-        ``("rename_table", (old, new))``, ``("foreign_key", (table, name, columns))``,
+        ``("rename_table", (old, new))``, ``("foreign_key", (table, name, columns, referenced))``,
         ``("rename_index", (old, new))``
     :rtype: Iterator[tuple[str, Any]]
     """
@@ -829,9 +885,15 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
                 unique = tuple(_column_of(part) for part in _split_top(inner))
                 events.append((match.start(), "unique", (match.group(1), unique)))
             elif (fk := _FK_ITEM.match(item.strip())) is not None:
-                inner, _ = _paren_body(item, item.index("(", fk.end() - 1))
+                inner, after = _paren_body(item, item.index("(", fk.end() - 1))
                 referencing = tuple(_column_of(part) for part in _split_top(inner))
-                events.append((match.start(), "foreign_key", (match.group(1), fk.group(1) or "", referencing)))
+                events.append(
+                    (
+                        match.start(),
+                        "foreign_key",
+                        (match.group(1), fk.group(1) or "", referencing, _referenced(item[after:])),
+                    )
+                )
             elif _NOT_A_COLUMN.match(item) is None and _INLINE_PK.search(item):
                 key = (_column_of(item.split()[0]),)
             elif _NOT_A_COLUMN.match(item) is None and _INLINE_UNIQUE.search(item):
@@ -841,9 +903,15 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
         inner, _ = _paren_body(text, match.end() - 1)
         events.append((match.start(), "unique", (match.group(1), tuple(_column_of(p) for p in _split_top(inner)))))
     for match in _ADD_FK.finditer(text):
-        inner, _ = _paren_body(text, match.end() - 1)
+        inner, after = _paren_body(text, match.end() - 1)
         referencing = tuple(_column_of(part) for part in _split_top(inner))
-        events.append((match.start(), "foreign_key", (match.group(1), match.group(2) or "", referencing)))
+        events.append(
+            (
+                match.start(),
+                "foreign_key",
+                (match.group(1), match.group(2) or "", referencing, _referenced(text[after:])),
+            )
+        )
     for match in _ADD_PK.finditer(text):
         inner, _ = _paren_body(text, match.end() - 1)
         events.append((match.start(), "table", (match.group(1), tuple(_column_of(p) for p in _split_top(inner)))))
@@ -896,6 +964,23 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
         events.append((match.start(), "rename_index", (match.group(1), match.group(2))))
     for _, kind, payload in sorted(events, key=lambda event: event[0]):
         yield kind, payload
+
+
+def _referenced(text: str) -> tuple[str, tuple[str, ...]] | None:
+    """what a foreign key references, from the text after its referencing columns.
+
+    :param text: the text following the referencing columns' ``)``
+    :ptype text: str
+    :return: the referenced table as written and its columns; None when no ``REFERENCES <table> (<columns>)`` follows
+        (a key referencing a table's primary key by omitting the columns has none known here)
+    :rtype: tuple[str, tuple[str, ...]] | None
+    """
+    match = _REFERENCES.match(_strip_comments(text))
+    if match is None:
+        return None
+    stripped = _strip_comments(text)
+    inner, _ = _paren_body(stripped, match.end() - 1)
+    return match.group(1), tuple(_column_of(part) for part in _split_top(inner))
 
 
 def _strip_comments(text: str) -> str:
@@ -1010,7 +1095,7 @@ def _apply_ddl(catalog: SchemaCatalog, text: str, origin: str, *, local: bool) -
         if kind == "foreign_key":
             table = bare_table(payload[0])
             if table is not None:
-                catalog.add_foreign_key(table, payload[1], payload[2], origin)
+                catalog.add_foreign_key(table, payload[1], payload[2], origin, payload[3])
         elif kind in {"table", "unique"}:
             table = bare_table(payload[0])
             if table is not None and kind == "table":
@@ -1535,9 +1620,9 @@ def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, lo
                 if table is not None and columns:
                     catalog.add_unique(table, columns, origin)
             for element in values.elements(_keyword(call, "foreign_keys")):
-                name, columns = _foreign_key(element, values)
+                name, columns, referenced = _foreign_key(element, values)
                 if table is not None and columns:
-                    catalog.add_foreign_key(table, name, columns, origin)
+                    catalog.add_foreign_key(table, name, columns, origin, referenced)
         elif final == "Table" and call.args and values.text(call.args[0]) is not None:
             table = bare_table(values.text(call.args[0]) or "")
             if table is None:
@@ -1552,9 +1637,9 @@ def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, lo
             if key:
                 catalog.add_key(table, key, origin)
             for element in call.args[1:]:
-                name, referencing = _foreign_key(element, values)
+                name, referencing, referenced = _foreign_key(element, values)
                 if referencing:
-                    catalog.add_foreign_key(table, name, referencing, origin)
+                    catalog.add_foreign_key(table, name, referencing, origin, referenced)
                 columns = _unique_columns(element, values, named_first=False)
                 if columns:
                     catalog.add_unique(table, columns, origin)
@@ -1780,31 +1865,45 @@ def _unique_columns(node: ast.expr, values: _Values, *, named_first: bool) -> tu
     return tuple(text for text in texts if text is not None) if texts and None not in texts else ()
 
 
-def _foreign_key(node: ast.expr, values: _Values) -> tuple[str, tuple[str, ...]]:
-    """the name and referencing columns a foreign-key call declares: SQLAlchemy's ``ForeignKeyConstraint([columns],
-    [references], name=...)`` in a ``Table``, 3tears' ``ForeignKeyDef(local_cols=(...), ...)`` in a ``TableSchema``'s
-    ``foreign_keys`` (unnamed: Postgres names it).
+def _foreign_key(node: ast.expr, values: _Values) -> tuple[str, tuple[str, ...], tuple[str, tuple[str, ...]] | None]:
+    """the name, referencing columns and target a foreign-key call declares: SQLAlchemy's
+    ``ForeignKeyConstraint([columns], ["<table>.<column>", ...], name=...)`` in a ``Table``, 3tears'
+    ``ForeignKeyDef(local_cols=(...), ref_table=..., ref_cols=(...))`` in a ``TableSchema``'s ``foreign_keys``
+    (unnamed: Postgres names it).
 
     :param node: an expression
     :ptype node: ast.expr
     :param values: the module's known values
     :ptype values: _Values
-    :return: its name (empty when unnamed) and columns; no columns when it is no such call or a column is unknown
-    :rtype: tuple[str, tuple[str, ...]]
+    :return: its name (empty when unnamed), columns, and the referenced table and columns (None when not literal); no
+        columns when it is no such call or a column is unknown
+    :rtype: tuple[str, tuple[str, ...], tuple[str, tuple[str, ...]] | None]
     """
     if not isinstance(node, ast.Call):
-        return "", ()
+        return "", (), None
     final = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", None)
+    referenced: tuple[str, tuple[str, ...]] | None = None
     if final == "ForeignKeyConstraint":
         written = _keyword(node, "columns") or (node.args[0] if node.args else None)
+        targets_node = _keyword(node, "refcolumns") or (node.args[1] if len(node.args) > 1 else None)
+        targets = values.texts(targets_node) if targets_node is not None else None
+        split = [target.rsplit(".", 1) for target in targets or ()]
+        if targets and all(len(part) == 2 for part in split) and len({part[0] for part in split}) == 1:
+            referenced = (split[0][0], tuple(part[1] for part in split))
     elif final == "ForeignKeyDef":
         written = _keyword(node, "local_cols") or (node.args[0] if node.args else None)
+        table_node = _keyword(node, "ref_table") or (node.args[1] if len(node.args) > 1 else None)
+        cols_node = _keyword(node, "ref_cols") or (node.args[2] if len(node.args) > 2 else None)
+        target = values.text(table_node) if table_node is not None else None
+        target_columns = values.texts(cols_node) if cols_node is not None else None
+        if target is not None and target_columns:
+            referenced = (target, tuple(target_columns))
     else:
-        return "", ()
+        return "", (), None
     columns = values.texts(written) if written is not None else None
     name_node = _keyword(node, "name")
     name = (values.text(name_node) or "") if name_node is not None else ""
-    return name, tuple(columns or ())
+    return name, tuple(columns or ()), referenced
 
 
 def _add_site(catalog: SchemaCatalog, index: _DeclaredIndex) -> None:
