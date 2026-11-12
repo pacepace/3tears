@@ -11,7 +11,7 @@ advisory lock per prefix, so no sweep sees a database between its create and tha
 from __future__ import annotations
 
 import re
-import uuid
+import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -68,7 +68,7 @@ async def _sweep(admin: Any, prefix: str) -> list[str]:
         try:
             # no FORCE: a session that connected since the read keeps its database
             await admin.execute(f'DROP DATABASE IF EXISTS "{name}"')
-        except asyncpg.ObjectInUseError:
+        except asyncpg.ObjectInUseError:  # NOSILENT: a session connected since the read: a run uses it, so it is kept
             continue
         dropped.append(name)
     return dropped
@@ -98,7 +98,7 @@ async def scratch_database(
     """
     if _PREFIX.fullmatch(prefix) is None:
         raise ValueError(f"a scratch database prefix is lower-case letters and underscores ending in '_': {prefix!r}")
-    name = f"{prefix}{uuid.uuid4().hex[:8]}"
+    name = f"{prefix}{secrets.token_hex(4)}"
     dsn = _database_dsn(admin_dsn, name)
     admin = await connect(admin_dsn)
     holder: Any = None
