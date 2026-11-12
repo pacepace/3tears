@@ -18,11 +18,11 @@ import pytest
 from sqlalchemy import MetaData
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex, CreateTable
-
 from threetears.agent.knowledge.collections import ConceptCollection, PlaybookEntryCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import TableSchema
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.captured import CapturedL3
 from threetears.core.testing.plans import explain_statement, plan_uses_index
 
 pytestmark = pytest.mark.integration
@@ -90,29 +90,6 @@ async def _seed(
     await conn.execute(f'ANALYZE "{table}"')
 
 
-class _Captured:
-    """an L3 pool that runs nothing and records each statement asked of it, so a test explains the statement the
-    code under test really writes."""
-
-    def __init__(self) -> None:
-        self.asked: list[tuple[str, tuple[Any, ...]]] = []
-
-    async def fetch(self, sql: str, *args: Any, **_: Any) -> list[Any]:
-        self.asked.append((sql, args))
-        return []
-
-    async def fetchrow(self, sql: str, *args: Any, **_: Any) -> None:
-        self.asked.append((sql, args))
-
-    async def fetchval(self, sql: str, *args: Any, **_: Any) -> int:
-        self.asked.append((sql, args))
-        return 0
-
-    async def execute(self, sql: str, *args: Any, **_: Any) -> str:
-        self.asked.append((sql, args))
-        return "UPDATE 0"
-
-
 async def _create(conn: asyncpg.Connection, schema: TableSchema) -> None:
     """create a declared table and its declared indexes as Postgres would hold them.
 
@@ -155,7 +132,7 @@ async def test_draft_owner_indexes(conn: asyncpg.Connection) -> None:
     status = "CASE WHEN g % 50 = 0 THEN 'draft' ELSE 'active' END"
     await _seed(conn, "playbook_entries", user_id="($1::uuid[])[1 + g % 100]", status=status, _params=(users,))
     await _seed(conn, "concepts", user_id="($1::uuid[])[1 + g % 100]", status=status, _params=(users,))
-    captured = _Captured()
+    captured = CapturedL3()
     registry = CollectionRegistry()
     registry.configure(l3_pool=captured)
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")

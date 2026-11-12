@@ -37,6 +37,7 @@ from threetears.core.coordination.tables import (
     table_def_for,
 )
 from threetears.core.data.sql_builder import build_create_index_sql, build_create_table_sql
+from threetears.core.testing.captured import CapturedL3
 from threetears.core.testing.plans import explain_write, plan_uses_index
 
 pytestmark = pytest.mark.integration
@@ -80,17 +81,6 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
         await held.close()
 
 
-class _Captured:
-    """an L3 pool that runs nothing and records each statement asked of it (the sweep's page deletes no row)."""
-
-    def __init__(self) -> None:
-        self.asked: list[tuple[str, tuple[Any, ...]]] = []
-
-    async def fetch(self, sql: str, *args: Any) -> list[Any]:
-        self.asked.append((sql, args))
-        return []
-
-
 # parity-with: threetears.core.collections.generation.GenerationSource
 class _Generations:
     """the revocations table caches absences, so a registry with L3 names a generation source."""
@@ -112,7 +102,7 @@ async def _swept(collection_class: type[CoordinationCollection]) -> tuple[str, t
     :return: the statement and its parameters
     :rtype: tuple[str, tuple[Any, ...]]
     """
-    captured = _Captured()
+    captured = CapturedL3()
     registry = CollectionRegistry()
     registry.configure(l1_backend=SQLiteBackend(db_name=f"coordplan_{uuid.uuid4().hex[:8]}"), l3_pool=captured)
     registry.set_generation_source(_Generations())

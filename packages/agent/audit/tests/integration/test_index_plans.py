@@ -16,10 +16,10 @@ from typing import Any
 
 import asyncpg
 import pytest
-
 from threetears.agent.audit.migrations import register
 from threetears.agent.audit.persist import anonymize_audit_rows, prune_audit_events
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.testing.captured import CapturedL3
 from threetears.core.testing.plans import explain_statement, explain_write, on_yugabyte, plan_uses_index
 
 pytestmark = pytest.mark.integration
@@ -32,7 +32,7 @@ class _Store:
         self._conn = conn
 
     async def execute(self, sql: str, *params: Any) -> str:
-        return await self._conn.execute(sql, *params)
+        return str(await self._conn.execute(sql, *params))
 
     async def query(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         return [dict(r) for r in await self._conn.fetch(sql, *params)]
@@ -102,29 +102,6 @@ async def _seed(
     await conn.execute(f'ANALYZE "{table}"')
 
 
-class _Captured:
-    """an L3 pool that runs nothing and records each statement asked of it, so a test explains the statement the
-    code under test really writes."""
-
-    def __init__(self) -> None:
-        self.asked: list[tuple[str, tuple[Any, ...]]] = []
-
-    async def fetch(self, sql: str, *args: Any, **_: Any) -> list[Any]:
-        self.asked.append((sql, args))
-        return []
-
-    async def fetchrow(self, sql: str, *args: Any, **_: Any) -> None:
-        self.asked.append((sql, args))
-
-    async def fetchval(self, sql: str, *args: Any, **_: Any) -> int:
-        self.asked.append((sql, args))
-        return 0
-
-    async def execute(self, sql: str, *args: Any, **_: Any) -> str:
-        self.asked.append((sql, args))
-        return "UPDATE 0"
-
-
 @pytest.fixture
 async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
     """A connection on a fresh schema with audit_events built by the package and seeded: 5000 events over a
@@ -136,7 +113,7 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
         await connection.execute(f'SET search_path TO "{schema}"')
         runner = MigrationRunner()
         register(runner)
-        await runner.apply_for_platform_schema(_Store(connection))  # type: ignore[arg-type]
+        await runner.apply_for_platform_schema(_Store(connection))
         actors = [uuid.uuid4() for _ in range(100)]
         await _seed(connection, "audit_events", actor_user_id="($1::uuid[])[1 + g % 100]", _params=(actors,))
         yield connection
@@ -148,8 +125,8 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
 async def test_audit_events_time(conn: asyncpg.Connection) -> None:
     """Flips if retention's prune stops finding the expired events through idx_audit_events_time_asc, or if on
     YugabyteDB a batch's read of them stops seeking the range (a hashed ``timestamp`` reads every event)."""
-    captured = _Captured()
-    await prune_audit_events(captured, older_than=timedelta(minutes=80), batch_size=100)  # type: ignore[arg-type]
+    captured = CapturedL3()
+    await prune_audit_events(captured, older_than=timedelta(minutes=80), batch_size=100)
     (sql, args), *_ = captured.asked
     plan = await explain_write(conn, sql, *args)
     assert plan_uses_index(plan, "idx_audit_events_time_asc"), plan.plan
@@ -163,8 +140,8 @@ async def test_audit_events_time(conn: asyncpg.Connection) -> None:
 
 async def test_audit_events_actor(conn: asyncpg.Connection) -> None:
     """Flips if an erasure stops finding an actor's events through idx_audit_events_actor."""
-    captured = _Captured()
-    await anonymize_audit_rows(captured, actor_user_ids=[uuid.uuid4()], batch_size=100)  # type: ignore[arg-type]
+    captured = CapturedL3()
+    await anonymize_audit_rows(captured, actor_user_ids=[uuid.uuid4()], batch_size=100)
     (sql, args), *_ = captured.asked
     plan = await explain_statement(conn, sql, *args)
     assert plan_uses_index(plan, "idx_audit_events_actor"), plan.plan

@@ -29,9 +29,9 @@ import asyncpg
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.captured import CapturedL3
 from threetears.core.testing.plans import explain_statement, plan_uses_index
 from threetears.core.testing.schemas import drop_schema
-
 from threetears.scrape.health import (
     ScrapeTargetHealthCollection,
     clear_robots_block,
@@ -625,21 +625,6 @@ async def test_list_walled_merges_its_legs_newest_first(health: ScrapeTargetHeal
     assert found == [closed_robots, robots_only, walled, both], found
 
 
-class _Captured:
-    """an L3 pool that runs nothing and records each statement asked of it."""
-
-    def __init__(self) -> None:
-        self.asked: list[tuple[str, tuple[object, ...]]] = []
-
-    async def fetch(self, sql: str, *args: object) -> list[object]:
-        self.asked.append((sql, args))
-        return []
-
-    async def fetchval(self, sql: str, *args: object) -> str:
-        self.asked.append((sql, args))
-        return "PostgreSQL"
-
-
 async def test_list_walled_reads_its_indexes(db_container: str) -> None:
     """Flips if either leg of the walled queue stops reading its partial index
     (``scrape_target_health_walled`` / ``scrape_target_health_robots``): the queue would read
@@ -663,7 +648,7 @@ async def test_list_walled_reads_its_indexes(db_container: str) -> None:
             )
             await conn.execute("ANALYZE scrape_target_health")
             registry = CollectionRegistry()
-            captured = _Captured()
+            captured = CapturedL3(value="PostgreSQL")
             registry.configure(l3_pool=captured)
             collection = ScrapeTargetHealthCollection(
                 registry, DefaultCoreConfig(collection_flush="ALWAYS"), nats_client=None

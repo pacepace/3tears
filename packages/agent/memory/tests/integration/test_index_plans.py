@@ -10,14 +10,13 @@ plan whether it found its rows through the index (:func:`threetears.core.testing
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import AsyncIterator, Mapping
+from typing import Any, TypedDict
 from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
 import pytest_asyncio
-
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import (
     MediaContentCollection,
@@ -32,6 +31,7 @@ from threetears.conversations.migrations import register as register_conversatio
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.testing.captured import CapturedL3
 from threetears.core.testing.plans import StatementPlan, explain_statement, explain_write, plan_uses_index
 
 from .conftest import AsyncpgStore
@@ -46,27 +46,12 @@ _ROWS = 6000
 _DIM = 1024
 
 
-class _Captured:
-    """an L3 pool that runs nothing and records each statement asked of it, so a test explains the statement the
-    code under test really writes."""
+class _Owner(TypedDict):
+    """the caller a memory read is scoped to."""
 
-    def __init__(self) -> None:
-        self.asked: list[tuple[str, tuple[Any, ...]]] = []
-
-    async def fetch(self, sql: str, *args: Any) -> list[Any]:
-        self.asked.append((sql, args))
-        return []
-
-    async def fetchrow(self, sql: str, *args: Any) -> None:
-        self.asked.append((sql, args))
-
-    async def fetchval(self, sql: str, *args: Any) -> int:
-        self.asked.append((sql, args))
-        return 0
-
-    async def execute(self, sql: str, *args: Any) -> str:
-        self.asked.append((sql, args))
-        return "UPDATE 0"
+    user_id: uuid.UUID
+    agent_id: uuid.UUID
+    customer_id: uuid.UUID
 
 
 class _World:
@@ -83,7 +68,7 @@ class _World:
         #: the one conversation holding 3,000 surfaced refs, where reading one agent's newest needs their index
         self.busy_conversation = uuid.UUID(int=0)
 
-    def _collection(self, kind: type[Any], captured: _Captured) -> Any:
+    def _collection(self, kind: type[Any], captured: CapturedL3) -> Any:
         registry = CollectionRegistry()
         registry.configure(l3_pool=captured)
         config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
@@ -91,66 +76,66 @@ class _World:
             return kind(registry, config, authorizer=MagicMock(spec=MemoryAuthorizerDependencies))
         return kind(registry, config)
 
-    def memories(self, captured: _Captured) -> MemoriesCollection:
+    def memories(self, captured: CapturedL3) -> MemoriesCollection:
         """the memories collection over ``captured``.
 
         :param captured: the recording pool
-        :ptype captured: _Captured
+        :ptype captured: CapturedL3
         :return: the collection
         :rtype: MemoriesCollection
         """
         collection: MemoriesCollection = self._collection(MemoriesCollection, captured)
         return collection
 
-    def chunks(self, captured: _Captured) -> MemoryChunkCollection:
+    def chunks(self, captured: CapturedL3) -> MemoryChunkCollection:
         """the memory chunks collection over ``captured``.
 
         :param captured: the recording pool
-        :ptype captured: _Captured
+        :ptype captured: CapturedL3
         :return: the collection
         :rtype: MemoryChunkCollection
         """
         collection: MemoryChunkCollection = self._collection(MemoryChunkCollection, captured)
         return collection
 
-    def contents(self, captured: _Captured) -> MediaContentCollection:
+    def contents(self, captured: CapturedL3) -> MediaContentCollection:
         """the media content collection over ``captured``.
 
         :param captured: the recording pool
-        :ptype captured: _Captured
+        :ptype captured: CapturedL3
         :return: the collection
         :rtype: MediaContentCollection
         """
         collection: MediaContentCollection = self._collection(MediaContentCollection, captured)
         return collection
 
-    def refs(self, captured: _Captured) -> MemoryRefsCollection:
+    def refs(self, captured: CapturedL3) -> MemoryRefsCollection:
         """the surfaced-refs collection over ``captured``.
 
         :param captured: the recording pool
-        :ptype captured: _Captured
+        :ptype captured: CapturedL3
         :return: the collection
         :rtype: MemoryRefsCollection
         """
         collection: MemoryRefsCollection = self._collection(MemoryRefsCollection, captured)
         return collection
 
-    def consolidations(self, captured: _Captured) -> MemoryConsolidationsCollection:
+    def consolidations(self, captured: CapturedL3) -> MemoryConsolidationsCollection:
         """the consolidation edges collection over ``captured``.
 
         :param captured: the recording pool
-        :ptype captured: _Captured
+        :ptype captured: CapturedL3
         :return: the collection
         :rtype: MemoryConsolidationsCollection
         """
         collection: MemoryConsolidationsCollection = self._collection(MemoryConsolidationsCollection, captured)
         return collection
 
-    async def plans(self, captured: _Captured) -> list[StatementPlan]:
+    async def plans(self, captured: CapturedL3) -> list[StatementPlan]:
         """the plan of every statement ``captured`` recorded.
 
         :param captured: the recording pool
-        :ptype captured: _Captured
+        :ptype captured: CapturedL3
         :return: one plan per statement, in order
         :rtype: list[StatementPlan]
         """
@@ -173,7 +158,7 @@ async def world(pg_url: str) -> AsyncIterator[_World]:
     runner = MigrationRunner()
     register_conversations(runner)
     register_memory(runner)
-    await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+    await runner.apply_for_agent_schema(AsyncpgStore(conn))
     agents = [uuid.uuid4() for _ in range(3)]
     customers = [uuid.uuid4() for _ in range(30)]
     users = [uuid.uuid4() for _ in range(300)]
@@ -270,7 +255,7 @@ def _shape(plan: StatementPlan) -> str:
     """
     lines: list[str] = []
 
-    def walk(node: dict[str, Any], depth: int) -> None:
+    def walk(node: Mapping[str, Any], depth: int) -> None:
         named = " ".join(
             f"{key}={node[key]}" for key in ("Relation Name", "Index Name", "Index Cond", "Actual Rows") if key in node
         )
@@ -282,14 +267,14 @@ def _shape(plan: StatementPlan) -> str:
     return plan.sql[:300] + "\n" + "\n".join(lines)
 
 
-async def _only_plan(world: _World, captured: _Captured) -> StatementPlan:
+async def _only_plan(world: _World, captured: CapturedL3) -> StatementPlan:
     (plan,) = await world.plans(captured)
     return plan
 
 
 async def test_memories_agent_user(world: _World) -> None:
     """Flips if one user's reads by agent and user stop reading ix_memories_agent_user_date."""
-    captured = _Captured()
+    captured = CapturedL3()
     memories = world.memories(captured)
     await memories.count_by_user(world.user, agent_id=world.agent)
     await memories.find_similar_for_dedup(
@@ -313,7 +298,7 @@ async def test_memories_agent_user(world: _World) -> None:
 
 async def test_memories_agent_customer_user(world: _World) -> None:
     """Flips if one owner's reads by the whole owner triple stop reading idx_memories_agent_customer_user."""
-    captured = _Captured()
+    captured = CapturedL3()
     memories = world.memories(captured)
     await memories.find_by_user(world.user, agent_id=world.agent, customer_id=world.customer)
     await memories.find_ids_by_tags(
@@ -357,7 +342,7 @@ def _history_pool(plan: StatementPlan) -> bool:
 async def test_memories_user_date(world: _World) -> None:
     """Flips if hybrid_search's history pool (one owner's memories older than its recent ones, nearest first) stops
     reading ix_memories_agent_user_date: the user's memories by date, the range bounding them."""
-    captured = _Captured()
+    captured = CapturedL3()
     await _hybrid_search(world, world.memories(captured))
     history = [plan for plan in await world.plans(captured) if _history_pool(plan)]
     assert history, [sql for sql, _ in captured.asked]
@@ -367,7 +352,7 @@ async def test_memories_user_date(world: _World) -> None:
 
 async def test_memories_user_alias(world: _World) -> None:
     """Flips if a memory by its name stops reading ix_memories_user_alias."""
-    captured = _Captured()
+    captured = CapturedL3()
     await world.memories(captured).find_by_alias(user_id=world.user, agent_id=world.agent, alias="a10")
     plan = await _only_plan(world, captured)
     assert plan_uses_index(plan, "ix_memories_user_alias"), _shape(plan)
@@ -378,7 +363,7 @@ _CHUNK_WEIGHTS = {"semantic": 1.0, "keyword": 1.0}
 
 async def test_media_content_agent_user(world: _World) -> None:
     """Flips if one user's file contents stop reading idx_media_content_agent_user."""
-    captured = _Captured()
+    captured = CapturedL3()
     contents = world.contents(captured)
     await contents.hybrid_search(
         user_id=world.user,
@@ -406,7 +391,7 @@ async def test_media_content_agent_user(world: _World) -> None:
 
 async def test_memory_chunks_agent_user(world: _World) -> None:
     """Flips if one user's chunk searches stop reading idx_memory_chunks_agent_user."""
-    captured = _Captured()
+    captured = CapturedL3()
     chunks = world.chunks(captured)
     await chunks.hybrid_search(
         user_id=world.user,
@@ -432,9 +417,9 @@ async def test_memory_chunks_agent_user(world: _World) -> None:
 async def test_memory_chunks_memory(world: _World) -> None:
     """Flips if a memory's chunks by index, its chunk count, or the count a recalled chunk carries stop reading
     ix_memory_chunks_memory."""
-    captured = _Captured()
+    captured = CapturedL3()
     chunks = world.chunks(captured)
-    owner = {"user_id": world.user, "agent_id": world.agent, "customer_id": world.customer}
+    owner: _Owner = {"user_id": world.user, "agent_id": world.agent, "customer_id": world.customer}
     await chunks.find_by_chunk_indexes(world.memory, chunk_indexes=[0, 1], **owner)
     await chunks.count_by_memory_id(world.memory, **owner)
     await chunks.find_for_recall(chunk_id=world.chunk, user_id=world.user, agent_id=world.agent)
@@ -456,7 +441,7 @@ async def test_memory_chunks_memory(world: _World) -> None:
 
 async def test_chunks_memory_id_chunk_id(world: _World) -> None:
     """Flips if a memory's chunks in order stop reading idx_chunks_memory_id_chunk_id."""
-    captured = _Captured()
+    captured = CapturedL3()
     await world.chunks(captured).find_by_memory_id(
         world.memory, user_id=world.user, agent_id=world.agent, customer_id=world.customer
     )
@@ -466,7 +451,7 @@ async def test_chunks_memory_id_chunk_id(world: _World) -> None:
 
 async def test_mem_conversation(world: _World) -> None:
     """Flips if a conversation's chunks stop finding its memories through idx_mem_conversation."""
-    captured = _Captured()
+    captured = CapturedL3()
     await world.chunks(captured).find_by_conversation_id(
         world.conversation, user_id=world.user, agent_id=world.agent, customer_id=world.customer
     )
@@ -476,7 +461,7 @@ async def test_mem_conversation(world: _World) -> None:
 
 async def test_media_memory_id(world: _World) -> None:
     """Flips if a chunk's file, joined by its memory, stops being found through ix_media_agent_memory."""
-    captured = _Captured()
+    captured = CapturedL3()
     chunks = world.chunks(captured)
     await chunks.search_by_ids([world.chunk], world.user, agent_id=world.agent)
     await chunks.find_for_recall(chunk_id=world.chunk, user_id=world.user, agent_id=world.agent)
@@ -514,7 +499,7 @@ async def test_repoint_agent_user(world: _World) -> None:
     """Flips if a user merge's repoint naming the schema's agent stops reading each table's (agent_id, user_id)
     index (each UPDATE would read every row of its table), or its alias-collision lock stops reading
     ix_memories_user_alias."""
-    captured = _Captured()
+    captured = CapturedL3()
     await repoint_user(captured, from_user_id=world.user, to_user_id=uuid.uuid4(), agent_id=world.agent)
     (lock_sql, lock_args), *updates = captured.asked
     lock = await explain_statement(world.conn, lock_sql, *lock_args)
@@ -534,7 +519,7 @@ async def test_repoint_agent_user(world: _World) -> None:
 
 async def test_memory_consolidations_source(world: _World) -> None:
     """Flips if what a source was merged into stops reading idx_memory_consolidations_source."""
-    captured = _Captured()
+    captured = CapturedL3()
     await world.consolidations(captured).find_consolidated_into(world.agent, world.memory)
     await world.memories(captured).search_by_ids([world.memory], world.user, agent_id=world.agent)
     missed = [
@@ -548,7 +533,7 @@ async def test_memory_consolidations_source(world: _World) -> None:
 async def test_conv_mem_refs_conversation_agent_date(world: _World) -> None:
     """Flips if the newest refs one agent surfaced in a busy conversation stop reading
     idx_conv_mem_refs_conversation_agent_date."""
-    captured = _Captured()
+    captured = CapturedL3()
     await world.refs(captured).find_by_conversation(world.busy_conversation, world.agent)
     plan = await _only_plan(world, captured)
     assert plan_uses_index(plan, "idx_conv_mem_refs_conversation_agent_date"), _shape(plan)
@@ -560,7 +545,7 @@ async def test_media_content_media_type(world: _World) -> None:
     file = await world.conn.fetchval(
         "SELECT media_id FROM media_content WHERE agent_id = $1 AND user_id = $2 LIMIT 1", world.agent, world.user
     )
-    captured = _Captured()
+    captured = CapturedL3()
     await world.contents(captured).search_by_ids([file], world.user, agent_id=world.agent)
     plan = await _only_plan(world, captured)
     assert plan_uses_index(plan, "ix_media_content_media_type"), _shape(plan)

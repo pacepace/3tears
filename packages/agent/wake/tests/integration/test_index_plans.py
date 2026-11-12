@@ -17,7 +17,6 @@ from typing import Any, cast
 
 import asyncpg
 import pytest
-
 from threetears.agent.skills.migrations import register as register_skills
 from threetears.agent.wake import rate_limit
 from threetears.agent.wake.collections import (
@@ -31,6 +30,7 @@ from threetears.core.backends.protocol import L3Backend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.testing.captured import CapturedL3
 from threetears.core.testing.plans import explain_statement, explain_write, on_yugabyte, plan_uses_index
 
 from .conftest import AsyncpgStore
@@ -97,29 +97,6 @@ async def _seed(conn: asyncpg.Connection, table: str, rows: int = _ROWS, **value
     await conn.execute(f'ANALYZE "{table}"')
 
 
-class _Captured:
-    """an L3 pool that runs nothing and records each statement asked of it, so a test explains the statement the
-    code under test really writes."""
-
-    def __init__(self) -> None:
-        self.asked: list[tuple[str, tuple[Any, ...]]] = []
-
-    async def fetch(self, sql: str, *args: Any) -> list[Any]:
-        self.asked.append((sql, args))
-        return []
-
-    async def fetchrow(self, sql: str, *args: Any) -> None:
-        self.asked.append((sql, args))
-
-    async def fetchval(self, sql: str, *args: Any) -> int:
-        self.asked.append((sql, args))
-        return 0
-
-    async def execute(self, sql: str, *args: Any) -> str:
-        self.asked.append((sql, args))
-        return "UPDATE 0"
-
-
 @pytest.fixture
 async def conn(pg_schema: tuple[str, str]) -> AsyncIterator[asyncpg.Connection]:
     """A connection on a fresh schema with the wake tables built and seeded: 5000 schedules over 500 agents and 250
@@ -163,7 +140,7 @@ async def conn(pg_schema: tuple[str, str]) -> AsyncIterator[asyncpg.Connection]:
         await connection.close()
 
 
-def _collections(pool: _Captured | asyncpg.Connection) -> SimpleNamespace:
+def _collections(pool: CapturedL3 | asyncpg.Connection) -> SimpleNamespace:
     registry = CollectionRegistry()
     # the test double and the bare connection carry only the raw reads these collections use, not the whole
     # L3Backend surface
@@ -176,7 +153,7 @@ def _collections(pool: _Captured | asyncpg.Connection) -> SimpleNamespace:
     )
 
 
-async def _user_counts(captured: _Captured) -> list[tuple[str, tuple[Any, ...]]]:
+async def _user_counts(captured: CapturedL3) -> list[tuple[str, tuple[Any, ...]]]:
     """the statements check_rate_limit writes, the per-user count among them."""
     trigger = SimpleNamespace(
         conversation_id=uuid.uuid4(),
@@ -194,7 +171,7 @@ async def _user_counts(captured: _Captured) -> list[tuple[str, tuple[Any, ...]]]
 async def test_wake_schedules_next_fire(conn: asyncpg.Connection) -> None:
     """Flips if the tick's due scan stops reading idx_wake_schedules_next_fire_asc, or if on YugabyteDB a tick past
     every active schedule stops reading only its page (a hashed ``next_fire_at`` reads and sorts every active one)."""
-    captured = _Captured()
+    captured = CapturedL3()
     await _collections(captured).schedules.list_due_for_tick(_NOW, limit=50)
     (sql, args), *_ = captured.asked
     plan = await explain_statement(conn, sql, *args)
@@ -203,7 +180,7 @@ async def test_wake_schedules_next_fire(conn: asyncpg.Connection) -> None:
     late_tick = datetime.now(UTC) + timedelta(days=30)
     due = await _collections(conn).schedules.list_due_for_tick(late_tick, limit=50)
     assert len(due) == 50, len(due)
-    late = _Captured()
+    late = CapturedL3()
     await _collections(late).schedules.list_due_for_tick(late_tick, limit=50)
     (sql, args), *_ = late.asked
     page = await explain_statement(conn, sql, *args)
@@ -215,14 +192,14 @@ async def test_wake_schedules_next_fire(conn: asyncpg.Connection) -> None:
 
 async def test_wake_schedules_user(conn: asyncpg.Connection) -> None:
     """Flips if the per-user fire count stops reading idx_wake_schedules_user."""
-    (sql, args), *_ = await _user_counts(_Captured())
+    (sql, args), *_ = await _user_counts(CapturedL3())
     plan = await explain_statement(conn, sql, *args)
     assert plan_uses_index(plan, "idx_wake_schedules_user"), plan.plan
 
 
 async def test_webhook_subs_user(conn: asyncpg.Connection) -> None:
     """Flips if the per-user fire count stops reading idx_webhook_subs_user."""
-    (sql, args), *_ = await _user_counts(_Captured())
+    (sql, args), *_ = await _user_counts(CapturedL3())
     plan = await explain_statement(conn, sql, *args)
     assert plan_uses_index(plan, "idx_webhook_subs_user"), plan.plan
 
@@ -230,7 +207,7 @@ async def test_webhook_subs_user(conn: asyncpg.Connection) -> None:
 async def test_wake_schedules_agent_status(conn: asyncpg.Connection) -> None:
     """Flips if any read of an agent's schedules stops reading idx_wake_schedules_agent_status."""
     agent = await conn.fetchval("SELECT agent_id FROM agent_wake_schedules LIMIT 1")
-    captured = _Captured()
+    captured = CapturedL3()
     collections = _collections(captured)
     await collections.schedules.list_for_agent(agent)
     statements = [
@@ -247,7 +224,7 @@ async def test_wake_schedules_agent_status(conn: asyncpg.Connection) -> None:
 async def test_webhook_subs_agent(conn: asyncpg.Connection) -> None:
     """Flips if any read of an agent's webhook subscriptions stops reading idx_webhook_subs_agent."""
     agent = await conn.fetchval("SELECT agent_id FROM webhook_subscriptions LIMIT 1")
-    captured = _Captured()
+    captured = CapturedL3()
     collections = _collections(captured)
     await collections.subscriptions.list_for_agent(agent)
     statements = [*captured.asked, (rate_limit.COUNT_AGENT_FIRES_SQL, (agent, _NOW - timedelta(days=1), True))]
@@ -258,7 +235,7 @@ async def test_webhook_subs_agent(conn: asyncpg.Connection) -> None:
 
 async def test_wake_fires_dispatching(conn: asyncpg.Connection) -> None:
     """Flips if the reaper's sweep of the fires in flight stops reading idx_wake_fires_dispatching."""
-    captured = _Captured()
+    captured = CapturedL3()
     await _collections(captured).fires.reap_stale_dispatching(_NOW, older_than=timedelta(minutes=10))
     (sql, args), *_ = captured.asked
     plan = await explain_write(conn, sql, *args)
@@ -308,7 +285,7 @@ async def _busy_conversation(conn: asyncpg.Connection) -> SimpleNamespace:
     return SimpleNamespace(conversation=conversation, schedule=first, subscription=subscription)
 
 
-def _of(captured: _Captured, table: str) -> list[tuple[str, tuple[Any, ...]]]:
+def _of(captured: CapturedL3, table: str) -> list[tuple[str, tuple[Any, ...]]]:
     """the statements asked of ``table`` (a helper's one question of the server's version left out)."""
     return [asked for asked in captured.asked if table in asked[0]]
 
@@ -316,7 +293,7 @@ def _of(captured: _Captured, table: str) -> list[tuple[str, tuple[Any, ...]]]:
 async def _wake_count(busy: SimpleNamespace, *, webhook: bool) -> tuple[str, tuple[Any, ...]]:
     """the per-wake count check_fire_limits writes for one of the busy conversation's wakes: its schedule's, or with
     ``webhook`` its subscription's."""
-    captured = _Captured()
+    captured = CapturedL3()
     trigger = SimpleNamespace(
         conversation_id=busy.conversation,
         schedule_id=None if webhook else busy.schedule,
@@ -339,7 +316,7 @@ async def test_wake_schedules_conv_active(conn: asyncpg.Connection) -> None:
     idx_wake_schedules_conv_active (on YugabyteDB: if the count stops reading it, or the listing reads past the
     conversation's own schedules)."""
     busy = await _busy_conversation(conn)
-    captured = _Captured()
+    captured = CapturedL3()
     schedules = _collections(captured).schedules
     await schedules.list_active_for_conversation(busy.conversation)
     listed = _of(captured, "agent_wake_schedules")
@@ -370,7 +347,7 @@ async def test_wake_fires_schedule_time(conn: asyncpg.Connection) -> None:
     """Flips if one schedule's history page or its rate-limit count of the last day stops reading
     idx_wake_fires_schedule_time."""
     busy = await _busy_conversation(conn)
-    captured = _Captured()
+    captured = CapturedL3()
     await _collections(captured).fires.list_for_schedule(busy.conversation, busy.schedule)
     statements = [
         *_of(captured, "wake_fires"),
@@ -401,7 +378,7 @@ async def test_wake_fires_webhook_time(conn: asyncpg.Connection) -> None:
     """Flips if one subscription's history page or its rate-limit count of the last day stops reading
     idx_wake_fires_webhook_time."""
     busy = await _busy_conversation(conn)
-    captured = _Captured()
+    captured = CapturedL3()
     await _collections(captured).fires.list_for_subscription(busy.conversation, busy.subscription)
     statements = [
         *_of(captured, "wake_fires"),
@@ -416,7 +393,7 @@ async def test_wake_fires_conv_time(conn: asyncpg.Connection) -> None:
     """Flips if a conversation's newest fires stop reading idx_wake_fires_conv_time (the page would read and sort
     every fire the conversation ever had)."""
     busy = await _busy_conversation(conn)
-    captured = _Captured()
+    captured = CapturedL3()
     await _collections(captured).fires.list_for_conversation(busy.conversation)
     (sql, args), *rest = _of(captured, "wake_fires")
     assert not rest, captured.asked
@@ -437,7 +414,7 @@ async def test_webhook_refusals_sub_time(conn: asyncpg.Connection) -> None:
         busy.subscription,
     )
     await conn.execute("ANALYZE webhook_refusals")
-    captured = _Captured()
+    captured = CapturedL3()
     await _collections(captured).subscriptions.list_refusals(busy.subscription)
     (sql, args), *rest = _of(captured, "webhook_refusals")
     assert not rest, captured.asked

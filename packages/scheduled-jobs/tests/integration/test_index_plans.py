@@ -11,13 +11,12 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import asyncpg
 import pytest
-
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.captured import CapturedL3
 from threetears.core.testing.plans import explain_statement, explain_write, on_yugabyte, plan_uses_index
 from threetears.scheduled_jobs.collections import JobFireCollection, ScheduledJobCollection
 
@@ -26,29 +25,6 @@ from .conftest import apply_schema
 pytestmark = pytest.mark.integration
 
 _NOW = datetime(2026, 11, 9, tzinfo=UTC)
-
-
-class _Captured:
-    """an L3 pool that runs nothing and records each statement asked of it, so a test explains the statement the
-    code under test really writes."""
-
-    def __init__(self) -> None:
-        self.asked: list[tuple[str, tuple[Any, ...]]] = []
-
-    async def fetch(self, sql: str, *args: Any, **_: Any) -> list[Any]:
-        self.asked.append((sql, args))
-        return []
-
-    async def fetchrow(self, sql: str, *args: Any, **_: Any) -> None:
-        self.asked.append((sql, args))
-
-    async def fetchval(self, sql: str, *args: Any, **_: Any) -> int:
-        self.asked.append((sql, args))
-        return 0
-
-    async def execute(self, sql: str, *args: Any, **_: Any) -> str:
-        self.asked.append((sql, args))
-        return "UPDATE 0"
 
 
 @pytest.fixture
@@ -80,7 +56,7 @@ async def conn(pg_schema: tuple[str, str]) -> AsyncIterator[asyncpg.Connection]:
         await connection.close()
 
 
-def _stores(captured: _Captured) -> tuple[ScheduledJobCollection, JobFireCollection]:
+def _stores(captured: CapturedL3) -> tuple[ScheduledJobCollection, JobFireCollection]:
     registry = CollectionRegistry()
     registry.configure(l3_pool=captured)
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
@@ -93,14 +69,14 @@ def _stores(captured: _Captured) -> tuple[ScheduledJobCollection, JobFireCollect
 async def test_scheduled_jobs_next_fire(conn: asyncpg.Connection) -> None:
     """Flips if the tick's due scan stops reading idx_scheduled_jobs_next_fire_asc, or if on YugabyteDB a tick past
     every active job stops reading only its page (a hashed ``next_fire_at`` reads and sorts every active one)."""
-    captured = _Captured()
+    captured = CapturedL3()
     jobs, _ = _stores(captured)
     await jobs.list_due_for_tick(_NOW, kinds=["k1"], limit=50)
     (sql, args), *_ = captured.asked
     plan = await explain_statement(conn, sql, *args)
     assert plan_uses_index(plan, "idx_scheduled_jobs_next_fire_asc"), plan.plan
     # a tick after every one of the 500 active jobs (all of kind k0) is due: the page of 50 reads about its own rows
-    late = _Captured()
+    late = CapturedL3()
     jobs, _ = _stores(late)
     await jobs.list_due_for_tick(datetime.now(UTC) + timedelta(days=30), kinds=["k0"], limit=50)
     (sql, args), *_ = late.asked
@@ -113,7 +89,7 @@ async def test_scheduled_jobs_next_fire(conn: asyncpg.Connection) -> None:
 async def test_job_fires_job_time(conn: asyncpg.Connection) -> None:
     """Flips if the latest fire of each listed job stops reading idx_job_fires_job_time."""
     jobs = [row["job_id"] for row in await conn.fetch("SELECT job_id FROM scheduled_jobs LIMIT 20")]
-    captured = _Captured()
+    captured = CapturedL3()
     _, fires = _stores(captured)
     await fires.latest_for_jobs(jobs)
     (sql, args), *_ = captured.asked
@@ -123,7 +99,7 @@ async def test_job_fires_job_time(conn: asyncpg.Connection) -> None:
 
 async def test_job_fires_dispatching(conn: asyncpg.Connection) -> None:
     """Flips if the reaper's sweep of the fires in flight stops reading idx_job_fires_dispatching."""
-    captured = _Captured()
+    captured = CapturedL3()
     _, fires = _stores(captured)
     await fires.reap_stale_dispatching(_NOW, older_than=timedelta(minutes=10), kinds=["k1"])
     (sql, args), *_ = captured.asked

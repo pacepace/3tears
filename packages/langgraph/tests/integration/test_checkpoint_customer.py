@@ -18,9 +18,9 @@ from typing import Any
 import asyncpg
 import pytest
 import pytest_asyncio
-
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.keyed import delete_keyed
+from threetears.core.testing.captured import CapturedL3
 from threetears.core.testing.plans import explain_write, plan_uses_index
 from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
 from threetears.langgraph.checkpoint_scope import CheckpointScope
@@ -69,21 +69,6 @@ class _MigrationStore:
         return [dict(r) for r in await self.conn.fetch(sql, *params)]
 
 
-class _Captured:
-    """an executor that runs nothing and records each statement asked of it."""
-
-    def __init__(self) -> None:
-        self.asked: list[tuple[str, tuple[Any, ...]]] = []
-
-    async def execute(self, sql: str, *args: Any) -> str:
-        self.asked.append((sql, args))
-        return "DELETE 0"
-
-    async def fetch(self, sql: str, *args: Any) -> list[Any]:
-        self.asked.append((sql, args))
-        return []
-
-
 async def _insert(conn: asyncpg.Connection, thread_id: str, n: int) -> None:
     """one checkpoint and one pending write of ``thread_id``."""
     await conn.execute(
@@ -110,10 +95,10 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
         await held.execute(f'SET search_path TO "{schema}", public')
         runner = MigrationRunner()
         register_langgraph(runner)
-        await runner.apply_for_agent_schema(_MigrationStore(held), target=1)  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(_MigrationStore(held), target=1)
         for n, thread_id in enumerate(_THREADS):
             await _insert(held, thread_id, n)
-        assert await runner.apply_for_agent_schema(_MigrationStore(held)) == 1  # type: ignore[arg-type]
+        assert await runner.apply_for_agent_schema(_MigrationStore(held)) == 1
         yield held
     finally:
         await held.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
@@ -136,7 +121,7 @@ async def test_the_migration_fills_the_rows_written_before_it_and_a_replay_write
     assert await backfill_customer_ids(conn, page=2) == 0
     runner = MigrationRunner()
     register_langgraph(runner)
-    assert await runner.apply_for_agent_schema(_MigrationStore(conn)) == 0  # type: ignore[arg-type]
+    assert await runner.apply_for_agent_schema(_MigrationStore(conn)) == 0
 
 
 async def test_the_trigger_fills_every_later_write_and_a_rekey(conn: asyncpg.Connection) -> None:
@@ -204,7 +189,7 @@ async def test_the_purge_reads_its_customer_s_rows_by_index(db_container: str) -
         await conn.execute(f'SET search_path TO "{schema}", public')
         runner = MigrationRunner()
         register_langgraph(runner)
-        await runner.apply_for_agent_schema(_MigrationStore(conn))  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(_MigrationStore(conn))
         customers = [uuid.uuid4() for _ in range(_PLAN_CUSTOMERS)]
         threads = [f"{customers[n % _PLAN_CUSTOMERS]}/t-{n}" for n in range(_PLAN_CUSTOMERS * _PLAN_THREADS)]
         await conn.execute(
@@ -219,7 +204,7 @@ async def test_the_purge_reads_its_customer_s_rows_by_index(db_container: str) -
         )
         await conn.execute("ANALYZE checkpoints")
         await conn.execute("ANALYZE checkpoint_writes")
-        captured = _Captured()
+        captured = CapturedL3(status="DELETE 0")
         saver = ThreeTierCheckpointSaver(executor=captured, scope=CheckpointScope.for_customer(customers[7]))
         await saver.adelete_customer_threads()
         (writes_sql, writes_args), (checkpoints_sql, checkpoints_args) = captured.asked

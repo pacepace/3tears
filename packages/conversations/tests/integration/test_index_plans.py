@@ -15,11 +15,11 @@ from typing import Any
 import asyncpg
 import pytest
 import pytest_asyncio
-
 from threetears.conversations.merge import repoint_user
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.keyed import Sort, keyset_page
+from threetears.core.testing.captured import CapturedL3
 from threetears.core.testing.plans import (
     StatementPlan,
     explain_statement,
@@ -36,22 +36,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 _ROWS = 6000
 
 
-class _Captured:
-    """a connection that records each statement asked of it and runs none of them over ``conversations``; any other
-    (keyset_page's one question of the server's version) goes to ``real``, when given, so the page is spelled as it
-    is on the session's database (YugabyteDB's expansion, not PostgreSQL's row comparison)."""
-
-    def __init__(self, real: asyncpg.Connection | None = None) -> None:
-        self.asked: list[tuple[str, tuple[Any, ...]]] = []
-        self._real = real
-
-    async def fetch(self, sql: str, *args: Any) -> list[Any]:
-        self.asked.append((sql, args))
-        if self._real is not None and 'FROM "conversations"' not in sql:
-            return list(await self._real.fetch(sql, *args))
-        return []
-
-
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def world(pg_url: str) -> AsyncIterator[tuple[asyncpg.Connection, uuid.UUID, uuid.UUID]]:
     """a fresh schema with the conversations table built and seeded: 6000 conversations over three agents, three
@@ -62,7 +46,7 @@ async def world(pg_url: str) -> AsyncIterator[tuple[asyncpg.Connection, uuid.UUI
     await conn.execute(f'SET search_path TO "{schema}", public')
     runner = MigrationRunner()
     register_conversations(runner)
-    await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+    await runner.apply_for_agent_schema(AsyncpgStore(conn))
     agents = [uuid.uuid4() for _ in range(3)]
     users = [uuid.uuid4() for _ in range(300)]
     await conn.execute(
@@ -119,7 +103,7 @@ async def _resumed_page(conn: asyncpg.Connection, by: dict[str, Any], sort: str)
     columns = ("conversation_id", sort)
     first = await keyset_page(conn, "conversations", columns=columns, by=by, order=order, limit=_PAGE)
     assert first.next_cursor is not None, first
-    captured = _Captured(conn)
+    captured = CapturedL3(real=conn, passes=lambda sql: 'FROM "conversations"' not in sql)
     await keyset_page(
         captured,
         "conversations",
@@ -179,7 +163,7 @@ async def test_conv_agent_user_created(world: tuple[asyncpg.Connection, uuid.UUI
     plan = await _resumed_plan(conn, {"agent_id": agent, "user_id": user}, "date_created")
     assert plan_uses_index(plan, "idx_conv_agent_user_created"), plan.plan
     # a user merge's repoint of the user's conversations under the schema's agent reads an agent-led user index
-    captured = _Captured()
+    captured = CapturedL3()
     await repoint_user(captured, from_user_id=user, to_user_id=uuid.uuid4(), agent_id=agent)
     (sql, args), *rest = captured.asked
     assert not rest, captured.asked
