@@ -545,3 +545,68 @@ def test_a_json_field_index_written_with_spaces_is_the_field_not_its_column(sche
     assert _kinds("SELECT * FROM namespaces WHERE tags = $1 AND customer_id = $2", schema, _SPACED) == [
         ("non-key-where", "namespaces")
     ]
+
+
+#: hub #38: a datasource's readiness counts, each a correlated count of a table by the outer datasource row
+_READINESS = "src/hub/scope_injection.py::_knowledge_readiness_template"
+_COUNTED = (
+    "SELECT d.name, (SELECT COUNT(*) FROM {inner} AS pe WHERE pe.status = 'active' AND {match}) AS active "
+    "FROM datasources AS d{outer}"
+)
+_EITHER = "(pe.datasource_id = d.id OR pe.datasource_id = d.origin_datasource_id)"
+
+
+@pytest.mark.parametrize(
+    ("inner", "match", "outer", "expected"),
+    [
+        # the outer datasources read by key: each count reads by that row's datasource, through its purposed index
+        ("playbook_entries", _EITHER, " WHERE d.id = ANY($3)", []),
+        ("playbook_entries", "pe.datasource_id = d.id", " WHERE d.id = ANY($3)", []),
+        # no index on the inner column: still every active row counted for each outer row
+        ("concepts", _EITHER, " WHERE d.id = ANY($3)", [("whole-aggregate", "concepts")]),
+        ("concepts", "pe.datasource_id = d.id", " WHERE d.id = ANY($3)", [("whole-aggregate", "concepts")]),
+        # the outer row read whole, or by a non-key filter: its values are every datasource, so is the count
+        ("playbook_entries", _EITHER, "", [("whole-select", "datasources"), ("whole-aggregate", "playbook_entries")]),
+        (
+            "playbook_entries",
+            "pe.datasource_id = d.id",
+            "",
+            [("whole-select", "datasources"), ("whole-aggregate", "playbook_entries")],
+        ),
+        (
+            "playbook_entries",
+            _EITHER,
+            " WHERE d.name = $1",
+            [("non-key-where", "datasources"), ("whole-aggregate", "playbook_entries")],
+        ),
+        # a branch equal to the inner row's own column binds nothing
+        (
+            "playbook_entries",
+            "(pe.datasource_id = d.id OR pe.datasource_id = pe.id)",
+            " WHERE d.id = ANY($3)",
+            [("whole-aggregate", "playbook_entries")],
+        ),
+    ],
+)
+def test_a_correlated_equality_binds_only_through_a_keyed_outer_row(
+    tmp_path: Path, inner: str, match: str, outer: str, expected: list[tuple[str, str]]
+) -> None:
+    """Flips if a correlated count bound by an outer row read by key (each ``OR`` branch one outer column) is not
+    keyed through the inner table's purposed index, or if a correlated equality to an outer row read whole, or one on
+    an inner column no index serves, stops being a finding."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "v001.sql").write_text(
+        "CREATE TABLE datasources (id UUID PRIMARY KEY, name TEXT, origin_datasource_id UUID);\n"
+        "CREATE TABLE playbook_entries (id UUID PRIMARY KEY, datasource_id UUID, status TEXT);\n"
+        f"-- purpose: {_READINESS}\n"
+        "CREATE INDEX playbook_entries_active_by_datasource ON playbook_entries (datasource_id)"
+        " WHERE status = 'active';\n"
+        "CREATE TABLE concepts (id UUID PRIMARY KEY, datasource_id UUID, status TEXT);\n",
+        encoding="utf-8",
+    )
+    catalog = collect_schema(tmp_path, (tmp_path / "src",))
+    sql = _COUNTED.format(inner=inner, match=match, outer=outer)
+    found = [kind for kind in _kinds(sql, catalog, _READINESS) if kind[0] != "keyed-count"]
+    assert found == expected
+    if not expected:
+        assert ("playbook_entries", "playbook_entries_active_by_datasource", _READINESS) in catalog.used

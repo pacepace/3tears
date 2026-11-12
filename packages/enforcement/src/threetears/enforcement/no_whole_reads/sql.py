@@ -615,8 +615,9 @@ def _atoms(predicate: str) -> list[_Atom]:
         columns = {atoms[0].column for atoms in each if len(atoms) == 1 and atoms[0].kind == "eq"}
         if len(columns) == 1 and all(len(atoms) == 1 and atoms[0].kind == "eq" for atoms in each):
             return [_Atom("eq", columns.pop(), bound=True)]
-        if all(atoms and all(atom.kind in {"eq", "range"} for atom in atoms) for atoms in each):
-            # ``a = ANY($1) OR b = ANY($1)``: keyed when every branch keys the read by its own index or key
+        if all(atoms and all(atom.kind in {"eq", "range", "join"} for atom in atoms) for atoms in each):
+            # ``a = ANY($1) OR b = ANY($1)``: keyed when every branch keys the read by its own index or key; a branch
+            # equal to an outer row's column (``t.x = d.y``) binds as an equality where that row is read by key
             return [_Atom("either", bound=True, branches=tuple(tuple(atoms) for atoms in each))]
         return [_Atom("filter", bound=bound)]
     if re.match(r"\s*(?:NOT\b|EXISTS\b)", masked, re.IGNORECASE):
@@ -813,6 +814,8 @@ class _Level:
     :ivar correlated: whether it is a subquery, where a column of a relation it does not name is an outer row's
     :ivar nearest: the column it orders by a distance from first (``ORDER BY embedding <=> $1``), ``(qualifier,
         name)``: with a LIMIT, the k nearest rows, which an approximate-nearest-neighbour index of that column serves
+    :ivar enclosing: for a subquery, whether the relation an outer row's qualifier names is read by key at the level
+        enclosing it (None when no enclosing ``SELECT`` names it, as an ``UPDATE``'s target)
     """
 
     relations: list[_Relation]
@@ -823,6 +826,7 @@ class _Level:
     outer: set[str] = field(default_factory=set)
     correlated: bool = False
     nearest: tuple[str, str] | None = None
+    enclosing: Callable[[str], bool | None] | None = None
 
 
 def _owner(level: _Level, qualifier: str) -> list[int]:
@@ -894,6 +898,109 @@ def _keys(
     )
 
 
+def _outer_keyed(level: _Level, qualifier: str) -> bool:
+    """whether an outer row a subquery's column names (``d.id`` in ``(SELECT count(*) FROM t WHERE t.d_id = d.id)``)
+    is read by key where it is read: then the subquery reads by that row's key, one value per outer row. An outer row
+    read whole binds nothing (each of every row's values is read). An outer row no enclosing ``SELECT`` reads (an
+    ``UPDATE``'s target), or one of a table whose key the walk cannot find, is judged at its own statement.
+
+    :param level: the subquery's level
+    :ptype level: _Level
+    :param qualifier: the outer row's qualifier, lower-cased
+    :ptype qualifier: str
+    :return: whether it binds
+    :rtype: bool
+    """
+    if not level.correlated or level.enclosing is None:
+        return True
+    keyed = level.enclosing(qualifier)
+    return keyed is None or keyed
+
+
+def _correlated_branches(level: _Level, atom: _Atom) -> _Atom:
+    """an ``OR``'s branches with each correlated equality (``t.x = outer.y``, the outer row read by key) as an
+    equality of this level's column; any other equality of two columns leaves the ``OR`` a filter.
+
+    :param level: the level
+    :ptype level: _Level
+    :param atom: the ``either`` atom
+    :ptype atom: _Atom
+    :return: the atom, its branches binding only this level's columns, or a ``filter`` atom
+    :rtype: _Atom
+    """
+    if not any(part.kind == "join" for branch in atom.branches for part in branch):
+        return atom
+    branches: list[tuple[_Atom, ...]] = []
+    for branch in atom.branches:
+        parts: list[_Atom] = []
+        for part in branch:
+            if part.kind != "join":
+                parts.append(part)
+                continue
+            q, oq = part.column[0], part.other[0]
+            mine, theirs = _owner(level, q), _owner(level, oq)
+            if q and oq and mine and not theirs and _outer_keyed(level, oq):
+                parts.append(_Atom("eq", part.column, bound=True))
+            elif q and oq and theirs and not mine and _outer_keyed(level, q):
+                parts.append(_Atom("eq", part.other, bound=True))
+            else:
+                return _Atom("filter", bound=atom.bound)
+        branches.append(tuple(parts))
+    return _Atom("either", bound=True, branches=tuple(branches))
+
+
+def _enclosing_keyed(
+    text: str,
+    depths: list[int],
+    start: int,
+    ctes: set[str],
+    bound_ctes: frozenset[str],
+    reader: Reader,
+    qualifier: str,
+) -> bool | None:
+    """whether the relation a subquery's outer qualifier names is read by key at the nearest enclosing ``SELECT``
+    that names it.
+
+    :param text: cleaned SQL
+    :ptype text: str
+    :param depths: :func:`_depths` of it
+    :ptype depths: list[int]
+    :param start: where the subquery's ``SELECT`` starts
+    :ptype start: int
+    :param ctes: the statement's CTE names
+    :ptype ctes: set[str]
+    :param bound_ctes: those seeded by a bound key
+    :ptype bound_ctes: frozenset[str]
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :param qualifier: the outer qualifier, lower-cased
+    :ptype qualifier: str
+    :return: whether it is keyed there; None when no enclosing ``SELECT`` names it, or names a table of no known key
+    :rtype: bool | None
+    """
+    depth = depths[start]
+    for match in reversed([found for found in _SELECT.finditer(text) if found.start() < start]):
+        at = depths[match.start()]
+        if at >= depth:
+            continue
+        end, masked = _own_level(text, depths, match.start(), at)
+        if end <= start:
+            continue
+        level = _level(text, depths, match.start(), end, masked, ctes, bound_ctes, reader)
+        if level is None:
+            continue
+        owners = [i for i, relation in enumerate(level.relations) if _answers(relation, qualifier)]
+        if not owners:
+            depth = at
+            continue
+        keyed, known = _keyed(level, reader)
+        if not all(known[i] for i in owners):
+            # an outer table whose key the walk cannot find is its own finding (``unknown-schema``): judged there
+            return None
+        return all(keyed[i] for i in owners)
+    return None
+
+
 def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
     """which data relations of a level are read by key, and which have a known schema.
 
@@ -922,12 +1029,18 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
             oq, oname = atom.other
             mine, theirs = _owner(level, qualifier), _owner(level, oq)
             if qualifier and not mine and theirs:
-                # ``outer.x = t.y``: the outer row's column binds this level's
+                # ``outer.x = t.y``: the outer row's column binds this level's, when that row is itself read by key
                 for i in theirs:
-                    eq[i].add(oname)
+                    if _outer_keyed(level, qualifier):
+                        eq[i].add(oname)
+                    else:
+                        other[i] += 1
             elif oq and not theirs and mine:
                 for i in mine:
-                    eq[i].add(name)
+                    if _outer_keyed(level, oq):
+                        eq[i].add(name)
+                    else:
+                        other[i] += 1
             elif not qualifier and not oq and level.correlated:
                 for i in mine:
                     eq[i].add(name)
@@ -944,6 +1057,7 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
                 contained[i].add(name)
                 other[i] += 1
         elif atom.kind == "either":
+            atom = _correlated_branches(level, atom)
             owners = {tuple(_owner(level, part.column[0])) for branch in atom.branches for part in branch}
             known_branches = all(_known(level, part.column[0]) for branch in atom.branches for part in branch)
             if len(owners) == 1 and known_branches:
@@ -1399,6 +1513,8 @@ def _level(
     )
     level.outer = _outer_columns(text, depths, start, depth)
     level.nearest = _nearest_order(masked, text[start : start + len(masked)])
+    if depth > 0:
+        level.enclosing = lambda qualifier: _enclosing_keyed(text, depths, start, ctes, bound_ctes, reader, qualifier)
     return level
 
 
