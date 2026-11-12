@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from nats.js.errors import NotFoundError
 
 from threetears.core.coordination import ReplayGuard
 from threetears.core.coordination.replay_guard import CLOCK_DRIFT_ALLOWANCE
@@ -141,6 +142,6 @@ async def test_a_reconnect_recreates_a_bucket_lost_under_a_running_guard(nats_co
         while info is None and asyncio.get_running_loop().time() < deadline:
             try:
                 info = await js.stream_info(stream)
-            except Exception:  # noqa: BLE001 -- absent until the hook recreates it; the deadline bounds the wait
-                await asyncio.sleep(0.2)
+            except NotFoundError:  # absent until the hook recreates it; the deadline bounds the wait
+                await asyncio.sleep(0.05)
         assert info is not None, "the reconnect hook did not recreate the stream"
