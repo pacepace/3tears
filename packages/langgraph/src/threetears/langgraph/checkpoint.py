@@ -1974,9 +1974,11 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         - ``unscoped`` -- refused either way, for the reason it always was: the
           pattern would match every row in the table.
 
-        The L3 half matches on the customer's key prefix. A UUID's text form
-        contains neither ``%`` nor ``_``, so the pattern needs no ``ESCAPE``
-        clause and cannot widen beyond the one customer.
+        The L3 half deletes the rows whose ``customer_id`` is the customer: the
+        column langgraph v002 adds, set from the stored thread id's customer
+        prefix by a trigger on every write (and backfilled for older rows), so
+        it names exactly the rows the prefix names, through its partial index
+        rather than a read of every row.
 
         Caches are best-effort and say so. L2 is swept when it can be; L1's
         protocol deletes one thread at a time with no way to enumerate a
@@ -1997,9 +1999,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :raises CheckpointPurgeIncompleteError: when the L2 prefix sweep failed; raised after the
             L3 rows are deleted, so this customer's bundles may still be cached. retrying is safe
         """
-        prefix = self._customer_prefix(
-            self._scope.customer_for_operation(customer, operation="adelete_customer_threads"),
-        )
+        resolved = self._scope.customer_for_operation(customer, operation="adelete_customer_threads")
+        prefix = self._customer_prefix(resolved)
         if prefix is None:
             raise ValueError(
                 "adelete_customer_threads() needs a saver built with CheckpointScope.for_customer(...), "
@@ -2008,10 +2009,10 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 "and the pattern would match every thread in the table.",
             )
 
-        # every thread id starting with the customer's prefix: a range of the key in code-point order, what
-        # ``LIKE '<prefix>%'`` named (the prefix holds no ``%`` or ``_``: a UUID and its separator)
-        await delete_keyed(self._exec, "checkpoint_writes", prefix={"thread_id": prefix})
-        await delete_keyed(self._exec, "checkpoints", prefix={"thread_id": prefix})
+        # every row whose thread id starts with the customer's prefix: the rows whose customer_id (set from that
+        # prefix by langgraph v002's trigger, and backfilled) is this customer, read through its partial index
+        await delete_keyed(self._exec, "checkpoint_writes", by={"customer_id": resolved})
+        await delete_keyed(self._exec, "checkpoints", by={"customer_id": resolved})
 
         failures: list[CheckpointCacheError] = []
         try:

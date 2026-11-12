@@ -19,6 +19,9 @@ from threetears.core.data.migrations import (
 from threetears.langgraph.migrations.v001_create_checkpoint_tables import (
     create_checkpoint_tables,
 )
+from threetears.langgraph.migrations.v002_checkpoint_customer_column import (
+    add_checkpoint_customer_column,
+)
 
 PACKAGE_NAME = "langgraph"
 
@@ -41,6 +44,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
         scope=MigrationScope.AGENT,
     )
     pkg.version(1)(create_checkpoint_tables)
+    pkg.version(2)(add_checkpoint_customer_column)
     runner.register(pkg)
     return pkg
 

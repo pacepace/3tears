@@ -41,6 +41,7 @@ from threetears.langgraph.checkpoint import (
     ThreeTierCheckpointSaver,
 )
 from threetears.langgraph.checkpoint_scope import CheckpointScope
+from threetears.langgraph.migrations.v002_checkpoint_customer_column import customer_of
 from threetears.langgraph.protocols import CheckpointL2Cache, CheckpointL2PrefixCache
 
 _LOGGER = "threetears.langgraph.checkpoint"
@@ -812,11 +813,13 @@ class TestPerCustomerPurge:
         assert 'DELETE FROM "checkpoints"' in statements[1]
 
     async def test_purge_matches_only_this_customers_prefix(self) -> None:
-        """the pattern is the customer's own prefix and nothing wider.
+        """the rows deleted are the customer's own prefix's and nothing wider.
 
-        a UUID's text form contains no ``%`` and no ``_``, so the pattern needs
-        no ESCAPE clause -- asserted here so a future change of separator or id
-        type has to confront it.
+        each statement pins ``customer_id`` to this customer alone; the column is
+        the customer a stored thread id's prefix names (langgraph v002's trigger,
+        :func:`customer_of` its reading), so it names exactly the rows whose
+        thread id starts with ``"<customer>/"``: never a thread id that only
+        shares the UUID's text, an unscoped one, or another customer's.
 
         :return: nothing
         :rtype: None
@@ -826,16 +829,16 @@ class TestPerCustomerPurge:
 
         await saver.adelete_customer_threads()
 
-        # the customer's prefix as a range of the key in code-point order: from the prefix to the least text past
-        # every text starting with it (the separator's successor), what LIKE '<prefix>%' named
-        ranges = [call.args[1:] for call in executor.execute.await_args_list]
-        assert ranges == [(f"{_CUSTOMER_A}/", f"{_CUSTOMER_A}0"), (f"{_CUSTOMER_A}/", f"{_CUSTOMER_A}0")]
-        assert all(
-            '"thread_id" COLLATE "C" >= $1 AND "thread_id" COLLATE "C" < $2' in call.args[0]
-            for call in executor.execute.await_args_list
-        )
-        assert "%" not in str(_CUSTOMER_A)
-        assert "_" not in str(_CUSTOMER_A)
+        assert [call.args[1:] for call in executor.execute.await_args_list] == [(_CUSTOMER_A,), (_CUSTOMER_A,)]
+        assert all('WHERE "customer_id" = $1' in call.args[0] for call in executor.execute.await_args_list)
+        assert customer_of(f"{_CUSTOMER_A}/t-1") == _CUSTOMER_A
+        assert customer_of(f"{_CUSTOMER_A}/{_CUSTOMER_B}/t-1") == _CUSTOMER_A
+        assert customer_of(f"{_CUSTOMER_A}t-1") is None
+        lettered = UUID("abcdef01-2345-6789-abcd-ef0123456789")
+        assert customer_of(f"{lettered}/t-1") == lettered
+        assert customer_of(f"{str(lettered).upper()}/t-1") is None
+        assert customer_of(f"x{_CUSTOMER_A}/t-1") is None
+        assert customer_of("t-1") is None
 
     async def test_purge_sweeps_the_customers_l2_keys(self) -> None:
         """a purged blob still served from cache is not a purge.
@@ -1568,8 +1571,7 @@ class TestDeletingUnderFromConfig:
 
         await saver.adelete_customer_threads(customer=_CUSTOMER_A)
 
-        ranges = [call.args[1:] for call in executor.execute.await_args_list]
-        assert ranges == [(f"{_CUSTOMER_A}/", f"{_CUSTOMER_A}0"), (f"{_CUSTOMER_A}/", f"{_CUSTOMER_A}0")]
+        assert [call.args[1:] for call in executor.execute.await_args_list] == [(_CUSTOMER_A,), (_CUSTOMER_A,)]
 
 
 class TestTheDeleteArgumentCannotCrossScopes:
@@ -1629,8 +1631,7 @@ class TestTheDeleteArgumentCannotCrossScopes:
 
         await saver.adelete_customer_threads(customer=_CUSTOMER_A)
 
-        ranges = [call.args[1:] for call in executor.execute.await_args_list]
-        assert ranges == [(f"{_CUSTOMER_A}/", f"{_CUSTOMER_A}0"), (f"{_CUSTOMER_A}/", f"{_CUSTOMER_A}0")]
+        assert [call.args[1:] for call in executor.execute.await_args_list] == [(_CUSTOMER_A,), (_CUSTOMER_A,)]
 
     async def test_a_scoped_purge_refuses_another_customer(self) -> None:
         """asking a saver built for A to erase B is the mistake worth catching.

@@ -12,8 +12,10 @@ sandboxed agents back it with
 which transmits hex-encoded bytes over NATS and writes BYTEA
 server-side.
 
-**there is deliberately no ``customer_id`` column, and no migration
-that adds one.** a multi-tenant direct-pool deployment scopes its
+**the key carries the customer; v002 adds ``customer_id`` beside it.**
+(:mod:`~threetears.langgraph.migrations.v002_checkpoint_customer_column`:
+a column a trigger fills from the key's prefix, so a customer's purge
+reads its rows by index.) a multi-tenant direct-pool deployment scopes its
 checkpoints by binding the saver to a customer, which folds that
 customer into the ``thread_id`` value -- inside the existing primary
 key, so a row is unique THROUGH its customer without altering the
