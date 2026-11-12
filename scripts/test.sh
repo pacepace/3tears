@@ -251,10 +251,16 @@ if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}
     else
         testament run --suite "$SUITE" ${AREA_ARGS+"${AREA_ARGS[@]}"} -- ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || pool_status=$?
     fi
-    # testament exits 2 when it gave no verdict on the tests: the pool, the machine or the manifest
-    # stopped it (coordinator_unreachable, no_runner, connection_lost, batches_lost,
-    # env_build_failed, machine_not_set_up, bad_manifest). Say so last, where a long run's reader
-    # looks, since the banner above has scrolled away.
+    # testament gave no verdict on the tests when the pool, the machine or the manifest stopped it.
+    # From testament 0.46 a pool that couldn't serve the run (coordinator_unreachable, no_runner,
+    # connection_lost, batches_lost, store_full) exits 75, and every other stop (env_build_failed,
+    # machine_not_set_up, bad_manifest, a refusal) still exits 2; before 0.46 all of them exit 2.
+    # This script keeps one answer for both, its own exit 2, which check-all.sh and the runbook read.
+    # Say so last, where a long run's reader looks, since the banner above has scrolled away.
+    if [ "$pool_status" -eq 75 ]; then
+        echo "test.sh: testament exit 75: the pool could not serve this run." >&2
+        pool_status=2
+    fi
     if [ "$pool_status" -eq 2 ]; then
         # the unit suite never reruns wide here; the integration suite may, one package at a time on a
         # machine with Docker, when the person agrees (CLAUDE.md, docs/testing.md "When the pool is down")
