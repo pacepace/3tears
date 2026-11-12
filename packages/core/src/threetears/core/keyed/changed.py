@@ -32,14 +32,13 @@ none rewritten in place.
 
 from __future__ import annotations
 
-import base64
-import binascii
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Final
 
 from threetears.core.backends.dialect import known_on_yugabyte
+from threetears.core.keyed._held import Held, HeldArrow, HeldMapping, hash_bytes as _hash_bytes
 from threetears.core.keyed._filters import Derived, Fragment, Selected, by_conditions, relation as _relation, narrowing
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.inline import InlineDuckDB
@@ -55,6 +54,11 @@ from threetears.interfaces.keyed.changed import (
     HashEncoding,
     HashKind,
 )
+
+try:
+    import pyarrow as pa
+except ImportError:  # NOSILENT: the snapshot extra is optional; held is then a mapping (an Arrow table needs it)
+    pa = None
 
 __all__ = [
     "ROW_HASH_COLUMN",
@@ -205,41 +209,6 @@ def row_hash_selected(columns: Sequence[HashColumn], dialect: Dialect, *, alias:
     :rtype: Selected
     """
     return Selected(row_hash_sql(columns, dialect, alias=alias), ROW_HASH_COLUMN)
-
-
-def _hash_bytes(hashed: str) -> bytes:
-    """the 16 bytes a hash's text spells, either spelling (:class:`HashEncoding`): 32 hex digits or 22 characters of
-    unpadded base64.
-
-    :param hashed: the hash's text
-    :ptype hashed: str
-    :return: its bytes
-    :rtype: bytes
-    :raises ValueError: for a text that is neither spelling of 16 bytes
-    """
-    try:
-        if len(hashed) == 2 * _HASH_BYTES:
-            return bytes.fromhex(hashed)
-        if len(hashed) == 22:
-            spelled = base64.b64decode(hashed + "==", validate=True)
-            if len(spelled) == _HASH_BYTES and base64.b64encode(spelled).decode().rstrip("=") == hashed:
-                return spelled
-    except (ValueError, binascii.Error) as refused:
-        raise ValueError(f"a hash is 32 hex digits or 22 of unpadded base64, got {hashed!r}") from refused
-    raise ValueError(f"a hash is 32 hex digits or 22 of unpadded base64, got {hashed!r}")
-
-
-def _same_hash(held: str | None, answered: Any) -> bool:
-    """True when a held hash spells the same bytes as an answered one, whichever spelling each is in; False for a
-    held row stored with no hash, or a held text that is no hash (read again, as a row with none)."""
-    if held is None or answered is None:
-        return False
-    if held == answered:
-        return True
-    try:
-        return _hash_bytes(held) == _hash_bytes(str(answered))
-    except ValueError:  # NOSILENT: a held text that is no hash is a row to read again (False), as documented
-        return False
 
 
 def _group_hash(hashes: Sequence[str]) -> GroupHash:
@@ -410,7 +379,7 @@ async def read_changed(
     *,
     key: Sequence[str | Sort],
     columns: Sequence[str | Selected],
-    held: Mapping[tuple[Any, ...], str | None],
+    held: Mapping[tuple[Any, ...], str | None] | Any,
     hash_columns: Sequence[HashColumn],
     by: Mapping[str, Any] | None = None,
     where: Sequence[Fragment] = (),
@@ -441,8 +410,11 @@ async def read_changed(
     :param held: each key the caller holds INSIDE this scope (a tuple in ``key``'s order, each value of its kind or
         its text: matched to the answered key by :func:`key_text`) onto the hash stored with it, in either
         spelling (:class:`HashEncoding`: compared by its bytes), None for a row stored with none (always read again); a
-        held key outside the scope would be reported gone
-    :ptype held: Mapping[tuple[Any, ...], str | None]
+        held key outside the scope would be reported gone. Or an Arrow table of the key columns (named as in
+        ``key``, any type) and :data:`ROW_HASH_COLUMN` (NULL: always read again), as L3 answers them: matched and
+        compared column by column in ``pyarrow.compute`` and numpy, never a Python row of it built (the gone keys,
+        the answer, are the only Python values made of it); the same answer as the mapping
+    :ptype held: Mapping[tuple[Any, ...], str | None] | pa.Table
     :param hash_columns: the columns the hash covers, as the stored hashes were taken
     :ptype hash_columns: Sequence[HashColumn]
     :param by: the scope's pinned leading columns, as :func:`~threetears.core.keyed.keyset_rows` takes them
@@ -503,7 +475,11 @@ async def read_changed(
         return tuple(key_text(value, kind.kind, kind.scale) for value, kind in zip(values, kinds, strict=True))
 
     # held and answered keys meet in one form: each value's canonical text by its column's kind
-    held_by_text = {canonical(held_key): (held_key, held_hash) for held_key, held_hash in held.items()}
+    holding: Held = (
+        HeldArrow(held, key_columns, kinds, _LANES, _LANE_MOD, key_text)
+        if pa is not None and isinstance(held, pa.Table)
+        else HeldMapping.of(held, canonical, _LANES, _LANE_MOD)
+    )
     vanished: list[tuple[Any, ...]] = []
     moved_groups: list[Any] = []
     moved_group_rows = 0
@@ -529,24 +505,18 @@ async def read_changed(
                 dialect=dialect,
             )
         )
-        held_groups: dict[str | None, list[str | None]] = {}
-        for text, (_, held_hash) in held_by_text.items():
-            held_groups.setdefault(text[at], []).append(held_hash)
+        held_groups = holding.group_hashes(at)
         moved: list[Any] = []
         moved_texts: set[str | None] = set()
         for group_text, (value, answered) in answered_groups.items():
-            if _held_group_hash(held_groups.get(group_text)) != answered:
+            if held_groups.get(group_text) != answered:
                 moved.append(value)
                 moved_texts.add(group_text)
                 moved_group_rows += answered.rows
         # a held group the scope answers no row of: every held key of it is gone, read no further
-        vanished = [held_key for text, (held_key, _) in held_by_text.items() if text[at] not in answered_groups]
-        gone_groups: dict[str | None, Any] = {}
-        for held_text, (held_key, _) in held_by_text.items():
-            if held_text[at] not in answered_groups:
-                gone_groups.setdefault(held_text[at], held_key[at])
+        vanished, gone_groups = holding.outside(at, set(answered_groups))
         moved_groups = [*moved, *gone_groups.values()]
-        held_by_text = {text: holding for text, holding in held_by_text.items() if text[at] in moved_texts}
+        holding = holding.within(at, moved_texts)
         if not moved:
             return ChangedRows(rows=[], gone_keys=vanished, moved_groups=moved_groups)
         if group_rows_at_most is not None and moved_group_rows > group_rows_at_most:
@@ -584,19 +554,17 @@ async def read_changed(
                 )
             )
 
-    seen: set[tuple[str | None, ...]] = set()
     wanted: list[tuple[Any, ...]] = []
     # each wanted key's hash as phase 1 answered it: phase 2 stamps it on the key's full row, never reading it again
     answered_hashes: dict[tuple[str | None, ...], Any] = {}
-    for row in scope:
-        answered_key = tuple(row[column] for column in key_columns)
-        text = canonical(answered_key)
-        seen.add(text)
-        holding = held_by_text.get(text)
-        if holding is None or not _same_hash(holding[1], row[ROW_HASH_COLUMN]):
+    answered_keys = [tuple(row[column] for column in key_columns) for row in scope]
+    answered_texts = [canonical(answered_key) for answered_key in answered_keys]
+    same, unanswered = holding.compare(answered_texts, [row[ROW_HASH_COLUMN] for row in scope])
+    for row, answered_key, text, held_same in zip(scope, answered_keys, answered_texts, same, strict=True):
+        if not held_same:
             wanted.append(answered_key)
             answered_hashes[text] = row[ROW_HASH_COLUMN]
-    gone = [*vanished, *(held_key for text, (held_key, _) in held_by_text.items() if text not in seen)]
+    gone = [*vanished, *unanswered]
     if not wanted:
         return ChangedRows(rows=[], gone_keys=gone, moved_groups=moved_groups, moved_group_rows=moved_group_rows)
     if full_rows_at_most is not None and len(wanted) > full_rows_at_most:
@@ -640,17 +608,6 @@ async def read_changed(
         moved_groups=moved_groups,
         moved_group_rows=moved_group_rows,
     )
-
-
-def _held_group_hash(hashes: Sequence[str | None] | None) -> GroupHash | None:
-    """the group hash of a held group's stored hashes; None (always moved) for a group not held, or holding a row
-    stored with no hash or with one that is no row hash."""
-    if hashes is None or any(hashed is None for hashed in hashes):
-        return None
-    try:
-        return _group_hash([hashed for hashed in hashes if hashed is not None])
-    except ValueError:  # NOSILENT: a stored hash that is no row hash makes its group moved (None), as documented
-        return None
 
 
 def _in_groups(group: str, values: Sequence[Any]) -> Fragment:

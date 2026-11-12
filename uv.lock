@@ -170,6 +170,7 @@ security = [
 ]
 snapshot = [
     { name = "duckdb" },
+    { name = "numpy" },
     { name = "pyarrow" },
 ]
 socks = [
@@ -202,6 +203,7 @@ requires-dist = [
     { name = "duckdb", marker = "extra == 'snapshot'", specifier = ">=1.1" },
     { name = "httpx", marker = "extra == 'http'" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'socks'" },
+    { name = "numpy", marker = "extra == 'snapshot'", specifier = ">=1.26" },
     { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20,<2" },
     { name = "pgvector", marker = "extra == 'pgvector'" },
     { name = "pyarrow", marker = "extra == 'snapshot'", specifier = ">=17" },

@@ -65,8 +65,9 @@ socks = ["httpx[socks]"]
 duckdb = ["duckdb>=1.1"]
 # a pod's whole copy of its tables in a DuckDB L1 read as Arrow (threetears.core.collections.copy_follower,
 # copy_checkpoint): pyarrow reads the rail's Arrow replies and writes the checkpoint's parts; DuckDB reads
-# Arrow without a copy.
-snapshot = ["duckdb>=1.1", "pyarrow>=17"]
+# Arrow without a copy. numpy: a changed-rows read's held Arrow table, its hashes decoded and its groups' lanes
+# summed column-wise (threetears.core.keyed._held).
+snapshot = ["duckdb>=1.1", "pyarrow>=17", "numpy>=1.26"]
 # pulled by anything importing :mod:`threetears.core.testing.fixtures`
 # (the centralized testcontainer harness for downstream integration
 # tests). lazy-imported inside fixture bodies so the rest of
