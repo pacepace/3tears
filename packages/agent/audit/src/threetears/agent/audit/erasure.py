@@ -99,10 +99,9 @@ log = get_logger(__name__)
 #: client sends a longer list in batches of this size.
 MAX_ANONYMIZE_ACTORS: Final[int] = 500
 
-#: seconds a pod waits for the hub's answer to one batch. the hub spends up to half of it waiting
-#: for the audit backlog published before the request to be persisted, and that half must outlast
-#: the hub's audit redelivery window -- the durable's ack wait plus one fetch -- or a message a
-#: crashed hub replica was holding fails every request made inside that window.
+#: seconds a pod waits for the hub's answer to one batch: the hub verifies the caller and rewrites
+#: the batch's matching audit rows within it. a batch with no answer by then raises
+#: :class:`AuditAnonymizeUnavailableError`, and sending it again is safe.
 DEFAULT_ANONYMIZE_TIMEOUT_SECONDS: Final[float] = 60.0
 
 #: every ``error_code`` a responder answers with.
