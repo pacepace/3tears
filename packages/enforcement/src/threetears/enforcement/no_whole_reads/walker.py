@@ -2061,6 +2061,13 @@ class _ModuleWalk(ast.NodeVisitor):
             # a collection's own schema name (``self.schema.name``): the table its class declares
             if (schema_name := self._schema_name_text(value)) is not None:
                 return ast.Constant(schema_name)
+            # ... in a base class declaring none, whose same-module subclasses each declare one: each of their tables,
+            # one or another, judged in turn (:func:`_branch_calls`)
+            if (subclass_names := self._subclass_schema_names(value)) is not None:
+                chained: ast.expr = ast.Constant(subclass_names[-1])
+                for name in reversed(subclass_names[:-1]):
+                    chained = ast.IfExp(test=ast.Constant(True), body=ast.Constant(name), orelse=chained)
+                return chained
             # a mapping keyed by constants (``by={STATE_COLUMN: state}``): each key the string it names
             if isinstance(value, ast.Dict):
                 keys = [
@@ -3146,6 +3153,49 @@ class _ModuleWalk(ast.NodeVisitor):
             return self._declared_schema(bound[0], depth + 1) if len(bound) == 1 else None
         return None
 
+    def _subclass_schema_names(self, node: ast.expr) -> list[str] | None:
+        """the tables a base class's own schema name (``self.schema.name``) may be: the walked class declares no
+        ``TableSchema`` (nor does a same-module base), and its same-module subclasses (direct or further down) declare
+        one each. A shared method there (``CoordinationCollection.sweep_expired``) runs on each subclass's table.
+
+        :param node: the expression
+        :ptype node: ast.expr
+        :return: the subclasses' declared names, in module order; None when the expression is no such name, the class
+            declares its own, or fewer than one subclass declares one
+        :rtype: list[str] | None
+        """
+        owner = self._class_nodes[-1] if self._class_nodes else None
+        if owner is None or not (isinstance(node, ast.Attribute) and node.attr == "name"):
+            return None
+        receiver = node.value
+        if not (
+            isinstance(receiver, ast.Attribute)
+            and receiver.attr == "schema"
+            and isinstance(receiver.value, ast.Name)
+            and receiver.value.id in {"self", "cls"}
+        ):
+            return None
+        if self._class_schema_name(owner, 0) is not None:
+            return None
+        classes = [statement for statement in self._tree.body if isinstance(statement, ast.ClassDef)]
+        below = {owner.name}
+        changed = True
+        while changed:
+            changed = False
+            for candidate in classes:
+                if candidate.name not in below and any(
+                    isinstance(base, ast.Name) and base.id in below for base in candidate.bases
+                ):
+                    below.add(candidate.name)
+                    changed = True
+        names = [
+            found
+            for candidate in classes
+            if candidate.name in below - {owner.name} and (found := self._class_schema_name(candidate, 0)) is not None
+        ]
+        unique = list(dict.fromkeys(names))
+        return unique or None
+
     def _class_schema_name(self, owner: ast.ClassDef, depth: int) -> str | None:
         """the table name a class declares as its ``schema = TableSchema(name=...)`` (or a module constant bound to
         one), or that a base class of the same module declares.
@@ -3540,11 +3590,30 @@ def _literal_branches(value: ast.expr) -> bool:
     :return: whether it is
     :rtype: bool
     """
-    return (
-        isinstance(value, ast.IfExp)
-        and isinstance(value.body, ast.Dict | ast.Tuple | ast.List)
-        and isinstance(value.orelse, ast.Dict | ast.Tuple | ast.List)
+    if not isinstance(value, ast.IfExp):
+        return False
+    # a table named one way or another (a base class's method on each subclass's table): strings, chained
+    arms = (value.body, value.orelse)
+    if all(_string_arm(arm) for arm in arms):
+        return True
+    return isinstance(value.body, ast.Dict | ast.Tuple | ast.List) and isinstance(
+        value.orelse, ast.Dict | ast.Tuple | ast.List
     )
+
+
+def _string_arm(arm: ast.expr) -> bool:
+    """whether an arm of a condition is a literal string, or another condition whose arms all are."""
+    if isinstance(arm, ast.Constant):
+        return isinstance(arm.value, str)
+    return isinstance(arm, ast.IfExp) and _string_arm(arm.body) and _string_arm(arm.orelse)
+
+
+def _arms(value: ast.IfExp) -> list[ast.expr]:
+    """every arm of a condition, a chained condition's arms flattened."""
+    found: list[ast.expr] = []
+    for arm in (value.body, value.orelse):
+        found.extend(_arms(arm) if isinstance(arm, ast.IfExp) and _string_arm(arm) else [arm])
+    return found
 
 
 def _branch_calls(call: ast.Call) -> list[ast.Call]:
@@ -3565,7 +3634,7 @@ def _branch_calls(call: ast.Call) -> list[ast.Call]:
                     func=each.func, args=[*each.args[:index], arm, *each.args[index + 1 :]], keywords=each.keywords
                 )
                 for each in calls
-                for arm in (argument.body, argument.orelse)
+                for arm in _arms(argument)
             ]
     for index, keyword in enumerate(call.keywords):
         if _literal_branches(keyword.value):
@@ -3581,7 +3650,7 @@ def _branch_calls(call: ast.Call) -> list[ast.Call]:
                     ],
                 )
                 for each in calls
-                for arm in (keyword.value.body, keyword.value.orelse)
+                for arm in _arms(keyword.value)
             ]
     return calls
 

@@ -4563,3 +4563,80 @@ def test_a_by_that_is_one_literal_or_another_is_judged_per_branch(tmp_path: Path
     found = _symbols(config)
     assert not any(function == "repoint" for function, _ in found), found
     assert ("repoint_inline", 'non-key-where "files"') in found, found
+
+
+_BASE_CLASS_SWEEP = {
+    "coordination.py": """
+        from threetears.core.collections.schema_backed import Index, SchemaBackedCollection, TableSchema
+        from threetears.core.keyed import delete_before
+
+        class Shared(SchemaBackedCollection):
+            async def sweep(self, cutoff):
+                return await delete_before(
+                    self.schema.name, collection=self, key=("purpose", "key"), column="expires_at", before=cutoff, page=5
+                )
+
+            async def by_owner(self, owner):
+                return await delete_before(
+                    self.schema.name, collection=self, key=("purpose", "key"), column="owner", before=owner, page=5
+                )
+
+        class Counters(Shared):
+            schema = TableSchema(
+                name="counters",
+                primary_key=("purpose", "key"),
+                columns=[],
+                indexes=(
+                    Index(
+                        "counters_expiry",
+                        "expires_at",
+                        asc=("expires_at",),
+                        purpose="src/coordination.py::Shared.sweep",
+                        plan_test="tests/test_plans.py::test_sweeps",
+                    ),
+                ),
+            )
+
+        class Claims(Shared):
+            schema = TableSchema(
+                name="claims",
+                primary_key=("purpose", "key"),
+                columns=[],
+                indexes=(
+                    Index(
+                        "claims_expiry",
+                        "expires_at",
+                        asc=("expires_at",),
+                        purpose="src/coordination.py::Shared.sweep",
+                        plan_test="tests/test_plans.py::test_sweeps",
+                    ),
+                ),
+            )
+    """,
+}
+
+_BASE_CLASS_SWEEP_PLANS = """
+    from threetears.core.testing.plans import explain_write, plan_uses_index
+
+    async def test_sweeps(conn):
+        plan = await explain_write(conn, "DELETE FROM counters WHERE expires_at < $1", 0)
+        assert plan_uses_index(plan, "counters_expiry")
+        plan = await explain_write(conn, "DELETE FROM claims WHERE expires_at < $1", 0)
+        assert plan_uses_index(plan, "claims_expiry")
+"""
+
+
+def test_a_base_class_method_s_schema_name_is_each_subclass_s_table(tmp_path: Path) -> None:
+    """Flips if a shared method of a base collection declaring no TableSchema (``self.schema.name``) is not judged on
+    each same-module subclass's declared table: the sweep through each subclass's purposed expiry index passes and
+    keeps both purposes used; a sweep by a column no subclass indexes is a non-key read, never an unknown one."""
+    _plans(tmp_path, _BASE_CLASS_SWEEP_PLANS)
+    config = _config(tmp_path, _BASE_CLASS_SWEEP)
+    findings = no_whole_reads_findings(config)
+    found = _symbols(config)
+    assert not [finding for finding in findings if "unknown-" in finding], findings
+    assert not [finding for finding in findings if ": index-" in finding], findings
+    assert not {function for function, _ in found} & {"Shared.sweep"}, found
+    assert {symbol.split(" ")[0] for function, symbol in found if function == "Shared.by_owner"} == {"non-key-where"}, (
+        found
+    )
