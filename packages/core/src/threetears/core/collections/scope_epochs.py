@@ -95,8 +95,9 @@ from typing import Any, Final
 import asyncpg
 from threetears.observe import contain, get_logger
 
-from threetears.core.keyed import Lock, WholeReads, read_row, read_value
+from threetears.core.keyed import KeyBatch, Lock, WholeReads, read_keyed, read_row, read_value
 from threetears.core.sql_fragments import quote_identifier
+from threetears.core.declared import whole_read
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, read_l3_rows
 from threetears.core.collections.schema_backed import (
@@ -137,19 +138,23 @@ _COLUMNS: Final = ("scope", "epoch", "previous_epoch", "writing", "pending", "da
 
 #: why a snapshot reads the epochs table whole, counted by table and why (``scope_epochs_whole_reads_total``). Only
 #: ``first`` (an instance's first read) is expected; every other is a record a read of its changes could not be trusted
-#: to follow
+#: to follow. Each is a cold start (coordinator ruling 2026-11-12): the table emptied or replaced, or restored behind
+#: the version held
 _WHOLE_READS: Final = WholeReads(
     "scope_epochs_whole_reads_total",
     subject="whole reads of a scope epochs table",
     whys={
         "first": "the first read of an instance: every scope is read once",
         "reset": "the writer's record was recreated or is gone (the table emptied or replaced)",
-        "version_backwards": "the data's version went back",
-        "epoch_backwards": "a scope's epoch went back",
-        "pending_lost": "a scope held as pending is neither pending nor moved: its mark cleared without a commit moving it",
+        "version_backwards": "the data's version went back (the table restored from behind)",
     },
     expected={"first"},
 )
+
+#: why a change names scopes the rows held cannot be merged with, each read again by key, never the table whole
+#: (coordinator ruling 2026-11-12): a scope's epoch went back, or a scope held as pending is neither pending nor moved
+#: (its mark cleared without a commit moving it)
+_REREAD_BY_KEY: Final = frozenset({"epoch_backwards", "pending_lost"})
 
 #: scopes one statement names when touching
 _TOUCH_BATCH: Final = 500
@@ -324,13 +329,25 @@ class ScopeEpochs:
         """
         async with self._reading:
             held = self._held
-            if held is None:
-                return await self._read_whole("first")
-            changed = await self._read_changed()
-            why = self._distrust(held, changed)
-            if why is not None:
-                return await self._read_whole(why)
-            return self._merge(held, changed)
+            why = "first"
+            if held is not None:
+                changed = await self._read_changed()
+                distrust = self._distrust(held, changed)
+                if distrust is None:
+                    return self._merge(held, changed)
+                if distrust in _REREAD_BY_KEY:
+                    return await self._reread(held, changed)
+                why = distrust
+            return await whole_read(
+                self._read_whole(why),
+                kind="cold_start",
+                reason="every scope's epoch is read once into a reader holding none (its first read), and again only when "
+                "the table was emptied, replaced or restored behind the version held: no row held answers for it",
+                ruling="Pace 2026-11-12: cold start fills read whole; coordinator 2026-11-12: a reset and a restore are one",
+                proof="packages/core/tests/integration/test_scope_epochs_incremental.py::"
+                "test_read_whole_is_reached_only_at_a_first_read_a_reset_or_a_restore",
+                speed="packages/core/tests/integration/test_scope_epochs_incremental.py::test_read_whole_speed_at_real_size",
+            )
 
     async def _read_whole(self, why: str) -> EpochSnapshot:
         """read every row, keep it, and answer its snapshot; counted by why.
@@ -346,7 +363,16 @@ class ScopeEpochs:
         _WHOLE_READS.count(why, table=self._collection.table_name)
         l3 = self._collection.required_l3_pool
         record = await read_value(l3, self.table_name, by={"scope": WHOLE}, column="epoch")
-        rows = await read_l3_rows(l3, self._collection.table_name, _COLUMNS, ("scope",), page_size=self._page_size)
+        rows = await whole_read(
+            read_l3_rows(l3, self._collection.table_name, _COLUMNS, ("scope",), page_size=self._page_size),
+            kind="cold_start",
+            reason="every scope's epoch is read once into a reader holding none (its first read), and again only when "
+            "the table was emptied, replaced or restored behind the version held: no row held answers for it",
+            ruling="Pace 2026-11-12: cold start fills read whole; coordinator 2026-11-12: a reset and a restore are one",
+            proof="packages/core/tests/integration/test_scope_epochs_incremental.py::"
+            "test_read_whole_is_reached_only_at_a_first_read_a_reset_or_a_restore",
+            speed="packages/core/tests/integration/test_scope_epochs_incremental.py::test_read_whole_speed_at_real_size",
+        )
         self._rows = {str(row["scope"]): row for row in rows}
         self._since = int(record) if record is not None else 0
         built = _Building()
@@ -385,7 +411,7 @@ class ScopeEpochs:
         :ptype held: EpochSnapshot
         :param changed: the rows :meth:`_read_changed` read
         :ptype changed: list[dict[str, Any]]
-        :return: the why (:data:`_WHOLE_READS`), or None
+        :return: the why (:data:`_WHOLE_READS`, or :data:`_REREAD_BY_KEY`), or None
         :rtype: str | None
         """
         record = next((row for row in changed if str(row["scope"]) == WHOLE), None)
@@ -402,6 +428,47 @@ class ScopeEpochs:
         if not held.pending <= read:
             return "pending_lost"
         return None
+
+    async def _reread(self, held: EpochSnapshot, changed: list[dict[str, Any]]) -> EpochSnapshot:
+        """the snapshot when a change names scopes the rows held cannot be merged with: an epoch gone back, or a pending
+        mark cleared without its epoch moving past the last read. Those scopes alone are read again, by key, and the
+        snapshot built from the rows held, the change's and theirs: what a whole read answers, read by key.
+
+        :param held: the snapshot held
+        :ptype held: EpochSnapshot
+        :param changed: the rows :meth:`_read_changed` read
+        :ptype changed: list[dict[str, Any]]
+        :return: the snapshot
+        :rtype: EpochSnapshot
+        """
+        read = {str(row["scope"]) for row in changed}
+        backwards = {
+            str(row["scope"])
+            for row in changed
+            if (before := self._rows.get(str(row["scope"]))) is not None and int(row["epoch"]) < int(before["epoch"])
+        }
+        named = sorted(backwards | (held.pending - read))
+        again = await read_keyed(
+            self._collection.required_l3_pool,
+            self.table_name,
+            keys=KeyBatch(("scope",), [(scope,) for scope in named]),
+            columns=_COLUMNS,
+        )
+        found = {str(row["scope"]): dict(row) for row in again}
+        for row in changed:
+            self._rows[str(row["scope"])] = row
+        for scope in named:
+            if scope in found:
+                self._rows[scope] = found[scope]
+            else:
+                self._rows.pop(scope, None)
+        record = self._rows.get(WHOLE)
+        self._since = int(record["epoch"]) if record is not None else 0
+        built = _Building()
+        for row in self._rows.values():
+            built.apply(row)
+        self._held = built.snapshot()
+        return self._held
 
     def _merge(self, held: EpochSnapshot, changed: list[dict[str, Any]]) -> EpochSnapshot:
         """merge the rows of a change into the rows held, and answer the snapshot; the one held when nothing moved.
