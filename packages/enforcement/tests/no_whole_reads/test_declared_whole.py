@@ -131,7 +131,7 @@ def test_a_kind_lets_through_only_its_own_whole_reads(tmp_path: Path) -> None:
         (("the manifest's counts are taken inside the dump's own snapshot", "snapshot counts"), "the reason must say"),
         (("test_counts_only_in_a_snapshot", "test_missing"), "the proof tests/test_backup.py defines no test_missing"),
         (('kind="backup_verification"', 'kind="nightly"'), "kind must be one of"),
-        (('speed="tests/test_backup.py::test_count_speed"', 'speed=""'), "the speed test names no test file"),
+        (('speed="tests/test_backup.py::test_fill_speed"', 'speed=""'), "the speed test names no test file"),
     ],
 )
 def test_a_declaration_is_checked_not_trusted(tmp_path: Path, change: tuple[str, str], message: str) -> None:
@@ -142,7 +142,8 @@ def test_a_declaration_is_checked_not_trusted(tmp_path: Path, change: tuple[str,
     )
     findings = _findings(tmp_path, {"store.py": module})
     assert any(message in finding for finding in findings), findings
-    assert any("in <module>: whole-aggregate items" in finding for finding in findings), findings
+    still = "in fill: whole-select items" if "fill_speed" in change[0] else "in <module>: whole-aggregate items"
+    assert any(still in finding for finding in findings), findings
 
 
 def test_a_proof_must_name_the_enclosing_function(tmp_path: Path) -> None:
@@ -245,3 +246,90 @@ def test_a_call_into_a_declared_constant_read_is_declared_there_too(tmp_path: Pa
     findings = _findings(tmp_path, {"store.py": _STORE, "restore.py": caller}, proofs)
     assert any("in plain: calls-whole-read count_items" in finding for finding in findings), findings
     assert not any("in same:" in finding or " same whole_read" in finding for finding in findings), findings
+
+
+_LOCAL_SQL = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.declared import whole_read
+
+    ITEMS = TableSchema(name="items", primary_key="id", columns=[])
+
+    async def count_items(conn, table):
+        sql = f"SELECT count(*) FROM {table}"
+        return await whole_read(
+            conn.fetchval(sql),
+            kind="backup_verification",
+            reason="the manifest's counts are taken inside the dump's own snapshot",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_counts_only_in_a_snapshot",
+            speed="tests/test_backup.py::test_count_speed",
+        )
+"""
+
+
+@pytest.mark.parametrize("reused", [False, True])
+def test_a_local_statement_named_only_by_the_declaration_is_covered(tmp_path: Path, reused: bool) -> None:
+    """Flips if a statement bound to a local just before the declaration (named only in the wrapped read) is still
+    reported, or if one the function also runs undeclared is covered."""
+    module = _LOCAL_SQL
+    if reused:
+        module = module.replace(
+            "        return await whole_read(", "        await conn.fetchval(sql)\n        return await whole_read("
+        )
+    findings = _findings(tmp_path, {"store.py": module})
+    reported = any("in count_items: unknown-schema" in f or "in count_items: whole-aggregate" in f for f in findings)
+    assert reported is reused, findings
+
+
+_BARE = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.declared import whole_read
+
+    ITEMS = TableSchema(name="items", primary_key="id", columns=[])
+    OWNERS = TableSchema(name="owners", primary_key="id", columns=[])
+
+    async def count_items(conn):
+        return await whole_read(
+            conn.fetchval("STATEMENT"),
+            kind="backup_verification",
+            reason="the manifest's counts are taken inside the dump's own snapshot",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_counts_only_in_a_snapshot",
+        )
+
+    async def inventory(conn):
+        return await whole_read(
+            count_items(conn),
+            kind="backup_verification",
+            reason="the inventory of every table, counted in the dump's own snapshot",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_inventory_entry",
+        )
+"""
+
+
+@pytest.mark.parametrize(
+    ("statement", "accepted"),
+    [
+        ("SELECT count(*) FROM items", True),
+        ("SELECT count(*) AS n, coalesce(sum(hashtext(t::text)::bigint), 0) AS s FROM items t", True),
+        ("SELECT count(*) FROM items i JOIN owners o ON o.id = i.id", False),
+        ("SELECT count(*) FROM items WHERE body <> ''", False),
+        ("SELECT count(*) FROM items GROUP BY body ORDER BY 1", False),
+    ],
+)
+def test_a_backup_count_omits_its_speed_test_only_when_it_is_the_bare_count(
+    tmp_path: Path, statement: str, accepted: bool
+) -> None:
+    """Flips if a backup_verification declaration with no speed test is accepted over a joined, filtered or ordered
+    statement, or refused over a bare count(*) or row checksum of one table (and its declared caller with it).
+    Coordinator ruling 2026-11-12: the bare count IS the bare operation; anything richer is timed."""
+    proofs = _PROOFS + textwrap.indent("\ndef test_inventory_entry():\n    assert inventory\n", "    ")
+    findings = _findings(tmp_path, {"store.py": _BARE.replace("STATEMENT", statement)}, proofs)
+    refused = [finding for finding in findings if "names no speed test" in finding]
+    if accepted:
+        assert findings == [], findings
+    else:
+        assert any("count_items whole_read" in finding for finding in refused), findings
+        assert any("in count_items:" in finding for finding in findings), findings
+        assert any("in inventory: calls-whole-read count_items" in finding for finding in findings), findings

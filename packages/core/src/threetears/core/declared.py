@@ -81,7 +81,9 @@ def whole_read(
         reached only in that situation
     :ptype proof: str
     :param speed: ``<test file>::<test function>``: a speed test at real size calling ``budget_problem``, for
-        ``cold_start``, ``every_state_answer``, ``backup_verification`` and ``schema_change``
+        ``cold_start``, ``every_state_answer``, ``backup_verification`` and ``schema_change`` (a
+        ``backup_verification`` of a bare ``count(*)`` or row checksum over one table, which the gate checks, needs
+        none: it is the bare operation)
     :ptype speed: str
     :return: ``value``
     :rtype: _T

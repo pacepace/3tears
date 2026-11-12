@@ -550,6 +550,16 @@ _STATIC_UNIT_KINDS: Final[frozenset[str]] = frozenset(
 #: Pace's ruling, as a declaration cites it: his name and the ruling's date
 _RULING: Final[re.Pattern[str]] = re.compile(r"\bPace\b.*\b\d{4}-\d{2}-\d{2}\b|\b\d{4}-\d{2}-\d{2}\b.*\bPace\b")
 
+#: the bare operation a backup verifies with: ``count(*)`` (and the order-free row checksum) over one relation, no join,
+#: filter or ordering. A ``backup_verification`` declaration whose every statement is this needs no speed test (it IS
+#: the bare operation; coordinator ruling 2026-11-12); anything richer does.
+_BARE_COUNT: Final[re.Pattern[str]] = re.compile(
+    r"^\s*SELECT\s+count\(\*\)(?:\s+AS\s+\w+)?"
+    r"(?:\s*,\s*coalesce\(sum\(hashtext\(\w+::text\)::bigint\),\s*0\)(?:\s+AS\s+\w+)?)?"
+    r"\s+FROM\s+(?:\"[^\"]*\"|[\w{}]+)(?:\.(?:\"[^\"]*\"|[\w{}]+))?(?:\s+\w+)?\s*;?\s*$",
+    re.IGNORECASE,
+)
+
 #: a ``calls-whole-read`` hit's statement: ``<call> -> <path>:<line> <symbol>``
 _REACHED: Final[re.Pattern[str]] = re.compile(r" -> (?P<path>[^ :]+):\d+ ")
 
@@ -609,13 +619,27 @@ class _Declared:
                 if not declared.covers(hit.path, hit.function, hit.line) or not self._lets(declared, hit, scan.schema):
                     continue
                 if hit.kind == "calls-whole-read":
-                    reached = _REACHED.search(hit.statement)
-                    target = (reached.group("path") if reached else "", hit.symbol.split(" ", 1)[-1])
+                    target = self._target(hit)
                     if target in undeclared or kinds_of.get(target) != {declared.kind}:
                         continue
                 self.covered.add(hit)
                 used.add(index)
+        bare = self._bare_functions(sound, hits)
         for index, declared in enumerate(sound):
+            if index in used and declared.kind == "backup_verification" and not declared.speed:
+                mine = [hit for hit in self.covered if declared.covers(hit.path, hit.function, hit.line)]
+                if not all(
+                    (hit.kind == "calls-whole-read" and self._target(hit) in bare)
+                    or (hit.kind != "calls-whole-read" and _BARE_COUNT.match(hit.statement) is not None)
+                    for hit in mine
+                ):
+                    self.covered.difference_update(mine)
+                    self.findings.append(
+                        f"{declared.path}:{declared.line} {declared.function} whole_read(kind='backup_verification'): "
+                        "names no speed test, which only a bare count(*) or row checksum over one table (no join, "
+                        "filter or ordering) may omit: give speed=<test file>::<test function> calling budget_problem"
+                    )
+                    continue
             if index in used:
                 self.accepted.append(declared)
             else:
@@ -624,6 +648,38 @@ class _Declared:
                     "no whole read of its kind (a keyed read needs no declaration; a call into a function must be "
                     "declared there with the same kind): remove it or fix what it wraps"
                 )
+
+    @staticmethod
+    def _target(hit: WholeReadHit) -> tuple[str, str]:
+        """the function a ``calls-whole-read`` hit reaches.
+
+        :param hit: the hit
+        :ptype hit: WholeReadHit
+        :return: its path and qualified name
+        :rtype: tuple[str, str]
+        """
+        reached = _REACHED.search(hit.statement)
+        return (reached.group("path") if reached else "", hit.symbol.split(" ", 1)[-1])
+
+    def _bare_functions(self, sound: list[DeclaredWhole], hits: list[WholeReadHit]) -> set[tuple[str, str]]:
+        """the functions whose every whole read is a declared bare count (:data:`_BARE_COUNT`).
+
+        :param sound: the sound declarations
+        :ptype sound: list[DeclaredWhole]
+        :param hits: every hit
+        :ptype hits: list[WholeReadHit]
+        :return: their paths and qualified names
+        :rtype: set[tuple[str, str]]
+        """
+        reads: dict[tuple[str, str], list[bool]] = {}
+        for hit in hits:
+            if hit.kind == "calls-whole-read":
+                continue
+            owners = [declared for declared in sound if declared.covers(hit.path, hit.function, hit.line)]
+            places = {(owner.path, owner.function) for owner in owners} or {(hit.path, hit.function)}
+            for place in places:
+                reads.setdefault(place, []).append(bool(owners) and _BARE_COUNT.match(hit.statement) is not None)
+        return {place for place, bare in reads.items() if all(bare)}
 
     @staticmethod
     def _lets(declared: DeclaredWhole, hit: WholeReadHit, schema: SchemaCatalog) -> bool:
@@ -668,7 +724,10 @@ class _Declared:
         proof = _proving_test_defect(config.repo_root, line)
         if proof is not None:
             defects.append(f"the proof {proof}")
-        if declared.kind in DECLARED_SPEED_KINDS:
+        if declared.kind in DECLARED_SPEED_KINDS and not (
+            declared.kind == "backup_verification" and not declared.speed
+        ):
+            # a backup_verification with no speed test is judged once its statements are known (_bare_only)
             speed = _proving_test_defect(config.repo_root, line, test=declared.speed, calls="budget_problem")
             if speed is not None:
                 defects.append(f"the speed test {speed}")

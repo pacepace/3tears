@@ -440,8 +440,18 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
             "calls-whole-read",
         }
     ),
-    # a backup's own count and checksum, taken inside its snapshot
-    "backup_verification": frozenset({"whole-select", "whole-aggregate", "verify-aggregate", "calls-whole-read"}),
+    # a backup's own count and checksum, taken inside its snapshot, of every table it holds (named at run time, so
+    # read as unknown, cut at the backup's instant where a column says when a row was written)
+    "backup_verification": frozenset(
+        {
+            "whole-select",
+            "whole-aggregate",
+            "verify-aggregate",
+            "unknown-schema",
+            "unknown-predicate",
+            "calls-whole-read",
+        }
+    ),
     # a warehouse relation holding no key to read by (never an L3 table)
     "unbounded_by_warehouse": frozenset(
         {
@@ -467,7 +477,9 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
     "operator_reset": frozenset({"truncate", "truncate-call", "whole-delete"}),
 }
 
-#: the kinds whose declaration names a speed test: they read our own tables at size
+#: the kinds whose declaration names a speed test: they read our own tables at size. A ``backup_verification`` whose
+#: every statement is a bare ``count(*)`` or row checksum over one table (no join, filter or ordering) may omit it: the
+#: statement IS the bare operation (coordinator ruling 2026-11-12)
 DECLARED_SPEED_KINDS: Final[frozenset[str]] = frozenset(
     {"cold_start", "every_state_answer", "backup_verification", "schema_change"}
 )
@@ -739,6 +751,8 @@ class DeclaredWhole:
     :ivar speed: the speed test, empty when not given or not a literal
     :ivar constants: each module constant the wrapped expression names and nothing else in the module does, with the
         lines of its value: its statement's hits are written there
+    :ivar locals: each local of the enclosing function bound once and named only in the wrapped expression (the SQL
+        built just before the call), with the lines of its value
     """
 
     path: str
@@ -752,6 +766,7 @@ class DeclaredWhole:
     proof: str
     speed: str = ""
     constants: tuple[tuple[str, int, int], ...] = ()
+    locals: tuple[tuple[str, int, int], ...] = ()
 
     def covers(self, path: str, function: str, line: int) -> bool:
         """whether a site (a hit, a written statement) is the declared read: in the wrapped expression, or the value
@@ -768,7 +783,9 @@ class DeclaredWhole:
         """
         if path != self.path:
             return False
-        if function == self.function and self.first <= line <= self.last:
+        if function == self.function and (
+            self.first <= line <= self.last or any(first <= line <= last for _, first, last in self.locals)
+        ):
             return True
         return function == "<module>" and any(first <= line <= last for _, first, last in self.constants)
 
@@ -2489,6 +2506,7 @@ class _ModuleWalk(ast.NodeVisitor):
                 # a constant named anywhere else in the module is not this declaration's alone
                 if span is not None and everywhere.count(name) == inside.count(name):
                     constants.append((name, *span))
+        own = self._declared_locals(node, wrapped) if wrapped is not None else ()
         self.declarations.append(
             DeclaredWhole(
                 self.path,
@@ -2502,8 +2520,49 @@ class _ModuleWalk(ast.NodeVisitor):
                 literal.get("proof", ""),
                 literal.get("speed", ""),
                 tuple(constants),
+                own,
             )
         )
+
+    def _declared_locals(self, node: ast.Call, wrapped: ast.expr) -> tuple[tuple[str, int, int], ...]:
+        """the locals of the declaration's enclosing function the wrapped expression names: each bound once there and
+        named nowhere else in it, with its value's lines.
+
+        :param node: the declaration
+        :ptype node: ast.Call
+        :param wrapped: the wrapped read
+        :ptype wrapped: ast.expr
+        :return: ``(name, first, last)`` each
+        :rtype: tuple[tuple[str, int, int], ...]
+        """
+        enclosing = [
+            function
+            for function in ast.walk(self._tree)
+            if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and function.lineno <= node.lineno <= (function.end_lineno or function.lineno)
+        ]
+        if not enclosing:
+            return ()
+        function = max(enclosing, key=lambda found: found.lineno)
+        inside = [n.id for n in ast.walk(wrapped) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
+        loads = [n.id for n in ast.walk(function) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
+        bound: dict[str, list[ast.stmt]] = {}
+        for statement in ast.walk(function):
+            if isinstance(statement, ast.Assign):
+                for target in statement.targets:
+                    if isinstance(target, ast.Name):
+                        bound.setdefault(target.id, []).append(statement)
+            elif isinstance(statement, (ast.AugAssign, ast.AnnAssign)) and isinstance(statement.target, ast.Name):
+                # a second spelling of the name: never the declaration's alone
+                bound.setdefault(statement.target.id, []).append(statement)
+        found: list[tuple[str, int, int]] = []
+        for name in sorted(set(inside)):
+            assigned = bound.get(name, [])
+            only = assigned[0] if len(assigned) == 1 else None
+            if isinstance(only, ast.Assign) and loads.count(name) == inside.count(name):
+                value = only.value
+                found.append((name, value.lineno, value.end_lineno or value.lineno))
+        return tuple(found)
 
     def _relation_produced(self, value: ast.expr) -> str | None:
         """the relation an expression names when a declared relation producer yields it: a call of a declared
