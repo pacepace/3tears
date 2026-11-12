@@ -29,7 +29,9 @@ import pyarrow as pa
 import pytest
 
 from packages.core.tests.unit.shared_arrow import jobs
+from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
 from threetears.core.shared_arrow import (
+    MappedTables,
     MappedVersion,
     Parts,
     SharedArrowFullError,
@@ -701,6 +703,171 @@ class TestTheServingProcessReadsInPlace:
         reader.close()
         with pytest.raises(RuntimeError), reader.read():
             pass
+
+
+#: the tables of a version a serving read maps, as many as a report's version holds
+_SERVING_TABLES = 20
+
+
+class _CountingCursor:
+    """a DuckDB cursor that counts its registrations and its closing, the rest passed through."""
+
+    def __init__(self, cursor: Any, counts: dict[str, int]) -> None:
+        self._cursor = cursor
+        self._counts = counts
+
+    def register(self, name: str, table: Any) -> Any:
+        self._counts["register"] += 1
+        return self._cursor.register(name, table)
+
+    def close(self) -> None:
+        self._counts["closed"] += 1
+        self._cursor.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+
+class _CountingConnection:
+    """a version's DuckDB connection whose cursors count their registrations (:class:`_CountingCursor`)."""
+
+    def __init__(self, connection: Any, counts: dict[str, int]) -> None:
+        self._connection = connection
+        self._counts = counts
+
+    def cursor(self) -> _CountingCursor:
+        self._counts["cursors"] += 1
+        return _CountingCursor(self._connection.cursor(), self._counts)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+
+@pytest.fixture
+def counts(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """every version connection's cursors made, registrations and cursors closed, counted.
+
+    :return: the counts
+    :rtype: dict[str, int]
+    """
+    made = {"cursors": 0, "register": 0, "closed": 0}
+    connect = MappedTables.connect
+
+    def counting(self: MappedTables, **kwargs: Any) -> _CountingConnection:
+        return _CountingConnection(connect(self, **kwargs), made)
+
+    monkeypatch.setattr(MappedTables, "connect", counting)
+    return made
+
+
+def _serving_version(store: SharedArrowStore, name: str, rows: int = 10) -> dict[str, pa.Table]:
+    tables = {f"t{index}": _table(index, rows=rows) for index in range(_SERVING_TABLES)}
+    store.publish(name, tables)
+    return tables
+
+
+class TestAReadBorrowsARegisteredCursor:
+    def test_reads_of_a_version_register_each_table_once_per_cursor_made(
+        self, store: SharedArrowStore, counts: dict[str, int]
+    ) -> None:
+        """Flips if a read registers the version's tables again on a cursor an earlier read registered (SharedRead
+        made a cursor and registered every table on every read: 45k registrations over 40 uploads in reports)."""
+        _serving_version(store, "v1")
+        reader = store.reader()
+        for index in range(50):
+            with reader.read() as read:
+                assert read.cursor.execute('SELECT sum(a) FROM "t3"').fetchone() == (30,)
+        assert counts["cursors"] == 1, counts
+        assert counts["register"] == _SERVING_TABLES, counts
+        barrier = threading.Barrier(4)
+        failures: list[BaseException] = []
+
+        def overlapping() -> None:
+            try:
+                with reader.read() as read:
+                    barrier.wait(timeout=10)
+                    assert read.cursor.execute('SELECT sum(a) FROM "t5"').fetchone() == (50,)
+            except BaseException as exc:  # noqa: BLE001 - handed to the test thread
+                failures.append(exc)
+
+        threads = [threading.Thread(target=overlapping) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert not failures, failures
+        assert counts["cursors"] == 4, "four reads at once hold four cursors, never one cursor at once"
+        assert counts["register"] == 4 * _SERVING_TABLES, counts
+        reader.close()
+        assert counts["closed"] == 4, "every cursor of the version closes when it is let go"
+
+    def test_a_read_that_left_something_on_its_cursor_or_failed_gives_it_to_no_other_read(
+        self, store: SharedArrowStore, counts: dict[str, int]
+    ) -> None:
+        """Flips if a cursor a read left a temporary view or table on (one shadows a mapped table of the same name),
+        or whose read raised, is handed to the next read."""
+        _serving_version(store, "v1")
+        reader = store.reader()
+        with reader.read() as read:
+            read.cursor.execute('CREATE TEMP VIEW "t3" AS SELECT 42 AS a')
+        with reader.read() as read:
+            assert read.cursor.execute('SELECT sum(a) FROM "t3"').fetchone() == (30,)
+        with reader.read() as read:
+            read.cursor.execute("CREATE TEMP TABLE scratch AS SELECT 1 AS x")
+        with pytest.raises(RuntimeError, match="mid-read"), reader.read() as read:
+            raise RuntimeError("mid-read")
+        with reader.read() as read:
+            assert read.cursor.execute("SELECT count(*) FROM duckdb_tables() WHERE temporary").fetchone() == (0,)
+        assert counts["cursors"] == 4, counts
+        assert counts["closed"] == 3, "the left-on and failed reads' cursors are closed, not handed on"
+        reader.close()
+        assert counts["closed"] == 4, counts
+
+    def test_a_superseded_version_closes_its_cursors_when_its_last_read_ends(
+        self, store: SharedArrowStore, counts: dict[str, int]
+    ) -> None:
+        """Flips if a version's free cursors outlive its lease (they hold its connection and mapped pages)."""
+        _serving_version(store, "v1")
+        reader = store.reader()
+        with reader.read():
+            pass
+        assert counts["closed"] == 0
+        _serving_version(store, "v2")
+        with reader.read() as read:
+            assert read.version == "v2"
+        assert counts["closed"] == 1, "v1's free cursor closed as v1 was let go"
+        store.settle()
+        assert store.versions() == ("v2",)
+        reader.close()
+        assert counts["closed"] == 2
+
+    async def test_a_read_at_real_size_costs_little_past_its_query(self, store: SharedArrowStore) -> None:
+        """a serving read of a version of 20 tables (open, query, close) within 2x the same point query on one cursor
+        already registered, interleaved; registering every table again on each read (today's 1.5 ms a read beside a
+        0.3 ms query) is over."""
+        _serving_version(store, "v1", rows=50_000)
+        reader = store.reader()
+        reads = 200
+        # the bare: the same point query on a cursor already registered, the one an open read holds
+        held = reader.read()
+        bare_cursor = held.__enter__().cursor
+        point = 'SELECT a FROM "t3" WHERE a = 3 LIMIT 1'
+
+        async def bare() -> None:
+            for _ in range(reads):
+                assert bare_cursor.execute(point).fetchone() == (3,)
+
+        async def served() -> None:
+            for _ in range(reads):
+                with reader.read() as read:
+                    assert read.cursor.execute(point).fetchone() == (3,)
+
+        baseline, took = await best_seconds_interleaved(bare, served)
+        print(f"{reads} serving reads {took * 1000:.1f} ms, the bare point queries {baseline * 1000:.1f} ms")
+        held.__exit__(None, None, None)
+        reader.close()
+        problem = budget_problem(f"{reads} serving reads of a {_SERVING_TABLES}-table version", took, baseline)
+        assert problem is None, problem
 
 
 def _parts(values: dict[str, int], rows: int = 1_000) -> Parts:

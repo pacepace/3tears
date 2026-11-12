@@ -2885,7 +2885,9 @@ class SharedRead:
 
     :ivar version: the version read
     :ivar tables: table name -> the mapped table
-    :ivar cursor: a DuckDB cursor with every table as a view over its mapped Arrow, no row copied
+    :ivar cursor: a DuckDB cursor with every table as a view over its mapped Arrow, no row copied; once the read ends
+        it is handed to a later read of the version (one read at a time), so leave nothing on it and change no setting:
+        a cursor holding a temporary view or table it was not made with, or whose read raised, is closed instead
     :ivar prepared: what the reader's ``prepare`` returned for this version's connection; None without one
     """
 
@@ -2925,35 +2927,80 @@ class _HeldVersion:
             raise
         self.reads = 0
         self.superseded = False
+        #: cursors finished reads handed back, each with its count of temporary objects when it was made: the next read
+        #: borrows one instead of registering every table again on a new cursor; closed as the version is let go
+        self.free: list[tuple[Any, int]] = []
 
-    def cursor(self) -> Any:
-        """a cursor of the connection with this version's tables registered on it (a registration is the connection's
-        own, and the views made by :meth:`MappedTables.connect` name them).
+    def borrow(self) -> tuple[Any, int]:
+        """a cursor of the connection with this version's tables registered on it (a registration is the cursor's
+        own, and the views made by :meth:`MappedTables.connect` name them): one a finished read handed back, else a new
+        one. Called under the reader's lock; the cursor is the borrower's alone until it is handed back.
 
-        :return: the cursor; close it when done
-        :rtype: duckdb.DuckDBPyConnection
+        :return: the cursor, and its count of temporary objects as made (:func:`_temporary_objects`)
+        :rtype: tuple[duckdb.DuckDBPyConnection, int]
         """
+        if self.free:
+            return self.free.pop()
         cursor = self.connection.cursor()
         try:
             for name, table in self.mapped.tables.items():
                 cursor.register(f"{_REGISTERED_PREFIX}{name}", table)
+            made = _temporary_objects(cursor)
         except BaseException:
             cursor.close()
             raise
-        return cursor
+        return cursor, made
 
     def close(self) -> None:
-        """close the connection, unmap the files and release the lease (whose release retires the version when it is
-        not current and nobody else holds it).
+        """close the free cursors and the connection, unmap the files and release the lease (whose release retires the
+        version when it is not current and nobody else holds it).
 
         :return: nothing
         :rtype: None
         """
         try:
+            free, self.free = self.free, []
+            for cursor, _ in free:
+                cursor.close()
             self.connection.close()
             self.mapped.close()
         finally:
             self.lease.release()
+
+
+#: a cursor's temporary views and tables: a read's leftovers, which would shadow a mapped table for the next read
+_TEMPORARY_VIEWS: Final = "SELECT count(*) FROM duckdb_views() WHERE temporary"
+_TEMPORARY_TABLES: Final = "SELECT count(*) FROM duckdb_tables() WHERE temporary"
+
+
+def _temporary_objects(cursor: Any) -> int:
+    """how many temporary views and tables a cursor sees (its registrations among them).
+
+    :param cursor: the cursor
+    :ptype cursor: duckdb.DuckDBPyConnection
+    :return: the count
+    :rtype: int
+    """
+    views = cursor.execute(_TEMPORARY_VIEWS).fetchone()
+    tables = cursor.execute(_TEMPORARY_TABLES).fetchone()
+    return int(views[0]) + int(tables[0])
+
+
+def _clean_cursor(cursor: Any, made: int) -> bool:
+    """whether a read left its cursor as it was made (no temporary view or table added or dropped), so the next read
+    may borrow it.
+
+    :param cursor: the cursor
+    :ptype cursor: duckdb.DuckDBPyConnection
+    :param made: its count of temporary objects as made
+    :ptype made: int
+    :return: whether it is clean; False when it cannot be read
+    :rtype: bool
+    """
+    try:
+        return _temporary_objects(cursor) == made
+    except duckdb.Error:
+        return False
 
 
 class SharedArrowReader:
@@ -3045,19 +3092,27 @@ class SharedArrowReader:
             held.reads += 1
             self._reads += 1
             try:
-                cursor = held.cursor()
+                cursor, made = held.borrow()
             except BaseException:
                 held.reads -= 1
                 raise
         if let_go is not None:
             let_go.close()
+        clean = False
         try:
             yield SharedRead(version=held.name, tables=held.mapped.tables, cursor=cursor, prepared=held.prepared)
+            clean = True
         finally:
-            cursor.close()
+            # handed back only as it was made: a temporary view or table left on it would shadow a mapped table for
+            # the next read, and a read that raised may have left anything
+            clean = clean and _clean_cursor(cursor, made)
             with self._lock:
                 held.reads -= 1
+                if clean:
+                    held.free.append((cursor, made))
                 done = held.superseded and held.reads == 0
+            if not clean:
+                cursor.close()
             if done:
                 held.close()
 
