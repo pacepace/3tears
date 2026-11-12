@@ -150,9 +150,9 @@ uv sync                    # install all packages in dev mode
 | `./scripts/typecheck.sh` | mypy on all packages, or one: `./scripts/typecheck.sh evals` |
 | `./scripts/check-all.sh` | lint plus typecheck plus tests, including CI's mcp-1.x and OpenTelemetry-floor suites |
 
-Extra args pass through: `./scripts/test.sh core -v -x`
+Extra args pass through: `./scripts/test.sh core -v -k lease`
 
-Where `testament` is installed, `test.sh` hands the run to testament's runners (outside CI); `TESTAMENT=off` forces the local run, with the reason stated in `TESTAMENT_OFF_REASON`. There, a package run skips its integration tests, which `test-integration.sh` covers, and `-x`, `--maxfail`, `-n` or `--lf` make testament run it locally instead. `test.sh` itself stays local for a run gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`, `THREETEARS_EVALS_PAID*`) or one that passes `-m`, since on the pool those would skip or lose their marker.
+Where `testament` is installed, `test.sh` hands the run to testament's runners (outside CI), and only there: the manifest is `fallback = "pool-only"`, so a pool that can't take the run fails it rather than running it on this machine. `TESTAMENT=off` forces a local run, with the reason stated in `TESTAMENT_OFF_REASON`. A pool run leaves out the integration tests, which `test-integration.sh` covers, and the `loop_timing` tests, which CI runs serially. A `-m` narrows the pool's selection. `-x`, `--maxfail`, `--lf`, `-n` and their kin need one local pytest process, and `-s`, `--pdb` and `--trace` this terminal: with only named test files (`./scripts/test.sh core packages/core/tests/test_x.py -x`) the run goes local, and a wider run is refused. A run gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`, `THREETEARS_EVALS_PAID*`) stays local, since on the pool its tests would skip.
 
 `test-sidecar.sh` and `test-integration.sh` sit outside `test.sh` on purpose (an AGPL dependency, and Docker). Neither is optional:
 

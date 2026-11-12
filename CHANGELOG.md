@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### testing: the pool is the only route, and the laptop runs tests only on purpose
+
+**Changed:** `.testament.toml` sets `fallback = "pool-only"` (testament 0.45.1 or later). A pool
+that can't take a run now fails it, exit 2, instead of running the whole suite on the
+submitting machine. The pool's selection also leaves out `loop_timing`, which CI already runs
+serially on its own runner, so a developer's pool run no longer meets those wall-clock flakes.
+
+`scripts/test.sh` sends a run that passes `-m` to the pool, where testament ANDs it with the
+manifest's own expression; it used to keep every `-m` run local. `-x`, `--maxfail`, `--lf`,
+`--ff`, `--sw` and `-n` need one local pytest process, and `-s`, `--pdb` and `--trace` need the
+terminal: a run that names only test files goes local with them, and a package or directory run
+is refused (exit 2) with how to run it, where it used to run the whole package on this machine. CLAUDE.md's example was such a run
+(`test.sh core -v -x`).
+
+**Fixed (docs):** docs/testing.md said CI runs no integration tests; its `integration` job runs
+core, nats, epoch, scheduled-jobs and agent/acl.
+
 ## v0.95.0 -- 2026-11-07
 
 ### enforcement: five epoch-discipline gates, each with a list that only shrinks
