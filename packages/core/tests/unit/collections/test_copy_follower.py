@@ -1547,11 +1547,13 @@ def _risen(before: Mapping[str, float]) -> dict[str, float]:
 
 
 async def test_stage_whole_is_reached_only_at_a_cold_start_a_reset_a_schema_change_or_a_legacy_whole_record() -> None:
-    """the proving test of CopyFollower._stage_whole and CopyFollower._stage's ledger lines: every steady-state path
-    (keys, a load's partition, a load's key prefixes, a stamp that moves, a failed pass, a start from a checkpoint and
-    its checkpoints) reads nothing whole; only a cold start, an operator's reset, a schema change and a whole record
-    with neither prefixes nor a reason (a writer older than 0.95.0 mid-roll) reach _stage_whole, each counted once
-    by its why (copy_follower_whole_reads_total, which _stage_whole alone counts)."""
+    """the proving test of the whole reads declared in CopyFollower._stage_cold_start, CopyFollower._stage_schema_change
+    and CopyFollower._stage_legacy_whole_record, and of CopyFollower._stage's declared call into each: every
+    steady-state path (keys, a load's partition, a load's key prefixes, a stamp that moves, a failed pass, a start from
+    a checkpoint and its checkpoints) reads nothing whole; only a cold start and an operator's reset
+    (_stage_cold_start), a schema change (_stage_schema_change) and a whole record with neither prefixes nor a reason
+    (a writer older than 0.95.0 mid-roll: _stage_legacy_whole_record) reach _stage_whole, each counted once by its why
+    (copy_follower_whole_reads_total, which _stage_whole alone counts, by the why each of the three passes it)."""
     l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
     l3.put(_rows("VA", 120))
     log.commit([("VA", i) for i in range(120)])
@@ -1622,7 +1624,8 @@ def test_the_older_writers_whole_record_read_is_gone_by_0_96_0() -> None:
     """legacy_whole_record lives only for the 0.95.0 roll (Pace, 2026-11-09): from 3tears 0.96.0 it fails until the
     code is deleted: CopyFollower._on_dropped's re-read and the non-key branch of CopyFollower._on_partition (a whole
     record then is the registry's to refuse), WHOLE_READ_WHYS["legacy_whole_record"], this test's twin assertions in
-    test_stage_whole_is_reached_only_at_..., and the why in its ledger reason."""
+    test_stage_whole_is_reached_only_at_..., and the rolling_upgrade declaration (until="0.96.0") in
+    CopyFollower._stage and CopyFollower._stage_legacy_whole_record."""
     assert core.__version__ != "unknown", "3tears is not installed: its version cannot be judged"
     if _version_tuple(core.__version__) >= (0, 96, 0):
         assert "legacy_whole_record" not in WHOLE_READ_WHYS, (

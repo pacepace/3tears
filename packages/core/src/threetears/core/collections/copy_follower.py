@@ -40,7 +40,7 @@ import asyncio
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -64,6 +64,7 @@ from threetears.core.collections.schema_backed import (
     sql_cast,
 )
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
+from threetears.core.declared import whole_read
 from threetears.core.keyed import KeyBatch, WholeReads, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join
@@ -1230,7 +1231,35 @@ class CopyFollower:
                 self._whole.pop(name, None)
                 self._partitions[name] = []
                 why = whole[name]
-                scopes = await self._stage_whole(table, rows_stage, why, held)
+                # the reason is known here: each is read by its own function, and declared as that situation
+                if why == "schema_change":
+                    scopes = await whole_read(
+                        self._stage_schema_change(table, rows_stage, held),
+                        kind="schema_change",
+                        reason="a followed table was dropped or recreated by a migration: that table alone is read again",
+                        ruling="Pace 2026-11-12: the one full load is a true no-data cold start; coordinator 2026-11-12: reset, schema change, rolling upgrade",
+                        proof="packages/core/tests/unit/collections/test_copy_follower.py::test_stage_whole_is_reached_only_at_a_cold_start_a_reset_a_schema_change_or_a_legacy_whole_record",
+                        speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
+                    )
+                elif why == "legacy_whole_record":
+                    scopes = await whole_read(
+                        self._stage_legacy_whole_record(table, rows_stage, held),
+                        kind="rolling_upgrade",
+                        reason="a writer older than 0.95.0 recorded the whole table mid-roll: that table is read again",
+                        until="0.96.0",
+                        ruling="Pace 2026-11-12: the one full load is a true no-data cold start; coordinator 2026-11-12: reset, schema change, rolling upgrade",
+                        proof="packages/core/tests/unit/collections/test_copy_follower.py::test_stage_whole_is_reached_only_at_a_cold_start_a_reset_a_schema_change_or_a_legacy_whole_record",
+                        speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
+                    )
+                else:
+                    scopes = await whole_read(
+                        self._stage_cold_start(table, rows_stage, why, held),
+                        kind="cold_start",
+                        reason="the copy holds nothing valid for the table: a first start with no checkpoint, or an operator's reset",
+                        ruling="Pace 2026-11-12: the one full load is a true no-data cold start; coordinator 2026-11-12: reset, schema change, rolling upgrade",
+                        proof="packages/core/tests/unit/collections/test_copy_follower.py::test_stage_whole_is_reached_only_at_a_cold_start_a_reset_a_schema_change_or_a_legacy_whole_record",
+                        speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
+                    )
                 self._staged[name] = StagedChange(table=name, key=table.key, rows=rows_stage, whole=True)
                 self._staged_whole[name] = why
                 self._staged_scopes[name] = scopes
@@ -1538,30 +1567,107 @@ class CopyFollower:
             del partitions[name]
             self._reading = None
 
-    async def _stage_whole(
+    @staticmethod
+    def _whole_select(table: FollowedTable) -> tuple[str, dict[str, Any], str]:
+        """a table's whole read beside the copy: its select of every column, the columns' arrow types, and its lead
+        column's array cast (declared, so hashed on YugabyteDB: no declaration names a range-sharded lead).
+
+        :param table: the table
+        :ptype table: FollowedTable
+        :return: the select, the types and the lead array cast
+        :rtype: tuple[str, dict[str, Any], str]
+        """
+        types = rail_arrow_types(table.columns)
+        selected = ", ".join(quote_identifier(column) for column in types)
+        select = f"SELECT {selected} FROM {quote_identifier(table.name)}"  # noqa: S608 - trusted identifiers
+        return select, types, f"{sql_cast(table.kind(table.read_order[0]))}[]"
+
+    async def _stage_cold_start(
         self, table: FollowedTable, rows_stage: str, why: str, held: frozenset[str]
     ) -> set[str | None]:
-        """read a table whole beside the copy: the one read of a whole table, counted by why. While a write holds
+        """read a table whole beside the copy because the copy holds nothing valid for it: a first start with no checkpoint
+        (``cold_start``) or an operator's reset of the table (``reset``).
+
+        :return: the scopes of the rows staged
+        :rtype: set[str | None]
+        """
+        select, types, lead = self._whole_select(table)
+        pages = whole_read(
+            keyset_arrow_pages(
+                self._l3, select, table.read_order, types=types, page_size=self._page_size, lead_array=lead
+            ),
+            kind="cold_start",
+            reason="the copy holds nothing valid for the table: a first start with no checkpoint, or an operator's reset",
+            ruling="Pace 2026-11-12: the one full load is a true no-data cold start; coordinator 2026-11-12: reset, schema change, rolling upgrade",
+            proof="packages/core/tests/unit/collections/test_copy_follower.py::test_stage_whole_is_reached_only_at_a_cold_start_a_reset_a_schema_change_or_a_legacy_whole_record",
+            speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
+        )
+        return await self._stage_whole(table, rows_stage, why, held, pages)
+
+    async def _stage_schema_change(
+        self, table: FollowedTable, rows_stage: str, held: frozenset[str]
+    ) -> set[str | None]:
+        """read a table whole beside the copy because a migration dropped or recreated it (``schema_change``).
+
+        :return: the scopes of the rows staged
+        :rtype: set[str | None]
+        """
+        select, types, lead = self._whole_select(table)
+        pages = whole_read(
+            keyset_arrow_pages(
+                self._l3, select, table.read_order, types=types, page_size=self._page_size, lead_array=lead
+            ),
+            kind="schema_change",
+            reason="a followed table was dropped or recreated by a migration: that table alone is read again",
+            ruling="Pace 2026-11-12: the one full load is a true no-data cold start; coordinator 2026-11-12: reset, schema change, rolling upgrade",
+            proof="packages/core/tests/unit/collections/test_copy_follower.py::test_stage_whole_is_reached_only_at_a_cold_start_a_reset_a_schema_change_or_a_legacy_whole_record",
+            speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
+        )
+        return await self._stage_whole(table, rows_stage, "schema_change", held, pages)
+
+    async def _stage_legacy_whole_record(
+        self, table: FollowedTable, rows_stage: str, held: frozenset[str]
+    ) -> set[str | None]:
+        """read a table whole beside the copy because a writer older than 0.95.0 recorded the whole table mid-roll
+        (``legacy_whole_record``; gone by 0.96.0).
+
+        :return: the scopes of the rows staged
+        :rtype: set[str | None]
+        """
+        select, types, lead = self._whole_select(table)
+        pages = whole_read(
+            keyset_arrow_pages(
+                self._l3, select, table.read_order, types=types, page_size=self._page_size, lead_array=lead
+            ),
+            kind="rolling_upgrade",
+            reason="a writer older than 0.95.0 recorded the whole table mid-roll: that table is read again",
+            until="0.96.0",
+            ruling="Pace 2026-11-12: the one full load is a true no-data cold start; coordinator 2026-11-12: reset, schema change, rolling upgrade",
+            proof="packages/core/tests/unit/collections/test_copy_follower.py::test_stage_whole_is_reached_only_at_a_cold_start_a_reset_a_schema_change_or_a_legacy_whole_record",
+            speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
+        )
+        return await self._stage_whole(table, rows_stage, "legacy_whole_record", held, pages)
+
+    async def _stage_whole(
+        self,
+        table: FollowedTable,
+        rows_stage: str,
+        why: str,
+        held: frozenset[str],
+        pages: AsyncIterator[Any],
+    ) -> set[str | None]:
+        """stage a table's whole read (each situation's own function declares it) beside the copy, counted by why. While a write holds
         some scopes (a first start beside a long write) their rows are left out and each is read as a partition once
         the write commits.
 
+        :param pages: the table's keyset pages, read whole
+        :ptype pages: AsyncIterator[Any]
         :return: the scopes of the rows staged
         :rtype: set[str | None]
         """
         _WHOLE_READS.count(why, table=table.name)
         if why != "cold_start":
             _warms().labels(why=why).inc()
-        types = rail_arrow_types(table.columns)
-        selected = ", ".join(quote_identifier(name) for name in types)
-        pages = keyset_arrow_pages(
-            self._l3,
-            f"SELECT {selected} FROM {quote_identifier(table.name)}",  # noqa: S608 - trusted identifiers
-            table.read_order,
-            types=types,
-            page_size=self._page_size,
-            # declared, so hashed on YugabyteDB: no declaration names a range-sharded lead
-            lead_array=f"{sql_cast(table.kind(table.read_order[0]))}[]",
-        )
         scopes: set[str | None] = set()
         await asyncio.to_thread(self._backend.stage_rows, rows_stage, table.name, pa.table({}), table.key)
         async for page in pages:

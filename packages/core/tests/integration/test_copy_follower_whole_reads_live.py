@@ -214,8 +214,9 @@ def _reader(backend: DuckDBBackend) -> Any:
 
 
 async def test_stage_whole_speed_at_real_size(db: _Db) -> None:
-    """a cold start, end to end (CopyFollower.warm and the catch-up that applies it): CopyFollower._stage_whole's
-    whole read of the table from L3, which CopyFollower._stage stages, and the one apply, within 2x a bare keyset
+    """a cold start, end to end (CopyFollower.warm and the catch-up that applies it): the whole read of the table from
+    L3 declared in CopyFollower._stage_cold_start (and its twins _stage_schema_change and _stage_legacy_whole_record,
+    the same read), which CopyFollower._stage_whole stages, and the one apply, within 2x a bare keyset
     read of the same pages and their copy-in to DuckDB (the work a cold start must do: the rows read, and held)."""
     types = rail_arrow_types(_COLUMNS)
     selected = ", ".join(types)
