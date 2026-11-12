@@ -235,12 +235,12 @@ class FakePool:
                 return "DELETE 1"
             return "DELETE 0"
 
-        if "update context_items set date_accessed" in sql_lower:
-            # composite-pk: WHERE conversation_id = $1 AND context_id = $2
-            # SET date_accessed = $3
-            cid = str(args[1])
+        if 'update "context_items" set "date_accessed"' in sql_lower:
+            # touch, through update_keyed: SET date_accessed = $1
+            # WHERE conversation_id = $2 AND context_id = $3
+            cid = str(args[2])
             if cid in self.rows:
-                self.rows[cid]["date_accessed"] = args[2]
+                self.rows[cid]["date_accessed"] = args[0]
                 return "UPDATE 1"
             return "UPDATE 0"
 

@@ -23,8 +23,6 @@ from threetears.agent.tools.base_tool import (
     ToolResult,
 )
 from threetears.agent.tools.context import ToolContextManager
-from threetears.observe import contain, get_logger
-
 from threetears.agent.workspace import pin
 from threetears.agent.workspace.authorize import (
     WorkspaceAccessDenied,
@@ -34,12 +32,14 @@ from threetears.agent.workspace.collections import (
     WorkspaceFileCollection,
     WorkspaceFileVersionCollection,
 )
-from threetears.agent.workspace.tool_registry import register_tool_builder
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
+from threetears.agent.workspace.tool_registry import register_tool_builder
 from threetears.agent.workspace.tools.helpers import (
     authorize_workspace,
     workspace_audit_identity,
 )
+from threetears.core.keyed import update_keyed
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "WorkspaceDeleteTool",
@@ -59,11 +59,6 @@ _INPUT_SCHEMA: dict[str, Any] = {
     "required": ["name"],
     "additionalProperties": False,
 }
-
-
-_SOFT_DELETE_WORKSPACE_SQL = (
-    "UPDATE workspaces SET date_deleted = $1, date_updated = $1 WHERE workspace_id = $2 AND agent_id = $3"
-)
 
 
 class WorkspaceDeleteTool(TearsTool):
@@ -164,11 +159,11 @@ class WorkspaceDeleteTool(TearsTool):
                 # a branch.
                 async with self._db_pool.acquire() as conn:
                     async with conn.transaction(namespace=workspace.namespace_name):
-                        await conn.execute(
-                            _SOFT_DELETE_WORKSPACE_SQL,
-                            now,
-                            workspace.id,
-                            workspace.agent_id,
+                        await update_keyed(
+                            conn,
+                            "workspaces",
+                            values={"date_deleted": now, "date_updated": now},
+                            by={"workspace_id": workspace.id, "agent_id": workspace.agent_id},
                         )
 
                 ctx = self._context_provider()

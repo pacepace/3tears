@@ -7,7 +7,7 @@ rewritten statement to its helper call on a database holding every rewritten tab
 on the other: a PostgreSQL run proves the PostgreSQL half, a YugabyteDB run the YugabyteDB half.
 
 The schema is built once a session, by each package's own migrations: the agent-scope packages (conversations, memory,
-skills, workspace, langgraph) and the platform-scope ones (core's coordination tables, epoch, mcp,
+skills, tools, workspace, langgraph) and the platform-scope ones (core's coordination tables, epoch, mcp,
 scheduled-jobs). The datasources tables are created by
 the hub, not by a 3tears migration, so they are built from their declared :class:`TableSchema` (the hub's source too).
 The schema is dropped when the session ends.
@@ -29,6 +29,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.agent.skills.migrations import register as register_skills
+from threetears.agent.tools.migrations import register as register_tools
 from threetears.agent.workspace.migrations import register as register_workspace
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.coordination.migrations import register as register_coordination
@@ -93,6 +94,7 @@ async def _build(url: str, schema: str) -> bool:
         register_conversations(agent)
         register_memory(agent)
         register_skills(agent)
+        register_tools(agent)
         register_workspace(agent)
         register_langgraph(agent)
         await agent.apply_for_agent_schema(_Store(conn))  # type: ignore[arg-type]

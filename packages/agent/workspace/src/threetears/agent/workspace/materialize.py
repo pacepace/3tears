@@ -80,16 +80,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Literal
 from uuid import UUID, uuid7
 
-from watchfiles import Change, awatch
-
 from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.call_scope import current_scope
-from threetears.core.keyed import read_row
-from threetears.core.utils.atomic_write import atomic_write
-from threetears.observe import contain, counter, get_logger
-
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
 from threetears.agent.workspace.tools.helpers import _next_journal_version
+from threetears.core.keyed import delete_keyed, read_row
+from threetears.core.utils.atomic_write import atomic_write
+from threetears.observe import contain, counter, get_logger
+from watchfiles import Change, awatch
 
 __all__ = [
     "CaptureBackFailedError",
@@ -206,10 +204,6 @@ ON CONFLICT (workspace_id, relative_path) DO UPDATE SET
     date_updated = EXCLUDED.date_updated
 """
 
-_DELETE_WORKSPACE_FILE_SQL = """
-DELETE FROM workspace_files
-WHERE workspace_id = $1 AND relative_path = $2
-"""
 
 _UPDATE_WORKSPACE_VERSION_SQL = """
 UPDATE workspaces
@@ -863,11 +857,7 @@ async def _seed_l3_disk_wins(
                         correlation_id,
                         now,
                     )
-                    await conn.execute(
-                        _DELETE_WORKSPACE_FILE_SQL,
-                        workspace.id,
-                        rel,
-                    )
+                    await delete_keyed(conn, "workspace_files", by={"workspace_id": workspace.id, "relative_path": rel})
                 await conn.execute(
                     _UPDATE_WORKSPACE_VERSION_SQL,
                     max_version,
@@ -1069,10 +1059,8 @@ async def _handle_watch_batch(
                             correlation_id,
                             now,
                         )
-                        await conn.execute(
-                            _DELETE_WORKSPACE_FILE_SQL,
-                            workspace.id,
-                            rel,
+                        await delete_keyed(
+                            conn, "workspace_files", by={"workspace_id": workspace.id, "relative_path": rel}
                         )
                         changed.append(rel)
                     else:
@@ -1468,11 +1456,7 @@ async def _capture_back(
                         correlation_id,
                         now,
                     )
-                    await conn.execute(
-                        _DELETE_WORKSPACE_FILE_SQL,
-                        workspace.id,
-                        rel,
-                    )
+                    await delete_keyed(conn, "workspace_files", by={"workspace_id": workspace.id, "relative_path": rel})
                     changed.append(rel)
                     change_kinds[rel] = "delete"
 

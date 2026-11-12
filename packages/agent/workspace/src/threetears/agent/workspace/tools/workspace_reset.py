@@ -28,8 +28,6 @@ from threetears.agent.tools.base_tool import (
     ToolResult,
 )
 from threetears.agent.tools.context import ToolContextManager
-from threetears.observe import contain, get_logger
-
 from threetears.agent.workspace import pin
 from threetears.agent.workspace.authorize import (
     WorkspaceAccessDenied,
@@ -40,8 +38,8 @@ from threetears.agent.workspace.collections import (
     WorkspaceFileVersionCollection,
 )
 from threetears.agent.workspace.config import ValidatorEntry
-from threetears.agent.workspace.tool_registry import register_tool_builder
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
+from threetears.agent.workspace.tool_registry import register_tool_builder
 from threetears.agent.workspace.tools.helpers import (
     _resolve_validators,
     authorize_workspace,
@@ -52,6 +50,8 @@ from threetears.agent.workspace.validators import (
     WorkspaceValidationError,
     dispatch_validators,
 )
+from threetears.core.keyed import delete_keyed
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "WorkspaceResetTool",
@@ -84,7 +84,6 @@ ON CONFLICT (workspace_id, relative_path) DO UPDATE SET
     date_updated = EXCLUDED.date_updated
 """
 
-_DELETE_WORKSPACE_FILE_BY_PATH_SQL = "DELETE FROM workspace_files WHERE workspace_id = $1 AND relative_path = $2"
 
 _INSERT_WORKSPACE_FILE_VERSION_SQL = """
 INSERT INTO workspace_file_versions (
@@ -413,7 +412,9 @@ class WorkspaceResetTool(TearsTool):
                         correlation_id,
                     )
                 for relative in sorted(delete_paths):
-                    await conn.execute(_DELETE_WORKSPACE_FILE_BY_PATH_SQL, workspace_id, relative)
+                    await delete_keyed(
+                        conn, "workspace_files", by={"workspace_id": workspace_id, "relative_path": relative}
+                    )
                     await self._insert_journal(
                         conn,
                         workspace_id,

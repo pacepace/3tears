@@ -49,10 +49,13 @@ class _ScriptedPool:
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         if sql.lstrip().startswith("UPDATE"):
             return [self.row]
+        if 'FROM "job_fires" AS t WHERE t."job_id"' in sql:
+            # the delete cascade's read of a job's fires (keyset_rows by the job): what the foreign-key action reaches
+            return list(self.cascaded)
         if sql.startswith("SELECT t."):
             # a keyed point read of a job or a fire (threetears.core.keyed.read_row), sent through fetch: its one row
             return [dict(self.row)]
-        return list(self.cascaded) if "FROM job_fires WHERE job_id" in sql else []
+        return []
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
         return dict(self.row)

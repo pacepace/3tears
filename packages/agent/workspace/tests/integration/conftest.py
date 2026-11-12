@@ -182,7 +182,7 @@ class _FakeStore:
             self._handle_upsert_file(args)
         elif q.startswith("UPDATE workspaces"):
             self._handle_update_workspace(args)
-        elif q.startswith("DELETE FROM workspace_files"):
+        elif q.startswith('DELETE FROM "workspace_files"'):
             self._handle_delete_file(args)
         else:
             raise NotImplementedError(f"_FakeStore does not recognize SQL: {q[:120]!r}")

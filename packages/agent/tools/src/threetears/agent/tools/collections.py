@@ -16,23 +16,26 @@ from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import MetaData, Table
-
+from threetears.agent.tools.entities import ContextItemEntity
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
     JSONB_TYPE,
     STRING_TYPE,
     UUID_TYPE,
     Column,
-    ForeignKey as SchemaForeignKey,
-    Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
 )
+from threetears.core.collections.schema_backed import (
+    ForeignKey as SchemaForeignKey,
+)
+from threetears.core.collections.schema_backed import (
+    Index as SchemaIndex,
+)
 from threetears.core.data.migrations import ConnectionSession, database_ddl_lock
-from threetears.observe import contain, get_logger
-
-from threetears.agent.tools.entities import ContextItemEntity
+from threetears.core.keyed import update_keyed
 from threetears.core.tenancy import TENANT_BY_SCHEMA
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "ContextItemCollection",
@@ -388,11 +391,11 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         # partition-column enforcement.
         try:
             assert self.l3_pool is not None
-            await self.l3_pool.execute(
-                "UPDATE context_items SET date_accessed = $3 WHERE conversation_id = $1 AND context_id = $2",
-                conversation_id,
-                cid,
-                now,
+            await update_keyed(
+                self.l3_pool,
+                "context_items",
+                values={"date_accessed": now},
+                by={"conversation_id": conversation_id, "context_id": cid},
             )
         except Exception as exc:
             contain(

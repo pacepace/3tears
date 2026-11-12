@@ -379,7 +379,7 @@ class _FakeConnection(FakeAsyncpgConnection):
                 "sha256": args[4],
                 "version": args[5],
             }
-        elif "DELETE FROM workspace_files" in query:
+        elif 'DELETE FROM "workspace_files"' in query:
             rel = args[1]
             self.head_by_path.pop(rel, None)
         return "INSERT 0 1"

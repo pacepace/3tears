@@ -44,13 +44,13 @@ from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.backends.schema_sql import decode_jsonb, encode_jsonb
 from threetears.core.collections.base import BaseCollection
 from threetears.core.data.gin import gin_filter
-from threetears.core.keyed import read_row
+from threetears.core.keyed import delete_keyed, read_row, update_keyed
 from threetears.core.serialization import (
     deserialize_from_json,
     serialize_to_json,
 )
-from threetears.observe import get_logger
 from threetears.core.tenancy import TENANT_BY_SCHEMA
+from threetears.observe import get_logger
 
 __all__ = [
     "AgentSkillCollection",
@@ -376,12 +376,6 @@ _AGENT_SKILL_INVOCATIONS_UPSERT_SQL = _build_upsert_sql(
 )
 
 
-_AGENT_SKILLS_DELETE_SQL = "DELETE FROM agent_skills WHERE agent_id = $1 AND skill_id = $2"
-
-
-_AGENT_SKILL_INVOCATIONS_DELETE_SQL = "DELETE FROM agent_skill_invocations WHERE agent_id = $1 AND invocation_id = $2"
-
-
 class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
     """Three-tier collection for :class:`AgentSkillEntity`.
 
@@ -510,11 +504,7 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         if self.l3_pool is None:
             return None
         agent_id, skill_id = self.normalize_pk(entity_id)
-        await self.l3_pool.execute(
-            _AGENT_SKILLS_DELETE_SQL,
-            agent_id,
-            skill_id,
-        )
+        await delete_keyed(self.l3_pool, "agent_skills", by={"agent_id": agent_id, "skill_id": skill_id})
         return None
 
     def serialize(self, data: dict[str, Any]) -> bytes:
@@ -916,10 +906,8 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
         if self.l3_pool is None:
             return None
         agent_id, invocation_id = self.normalize_pk(entity_id)
-        await self.l3_pool.execute(
-            _AGENT_SKILL_INVOCATIONS_DELETE_SQL,
-            agent_id,
-            invocation_id,
+        await delete_keyed(
+            self.l3_pool, "agent_skill_invocations", by={"agent_id": agent_id, "invocation_id": invocation_id}
         )
         return None
 
@@ -1177,14 +1165,11 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
         # cache-bypass: targeted single-row UPDATE on the outcome
         # columns; row cache typically holds the pre-outcome shape and
         # subsequent reads fetch-through cleanly.
-        await self.l3_pool.execute(
-            "UPDATE agent_skill_invocations "
-            "SET outcome = $3, outcome_source = $4 "
-            "WHERE agent_id = $1 AND invocation_id = $2",
-            agent_id,
-            invocation_id,
-            outcome,
-            source,
+        await update_keyed(
+            self.l3_pool,
+            "agent_skill_invocations",
+            values={"outcome": outcome, "outcome_source": source},
+            by={"agent_id": agent_id, "invocation_id": invocation_id},
         )
         return None
 

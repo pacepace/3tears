@@ -432,7 +432,7 @@ async def test_bind_body_deletes_file_emits_delete_journal(
 
     executions = harness["pool"].conn.executions
     journal_rows = [e for e in executions if "INSERT INTO workspace_file_versions" in e[0]]
-    delete_head = [e for e in executions if "DELETE FROM workspace_files" in e[0]]
+    delete_head = [e for e in executions if 'DELETE FROM "workspace_files"' in e[0]]
     assert len(journal_rows) == 1
     assert journal_rows[0][1][3] == 4  # prior+1
     assert journal_rows[0][1][6] == "delete"
@@ -446,7 +446,7 @@ _ROOT_READS_EVERYTHING = pytest.mark.skipif(
 
 def _deletes(harness: dict[str, Any]) -> list[tuple[str, tuple[Any, ...], bool]]:
     """every head-row delete the bind issued."""
-    return [e for e in harness["pool"].conn.executions if "DELETE FROM workspace_files" in e[0]]
+    return [e for e in harness["pool"].conn.executions if 'DELETE FROM "workspace_files"' in e[0]]
 
 
 def _skipped(phase: str) -> float:
@@ -1088,11 +1088,11 @@ async def test_watch_batch_deleted_change_emits_delete(tmp_path: Path) -> None:
         await watch.deliver({(Change.deleted, str(target))})
         window = executions[before:]
         assert [e[1][6] for e in _journal(window, "gone.txt")] == ["delete"]
-        assert [e[1] for e in window if "DELETE FROM workspace_files" in e[0]] == [
+        assert [e[1] for e in window if 'DELETE FROM "workspace_files"' in e[0]] == [
             (harness["workspace_id"], "gone.txt")
         ]
 
-    delete_head = [e for e in executions if "DELETE FROM workspace_files" in e[0]]
+    delete_head = [e for e in executions if 'DELETE FROM "workspace_files"' in e[0]]
     journal_deletes = [e for e in executions if "INSERT INTO workspace_file_versions" in e[0] and e[1][6] == "delete"]
     assert len(journal_deletes) >= 1
     assert len(delete_head) >= 1

@@ -41,6 +41,7 @@ import re
 import subprocess
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -52,6 +53,12 @@ __all__ = ["main"]
 
 #: the connection methods a point read is sent through, onto the helper that replaces each
 _HELPER_OF: Final[dict[str, str]] = {"fetch": "read_by", "fetchrow": "read_row", "fetchval": "read_value"}
+
+#: the connection method a write is sent through (its status discarded)
+_WRITE_METHODS: Final[frozenset[str]] = frozenset({"execute"})
+
+#: a write's helper, by its verb
+_WRITE_HELPER: Final[dict[str, str]] = {"update": "update_keyed", "delete": "delete_keyed"}
 
 #: where the helpers are imported from
 _HELPER_MODULE: Final[str] = "threetears.core.keyed"
@@ -142,6 +149,8 @@ class Rewrite:
     :ivar pins: each pinned column (:class:`Pin` as a dict)
     :ivar args: each parameter's argument as written, ``$1`` first
     :ivar new_call: the call written in the statement's place (before formatting)
+    :ivar shape: ``point`` or ``write``
+    :ivar sets: a write's ``SET`` columns
     """
 
     path: str
@@ -155,6 +164,10 @@ class Rewrite:
     pins: list[dict[str, Any]]
     args: list[str]
     new_call: str = ""
+    #: ``point`` (a read), or ``write`` (an ``UPDATE`` / ``DELETE`` by equality, :func:`plan_write_rewrites`)
+    shape: str = "point"
+    #: a write's ``SET`` columns (:class:`Pin` as a dict; ``now`` for ``now()``), none for a ``DELETE`` or a read
+    sets: list[dict[str, Any]] = field(default_factory=list)
     # the edits that make it, not recorded: (start line, start col, end line, end col, text) in the module's bytes
     edits: list[tuple[int, int, int, int, str]] = field(default_factory=list, repr=False)
 
@@ -215,6 +228,30 @@ def parse_point(sql: str) -> PointSql | str:
                 return "an expression, alias or DISTINCT in the select list"
             picked.append(column.group("column"))
         columns = tuple(picked)
+    pins = _pins(where, masked, qualifiers)
+    if isinstance(pins, str):
+        return pins
+    numbers = sorted({pin.param for pin in pins if pin.param is not None})
+    if numbers != list(range(1, len(numbers) + 1)):
+        return "parameters not numbered $1..$n"
+    if not any(pin.kind == "param" for pin in pins):
+        return "no bound parameter (literals only): a constant read, judged by hand"
+    return PointSql(table=match.group("table").lower(), columns=columns, pins=tuple(pins))
+
+
+def _pins(where: str, masked: str, qualifiers: set[str | None]) -> list[Pin] | str:
+    """each column a ``WHERE`` of equalities pins (``= $n``, ``= <literal>``, ``IS NULL``, joined by ``AND``), or why
+    it is not one.
+
+    :param where: the ``WHERE`` clause's text
+    :ptype where: str
+    :param masked: the same text, its quoted literals masked
+    :ptype masked: str
+    :param qualifiers: the names a column may be qualified by (None: unqualified)
+    :ptype qualifiers: set[str | None]
+    :return: the pins, or the refusal's reason
+    :rtype: list[Pin] | str
+    """
     pins: list[Pin] = []
     starts = [0, *(found.end() for found in _AND.finditer(masked))]
     ends = [found.start() for found in _AND.finditer(masked)] + [len(where)]
@@ -237,12 +274,118 @@ def parse_point(sql: str) -> PointSql | str:
             pins.append(Pin(name, "null"))
     if len({pin.column for pin in pins}) != len(pins):
         return "a column pinned twice"
-    numbers = sorted({pin.param for pin in pins if pin.param is not None})
+    return pins
+
+
+@dataclass(frozen=True)
+class WriteSql:
+    """a keyed write by equality, parsed: ``UPDATE <table> SET <col> = <value>, ... WHERE <pins>`` or ``DELETE FROM
+    <table> WHERE <pins>``.
+
+    :ivar kind: ``update`` or ``delete``
+    :ivar table: the table as written (``schema.table`` kept)
+    :ivar sets: each column an update sets (:class:`Pin`: ``param``, ``literal``, ``null``, or ``now`` for ``now()``)
+    :ivar pins: each pinned column, in the statement's order
+    """
+
+    kind: str
+    table: str
+    sets: tuple[Pin, ...]
+    pins: tuple[Pin, ...]
+
+
+_UPDATE: Final[re.Pattern[str]] = re.compile(
+    rf"^update\s+(?P<table>{_IDENT}(?:\.{_IDENT})?)\s+set\s+(?P<sets>.+?)\s+where\s+(?P<where>.+?)\s*;?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_DELETE: Final[re.Pattern[str]] = re.compile(
+    rf"^delete\s+from\s+(?P<table>{_IDENT}(?:\.{_IDENT})?)\s+where\s+(?P<where>.+?)\s*;?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_SET_PARAM: Final[re.Pattern[str]] = re.compile(rf"^(?P<column>{_IDENT})\s*=\s*\$(?P<n>\d+)$")
+_SET_LITERAL: Final[re.Pattern[str]] = re.compile(
+    rf"^(?P<column>{_IDENT})\s*=\s*(?P<literal>'(?:[^']|'')*'|true|false|-?\d+)$", re.IGNORECASE
+)
+_SET_NULL: Final[re.Pattern[str]] = re.compile(rf"^(?P<column>{_IDENT})\s*=\s*null$", re.IGNORECASE)
+_SET_NOW: Final[re.Pattern[str]] = re.compile(rf"^(?P<column>{_IDENT})\s*=\s*now\(\)$", re.IGNORECASE)
+
+
+def parse_write(sql: str) -> WriteSql | str:
+    """a keyed write by equality, or why it is not one: every ``SET`` a column to a parameter, a literal, ``NULL`` or
+    ``now()``; every ``WHERE`` conjunct an equality :func:`parse_point` takes; no ``RETURNING``, alias, join,
+    subquery or expression.
+
+    :param sql: the statement
+    :ptype sql: str
+    :return: the parsed write, or the refusal's reason
+    :rtype: WriteSql | str
+    """
+    text = " ".join(sql.split())
+    if "{" in text or "}" in text:
+        return "interpolated"
+    if text.startswith("/*") or "--" in text:
+        return "a comment or hint in the statement"
+    masked_text = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", text)
+    if re.search(r"\breturning\b", masked_text, re.IGNORECASE):
+        return "RETURNING (the rows' type would change)"
+    if re.search(
+        r"\b(from|using)\b",
+        masked_text[len("delete from ") :] if masked_text.lower().startswith("delete") else masked_text,
+        re.IGNORECASE,
+    ):
+        return "a join (FROM / USING)"
+    update = _UPDATE.match(text)
+    delete = _DELETE.match(text) if update is None else None
+    if update is None and delete is None:
+        return "not UPDATE <table> SET ... WHERE ... nor DELETE FROM <table> WHERE ..."
+    match = update if update is not None else delete
+    assert match is not None
+    table = match.group("table")
+    where = match.group("where")
+    masked = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", where)
+    if re.search(r"[()]|\bor\b|\bin\b|\bany\b|\bnot\b|<|>|::|\blike\b|\bbetween\b|->", masked, re.IGNORECASE):
+        return "a predicate other than equality (IN, ANY, OR, range, cast, expression)"
+    pins = _pins(where, masked, {None, table.split(".")[-1]})
+    if isinstance(pins, str):
+        return pins
+    sets: list[Pin] = []
+    if update is not None:
+        assignments = update.group("sets")
+        masked_sets = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", assignments)
+        if re.search(r"\(\s*select\b|::|\|\||[-+*/]\s*[a-z$0-9]", masked_sets, re.IGNORECASE):
+            return "a SET expression (a subquery, cast, increment or operator)"
+        starts = [0, *(found.end() for found in re.finditer(r",", masked_sets))]
+        ends = [found.start() for found in re.finditer(r",", masked_sets)] + [len(assignments)]
+        for start, end in zip(starts, ends, strict=True):
+            assignment = assignments[start:end].strip()
+            for pattern, kind in (
+                (_SET_PARAM, "param"),
+                (_SET_LITERAL, "literal"),
+                (_SET_NULL, "null"),
+                (_SET_NOW, "now"),
+            ):
+                found = pattern.match(assignment)
+                if found is not None:
+                    break
+            else:
+                return f"a SET other than a parameter, literal, NULL or now(): {assignment!r}"
+            name = found.group("column").lower()
+            if kind == "param":
+                sets.append(Pin(name, "param", param=int(found.group("n"))))
+            elif kind == "literal":
+                sets.append(Pin(name, "literal", literal=_literal(found.group("literal"))))
+            else:
+                sets.append(Pin(name, kind))
+        if len({pin.column for pin in sets}) != len(sets):
+            return "a column set twice"
+    numbers = sorted({pin.param for pin in (*sets, *pins) if pin.param is not None})
     if numbers != list(range(1, len(numbers) + 1)):
         return "parameters not numbered $1..$n"
     if not any(pin.kind == "param" for pin in pins):
-        return "no bound parameter (literals only): a constant read, judged by hand"
-    return PointSql(table=match.group("table").lower(), columns=columns, pins=tuple(pins))
+        return "no bound parameter in the WHERE (literals only): a constant write, judged by hand"
+    return WriteSql(
+        kind="update" if update is not None else "delete", table=table.lower(), sets=tuple(sets), pins=tuple(pins)
+    )
 
 
 @dataclass
@@ -288,15 +431,19 @@ def _plain_simple(node: ast.expr) -> bool:
     return isinstance(node, ast.Name | ast.Constant)
 
 
-def _call_of(module: _Module, use: ast.expr) -> ast.Call | str:
-    """the awaited ``fetch``/``fetchrow``/``fetchval`` call whose first argument is ``use``, or why it is not one."""
+def _call_of(module: _Module, use: ast.expr, methods: frozenset[str] = frozenset(_HELPER_OF)) -> ast.Call | str:
+    """the awaited call of one of ``methods`` (``fetch``/``fetchrow``/``fetchval`` for a read; ``execute``, its status
+    discarded, for a write) whose first argument is ``use``, or why it is not one."""
     call = module.parent(use)
     if not (isinstance(call, ast.Call) and call.args and call.args[0] is use):
         return "not a call's first argument nor a constant"
-    if not (isinstance(call.func, ast.Attribute) and call.func.attr in _HELPER_OF):
-        return f"sent by {ast.unparse(call.func)[:60]}, not fetch/fetchrow/fetchval"
-    if not isinstance(module.parent(call), ast.Await):
+    if not (isinstance(call.func, ast.Attribute) and call.func.attr in methods):
+        return f"sent by {ast.unparse(call.func)[:60]}, not {'/'.join(sorted(methods))}"
+    awaited = module.parent(call)
+    if not isinstance(awaited, ast.Await):
         return "the call is not awaited where it is made"
+    if methods == _WRITE_METHODS and not isinstance(module.parent(awaited), ast.Expr):
+        return "the statement's status is read (the helper answers a count, not a status)"
     if call.keywords:
         return "keyword arguments to the call (timeout=, ...)"
     if any(isinstance(arg, ast.Starred) for arg in call.args):
@@ -304,7 +451,9 @@ def _call_of(module: _Module, use: ast.expr) -> ast.Call | str:
     return call
 
 
-def _sent_by(module: _Module, literal: ast.Constant) -> tuple[list[ast.Call], ast.Assign | ast.AnnAssign | None] | str:
+def _sent_by(
+    module: _Module, literal: ast.Constant, methods: frozenset[str] = frozenset(_HELPER_OF)
+) -> tuple[list[ast.Call], ast.Assign | ast.AnnAssign | None] | str:
     """every awaited ``fetch``/``fetchrow``/``fetchval`` call sending a statement literal (written at the call, or a
     constant -- ``.strip()`` of one too -- every one of whose uses is such a call), and the constant; or why not."""
     holder: ast.AST = literal
@@ -332,14 +481,14 @@ def _sent_by(module: _Module, literal: ast.Constant) -> tuple[list[ast.Call], as
             return f"its constant {name} is never used"
         calls = []
         for use in uses:
-            call = _call_of(module, use)
+            call = _call_of(module, use, methods)
             if isinstance(call, str):
                 return f"its constant {name}: {call}"
             calls.append(call)
         return calls, parent
     if holder is not literal:
         return "not a call's first argument nor a constant"
-    call = _call_of(module, literal)
+    call = _call_of(module, literal, methods)
     return call if isinstance(call, str) else ([call], None)
 
 
@@ -382,8 +531,30 @@ def _render(rewrite: Rewrite, receiver: str) -> str:
     return f"{rewrite.helper}({', '.join(parts)})"
 
 
-def _statement_literal(module: _Module, line: int) -> ast.Constant | str:
-    """the string literal holding the statement at ``line``."""
+def _value_text(pin: Mapping[str, Any], args: Sequence[str]) -> str:
+    """a pinned or set column's value as the helper call writes it: the argument, a literal, None, or ``now()``."""
+    if pin["kind"] == "param":
+        return str(args[pin["param"] - 1])
+    if pin["kind"] == "literal":
+        return _python_literal(pin["literal"])
+    if pin["kind"] == "now":
+        return 'Fragment("now()")'
+    return "None"
+
+
+def _render_write(rewrite: Rewrite, receiver: str) -> str:
+    """the write helper call, written in the ``execute`` call's place."""
+    by = "{" + ", ".join(f"{pin['column']!r}: {_value_text(pin, rewrite.args)}" for pin in rewrite.pins) + "}"
+    parts = [receiver, repr(rewrite.table)]
+    if rewrite.helper == "update_keyed":
+        values = ", ".join(f"{pin['column']!r}: {_value_text(pin, rewrite.args)}" for pin in rewrite.sets)
+        parts.append(f"values={{{values}}}")
+    parts.append(f"by={by}")
+    return f"{rewrite.helper}({', '.join(parts)})"
+
+
+def _statement_literal(module: _Module, line: int, verb: str = "select") -> ast.Constant | str:
+    """the string literal holding the statement at ``line``, one starting with ``verb``."""
     found = [
         node
         for node in ast.walk(module.tree)
@@ -394,10 +565,12 @@ def _statement_literal(module: _Module, line: int) -> ast.Constant | str:
     strings = [
         node
         for node in found
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and re.match(r"\s*select\b", node.value, re.I)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and re.match(rf"\s*{verb}\b", node.value, re.I)
     ]
     if len(strings) != 1:
-        return f"{len(strings)} SELECT literals on its line"
+        return f"{len(strings)} {verb.upper()} literals on its line"
     return strings[0]
 
 
@@ -524,6 +697,105 @@ def plan_point_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
     return rewrites, refusals
 
 
+def plan_write_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
+    """every write finding of the repo that is an ``UPDATE`` / ``DELETE`` by equality (:func:`parse_write`), sent by
+    an awaited ``execute`` whose status is discarded, as the :func:`~threetears.core.keyed.update_keyed` /
+    :func:`~threetears.core.keyed.delete_keyed` call it takes, or the refusal it gets.
+
+    :param config: the repo's no-whole-reads config
+    :ptype config: NoWholeReadsConfig
+    :return: the rewrites, and the refusals
+    :rtype: tuple[list[Rewrite], list[Refusal]]
+    """
+    whole_hits, scan = _hits(config)
+    unkeyed: dict[tuple[str, int], str] = {(hit.path, hit.line): hit.symbol for hit in whole_hits}
+    hits = [
+        hit for hit in _helper_hits(scan.statements, config.helper_modules, _producers(config)) if hit.shape == "write"
+    ]
+    modules: dict[str, _Module] = {}
+    rewrites: list[Rewrite] = []
+    refusals: list[Refusal] = []
+    for hit in hits:
+        statement = hit.statement
+        one_line = " ".join(statement.text.split())
+
+        def refuse(reason: str) -> None:
+            refusals.append(
+                Refusal(statement.path, statement.line, statement.function, hit.shape, hit.table, reason, one_line)
+            )
+
+        if (statement.path, statement.line) in unkeyed:
+            refuse(
+                f"the no-whole-reads rule finds it unkeyed ({unkeyed[statement.path, statement.line]}): a real fix first"
+            )
+            continue
+        parsed = parse_write(statement.text)
+        if isinstance(parsed, str):
+            refuse(parsed)
+            continue
+        module = modules.get(statement.path)
+        if module is None:
+            module = modules[statement.path] = _Module.read(config.repo_root / statement.path)
+        literal = _statement_literal(module, statement.line, parsed.kind)
+        if isinstance(literal, str):
+            refuse(literal)
+            continue
+        old_sql = literal.value
+        assert isinstance(old_sql, str)
+        if " ".join(old_sql.split()) != " ".join(statement.text.split()):
+            refuse("the literal at its line is not the statement the walk found")
+            continue
+        sent = _sent_by(module, literal, _WRITE_METHODS)
+        if isinstance(sent, str):
+            refuse(sent)
+            continue
+        calls, constant = sent
+        if constant is not None:
+            target = constant.targets[0] if isinstance(constant, ast.Assign) else constant.target
+            assert isinstance(target, ast.Name)
+            if _referenced_elsewhere(config.repo_root, module.path, target.id):
+                refuse(f"its constant {target.id} is named elsewhere in the repo")
+                continue
+        bound = [pin.param for pin in (*parsed.sets, *parsed.pins) if pin.param is not None]
+        numbers = sorted(set(bound))
+        uses = Counter(bound)
+        planned: list[Rewrite] = []
+        for call in calls:
+            arguments = call.args[1:]
+            problem = ""
+            if len(arguments) != len(numbers):
+                problem = f"{len(arguments)} arguments for {len(numbers)} parameters"
+            elif any(count > 1 and not _plain_simple(arguments[number - 1]) for number, count in uses.items()):
+                problem = "a parameter used twice whose argument is not a plain name"
+            if problem:
+                refuse(problem)
+                planned = []
+                break
+            rewrite = Rewrite(
+                path=statement.path,
+                function=_function_at(module, call) if constant is not None else statement.function,
+                line=statement.line,
+                table=parsed.table,
+                old_sql=old_sql,
+                method="execute",
+                helper=_WRITE_HELPER[parsed.kind],
+                columns=None,
+                pins=[asdict(pin) for pin in parsed.pins],
+                args=[module.segment(argument) for argument in arguments],
+                shape="write",
+                sets=[asdict(pin) for pin in parsed.sets],
+            )
+            assert isinstance(call.func, ast.Attribute)
+            rewrite.new_call = _render_write(rewrite, module.segment(call.func.value))
+            assert call.end_lineno is not None and call.end_col_offset is not None
+            rewrite.edits.append((call.lineno, call.col_offset, call.end_lineno, call.end_col_offset, rewrite.new_call))
+            planned.append(rewrite)
+        if planned and constant is not None:
+            planned[0].edits.append(_constant_edit(module, constant))
+        rewrites.extend(planned)
+    return rewrites, refusals
+
+
 def _splice(source: str, edits: list[tuple[int, int, int, int, str]]) -> str:
     """the source with each edit made; positions are 1-based lines and UTF-8 byte columns, as ``ast`` gives them."""
     lines = source.encode("utf-8").splitlines(keepends=True)
@@ -584,7 +856,10 @@ def apply_rewrites(repo_root: Path, rewrites: list[Rewrite], *, ruff: str | None
     for relative, mine in by_path.items():
         path = repo_root / relative
         source = _splice(path.read_text(encoding="utf-8"), [edit for rewrite in mine for edit in rewrite.edits])
-        source = _with_import(source, {rewrite.helper for rewrite in mine})
+        names = {rewrite.helper for rewrite in mine}
+        if any(pin["kind"] == "now" for rewrite in mine for pin in rewrite.sets):
+            names.add("Fragment")
+        source = _with_import(source, names)
         ast.parse(source)
         path.write_text(source, encoding="utf-8")
     touched = sorted(by_path)
@@ -715,7 +990,7 @@ def _say(line: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """the command line: ``point`` (the only shape so far).
+    """the command line: ``point`` (reads), ``write`` (keyed ``UPDATE`` / ``DELETE`` by equality), ``test-module``.
 
     :param argv: the arguments
     :ptype argv: list[str] | None
@@ -723,7 +998,7 @@ def main(argv: list[str] | None = None) -> int:
     :rtype: int
     """
     parser = argparse.ArgumentParser(prog="threetears.enforcement.no_whole_reads.rewrite")
-    parser.add_argument("shape", choices=["point", "test-module"])
+    parser.add_argument("shape", choices=["point", "write", "test-module"])
     parser.add_argument("--module", type=Path, help="test-module: where the generated test goes, repo-relative")
     parser.add_argument("--pg-fixture", default="conn")
     parser.add_argument("--yb-fixture", default="yugabyte_conn")
@@ -750,9 +1025,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     config = _config(repo, options.config)
     before, _ = _hits(config)
-    rewrites, refusals = plan_point_rewrites(config)
+    rewrites, refusals = (plan_write_rewrites if options.shape == "write" else plan_point_rewrites)(config)
     reasons = Counter(refusal.reason.split(":")[0].split(" (")[0] for refusal in refusals)
-    _say(f"point: {len(rewrites)} rewrites, {len(refusals)} refusals")
+    _say(f"{options.shape}: {len(rewrites)} rewrites, {len(refusals)} refusals")
     for reason, count in reasons.most_common():
         _say(f"  refused {count:4d}  {reason}")
     if options.refusals is not None:

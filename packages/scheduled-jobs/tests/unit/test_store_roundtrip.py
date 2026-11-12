@@ -204,7 +204,7 @@ class TestFireStoreWrites:
         fire_id, partition = uuid4(), uuid4()
         await coll.finalize_success(partition, fire_id, status="succeeded", output={"ok": 1}, latency_ms=9)
         sql, args = pool.calls[-1]
-        assert "UPDATE job_fires SET status = $1" in sql
+        assert 'UPDATE "job_fires" SET "status" = $1' in sql
         assert args[0] == "succeeded"
         assert args[1] == {"ok": 1}
         assert args[2] == 9

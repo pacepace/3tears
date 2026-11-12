@@ -114,6 +114,11 @@ class _FakeConnection(FakeAsyncpgConnection):
             selector = args[2]
         return self.script.get((relative_path, selector))
 
+    async def fetch(self, query: str, *args: Any, namespace: Any = None) -> list[dict[str, Any]]:
+        # an integer version's row, read through keyed.read_row: by (workspace_id, relative_path, version)
+        found = await self.fetchrow(query, *args, namespace=namespace)
+        return [] if found is None else [found]
+
 
 @dataclass
 class _FakeAcquireCM(FakeAsyncpgAcquireCM):

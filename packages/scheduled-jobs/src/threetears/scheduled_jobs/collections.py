@@ -40,7 +40,7 @@ from threetears.core.collections.schema_backed import (
     Column,
     TableSchema,
 )
-from threetears.core.keyed import read_row
+from threetears.core.keyed import delete_keyed, read_row, update_keyed
 from threetears.core.tenancy import no_tenant
 from threetears.observe import get_logger
 from threetears.scheduled_jobs.entities import JobFireEntity, ScheduledJobEntity
@@ -112,12 +112,6 @@ _SCHEDULED_JOBS_SELECT_COLUMNS = ", ".join(column.name for column in _SCHEDULED_
 
 #: every ``job_fires`` column, as the reads select them
 _JOB_FIRES_SELECT_COLUMNS = ", ".join(column.name for column in _JOB_FIRES_SCHEMA.columns)
-
-
-_SCHEDULED_JOBS_DELETE_SQL = "DELETE FROM scheduled_jobs WHERE partition_key = $1 AND job_id = $2"
-
-
-_JOB_FIRES_DELETE_SQL = "DELETE FROM job_fires WHERE partition_key = $1 AND fire_id = $2"
 
 
 # Terminal error text stamped onto a fire row the reaper reclaims. Names
@@ -258,7 +252,7 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
         if self.l3_pool is None:
             return None
         partition_key, job_id = self.normalize_pk(entity_id)
-        await self.l3_pool.execute(_SCHEDULED_JOBS_DELETE_SQL, partition_key, job_id)
+        await delete_keyed(self.l3_pool, "scheduled_jobs", by={"partition_key": partition_key, "job_id": job_id})
         return None
 
     # --- ScheduleStore protocol methods ---
@@ -900,7 +894,7 @@ class JobFireCollection(DeclaredTableCollection[JobFireEntity]):
         if self.l3_pool is None:
             return None
         partition_key, fire_id = self.normalize_pk(entity_id)
-        await self.l3_pool.execute(_JOB_FIRES_DELETE_SQL, partition_key, fire_id)
+        await delete_keyed(self.l3_pool, "job_fires", by={"partition_key": partition_key, "fire_id": fire_id})
         return None
 
     # --- FireStore protocol methods ---
@@ -986,14 +980,11 @@ class JobFireCollection(DeclaredTableCollection[JobFireEntity]):
         # cache-bypass: targeted UPDATE on the terminal-state columns; the row is evicted from
         # every tier once it lands.
         async with self.bypassing_write((partition_key, fire_id)):
-            await self.l3_pool.execute(
-                "UPDATE job_fires SET status = $1, output = $2, latency_ms = $3 "
-                "WHERE partition_key = $4 AND fire_id = $5",
-                status,
-                output,
-                latency_ms,
-                partition_key,
-                fire_id,
+            await update_keyed(
+                self.l3_pool,
+                "job_fires",
+                values={"status": status, "output": output, "latency_ms": latency_ms},
+                by={"partition_key": partition_key, "fire_id": fire_id},
             )
         return None
 

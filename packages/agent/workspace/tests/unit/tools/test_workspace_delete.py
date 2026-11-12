@@ -207,16 +207,18 @@ async def test_delete_soft_deletes_workspace_in_transaction(
     assert pool.conn.transactions[0].entered is True
     assert pool.conn.transactions[0].exited is True
 
-    updates = [e for e in pool.conn.executions if "UPDATE workspaces" in e[0]]
+    # the soft delete through update_keyed: each value its own placeholder, both stamped with the one instant
+    updates = [e for e in pool.conn.executions if 'UPDATE "workspaces"' in e[0]]
     assert len(updates) == 1
     sql, args, in_tx = updates[0]
-    assert "SET date_deleted = $1" in sql
-    assert "date_updated = $1" in sql
-    assert "WHERE workspace_id = $2" in sql
+    assert 'SET "date_deleted" = $1' in sql
+    assert '"date_updated" = $2' in sql
+    assert 'WHERE "workspace_id" = $3' in sql
     assert in_tx is True
     assert isinstance(args[0], datetime)
     assert args[0].tzinfo == UTC
-    assert args[1] == ws_id
+    assert args[1] == args[0]
+    assert args[2] == ws_id
 
     # no pin to clear
     assert cleared == []

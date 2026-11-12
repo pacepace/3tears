@@ -22,10 +22,14 @@ from threetears.enforcement.no_whole_reads import (
     use_the_helper_findings,
 )
 from threetears.enforcement.no_whole_reads.rewrite import (
+    Pin,
     PointSql,
+    WriteSql,
     apply_rewrites,
     parse_point,
+    parse_write,
     plan_point_rewrites,
+    plan_write_rewrites,
     render_test_module,
     write_manifest,
 )
@@ -211,3 +215,120 @@ def test_the_generated_test_module_parses_and_names_its_fixtures() -> None:
     assert "parents[2]" in text and "tests/helper_rewrites.json" in text
     assert "pg_conn: Any" in text and "yb_conn: Any" in text
     assert "from tests.support.seeds import OVERRIDES" in text and "overrides=OVERRIDES" in text
+
+
+_WRITES = """
+    #: forget one geo
+    _FORGET_SQL = "DELETE FROM geos WHERE state = $1 AND geo_id = $2"
+
+
+    async def rename(conn, agent_id, name):
+        await conn.execute("UPDATE agents SET name = $2, date_updated = now(), flag = TRUE WHERE id = $1", agent_id, name)
+
+
+    async def forget(conn, state, geo):
+        await conn.execute(_FORGET_SQL, state, geo)
+
+
+    async def renamed_count(conn, agent_id, name):
+        status = await conn.execute("UPDATE agents SET name = $1 WHERE id = $2", name, agent_id)
+        return status
+
+
+    async def by_status(conn, status):
+        await conn.execute("DELETE FROM agents WHERE status = $1", status)
+
+
+    async def bumped(conn, agent_id):
+        await conn.execute("UPDATE agents SET hits = hits + 1 WHERE id = $1", agent_id)
+
+
+    async def returned(conn, agent_id):
+        return await conn.fetch("DELETE FROM agents WHERE id = $1 RETURNING id", agent_id)
+"""
+
+
+def _write_config(tmp_path: Path) -> NoWholeReadsConfig:
+    src = tmp_path / "src"
+    for name, source in {"pkg/tables.py": _TABLES, "pkg/writes.py": _WRITES}.items():
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
+    return NoWholeReadsConfig(
+        repo_root=tmp_path, src_roots=(src,), ledger_dir=tmp_path, dependency_schema=False, table_lists=()
+    )
+
+
+def test_a_keyed_write_by_equality_is_parsed() -> None:
+    """Flips if an UPDATE's SET (a parameter, a literal, NULL, now()) or a DELETE's pins are read other than written."""
+    assert parse_write(
+        "UPDATE a.t SET x = $1, y = NULL, z = now(), w = 'k' WHERE id = $2 AND gone IS NULL"
+    ) == WriteSql(
+        "update",
+        "a.t",
+        (Pin("x", "param", param=1), Pin("y", "null"), Pin("z", "now"), Pin("w", "literal", literal="k")),
+        (Pin("id", "param", param=2), Pin("gone", "null")),
+    )
+    assert parse_write("DELETE FROM t WHERE k = $1 AND live = TRUE") == WriteSql(
+        "delete", "t", (), (Pin("k", "param", param=1), Pin("live", "literal", literal=True))
+    )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "UPDATE t SET n = n + 1 WHERE id = $1",
+        "UPDATE t SET v = $1::jsonb WHERE id = $2",
+        "UPDATE t SET v = $1 WHERE id = ANY($2)",
+        "UPDATE t SET v = $1 FROM u WHERE t.id = u.id AND u.k = $2",
+        "DELETE FROM t WHERE id IN (SELECT id FROM t WHERE at < $1 LIMIT $2)",
+        "DELETE FROM t WHERE id = $1 RETURNING id",
+        "DELETE FROM t USING u WHERE t.id = u.id AND u.k = $1",
+        "UPDATE t SET v = (SELECT max(v) FROM u) WHERE id = $1",
+        "DELETE FROM {} WHERE id = $1",
+        "DELETE FROM t WHERE live = TRUE",
+    ],
+)
+def test_anything_but_a_write_by_equality_is_refused(sql: str) -> None:
+    """Flips if a write the helpers cannot send as written is taken for a keyed write by equality."""
+    assert isinstance(parse_write(sql), str), sql
+
+
+def test_keyed_writes_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path) -> None:
+    """Flips if a keyed write by equality, its status discarded, is not rewritten onto update_keyed / delete_keyed
+    exactly, the manifest does not record it, or the rewritten module still holds a use-the-helper finding for it or
+    a new whole-read finding; or a write whose status is read, an increment, a RETURNING or an unkeyed write is
+    rewritten."""
+    config = _write_config(tmp_path)
+    before = no_whole_reads_findings(config)
+    rewrites, refusals = plan_write_rewrites(config)
+    assert sorted((rewrite.function, rewrite.helper) for rewrite in rewrites) == [
+        ("forget", "delete_keyed"),
+        ("rename", "update_keyed"),
+    ]
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    assert refused.keys() >= {"renamed_count", "by_status", "bumped"}, refused
+    assert "status is read" in refused["renamed_count"]
+    assert "unkeyed" in refused["by_status"]
+    assert not [rewrite for rewrite in rewrites if rewrite.function == "returned"]
+
+    assert apply_rewrites(tmp_path, rewrites, ruff=None) == ["src/pkg/writes.py"]
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    entries = json.loads(manifest.read_text(encoding="utf-8"))
+    assert {entry["shape"] for entry in entries} == {"write"}
+
+    source = (tmp_path / "src/pkg/writes.py").read_text(encoding="utf-8")
+    assert "from threetears.core.keyed import Fragment, delete_keyed, update_keyed" in source
+    assert "_FORGET_SQL" not in source and "forget one geo" not in source
+    assert (
+        "await update_keyed(conn, 'agents', values={'name': name, 'date_updated': Fragment(\"now()\"), 'flag': True},"
+        " by={'id': agent_id})" in source
+    )
+    assert "await delete_keyed(conn, 'geos', by={'state': state, 'geo_id': geo})" in source
+    for entry in entries:
+        assert_source_says(tmp_path, entry)
+
+    left = [finding for finding in use_the_helper_findings(config) if "use-the-helper write" in finding]
+    assert not [finding for finding in left if " in rename:" in finding or " in forget:" in finding], left
+    assert _unlined(no_whole_reads_findings(config)) == _unlined(before)

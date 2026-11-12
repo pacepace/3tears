@@ -21,6 +21,14 @@ for all, both delete exactly the same rows; with fewer, each deletes the batch's
 oldest (its ``ORDER BY``; the old statement named no order). The source check finds the ``delete_before`` call in the
 function with the recorded key and column, its collection ``self``.
 
+**Writes** (``"shape": "write"``): an ``UPDATE`` / ``DELETE`` by equality replaced by
+:func:`~threetears.core.keyed.update_keyed` / :func:`~threetears.core.keyed.delete_keyed`. Over the same seed cases,
+each side runs on its own seeded table in a transaction rolled back after it, and the table as each leaves it (every
+column of every row) is compared: the same rows written, to the same values, and no other. A ``SET`` parameter binds
+a value no seeded row holds (the write shows), ``now()`` the transaction's own time on both sides (it is the same
+within a transaction only per side: compared by being set, not by its instant). The source check finds the call's
+table, ``by`` pins and ``values`` as recorded.
+
 **Seeding.** Each row is built from the table as migrated (its columns, types, NOT NULLs, defaults, enums and unique
 keys, read from the catalog), so a table needs no hand-written row factory: every
 column the read pins as a parameter is shared by a tenant's rows (the key names many rows), or unique a row where a
@@ -46,7 +54,7 @@ from pathlib import Path
 from typing import Any, Final
 from uuid import NAMESPACE_OID, uuid5
 
-from threetears.core.keyed import delete_before, read_by, read_row, read_value
+from threetears.core.keyed import Fragment, delete_before, delete_keyed, read_by, read_row, read_value, update_keyed
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
 __all__ = [
@@ -331,6 +339,9 @@ async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides:
     if entry.get("shape") == "sweep":
         await _assert_sweep_same(conn, entry)
         return
+    if entry.get("shape") == "write":
+        await _assert_write_same(conn, entry, overrides=overrides)
+        return
     table = entry["table"]
     await _drop_checks(conn, table)
     shape = await _catalog(conn, table)
@@ -378,6 +389,112 @@ async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides:
             )
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")
+
+
+async def _assert_write_same(conn: Any, entry: Mapping[str, Any], *, overrides: _Overrides | None) -> None:
+    """the write entry's helper call leaves the table as its old statement left it, over every seed case.
+
+    :param conn: an asyncpg connection to a migrated test database, as a superuser
+    :ptype conn: Any
+    :param entry: the manifest entry (``shape`` ``write``)
+    :ptype entry: Mapping[str, Any]
+    :param overrides: per table, column -> value of a seed, where the generic row does not fit
+    :ptype overrides: _Overrides | None
+    :return: nothing
+    :rtype: None
+    :raises AssertionError: naming each case whose table after the write differs
+    """
+    table = entry["table"]
+    await _drop_checks(conn, table)
+    shape = await _catalog(conn, table)
+    # the pins numbered $1.. among themselves for the row factory, then each placed at its own number
+    numbered = sorted({pin["param"] for pin in entry["pins"] if pin["kind"] == "param"})
+    compact = {number: place + 1 for place, number in enumerate(numbered)}
+    pins = [{**pin, "param": compact[pin["param"]]} if pin["kind"] == "param" else pin for pin in entry["pins"]]
+    row, pinned = row_factory(shape, {**entry, "pins": pins}, (overrides or {}).get(table, {}))
+    total = max([pin["param"] for pin in (*entry["pins"], *entry["sets"]) if pin.get("param")] or [0])
+    params: list[Any] = [None] * total
+    for number, place in compact.items():
+        params[number - 1] = pinned[place - 1]
+    for offset, pin in enumerate(entry["sets"]):
+        if pin["kind"] == "param" and params[pin["param"] - 1] is None:
+            column = shape.columns.get(pin["column"])
+            if column is None:
+                raise AssertionError(f"{table}: the write sets {pin['column']}, which the table has no column of")
+            # a value no seeded row holds, so the write shows in the table after it
+            params[pin["param"] - 1] = _value(column, 900_000 + offset)
+    by = {
+        pin["column"]: params[pin["param"] - 1] if pin["kind"] == "param" else pin.get("literal")
+        for pin in entry["pins"]
+    }
+    values: dict[str, Any] = {}
+    for pin in entry["sets"]:
+        if pin["kind"] == "param":
+            values[pin["column"]] = params[pin["param"] - 1]
+        elif pin["kind"] == "literal":
+            values[pin["column"]] = pin["literal"]
+        elif pin["kind"] == "now":
+            values[pin["column"]] = Fragment("now()")
+        else:
+            values[pin["column"]] = None
+
+    async def helper(c: Any) -> list[Any]:
+        if entry["helper"] == "update_keyed":
+            await update_keyed(c, table, values=values, by=by)
+        else:
+            await delete_keyed(c, table, by=by)
+        return []
+
+    # now() differs between the two sides' transactions: compared by whether it was set, not by its instant
+    now_columns = {pin["column"] for pin in entry["sets"] if pin["kind"] == "now"}
+    kept = [name for name in shape.columns if name not in now_columns]
+    listed = ", ".join(f'"{name}"' for name in kept)
+    stamped = "".join(f', "{name}" IS NOT NULL AS "{name}__set"' for name in sorted(now_columns))
+    await conn.execute("SET session_replication_role = replica")
+    try:
+        await assert_same_results(
+            conn,
+            table=table,
+            row=row,
+            old_sql=entry["old_sql"],
+            params=params,
+            helper=helper,
+            state_sql=f"SELECT {listed}{stamped} FROM {table}",  # noqa: S608 - the test's own table
+        )
+    finally:
+        await conn.execute("SET session_replication_role = DEFAULT")
+
+
+def _write_says(call: ast.Call, entry: Mapping[str, Any]) -> bool:
+    """whether a write helper call names the entry's table, pins and values as recorded."""
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    if len(call.args) != 2 or not (isinstance(call.args[1], ast.Constant) and call.args[1].value == entry["table"]):
+        return False
+
+    def matches(written: ast.expr | None, pins: Sequence[Mapping[str, Any]]) -> bool:
+        if not isinstance(written, ast.Dict) or len(written.keys) != len(pins):
+            return False
+        for key, value, pin in zip(written.keys, written.values, pins, strict=True):
+            if not (isinstance(key, ast.Constant) and key.value == pin["column"]):
+                return False
+            if pin["kind"] == "param":
+                if not _same_expression(value, entry["args"][pin["param"] - 1]):
+                    return False
+            elif pin["kind"] == "now":
+                if not _same_expression(value, 'Fragment("now()")'):
+                    return False
+            elif not (
+                isinstance(value, ast.Constant)
+                and value.value == (pin["literal"] if pin["kind"] == "literal" else None)
+            ):
+                return False
+        return True
+
+    if not matches(keywords.get("by"), entry["pins"]):
+        return False
+    if entry["helper"] == "update_keyed":
+        return matches(keywords.get("values"), entry["sets"])
+    return "values" not in keywords
 
 
 def _function(tree: ast.Module, qualified: str) -> ast.AST | None:
@@ -539,6 +656,8 @@ def _sweep_says(call: ast.Call, entry: Mapping[str, Any]) -> bool:
 def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
     if entry.get("shape") == "sweep":
         return _sweep_says(call, entry)
+    if entry.get("shape") == "write":
+        return _write_says(call, entry)
     keywords = {keyword.arg: keyword.value for keyword in call.keywords}
     if len(call.args) != 2 or not (isinstance(call.args[1], ast.Constant) and call.args[1].value == entry["table"]):
         return False

@@ -1031,5 +1031,556 @@
   "shape": "sweep",
   "table": "coordination_redemptions",
   "table_argument": "self.schema.name"
+ },
+ {
+  "args": [
+   "agent_id",
+   "skill_id"
+  ],
+  "columns": null,
+  "function": "AgentSkillCollection.delete_from_store",
+  "helper": "delete_keyed",
+  "line": 379,
+  "method": "execute",
+  "new_call": "delete_keyed(self.l3_pool, 'agent_skills', by={'agent_id': agent_id, 'skill_id': skill_id})",
+  "old_sql": "DELETE FROM agent_skills WHERE agent_id = $1 AND skill_id = $2",
+  "path": "packages/agent/skills/src/threetears/agent/skills/collections.py",
+  "pins": [
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "skill_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "sets": [],
+  "shape": "write",
+  "table": "agent_skills"
+ },
+ {
+  "args": [
+   "agent_id",
+   "invocation_id"
+  ],
+  "columns": null,
+  "function": "AgentSkillInvocationCollection.delete_from_store",
+  "helper": "delete_keyed",
+  "line": 382,
+  "method": "execute",
+  "new_call": "delete_keyed(self.l3_pool, 'agent_skill_invocations', by={'agent_id': agent_id, 'invocation_id': invocation_id})",
+  "old_sql": "DELETE FROM agent_skill_invocations WHERE agent_id = $1 AND invocation_id = $2",
+  "path": "packages/agent/skills/src/threetears/agent/skills/collections.py",
+  "pins": [
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "invocation_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "sets": [],
+  "shape": "write",
+  "table": "agent_skill_invocations"
+ },
+ {
+  "args": [
+   "agent_id",
+   "invocation_id",
+   "outcome",
+   "source"
+  ],
+  "columns": null,
+  "function": "AgentSkillInvocationCollection.set_outcome",
+  "helper": "update_keyed",
+  "line": 1181,
+  "method": "execute",
+  "new_call": "update_keyed(self.l3_pool, 'agent_skill_invocations', values={'outcome': outcome, 'outcome_source': source}, by={'agent_id': agent_id, 'invocation_id': invocation_id})",
+  "old_sql": "UPDATE agent_skill_invocations SET outcome = $3, outcome_source = $4 WHERE agent_id = $1 AND invocation_id = $2",
+  "path": "packages/agent/skills/src/threetears/agent/skills/collections.py",
+  "pins": [
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "invocation_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "sets": [
+   {
+    "column": "outcome",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   },
+   {
+    "column": "outcome_source",
+    "kind": "param",
+    "literal": null,
+    "param": 4
+   }
+  ],
+  "shape": "write",
+  "table": "agent_skill_invocations"
+ },
+ {
+  "args": [
+   "conversation_id",
+   "cid",
+   "now"
+  ],
+  "columns": null,
+  "function": "ContextItemCollection.touch",
+  "helper": "update_keyed",
+  "line": 392,
+  "method": "execute",
+  "new_call": "update_keyed(self.l3_pool, 'context_items', values={'date_accessed': now}, by={'conversation_id': conversation_id, 'context_id': cid})",
+  "old_sql": "UPDATE context_items SET date_accessed = $3 WHERE conversation_id = $1 AND context_id = $2",
+  "path": "packages/agent/tools/src/threetears/agent/tools/collections.py",
+  "pins": [
+   {
+    "column": "conversation_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "context_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "sets": [
+   {
+    "column": "date_accessed",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   }
+  ],
+  "shape": "write",
+  "table": "context_items"
+ },
+ {
+  "args": [
+   "workspace.id",
+   "rel"
+  ],
+  "columns": null,
+  "function": "_seed_l3_disk_wins",
+  "helper": "delete_keyed",
+  "line": 209,
+  "method": "execute",
+  "new_call": "delete_keyed(conn, 'workspace_files', by={'workspace_id': workspace.id, 'relative_path': rel})",
+  "old_sql": "\nDELETE FROM workspace_files\nWHERE workspace_id = $1 AND relative_path = $2\n",
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/materialize.py",
+  "pins": [
+   {
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "relative_path",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "sets": [],
+  "shape": "write",
+  "table": "workspace_files"
+ },
+ {
+  "args": [
+   "workspace.id",
+   "rel"
+  ],
+  "columns": null,
+  "function": "_capture_back",
+  "helper": "delete_keyed",
+  "line": 209,
+  "method": "execute",
+  "new_call": "delete_keyed(conn, 'workspace_files', by={'workspace_id': workspace.id, 'relative_path': rel})",
+  "old_sql": "\nDELETE FROM workspace_files\nWHERE workspace_id = $1 AND relative_path = $2\n",
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/materialize.py",
+  "pins": [
+   {
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "relative_path",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "sets": [],
+  "shape": "write",
+  "table": "workspace_files"
+ },
+ {
+  "args": [
+   "workspace.id",
+   "rel"
+  ],
+  "columns": null,
+  "function": "_handle_watch_batch",
+  "helper": "delete_keyed",
+  "line": 209,
+  "method": "execute",
+  "new_call": "delete_keyed(conn, 'workspace_files', by={'workspace_id': workspace.id, 'relative_path': rel})",
+  "old_sql": "\nDELETE FROM workspace_files\nWHERE workspace_id = $1 AND relative_path = $2\n",
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/materialize.py",
+  "pins": [
+   {
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "relative_path",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "sets": [],
+  "shape": "write",
+  "table": "workspace_files"
+ },
+ {
+  "args": [
+   "now",
+   "workspace.id",
+   "workspace.agent_id"
+  ],
+  "columns": null,
+  "function": "WorkspaceDeleteTool.execute",
+  "helper": "update_keyed",
+  "line": 65,
+  "method": "execute",
+  "new_call": "update_keyed(conn, 'workspaces', values={'date_deleted': now, 'date_updated': now}, by={'workspace_id': workspace.id, 'agent_id': workspace.agent_id})",
+  "old_sql": "UPDATE workspaces SET date_deleted = $1, date_updated = $1 WHERE workspace_id = $2 AND agent_id = $3",
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/tools/workspace_delete.py",
+  "pins": [
+   {
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   }
+  ],
+  "sets": [
+   {
+    "column": "date_deleted",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "date_updated",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "shape": "write",
+  "table": "workspaces"
+ },
+ {
+  "args": [
+   "workspace_id",
+   "relative"
+  ],
+  "columns": null,
+  "function": "WorkspaceResetTool._apply_reset",
+  "helper": "delete_keyed",
+  "line": 87,
+  "method": "execute",
+  "new_call": "delete_keyed(conn, 'workspace_files', by={'workspace_id': workspace_id, 'relative_path': relative})",
+  "old_sql": "DELETE FROM workspace_files WHERE workspace_id = $1 AND relative_path = $2",
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/tools/workspace_reset.py",
+  "pins": [
+   {
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "relative_path",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "sets": [],
+  "shape": "write",
+  "table": "workspace_files"
+ },
+ {
+  "args": [
+   "entity_id"
+  ],
+  "columns": null,
+  "function": "DataSourceTableCollection.delete_from_store",
+  "helper": "delete_keyed",
+  "line": 657,
+  "method": "execute",
+  "new_call": "delete_keyed(self.l3_pool, 'datasource_tables', by={'id': entity_id})",
+  "old_sql": "DELETE FROM datasource_tables WHERE id = $1",
+  "path": "packages/datasources/src/threetears/datasources/collections.py",
+  "pins": [
+   {
+    "column": "id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "sets": [],
+  "shape": "write",
+  "table": "datasource_tables"
+ },
+ {
+  "args": [
+   "entity_id"
+  ],
+  "columns": null,
+  "function": "DataSourceColumnCollection.delete_from_store",
+  "helper": "delete_keyed",
+  "line": 808,
+  "method": "execute",
+  "new_call": "delete_keyed(self.l3_pool, 'datasource_columns', by={'id': entity_id})",
+  "old_sql": "DELETE FROM datasource_columns WHERE id = $1",
+  "path": "packages/datasources/src/threetears/datasources/collections.py",
+  "pins": [
+   {
+    "column": "id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "sets": [],
+  "shape": "write",
+  "table": "datasource_columns"
+ },
+ {
+  "args": [
+   "entity_id"
+  ],
+  "columns": null,
+  "function": "DataSourceSchemaDigestCollection.delete_from_store",
+  "helper": "delete_keyed",
+  "line": 969,
+  "method": "execute",
+  "new_call": "delete_keyed(self.l3_pool, 'datasource_schema_digests', by={'datasource_id': entity_id})",
+  "old_sql": "DELETE FROM datasource_schema_digests WHERE datasource_id = $1",
+  "path": "packages/datasources/src/threetears/datasources/collections.py",
+  "pins": [
+   {
+    "column": "datasource_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "sets": [],
+  "shape": "write",
+  "table": "datasource_schema_digests"
+ },
+ {
+  "args": [
+   "entity_id"
+  ],
+  "columns": null,
+  "function": "DataSourceRelationCollection.delete_from_store",
+  "helper": "delete_keyed",
+  "line": 1080,
+  "method": "execute",
+  "new_call": "delete_keyed(self.l3_pool, 'datasource_relations', by={'id': entity_id})",
+  "old_sql": "DELETE FROM datasource_relations WHERE id = $1",
+  "path": "packages/datasources/src/threetears/datasources/collections.py",
+  "pins": [
+   {
+    "column": "id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "sets": [],
+  "shape": "write",
+  "table": "datasource_relations"
+ },
+ {
+  "args": [
+   "entity_id"
+  ],
+  "columns": null,
+  "function": "TableTemplateCollection.delete_from_store",
+  "helper": "delete_keyed",
+  "line": 1212,
+  "method": "execute",
+  "new_call": "delete_keyed(self.l3_pool, 'table_templates', by={'id': entity_id})",
+  "old_sql": "DELETE FROM table_templates WHERE id = $1",
+  "path": "packages/datasources/src/threetears/datasources/collections.py",
+  "pins": [
+   {
+    "column": "id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "sets": [],
+  "shape": "write",
+  "table": "table_templates"
+ },
+ {
+  "args": [
+   "partition_key",
+   "job_id"
+  ],
+  "columns": null,
+  "function": "ScheduledJobCollection.delete_from_store",
+  "helper": "delete_keyed",
+  "line": 117,
+  "method": "execute",
+  "new_call": "delete_keyed(self.l3_pool, 'scheduled_jobs', by={'partition_key': partition_key, 'job_id': job_id})",
+  "old_sql": "DELETE FROM scheduled_jobs WHERE partition_key = $1 AND job_id = $2",
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "column": "partition_key",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "job_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "sets": [],
+  "shape": "write",
+  "table": "scheduled_jobs"
+ },
+ {
+  "args": [
+   "partition_key",
+   "fire_id"
+  ],
+  "columns": null,
+  "function": "JobFireCollection.delete_from_store",
+  "helper": "delete_keyed",
+  "line": 120,
+  "method": "execute",
+  "new_call": "delete_keyed(self.l3_pool, 'job_fires', by={'partition_key': partition_key, 'fire_id': fire_id})",
+  "old_sql": "DELETE FROM job_fires WHERE partition_key = $1 AND fire_id = $2",
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "column": "partition_key",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "fire_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "sets": [],
+  "shape": "write",
+  "table": "job_fires"
+ },
+ {
+  "args": [
+   "status",
+   "output",
+   "latency_ms",
+   "partition_key",
+   "fire_id"
+  ],
+  "columns": null,
+  "function": "JobFireCollection.finalize_success",
+  "helper": "update_keyed",
+  "line": 990,
+  "method": "execute",
+  "new_call": "update_keyed(self.l3_pool, 'job_fires', values={'status': status, 'output': output, 'latency_ms': latency_ms}, by={'partition_key': partition_key, 'fire_id': fire_id})",
+  "old_sql": "UPDATE job_fires SET status = $1, output = $2, latency_ms = $3 WHERE partition_key = $4 AND fire_id = $5",
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "column": "partition_key",
+    "kind": "param",
+    "literal": null,
+    "param": 4
+   },
+   {
+    "column": "fire_id",
+    "kind": "param",
+    "literal": null,
+    "param": 5
+   }
+  ],
+  "sets": [
+   {
+    "column": "status",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "output",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "column": "latency_ms",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   }
+  ],
+  "shape": "write",
+  "table": "job_fires"
  }
 ]

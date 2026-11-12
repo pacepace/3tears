@@ -61,7 +61,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
     UniqueConstraint,
 )
-from threetears.core.keyed import read_row
+from threetears.core.keyed import delete_keyed, read_row
 from threetears.core.security.secret_refs import validate_ref
 from threetears.datasources.customer_scope import BY_CUSTOMER, COLUMN_CATALOGUE, TABLE_CATALOGUE
 from threetears.datasources.entities import (
@@ -653,10 +653,7 @@ class DataSourceTableCollection(DeclaredTableCollection[DataSourceTableEntity]):
         """
         if self.l3_pool is None:
             return
-        await self.l3_pool.execute(
-            "DELETE FROM datasource_tables WHERE id = $1",
-            entity_id,
-        )
+        await delete_keyed(self.l3_pool, "datasource_tables", by={"id": entity_id})
 
     async def get_by_natural_key(
         self,
@@ -804,10 +801,7 @@ class DataSourceColumnCollection(DeclaredTableCollection[DataSourceColumnEntity]
         """
         if self.l3_pool is None:
             return
-        await self.l3_pool.execute(
-            "DELETE FROM datasource_columns WHERE id = $1",
-            entity_id,
-        )
+        await delete_keyed(self.l3_pool, "datasource_columns", by={"id": entity_id})
 
     async def get_by_natural_key(
         self,
@@ -965,10 +959,7 @@ class DataSourceSchemaDigestCollection(
         """
         if self.l3_pool is None:
             return
-        await self.l3_pool.execute(
-            "DELETE FROM datasource_schema_digests WHERE datasource_id = $1",
-            entity_id,
-        )
+        await delete_keyed(self.l3_pool, "datasource_schema_digests", by={"datasource_id": entity_id})
 
 
 class DataSourceRelationCollection(DeclaredTableCollection[DataSourceRelationEntity]):
@@ -1076,10 +1067,7 @@ class DataSourceRelationCollection(DeclaredTableCollection[DataSourceRelationEnt
         """
         if self.l3_pool is None:
             return
-        await self.l3_pool.execute(
-            "DELETE FROM datasource_relations WHERE id = $1",
-            entity_id,
-        )
+        await delete_keyed(self.l3_pool, "datasource_relations", by={"id": entity_id})
 
 
 class TableTemplateCollection(DeclaredTableCollection[TableTemplateEntity]):
@@ -1208,10 +1196,7 @@ class TableTemplateCollection(DeclaredTableCollection[TableTemplateEntity]):
         """
         if self.l3_pool is None:
             return
-        await self.l3_pool.execute(
-            "DELETE FROM table_templates WHERE id = $1",
-            entity_id,
-        )
+        await delete_keyed(self.l3_pool, "table_templates", by={"id": entity_id})
 
 
 #: ``datasource_customers`` as the hub declares it (hub v001): which customers a ``restricted`` shared datasource

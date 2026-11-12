@@ -286,7 +286,7 @@ async def test_reset_drops_files_template_no_longer_has(
     result = await tool.execute(name="seed")
 
     assert result.success is True, result.error
-    deletes = [e for e in pool.conn.executions if "DELETE FROM workspace_files" in e[0]]
+    deletes = [e for e in pool.conn.executions if 'DELETE FROM "workspace_files"' in e[0]]
     assert len(deletes) == 1
     assert deletes[0][1][1] == "dropped.md"
 
