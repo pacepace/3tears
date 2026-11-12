@@ -41,7 +41,18 @@ from threetears.evals.kernel import (
     ValidationFailedError,
     judge_case_payload,
 )
-from threetears.evals.ops import LaunchArguments, OpsHost, launch_estimate, run_launch
+from threetears.evals.ops import (
+    LaunchArguments,
+    OpsHost,
+    SweepArguments,
+    SweepArm,
+    job_cancel,
+    job_resume,
+    launch_estimate,
+    run_job_id,
+    run_launch,
+    sweep_launch,
+)
 from threetears.evals.ops.lenses import estimate_text
 from threetears.evals.providers import Catalogue, Clients, Model
 from threetears.evals.run import (
@@ -88,14 +99,18 @@ class _FakeOpenRouter:  # parity-exempt: stands in for OpenRouter's HTTP endpoin
         self.list_fails = list_fails
         self.list_reads = 0
         self.completions = 0
+        #: When set, every completion waits here until it is set, so a test can hold a run part-way.
+        self.held: asyncio.Event | None = None
 
-    def __call__(self, request: httpx.Request) -> httpx.Response:
+    async def __call__(self, request: httpx.Request) -> httpx.Response:
         if request.method == "GET":
             self.list_reads += 1
             if self.list_fails:
                 return httpx.Response(503, json={"error": {"message": "unavailable"}})
             return httpx.Response(200, json={"data": self.rows})
         self.completions += 1
+        if self.held is not None:
+            await self.held.wait()
         content = json.dumps({"reasoning": "read it", "criteria_scores": {TRANSCRIPT_DIM_ID: 3}})
         return httpx.Response(
             200,
@@ -360,6 +375,84 @@ async def test_a_resume_in_a_fresh_process_reads_the_catalogue_and_is_priced_and
     assert restarted.provider.list_reads >= 1, "the take-up read the catalogue before it priced"
     [stored] = restarted.stored_runs()
     assert stored.status == "completed"
+
+
+async def _notice_of(process: _Process) -> str:
+    """What an uncapped estimate on ``process`` says of the skipped check: the sentence every result carries."""
+    arm = await process.estimate(None)
+    [check] = arm.plan.served_checks
+    notice = check.skipped_notice()
+    assert notice is not None
+    return notice
+
+
+async def test_a_resume_whose_list_cannot_be_read_is_taken_up_and_job_resume_says_the_check_was_skipped() -> None:
+    first, run_id = await _budget_stopped_run()
+    restarted = off_loop(
+        _Process, _FakeOpenRouter([_FLASH_ROW], list_fails=True), enforced=False, storage=first.host.eval_host.storage
+    )
+    notice = await _notice_of(restarted)
+    host = OpsHost(launch=restarted.host)
+
+    started = await job_resume(host, run_job_id(run_id), TOYHOST_SCOPE, max_cost_usd=3.0)
+
+    assert started.notices == [notice], "the resume's caller is told, not only the log"
+    (job,) = started.jobs
+    assert (await settled(host, job.job_id)).state == "completed"
+
+
+def _sweep_arguments() -> SweepArguments:
+    return SweepArguments(
+        template_id=_TEMPLATE_ID,
+        subject_id="the flash judge",
+        campaign_name="flash judge",
+        campaign_behavior="judge agreement",
+        k_runs=1,
+        arms=[SweepArm(model=_FLASH, label="flash")],
+    )
+
+
+async def test_a_sweep_whose_list_cannot_be_read_is_launched_and_its_result_says_the_check_was_skipped() -> None:
+    process = off_loop(_Process, _FakeOpenRouter([_FLASH_ROW], list_fails=True), enforced=False)
+    notice = await _notice_of(process)
+    host = OpsHost(launch=process.host)
+
+    started = await sweep_launch(host, _sweep_arguments(), TOYHOST_SCOPE, created_by="agent:test")
+
+    assert started.notices == [notice], "the sweep's caller is told, not only the log"
+    (job,) = started.jobs
+    assert (await settled(host, job.job_id)).state == "completed"
+
+
+async def test_a_sweep_taken_up_where_its_list_cannot_be_read_says_the_check_was_skipped() -> None:
+    held = _FakeOpenRouter([_FLASH_ROW])
+    held.held = asyncio.Event()
+    first = off_loop(_Process, held, enforced=False)
+    holder = OpsHost(launch=first.host)
+    (job,) = (await sweep_launch(holder, _sweep_arguments(), TOYHOST_SCOPE, created_by="agent:test")).jobs
+    async with asyncio.timeout(10):
+        while held.completions == 0:
+            await asyncio.sleep(0.01)
+    await job_cancel(holder, job.job_id, TOYHOST_SCOPE, reason="restarting the host")
+    assert (await settled(holder, job.job_id)).state == "cancelled"
+    held.held.set()
+    manager = first.host.job_manager
+    async with asyncio.timeout(10):
+        while manager.is_task_active(job.job_id.removeprefix("sweep:")) or any(
+            manager.is_active(run.id) for run in first.stored_runs()
+        ):
+            await asyncio.sleep(0.01)
+
+    restarted = off_loop(
+        _Process, _FakeOpenRouter([_FLASH_ROW], list_fails=True), enforced=False, storage=first.host.eval_host.storage
+    )
+    notice = await _notice_of(restarted)
+    resumer = OpsHost(launch=restarted.host)
+    started = await job_resume(resumer, job.job_id, TOYHOST_SCOPE)
+
+    assert started.notices == [notice], "the sweep's take-up tells its caller, not only the log"
+    (resumed,) = started.jobs
+    assert (await settled(resumer, resumed.job_id)).state == "completed"
 
 
 # =============================================================================

@@ -288,7 +288,8 @@ models share, so one read serves this check and the pricing after it: rows young
 `refresh_after` are kept, older ones fetched again. A model that list does not name is refused, naming the model
 and the provider. A list that cannot be read, or whose refresh failed so it is not current, leaves the arm admitted,
 and the check skipped is said with the reason on the estimate (`ArmEstimate.served_check_skipped`, and its text),
-on the admitted launch (`AdmittedLaunch.notices`) and on `run_launch`'s answer (`JobsStarted.notices`). A model
+on the admitted launch (`AdmittedLaunch.notices`), and on the answer of `run_launch`, `sweep_launch`,
+`sweep_resume` and `job_resume` (`JobsStarted.notices`). A model
 whose provider the factory reads no list of (a direct Anthropic or OpenAI model, an OpenAI-compatible `base_url`)
 is not checked, and neither is any model of a factory without `model_listing`, such as a host's own adapter. A
 price from past runs never stands in for this check.

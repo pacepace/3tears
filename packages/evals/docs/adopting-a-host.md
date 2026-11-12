@@ -379,8 +379,8 @@ priced is refused, naming the call and why, never admitted unchecked.
 **Admission also checks the models are still served.** `Clients.model_listing(model, role=...)` answers what
 OpenRouter's model list (the same catalogue, so the same read) says of a model that goes to OpenRouter, and admission
 asks it of each arm's candidate, judge and simulator models: a model the list does not name is refused, naming it,
-and a list that cannot be read lets the launch go ahead saying the check was skipped (`JobsStarted.notices`,
-`ArmEstimate.served_check_skipped`). A model going to Anthropic or OpenAI directly is not checked. A factory of your
+and a list that cannot be read lets the launch, the sweep or the resume go ahead saying the check was skipped
+(`JobsStarted.notices`, `ArmEstimate.served_check_skipped`). A model going to Anthropic or OpenAI directly is not checked. A factory of your
 own may offer the same `async model_listing(model, *, role) -> ModelListing | None` (`ModelListing` from
 `threetears.evals.schema`), answering `None` for a model whose provider keeps no list it reads; one without it is
 not checked. A long-lived process is not priced from its first

@@ -216,8 +216,9 @@ class JobsStarted(EvalBaseModel):
         default_factory=list,
         exclude_if=lambda value: not value,
         description=(
-            "What admitting the work found and did not refuse it for, each a sentence: a launch whose served-model "
-            "check could not be made (its provider's model list could not be read) says so here. Left out when empty."
+            "What admitting the work found and did not refuse it for, each a sentence: a launch, a sweep or a resume "
+            "whose served-model check could not be made (its provider's model list could not be read) says so here. "
+            "Left out when empty."
         ),
     )
 

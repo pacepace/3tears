@@ -115,7 +115,8 @@ now, says of each arm's candidate, judge and simulator models (`ModelListing`, `
 `ArmPlan.served_checks`). `Clients.model_listing` reads OpenRouter's list, which is the price catalogue, so one read
 serves both checks. A model the list does not name is refused whatever the cap, naming the model and the provider. A
 list that cannot be read lets the launch go ahead, and the caller is told the check was skipped and why:
-`ArmEstimate.served_check_skipped` (and the estimate's text), `AdmittedLaunch.notices` and `JobsStarted.notices`. A
+`ArmEstimate.served_check_skipped` (and the estimate's text), `AdmittedLaunch.notices`, and `JobsStarted.notices` on
+the answer of `run_launch`, `sweep_launch`, `sweep_resume` and `job_resume` (a run's, a launch's or a sweep's). A
 model going to Anthropic or OpenAI directly, and every model of a factory without `model_listing`, is not checked.
 `Model.price_ceiling_refusal()` says why a ceiling is unknown, and `unpriced_because` words it for a refusal.
 
