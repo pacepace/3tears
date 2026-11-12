@@ -532,8 +532,17 @@ def _keyset_page(call: ast.Call) -> list[str]:
 def _read_changed(call: ast.Call) -> list[str]:
     """phase 1, the scope's keys and hashes, is a keyset page in the key's order (``relation`` / ``key`` as
     ``keyset_rows`` takes ``table`` / ``order``; a key column named by its string a sort of it); phase 2 reads by
-    those keys, keyed whenever phase 1 is."""
+    those keys, keyed whenever phase 1 is.
+
+    A key the walk cannot read (``key=list(source.key)``, handed at run time) leaves the page's order unknown: phase 1
+    is judged by its ``by`` and ``where`` alone, a page ordered by ``{}``, so pins of a leading key of the relation
+    (its table's, or the key a declared relation producer gives it) are keyed and a page pinning none is found."""
     key = _argument(call, "key", None)
+    if key is not None and not isinstance(key, ast.Tuple | ast.List):
+        table, own = _relation(_argument(call, "relation", 1), "relation")
+        pinned, place = _conditions(_by(_argument(call, "by", None)))
+        filtered, _ = _filters(call, place)
+        return [f"SELECT * FROM {table} AS t{_where([*pinned, *filtered])} ORDER BY {{}} LIMIT {_LIMIT}", *own]
     if isinstance(key, ast.Tuple | ast.List):
         key = ast.List(
             elts=[

@@ -114,6 +114,9 @@ def _judged(code: str, schema: SchemaCatalog, name: str = "src/app.py::reader") 
         # a scope's changed rows by hash: its keys and hashes paged in the key's order, then those keys read
         'read_changed(c, "results", key=["state", "geo", Sort("id", "bigint")], columns=cols, held=h, '
         'hash_columns=hc, by={"state": s})',
+        # ... its key handed at run time (a source's own key): phase 1 judged by its pins, a leading key's here
+        # (R-D, coordinator 2026-11-12)
+        'read_changed(c, "results", key=list(source.key), columns=cols, held=h, hash_columns=hc, by={"state": s})',
         'count_at_most(c, "results", by={"state": s}, at_most=3, order=["state", "geo", "id"])',
         # many scopes' group hashes in one statement: the scopes' rows, bound by the key's leading column
         'group_hashes(c, "results", scope="state", scopes=ss, group="geo", hash_columns=hc)',
@@ -225,6 +228,10 @@ def test_a_keyed_count_is_a_keyed_count(schema: SchemaCatalog) -> None:
             'read_changed(c, "results", key=["kind", "id"], columns=cols, held=h, hash_columns=hc, by={})',
             "non-key-where",
         ),
+        # ... its key handed at run time: judged by its pins alone (R-D, coordinator 2026-11-12), none a whole read,
+        # a column no key leads with read for its filter
+        ('read_changed(c, "results", key=key, columns=cols, held=h, hash_columns=hc, by={})', "whole-select"),
+        ('read_changed(c, "results", key=key, columns=cols, held=h, hash_columns=hc, by={"kind": k})', "non-key-where"),
     ],
 )
 def test_a_helper_naming_no_key_is_a_whole_read(code: str, kind: str, schema: SchemaCatalog) -> None:
@@ -256,7 +263,8 @@ def test_a_helper_naming_no_key_is_a_whole_read(code: str, kind: str, schema: Sc
         ('count_at_most(c, "results", at_most=3, order=key)', "order"),
         ('delete_before("leases", collection=c, key=key, column="expires_at", before=t, page=5)', "key"),
         ('read_past_marks(c, "rel", columns=cols, marks=marks)', "marks"),
-        ('read_changed(c, "results", key=key, columns=cols, held=h, hash_columns=hc, by={})', "order"),
+        # a run-time key whose by= the walk cannot read either
+        ('read_changed(c, "results", key=key, columns=cols, held=h, hash_columns=hc, by=pinned)', "by"),
         ('group_hashes(c, "results", scope=column, scopes=ss, group="geo", hash_columns=hc)', "scope"),
         ('group_hashes(c, "results", scope="state", group="geo", hash_columns=hc)', "scopes"),
         # a look with no bound is no bounded look

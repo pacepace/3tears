@@ -3494,6 +3494,7 @@ _RELATION_PRODUCED = """
     class SourceTable:
         name: str
         relation: str
+        key: tuple[str, ...] = ()
 
 
     def derived(relation):
@@ -3535,6 +3536,26 @@ _RELATION_PRODUCED = """
         return await keyed.counts_by(reader, source.relation, column="state", values=keyed.AnyOf([state]))
 
 
+    async def changed_by_state(reader, source: SourceTable, state, held):
+        return await keyed.read_changed(
+            reader, source.relation, key=list(source.key), columns=["a"], held=held, hash_columns=["a"],
+            by={"state": state},
+        )
+
+
+    async def changed_everywhere(reader, source: SourceTable, held):
+        return await keyed.read_changed(
+            reader, source.relation, key=list(source.key), columns=["a"], held=held, hash_columns=["a"]
+        )
+
+
+    async def changed_by_kind(reader, source: SourceTable, kind, held):
+        return await keyed.read_changed(
+            reader, source.relation, key=list(source.key), columns=["a"], held=held, hash_columns=["a"],
+            by={"kind": kind},
+        )
+
+
     class Inputs:
         def __init__(self, inputs):
             self._inputs = inputs
@@ -3552,11 +3573,15 @@ _PRODUCERS = {"SourceTable.relation": ("state",), "derived": ("run_id",), "Input
 def test_a_relation_a_declared_producer_yields_is_judged_by_its_declared_key(tmp_path: Path) -> None:
     """Flips if a helper handed a run-time relation a declared producer yields (a typed receiver's attribute, a
     producer function's return, a ``self`` attribute in its class) is not judged by the declared key: a read bound by
-    the key passes, one bound by another column is the whole read it is, and one the walk cannot type stays unseen."""
+    the key passes, one bound by another column is the whole read it is, and one the walk cannot type stays unseen;
+    a changed-rows read whose key is handed at run time too (``key=list(source.key)``) is judged by its pins."""
     found = _symbols(_config(tmp_path, {"produced.py": _RELATION_PRODUCED}, relation_producers=_PRODUCERS))
     functions = {function for function, _ in found}
-    for keyed_read in ("by_state", "every_state", "every_marked", "derived_by_run", "Inputs.named"):
+    for keyed_read in ("by_state", "every_state", "every_marked", "derived_by_run", "Inputs.named", "changed_by_state"):
         assert keyed_read not in functions, found
+    # a changed-rows read whose key is handed at run time (R-D, coordinator 2026-11-12): phase 1 judged by its pins
+    assert ("changed_everywhere", "whole-select produced.sourcetable__relation") in found, found
+    assert ("changed_by_kind", "non-key-where produced.sourcetable__relation") in found, found
     assert ("by_kind", "whole-aggregate produced.sourcetable__relation") in found, found
     assert ("derived_by_office", "whole-aggregate produced.derived") in found, found
     assert ("Inputs.every", "whole-aggregate produced.inputs___inputs") in found, found
