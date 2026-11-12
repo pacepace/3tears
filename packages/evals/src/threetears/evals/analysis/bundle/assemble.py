@@ -109,6 +109,7 @@ from threetears.evals.analysis.bundle.observations import _apparatus_classes, _o
 from threetears.evals.analysis.bundle.measures import (
     _failures_as_misses,
     goal_check_proofs_of,
+    negative_values_of,
     _measure_walk_memo,
 )
 from threetears.evals.analysis.bundle.design import (
@@ -771,6 +772,22 @@ def assemble_context_bundle(
     # carried here so that staying off it is not read as never having been measured.
     results_by_cell = _results_by_cell(cells, results)
     bundle.cost_unmeasured_cells, bundle.cost_unmeasured = _cost_unmeasured(results_by_cell)
+    by_arm: dict[str, list[ResultView]] = {}
+    for (variant_key, _), members in results_by_cell.items():
+        by_arm.setdefault(variant_key, []).extend(members)
+    bundle.negative_values = negative_values_of(by_arm, profile=profile)
+    for negative in bundle.negative_values:
+        log.warning(
+            "campaign %s, aspect %s: %d result(s) of arm %s recorded a negative value on %s, a measure declared "
+            "non-negative (a host bug); its intervals are drawn at 0. Result ids%s: %s",
+            bundle.campaign_id,
+            bundle.aspect,
+            negative.n_results,
+            negative.variant_key,
+            negative.measure,
+            f" (first {len(negative.result_ids)})" if negative.n_results > len(negative.result_ids) else "",
+            ", ".join(negative.result_ids),
+        )
     bundle.latency_contended_cells, bundle.latency_contended = _latency_contended(
         results_by_cell,
         contended_ids,

@@ -128,6 +128,7 @@ from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.campaign.provenance import timing_caveats
 from threetears.evals.analysis.report.campaign.scorecard import bar_threshold, campaign_verdict
 from threetears.evals.analysis.report.campaign.warnings import campaign_warnings
+from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.verdict import (
     MIN_CASES,
     CauseWords,
@@ -3907,6 +3908,8 @@ def _method_blocks(
         blocks.append(latency)
     for _, sentence in sorted(bundle.short_runs.items()):
         say("runs", sentence)
+    for negative in bundle.negative_values:
+        say("measurement", negative.sentence(measure_name_of(bundle, negative.measure), arm(negative.variant_key)))
     _run_disclosures(bundle, say, arm, forms)
     if (footing := _production_footing_sentence(bundle, arm)) is not None:
         say("measurement", footing)

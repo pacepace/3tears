@@ -113,6 +113,7 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.analysis.report.words import declared_arm_names, printed_arm_labels, trial_dimension
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
+from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.style import check_held, declared_check_name, measure_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.host.bars import PassCriterion, pass_threshold_label
@@ -1043,6 +1044,10 @@ class _Builder:
                 short.setdefault(run, ShortRun(run=run, arm=self.arm(key) if key is not None else None, note=note))
             for observation in aspect.telemetry.measures.unreported_observations:
                 unreported.setdefault(observation)
+            for negative in aspect.negative_values:
+                unreported.setdefault(
+                    negative.sentence(measure_name_of(aspect, negative.measure), self.arm(negative.variant_key))
+                )
         for note in self.unreported:
             unreported.setdefault(note)
         return Caveats(
