@@ -153,7 +153,7 @@ Use the scripts; never run `pytest`, `ruff` or `mypy` directly. Extra arguments 
 |---|---|
 | `./scripts/check-all.sh` | Lint, typecheck, the unit tests, the mcp-1.x and OpenTelemetry-floor suites CI's `check` job runs, and the sidecar tests |
 | `./scripts/test.sh [package]` | The unit tests, for every package or one: `./scripts/test.sh core` |
-| `./scripts/test-integration.sh` | The integration tests, against real containers such as NATS and Postgres (needs Docker) |
+| `./scripts/test-integration.sh` | The integration tests, against real Postgres, NATS and S3: on the testament pool for the packages moved there, and locally through testcontainers (needs Docker) for the rest |
 | `./scripts/test-sidecar.sh` | The scrape package's nodriver sidecar tests |
 | `./scripts/lint.sh` | `ruff check` and the format check; `--fix` fixes |
 | `./scripts/typecheck.sh [package]` | `mypy`, strict |

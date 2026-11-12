@@ -94,8 +94,9 @@ can't take a run, it exits 2 naming the key instead of running the suite on your
 `--capture=no`, `--pdb` and `--trace` need this terminal (testament runs those here whatever the
 manifest says), so the pool can't take them either. With only named test files (`.py` files or
 node ids) the run goes local with them; any wider run (a package, a directory) is refused, exit 2,
-with how to run it. A run gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`) stays
-local, since its tests would skip on runners without it. Any other run goes local only with
+with how to run it. A run gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`,
+`TAVILY_API_KEY`) stays local, since its tests would skip on runners without it; that is how the
+live Tavily test runs: `TAVILY_API_KEY=... ./scripts/test.sh search packages/search/tests/test_embedded_smoke.py`. Any other run goes local only with
 `TESTAMENT=off` and a stated reason, `TESTAMENT_OFF_REASON="..."`, which `test.sh` prints; without
 the reason it refuses and exits 2.
 
@@ -122,8 +123,9 @@ On a machine with room for it (not the laptop), a package works the same way.
 the mcp 1.x, OpenTelemetry-floor and sidecar suites, then fails at the end with "Unit suite NOT
 run". That line is expected only when the testament error above it is one of the pool or machine
 causes listed here; any other exit 2 (a `TESTAMENT=off` with no reason, `path_not_found`, a crash
-in the code under test) is yours to fix. Every other check above it must be green. Run
-`./scripts/test-integration.sh -rs` as always. Push: CI's `route` job finds the pool down and runs
+in the code under test) is yours to fix. Every other check above it must be green. For the
+integration tests, run `TESTAMENT=off TESTAMENT_OFF_REASON="pool down" ./scripts/test-integration.sh -rs`:
+the paths that normally run on the pool then run here through testcontainers, beside the rest. Push: CI's `route` job finds the pool down and runs
 the unit suite on the GitHub shards, and their verdict is the unit gate. To run the whole unit
 suite yourself anyway, use a machine with more memory than a 16 GB CI runner, run it the way CI
 does (`TESTAMENT_OFF_REASON="pool down" ./scripts/ci-unit-tests.sh`, in sessions), and expect
@@ -299,9 +301,10 @@ the root's per-test reset of process-wide state.
 ## The integration suite
 
 `./scripts/test-integration.sh` runs the integration tests. `test.sh` excludes them with
-`-m "not integration"`, and `check-all.sh` does not run them either: they spin real NATS and
-Postgres containers and need Docker, so folding them into the default gate would break it
-wherever Docker is absent. **CI runs only part of them:** its `integration` job covers core,
+`-m "not integration"`, and `check-all.sh` does not run them either. They run on two routes while
+they move to the testament pool one package at a time. The paths in `.testament.toml`'s
+`[suites.integration]` run on the pool, against Postgres, NATS and S3 started as processes in its
+container. The script's `LOCAL_DIRS` run here against testcontainers, and need Docker. **CI runs only part of them:** its `integration` job covers core,
 nats, epoch, scheduled-jobs and agent/acl against Postgres and NATS services, so the rest of the
 packages are executed by nothing but a developer, locally.
 

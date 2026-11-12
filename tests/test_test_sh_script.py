@@ -176,6 +176,147 @@ class TestNamedTestPathsRunAlone:
         assert run.argv == ["uv", "run", "pytest", _EVALS_FILE]
         assert "running locally, not via testament: an environment gate is set" in run.stderr
 
+    def test_a_tavily_key_keeps_the_run_local(self, repo: Path) -> None:
+        """the live Tavily tier is a ``secrets`` test the pool deselects: with its key set, the run stays here.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["evals", _EVALS_FILE], env={"TAVILY_API_KEY": "a-key"})
+        assert run.argv == ["uv", "run", "pytest", _EVALS_FILE]
+        assert "running locally, not via testament: an environment gate is set" in run.stderr
+
+
+class TestAnotherSuite:
+    """``--suite NAME`` sends the run to that suite of the manifest, in place of ``default``, and only on the pool."""
+
+    _INTEGRATION_DIR = "packages/core/tests/integration"
+
+    @pytest.fixture
+    def integration_dir(self, repo: Path) -> str:
+        """an integration directory in the miniature repo.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: its repo-relative path
+        :rtype: str
+        """
+        (repo / self._INTEGRATION_DIR).mkdir(parents=True)
+        return self._INTEGRATION_DIR
+
+    @pytest.mark.parametrize(
+        "suite",
+        [pytest.param(["--suite", "integration"], id="apart"), pytest.param(["--suite=integration"], id="joined")],
+    )
+    def test_the_named_suite_replaces_default(self, repo: Path, integration_dir: str, suite: list[str]) -> None:
+        """the run names the one suite given, never ``default`` beside it.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param integration_dir: a directory to run
+        :ptype integration_dir: str
+        :param suite: the flag, in either form
+        :ptype suite: list[str]
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, [*suite, integration_dir, "-rs"])
+        assert run.returncode == 0, run.stderr
+        assert run.argv == ["testament", "run", "--suite", "integration", "--", integration_dir, "-rs"]
+        assert "suite integration" in run.stderr.splitlines()[0]
+
+    def test_a_package_with_a_suite_runs_the_package_there(self, repo: Path) -> None:
+        """``core --suite integration`` sends core's tests to that suite.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core", "--suite", "integration"])
+        assert run.argv == ["testament", "run", "--suite", "integration", "--", "packages/core/tests/"]
+
+    def test_areas_resolve_against_the_suite_named(self, repo: Path) -> None:
+        """an area goes to testament beside the suite it belongs to.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["--suite", "integration", "--area", "nats"])
+        assert run.argv == ["testament", "run", "--suite", "integration", "--area", "nats", "--"]
+
+    def test_a_suite_with_no_name_is_refused(self, repo: Path) -> None:
+        """``--suite`` at the end names nothing.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core", "--suite"])
+        assert run.returncode == 2
+        assert run.argv == []
+        assert "--suite needs a suite name" in run.stderr
+
+    @pytest.mark.parametrize(
+        ("env", "testament"),
+        [
+            pytest.param({"TESTAMENT": "off", "TESTAMENT_OFF_REASON": "debugging"}, True, id="off-with-reason"),
+            pytest.param({"RECORD": "1"}, True, id="env-gate"),
+            pytest.param({"CI": "true"}, True, id="ci"),
+            pytest.param({}, False, id="no-testament"),
+        ],
+    )
+    def test_a_local_run_refuses_a_suite_other_than_default(
+        self, repo: Path, integration_dir: str, env: dict[str, str], testament: bool
+    ) -> None:
+        """a suite is the pool's, and this script's local run is the unit suite's: it refuses, running nothing.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param integration_dir: a directory to run
+        :ptype integration_dir: str
+        :param env: extra environment for the run
+        :ptype env: dict[str, str]
+        :param testament: whether a ``testament`` is on PATH
+        :ptype testament: bool
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["--suite", "integration", integration_dir], testament=testament, env=env)
+        assert run.returncode == 2
+        assert run.argv == []
+        assert "--suite integration selects a suite on the testament pool, and this run is local" in run.stderr
+
+    def test_default_named_on_a_local_run_is_the_local_run(self, repo: Path) -> None:
+        """``--suite default`` is what a local run is anyway.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["core", "--suite", "default"], testament=False)
+        assert run.returncode == 0, run.stderr
+        assert run.argv == ["uv", "run", "pytest", "packages/core/tests/"]
+
+    def test_a_local_flag_with_a_suite_is_refused(self, repo: Path) -> None:
+        """named files with ``-x`` would run here, outside the suite named, so the pair is refused.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["--suite", "integration", _EVALS_FILE, "-x"])
+        assert run.returncode == 2
+        assert run.argv == []
+        assert "--suite integration runs on the testament pool, and -x keeps this run local" in run.stderr
+
 
 class TestAPackageWithOnlyFlagsRunsTheWholePackage:
     """Flags, and the values of flags, are not test paths."""
@@ -674,7 +815,28 @@ class TestTheManifest:
         suite = manifest["suites"]["default"]
         assert suite["adapter"] == "pytest" and suite["default_for_paths"] is True
         assert suite["default_selection"] == ["packages/", "tests/"]
-        assert "testament run --suite default" in _SCRIPT.read_text()
+        # the suite a run names unless `--suite` says otherwise; the pool-route tests check it reaches testament
+        assert 'SUITE="default"' in _SCRIPT.read_text()
+        assert 'testament run --suite "$SUITE"' in _SCRIPT.read_text()
+
+    def test_the_integration_suite_runs_on_process_services_and_fails_a_missing_one(self) -> None:
+        """``--suite integration`` names a suite whose services are child processes and whose skips are failures.
+
+        Its ``env`` replaces the project's whole, so it repeats the uv cache.
+
+        :return: nothing
+        :rtype: None
+        """
+        manifest = tomllib.loads((_REPO_ROOT / ".testament.toml").read_text())
+        suite = manifest["suites"]["integration"]
+        assert suite["adapter"] == "pytest" and "default_for_paths" not in suite
+        marks = suite["command"][suite["command"].index("-m") + 1]
+        assert marks == "integration and not docker and not secrets"
+        assert suite["env"] == {
+            "UV_CACHE_DIR": manifest["env"]["UV_CACHE_DIR"],
+            "THREETEARS_TEST_SERVICES": "process",
+            "THREETEARS_REQUIRE_SERVICES": "1",
+        }
 
 
 class TestWhenThePoolGivesNoVerdict:

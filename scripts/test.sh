@@ -15,6 +15,7 @@ cd "$REPO_ROOT"
 #   ./scripts/test.sh evals packages/evals/tests/test_x.py       # that file only, not all of evals
 #   ./scripts/test.sh evals packages/evals/tests/test_x.py::test_y -q   # one test
 #   ./scripts/test.sh --not-area evals    # everything but evals, on the pool (areas: .testament.toml)
+#   ./scripts/test.sh --suite integration packages/scheduled-jobs/tests/integration   # another suite, on the pool
 #
 # Test paths (`.py` files, `file.py::name` node ids or directories, under packages/ or tests/) run
 # instead of the package's whole tests/, on the pool or locally alike. A package name with only
@@ -37,23 +38,39 @@ EXTRA_ARGS=("$@")
 # `--area NAME` and `--not-area NAME` (repeatable; see .testament.toml's [suites.default.areas]) are testament's,
 # not pytest's: they go to `testament run` ahead of the pytest selection. Only the pool knows the
 # areas, so a run that would go local refuses them below rather than running more than was asked.
+# `--suite NAME` is testament's too: the manifest's suite the run goes to, in place of `default`
+# (scripts/test-integration.sh passes `--suite integration`). A suite is a pool thing as well, so a
+# run that would go local refuses any suite but `default`, whose local form is this script's own.
 AREA_ARGS=()
 PYTEST_ARGS=()
+SUITE="default"
 area_flag=""
+suite_flag=""
 for arg in ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}; do
     if [ -n "$area_flag" ]; then
         AREA_ARGS+=("$area_flag" "$arg")
         area_flag=""
         continue
     fi
+    if [ -n "$suite_flag" ]; then
+        SUITE="$arg"
+        suite_flag=""
+        continue
+    fi
     case "$arg" in
         --area | --not-area) area_flag="$arg" ;;
         --area=* | --not-area=*) AREA_ARGS+=("$arg") ;;
+        --suite) suite_flag=1 ;;
+        --suite=*) SUITE="${arg#--suite=}" ;;
         *) PYTEST_ARGS+=("$arg") ;;
     esac
 done
 if [ -n "$area_flag" ]; then
     echo "test.sh: ${area_flag} needs an area name (see [suites.default.areas] in .testament.toml)" >&2
+    exit 2
+fi
+if [ -n "$suite_flag" ] || [ -z "$SUITE" ]; then
+    echo "test.sh: --suite needs a suite name (the [suites.<name>] tables in .testament.toml)" >&2
     exit 2
 fi
 EXTRA_ARGS=(${PYTEST_ARGS+"${PYTEST_ARGS[@]}"})
@@ -114,14 +131,21 @@ fi
 # Where testament is installed (see .testament.toml), it runs the tests on its runners instead,
 # outside CI and unless TESTAMENT=off. It distributes the tests itself, so no `-n 4`. The run names
 # the manifest's unit suite, `--suite default`, so it stays that suite whatever other suites the
-# manifest declares, and an `--area` resolves against it. That suite's command carries
+# manifest declares, and an `--area` resolves against it; a `--suite` given here names another
+# instead (one suite per run, the last one given). The unit suite's command carries
 # `-m "not integration and not loop_timing and not docker and not secrets"`, so a run there skips
 # those. A `-m` given here narrows that expression (testament sends `-m "(<manifest's>) and (<yours>)"`).
 #
-# A run gated by an environment variable (RECORD, THREETEARS_LIVE_*) stays local, because it
-# would reach runners that do not have it, so its tests would skip -- and a skip reads like a pass.
+# A run gated by an environment variable (RECORD, THREETEARS_LIVE_*, TAVILY_API_KEY) stays local,
+# because it would reach runners that do not have it, so its tests would skip -- and a skip reads
+# like a pass. TAVILY_API_KEY is the `secrets` test the pool deselects and no other script runs
+# (packages/search/tests/test_embedded_smoke.py's live tier): `TAVILY_API_KEY=... ./scripts/test.sh
+# search packages/search/tests/test_embedded_smoke.py` runs it here. The other credentials the
+# `secrets` walker knows have their own scripts (test-integration.sh for Redshift,
+# test-live-claude-cli.sh), and CLAUDE_CODE_OAUTH_TOKEN is often set for other reasons, which would
+# send every run local.
 local_only=""
-if env | grep -E '^(RECORD|THREETEARS_LIVE_[A-Z_]*)=' >/dev/null; then
+if env | grep -E '^(RECORD|THREETEARS_LIVE_[A-Z_]*|TAVILY_API_KEY)=' >/dev/null; then
     local_only="an environment gate is set"
 fi
 # a local run's own -m replaces the whole-suite run's `-m "not integration"` (pytest keeps the last)
@@ -205,17 +229,25 @@ if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}
         echo "test.sh: --area and --not-area select on the testament pool, and ${needs_local_process} keeps this run local; name test files instead" >&2
         exit 2
     fi
+    if [ "$SUITE" != "default" ]; then
+        echo "test.sh: --suite ${SUITE} runs on the testament pool, and ${needs_local_process} keeps this run local; drop the flag, or run it here on purpose with TESTAMENT=off TESTAMENT_OFF_REASON=\"...\" (for the integration suite, through scripts/test-integration.sh)" >&2
+        exit 2
+    fi
     echo "test.sh: running locally, not via testament: ${needs_local_process} needs one local pytest process or this terminal, and the run names only test files" >&2
     exec uv run pytest ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
 fi
 if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}" != "off" ] && [ -z "$local_only" ]; then
-    echo "test.sh: via testament, pool only (integration tests run locally with test-integration.sh, loop_timing tests in CI; if the pool is down: docs/testing.md, \"When the pool is down\")" >&2
+    if [ "$SUITE" = "default" ]; then
+        echo "test.sh: via testament, pool only (integration tests run with test-integration.sh, loop_timing tests in CI; if the pool is down: docs/testing.md, \"When the pool is down\")" >&2
+    else
+        echo "test.sh: via testament, pool only, suite ${SUITE} (if the pool is down: docs/testing.md, \"When the pool is down\")" >&2
+    fi
     pool_status=0
     if [ -n "$PACKAGE" ] && [ ${#TEST_PATHS[@]} -eq 0 ]; then
-        testament run --suite default ${AREA_ARGS+"${AREA_ARGS[@]}"} -- "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} ||
+        testament run --suite "$SUITE" ${AREA_ARGS+"${AREA_ARGS[@]}"} -- "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} ||
             pool_status=$?
     else
-        testament run --suite default ${AREA_ARGS+"${AREA_ARGS[@]}"} -- ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || pool_status=$?
+        testament run --suite "$SUITE" ${AREA_ARGS+"${AREA_ARGS[@]}"} -- ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} || pool_status=$?
     fi
     # testament exits 2 when it gave no verdict on the tests: the pool, the machine or the manifest
     # stopped it (coordinator_unreachable, no_runner, connection_lost, batches_lost,
@@ -229,6 +261,10 @@ fi
 
 if [ ${#AREA_ARGS[@]} -gt 0 ]; then
     echo "test.sh: --area and --not-area select on the testament pool, and this run is local; name a package or test paths instead (\`--not-area evals\` is roughly \`--ignore=packages/evals\`)" >&2
+    exit 2
+fi
+if [ "$SUITE" != "default" ]; then
+    echo "test.sh: --suite ${SUITE} selects a suite on the testament pool, and this run is local; the integration suite's local form is scripts/test-integration.sh" >&2
     exit 2
 fi
 

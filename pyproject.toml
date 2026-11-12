@@ -113,6 +113,10 @@ dev-dependencies = [
     # against the in-memory FakeDataStore). 4.15.0 is the first release with
     # testcontainers.community, where the containers now live.
     "testcontainers[postgres]>=4.15.0",
+    # moto's S3 server, which threetears.core.testing.services starts as a child process where the
+    # integration suite runs without Docker (THREETEARS_TEST_SERVICES=process, the testament pool).
+    # Locked here rather than installed in the image, so the Python dependencies stay in one lock.
+    "moto[server]>=5.0",
     # prometheus-client installed in dev so packages/models tracking +
     # callbacks tests exercise the real prometheus integration rather
     # than getting skipped. declared in models as an optional extra

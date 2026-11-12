@@ -54,9 +54,16 @@ warnings.filterwarnings(
 
 # ``tests.contain_tripwire`` fails a test whose code under test contained a programming error
 # (see its docstring); ``tests.clock_isolation`` keeps a freeze from importing under the fake
-# clock and fails a test that leaves the clock frozen; ``pytester`` lets their own tests run a
-# session with them installed.
-pytest_plugins = ["threetears.core.testing.fixtures", "tests.contain_tripwire", "tests.clock_isolation", "pytester"]
+# clock and fails a test that leaves the clock frozen; ``tests.require_services`` fails an integration
+# test that skips at runtime under THREETEARS_REQUIRE_SERVICES=1 (the pool's integration suite);
+# ``pytester`` lets their own tests run a session with them installed.
+pytest_plugins = [
+    "threetears.core.testing.fixtures",
+    "tests.contain_tripwire",
+    "tests.clock_isolation",
+    "tests.require_services",
+    "pytester",
+]
 
 
 @pytest.fixture(autouse=True)
