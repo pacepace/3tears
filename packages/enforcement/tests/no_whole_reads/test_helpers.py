@@ -535,3 +535,42 @@ def test_a_stage_or_source_target_written_as_an_f_string_is_the_relation_it_name
     declares (``local_relations["*"]``), as the same f-string handed to any other helper is."""
     written = [statement.sql for statement in helper_statements(_call(code))]
     assert any(f"{COPY_PREFIX}{{}}" in sql and sql.startswith(("DELETE", "UPDATE")) for sql in written), written
+
+
+def test_a_keyed_aggregate_over_a_prefix_and_a_range_of_the_next_column_is_keyed(schema: SchemaCatalog) -> None:
+    """Flips if aggregate_keyed over the key's lead and a range of its next column (a set of states, a window of
+    geographies) is refused, or one whose range leads no index (expires_at alone) is passed."""
+    code = (
+        'aggregate_keyed(c, "results", aggregates={"n": Count(), "s": Sum("t.id")}, by={"state": AnyOf(ss)}, '
+        'ranges=[Range("geo", lo, hi), Range("geo", lo2, hi2)], group=[Selected("t.kind", "kind")])'
+    )
+    judged = _judged(code, schema, "src/app.py::elsewhere")
+    assert judged and all(kind not in {"whole-select", "non-key-where", "whole-aggregate"} for kind, _ in judged[0])
+    whole = 'aggregate_keyed(c, "tenant_leases", aggregates={"n": Count()}, ranges=[Range("expires_at", high=t)])'
+    assert _judged(whole, schema, _SWEEP) != [[]]
+
+
+def test_a_keyed_aggregate_through_an_index_is_keyed_only_for_the_caller_it_names(schema: SchemaCatalog) -> None:
+    """Flips if a tenant's window (customer_id, expires_at) is keyed outside the index's purpose, or not inside it."""
+    code = (
+        'aggregate_keyed(c, "tenant_leases", aggregates={"n": Count()}, by={"customer_id": p}, '
+        'ranges=[Range("expires_at", lo, hi, high_inclusive=True)])'
+    )
+    inside = _judged(code, schema, _SWEEP)
+    assert inside and all(kind not in {"whole-select", "non-key-where", "whole-aggregate"} for kind, _ in inside[0])
+    assert any(kind in {"whole-select", "non-key-where", "whole-aggregate"} for kind, _ in _judged(code, schema)[0])
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        'aggregate_keyed(c, "results", aggregates={"n": Count()}, by={"state": s}, ranges=rs)',
+        'aggregate_keyed(c, "results", aggregates={"n": Count()}, by={"state": s}, ranges=[Range(col, lo)])',
+        'aggregate_keyed(c, "results", aggregates={"n": Count()}, by={"state": s}, ranges=[Range("geo", lo), Range("id", lo)])',
+        'aggregate_keyed(c, "results", aggregates={"n": Count()}, by={"state": s}, ranges=[r])',
+    ],
+)
+def test_a_keyed_aggregate_whose_ranges_the_walk_cannot_read_is_unseen(code: str) -> None:
+    """Flips if ranges named at run time, a run-time range column, or ranges of two columns are passed on a guess."""
+    statements = list(helper_statements(_call(code)))
+    assert [(statement.sql, statement.unseen) for statement in statements] == [(UNSEEN, "ranges")]

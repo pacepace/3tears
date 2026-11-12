@@ -276,3 +276,13 @@ def test_hand_written_sql_over_a_change_relation_is_named_and_its_step_is_not(tm
     naming the relation, or if the same computation through core.keyed's steps is."""
     config = _config(tmp_path, {"pkg/settle.py": _CHANGE_SQL})
     assert _named(use_the_helper_findings(config)) == {"by_hand": "join change:held_rows"}
+
+
+def test_a_hand_written_count_or_sum_is_pointed_at_the_keyed_aggregate(tmp_path: Path) -> None:
+    """Flips if a hand-written count (a sum over a window, a count of a tenant set) is not told its home,
+    aggregate_keyed, or a point read is told it."""
+    config = _config(tmp_path, {"pkg/tables.py": _TABLES, "pkg/reads.py": _HAND_WRITTEN})
+    findings = [finding for finding in use_the_helper_findings(config) if ": use-the-helper " in finding]
+    counted = [finding for finding in findings if "use-the-helper count " in finding]
+    assert counted and all("aggregate_keyed" in finding.rsplit(" -- ", 1)[1] for finding in counted)
+    assert all("aggregate_keyed" not in finding for finding in findings if finding not in counted)

@@ -77,6 +77,13 @@ _ADVICE: Final[str] = (
 )
 
 
+#: what a count is told first: its keyed home, whatever it counts or sums
+_COUNT_ADVICE: Final[str] = (
+    "a count or sum over a key prefix, a set of its values and a window of the next column, grouped or not, is "
+    "threetears.core.keyed.aggregate_keyed; otherwise "
+)
+
+
 @dataclass(frozen=True)
 class _Hit:
     """one statement written outside the helpers.
@@ -240,7 +247,8 @@ def _finding(hit: _Hit) -> str:
     statement = " ".join(hit.statement.text.split())
     shown = statement if len(statement) <= 200 else f"{statement[:197]}..."
     where = f"{hit.statement.path}:{hit.statement.line} in {hit.statement.function}"
-    return f"{where}: use-the-helper {hit.shape} {hit.table} -- {shown} -- {_ADVICE}"
+    advice = f"{_COUNT_ADVICE}{_ADVICE}" if hit.shape == "count" else _ADVICE
+    return f"{where}: use-the-helper {hit.shape} {hit.table} -- {shown} -- {advice}"
 
 
 def statement_findings(

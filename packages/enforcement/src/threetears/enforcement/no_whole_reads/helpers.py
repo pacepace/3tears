@@ -91,6 +91,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "delete_keyed",
         "update_keyed",
         "counts_by_relations",
+        "aggregate_keyed",
         "update_before",
         "apply_stage",
         "update_from",
@@ -645,6 +646,54 @@ def _counts_by_relations(call: ast.Call) -> list[str]:
     return statements
 
 
+def _ranges(node: ast.expr | None) -> list[str]:
+    """a keyed aggregate's ``ranges=`` as the conditions it writes: each ``Range`` of its one literal column, by the
+    edges it names (``low`` at or above, ``high`` below). Unseen when the list, a range or its column is run-time, or
+    the ranges name two columns (the helper refuses those: one column, the one after the prefix)."""
+    if node is None:
+        return []
+    if not isinstance(node, ast.Tuple | ast.List):
+        raise _Unseen("ranges")
+    columns: set[str] = set()
+    edges: list[tuple[str, bool, bool]] = []
+    for element in node.elts:
+        if not (isinstance(element, ast.Call) and _name(element) == "Range"):
+            raise _Unseen("ranges")
+        column = _argument(element, "column", 0)
+        if not (isinstance(column, ast.Constant) and isinstance(column.value, str)):
+            raise _Unseen("ranges")
+        columns.add(column.value)
+
+        def given(keyword: str, position: int, range_: ast.Call = element) -> bool:
+            value = _argument(range_, keyword, position)
+            return value is not None and not (isinstance(value, ast.Constant) and value.value is None)
+
+        edges.append((column.value, given("low", 1), given("high", 2)))
+    if len(columns) > 1:
+        raise _Unseen("ranges")
+    # every range is of the one column: the rows read are those of its widest edges, the edges any range names
+    if not edges:
+        return []
+    ranged = _quoted(edges[0][0])
+    return [
+        *([f"{ranged} >= $0"] if all(low for _, low, _ in edges) else []),
+        *([f"{ranged} < $0"] if all(high for _, _, high in edges) else []),
+    ]
+
+
+def _aggregate_keyed(call: ast.Call) -> list[str]:
+    """a keyed aggregate (``aggregate_keyed``): the rows its ``by`` pins (an ``AnyOf`` as ``= ANY``), its ranges of
+    the next column bound and its ``where`` narrows, counted. Its group (a column or a time bucket) is no predicate."""
+    relation, own = _relation(_argument(call, "table", 1), "table")
+    pinned, place = _conditions(_by(_argument(call, "by", None)))
+    ranged = []
+    for condition in _ranges(_argument(call, "ranges", None)):
+        ranged.append(condition.replace("$0", f"${place}"))
+        place += 1
+    filtered, _ = _filters(call, place)
+    return [f"SELECT count(*) FROM {relation} AS r{_where([*pinned, *ranged, *filtered])}", *own]
+
+
 def _probe(call: ast.Call) -> list[str]:
     relation, own = _relation(_argument(call, "table", 1), "table")
     pinned, place = _conditions(_by(_argument(call, "by", None)))
@@ -928,6 +977,7 @@ _SYNTHESIZERS: Final = {
     "delete_keyed": _keyed_write,
     "update_keyed": _keyed_write,
     "counts_by_relations": _counts_by_relations,
+    "aggregate_keyed": _aggregate_keyed,
     "update_before": _update_before,
     "apply_stage": _apply_stage,
     "update_from": _update_from,
@@ -948,6 +998,7 @@ _READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
             "keyset_rows",
             "copy_keyed",
             "counts_by",
+            "aggregate_keyed",
             "count_at_most",
             "holds_any",
             "read_after",
