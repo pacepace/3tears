@@ -49,7 +49,12 @@ async def test_a_host_pool_writes_a_vector_to_null_and_to_a_value(db_container: 
         assert (cleared.count, written.count) == (1, 1)
         await pool.execute(f"INSERT INTO {table} (id, embedding) VALUES ($1, $2), ($3, $4)", 3, "[4,5,6]", 4, None)
         rows = await pool.fetch(f"SELECT id, embedding FROM {table} ORDER BY id")
-        assert [(row["id"], row["embedding"]) for row in rows] == [(1, None), (2, "[0.5,0,1]"), (3, "[4,5,6]"), (4, None)]
+        assert [(row["id"], row["embedding"]) for row in rows] == [
+            (1, None),
+            (2, "[0.5,0,1]"),
+            (3, "[4,5,6]"),
+            (4, None),
+        ]
     finally:
         await pool.close()
 
