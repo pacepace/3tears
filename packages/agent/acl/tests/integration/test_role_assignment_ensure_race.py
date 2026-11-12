@@ -23,7 +23,7 @@ pytestmark = pytest.mark.integration
 
 #: the hub's ``role_assignments`` shape, reduced to the columns the ensure reads and writes.
 _ROLE_ASSIGNMENTS_DDL = """
-CREATE TABLE role_assignments (
+CREATE TABLE IF NOT EXISTS role_assignments (
     row_scope varchar(8) NOT NULL,
     assignment_id uuid NOT NULL,
     role_id uuid NOT NULL,
@@ -37,40 +37,69 @@ CREATE TABLE role_assignments (
     date_granted timestamptz NOT NULL DEFAULT now(),
     managed_by varchar(32) NOT NULL DEFAULT 'manual',
     source varchar(64),
+    customer_id uuid,
     CONSTRAINT role_assignments_pkey PRIMARY KEY (row_scope, assignment_id)
+)
+"""
+
+#: the namespaces the ensure reads a grant's customer from (acl v005), reduced to the key and the customer.
+_NAMESPACES_DDL = """
+CREATE TABLE IF NOT EXISTS namespaces (
+    namespace_id uuid PRIMARY KEY,
+    customer_id uuid
 )
 """
 
 #: the natural-key index the deploying application declares (the aibots hub's v121).
 _NATURAL_KEY_INDEX = """
-CREATE UNIQUE INDEX idx_role_assignments_namespace_natural_key
+CREATE UNIQUE INDEX IF NOT EXISTS idx_role_assignments_namespace_natural_key
     ON role_assignments (group_id, role_id, scope_namespace_id, managed_by)
  WHERE scope_type = 'namespace'
 """
 
 
-async def _pool(db_container: str, *, natural_key: bool) -> asyncpg.Pool:
+async def _pool(db_container: str, schema: str, *, natural_key: bool) -> asyncpg.Pool:
     from threetears.core.collections import init_connection
 
-    pool: asyncpg.Pool = await asyncpg.create_pool(db_container, min_size=1, max_size=12, init=init_connection)
-    async with pool.acquire() as conn:
-        await conn.execute("DROP TABLE IF EXISTS role_assignments")
+    conn = await asyncpg.connect(db_container)
+    try:
+        # IF NOT EXISTS throughout: YugabyteDB may retry a DDL statement that a concurrent session's catalog change
+        # interrupted, and the retry finds what its first attempt made
+        await conn.execute(f'CREATE SCHEMA "{schema}"')
+        await conn.execute(f'SET search_path TO "{schema}"')
         await conn.execute(_ROLE_ASSIGNMENTS_DDL)
-        await conn.execute("CREATE UNIQUE INDEX role_assignments_id_unique ON role_assignments (assignment_id)")
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS role_assignments_id_unique ON role_assignments (assignment_id)"
+        )
+        await conn.execute(_NAMESPACES_DDL)
         if natural_key:
             await conn.execute(_NATURAL_KEY_INDEX)
+    finally:
+        await conn.close()
+    pool: asyncpg.Pool = await asyncpg.create_pool(
+        db_container,
+        min_size=1,
+        max_size=12,
+        init=init_connection,
+        server_settings={"search_path": f'"{schema}"'},
+    )
     return pool
 
 
 @pytest.fixture
 async def indexed_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
-    pool = await _pool(db_container, natural_key=True)
+    """the ensure's tables in a schema of this test's own, dropped after it."""
+    schema = f"ensure_race_{uuid.uuid4().hex[:12]}"
+    pool = await _pool(db_container, schema, natural_key=True)
     try:
         yield pool
     finally:
-        async with pool.acquire() as conn:
-            await conn.execute("DROP TABLE IF EXISTS role_assignments")
         await pool.close()
+        conn = await asyncpg.connect(db_container)
+        try:
+            await conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
+        finally:
+            await conn.close()
 
 
 def _collection(pool: asyncpg.Pool) -> RoleAssignmentCollection:

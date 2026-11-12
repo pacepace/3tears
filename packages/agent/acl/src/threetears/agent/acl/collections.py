@@ -231,6 +231,7 @@ ROLE_BY_PLATFORM_NAME_SQL: Final[str] = "SELECT * FROM roles WHERE name = $1 AND
 
 __all__ = [
     "LISTING_PAGE",
+    "CustomerBackfillPage",
     "EntityPage",
     "GroupCascade",
     "GroupCollection",
@@ -1283,6 +1284,141 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
 
 
 # ---------------------------------------------------------------------------
+# a grant's customer (acl v005)
+# ---------------------------------------------------------------------------
+
+#: the scope types whose grant names no customer: every namespace, or a node of the name space
+_CUSTOMERLESS_SCOPES: Final[frozenset[str]] = frozenset({"all", "subtree"})
+
+_UNSET: Final[object] = object()
+
+
+def _assignment_customer(data: dict[str, Any]) -> UUID | None:
+    """the customer a grant's row records in ``customer_id``, from its scope (acl v005).
+
+    ``all`` and ``subtree`` name no customer (None); ``type_customer`` is its ``scope_customer_id``; a ``namespace``
+    grant's is its namespace's, which only the writer holds, so ``data`` must name it (None for a platform namespace).
+    A ``customer_id`` given for the other shapes must agree with the scope.
+
+    :param data: the row's payload: ``scope_type``, ``scope_customer_id``, and ``customer_id`` where given
+    :ptype data: dict[str, Any]
+    :return: the grant's customer, or None
+    :rtype: UUID | None
+    :raises ValueError: when a namespace grant names no ``customer_id``, or a given one contradicts the scope
+    """
+    scope_type = data.get("scope_type")
+    given: Any = data.get("customer_id", _UNSET)
+    derived: UUID | None
+    if scope_type in _CUSTOMERLESS_SCOPES:
+        derived = None
+    elif scope_type == "type_customer":
+        derived = data.get("scope_customer_id")
+    elif scope_type == "namespace":
+        if given is _UNSET:
+            raise ValueError(
+                "a namespace grant records its namespace's customer: pass customer_id (None for a platform namespace)"
+            )
+        derived = given
+    else:
+        raise ValueError(f"unknown scope_type {scope_type!r}")
+    if given is not _UNSET and given != derived:
+        raise ValueError(f"customer_id {given} contradicts a {scope_type} grant's customer {derived}")
+    return derived
+
+
+@dataclass(frozen=True)
+class CustomerBackfillPage:
+    """one page of :meth:`RoleAssignmentCollection.backfill_customers`.
+
+    :ivar read: the grants the page read
+    :ivar written: the grants whose ``customer_id`` it set, each ``(row_scope, assignment_id, group_id)``
+    :ivar next_cursor: where the next page starts; None when the page was the last
+    """
+
+    read: int
+    written: tuple[tuple[str, UUID, UUID], ...]
+    next_cursor: str | None
+
+
+#: the grants' walk for the backfill: every grant by its unique id (``uq_role_assignments_assignment_id``)
+_BACKFILL_ORDER: Final[tuple[Sort, ...]] = (Sort("assignment_id", cast="uuid"),)
+
+
+@dataclass(frozen=True)
+class _CustomerBackfillPlan:
+    """one page of grants read for the customer backfill, and the writes it needs.
+
+    :ivar read: the grants the page read
+    :ivar changes: per customer to record, the grants (``row_scope``, ``assignment_id``, ``group_id``) holding another
+    :ivar next_cursor: where the next page starts; None when the page was the last
+    """
+
+    read: int
+    changes: dict[UUID | None, list[tuple[str, UUID, UUID]]]
+    next_cursor: str | None
+
+
+async def _customer_backfill_plan(conn: Any, *, limit: int, cursor: str | None) -> _CustomerBackfillPlan:
+    """read one page of grants in key order from ``cursor`` and the customer each should record.
+
+    Each grant whose recorded customer differs from its scope's (:func:`_assignment_customer`; a namespace grant's
+    namespace read by key) is in the plan, grouped by the customer it should record. A grant whose namespace is gone
+    keeps what it holds (the namespace's delete cascades it away).
+
+    :param conn: anything with an asyncpg-shaped ``fetch`` (an L3 pool, a connection)
+    :ptype conn: Any
+    :param limit: the grants the page reads
+    :ptype limit: int
+    :param cursor: the previous page's ``next_cursor``; the first page when None
+    :ptype cursor: str | None
+    :return: the page's reads and the writes it needs
+    :rtype: _CustomerBackfillPlan
+    """
+    page = await keyset_page(
+        conn,
+        "role_assignments",
+        columns=(
+            "row_scope",
+            "assignment_id",
+            "group_id",
+            "scope_type",
+            "scope_namespace_id",
+            "scope_customer_id",
+            "customer_id",
+        ),
+        by={},
+        order=_BACKFILL_ORDER,
+        limit=limit,
+        cursor=cursor,
+    )
+    namespace_ids = sorted(
+        {row["scope_namespace_id"] for row in page.rows if row["scope_type"] == "namespace"}, key=str
+    )
+    namespace_customer: dict[UUID, UUID | None] = {}
+    if namespace_ids:
+        found = await k.read_keyed(
+            conn,
+            "namespaces",
+            keys=k.KeyBatch(("namespace_id",), [(each,) for each in namespace_ids], casts=("uuid",)),
+            columns=("namespace_id", "customer_id"),
+        )
+        namespace_customer = {row["namespace_id"]: row["customer_id"] for row in found}
+    changes: dict[UUID | None, list[tuple[str, UUID, UUID]]] = {}
+    for row in page.rows:
+        if row["scope_type"] == "namespace":
+            if row["scope_namespace_id"] not in namespace_customer:
+                continue
+            customer = namespace_customer[row["scope_namespace_id"]]
+        else:
+            customer = _assignment_customer(
+                {"scope_type": row["scope_type"], "scope_customer_id": row["scope_customer_id"]}
+            )
+        if row["customer_id"] != customer:
+            changes.setdefault(customer, []).append((row["row_scope"], row["assignment_id"], row["group_id"]))
+    return _CustomerBackfillPlan(read=len(page.rows), changes=changes, next_cursor=page.next_cursor)
+
+
+# ---------------------------------------------------------------------------
 # RoleAssignmentCollection
 # ---------------------------------------------------------------------------
 
@@ -1320,6 +1456,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             "list_scoped_to_namespace",
             "list_of_type_customer",
             "list_by_scope_type",
+            "backfill_customers",
             "ensure_group_role_assignment",
             "delete_by_group_and_scope",
             "delete_from_store",
@@ -1350,6 +1487,10 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             Column("scope_namespace_id", UUID_TYPE, nullable=True, immutable=True),
             Column("scope_namespace_type", STRING_TYPE, nullable=True, immutable=True),
             Column("scope_customer_id", UUID_TYPE, nullable=True, immutable=True),
+            # the customer whose grant this is, set by every writer (acl v005): a namespace grant's namespace's
+            # customer (None for a platform namespace), a type_customer grant's scope_customer_id, None for 'all' and
+            # 'subtree'. A customer admin's listing pins it, so a platform grant never shows in a customer's page.
+            Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
             # the root of a ``subtree`` scope, as a NAME. containment is
             # a statement about the name space -- namespace ids are
             # minted per row and carry no hierarchy -- and a subtree
@@ -1394,10 +1535,13 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
     ) -> RoleAssignmentEntity:
         """construct new assignment entity, auto-deriving ``row_scope``.
 
-        role_assignments has no ``customer_id`` column on the row
-        itself; the row's effective customer flows from the scope
-        triple (``scope_type`` / ``scope_namespace_id`` /
-        ``scope_customer_id``). ``row_scope`` stores the discriminator
+        ``customer_id`` (acl v005) is the grant's customer, derived here
+        from the scope when the shape names it (:func:`_assignment_customer`):
+        ``None`` for ``all`` / ``subtree``, ``scope_customer_id`` for
+        ``type_customer``. A ``namespace`` grant's customer is its
+        namespace's, which only the caller holds: it must pass
+        ``customer_id`` (``None`` for a platform namespace).
+        ``row_scope`` stores the discriminator
         explicitly (``platform`` for super_admin ``scope_type='all'``
         rows or ``scope_type='type_customer'`` rows whose
         ``scope_customer_id IS NULL``; ``customer`` for every other
@@ -1409,7 +1553,9 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         :ptype data: dict[str, Any]
         :return: newly constructed assignment entity
         :rtype: RoleAssignmentEntity
+        :raises ValueError: when a namespace grant names no ``customer_id``, or the one given contradicts the scope
         """
+        data = {**data, "customer_id": _assignment_customer(data)}
         if "row_scope" not in data:
             scope_type = data.get("scope_type")
             scope_customer_id = data.get("scope_customer_id")
@@ -1779,15 +1925,22 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         else:
             new_id = uuid7()
             now = datetime.now(UTC)
+            # the grant's customer (acl v005): a namespace grant's is its namespace's (None for a platform one), read
+            # by the namespace's key; an 'all' grant has none
+            customer_id = (
+                None
+                if scope_id is None
+                else await k.read_value(self.l3_pool, "namespaces", by={"namespace_id": scope_id}, column="customer_id")
+            )
             inserted = await self.l3_pool.fetchval(
                 """
                 INSERT INTO role_assignments (
                     row_scope, assignment_id, role_id, group_id, scope_type,
                     scope_namespace_id, scope_namespace_type,
                     scope_customer_id, granted_by, date_granted,
-                    managed_by
+                    managed_by, customer_id
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, $8
+                    $1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, $8, $9
                 )
                 ON CONFLICT DO NOTHING
                 RETURNING assignment_id
@@ -1800,6 +1953,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 scope_id,
                 now,
                 managed_by,
+                customer_id,
             )
             if inserted is not None:
                 result = inserted
@@ -1839,6 +1993,43 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 result = winner
                 created = False
         return result, created
+
+    async def backfill_customers(self, *, limit: int = 500, cursor: str | None = None) -> CustomerBackfillPage:
+        """set ``customer_id`` on one page of grants, read in key order from ``cursor`` (acl v005's backfill).
+
+        Each grant whose recorded customer differs from its scope's (a ``namespace`` grant's namespace's, read by key;
+        a ``type_customer`` grant's ``scope_customer_id``; none for ``all`` / ``subtree``) is written by key, one
+        statement per customer the page holds, each through :meth:`bypassing_write` so every replica evicts the rows.
+        Idempotent: a page already right writes nothing, so a whole walk that writes nothing proves the column filled.
+        A caller walks the table page by page, each from the last page's ``next_cursor``, which also resumes a stopped
+        walk. v005 adds the column without filling it (expand): the deploying application runs this walk as an
+        operator step, and its contract release holds the column by a CHECK once a walk wrote nothing.
+
+        :param limit: the grants a page reads
+        :ptype limit: int
+        :param cursor: the previous page's ``next_cursor``; the first page when None
+        :ptype cursor: str | None
+        :return: what the page read and wrote, and the next page's cursor
+        :rtype: CustomerBackfillPage
+        :raises RuntimeError: when no L3 pool is bound
+        """
+        pool = self.l3_pool
+        if pool is None:
+            raise RuntimeError("RoleAssignmentCollection.backfill_customers requires an L3 pool")
+        plan = await _customer_backfill_plan(pool, limit=limit, cursor=cursor)
+        written: list[tuple[str, UUID, UUID]] = []
+        for customer, rows in plan.changes.items():
+            keys = [(row_scope, assignment_id) for row_scope, assignment_id, _ in rows]
+            async with self.bypassing_write(*keys):
+                # cache-bypass: the backfill's keyed UPDATE; every row it names is evicted once it lands
+                await k.update_keyed(
+                    pool,
+                    "role_assignments",
+                    values={"customer_id": customer},
+                    keys=k.KeyBatch(("row_scope", "assignment_id"), keys, casts=("text", "uuid")),
+                )
+            written.extend(rows)
+        return CustomerBackfillPage(read=plan.read, written=tuple(written), next_cursor=plan.next_cursor)
 
     async def _announce_rows(self, keys: Sequence[tuple[str, UUID]], group_id: UUID) -> None:
         """evict rows a statement of this class wrote by SQL, in one advance, naming their group.

@@ -50,6 +50,7 @@ ACCESS_TABLES_DDL = (
         scope_namespace_id uuid,
         scope_namespace_type varchar(255),
         scope_customer_id uuid,
+        customer_id uuid,
         scope_namespace_name varchar(255),
         granted_by uuid,
         date_granted timestamptz NOT NULL DEFAULT now(),

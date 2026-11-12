@@ -536,12 +536,14 @@ async def _seed_assignments(conn: asyncpg.Connection) -> list[uuid.UUID]:
     namespaces = [row["namespace_id"] for row in await conn.fetch("SELECT namespace_id FROM namespaces")]
     await conn.execute(
         "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id,"
-        " scope_namespace_type, scope_customer_id, managed_by)"
+        " scope_namespace_type, scope_customer_id, customer_id, managed_by)"
         " SELECT 'customer', gen_random_uuid(), (array_agg_r)[1 + s % 50], (array_agg_g)[1 + s % 500],"
         " (ARRAY['namespace', 'type_customer', 'all'])[1 + s % 3],"
         " CASE WHEN s % 3 = 0 THEN ($1::uuid[])[1 + s % 500] END,"
         " CASE WHEN s % 3 = 1 THEN 't' || (s % 20) END,"
-        " CASE WHEN s % 3 = 1 THEN gen_random_uuid() END, 'm' || s"
+        # a type grant's customer (acl v005) is its scope's
+        " CASE WHEN s % 3 = 1 THEN md5(s::text)::uuid END, CASE WHEN s % 3 = 1 THEN md5(s::text)::uuid END,"
+        " 'm' || s"
         " FROM (SELECT array_agg(role_id) AS array_agg_r FROM roles) r,"
         " (SELECT array_agg(group_id) AS array_agg_g FROM groups) g, generate_series(1, 5000) s",
         namespaces,
@@ -608,8 +610,9 @@ async def test_assignments_scope_type(conn: asyncpg.Connection) -> None:
     # the rare scope a reverse access query weighs against every namespace: a handful of platform grants
     await conn.execute("UPDATE role_assignments SET scope_type = 'type_customer' WHERE scope_type = 'all'")
     await conn.execute(
-        "UPDATE role_assignments SET scope_type = 'all', scope_customer_id = NULL, scope_namespace_type = NULL"
-        " WHERE assignment_id IN (SELECT assignment_id FROM role_assignments WHERE scope_type = 'type_customer'"
+        # an 'all' grant holds no customer (acl v005's CHECK)
+        "UPDATE role_assignments SET scope_type = 'all', scope_customer_id = NULL, scope_namespace_type = NULL,"
+        " customer_id = NULL WHERE assignment_id IN (SELECT assignment_id FROM role_assignments WHERE scope_type = 'type_customer'"
         " LIMIT 5)"
     )
     await conn.execute("ANALYZE role_assignments")
