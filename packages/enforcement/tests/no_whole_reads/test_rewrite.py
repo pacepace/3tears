@@ -231,9 +231,9 @@ def test_point_reads_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path) 
 
 
 def test_a_constant_named_elsewhere_is_left(tmp_path: Path) -> None:
-    """Flips if a statement constant another module names (an index purpose, an import) is rewritten away."""
+    """Flips if a statement constant another module names in code (an import) is rewritten away."""
     config = _config(tmp_path)
-    (tmp_path / "src/pkg/purposes.py").write_text("# purpose: src/pkg/reads.py::_GEO_SQL\n", encoding="utf-8")
+    (tmp_path / "src/pkg/purposes.py").write_text("from pkg.reads import _GEO_SQL\n", encoding="utf-8")
     rewrites, refusals = plan_point_rewrites(config)
     assert not [rewrite for rewrite in rewrites if rewrite.table == "geos"]
     assert any("_GEO_SQL is named elsewhere" in refusal.reason for refusal in refusals)
@@ -484,4 +484,213 @@ def test_keyed_writes_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path)
             for function in ("rename", "forget", "returned", "claimed", "moved", "rename_many", "bumped", "raised")
         )
     ], left
+    assert _unlined(no_whole_reads_findings(config)) == _unlined(before)
+
+
+_DICTS = """
+    from typing import Final
+
+    #: each table's rows of one agent
+    _ROWS_SQL: Final[dict[str, str]] = {
+        "agents": "SELECT id FROM agents WHERE id = $1",
+        "geos": "SELECT geo_id FROM geos WHERE state = $1",
+    }
+
+    _MIXED_SQL = {
+        "agents": "SELECT id FROM agents WHERE id = $1",
+        "geos": "SELECT geo_id FROM geos WHERE geo_id > $1",
+    }
+
+    _FORGET_SQL: Final[dict[str, str]] = {
+        "agents": "DELETE FROM agents WHERE id = $1",
+        "geos": "DELETE FROM geos WHERE state = $1",
+    }
+
+    _TWICE_SQL = {
+        "agents": "SELECT id FROM agents WHERE id = $1",
+    }
+
+
+    async def rows_of(conn, table, key):
+        return await conn.fetch(_ROWS_SQL[table], key)
+
+
+    async def every_table(pool, key):
+        return [await pool.fetch(_ROWS_SQL[table], key) for table in sorted(_ROWS_SQL)]
+
+
+    async def mixed(conn, table, key):
+        return await conn.fetch(_MIXED_SQL[table], key)
+
+
+    async def forget(conn, table, key):
+        await conn.execute(_FORGET_SQL[table], key)
+
+
+    async def twice(conn, key):
+        return await conn.fetch(_TWICE_SQL["agents"], key), await conn.fetchrow(_TWICE_SQL["agents"], key)
+"""
+
+
+def _dict_config(tmp_path: Path) -> NoWholeReadsConfig:
+    src = tmp_path / "src"
+    for name, source in {"pkg/tables.py": _TABLES, "pkg/dicts.py": _DICTS}.items():
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_keys.py").write_text(
+        "from pkg import dicts\n\n\ndef test_keys():\n    assert set(dicts._ROWS_SQL) == {'agents', 'geos'}\n",
+        encoding="utf-8",
+    )
+    return NoWholeReadsConfig(
+        repo_root=tmp_path, src_roots=(src,), ledger_dir=tmp_path, dependency_schema=False, table_lists=()
+    )
+
+
+def test_a_dict_of_statements_becomes_a_dict_of_helper_calls(tmp_path: Path) -> None:
+    """Flips if a module dict of point reads (or keyed writes), every use of which sends one value indexed at the
+    call, is not rewritten into a dict of ``lambda conn, <params>:`` helper calls with each call sending through it
+    and the annotation retyped; if a test reading only its keys blocks it; or if a dict holding an unkeyed value, or
+    sent by two methods, is rewritten at all."""
+    config = _dict_config(tmp_path)
+    before = no_whole_reads_findings(config)
+    reads, read_refusals = plan_point_rewrites(config)
+    writes, write_refusals = plan_write_rewrites(config)
+    assert sorted((rewrite.table, rewrite.helper, rewrite.function) for rewrite in reads) == [
+        ("agents", "read_by", "<module>"),
+        ("geos", "read_by", "<module>"),
+    ]
+    assert sorted((rewrite.table, rewrite.helper) for rewrite in writes) == [
+        ("agents", "delete_keyed"),
+        ("geos", "delete_keyed"),
+    ]
+    reasons = {refusal.reason for refusal in read_refusals}
+    assert any("_MIXED_SQL" in reason and "unkeyed" in reason for reason in reasons), reasons
+    assert any("_TWICE_SQL" in reason and "one helper per value" in reason for reason in reasons), reasons
+    assert not write_refusals, write_refusals
+
+    apply_rewrites(tmp_path, [*reads, *writes], ruff=None)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, [*reads, *writes])
+    source = (tmp_path / "src/pkg/dicts.py").read_text(encoding="utf-8")
+    assert "_ROWS_SQL: Final[dict[str, Callable[..., Awaitable[Any]]]] = {" in source
+    assert "lambda conn, p1: read_by(conn, 'agents', by={'id': p1}, columns=('id',), records=True)" in source
+    assert "lambda conn, state: read_by(conn, 'geos', by={'state': state}, columns=('geo_id',), records=True)" in source
+    assert "lambda conn, state: delete_keyed(conn, 'geos', by={'state': state})" in source
+    assert "return await _ROWS_SQL[table](conn, key)" in source
+    assert "await pool.fetch" not in source and "await _ROWS_SQL[table](pool, key) for table" in source
+    assert "await _FORGET_SQL[table](conn, key)" in source
+    assert "from collections.abc import Awaitable, Callable" in source and "from typing import Any, Final" in source
+    ast.parse(source)
+    for entry in json.loads(manifest.read_text(encoding="utf-8")):
+        assert_source_says(tmp_path, entry)
+
+    left = use_the_helper_findings(config)
+    assert not [finding for finding in left if "_ROWS_SQL" in finding or "_FORGET_SQL" in finding], left
+    assert not [f for f in left if ("agents" in f or "geos" in f) and ("rows_of" in f or "forget" in f)], left
+    assert _unlined(no_whole_reads_findings(config)) == _unlined(before)
+
+
+def test_a_dict_of_statements_another_module_sends_is_left(tmp_path: Path) -> None:
+    """Flips if a dict of statements is rewritten while another module reads its values, not only its keys."""
+    config = _dict_config(tmp_path)
+    (tmp_path / "tests/test_values.py").write_text(
+        "from pkg import dicts\n\n\ndef test_sql():\n    assert 'agents' in dicts._ROWS_SQL['agents']\n",
+        encoding="utf-8",
+    )
+    reads, refusals = plan_point_rewrites(config)
+    assert not [rewrite for rewrite in reads if rewrite.old_sql.endswith("WHERE state = $1")]
+    assert any("_ROWS_SQL is named elsewhere" in refusal.reason for refusal in refusals), refusals
+
+
+def test_a_constant_named_in_an_index_purpose_is_rewritten_and_the_purpose_repointed(tmp_path: Path) -> None:
+    """Flips if a statement constant whose only other mention is an index purpose entry (in a migration or the
+    declaration ledger) is left, if the purpose is not repointed to each function now making its call, or if a
+    comment naming it blocks the rewrite rather than being listed."""
+    config = _config(tmp_path)
+    migration = tmp_path / "src/pkg/v001.py"
+    migration.write_text(
+        'SQL = """\n-- purpose: src/pkg/other.py::f; src/pkg/reads.py::_GEO_SQL\nCREATE INDEX i ON geos (state)\n"""\n',
+        encoding="utf-8",
+    )
+    ledger = tmp_path / "tests/_index_declarations.txt"
+    ledger.parent.mkdir()
+    ledger.write_text("i :: on geos :: purpose=src/pkg/reads.py::_GEO_SQL :: plan_test=t.py::t\n", encoding="utf-8")
+    (tmp_path / "tests/test_geo.py").write_text("# the read behind _GEO_SQL\n", encoding="utf-8")
+    rewrites, refusals = plan_point_rewrites(config)
+    geos = [rewrite for rewrite in rewrites if rewrite.table == "geos"]
+    assert sorted(rewrite.function for rewrite in geos) == ["a_geo", "another_geo"], refusals
+    noted = [note for rewrite in geos for note in rewrite.notes]
+    assert noted == ["tests/test_geo.py:1: still names _GEO_SQL (prose; reword by hand)"], noted
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    repointed = "src/pkg/reads.py::a_geo; src/pkg/reads.py::another_geo"
+    assert f"-- purpose: src/pkg/other.py::f; {repointed}\n" in migration.read_text(encoding="utf-8")
+    assert f"purpose={repointed} ::" in ledger.read_text(encoding="utf-8")
+
+
+_CHOICES = """
+    _STAGES_SQL = "UPDATE agents SET stages = $2 WHERE id = $1 AND gone = false"
+    _UNITS_SQL = "UPDATE agents SET units = $2 WHERE id = $1 AND gone = false"
+    _ONE_SQL = "SELECT id, name FROM agents WHERE id = $1"
+    _OTHER_SQL = "SELECT geo_id, name FROM geos WHERE state = $1"
+    _COUNTED_A_SQL = "UPDATE agents SET name = $2 WHERE id = $1"
+    _COUNTED_B_SQL = "UPDATE agents SET slug = $2 WHERE id = $1"
+
+
+    async def store(conn, agent_id, counts, per_unit):
+        statement = _UNITS_SQL if per_unit else _STAGES_SQL
+        await conn.execute(statement, agent_id, counts)
+
+
+    async def either(conn, key, of_geos):
+        sql = _OTHER_SQL if of_geos else _ONE_SQL
+        return await conn.fetch(sql, key)
+
+
+    async def counted(conn, agent_id, value, slug):
+        sql = _COUNTED_B_SQL if slug else _COUNTED_A_SQL
+        status = await conn.execute(sql, agent_id, value)
+        return status
+"""
+
+
+def test_two_constants_chosen_by_a_conditional_become_a_conditional_of_helper_calls(tmp_path: Path) -> None:
+    """Flips if two statement constants chosen by ``x = A if c else B`` and sent by the next statement are not
+    rewritten into ``(<A's helper call> if c else <B's>)`` with the local and both constants removed; or if a
+    choice whose write's status is read is rewritten."""
+    src = tmp_path / "src"
+    for name, source in {"pkg/tables.py": _TABLES, "pkg/choices.py": _CHOICES}.items():
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
+    config = NoWholeReadsConfig(
+        repo_root=tmp_path, src_roots=(src,), ledger_dir=tmp_path, dependency_schema=False, table_lists=()
+    )
+    before = no_whole_reads_findings(config)
+    reads, _ = plan_point_rewrites(config)
+    writes, write_refusals = plan_write_rewrites(config)
+    assert sorted((rewrite.function, rewrite.table) for rewrite in reads) == [("either", "agents"), ("either", "geos")]
+    assert sorted((rewrite.function, rewrite.table) for rewrite in writes) == [("store", "agents"), ("store", "agents")]
+    assert {refusal.function for refusal in write_refusals} >= {"<module>"}
+    assert any("status is read" in refusal.reason for refusal in write_refusals), write_refusals
+
+    apply_rewrites(tmp_path, [*reads, *writes], ruff=None)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, [*reads, *writes])
+    source = (tmp_path / "src/pkg/choices.py").read_text(encoding="utf-8")
+    assert (
+        "await (update_keyed(conn, 'agents', values={'units': counts}, by={'id': agent_id, 'gone': False}) if per_unit"
+        " else update_keyed(conn, 'agents', values={'stages': counts}, by={'id': agent_id, 'gone': False}))" in source
+    )
+    assert (
+        "return await (read_by(conn, 'geos', by={'state': key}, columns=('geo_id', 'name'), records=True) if of_geos"
+        " else read_by(conn, 'agents', by={'id': key}, columns=('id', 'name'), records=True))" in source
+    )
+    for gone in ("statement =", "sql = _OTHER", "_STAGES_SQL", "_UNITS_SQL", "_ONE_SQL", "_OTHER_SQL"):
+        assert gone not in source, gone
+    assert "_COUNTED_A_SQL" in source and "status = await conn.execute(sql, agent_id, value)" in source
+    ast.parse(source)
+    for entry in json.loads(manifest.read_text(encoding="utf-8")):
+        assert_source_says(tmp_path, entry)
     assert _unlined(no_whole_reads_findings(config)) == _unlined(before)

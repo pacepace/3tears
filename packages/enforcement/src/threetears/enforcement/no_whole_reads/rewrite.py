@@ -45,8 +45,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import builtins
 import importlib
 import json
+import keyword
 import re
 import subprocess
 import sys
@@ -209,6 +211,12 @@ class Rewrite:
     returning: list[str] = field(default_factory=list)
     # the edits that make it, not recorded: (start line, start col, end line, end col, text) in the module's bytes
     edits: list[tuple[int, int, int, int, str]] = field(default_factory=list, repr=False)
+    # not recorded: index purpose entries naming the replaced constant, each (repo-relative file, old text, new text)
+    repoints: list[tuple[str, str, str]] = field(default_factory=list, repr=False)
+    # not recorded: what is left for a hand (a comment or docstring still naming the constant)
+    notes: list[str] = field(default_factory=list, repr=False)
+    # not recorded: names to import beside the helpers, module -> names (a dict of helper calls' annotation)
+    imports: dict[str, set[str]] = field(default_factory=dict, repr=False)
 
     def record(self) -> dict[str, Any]:
         """the manifest's entry.
@@ -217,7 +225,8 @@ class Rewrite:
         :rtype: dict[str, Any]
         """
         entry = asdict(self)
-        entry.pop("edits")
+        for kept_out in ("edits", "repoints", "notes", "imports"):
+            entry.pop(kept_out)
         return entry
 
 
@@ -714,20 +723,206 @@ def _statement_literal(module: _Module, line: int, verb: str = "select") -> ast.
     return strings[0]
 
 
-def _referenced_elsewhere(repo_root: Path, path: Path, name: str) -> bool:
-    """whether a constant's name is named in any other module or migration of the repo (an index purpose, a test)."""
+@dataclass
+class _Mentions:
+    """where else in the repo a statement constant's name is written.
+
+    :ivar used: a mention that is a use (code naming it in another module, a statement or config naming it): the
+        constant stays
+    :ivar purposes: the files holding an index purpose entry ``<its module>::<name>``, which the rewrite repoints to
+        the function now making the call
+    :ivar prose: ``path:line`` of each comment or docstring naming it, which the rewrite leaves (listed, to reword
+        by hand)
+    """
+
+    used: list[str] = field(default_factory=list)
+    purposes: list[Path] = field(default_factory=list)
+    prose: list[str] = field(default_factory=list)
+
+
+#: the files whose mentions of a constant are judged: code, statements, config, and the index declaration ledgers
+_MENTION_SUFFIXES: Final[frozenset[str]] = frozenset({".py", ".sql", ".yaml", ".txt"})
+
+#: calls of a mapping that read only its keys: a test holding a dict's keys to an enum names it, and stays true
+_KEY_READS: Final[frozenset[str]] = frozenset({"set", "len", "sorted", "list", "frozenset", "tuple"})
+
+
+def _key_only(parents: Mapping[int, ast.AST], node: ast.expr) -> bool:
+    """whether a mention of a mapping reads only its keys: ``set(D)``, ``len(D)``, ``k in D``, ``D.keys()``."""
+    parent = parents.get(id(node))
+    if isinstance(parent, ast.Call) and parent.args == [node] and not parent.keywords:
+        return isinstance(parent.func, ast.Name) and parent.func.id in _KEY_READS
+    if isinstance(parent, ast.Compare) and node in parent.comparators:
+        return all(isinstance(op, ast.In | ast.NotIn) for op in parent.ops)
+    if isinstance(parent, ast.Attribute) and parent.attr == "keys":
+        call = parents.get(id(parent))
+        return isinstance(call, ast.Call) and call.func is parent and not call.args
+    return False
+
+
+def _python_mentions(text: str, name: str, *, mapping: bool) -> tuple[list[int], list[int]]:
+    """the lines of a Python module where ``name`` is a use, and where it is prose (a comment or a docstring).
+
+    :param text: the module's source
+    :ptype text: str
+    :param name: the constant's name
+    :ptype name: str
+    :param mapping: whether the constant is a mapping, so a mention reading only its keys is no use of its values
+    :ptype mapping: bool
+    :return: the use lines, and the prose lines
+    :rtype: tuple[list[int], list[int]]
+    """
     pattern = re.compile(rf"\b{re.escape(name)}\b")
-    for other in repo_root.rglob("*"):
-        if other.suffix not in {".py", ".sql", ".yaml"} or other == path or ".venv" in other.parts:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:  # NOSILENT: a module that does not parse is judged by its text: every mention a use
+        return [number for number, line in enumerate(text.splitlines(), 1) if pattern.search(line)], []
+    parents = {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    docstrings: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) and node.body:
+            first = node.body[0]
+            if (
+                isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)
+            ):
+                docstrings.update(range(first.lineno, (first.end_lineno or first.lineno) + 1))
+    used: list[int] = []
+    code_lines: set[int] = set()
+    for node in ast.walk(tree):
+        named = (isinstance(node, ast.Name) and node.id == name) or (
+            isinstance(node, ast.Attribute) and node.attr == name
+        )
+        if isinstance(node, ast.alias) and name in {node.name, node.asname}:
+            used.append(node.lineno)
+            code_lines.add(node.lineno)
+        elif named:
+            assert isinstance(node, ast.Name | ast.Attribute)
+            code_lines.add(node.lineno)
+            if not (mapping and _key_only(parents, node)):
+                used.append(node.lineno)
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and pattern.search(node.value)
+            and node.lineno not in docstrings
+        ):
+            used.append(node.lineno)
+            code_lines.add(node.lineno)
+    prose = [
+        number
+        for number, line in enumerate(text.splitlines(), 1)
+        if pattern.search(line) and number not in code_lines and number not in used
+    ]
+    return sorted(set(used)), prose
+
+
+def _mentions(repo_root: Path, path: Path, name: str, *, mapping: bool = False) -> _Mentions:
+    """every mention of a constant's name in the repo's other modules, migrations and declaration ledgers, sorted
+    into uses, index purpose entries naming it, and prose.
+
+    :param repo_root: the repo
+    :ptype repo_root: Path
+    :param path: the constant's module
+    :ptype path: Path
+    :param name: the constant's name
+    :ptype name: str
+    :param mapping: whether the constant is a mapping (a mention reading only its keys is no use of its values)
+    :ptype mapping: bool
+    :return: the mentions
+    :rtype: _Mentions
+    """
+    relative = path.relative_to(repo_root).as_posix()
+    purpose = re.compile(rf"{re.escape(relative)}::{re.escape(name)}\b")
+    pattern = re.compile(rf"\b{re.escape(name)}\b")
+    found = _Mentions()
+    for other in sorted(repo_root.rglob("*")):
+        if other.suffix not in _MENTION_SUFFIXES or other == path:
             continue
-        if "node_modules" in other.parts or ".git" in other.parts:
+        if {".venv", "node_modules", ".git"} & set(other.parts):
             continue
         try:
-            if pattern.search(other.read_text(encoding="utf-8")):
-                return True
+            text = other.read_text(encoding="utf-8")
         except UnicodeDecodeError, OSError:  # NOSILENT: a file no text can be read from names no constant
             continue
-    return False
+        if not pattern.search(text):
+            continue
+        where = other.relative_to(repo_root).as_posix()
+        if purpose.search(text):
+            found.purposes.append(other)
+            # each purpose entry is the purpose's text, not code: judged with the entries taken out
+            text = purpose.sub(relative + "::", text)
+            if not pattern.search(text):
+                continue
+        if other.suffix == ".py":
+            used, prose = _python_mentions(text, name, mapping=mapping)
+            found.used += [f"{where}:{number}" for number in used]
+            found.prose += [f"{where}:{number}" for number in prose]
+        elif other.suffix == ".txt":
+            found.prose += [f"{where}:{n}" for n, line in enumerate(text.splitlines(), 1) if pattern.search(line)]
+        else:
+            found.used += [f"{where}:{n}" for n, line in enumerate(text.splitlines(), 1) if pattern.search(line)]
+    return found
+
+
+def _module_mentions_left(module: _Module, name: str, constant: ast.Assign | ast.AnnAssign) -> list[int]:
+    """the lines of the constant's own module, outside its assignment, that still name it once its uses are gone:
+    a comment or docstring naming it is left as it is (listed)."""
+    pattern = re.compile(rf"\b{re.escape(name)}\b")
+    first, last = constant.lineno, constant.end_lineno or constant.lineno
+    code = {
+        node.lineno
+        for node in ast.walk(module.tree)
+        if (isinstance(node, ast.Name) and node.id == name) or (isinstance(node, ast.Attribute) and node.attr == name)
+    }
+    return [
+        number
+        for number, line in enumerate(module.source.splitlines(), 1)
+        if pattern.search(line) and not first <= number <= last and number not in code
+    ]
+
+
+def _elsewhere(
+    repo_root: Path, module: _Module, constant: ast.Assign | ast.AnnAssign | None, calls: Sequence[ast.Call]
+) -> tuple[list[tuple[str, str, str]], list[str]] | str:
+    """a statement constant's mentions outside the calls that send it: the index purpose entries to repoint (to the
+    functions now making the calls) and the prose left to reword; or why the constant stays (another module uses it).
+
+    :param repo_root: the repo
+    :ptype repo_root: Path
+    :param module: the constant's module
+    :ptype module: _Module
+    :param constant: its assignment, None for a statement written at its call
+    :ptype constant: ast.Assign | ast.AnnAssign | None
+    :param calls: the calls sending it
+    :ptype calls: Sequence[ast.Call]
+    :return: the repoints (file, old entry, new entry) and the notes, or the refusal
+    :rtype: tuple[list[tuple[str, str, str]], list[str]] | str
+    """
+    if constant is None:
+        return [], []
+    target = constant.targets[0] if isinstance(constant, ast.Assign) else constant.target
+    assert isinstance(target, ast.Name)
+    name = target.id
+    mapping = isinstance(constant.value, ast.Dict)
+    found = _mentions(repo_root, module.path, name, mapping=mapping)
+    if found.used:
+        return f"its constant {name} is named elsewhere in the repo ({', '.join(found.used[:3])})"
+    relative = module.path.relative_to(repo_root).as_posix()
+    repoints: list[tuple[str, str, str]] = []
+    if found.purposes:
+        readers = sorted({_function_at(module, call) for call in calls})
+        if mapping or "<module>" in readers:
+            return f"its constant {name} is named in an index purpose, and no one function makes its calls"
+        old = f"{relative}::{name}"
+        new = "; ".join(f"{relative}::{reader}" for reader in readers)
+        repoints = [(other.relative_to(repo_root).as_posix(), old, new) for other in found.purposes]
+    if mapping:
+        # the dict stays (its values become helper calls), so every mention of it stays true
+        return repoints, []
+    prose = found.prose + [f"{relative}:{number}" for number in _module_mentions_left(module, name, constant)]
+    return repoints, [f"{where}: still names {name} (prose; reword by hand)" for where in prose]
 
 
 def _constant_edit(module: _Module, constant: ast.Assign | ast.AnnAssign) -> tuple[int, int, int, int, str]:
@@ -738,6 +933,347 @@ def _constant_edit(module: _Module, constant: ast.Assign | ast.AnnAssign) -> tup
         first -= 1
     last = constant.end_lineno or constant.lineno
     return (first, 0, last + 1, 0, "")
+
+
+#: the type a dict of statements' values take once each is the helper call it maps to
+_CALLABLE_VALUE: Final[str] = "Callable[..., Awaitable[Any]]"
+
+#: what a dict of helper calls needs imported for its annotation: module -> names
+_CALLABLE_IMPORTS: Final[dict[str, frozenset[str]]] = {
+    "collections.abc": frozenset({"Awaitable", "Callable"}),
+    "typing": frozenset({"Any"}),
+}
+
+
+def _parameter_names(pins: Sequence[Pin], count: int) -> list[str]:
+    """a name for each of a statement's parameters, ``$1`` first: the column it pins or sets, ``p<n>`` where that
+    is not a plain new name (a keyword, a builtin, ``conn``, a name taken twice, a fragment's parameter)."""
+    names: dict[int, str] = {}
+    for pin in pins:
+        if pin.kind in {"param", "any"} and pin.param is not None and pin.param not in names:
+            names[pin.param] = pin.column
+    taken: Counter[str] = Counter(names.values())
+    plain = {
+        number: name
+        for number, name in names.items()
+        if taken[name] == 1
+        and name.isidentifier()
+        and not keyword.iskeyword(name)
+        and name not in dir(builtins)
+        and name != "conn"
+    }
+    return [plain.get(number, f"p{number}") for number in range(1, count + 1)]
+
+
+@dataclass(frozen=True)
+class _Shape:
+    """how one shape's statements are parsed and sent."""
+
+    shape: str
+    parse: Any
+    methods: frozenset[str]
+
+
+def _value_sql(value: ast.expr) -> str | None:
+    return value.value if isinstance(value, ast.Constant) and isinstance(value.value, str) else None
+
+
+def _annotation_edit(module: _Module, constant: ast.Assign | ast.AnnAssign) -> tuple[int, int, int, int, str] | str:
+    """the edit retyping a dict of statements' values (``dict[K, str]``, ``Final[...]`` of one) as the helper calls
+    they become; none needed for an unannotated dict."""
+    if isinstance(constant, ast.Assign):
+        return (0, 0, 0, 0, "")
+    node = constant.annotation
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "Final":
+        node = node.slice
+    if not (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in {"dict", "Mapping"}
+        and isinstance(node.slice, ast.Tuple)
+        and len(node.slice.elts) == 2
+        and isinstance(node.slice.elts[1], ast.Name)
+        and node.slice.elts[1].id == "str"
+    ):
+        return f"annotated {ast.unparse(constant.annotation)}, not dict[K, str]"
+    value = node.slice.elts[1]
+    assert value.end_lineno is not None and value.end_col_offset is not None
+    return (value.lineno, value.col_offset, value.end_lineno, value.end_col_offset, _CALLABLE_VALUE)
+
+
+def _plan_dict(
+    config: NoWholeReadsConfig,
+    module: _Module,
+    literal: ast.Constant,
+    shape: _Shape,
+    pending: Mapping[tuple[str, int], Any],
+    unkeyed: Mapping[tuple[str, int], str],
+) -> list[Rewrite] | str:
+    """a dict of statements (``D = {key: "SELECT ...", ...}`` at the module's top) every use of which sends one value
+    (``await conn.fetch(D[key], *args)``): each value rewritten into a ``lambda conn, <params>:`` of the helper call
+    it maps to, each call into ``D[key](conn, *args)``; or why not. Every value must be a statement of the shape the
+    rule finds (and not unkeyed), all of one parameter count, every call of one method and argument count.
+
+    :return: one rewrite per value (the first holds the call and annotation edits), or the refusal
+    :rtype: list[Rewrite] | str
+    """
+    mapping = module.parent(literal)
+    assert isinstance(mapping, ast.Dict)
+    constant = module.parent(mapping)
+    if not (
+        isinstance(constant, ast.Assign | ast.AnnAssign)
+        and constant.value is mapping
+        and module.parent(constant) is module.tree
+    ):
+        return "a dict of statements not bound at the module's top"
+    targets = constant.targets if isinstance(constant, ast.Assign) else [constant.target]
+    if len(targets) != 1 or not isinstance(targets[0], ast.Name):
+        return "a dict of statements bound to something other than one name"
+    name = targets[0].id
+    if any(key is None for key in mapping.keys):
+        return f"its dict {name} spreads another mapping"
+    relative = module.path.relative_to(config.repo_root).as_posix()
+    parsed: list[Any] = []
+    for value in mapping.values:
+        sql = _value_sql(value)
+        if sql is None:
+            return f"its dict {name} holds a value other than a statement literal"
+        if (relative, value.lineno) in unkeyed:
+            return f"its dict {name}: the no-whole-reads rule finds a value unkeyed: a real fix first"
+        if (relative, value.lineno) not in pending:
+            return f"its dict {name} holds a value the rule finds no {shape.shape} statement in"
+        one = shape.parse(sql)
+        if isinstance(one, str):
+            return f"its dict {name}: {one}"
+        if shape.shape == "write" and one.returning:
+            return f"its dict {name}: a RETURNING write (its answer is read through the awaited call)"
+        parsed.append(one)
+    counts = {len({n for pin in (*getattr(one, "sets", ()), *one.pins) for n in pin.numbers()}) for one in parsed}
+    if len(counts) != 1:
+        return f"its dict {name}: values of different parameter counts"
+    count = counts.pop()
+    calls: list[ast.Call] = []
+    for node in ast.walk(module.tree):
+        if not (isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)):
+            continue
+        if _key_only(module.parents, node):
+            continue
+        subscript = module.parent(node)
+        if not (isinstance(subscript, ast.Subscript) and subscript.value is node):
+            return f"its dict {name} is used other than indexed at a call"
+        call = _call_of(module, subscript, shape.methods)
+        if isinstance(call, str):
+            return f"its dict {name}: {call}"
+        calls.append(call)
+    if not calls:
+        return f"its dict {name} is never sent"
+    methods = {call.func.attr for call in calls if isinstance(call.func, ast.Attribute)}
+    if len(methods) != 1:
+        return f"its dict {name} is sent by {'/'.join(sorted(methods))}: one helper per value"
+    method = methods.pop()
+    if any(len(call.args) - 1 != count for call in calls):
+        return f"its dict {name}: a call's arguments are not its values' {count} parameters"
+    if shape.shape == "point" and method == "fetchval" and any(one.columns is None for one in parsed):
+        return f"its dict {name}: fetchval of SELECT *"
+    elsewhere = _elsewhere(config.repo_root, module, constant, calls)
+    if isinstance(elsewhere, str):
+        return elsewhere
+    retyped = _annotation_edit(module, constant)
+    if isinstance(retyped, str):
+        return f"its dict {name} is {retyped}"
+    planned: list[Rewrite] = []
+    for value, one in zip(mapping.values, parsed, strict=True):
+        args = _parameter_names([*getattr(one, "sets", ()), *one.pins], count)
+        rewrite = Rewrite(
+            path=relative,
+            function="<module>",
+            line=value.lineno,
+            table=one.table,
+            old_sql=_value_sql(value) or "",
+            method=method,
+            helper=_HELPER_OF[method] if shape.shape == "point" else _WRITE_HELPER[one.kind],
+            columns=None if shape.shape == "write" or one.columns is None else list(one.columns),
+            pins=[asdict(pin) for pin in one.pins],
+            args=args,
+            shape=shape.shape,
+            sets=[asdict(pin) for pin in getattr(one, "sets", ())],
+        )
+        call_text = _render(rewrite, "conn") if shape.shape == "point" else _render_write(rewrite, "conn")
+        rewrite.new_call = f"lambda conn, {', '.join(args)}: {call_text}" if args else f"lambda conn: {call_text}"
+        assert value.end_lineno is not None and value.end_col_offset is not None
+        rewrite.edits.append((value.lineno, value.col_offset, value.end_lineno, value.end_col_offset, rewrite.new_call))
+        planned.append(rewrite)
+    first = planned[0]
+    for call in calls:
+        assert isinstance(call.func, ast.Attribute) and call.end_lineno is not None and call.end_col_offset is not None
+        rest = "".join(f", {module.segment(argument)}" for argument in call.args[1:])
+        text = f"{module.segment(call.args[0])}({module.segment(call.func.value)}{rest})"
+        first.edits.append((call.lineno, call.col_offset, call.end_lineno, call.end_col_offset, text))
+    if retyped[0]:
+        first.edits.append(retyped)
+        first.imports = {module_name: set(names) for module_name, names in _CALLABLE_IMPORTS.items()}
+    first.repoints, first.notes = elsewhere
+    return planned
+
+
+def _module_constant(module: _Module, literal: ast.expr) -> tuple[ast.Assign | ast.AnnAssign, str] | None:
+    """the module-top assignment of one name a statement literal is, and the name; None when it is not one."""
+    constant = module.parent(literal)
+    if not (
+        isinstance(constant, ast.Assign | ast.AnnAssign)
+        and constant.value is literal
+        and module.parent(constant) is module.tree
+    ):
+        return None
+    targets = constant.targets if isinstance(constant, ast.Assign) else [constant.target]
+    if len(targets) != 1 or not isinstance(targets[0], ast.Name):
+        return None
+    return constant, targets[0].id
+
+
+def _loads(scope: ast.AST, name: str) -> list[ast.Name]:
+    return [node for node in ast.walk(scope) if isinstance(node, ast.Name) and node.id == name]
+
+
+def _choice_of(module: _Module, literal: ast.Constant) -> ast.IfExp | None:
+    """the conditional choosing between two statement constants (``x = A if c else B``) a constant's one use is in,
+    or None when its use is not one."""
+    found = _module_constant(module, literal)
+    if found is None:
+        return None
+    uses = [node for node in _loads(module.tree, found[1]) if isinstance(node.ctx, ast.Load)]
+    if len(uses) != 1:
+        return None
+    choice = module.parent(uses[0])
+    return choice if isinstance(choice, ast.IfExp) and uses[0] in (choice.body, choice.orelse) else None
+
+
+def _plan_choice(
+    config: NoWholeReadsConfig,
+    module: _Module,
+    choice: ast.IfExp,
+    shape: _Shape,
+    pending: Mapping[tuple[str, int], Any],
+    unkeyed: Mapping[tuple[str, int], str],
+) -> list[Rewrite] | str:
+    """two statement constants chosen by a conditional bound to a local (``x = A if c else B``) that the very next
+    statement sends (``await conn.execute(x, *args)``): the call rewritten into ``(<A's helper call> if c else <B's>)``,
+    the local's binding and both constants removed; or why not. Both must be statements of the shape the rule finds
+    (and not unkeyed), of the call's argument count; the condition is evaluated where it was, before the arguments.
+
+    :return: the two rewrites (the first holds the edits), or the refusal
+    :rtype: list[Rewrite] | str
+    """
+    relative = module.path.relative_to(config.repo_root).as_posix()
+    chosen: list[tuple[ast.Assign | ast.AnnAssign, str, ast.Constant, Any]] = []
+    for side in (choice.body, choice.orelse):
+        if not isinstance(side, ast.Name):
+            return "a conditional choosing something other than two constants"
+        bound = [
+            statement
+            for statement in module.tree.body
+            if isinstance(statement, ast.Assign | ast.AnnAssign)
+            and statement.value is not None
+            and _module_constant(module, statement.value) == (statement, side.id)
+        ]
+        if len(bound) != 1 or bound[0].value is None or _value_sql(bound[0].value) is None:
+            return f"its choice's {side.id} is not one module statement constant"
+        literal = bound[0].value
+        assert isinstance(literal, ast.Constant)
+        if len([node for node in _loads(module.tree, side.id) if isinstance(node.ctx, ast.Load)]) != 1:
+            return f"its choice's {side.id} is used other than in the choice"
+        if (relative, literal.lineno) in unkeyed:
+            return f"its choice's {side.id}: the no-whole-reads rule finds it unkeyed: a real fix first"
+        if (relative, literal.lineno) not in pending:
+            return f"its choice's {side.id} is no {shape.shape} statement the rule finds"
+        one = shape.parse(literal.value)
+        if isinstance(one, str):
+            return f"its choice's {side.id}: {one}"
+        if shape.shape == "write" and one.returning:
+            return f"its choice's {side.id}: a RETURNING write"
+        chosen.append((bound[0], side.id, literal, one))
+    binding = module.parent(choice)
+    if not (
+        isinstance(binding, ast.Assign)
+        and binding.value is choice
+        and len(binding.targets) == 1
+        and isinstance(binding.targets[0], ast.Name)
+    ):
+        return "a choice of statements not bound to one local"
+    local = binding.targets[0].id
+    scope = module.scope(binding)
+    if not isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef):
+        return "a choice of statements outside a function"
+    named = _loads(scope, local)
+    loads = [node for node in named if isinstance(node.ctx, ast.Load)]
+    if len(loads) != 1 or len(named) != 2:
+        return f"its local {local} is bound or read more than once"
+    block = next(
+        (
+            body
+            for node in ast.walk(scope)
+            for body in (getattr(node, "body", None), getattr(node, "orelse", None))
+            if isinstance(body, list) and binding in body
+        ),
+        None,
+    )
+    assert block is not None
+    after = block.index(binding) + 1
+    if after >= len(block) or not any(node is loads[0] for node in ast.walk(block[after])):
+        return f"its local {local} is not sent by the statement right after its binding"
+    call = _call_of(module, loads[0], shape.methods)
+    if isinstance(call, str):
+        return call
+    assert isinstance(call.func, ast.Attribute)
+    method = call.func.attr
+    arguments = call.args[1:]
+    planned: list[Rewrite] = []
+    edits: list[tuple[int, int, int, int, str]] = []
+    repoints: list[tuple[str, str, str]] = []
+    notes: list[str] = []
+    for constant, name, literal, one in chosen:
+        bound_numbers = [n for pin in (*getattr(one, "sets", ()), *one.pins) for n in pin.numbers()]
+        if len(arguments) != len(set(bound_numbers)):
+            return f"its choice's {name}: {len(arguments)} arguments for {len(set(bound_numbers))} parameters"
+        if any(
+            count > 1 and not _plain_simple(arguments[number - 1]) for number, count in Counter(bound_numbers).items()
+        ):
+            return "a parameter used twice whose argument is not a plain name"
+        if shape.shape == "point" and method == "fetchval" and one.columns is None:
+            return "fetchval of SELECT *"
+        elsewhere = _elsewhere(config.repo_root, module, constant, [call])
+        if isinstance(elsewhere, str):
+            return elsewhere
+        repoints += elsewhere[0]
+        notes += elsewhere[1]
+        rewrite = Rewrite(
+            path=relative,
+            function=_function_at(module, call),
+            line=literal.lineno,
+            table=one.table,
+            old_sql=str(literal.value),
+            method=method,
+            helper=_HELPER_OF[method] if shape.shape == "point" else _WRITE_HELPER[one.kind],
+            columns=None if shape.shape == "write" or one.columns is None else list(one.columns),
+            pins=[asdict(pin) for pin in one.pins],
+            args=[module.segment(argument) for argument in arguments],
+            shape=shape.shape,
+            sets=[asdict(pin) for pin in getattr(one, "sets", ())],
+        )
+        receiver = module.segment(call.func.value)
+        rewrite.new_call = _render(rewrite, receiver) if shape.shape == "point" else _render_write(rewrite, receiver)
+        edits.append(_constant_edit(module, constant))
+        planned.append(rewrite)
+    assert call.end_lineno is not None and call.end_col_offset is not None
+    text = f"({planned[0].new_call} if {module.segment(choice.test)} else {planned[1].new_call})"
+    edits.append((call.lineno, call.col_offset, call.end_lineno, call.end_col_offset, text))
+    edits.append((binding.lineno, 0, (binding.end_lineno or binding.lineno) + 1, 0, ""))
+    planned[0].edits, planned[0].repoints, planned[0].notes = edits, repoints, notes
+    return planned
+
+
+_POINT: Final[_Shape] = _Shape("point", parse_point, frozenset(_HELPER_OF))
+_WRITE: Final[_Shape] = _Shape("write", parse_write, _WRITE_METHODS)
 
 
 def plan_point_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
@@ -756,6 +1292,8 @@ def plan_point_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
     modules: dict[str, _Module] = {}
     rewrites: list[Rewrite] = []
     refusals: list[Refusal] = []
+    pending = {(hit.statement.path, hit.statement.line): hit for hit in hits}
+    groups: dict[int, list[Rewrite] | str] = {}
     for hit in hits:
         statement = hit.statement
         one_line = " ".join(statement.text.split())
@@ -786,17 +1324,30 @@ def plan_point_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
         if " ".join(old_sql.split()) != " ".join(statement.text.split()):
             refuse("the literal at its line is not the statement the walk found")
             continue
+        choice = _choice_of(module, literal)
+        if isinstance(module.parent(literal), ast.Dict) or choice is not None:
+            held = module.parent(literal) if choice is None else choice
+            group = groups.get(id(held))
+            if group is None:
+                group = groups[id(held)] = (
+                    _plan_dict(config, module, literal, _POINT, pending, unkeyed)
+                    if choice is None
+                    else _plan_choice(config, module, choice, _POINT, pending, unkeyed)
+                )
+                if not isinstance(group, str):
+                    rewrites.extend(group)
+            if isinstance(group, str):
+                refuse(group)
+            continue
         sent = _sent_by(module, literal)
         if isinstance(sent, str):
             refuse(sent)
             continue
         calls, constant = sent
-        if constant is not None:
-            target = constant.targets[0] if isinstance(constant, ast.Assign) else constant.target
-            assert isinstance(target, ast.Name)
-            if _referenced_elsewhere(config.repo_root, module.path, target.id):
-                refuse(f"its constant {target.id} is named elsewhere in the repo")
-                continue
+        elsewhere = _elsewhere(config.repo_root, module, constant, calls)
+        if isinstance(elsewhere, str):
+            refuse(elsewhere)
+            continue
         numbers = sorted({pin.param for pin in parsed.pins if pin.param is not None})
         uses = Counter(pin.param for pin in parsed.pins if pin.param is not None)
         planned: list[Rewrite] = []
@@ -833,6 +1384,7 @@ def plan_point_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
             planned.append(rewrite)
         if planned and constant is not None:
             planned[0].edits.append(_constant_edit(module, constant))
+            planned[0].repoints, planned[0].notes = elsewhere
         rewrites.extend(planned)
     return rewrites, refusals
 
@@ -855,6 +1407,8 @@ def plan_write_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
     modules: dict[str, _Module] = {}
     rewrites: list[Rewrite] = []
     refusals: list[Refusal] = []
+    pending = {(hit.statement.path, hit.statement.line): hit for hit in hits}
+    groups: dict[int, list[Rewrite] | str] = {}
     for hit in hits:
         statement = hit.statement
         one_line = " ".join(statement.text.split())
@@ -885,17 +1439,30 @@ def plan_write_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
         if " ".join(old_sql.split()) != " ".join(statement.text.split()):
             refuse("the literal at its line is not the statement the walk found")
             continue
+        choice = _choice_of(module, literal)
+        if isinstance(module.parent(literal), ast.Dict) or choice is not None:
+            held = module.parent(literal) if choice is None else choice
+            group = groups.get(id(held))
+            if group is None:
+                group = groups[id(held)] = (
+                    _plan_dict(config, module, literal, _WRITE, pending, unkeyed)
+                    if choice is None
+                    else _plan_choice(config, module, choice, _WRITE, pending, unkeyed)
+                )
+                if not isinstance(group, str):
+                    rewrites.extend(group)
+            if isinstance(group, str):
+                refuse(group)
+            continue
         sent = _sent_by(module, literal, frozenset(_HELPER_OF) if parsed.returning else _WRITE_METHODS)
         if isinstance(sent, str):
             refuse(sent)
             continue
         calls, constant = sent
-        if constant is not None:
-            target = constant.targets[0] if isinstance(constant, ast.Assign) else constant.target
-            assert isinstance(target, ast.Name)
-            if _referenced_elsewhere(config.repo_root, module.path, target.id):
-                refuse(f"its constant {target.id} is named elsewhere in the repo")
-                continue
+        elsewhere = _elsewhere(config.repo_root, module, constant, calls)
+        if isinstance(elsewhere, str):
+            refuse(elsewhere)
+            continue
         bound = [number for pin in (*parsed.sets, *parsed.pins) for number in pin.numbers()]
         numbers = sorted(set(bound))
         uses = Counter(bound)
@@ -941,6 +1508,7 @@ def plan_write_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
             planned.append(rewrite)
         if planned and constant is not None:
             planned[0].edits.append(_constant_edit(module, constant))
+            planned[0].repoints, planned[0].notes = elsewhere
         rewrites.extend(planned)
     return rewrites, refusals
 
@@ -965,16 +1533,16 @@ def _splice(source: str, edits: list[tuple[int, int, int, int, str]]) -> str:
     return data.decode("utf-8")
 
 
-def _with_import(source: str, names: set[str]) -> str:
-    """the source importing ``names`` from the helpers' module: added to an existing top-level ``from`` import of it,
-    or as a new line after the module's last top-level import."""
+def _with_import(source: str, names: set[str], module: str = _HELPER_MODULE) -> str:
+    """the source importing ``names`` from ``module`` (the helpers' module by default): added to an existing
+    top-level ``from`` import of it, or as a new line after the module's last top-level import."""
     tree = ast.parse(source)
     lines = source.splitlines(keepends=True)
     for node in tree.body:
-        if isinstance(node, ast.ImportFrom) and node.module == _HELPER_MODULE and node.level == 0:
+        if isinstance(node, ast.ImportFrom) and node.module == module and node.level == 0:
             have = {alias.name for alias in node.names if alias.asname is None}
             wanted = sorted(have | names | {f"{a.name} as {a.asname}" for a in node.names if a.asname})
-            text = f"from {_HELPER_MODULE} import {', '.join(wanted)}\n"
+            text = f"from {module} import {', '.join(wanted)}\n"
             assert node.end_lineno is not None
             return "".join(lines[: node.lineno - 1]) + text + "".join(lines[node.end_lineno :])
     last = 0
@@ -983,7 +1551,7 @@ def _with_import(source: str, names: set[str]) -> str:
             last = node.end_lineno or node.lineno
         elif last:
             break
-    text = f"from {_HELPER_MODULE} import {', '.join(sorted(names))}\n"
+    text = f"from {module} import {', '.join(sorted(names))}\n"
     return "".join(lines[:last]) + text + "".join(lines[last:])
 
 
@@ -996,7 +1564,8 @@ def apply_rewrites(repo_root: Path, rewrites: list[Rewrite], *, ruff: str | None
     :ptype rewrites: list[Rewrite]
     :param ruff: the ruff to run (the repo's own); none when None (the source is left as spliced)
     :ptype ruff: str | None
-    :return: the touched modules, repo-relative
+    :return: the touched modules, repo-relative (each file whose index purpose entry is repointed is rewritten too,
+        as text, and not formatted)
     :rtype: list[str]
     """
     by_path: dict[str, list[Rewrite]] = defaultdict(list)
@@ -1013,9 +1582,17 @@ def apply_rewrites(repo_root: Path, rewrites: list[Rewrite], *, ruff: str | None
         if any(pin["kind"] == "any" for rewrite in mine for pin in rewrite.pins):
             names.add("AnyOf")
         source = _with_import(source, names)
+        for rewrite in mine:
+            for imported, wanted in rewrite.imports.items():
+                source = _with_import(source, wanted, imported)
         ast.parse(source)
         path.write_text(source, encoding="utf-8")
     touched = sorted(by_path)
+    for rewrite in rewrites:
+        for relative, old, new in rewrite.repoints:
+            path = repo_root / relative
+            text = path.read_text(encoding="utf-8")
+            path.write_text(re.sub(rf"{re.escape(old)}\b", lambda _: new, text), encoding="utf-8")
     if touched and ruff is not None:
         subprocess.run([ruff, "check", "--select", "I", "--fix", "--quiet", *touched], cwd=repo_root, check=False)
         subprocess.run([ruff, "format", "--quiet", *touched], cwd=repo_root, check=True)
@@ -1190,11 +1767,20 @@ def main(argv: list[str] | None = None) -> int:
     if options.dry_run:
         for rewrite in rewrites:
             _say(f"  {rewrite.path}:{rewrite.line} {rewrite.function}: {rewrite.new_call}")
+            for relative, old, new in rewrite.repoints:
+                _say(f"    purpose to repoint in {relative}: {old} -> {new}")
+            for note in rewrite.notes:
+                _say(f"    LEFT: {note}")
         return 0
     touched = apply_rewrites(repo, rewrites, ruff=options.ruff)
     write_manifest(repo / options.manifest, rewrites)
     added = _after_check(config, before, rewrites)
     _say(f"rewrote {len(rewrites)} statements in {len(touched)} modules; manifest {options.manifest}")
+    for rewrite in rewrites:
+        for relative, old, new in rewrite.repoints:
+            _say(f"  purpose repointed in {relative}: {old} -> {new}")
+        for note in rewrite.notes:
+            _say(f"  LEFT: {note}")
     for line in added:
         _say(f"  AFTER-CHECK: a rewrite added a whole-read finding: {line}")
     return 1 if added else 0
