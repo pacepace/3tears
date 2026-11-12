@@ -26,7 +26,51 @@ from nats.js.client import JetStreamContext
 import threetears.nats.client as client_module
 from threetears.nats import NatsClient, Subjects, set_default_namespace
 
+from .nats_support import until
+
 pytestmark = pytest.mark.integration
+
+#: a failure-only bound on each server state the tests wait for
+_WAIT_SECONDS = 10.0
+
+
+def _server_state(client: NatsClient, stream: str, durable: str) -> Any:
+    """reads the durable's state as the server holds it.
+
+    :param client: the client that asks
+    :ptype client: NatsClient
+    :param stream: the stream
+    :ptype stream: str
+    :param durable: the durable
+    :ptype durable: str
+    :return: an awaitable for the durable's ``ConsumerInfo``
+    :rtype: Any
+    """
+    return client.jetstream_context().consumer_info(stream, durable)
+
+
+async def _settled(client: NatsClient, stream: str, durable: str, handled: list[bytes]) -> Any:
+    """the durable's state once something was handled and the server holds nothing pending or unacked.
+
+    :param client: the client that asks
+    :ptype client: NatsClient
+    :param stream: the stream
+    :ptype stream: str
+    :param durable: the durable
+    :ptype durable: str
+    :param handled: what the handler has seen
+    :ptype handled: list[bytes]
+    :return: the durable's ``ConsumerInfo`` at that moment
+    :rtype: Any
+    """
+    infos: list[Any] = []
+
+    async def _done() -> bool:
+        infos.append(await _server_state(client, stream, durable))
+        return bool(handled) and (infos[-1].num_pending, infos[-1].num_ack_pending) == (0, 0)
+
+    await until(_done, within=_WAIT_SECONDS, what="the event handled and acked")
+    return infos[-1]
 
 
 async def test_an_event_published_as_the_consumer_stops_is_handled(
@@ -56,12 +100,21 @@ async def test_an_event_published_as_the_consumer_stops_is_handled(
             fetch_timeout_seconds=3.0,
         )
         loop = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.3)  # the loop is inside a fetch: its pull request is on the server
+
+        async def _fetching() -> bool:
+            return bool((await _server_state(pod, stream, "stopping")).num_waiting)
+
+        # the loop is inside a fetch: its pull request is on the server
+        await until(_fetching, within=_WAIT_SECONDS, what="the loop's pull request")
 
         send_unsubscribe = client_module.send_unsubscribe
 
+        async def _delivered() -> bool:
+            return bool((await _server_state(pod, stream, "stopping")).delivered.consumer_seq)
+
         async def slow_unsubscribe(*args: Any, **kwargs: Any) -> None:
-            await asyncio.sleep(1.0)
+            # held until the server has delivered the event to the stopping consumer's pull request
+            await until(_delivered, within=_WAIT_SECONDS, what="the event's delivery to the pull request")
             await send_unsubscribe(*args, **kwargs)
 
         # the injection point: hold the stop's UNSUB back on its way to the server
@@ -71,9 +124,8 @@ async def test_an_event_published_as_the_consumer_stops_is_handled(
         await pod.jetstream_publish(subject=Subjects.audit_event("survey.response.submit"), payload=b"during-stop")
         await stopping
         loop.cancel()
-        await asyncio.sleep(0.3)
 
-        info = await pod.jetstream_context().consumer_info(stream, "stopping")
+        info = await _settled(pod, stream, "stopping", handled)
         assert handled == [b"during-stop"]
         assert (info.num_pending, info.num_ack_pending) == (0, 0)
     finally:
@@ -135,11 +187,16 @@ async def test_an_event_delivered_to_a_request_the_client_gave_up_on_is_handled(
         assert await consumer.fetch_and_process() == 0  # the request is live on the server, the fetch is over
 
         await pod.jetstream_publish(subject=Subjects.audit_event("survey.response.submit"), payload=b"late")
-        await asyncio.sleep(0.3)  # delivered to the live request: on its way into the inbox's queue
-        await consumer.stop()
-        await asyncio.sleep(0.3)
 
-        info = await pod.jetstream_context().consumer_info(stream, "gaveup")
+        async def _delivered() -> bool:
+            return bool((await _server_state(pod, stream, "gaveup")).delivered.consumer_seq)
+
+        # delivered to the live request, and read into the inbox's queue ahead of the round trip's PONG
+        await until(_delivered, within=_WAIT_SECONDS, what="the event's delivery to the live request")
+        await hub.flush()
+        await consumer.stop()
+
+        info = await _settled(pod, stream, "gaveup", handled)
         assert handled == [b"late"]
         assert (info.num_pending, info.num_ack_pending) == (0, 0)
     finally:
