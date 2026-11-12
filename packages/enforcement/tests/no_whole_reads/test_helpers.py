@@ -281,6 +281,10 @@ def test_a_helper_whose_arguments_the_walk_cannot_read_is_unseen(code: str, argu
         # column): a predicate the walk cannot see on a table it does not know
         ('update_keyed(c, "{}", values=v, by={user_column: u}, returning=pk)', ["unknown-schema"]),
         ('read_row(c, "results", by={column: v})', ["non-key-where"]),
+        # every key column of a table the caller reads at run time, each bound to the row's value (SelectiveRestore's
+        # live twin): keyed, as SQL over {pk_columns} would be; a list whose name says nothing of the key is not
+        ('read_row(c, "{}", by=dict(zip(pk_columns, key, strict=True)))', []),
+        ('read_row(c, "results", by=dict(zip(columns, values)))', ["non-key-where"]),
     ],
 )
 def test_a_by_column_named_at_run_time_is_judged_as_its_interpolation(

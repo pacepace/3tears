@@ -284,6 +284,11 @@ def _by(node: ast.expr | None, argument: str = "by") -> list[tuple[str, str]]:
     the rule reads one that says it is the key as the key, and any other as a predicate it cannot see."""
     if node is None or (isinstance(node, ast.Constant) and node.value is None):
         return []
+    zipped = _zipped_columns(node)
+    if argument == "by" and zipped is not None:
+        # ``by=dict(zip(pk_columns, key))``: every column a run-time list names, each bound, as ``{pk_columns}`` in
+        # SQL the caller wrote: the key when its name says so, else a predicate the rule cannot see
+        return [("{" + _named(zipped, argument)[1:-1] + "}", "eq")]
     if not isinstance(node, ast.Dict) or any(key is None for key in node.keys):
         raise _Unseen(argument)
     pinned = []
@@ -301,6 +306,18 @@ def _by(node: ast.expr | None, argument: str = "by") -> list[tuple[str, str]]:
         else:
             pinned.append((column, "eq"))
     return pinned
+
+
+def _zipped_columns(node: ast.expr) -> ast.expr | None:
+    """the column list of a ``dict(zip(<columns>, <values>))`` pin: a name or attribute the code binds at run time,
+    each of its columns bound to its value; None for any other expression."""
+    if not (isinstance(node, ast.Call) and _name(node) == "dict" and len(node.args) == 1 and not node.keywords):
+        return None
+    inner = node.args[0]
+    if not (isinstance(inner, ast.Call) and _name(inner) == "zip" and len(inner.args) == 2):
+        return None
+    columns = inner.args[0]
+    return columns if isinstance(columns, ast.Name | ast.Attribute) else None
 
 
 #: what marks a pinned column as a ``Pin.expr`` expression, spelled as written rather than quoted
