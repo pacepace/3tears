@@ -22,6 +22,7 @@ unavailable.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -82,7 +83,7 @@ class _AsyncpgStore:
 @pytest.fixture
 async def pg_conn(pg_url: str) -> AsyncIterator[asyncpg.Connection]:
     """yield a connection bound to a fresh per-test schema."""
-    schema = f"helpers_it_{id(object())}".lower().replace("-", "_")
+    schema = f"helpers_it_{uuid.uuid4().hex}".lower().replace("-", "_")
     conn = await asyncpg.connect(pg_url)
     await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
     await conn.execute(f'SET search_path TO "{schema}"')

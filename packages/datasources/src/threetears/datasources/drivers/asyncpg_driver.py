@@ -158,7 +158,6 @@ import asyncpg
 
 from threetears.core.sql_fragments import FilterValue
 from threetears.core.fingerprint import postgres_fingerprint_sql
-from threetears.core.config import DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS, DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
 from threetears.core.utils.pg_pool_kwargs import (
     PoolStartupTimeoutError,
     create_pool_with_startup_timeout,
@@ -213,24 +212,26 @@ __all__ = [
 log = get_logger(__name__)
 
 
-def _pool_start_budget_seconds(pool_min_size: int) -> float:
-    """the startup budget for an owned pool of ``pool_min_size`` connections.
+def _pool_start_budget_seconds(config: PostgresConnectionConfig | YugabyteConnectionConfig) -> float:
+    """the startup budget for an owned pool of ``config.pool_min_size`` connections.
 
     under a connect guard the pool's logins run one at a time, so a fixed budget fails a pool of
     slow logins that each fit their own bound: four warehouse logins of nine seconds need 36s, more
-    than the platform's 30s. the budget is one per-login bound
-    (:data:`DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS`) for each of ``pool_min_size`` logins plus one
-    more -- the headroom the start needs above its last login, and what keeps the budget longer
-    than a single login's bound -- and never less than the platform's
-    :data:`DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS`. the driver's logins are not retried (its
-    connect guard turns every failure into a ``DriverConnectError``), so no retry headroom is needed.
+    than the platform's 30s. the budget is one per-login bound (``connect_timeout_seconds``, by
+    default :data:`threetears.core.config.DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS`) for each of
+    ``pool_min_size`` logins plus one more -- the headroom the start needs above its last login,
+    and what keeps the budget longer than a single login's bound -- and never less than
+    ``pool_startup_timeout_seconds`` (by default the platform's
+    :data:`threetears.core.config.DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS`). the driver's logins are
+    not retried (its connect guard turns every failure into a ``DriverConnectError``), so no retry
+    headroom is needed.
 
-    :param pool_min_size: connections the pool opens when it starts
-    :ptype pool_min_size: int
+    :param config: the datasource's connection config
+    :ptype config: PostgresConnectionConfig | YugabyteConnectionConfig
     :return: the budget in seconds
     :rtype: float
     """
-    return max(DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS, DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS * (pool_min_size + 1))
+    return max(config.pool_startup_timeout_seconds, config.connect_timeout_seconds * (config.pool_min_size + 1))
 
 
 # ---------------------------------------------------------------------------
@@ -793,9 +794,10 @@ class AsyncpgDriver(Driver):
         the pool starts through
         :func:`threetears.core.utils.pg_pool_kwargs.create_pool_with_startup_timeout`
         with :meth:`_connect_one` as its connect hook: each login is
-        bounded at the platform's per-connect timeout, the start at the
-        platform's startup budget, and a start that fails on one of its
-        ``min_size`` connects closes the connections the others opened.
+        bounded at the config's ``connect_timeout_seconds``, the start at
+        the budget :func:`_pool_start_budget_seconds` sizes from the
+        config, and a start that fails on one of its ``min_size``
+        connects closes the connections the others opened.
 
         the password is resolved through
         :meth:`config.resolve_password` which returns
@@ -865,8 +867,8 @@ class AsyncpgDriver(Driver):
             # ``DriverConnectError`` from ``_connect_one`` is neither retried nor wrapped.
             pool = await create_pool_with_startup_timeout(
                 pool_name=f"datasource_{self._datasource_name}",
-                startup_timeout=_pool_start_budget_seconds(cfg.pool_min_size),
-                connect_timeout=DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS,
+                startup_timeout=_pool_start_budget_seconds(cfg),
+                connect_timeout=cfg.connect_timeout_seconds,
                 host=cfg.host,
                 port=cfg.port,
                 database=cfg.database,

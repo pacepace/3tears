@@ -11,7 +11,7 @@ so this exercises it against a real NATS: two independently constructed
 collections, standing in for two pods, sharing one durable store and one
 JetStream KV, racing on the same key. exactly one derivation must run.
 
-requires docker; gated by ``pytest.mark.integration``.
+needs Postgres/NATS (the pool's child processes, or testcontainers off the pool); gated by ``pytest.mark.integration``.
 """
 
 from __future__ import annotations

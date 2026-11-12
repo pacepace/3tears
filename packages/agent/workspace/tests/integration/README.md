@@ -79,7 +79,7 @@ uv run --directory /path/to/3tears pytest \
   packages/agent-workspace/tests/integration/ -v
 ```
 
-All integration tests carry `pytestmark = [pytest.mark.asyncio,
-pytest.mark.integration]`. They are excluded from the fast loop by
-selecting the directory explicitly (or by `-m "not integration"` once
-the marker is registered in `pyproject.toml`).
+Only the two files that reach a real Postgres
+(`test_cross_agent_workspace.py`, `test_cross_agent_workspace_tx.py`)
+carry `pytest.mark.integration`. The fake-backed files need no external
+service: they carry only `pytest.mark.asyncio` and run in the unit suite.

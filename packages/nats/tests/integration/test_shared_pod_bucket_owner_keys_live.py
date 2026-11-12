@@ -17,7 +17,8 @@ nats-server, through the nats-py calls the 3tears KV client makes.
 As in ``test_agent_bucket_grant_live``, the minted allow-lists are applied as config-mode
 ``authorization`` permissions: the grant strings are what is under test.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -28,7 +29,6 @@ from uuid import UUID
 
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats.subject_permissions import (
     Principal,
     PrincipalPermissions,
@@ -104,9 +104,6 @@ def _server_config(pub_allow: list[str], sub_allow: list[str]) -> str:
 
 async def test_an_agent_pod_reaches_only_its_own_keys_in_the_shared_pod_buckets() -> None:
     """both halves against a real broker: its own keys work, every other owner's are refused."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     previous_ns = get_default_namespace()
     set_default_namespace(_NS)
     try:

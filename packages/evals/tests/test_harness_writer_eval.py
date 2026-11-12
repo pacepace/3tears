@@ -20,7 +20,6 @@ import asyncio
 import json
 import math
 import re
-import socket
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -30,6 +29,7 @@ import httpx
 import pytest
 
 from packages.evals.tests.analyst_support import fixture_snapshots
+from packages.evals.tests.offline_support import Connect, refuse_connects
 from packages.evals.tests.report_writer_support import reply
 from packages.evals.tests.writer_case_support import SEED
 from packages.evals.tests.writer_eval_support import (
@@ -116,17 +116,10 @@ def _refuse(request: httpx.Request) -> httpx.Response:
 
 
 @pytest.fixture
-def offline(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+def offline(monkeypatch: pytest.MonkeyPatch) -> list[Connect]:
     """No key in the environment, and every socket connect refused and counted."""
     monkeypatch.delenv(KEY_VARIABLE, raising=False)
-    attempts: list[object] = []
-
-    def connect(_self: socket.socket, address: object) -> None:
-        attempts.append(address)
-        raise AssertionError(f"a replay-only run connected to {address}")
-
-    monkeypatch.setattr(socket.socket, "connect", connect)
-    return attempts
+    return refuse_connects(monkeypatch)
 
 
 def _case_files(directory: Path) -> None:
@@ -257,7 +250,7 @@ def _holds_the_cases_template_and_campaign(tmp_path: Path, result: WriterResult)
 
 
 async def test_a_two_arm_replay_mints_launches_files_reads_the_promotion_and_writes_the_page(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     arms = _arms()
     _case_files(tmp_path / "cases")
@@ -312,7 +305,7 @@ async def test_a_two_arm_replay_mints_launches_files_reads_the_promotion_and_wri
 
 
 async def test_a_missing_recording_with_no_key_is_refused_before_anything_runs(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     arms = _arms()
     _case_files(tmp_path / "cases")
@@ -323,7 +316,7 @@ async def test_a_missing_recording_with_no_key_is_refused_before_anything_runs(
 
 
 async def test_a_case_withholding_a_note_an_arm_lacks_is_refused_before_anything_is_minted(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     files = dict(load_skill().files)
     del files["exemplars/r1-model-selection.md"]
@@ -363,7 +356,7 @@ def test_two_arms_alike_and_one_arm_are_refused() -> None:
 
 
 async def test_reports_whose_budgets_could_pass_an_arms_share_are_refused_before_any_arm_launches(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     arms = _arms()
     _case_files(tmp_path / "cases")
@@ -432,7 +425,7 @@ async def test_the_judge_s_floor_is_its_own_output_cap_and_the_prompt_allowance_
 
 @pytest.mark.parametrize("what", ["pass", "arm"])
 async def test_a_judge_whose_calls_at_their_floor_could_pass_a_part_is_refused_before_any_arm_launches(
-    tmp_path: Path, offline: list[object], what: str
+    tmp_path: Path, offline: list[Connect], what: str
 ) -> None:
     arms = _arms()
     _case_files(tmp_path / "cases")
@@ -492,7 +485,7 @@ async def test_a_judge_whose_calls_at_their_floor_could_pass_a_part_is_refused_b
 
 
 async def test_a_judge_whose_calls_at_their_floor_fit_every_part_is_admitted(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     arms = _arms()
     _case_files(tmp_path / "cases")
@@ -508,7 +501,7 @@ async def test_a_judge_whose_calls_at_their_floor_fit_every_part_is_admitted(
     assert offline == []
 
 
-async def test_a_held_out_set_listing_a_case_no_file_holds_is_refused(tmp_path: Path, offline: list[object]) -> None:
+async def test_a_held_out_set_listing_a_case_no_file_holds_is_refused(tmp_path: Path, offline: list[Connect]) -> None:
     arms = _arms()
     _case_files(tmp_path / "cases")
     # A first run mints every case into its side's set; no recording is laid, so it stops there.
@@ -537,7 +530,7 @@ def _the_misfit_case(tmp_path: Path) -> str:
 
 
 async def test_a_scope_holding_a_report_writer_template_of_another_kind_is_refused(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     _case_files(tmp_path / "cases")
     storage = EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite"))
@@ -556,7 +549,7 @@ async def test_a_scope_holding_a_report_writer_template_of_another_kind_is_refus
 
 
 async def test_a_dev_side_run_launches_the_dev_cases_and_reads_no_promotion(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     arms = _arms()
     _case_files(tmp_path / "cases")
@@ -579,7 +572,7 @@ async def test_a_dev_side_run_launches_the_dev_cases_and_reads_no_promotion(
 
 
 async def test_a_failed_promotion_gate_exits_4_naming_it_and_an_unfinished_arm_exits_1(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     arms = _arms()
     _case_files(tmp_path / "cases")
@@ -667,7 +660,7 @@ QUESTION: Final = "Does a blank line in SKILL.md change the reports?"
 
 
 async def test_a_replay_whose_pages_reach_the_judge_runs_the_pass_in_both_orders_and_reads_the_promotion_on_it(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     arms = _kairo_arms(tmp_path)
     judge = FakeScoringJudge()
@@ -748,7 +741,7 @@ def _scored(request: httpx.Request) -> httpx.Response:
 
 
 async def test_a_judge_recorded_over_stored_pages_replays_in_a_fresh_store_with_no_key(
-    tmp_path: Path, offline: list[object], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, offline: list[Connect], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     arms = _kairo_arms(tmp_path)
     recording = tmp_path / "recordings" / "judge.jsonl"
@@ -813,7 +806,7 @@ class FakeBrokeJudge(FakeScoringJudge):
 
 
 async def test_a_pass_stopped_by_an_account_refusal_is_read_said_and_exits_1(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     arms = _kairo_arms(tmp_path)
 
@@ -831,7 +824,7 @@ async def test_a_pass_stopped_by_an_account_refusal_is_read_said_and_exits_1(
 
 
 async def test_three_arms_split_the_pass_s_reserve_between_the_two_candidates(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     arms = {**_arms(), "fewer": Writer(WRITER, skill=load_skill(), revisions=0)}
     _case_files(tmp_path / "cases")
@@ -859,7 +852,7 @@ async def test_three_arms_split_the_pass_s_reserve_between_the_two_candidates(
 
 
 async def test_a_pass_its_part_cannot_cover_is_refused_with_nothing_spent_said_and_exits_1(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     arms = _kairo_arms(tmp_path)
     judge = FakeDearPairJudge()
@@ -891,7 +884,7 @@ async def test_a_pass_its_part_cannot_cover_is_refused_with_nothing_spent_said_a
 
 
 async def test_two_arms_differing_only_in_revisions_each_replay_their_own_recordings(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     arms = {"shipped": Writer(WRITER, skill=load_skill()), "fewer": Writer(WRITER, skill=load_skill(), revisions=0)}
     _case_files(tmp_path / "cases")
@@ -941,7 +934,7 @@ def _editor_variant() -> AnalystSkill:
     ],
 )
 async def test_a_candidate_runs_the_control_s_editor_only_when_its_editor_md_model_and_effort_all_match(
-    tmp_path: Path, offline: list[object], variant: Callable[[], Writer], one_editor: bool
+    tmp_path: Path, offline: list[Connect], variant: Callable[[], Writer], one_editor: bool
 ) -> None:
     arms = {"shipped": Writer(WRITER, skill=load_skill()), "variant": variant()}
     _case_files(tmp_path / "cases")
@@ -964,7 +957,7 @@ def _uncompared_headings() -> set[str]:
 
 
 async def test_a_candidate_held_at_its_pass_s_stop_is_read_as_running_another_editor(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     """Under a rule to stop, two cases launched one at a time: the pass is refused after the first, so the candidate is
     held there and its promotion read at its stop. It differs from the control in its effort alone, a skill the read
@@ -1005,7 +998,7 @@ async def test_a_candidate_held_at_its_pass_s_stop_is_read_as_running_another_ed
 
 
 async def test_the_action_unsaid_reads_arms_whose_skills_differ_as_two_editors(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     """The writer eval knows the two arms' editor.md match, though their skills differ; the action, told nothing,
     reads the arms' recorded skill levels and counts two editors, the direction that keeps an editor's reading out
@@ -1043,7 +1036,7 @@ def _renamed_note() -> AnalystSkill:
 
 
 async def test_cases_are_minted_against_the_control_arm_s_skill_not_the_shipped_one(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     control = _renamed_note()
     variant = AnalystSkill(files={**control.files, "SKILL.md": f"{control.files['SKILL.md']}\n"})

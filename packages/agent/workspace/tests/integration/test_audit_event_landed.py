@@ -36,7 +36,7 @@ from threetears.agent.workspace.sandbox import WorkspaceSandbox
 from threetears.agent.workspace.tools.doc_set import DocSetTool
 
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+pytestmark = pytest.mark.asyncio
 
 
 class _StubAuditEventCollection:

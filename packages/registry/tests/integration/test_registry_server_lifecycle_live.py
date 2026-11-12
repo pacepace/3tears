@@ -13,7 +13,7 @@ Everything is the production path: the server connects to a NATS testcontainer, 
 collections bucket (declared first, as the hub declares it), loads its catalog, starts every
 handler and its health server, and is probed over HTTP.
 
-requires docker; marked integration. run with::
+needs a NATS server (the pool's child process, or a testcontainer); marked integration. run with::
 
     ./scripts/test-integration.sh registry -rs
 """

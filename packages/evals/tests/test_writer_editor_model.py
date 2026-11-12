@@ -15,12 +15,12 @@ files, and a scripted judge scores the pages; every socket connect fails.
 from __future__ import annotations
 
 import asyncio
-import socket
 from pathlib import Path
 from typing import Final
 
 import pytest
 
+from packages.evals.tests.offline_support import Connect, refuse_connects
 from packages.evals.tests.writer_eval_support import FakeScoringJudge, kairo_case, kairo_report, lay_recording
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.harness import Writer, WriterEval, WriterResult
@@ -40,18 +40,11 @@ SCOPE: Final = "editor-lever"
 
 
 @pytest.fixture
-def offline(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+def offline(monkeypatch: pytest.MonkeyPatch) -> list[Connect]:
     """No key in the environment, and every socket connect refused and counted."""
     for variable in SHIPPED_KEY_VARIABLES.values():
         monkeypatch.delenv(variable, raising=False)
-    attempts: list[object] = []
-
-    def connect(_self: socket.socket, address: object) -> None:
-        attempts.append(address)
-        raise AssertionError(f"a replay-only run connected to {address}")
-
-    monkeypatch.setattr(socket.socket, "connect", connect)
-    return attempts
+    return refuse_connects(monkeypatch)
 
 
 def _arms(editor: str = EDITOR) -> dict[str, Writer]:
@@ -110,7 +103,7 @@ def _usage_models(tmp_path: Path, run: EvalRun) -> set[str]:
 
 
 async def test_the_editor_s_reviews_run_on_its_own_model_recorded_on_the_run(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     arms = _arms()
     _laid(tmp_path, arms)

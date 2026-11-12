@@ -151,20 +151,20 @@ Use the scripts; never run `pytest`, `ruff` or `mypy` directly. Extra arguments 
 
 | Script | What it runs |
 |---|---|
-| `./scripts/check-all.sh` | Lint, typecheck, the unit tests, the mcp-1.x and OpenTelemetry-floor suites CI's `check` job runs, and the sidecar tests |
+| `./scripts/check-all.sh` | Lint, typecheck, the unit and integration suites, the mcp-1.x and OpenTelemetry-floor suites CI's `check` job runs, and the sidecar tests |
 | `./scripts/test.sh [package]` | The unit tests, for every package or one: `./scripts/test.sh core` |
-| `./scripts/test-integration.sh` | The integration tests, against real containers such as NATS and Postgres (needs Docker) |
+| `./scripts/test-integration.sh` | The integration tests, against real Postgres, NATS and S3, on the testament pool; `--here` runs the ones that need Docker or a credential on this machine |
 | `./scripts/test-sidecar.sh` | The scrape package's nodriver sidecar tests |
 | `./scripts/lint.sh` | `ruff check` and the format check; `--fix` fixes |
 | `./scripts/typecheck.sh [package]` | `mypy`, strict |
 
-`check-all.sh` does not run the integration tests, and cross-pod behaviour is tested only there. Run `./scripts/test-integration.sh -rs` before a pull request and account for every skip, since a skip reads like a pass. [docs/testing.md](docs/testing.md) has the details, including building the sidecar image first.
+Cross-pod behaviour is tested only in the integration tests. `check-all.sh` runs them on the pool. When a change touches scrape, search or a package that reads a credential, also run `./scripts/test-integration.sh --here -rs` and account for every skip, since a skip reads like a pass. [docs/testing.md](docs/testing.md) has the details, including building the sidecar image first and what to run when the pool is down.
 
 ## Contributing
 
 1. Cut a feature branch from `develop`, in a fork if you can't push here.
 2. Write tests for new behaviour. Tests are contracts: fix the code, never weaken a test.
-3. Run `./scripts/check-all.sh`, then `./scripts/test-integration.sh -rs`.
+3. Run `./scripts/check-all.sh` (and `./scripts/test-integration.sh --here -rs` when your change touches scrape, search or a credentialed package), and account for every skip.
 4. Open a pull request into `develop`. It merges with a merge commit, never a squash.
 
 [CLAUDE.md](CLAUDE.md) has the rest of the repo's rules, for people and coding agents alike.

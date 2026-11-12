@@ -78,8 +78,11 @@ def test_it_is_renewed_while_the_callers_thread_is_busy() -> None:
     client = FakeNatsClient()
     with _lease(client, "pod-a").hold_sync("job", ttl=_TTL, renew_every=_RENEW) as held:
         before = _entry(client, "job")
-        time.sleep(0.5)  # the caller's thread works; the shared loop renews
-        assert _entry(client, "job") != before, "no renewal reached the bucket while the caller worked"
+        # the caller's thread works (here, only reading the bucket); the shared loop renews
+        deadline = time.monotonic() + 5
+        while _entry(client, "job") == before:
+            assert time.monotonic() < deadline, "no renewal reached the bucket while the caller worked"
+            time.sleep(0.02)
         assert held.held
         held.check()
 

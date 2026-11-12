@@ -34,7 +34,7 @@ from threetears.agent.workspace.sandbox import WorkspaceSandbox
 from threetears.agent.workspace.tools.fs_write import FsWriteTool
 
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+pytestmark = pytest.mark.asyncio
 
 
 async def test_fs_write_on_rejected_content_returns_failure_and_leaves_store_untouched(

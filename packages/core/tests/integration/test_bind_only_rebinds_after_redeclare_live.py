@@ -30,7 +30,10 @@ pytestmark = pytest.mark.integration
 _NAMESPACE = "rebindlive"
 _SCOPE = "tool_pod-01947100000070008000000000000001"
 #: how long after the wipe the "hub" re-declares -- longer than one bind attempt, well inside the wait.
-_REDECLARE_AFTER = timedelta(seconds=1.5)
+_REDECLARE_AFTER = timedelta(seconds=0.5)
+#: the pod's binds of an absent bucket pause at most this long between attempts (production: 2s), so the
+#: first bind after the re-declare comes within one short pause of it, not up to a 1.6s backoff step later
+_POD_TIMINGS = KvTimings(bind_retry_max_delay_seconds=0.2)
 
 
 async def _declare(hub: NatsClient, bucket: str) -> None:
@@ -65,7 +68,9 @@ async def test_a_bind_only_guard_records_again_once_the_hub_redeclares_its_wiped
     bucket = f"nonces_{uuid4().hex}"
     async with (
         await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=_NAMESPACE, client_name="hub") as hub,
-        await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=_NAMESPACE, client_name="pod") as pod,
+        await NatsClient.connect(
+            nats_url=nats_container, nats_subject_namespace=_NAMESPACE, client_name="pod", kv_timings=_POD_TIMINGS
+        ) as pod,
     ):
         await _declare(hub, bucket)
         guard = ReplayGuard(
@@ -103,7 +108,9 @@ async def test_a_pod_that_starts_before_the_hub_declares_binds_once_it_does(nats
     bucket = f"leases_{uuid4().hex}"
     async with (
         await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=_NAMESPACE, client_name="hub") as hub,
-        await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=_NAMESPACE, client_name="pod") as pod,
+        await NatsClient.connect(
+            nats_url=nats_container, nats_subject_namespace=_NAMESPACE, client_name="pod", kv_timings=_POD_TIMINGS
+        ) as pod,
     ):
         lease = KVLease(pod, bucket_name=bucket, pod_id="replica-1", create_if_missing=False, key_scope=_SCOPE)
         redeclare = asyncio.create_task(_redeclare_later(hub, bucket))

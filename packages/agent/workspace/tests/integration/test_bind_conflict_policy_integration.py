@@ -49,7 +49,7 @@ from threetears.agent.workspace.tools.fs_read import FsReadTool
 from packages.agent.workspace.tests.helpers.scripted_watch import ScriptedWatch
 
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+pytestmark = pytest.mark.asyncio
 
 
 _TARGET_REL = "audience_settings.yaml"

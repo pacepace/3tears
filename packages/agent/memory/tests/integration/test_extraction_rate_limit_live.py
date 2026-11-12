@@ -89,6 +89,35 @@ async def _legacy_bucket(nc: NatsClient, namespace: str) -> None:
     await nc.jetstream_context().add_stream(legacy)
 
 
+#: how long after a 2 s cooldown is seen running its key must be gone: the cooldown, plus the broker's
+#: sweep of expired keys. The bucket's own max_age (600 s) is far past it, so a key that took the
+#: bucket's lifetime fails here.
+_COOLDOWN_GONE_WITHIN_SECONDS = 3.5
+
+#: how often the expiry wait reads the key again.
+_EXPIRY_TICK_SECONDS = 0.05
+
+
+async def _cooldown_ends_within(ext: MemoryExtractor, conversation_id: uuid.UUID, seconds: float) -> tuple[bool, int]:
+    """read the conversation's cooldown until it has ended, or ``seconds`` have passed.
+
+    :param ext: the extractor whose cooldown is read
+    :ptype ext: MemoryExtractor
+    :param conversation_id: the conversation the cooldown was claimed for
+    :ptype conversation_id: uuid.UUID
+    :param seconds: the most this waits
+    :ptype seconds: float
+    :return: the last read: ``(True, 0)`` once the cooldown ended, the running answer at the deadline
+    :rtype: tuple[bool, int]
+    """
+    deadline = asyncio.get_running_loop().time() + seconds
+    while True:
+        answer = await ext.check_rate_limit(conversation_id)
+        if answer == (True, 0) or asyncio.get_running_loop().time() >= deadline:
+            return answer
+        await asyncio.sleep(_EXPIRY_TICK_SECONDS)
+
+
 async def test_the_cooldown_lives_on_the_key_not_the_shared_bucket(
     nats_container: str,
     permissive_memory_authorizer: MemoryAuthorizerDependencies,
@@ -102,8 +131,7 @@ async def test_the_cooldown_lives_on_the_key_not_the_shared_bucket(
         conversation_id = uuid.uuid7()
         assert await ext.claim_rate_limit(conversation_id) == (True, 0)
         assert await ext.check_rate_limit(conversation_id) == (False, 2)
-        await asyncio.sleep(3.5)
-        assert await ext.check_rate_limit(conversation_id) == (True, 0), (
+        assert await _cooldown_ends_within(ext, conversation_id, _COOLDOWN_GONE_WITHIN_SECONDS) == (True, 0), (
             "the cooldown key outlived its own lifetime -- it took the bucket's max_age"
         )
 
@@ -135,8 +163,7 @@ async def test_a_legacy_bucket_is_reconciled_and_then_carries_the_key_lifetime(
         assert await ext.claim_rate_limit(conversation_id) == (True, 0)
         info = await nc.jetstream_context().stream_info(f"KV_{namespace}-{_BUCKET}")
         assert info.config.allow_msg_ttl is True, "the extractor's open did not enable per-key lifetimes"
-        await asyncio.sleep(3.5)
-        assert await ext.check_rate_limit(conversation_id) == (True, 0)
+        assert await _cooldown_ends_within(ext, conversation_id, _COOLDOWN_GONE_WITHIN_SECONDS) == (True, 0)
 
 
 async def test_a_bucket_that_cannot_carry_a_key_lifetime_fails_loud(

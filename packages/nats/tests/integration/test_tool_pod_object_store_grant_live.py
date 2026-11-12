@@ -10,7 +10,8 @@ does not cover is never answered, so each claim runs against a real nats-server:
 - deleting an object, purging, deleting or reshaping the bucket, and every route into another pod's
   bucket are refused, and the bucket is unchanged.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ from datetime import timedelta
 
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats import NatsClient, ObjectStoreError
 from threetears.nats.subject_permissions import (
     Principal,
@@ -101,9 +101,6 @@ def _server_config(pub_allow: list[str], sub_allow: list[str]) -> str:
 
 
 async def test_a_tool_pod_works_inside_its_object_store_and_manages_nothing() -> None:
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     previous_ns = get_default_namespace()
     set_default_namespace(_NS)
     try:

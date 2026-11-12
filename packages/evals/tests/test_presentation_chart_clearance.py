@@ -372,7 +372,7 @@ _FRAMES = """() => [...document.querySelectorAll('.tbl')].filter(f => f.querySel
   .map(f => ({head: f.querySelector('th').textContent.trim(), scrolls: f.scrollWidth - f.clientWidth}))"""
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 @pytest.mark.parametrize("static", [True, False], ids=["static", "kit"])
 def test_the_render_check_passes_the_re_shoot_s_charts_and_scorecard(tmp_path: Path, static: bool) -> None:
     """``scripts/check.py`` over the re-shoot's charts and scorecard, drawn by the kit and by the static page: no label
@@ -387,7 +387,7 @@ def test_the_render_check_passes_the_re_shoot_s_charts_and_scorecard(tmp_path: P
     assert checked.returncode == 0 and len(runs) == 8, checked.stdout + checked.stderr
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_the_kit_s_reference_lines_stop_short_of_a_point_s_label_and_a_bar_s_note(tmp_path: Path) -> None:
     """The kit's own drawing (``kScatter``, ``barsH``) of the scatter and the noted bars, at every render: no label an
     axis or a reference line crosses, where at 5757aa3ae the scatter's lines ran through its point's label and the
@@ -407,7 +407,7 @@ def test_the_kit_s_reference_lines_stop_short_of_a_point_s_label_and_a_bar_s_not
     assert len(runs) == 8 and "crossed:" not in checked.stdout, checked.stdout
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_the_scorecard_holds_its_intervals_without_scrolling_sideways_at_688_px(tmp_path: Path) -> None:
     reason = chromium_unavailable()
     if reason is not None:
@@ -419,7 +419,7 @@ def test_the_scorecard_holds_its_intervals_without_scrolling_sideways_at_688_px(
     assert frames == [{"head": "Aspect", "scrolls": 0}], frames
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_the_render_check_fails_a_line_through_a_label_a_faint_mark_and_a_broken_interval(tmp_path: Path) -> None:
     """The check itself: the same page with the zero line let run through every label, the dot's interval faded to
     .35 and the interval cells let wrap, as at 5757aa3ae, fails on each."""

@@ -22,34 +22,14 @@ from sqlalchemy import MetaData
 
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MemoriesCollection, memories_table
-from threetears.agent.memory.migrations import register as register_memory
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
 
-from .conftest import AsyncpgStore
 from .memory_support import vec_sql
 
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture
-async def applied_schema(pg_schema: tuple[str, str]) -> tuple[str, str]:
-    """apply conversations + memory migrations into the per-test schema."""
-    url, schema = pg_schema
-    runner = MigrationRunner()
-    register_conversations(runner)
-    register_memory(runner)
-    conn = await asyncpg.connect(url)
-    try:
-        await conn.execute(f'SET search_path TO "{schema}", public')
-        await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
-    finally:
-        await conn.close()
-    return url, schema
 
 
 async def _make_pool(url: str, schema: str) -> asyncpg.Pool:

@@ -32,7 +32,7 @@ from threetears.agent.workspace.tools.doc_set import DocSetTool
 from threetears.agent.workspace.tools.fs_read import FsReadTool
 
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+pytestmark = pytest.mark.asyncio
 
 
 def _build_sandbox() -> WorkspaceSandbox:

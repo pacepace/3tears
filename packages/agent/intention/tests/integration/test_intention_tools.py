@@ -37,7 +37,7 @@ from threetears.agent.intention.tools import (
     load_intention_mark_surfaced_tool,
 )
 
-from .conftest import apply_migrations, build_collection, make_pool, owner_only_authorizer
+from .conftest import build_collection, make_pool, owner_only_authorizer
 from .conftest import InMemoryNatsBus as _InMemoryNatsBus
 
 
@@ -81,9 +81,8 @@ async def _count_open(pool: asyncpg.Pool, agent_id: uuid.UUID, user_id: uuid.UUI
 
 
 class TestIntentionLog:
-    async def test_log_creates_open_want(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+    async def test_log_creates_open_want(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -102,9 +101,8 @@ class TestIntentionLog:
         finally:
             await pool.close()
 
-    async def test_log_dedups_refreshes_not_duplicates(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+    async def test_log_dedups_refreshes_not_duplicates(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -135,10 +133,11 @@ class TestIntentionLog:
         finally:
             await pool.close()
 
-    async def test_on_logged_is_told_of_a_new_want_once_and_not_of_a_refresh(self, pg_schema: tuple[str, str]) -> None:
+    async def test_on_logged_is_told_of_a_new_want_once_and_not_of_a_refresh(
+        self, applied_schema: tuple[str, str]
+    ) -> None:
         """A consumer records each new want (metallm files it on the timeline); a refresh is the same want."""
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -164,9 +163,8 @@ class TestIntentionLog:
         finally:
             await pool.close()
 
-    async def test_a_failing_on_logged_leaves_the_want_logged(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+    async def test_a_failing_on_logged_leaves_the_want_logged(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -191,9 +189,8 @@ class TestIntentionLog:
         finally:
             await pool.close()
 
-    async def test_log_distinct_creates_second(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+    async def test_log_distinct_creates_second(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -212,10 +209,9 @@ class TestIntentionLog:
         finally:
             await pool.close()
 
-    async def test_log_refresh_save_failure_soft_fails(self, pg_schema: tuple[str, str]) -> None:
+    async def test_log_refresh_save_failure_soft_fails(self, applied_schema: tuple[str, str]) -> None:
         """a save failure on the dedup-refresh path returns the soft-fail string, not a raise."""
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -241,10 +237,9 @@ class TestIntentionLog:
         finally:
             await pool.close()
 
-    async def test_log_stamps_source_conversation_from_resolver(self, pg_schema: tuple[str, str]) -> None:
+    async def test_log_stamps_source_conversation_from_resolver(self, applied_schema: tuple[str, str]) -> None:
         """a context_resolver's conversation_id lands on source_conversation_id."""
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -277,9 +272,8 @@ class TestIntentionLog:
 
 
 class TestIntentionList:
-    async def test_list_open_outside_cooldown_ranked_isolated(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+    async def test_list_open_outside_cooldown_ranked_isolated(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -321,9 +315,8 @@ class TestIntentionList:
         finally:
             await pool.close()
 
-    async def test_list_empty_when_all_in_cooldown(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+    async def test_list_empty_when_all_in_cooldown(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -350,9 +343,8 @@ class TestIntentionList:
 
 
 class TestIntentionMarkSurfaced:
-    async def test_mark_asked_stamps_clock_and_emits_surfaced(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+    async def test_mark_asked_stamps_clock_and_emits_surfaced(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -395,9 +387,8 @@ class TestIntentionMarkSurfaced:
         finally:
             await pool.close()
 
-    async def test_mark_granted_emits_resolved(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+    async def test_mark_granted_emits_resolved(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -427,10 +418,9 @@ class TestIntentionMarkSurfaced:
         finally:
             await pool.close()
 
-    async def test_mark_foreign_want_not_found(self, pg_schema: tuple[str, str]) -> None:
+    async def test_mark_foreign_want_not_found(self, applied_schema: tuple[str, str]) -> None:
         """a want owned by another user reads back not-found (isolation)."""
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -464,9 +454,8 @@ class TestIntentionMarkSurfaced:
         finally:
             await pool.close()
 
-    async def test_invalid_status_rejected(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+    async def test_invalid_status_rejected(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -481,10 +470,9 @@ class TestIntentionMarkSurfaced:
 
 
 class TestIntentionDecay:
-    async def test_decay_sinks_abandoned_want(self, pg_schema: tuple[str, str]) -> None:
+    async def test_decay_sinks_abandoned_want(self, applied_schema: tuple[str, str]) -> None:
         """decay_salience ages a want with an old last_decayed_at toward the floor."""
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -519,9 +507,8 @@ class TestIntentionCacheCoherence:
     UPDATE, so a mark_surfaced / refresh save can't revert a scheduled decay
     (matching memory's guard)."""
 
-    async def test_decay_survives_stale_entity_save(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+    async def test_decay_survives_stale_entity_save(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -570,10 +557,9 @@ class TestIntentionCacheCoherence:
         finally:
             await pool.close()
 
-    async def test_decay_and_bump_invalidate_cache(self, pg_schema: tuple[str, str]) -> None:
+    async def test_decay_and_bump_invalidate_cache(self, applied_schema: tuple[str, str]) -> None:
         """decay_salience + bump_salience each invalidate the affected pks (defense B)."""
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
@@ -616,10 +602,9 @@ class TestIntentionCacheCoherence:
         finally:
             await pool.close()
 
-    async def test_user_id_is_immutable_across_saves(self, pg_schema: tuple[str, str]) -> None:
+    async def test_user_id_is_immutable_across_saves(self, applied_schema: tuple[str, str]) -> None:
         """user_id (the sole isolation boundary) can't be moved by an entity save."""
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())

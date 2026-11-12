@@ -24,7 +24,6 @@ import asyncio
 import dataclasses
 import json
 import re
-import socket
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Final
@@ -54,6 +53,7 @@ from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
     pass_criterion,
     refuse_unlike_editors,
 )
+from packages.evals.tests.offline_support import Connect, refuse_connects
 from packages.evals.tests.writer_case_support import SEED
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.harness import WriterCaseFile
@@ -72,22 +72,15 @@ DEFAULT_CASES: Final = 7
 DOC: Final = Path(__file__).resolve().parents[1] / "docs" / "judges-and-calibration.md"
 
 
-def _offline(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+def _offline(monkeypatch: pytest.MonkeyPatch) -> list[Connect]:
     """No key in the environment, and every socket connect refused and counted."""
     for name in KEYS:
         monkeypatch.delenv(name, raising=False)
-    attempts: list[object] = []
-
-    def connect(_self: socket.socket, address: object) -> None:
-        attempts.append(address)
-        raise AssertionError(f"a dry acceptance run connected to {address}")
-
-    monkeypatch.setattr(socket.socket, "connect", connect)
-    return attempts
+    return refuse_connects(monkeypatch, run="a dry acceptance run")
 
 
 @pytest.fixture(scope="module")
-def dry() -> Iterator[tuple[Acceptance, list[object]]]:
+def dry() -> Iterator[tuple[Acceptance, list[Connect]]]:
     """One dry run over the default cases, offline; what it found and every connect it tried."""
     with pytest.MonkeyPatch.context() as monkeypatch:
         attempts = _offline(monkeypatch)
@@ -199,7 +192,7 @@ def test_main_takes_a_variant_by_name_and_refuses_an_unknown_one(
 
 
 def test_the_dry_run_makes_no_network_call_over_two_arms_and_every_held_out_case(
-    dry: tuple[Acceptance, list[object]],
+    dry: tuple[Acceptance, list[Connect]],
 ) -> None:
     found, attempts = dry
     assert attempts == []
@@ -217,7 +210,7 @@ def test_the_dry_run_makes_no_network_call_over_two_arms_and_every_held_out_case
     assert found.read.changed == ["report_writer.skill"]
 
 
-def test_the_pass_asks_every_pair_in_both_orders(dry: tuple[Acceptance, list[object]]) -> None:
+def test_the_pass_asks_every_pair_in_both_orders(dry: tuple[Acceptance, list[Connect]]) -> None:
     found, _ = dry
     report = found.report
     assert report.campaign_id == found.result.campaign_id
@@ -237,7 +230,7 @@ def test_the_pass_asks_every_pair_in_both_orders(dry: tuple[Acceptance, list[obj
 
 
 def test_the_rule_is_declared_before_the_first_result_and_recorded_and_the_readout_says_the_floor(
-    dry: tuple[Acceptance, list[object]],
+    dry: tuple[Acceptance, list[Connect]],
 ) -> None:
     """The default rule reads every case, declared as the eval starts, so before its first result; the record and
     acceptance.json carry it and the floor its seven cases set, and the readout says what it did."""
@@ -275,7 +268,7 @@ def test_a_rule_to_stop_on_separation_is_recorded_as_declared(monkeypatch: pytes
 
 @pytest.mark.parametrize("same", [True, False], ids=["same cases", "other cases"])
 def test_a_prior_run_on_the_same_cases_carries_its_projection_into_the_floors_line(
-    dry: tuple[Acceptance, list[object]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same: bool
+    dry: tuple[Acceptance, list[Connect]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same: bool
 ) -> None:
     """``--prior`` reads an earlier acceptance.json; its projection is carried only when it ran the same case files."""
     earlier = dry[0].summary()
@@ -302,7 +295,7 @@ def test_a_prior_run_on_the_same_cases_carries_its_projection_into_the_floors_li
 
 
 def test_the_read_takes_the_pass_as_its_primary_and_the_criterion_is_decided_on_it(
-    dry: tuple[Acceptance, list[object]],
+    dry: tuple[Acceptance, list[Connect]],
 ) -> None:
     found, _ = dry
     read = found.read
@@ -326,7 +319,7 @@ def test_the_read_takes_the_pass_as_its_primary_and_the_criterion_is_decided_on_
 
 
 def test_the_readout_prints_the_read_and_the_criterion_with_its_verdict(
-    dry: tuple[Acceptance, list[object]],
+    dry: tuple[Acceptance, list[Connect]],
 ) -> None:
     found, _ = dry
     text = "\n".join(found.readout())
@@ -382,7 +375,7 @@ ENVELOPE_LINES: Final = (
 
 @pytest.mark.parametrize(("arms", "pass_usd", "is_dry", "line"), ENVELOPE_LINES)
 def test_the_readout_states_the_runs_spend_against_the_monthly_envelope_once(
-    dry: tuple[Acceptance, list[object]],
+    dry: tuple[Acceptance, list[Connect]],
     arms: tuple[float | None, ...],
     pass_usd: float,
     is_dry: bool,
@@ -420,7 +413,7 @@ def _shaped(read: WriterPromotion, *, decision: str, outcome: str, reason: str, 
 
 
 def test_the_criterion_passes_only_on_keep_with_a_separated_regressed_primary(
-    dry: tuple[Acceptance, list[object]],
+    dry: tuple[Acceptance, list[Connect]],
 ) -> None:
     read, runs, report = dry[0].read, dry[0].result.arms, dry[0].report
     passed = pass_criterion(
@@ -474,7 +467,7 @@ def test_the_criterion_passes_only_on_keep_with_a_separated_regressed_primary(
 
 @pytest.mark.parametrize("outcome", ["regressed", "improved"])
 def test_bounces_that_separate_either_way_void_the_acceptance(
-    dry: tuple[Acceptance, list[object]], outcome: str
+    dry: tuple[Acceptance, list[Connect]], outcome: str
 ) -> None:
     read = _shaped(dry[0].read, decision="keep", outcome="regressed", reason="separated", high=-0.1)
     verdicts = [
@@ -488,7 +481,7 @@ def test_bounces_that_separate_either_way_void_the_acceptance(
 
 
 def test_a_dry_run_states_the_last_live_run_on_its_cases_beside_its_scripted_figure(
-    dry: tuple[Acceptance, list[object]], tmp_path: Path
+    dry: tuple[Acceptance, list[Connect]], tmp_path: Path
 ) -> None:
     """A dry run's figure is its scripted turns priced, which estimates nothing live; given the record of a live run on
     the same case files, the line states what that run spent. A record from before runs carried ``spent_usd`` is read

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
@@ -87,6 +88,22 @@ class StubCollection(BaseCollection[StubEntity]):
 
     def deserialize(self, data: bytes) -> dict:
         return json.loads(data)
+
+
+async def _propagated(check: Callable[[], bool], *, what: str) -> None:
+    """wait for a setter's fire-and-forget propagation to show, looking every 5 ms for at most 5 s.
+
+    :param check: whether the propagation has landed
+    :ptype check: Callable[[], bool]
+    :param what: the propagation, for the failure message
+    :ptype what: str
+    :return: None
+    :rtype: None
+    """
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while not check():
+        assert asyncio.get_running_loop().time() < deadline, f"timed out waiting for {what}"
+        await asyncio.sleep(0.005)
 
 
 def _make_nats_mock() -> AsyncMock:
@@ -648,8 +665,14 @@ class TestSubscriptSetterPropagation:
 
         coll["e1", "name"] = "Bob"
 
-        # Yield to the event loop so the fire-and-forget task can complete
-        await asyncio.sleep(0.1)
+        # the fire-and-forget task writes L2 in the background
+        await _propagated(
+            lambda: (
+                f"{_TEST_SCOPE}.test_entities.e1" in nats.store
+                and json.loads(nats.store[f"{_TEST_SCOPE}.test_entities.e1"])["name"] == "Bob"
+            ),
+            what="the setter's L2 write",
+        )
 
         assert f"{_TEST_SCOPE}.test_entities.e1" in nats.store
         l2_data = json.loads(nats.store[f"{_TEST_SCOPE}.test_entities.e1"])
@@ -667,7 +690,7 @@ class TestSubscriptSetterPropagation:
 
         coll["e1", "name"] = "Bob"
 
-        await asyncio.sleep(0.1)
+        await _propagated(lambda: "e1" in l3_rows, what="the setter's L3 write")
 
         assert "e1" in l3_rows
         assert l3_rows["e1"]["name"] == "Bob"
@@ -685,7 +708,15 @@ class TestSubscriptSetterPropagation:
 
         coll["e1", "name"] = "Bob"
 
-        await asyncio.sleep(0.1)
+        # the background task's work is done once L2 holds the value and the buffer holds the write
+        await _propagated(
+            lambda: (
+                f"{_TEST_SCOPE}.test_entities.e1" in nats.store
+                and json.loads(nats.store[f"{_TEST_SCOPE}.test_entities.e1"])["name"] == "Bob"
+                and buf.pending_count() == 1
+            ),
+            what="the setter's L2 write and buffered L3 write",
+        )
 
         # NOT in L3
         assert "e1" not in l3_rows
@@ -703,7 +734,10 @@ class TestSubscriptSetterPropagation:
 
         coll["e1"] = {"id": "e1", "name": "Alice", "score": 99}
 
-        await asyncio.sleep(0.1)
+        await _propagated(
+            lambda: f"{_TEST_SCOPE}.test_entities.e1" in nats.store and "e1" in l3_rows,
+            what="the setter's L2 and L3 writes",
+        )
 
         # L1
         row = coll.get_row_sync("e1")
@@ -727,7 +761,7 @@ class TestSubscriptSetterPropagation:
 
         before = datetime.now(UTC)
         coll["e1", "name"] = "Bob"
-        await asyncio.sleep(0.1)
+        await _propagated(lambda: "e1" in l3_rows, what="the setter's L3 write")
 
         assert "e1" in l3_rows
         du = l3_rows["e1"].get("date_updated")
@@ -797,7 +831,13 @@ class TestMultiPodSimulation:
 
         # Pod A updates via setter
         pod_a["e1", "name"] = "Bob"
-        await asyncio.sleep(0.1)  # Let propagation complete
+        await _propagated(
+            lambda: (
+                f"{_TEST_SCOPE}.test_entities.e1" in nats.store
+                and json.loads(nats.store[f"{_TEST_SCOPE}.test_entities.e1"])["name"] == "Bob"
+            ),
+            what="pod A's L2 write",
+        )
 
         # Pod B's L1 is stale (still "Alice")
         stale_name = pod_b.get_field_sync("e1", "name")
@@ -829,7 +869,7 @@ class TestMultiPodSimulation:
 
         # Pod A updates via setter
         pod_a["e1", "name"] = "Updated"
-        await asyncio.sleep(0.1)
+        await _propagated(lambda: l3_rows["e1"]["name"] == "Updated", what="pod A's L3 write")
 
         # L3 (shared postgres) has the update
         assert l3_rows["e1"]["name"] == "Updated"
@@ -850,7 +890,15 @@ class TestMultiPodSimulation:
         await pod_a.ensure("e1")
 
         pod_a["e1", "name"] = "Deferred"
-        await asyncio.sleep(0.1)
+        # the background task's work is done once L2 holds the value and the buffer holds the write
+        await _propagated(
+            lambda: (
+                f"{_TEST_SCOPE}.test_entities.e1" in nats.store
+                and json.loads(nats.store[f"{_TEST_SCOPE}.test_entities.e1"])["name"] == "Deferred"
+                and buf.pending_count() == 1
+            ),
+            what="pod A's L2 write and buffered L3 write",
+        )
 
         # L3 still has old value
         assert l3_rows["e1"]["name"] == "Alice"

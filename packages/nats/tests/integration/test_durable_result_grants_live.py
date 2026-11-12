@@ -18,7 +18,8 @@ Three things are proven end to end, with the SAME allow-lists
 The auth-callout responder is not stood up: the grant strings are what matters, so they are applied
 directly as config-mode ``authorization`` permissions -- the same allow-list the responder mints.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -29,7 +30,6 @@ from datetime import timedelta
 
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats import (
     NatsClient,
     Principal,
@@ -115,9 +115,6 @@ def _scoped_user(name: str, password: str, allow: tuple[list[str], list[str]]) -
 
 
 async def test_a_pod_delivers_its_own_result_and_a_registry_collects_it() -> None:
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     set_default_namespace(_NS)
     pod_allow = _minted_permissions(Principal.TOOL_POD, pod_id=_POD)
     registry_allow = _minted_permissions(Principal.REGISTRY, conn_id=_REGISTRY_CONN)

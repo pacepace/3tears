@@ -44,6 +44,10 @@ _ALLOWED_DEFAULT_FILES: set[str] = {
     # timeouts so no-NATS / no-Docker test runs skip fast. test-only
     # module, never imported by production code paths.
     "threetears/core/testing/containers.py",
+    # Process-mode test services -- the same harness's start and stop bounds for the Postgres, NATS and
+    # S3 child processes the testament pool's integration suite runs on. test-only module, imported by
+    # threetears.core.testing.fixtures and never by production code paths.
+    "threetears/core/testing/services.py",
 }
 
 # Specific (file_relative, name) pairs for narrow exceptions, consulted by the
