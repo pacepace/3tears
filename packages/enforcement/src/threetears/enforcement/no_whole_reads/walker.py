@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Final
 
 from threetears.enforcement.common import dotted, iter_python_files, parse_python_path, relative_posix_path
+from threetears.enforcement.no_whole_reads.bounded import BoundBy, Bounded, bounded_relations
 from threetears.enforcement.no_whole_reads.flow import (
     CLEAN,
     HANDED,
@@ -874,6 +875,7 @@ class WholeReadScan:
     :ivar schema: the declared keys and indexes every statement was judged against
     :ivar statements: every SQL statement the walked modules write as text
     :ivar declarations: every read declared whole by nature (``whole_read``)
+    :ivar bounded_findings: each failed check of a declared bounded producer (:mod:`.bounded`)
     """
 
     hits: list[WholeReadHit] = field(default_factory=list)
@@ -887,6 +889,7 @@ class WholeReadScan:
     statements: list[WrittenStatement] = field(default_factory=list)
     declared_matched: set[str] = field(default_factory=set)
     declarations: list[DeclaredWhole] = field(default_factory=list)
+    bounded_findings: tuple[str, ...] = ()
 
 
 #: callees that only quote the name they are given: checked before a template function, since a quoter returning
@@ -1515,6 +1518,7 @@ class _ModuleWalk(ast.NodeVisitor):
         builders: frozenset[str] = frozenset(),
         never_none: frozenset[tuple[str, str]] = frozenset(),
         declared: Mapping[str, tuple[str, ...]] | None = None,
+        bounded: Bounded | None = None,
     ) -> None:
         """prepare a walk of one module.
 
@@ -1570,10 +1574,13 @@ class _ModuleWalk(ast.NodeVisitor):
         :param never_none: ``(function, parameter)`` every call site passes something that is never None
             (:func:`_never_none_parameters`)
         :ptype never_none: frozenset[tuple[str, str]]
+        :param bounded: what a copy accessor's relation reads as under a checked bounded producer
+        :ptype bounded: Bounded | None
         :return: nothing
         :rtype: None
         """
         self.path = path
+        self._bounded = bounded if bounded is not None else Bounded()
         self._never_none = never_none
         self._match_builders = dict(match_builders or {})
         #: the names the module's imports bind: ``x.read_by()`` on any other name is a method of an object
@@ -4265,13 +4272,19 @@ class _ModuleWalk(ast.NodeVisitor):
 
         :param node: the expression
         :ptype node: ast.expr
-        :return: :data:`TRANSIENT_PRODUCED`, :data:`HELPER_RELATION`, the declared table name, or None for any other
-            expression
+        :return: :data:`TRANSIENT_PRODUCED`, :data:`HELPER_RELATION`, the declared table name, a bounded copy relation's
+            cut (:meth:`Bounded.relation`), or None for any other expression
         :rtype: str | None
         """
         declared = self._schema_name_text(node)
         if declared is not None:
             return declared
+        if self._bounded.key and isinstance(node, ast.Call) and _final(node) in _COPY_CALLS:
+            # a copy accessor's relation, cut by a checked bounded producer's key (``limited_snapshot``): the cut it
+            # reads, one the producer leaves whole as the copy relation it is
+            cut = self._bounded.relation(_placeholder(node, self._envs[-1]))
+            if cut is not None:
+                return cut
         if self._helper_change_parameter(node):
             return TRANSIENT_PRODUCED
         if self._helper_relation(node):
@@ -6541,6 +6554,7 @@ def scan_whole_reads(
     relation_producers: frozenset[str] = frozenset(),
     public_forwarders: bool = False,
     declared_parameters: Mapping[str, tuple[str, ...]] | None = None,
+    bounded_producers: Mapping[str, BoundBy] | None = None,
 ) -> WholeReadScan:
     """walk every module under ``src_roots`` and record every whole read, write and call.
 
@@ -6584,6 +6598,9 @@ def scan_whole_reads(
     :param declared_parameters: ``<qualified function>.<parameter>`` onto the values the repo declares it holds: a
         relation or column named at run time (a copy's every table), judged once per value
     :ptype declared_parameters: Mapping[str, tuple[str, ...]] | None
+    :param bounded_producers: the copy accessor onto its checked bounded producer: a read through it is judged as
+        reading its relation cut by the producer's key (:mod:`~threetears.enforcement.no_whole_reads.bounded`)
+    :ptype bounded_producers: Mapping[str, BoundBy] | None
     :return: the walk
     :rtype: WholeReadScan
     """
@@ -6627,6 +6644,15 @@ def scan_whole_reads(
         if excluded or any(part in schema_change_dirs for part in relative.split("/")[:-1]):
             continue
         walked.append((relative, path))
+    bounded = bounded_relations(
+        bounded_producers or {},
+        [(relative, parse_python_path(path)) for relative, path in walked],
+        {
+            relative: {**_imported_strings(parse_python_path(path), strings), **strings.get(relative, {})}
+            for relative, path in walked
+        },
+    )
+    scan.bounded_findings = bounded.findings
 
     def walk_of(relative: str, path: Path, forwarders: RepoForwarders | None) -> _ModuleWalk:
         tree = parse_python_path(path)
@@ -6654,6 +6680,7 @@ def scan_whole_reads(
             builders=builders,
             never_none=never_none,
             declared=declared_parameters,
+            bounded=bounded,
         )
 
     # the repo's step builders, by name across every walked module: a call of one is a step judged where it is

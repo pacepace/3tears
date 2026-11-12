@@ -95,6 +95,7 @@ from typing import Final
 import threetears
 
 from threetears.enforcement.common import dotted
+from threetears.enforcement.no_whole_reads.bounded import BoundBy
 from threetears.enforcement.no_whole_reads.declarations import DECLARATIONS_NAME, apply_index_declarations
 from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, SchemaCatalog, collect_schema, index_findings
 from threetears.enforcement.no_whole_reads.use_the_helper import statement_counts, statement_findings
@@ -114,6 +115,7 @@ from threetears.enforcement.no_whole_reads.walker import (
 )
 
 __all__ = [
+    "BoundBy",
     "NoWholeReadsConfig",
     "no_whole_reads_findings",
     "use_the_helper_counts",
@@ -215,6 +217,12 @@ class NoWholeReadsConfig:
         hub's ``src/aibots/hub/``): an index purpose under one names a consumer's read, which keys that read in the
         consumer's own gate (its indexes are the dependency's there); here such an entry is neither unknown nor unused.
         The plan test, in this repo, still proves the index serves the consumer's statement
+    :ivar bounded_producers: the copy accessor (``Snapshot.relation``) onto the producer that cuts every relation it
+        answers to a key (:class:`~threetears.enforcement.no_whole_reads.bounded.BoundBy`: reports'
+        ``limited_snapshot``, each relation to the reader's states): a read through the accessor is judged as reading
+        that cut, with no condition of its own. Checked, never trusted: the producer binds the key in every relation
+        it returns, every other source of the relations is a snapshot's own or a declared one, and a reader of every
+        state is the one place the producer is skipped (:mod:`~threetears.enforcement.no_whole_reads.bounded`)
     """
 
     repo_root: Path
@@ -241,6 +249,7 @@ class NoWholeReadsConfig:
     threetears_tables_only: bool = False
     consumer_purposes: tuple[str, ...] = ()
     frozen_migrations: tuple[str, ...] = ()
+    bounded_producers: Mapping[str, BoundBy] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -440,6 +449,7 @@ def _hits(config: NoWholeReadsConfig) -> tuple[list[WholeReadHit], WholeReadScan
         relation_producers=frozenset(config.relation_producers),
         public_forwarders=config.public_forwarders,
         declared_parameters=config.declared_parameters,
+        bounded_producers=config.bounded_producers,
     )
     return scan.hits, scan
 
@@ -828,6 +838,7 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
             "check src_roots, since a walk that reads nothing reports nothing"
         )
     findings.extend(f"excluded prefix {prefix!r} matches no module; delete it" for prefix in scan.unmatched_exclusions)
+    findings.extend(scan.bounded_findings)
     findings.extend(
         f"declared parameter {key!r} names no parameter of a function the walk reads (qualified as "
         "<Class>.<method>.<parameter>); fix or delete the declaration"
