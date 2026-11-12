@@ -151,7 +151,8 @@ class KeyedStatement:
 
         :param rows: the table's rows (changed in place)
         :ptype rows: Iterable[dict[str, Any]]
-        :param now: what a ``now()`` SET value writes; the text ``now()`` is refused when None
+        :param now: what a ``now()`` SET value writes; the text ``now()`` is refused when None (a ``NULL`` SET value
+            writes None)
         :ptype now: Any
         :return: the updated rows; its length is the statement's row count
         :rtype: list[dict[str, Any]]
@@ -161,7 +162,10 @@ class KeyedStatement:
             if not self.matches(row):
                 continue
             for column, value in self.values.items():
-                if isinstance(value, _Sql):
+                if isinstance(value, _Sql) and value.text.lower() == "null":
+                    # a None assignment is written as the literal (it binds nothing)
+                    value = None
+                elif isinstance(value, _Sql):
                     if value.text.lower() != "now()" or now is None:
                         raise ValueError(f"a SET value the decoder cannot write: {column} = {value.text}")
                     value = now

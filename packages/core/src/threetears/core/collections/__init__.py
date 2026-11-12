@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from threetears.core.collections.asyncpg_init import (
     init_connection,
     register_jsonb_text_codec,
+    register_vector_text_codec,
 )
 from threetears.core.collections.delete_cascade import (
     CascadedRows,
@@ -157,6 +158,7 @@ __all__ = [
     "init_connection",
     "reapply_on_lost_race",
     "register_jsonb_text_codec",
+    "register_vector_text_codec",
     "repoint_user_rows",
     "serialize_to_json",
     "spans_partitions",

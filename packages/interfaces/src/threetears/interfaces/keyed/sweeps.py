@@ -22,6 +22,7 @@ from typing import Any
 
 from threetears.interfaces.keyed.filters import (
     IN_SUBQUERY,
+    assigned,
     batched_join_hint,
     by_conditions,
     quote_identifier,
@@ -125,7 +126,7 @@ def update_before_statement(
     :ptype column: str
     :param before: the bound
     :ptype before: Any
-    :param set_to: column -> its new value, each bound
+    :param set_to: column -> its new value, each bound (None written as the literal ``NULL``)
     :ptype set_to: Mapping[str, Any]
     :param page: the most rows a statement updates
     :ptype page: int
@@ -148,8 +149,7 @@ def update_before_statement(
     assignments = []
     params: list[Any] = []
     for name, value in set_to.items():
-        params.append(value)
-        assignments.append(f"{quote_identifier(name)} = ${len(params)}")
+        assignments.append(assigned(name, value, params))
     conditions, values = by_conditions(pinned, first=len(params) + 1)
     params += values
     conditions.append(f"{quote_identifier(column)} < ${len(params) + 1}")

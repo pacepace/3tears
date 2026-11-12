@@ -16,6 +16,8 @@ import duckdb
 import pytest
 
 from threetears.core.backends.protocol import RowcountUnreadableError
+from threetears.interfaces.keyed.sweeps import update_before_statement
+from threetears.interfaces.keyed.writes import update_keyed_statements
 from threetears.core.keyed import (
     AnyOf,
     Derived,
@@ -728,3 +730,23 @@ class TestCountsSinceMarks:
             )
         with pytest.raises(ValueError, match="need since="):
             await counts_by_relations(conn, {"ra": "ra"}, column="state", values=AnyOf(["S1"], "text"), max_of=["src"])
+
+
+def test_a_none_assignment_is_the_literal_null_and_binds_nothing() -> None:
+    """Flips if a keyed write's ``SET`` binds a None (a bind the driver must type by its column: asyncpg refuses
+    YugabyteDB's built-in ``vector`` there), or a None pin in ``by`` stops reading as ``IS NULL``.
+
+    Spec from hub #37 (2026-11-12): None renders as ``NULL`` in SET only; a filter keeps ``IS NULL``."""
+    [(sql, params)] = update_keyed_statements(
+        "t", values={"embedding": None, "name": "n", "note": None}, by={"id": 7, "gone": None}
+    )
+    assert '"embedding" = NULL' in sql, sql
+    assert '"note" = NULL' in sql, sql
+    assert '"name" = $1' in sql, sql
+    assert '"gone" IS NULL' in sql, sql
+    assert params == ["n", 7], params
+    swept, bound = update_before_statement(
+        "t", key=("id",), column="at", before=3, set_to={"status": None}, by={"status": "dispatching"}, page=5
+    )
+    assert '"status" = NULL' in swept, swept
+    assert None not in bound, bound

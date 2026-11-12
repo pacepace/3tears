@@ -26,6 +26,7 @@ from typing import Any
 
 from threetears.interfaces.keyed.filters import (
     Fragment,
+    assigned,
     by_conditions,
     narrowing,
     prefix_conditions,
@@ -237,7 +238,8 @@ def update_keyed_statements(
 
     :param table: the table (``schema.table``), a TRUSTED identifier
     :ptype table: str
-    :param values: column -> its new value, an :class:`Increment`, or a :class:`Fragment` expression (``now()``, its
+    :param values: column -> its new value (None written as the literal ``NULL``, binding nothing), an
+        :class:`Increment`, or a :class:`Fragment` expression (``now()``, its
         placeholders from ``$1``); columns are TRUSTED identifiers
     :ptype values: Mapping[str, Any]
     :param by: columns pinned (a leading part of the table's key, or of an index declared for the write), each a
@@ -273,8 +275,7 @@ def update_keyed_statements(
             params.append(value.amount)
             assignments.append(f"{quoted} = {quoted} + ${len(params)}")
         else:
-            params.append(value)
-            assignments.append(f"{quoted} = ${len(params)}")
+            assignments.append(assigned(column, value, params))
     return _statements(
         table,
         assignments,

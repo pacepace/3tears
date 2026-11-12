@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import Any, Final
 from uuid import NAMESPACE_OID, uuid5
 
+from threetears.core.collections.asyncpg_init import register_vector_text_codec
 from threetears.core.keyed import (
     AnyOf,
     Fragment,
@@ -155,10 +156,7 @@ async def _vectors_as_text(conn: Any) -> None:
     text form; on YugabyteDB ``vector`` is a built-in type (OID 8078), which asyncpg refuses outright ("unhandled
     standard data type") when a seeded row binds one or the table's state is read. A text codec covers both.
     """
-    for found in await conn.fetch(
-        "SELECT n.nspname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.typname = 'vector'"
-    ):
-        await conn.set_type_codec("vector", schema=found["nspname"], encoder=str, decoder=str, format="text")
+    await register_vector_text_codec(conn)
 
 
 async def _catalog(conn: Any, table: str) -> CatalogTable:

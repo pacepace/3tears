@@ -24,6 +24,7 @@ __all__ = [
     "Lock",
     "Pin",
     "Selected",
+    "assigned",
     "batched_join_hint",
     "by_conditions",
     "narrowing",
@@ -301,6 +302,30 @@ class Pin(str):
         if PLACEHOLDER.search(expression):
             raise ValueError(f"a pinned expression takes no parameters, got {expression!r}")
         return cls(expression)
+
+
+def assigned(column: str, value: Any, params: list[Any]) -> str:
+    """one ``SET`` assignment of a plain value: ``"col" = $n``, the value appended to ``params``; ``"col" = NULL`` for
+    None, binding nothing.
+
+    A NULL needs no type, and a bind does: the driver prepares the statement and must encode every parameter by its
+    column's type, refusing one it has no codec for (asyncpg on YugabyteDB, whose ``vector`` is a built-in type), even
+    when the value is None. Only an assignment takes the literal: in a filter a NULL compares as unknown, so ``by``
+    keeps ``IS NULL`` (:func:`by_conditions`).
+
+    :param column: the column, a TRUSTED identifier
+    :ptype column: str
+    :param value: its new value
+    :ptype value: Any
+    :param params: the statement's binds so far, appended to
+    :ptype params: list[Any]
+    :return: the assignment
+    :rtype: str
+    """
+    if value is None:
+        return f"{quote_identifier(column)} = NULL"
+    params.append(value)
+    return f"{quote_identifier(column)} = ${len(params)}"
 
 
 def by_conditions(

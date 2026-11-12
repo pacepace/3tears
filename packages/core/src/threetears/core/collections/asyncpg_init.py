@@ -30,11 +30,18 @@ double-encoding bug.
 from __future__ import annotations
 
 import json
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, Final
 
 from threetears.core.backends.schema_sql import json_default
 
-__all__ = ["init_connection", "register_jsonb_text_codec"]
+__all__ = ["init_connection", "register_jsonb_text_codec", "register_vector_text_codec"]
+
+#: every schema holding a type named ``vector``: pgvector's (an extension type, in the schema it was created in) or
+#: YugabyteDB's built-in one (``pg_catalog``, OID 8078). A catalog lookup by the type's name, a handful of rows.
+_VECTOR_SCHEMAS_SQL: Final[str] = (
+    "SELECT n.nspname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.typname = 'vector'"
+)
 
 
 def _encoder(value: Any) -> str:
@@ -86,10 +93,44 @@ async def register_jsonb_text_codec(conn: Any) -> None:
     )
 
 
+def _vector_text(value: str | Iterable[float]) -> str:
+    """a vector's text form, as pgvector reads and writes it (``[1.0,2.5,3.0]``).
+
+    :param value: the text form itself, or the components (a list, a tuple, a numpy array)
+    :ptype value: str | Iterable[float]
+    :return: the text form
+    :rtype: str
+    :raises TypeError: when a component is no number
+    """
+    if isinstance(value, str):
+        return value
+    return "[" + ",".join(repr(float(component)) for component in value) + "]"
+
+
+async def register_vector_text_codec(conn: Any) -> None:
+    """bind and read pgvector's ``vector`` as its text form on ``conn``, where the type exists.
+
+    asyncpg has no vector codec. On PostgreSQL the extension's type has an ordinary OID and asyncpg falls back to its
+    text form; on YugabyteDB ``vector`` is a built-in type (OID 8078), which asyncpg refuses outright when a statement
+    binding or returning one is prepared ("unhandled standard data type 'vector'"). A text codec serves both: a vector
+    is bound as its text (the text itself, or its components) and read as its text, as asyncpg's
+    PostgreSQL fallback reads it. A consumer wanting pgvector's own codec registers it after this; the later
+    registration wins.
+
+    :param conn: asyncpg connection
+    :ptype conn: Any
+    :return: nothing
+    :rtype: None
+    """
+    for found in await conn.fetch(_VECTOR_SCHEMAS_SQL):
+        await conn.set_type_codec("vector", schema=found["nspname"], encoder=_vector_text, decoder=str, format="text")
+
+
 async def init_connection(conn: Any) -> None:
     """asyncpg pool ``init=`` hook for every 3tears Postgres consumer.
 
-    today this just registers the JSONB / JSON text codec; consumers
+    registers the JSONB / JSON text codec and, where the database has one, the ``vector`` text codec
+    (:func:`register_vector_text_codec`); consumers
     that want additional per-connection setup (statement timeouts,
     application_name, search_path) should compose their own ``init``
     that calls :func:`init_connection` first and then layers their own
@@ -101,3 +142,4 @@ async def init_connection(conn: Any) -> None:
     :rtype: None
     """
     await register_jsonb_text_codec(conn)
+    await register_vector_text_codec(conn)
