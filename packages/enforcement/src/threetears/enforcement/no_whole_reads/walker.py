@@ -822,6 +822,8 @@ class _CallSite:
     :ivar receiver_name: the receiver's last segment (``_store``), empty for a bare or ``self`` call
     :ivar receiver_class: the class the receiver is known to be (a parameter or variable annotated with it, a name
         or ``self`` attribute assigned one of it), empty when unknown
+    :ivar whole_flags: the whole flags (``whole=True``) a bare or ``self`` call passes: each a finding unless the
+        callee resolves to functions of the repo none of which reaches a whole read
     """
 
     path: str
@@ -835,6 +837,7 @@ class _CallSite:
     whole_named: bool
     receiver_name: str
     receiver_class: str = ""
+    whole_flags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -3876,14 +3879,22 @@ class _ModuleWalk(ast.NodeVisitor):
         # a record saying the whole table changed (``NotedChange(whole_table=True)``) is built, not read: the flag is
         # judged where it is consumed
         constructs = name[:1].isupper()
-        for keyword in node.keywords:
-            if (
-                not constructs
-                and keyword.arg in _WHOLE_FLAGS
-                and isinstance(keyword.value, ast.Constant)
-                and keyword.value.value is True
-            ):
-                self._hit(node, f"whole-flag {keyword.arg}=", spelled)
+        flags = [
+            keyword.arg
+            for keyword in node.keywords
+            if not constructs
+            and keyword.arg in _WHOLE_FLAGS
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value is True
+        ]
+        # a flag to one of the module's functions or the caller's own method is judged once the call graph says
+        # whether that callee reads anything whole (a number format's ``whole=`` reads nothing); any other callee's
+        # flag is a finding here
+        local_callee = (isinstance(node.func, ast.Name) and not segments) or (
+            segments in (["self"], ["cls"]) and isinstance(node.func, ast.Attribute)
+        )
+        for flag in flags if not local_callee else []:
+            self._hit(node, f"whole-flag {flag}=", spelled)
         if name in {"add", "update", "extend"} and segments and _WHOLE_SET.search(segments[-1]):
             self._hit(node, f"marks-whole {segments[-1]}", spelled)
         if name == "truncate" and segments and _STORE.search(segments[-1]):
@@ -3914,7 +3925,15 @@ class _ModuleWalk(ast.NodeVisitor):
             receiver = "store"
         # a receiver of any other name is kept when the walk knows its class: a call on it reaches that class
         if receiver != "other" or whole_named or self._receiver_class(node):
-            self._call(node, name, receiver, spelled, narrowed=narrowed, whole_named=whole_named)
+            self._call(
+                node,
+                name,
+                receiver,
+                spelled,
+                narrowed=narrowed,
+                whole_named=whole_named,
+                whole_flags=tuple(flags) if local_callee else (),
+            )
 
     def _credit_pager(self, node: ast.Call) -> None:
         """record the purposed index a keyset pager's pages read through (``keyset_pages(l3, head, key, where=...,
@@ -3967,7 +3986,15 @@ class _ModuleWalk(ast.NodeVisitor):
                         self._hit(node, f"whole-select {finding.table}", text)
 
     def _call(
-        self, node: ast.Call, name: str, receiver: str, spelled: str, *, narrowed: bool, whole_named: bool
+        self,
+        node: ast.Call,
+        name: str,
+        receiver: str,
+        spelled: str,
+        *,
+        narrowed: bool,
+        whole_named: bool,
+        whole_flags: tuple[str, ...] = (),
     ) -> None:
         """keep a call for the call graph, resolved once every module is walked.
 
@@ -3983,6 +4010,8 @@ class _ModuleWalk(ast.NodeVisitor):
         :ptype narrowed: bool
         :param whole_named: whether its name says whole
         :ptype whole_named: bool
+        :param whole_flags: the whole flags (``whole=True``) it passes, judged once its callee is resolved
+        :ptype whole_flags: tuple[str, ...]
         :return: nothing
         :rtype: None
         """
@@ -4001,6 +4030,7 @@ class _ModuleWalk(ast.NodeVisitor):
                 whole_named,
                 receiver_name,
                 self._receiver_class(node),
+                whole_flags,
             )
         )
 
@@ -5131,7 +5161,17 @@ def _targets(
     if constructed is not None:
         init = (constructed, f"{call.name}.__init__")
         return [init] if init in by_name.get("__init__", []) else None
-    if call.receiver == "self" and call.owner:
+    # a bare call to a function defined in the caller, or in a function enclosing it, reaches that function: the
+    # name is the nearest enclosing function scope's (a class body's names are not in its methods' scope)
+    nested = [
+        (call.path, f"{scope}.{call.name}")
+        for scope in (call.function.rsplit(".", depth)[0] for depth in range(call.function.count(".") + 1))
+        if call.receiver == "bare" and scope != call.owner and scope not in (module_classes or {}).get(call.path, set())
+    ]
+    local = next((target for target in nested if target in by_name.get(call.name, [])), None)
+    if local is not None:
+        targets = [local]
+    elif call.receiver == "self" and call.owner:
         targets = [(call.path, f"{call.owner}.{call.name}")]
     elif call.receiver == "bare" and call.name in module_functions.get(call.path, set()):
         targets = [(call.path, call.name)]
@@ -5268,6 +5308,11 @@ def _resolve(
             )
         elif call.whole_named and (not targets or all(target in reaches for target in targets)):
             found.append(WholeReadHit(call.path, call.line, call.function, f"whole-call {call.name}", call.spelled))
+        if call.whole_flags and (not targets or any(target in reaches for target in targets)):
+            found.extend(
+                WholeReadHit(call.path, call.line, call.function, f"whole-flag {flag}=", call.spelled)
+                for flag in call.whole_flags
+            )
     return found, callers
 
 

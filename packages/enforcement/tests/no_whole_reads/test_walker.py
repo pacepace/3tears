@@ -1477,6 +1477,56 @@ def test_factories_templates_format_ddl_and_whole_records_are_judged_where_they_
     assert not {function for function, _ in found} & {"Epochs.one", "named", "kind_by_id", "record"}, found
 
 
+_LOCAL_NAMES = """
+    LAYOUT = "CREATE TABLE IF NOT EXISTS kinds (id UUID PRIMARY KEY, kind TEXT)"
+
+    def _number(value, kind, *, whole=False):
+        return int(value) if whole else float(value)
+
+    def judge(value):
+        return _number(value, "share", whole=True)
+
+    def outside(value):
+        return fetch_everything(value, whole=True)
+
+    class Store:
+        async def load(self, *, whole=False):
+            return await self._pool.fetch("SELECT * FROM kinds")
+
+        async def warm(self):
+            return await self.load(whole=True)
+
+        def label(self, value, *, whole=False):
+            return str(value)
+
+        def shown(self, value):
+            return self.label(value, whole=True)
+
+    def cell(value):
+        def whole(v):
+            return isinstance(v, int) and v >= 0
+
+        return whole(value)
+
+    async def reread(conn):
+        async def whole(c):
+            return await c.fetch("SELECT * FROM kinds")
+
+        return await whole(conn)
+"""
+
+
+def test_a_whole_flag_or_whole_named_call_to_a_function_that_reads_nothing_whole_is_no_read(tmp_path: Path) -> None:
+    """Flips if a ``whole=`` keyword to a function of the module (or a method of the caller's class) that reaches no
+    whole read is a finding (evals' number-format flag), if a call to a local function named ``whole`` that reads
+    nothing is (evals' type check), or if either stops being one where the callee does read whole or is not ours."""
+    found = _symbols(_config(tmp_path, {"local.py": _LOCAL_NAMES}))
+    assert not {function for function, _ in found} & {"judge", "cell", "Store.shown"}, found
+    assert ("outside", "whole-flag whole=") in found, found
+    assert ("Store.warm", "whole-flag whole=") in found, found
+    assert ("reread", "calls-whole-read reread.whole") in found, found
+
+
 _FENCE_TEMPLATE = """
     from threetears.core.collections.schema_backed import Index, TableSchema
     from threetears.core.keyed import delete_keyed, update_keyed
