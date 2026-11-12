@@ -1,0 +1,599 @@
+{
+  "$defs": {
+    "ChartQuery": {
+      "additionalProperties": false,
+      "description": "What a chart reads from the report input, structured so code can check it names things that exist.\n\nPlanner-written. An empty list or string means no filter there: every arm, every measure, every stratum, no\naspect, no limit (``limit`` 0).",
+      "properties": {
+        "source": {
+          "description": "The part of the report input the chart reads.",
+          "enum": [
+            "readings",
+            "contrasts",
+            "measures",
+            "judged",
+            "scoreboard",
+            "floors",
+            "strata",
+            "examples",
+            "tasks",
+            "configs",
+            "cells",
+            "confusion",
+            "human_pref",
+            "prices",
+            "bar_reads",
+            "compare",
+            "settle",
+            "levers"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "aspect": {
+          "description": "The aspect id it reads, for readings and anything per aspect; else empty.",
+          "title": "Aspect",
+          "type": "string"
+        },
+        "measures": {
+          "description": "Measure or judged-dimension keys, as the source spells them.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Measures",
+          "type": "array"
+        },
+        "arms": {
+          "description": "Arm ids to show, in order; empty for every arm.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Arms",
+          "type": "array"
+        },
+        "strata": {
+          "description": "Stratum or task ids to keep; empty for all.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Strata",
+          "type": "array"
+        },
+        "limit": {
+          "description": "The most rows to show (strata by cases, examples); 0 for no limit.",
+          "minimum": 0,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "transform": {
+          "enum": [
+            "none",
+            "per_1k",
+            "arm_minus_control"
+          ],
+          "title": "Transform",
+          "type": "string"
+        },
+        "small_multiples_by": {
+          "enum": [
+            "none",
+            "arm",
+            "aspect",
+            "task"
+          ],
+          "title": "Small Multiples By",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "aspect",
+        "measures",
+        "arms",
+        "strata",
+        "limit",
+        "transform",
+        "small_multiples_by"
+      ],
+      "title": "ChartQuery",
+      "type": "object"
+    },
+    "Claim": {
+      "additionalProperties": false,
+      "description": "One claim of the story, in page order, with the evidence that shows it and the caveats said beside it.",
+      "properties": {
+        "id": {
+          "description": "The claim's id, unique in the document; the editor's findings name it.",
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "text": {
+          "description": "The claim, figures by key.",
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "weight": {
+          "description": "How much it carries; it sets the claim's type size and nothing else.",
+          "enum": [
+            "lead",
+            "support",
+            "detail"
+          ],
+          "title": "Weight",
+          "type": "string"
+        },
+        "evidence": {
+          "description": "The one or two blocks that show it.",
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "title": "Evidence",
+          "type": "array"
+        },
+        "caveats": {
+          "description": "The ids of the caveats stated beside this claim; may be empty.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Caveats",
+          "type": "array"
+        },
+        "durable": {
+          "default": false,
+          "description": "Whether the claim should outlive this campaign, as an insight later ones read.",
+          "title": "Durable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "weight",
+        "evidence"
+      ],
+      "title": "Claim",
+      "type": "object"
+    },
+    "DecisionEntry": {
+      "additionalProperties": false,
+      "description": "One entry of the decision block: the slot word that titles it, and what it says.",
+      "properties": {
+        "slot": {
+          "enum": [
+            "recommendation",
+            "why_not",
+            "watch",
+            "next",
+            "the_trade",
+            "where_it_flips",
+            "our_lean",
+            "what_settles_it",
+            "what_is_tangled",
+            "known_despite_it"
+          ],
+          "title": "Slot",
+          "type": "string"
+        },
+        "text": {
+          "description": "What the entry says, figures by key.",
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slot",
+        "text"
+      ],
+      "title": "DecisionEntry",
+      "type": "object"
+    },
+    "DocCaveat": {
+      "additionalProperties": false,
+      "description": "One caveat the call's confidence carries: open, with what would make it material, or checked immaterial.",
+      "properties": {
+        "id": {
+          "description": "The caveat's id: one code assigns on the snapshot (caveats_list lists them), or `analyst:<slug>` for one code does not assign.",
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The caveat's name as the page prints it. Optional for a code caveat, which code labels by its kind; required for an `analyst:` caveat.",
+          "title": "Label"
+        },
+        "material_if": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For an open caveat: what would make it material, figures by key. Exactly one of this and `checked`.",
+          "title": "Material If"
+        },
+        "checked": {
+          "anyOf": [
+            {
+              "const": "immaterial",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "`immaterial` for a caveat code proves does not move the call; the page prints code's reason. Exactly one of this and `material_if`.",
+          "title": "Checked"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "DocCaveat",
+      "type": "object"
+    },
+    "DocConfidence": {
+      "additionalProperties": false,
+      "description": "How sure the call is, in one of three forms, and the caveats it carries, each once.",
+      "properties": {
+        "form": {
+          "enum": [
+            "high",
+            "high_if_immaterial",
+            "low"
+          ],
+          "title": "Form",
+          "type": "string"
+        },
+        "caveats": {
+          "description": "The caveats the confidence carries, open or checked, each once.",
+          "items": {
+            "$ref": "#/$defs/DocCaveat"
+          },
+          "title": "Caveats",
+          "type": "array"
+        }
+      },
+      "required": [
+        "form",
+        "caveats"
+      ],
+      "title": "DocConfidence",
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "description": "One evidence block under a claim: a kind of block over a query of the snapshot, as ``block_render`` draws it.",
+      "properties": {
+        "block": {
+          "description": "The kind of block, as block_catalog lists it.",
+          "enum": [
+            "forest",
+            "bars",
+            "diverging_bars",
+            "lines",
+            "scatter_frontier",
+            "gate_scatter",
+            "dot_interval",
+            "range_bars",
+            "gate_matrix",
+            "lattice",
+            "heatmap",
+            "diff_heatmap",
+            "confusion",
+            "examples",
+            "table"
+          ],
+          "title": "Block",
+          "type": "string"
+        },
+        "query": {
+          "$ref": "#/$defs/ChartQuery",
+          "description": "What the block reads, every field filled, as block_render returns it: an empty list or string is no filter, `limit` 0 no limit."
+        },
+        "reference": {
+          "anyOf": [
+            {
+              "enum": [
+                "floor",
+                "budget",
+                "margin",
+                "no_preference"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The reference line to draw, which code keys from the snapshot; null for none.",
+          "title": "Reference"
+        },
+        "emphasis": {
+          "default": "",
+          "description": "The one arm, stratum or task the block stresses, by id; empty for none.",
+          "title": "Emphasis",
+          "type": "string"
+        },
+        "caption": {
+          "description": "The line under the block, figures by key.",
+          "minLength": 1,
+          "title": "Caption",
+          "type": "string"
+        }
+      },
+      "required": [
+        "block",
+        "query",
+        "caption"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "ExploreRow": {
+      "additionalProperties": false,
+      "description": "One thing a reader could change and what it would do, in prose.\n\n``outcome`` here, :class:`NextStep`'s ``settles`` and :class:`DocCaveat`'s ``label`` are model prose not typed\n:data:`ModelProse`: the prose scan reads by attribute name, and other models read a structured ``outcome``,\n``settles`` and ``label`` by value.",
+      "properties": {
+        "control": {
+          "description": "What a reader could change.",
+          "minLength": 1,
+          "title": "Control",
+          "type": "string"
+        },
+        "binds": {
+          "description": "What it decides.",
+          "minLength": 1,
+          "title": "Binds",
+          "type": "string"
+        },
+        "outcome": {
+          "description": "What happens as it moves, figures by key.",
+          "minLength": 1,
+          "title": "Outcome",
+          "type": "string"
+        }
+      },
+      "required": [
+        "control",
+        "binds",
+        "outcome"
+      ],
+      "title": "ExploreRow",
+      "type": "object"
+    },
+    "MethodItem": {
+      "additionalProperties": false,
+      "description": "One term of the method appendix, and the caveats whose reach is the method.",
+      "properties": {
+        "term": {
+          "minLength": 1,
+          "title": "Term",
+          "type": "string"
+        },
+        "text": {
+          "description": "What it means here, figures by key.",
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "caveats": {
+          "description": "The ids of the caveats stated in this item; may be empty.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Caveats",
+          "type": "array"
+        }
+      },
+      "required": [
+        "term",
+        "text"
+      ],
+      "title": "MethodItem",
+      "type": "object"
+    },
+    "NextStep": {
+      "additionalProperties": false,
+      "description": "One experiment or declaration to make next, and what it would settle.",
+      "properties": {
+        "text": {
+          "description": "The step, figures by key.",
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "settles": {
+          "description": "What its result would settle.",
+          "minLength": 1,
+          "title": "Settles",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "settles"
+      ],
+      "title": "NextStep",
+      "type": "object"
+    },
+    "Omitted": {
+      "additionalProperties": false,
+      "description": "One thing the analyst saw and left out of the body, and why; the appendix still holds it.",
+      "properties": {
+        "what": {
+          "minLength": 1,
+          "title": "What",
+          "type": "string"
+        },
+        "why": {
+          "minLength": 1,
+          "title": "Why",
+          "type": "string"
+        }
+      },
+      "required": [
+        "what",
+        "why"
+      ],
+      "title": "Omitted",
+      "type": "object"
+    }
+  },
+  "$id": "report-doc/1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A campaign report as the analyst writes it, report-doc/1: the story, the call and how sure it is, the decision\nblock, the claims in page order with their evidence, and the appendix's parts. Its prose names every figure by key.",
+  "properties": {
+    "schema": {
+      "const": "report-doc/1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "story": {
+      "description": "The story the report tells; no code reads it.",
+      "enum": [
+        "decision",
+        "tradeoff",
+        "diagnosis",
+        "status",
+        "exploratory"
+      ],
+      "title": "Story",
+      "type": "string"
+    },
+    "headline": {
+      "description": "The finding, figures by key.",
+      "maxLength": 240,
+      "minLength": 1,
+      "title": "Headline",
+      "type": "string"
+    },
+    "lede": {
+      "description": "What the headline rests on, figures by key.",
+      "maxLength": 420,
+      "minLength": 1,
+      "title": "Lede",
+      "type": "string"
+    },
+    "flag": {
+      "anyOf": [
+        {
+          "maxLength": 300,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "One line above the decision for what a reader must know first; null for none.",
+      "title": "Flag"
+    },
+    "recommends": {
+      "description": "The arms the report recommends, by id, each once; empty for no call. The options table marks them.",
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Recommends",
+      "type": "array"
+    },
+    "confidence": {
+      "$ref": "#/$defs/DocConfidence"
+    },
+    "decision": {
+      "description": "The decision block's entries, in page order; a slot may repeat.",
+      "items": {
+        "$ref": "#/$defs/DecisionEntry"
+      },
+      "maxItems": 8,
+      "minItems": 1,
+      "title": "Decision",
+      "type": "array"
+    },
+    "claims": {
+      "description": "The story's claims, in page order.",
+      "items": {
+        "$ref": "#/$defs/Claim"
+      },
+      "maxItems": 12,
+      "minItems": 1,
+      "title": "Claims",
+      "type": "array"
+    },
+    "explore": {
+      "description": "What a reader could change; may be empty.",
+      "items": {
+        "$ref": "#/$defs/ExploreRow"
+      },
+      "maxItems": 3,
+      "title": "Explore",
+      "type": "array"
+    },
+    "omitted": {
+      "description": "What was left out of the body, and why; may be empty.",
+      "items": {
+        "$ref": "#/$defs/Omitted"
+      },
+      "title": "Omitted",
+      "type": "array"
+    },
+    "next": {
+      "description": "The next steps, after the claims; may be empty.",
+      "items": {
+        "$ref": "#/$defs/NextStep"
+      },
+      "maxItems": 6,
+      "title": "Next",
+      "type": "array"
+    },
+    "method": {
+      "description": "The method appendix's terms.",
+      "items": {
+        "$ref": "#/$defs/MethodItem"
+      },
+      "maxItems": 12,
+      "minItems": 1,
+      "title": "Method",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "story",
+    "headline",
+    "lede",
+    "recommends",
+    "confidence",
+    "decision",
+    "claims",
+    "explore",
+    "omitted",
+    "next",
+    "method"
+  ],
+  "title": "ReportDoc",
+  "type": "object"
+}

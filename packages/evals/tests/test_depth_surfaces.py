@@ -1,13 +1,14 @@
-"""Depth on every surface: the campaign page's tables and lines, the Methods' pairing line, the writer's view and the
-frontier's text.
+"""Depth on every surface: the campaign page's tables and lines, the Methods' pairing line, the depths read off an
+aspect's bundle and the frontier's text.
 
 The page states depth in tables, each with one plain sentence under it, or in one sentence where that says all the
-table would; the writer reads the same depths as fields and the sentence to say once. Code reads none of the memo's
-prose for them.
+table would; every surface reads the same depths and the sentence to say once off the bundle
+(:func:`~threetears.evals.analysis.depth_reading.aspect_depth`).
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 import pytest
@@ -18,7 +19,6 @@ from threetears.evals.analysis import (
     campaign_report_html,
     campaign_report_markdown,
 )
-from threetears.evals.analysis.campaign_bundle import writer_view
 from threetears.evals.analysis.depth import (
     COMMON_DEPTH_ONE_EVERYWHERE,
     REPEATS_FLOOR,
@@ -27,14 +27,12 @@ from threetears.evals.analysis.depth import (
     repeats_sentence,
     unmeasured_sentence,
 )
-from threetears.evals.analysis.depth_reading import PAIRING_METHOD
-from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
+from threetears.evals.analysis.depth_reading import PAIRING_METHOD, aspect_depth
 from threetears.evals.analysis.lens_text import frontier_text
 from threetears.evals.analysis.report.campaign.depth_blocks import depth_provenance_blocks
 from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, TableBlock
 from threetears.evals.analysis.style import lint_prose
 from packages.evals.tests.style_support import lint_page
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.depth_support import ONCE, TWICE, TwoArms
 from packages.evals.tests.report_shapes_support import Shape, s1_change, s2_choice, s3_measurement, s4_change
 
@@ -52,7 +50,7 @@ def _page(arms: TwoArms) -> CampaignReport:
             arms.bundle, assembled_at=_ASSEMBLED_AT, campaign_name="depth", arm_labels=read.arm_labels()
         )
     }
-    return build_campaign_report(arms.campaign, read, reports, None)
+    return build_campaign_report(arms.campaign, read, reports)
 
 
 def _table(page: CampaignReport, name: str) -> list[dict[str, object]]:
@@ -77,10 +75,12 @@ def test_the_page_states_each_arm_s_depth_in_a_table_and_says_once_that_they_dif
 def test_each_frontier_point_s_depth_sits_beside_it_and_the_common_depth_is_named() -> None:
     page = _page(TwoArms(TWICE, ONCE, k_a=2, k_b=2))
 
-    # Planned 2: A's pass^1 at the common depth is 5/8 and B's 3/4, over all four cases each; B ran none twice.
+    # Planned 2: A's pass^1 at the common depth is 5/8 and B's 3/4, over all four cases each; B ran none twice. Each
+    # reads at the pass rate's whole percent, which its interval of about 90 points sets (number policy, rule 2): A's
+    # 62.5% to even, 62.
     assert _table(page, "pass_k_depth") == [
         {"aspect": "character", "arm": "B", "planned": 2, "short": 4, "common": 1, "reading": 75.0, "left_out": 0},
-        {"aspect": "character", "arm": "A", "planned": 2, "short": 0, "common": 1, "reading": 62.5, "left_out": 0},
+        {"aspect": "character", "arm": "A", "planned": 2, "short": 0, "common": 1, "reading": 62.0, "left_out": 0},
     ]
     assert common_depth_sentence("character", 1, left_out=0) in _lines(page, "scorecard")
 
@@ -110,10 +110,12 @@ def test_the_precision_table_names_the_limiting_side_and_the_between_case_share(
     [shown] = _table(page, "precision")
 
     assert shown["arms"] == "A and B"
-    assert shown["half_width"] == round(row.precision.half_width, 1)
+    # Each half-width at the pass rate's whole points, which its narrowest interval (about 93 points) sets (number
+    # policy, rule 2), rounded half to even.
+    assert shown["half_width"] == float(round(row.precision.half_width))
     assert (shown["first"], shown["second"]) == (
-        round(row.precision.half_widths[arms.key_a], 1),
-        round(row.precision.half_widths[arms.key_b], 1),
+        float(round(row.precision.half_widths[arms.key_a])),
+        float(round(row.precision.half_widths[arms.key_b])),
     )
     assert shown["limited_by"] == {arms.key_a: "A", arms.key_b: "B"}[row.precision.limited_by or ""]
     # 10/19 of the difference's variance lies between cases.
@@ -135,52 +137,56 @@ def test_every_new_line_is_one_plain_sentence_and_the_page_passes_the_style_rule
     assert lint_page(campaign_report_markdown(page), names=["A", "B", "▸ A"]) == []
 
 
-def test_the_writer_reads_each_arm_s_depth_the_common_depth_and_what_limits_each_interval() -> None:
+def test_each_arm_s_depth_the_common_depth_and_what_limits_each_interval_are_read_off_the_bundle() -> None:
     arms = TwoArms(TWICE, ONCE, k_a=2, k_b=2)
-    bundle = campaign_bundle(arms.bundle, arms=arms.arms, readings=arms.readings().readings)
+    read = arms.readings()
 
-    view = writer_view(bundle)
-    [aspect] = view["aspects"]
+    depth = aspect_depth(arms.bundle, read.arm_labels().__getitem__)
 
-    assert aspect["depth"] == {
-        "arms": {
-            "A": {"cases": 4, "trials": 8, "repeats_per_case": [2, 2.0, 2]},
-            "B": {"cases": 4, "trials": 4, "repeats_per_case": [1, 1.0, 1]},
-        },
-        "differ": True,
-        "said": _SAID,
-        "pass_k": [
-            {
-                "where": "character",
-                "k": 2,
-                "common_depth": 1,
-                "shares_no_case": False,
-                "unmeasured_for": ["B"],
-                "said": [common_depth_sentence("character", 1, left_out=0), unmeasured_sentence("character", 2, ["B"])],
-            }
-        ],
+    assert {
+        label: {
+            "cases": held.cases,
+            "trials": held.trials,
+            "repeats_per_case": [held.repeats_min, held.repeats_median, held.repeats_max],
+        }
+        for label, held in depth.arms.items()
+    } == {
+        "A": {"cases": 4, "trials": 8, "repeats_per_case": [2, 2.0, 2]},
+        "B": {"cases": 4, "trials": 4, "repeats_per_case": [1, 1.0, 1]},
     }
-    [reading] = aspect["readings"]
-    assert set(reading["precision"]) == {"half_width", "own_half_width", "limited_by", "between_case_share"}
-    assert set(reading["precision"]["own_half_width"]) == {"A", "B"}
-    # What a between-case share means is defined once, for the whole view.
-    assert view["precision_means"] == REPEATS_FLOOR
-
-
-def test_the_writer_prompt_states_the_depth_rule() -> None:
-    assert "`depth.said`" in EVAL_ANALYSIS_GEN_DEFAULT
-    assert (
-        "never compare arms on pass^k above a `depth.pass_k` `common_depth`, or at all where null (`shares_no_case`)"
-        in EVAL_ANALYSIS_GEN_DEFAULT
-    )
+    assert (depth.differ, depth.said) == (True, _SAID)
+    assert [
+        {
+            "where": subject.where,
+            "k": subject.k,
+            "common_depth": subject.common_depth,
+            "shares_no_case": subject.shares_no_case,
+            "unmeasured_for": subject.unmeasured_for,
+            "said": subject.lines(),
+        }
+        for subject in depth.subjects
+        if subject.compared
+    ] == [
+        {
+            "where": "character",
+            "k": 2,
+            "common_depth": 1,
+            "shares_no_case": False,
+            "unmeasured_for": ["B"],
+            "said": [common_depth_sentence("character", 1, left_out=0), unmeasured_sentence("character", 2, ["B"])],
+        }
+    ]
+    [reading] = read.on_aspect("character")
+    assert reading.precision is not None
+    assert set(reading.precision.half_widths) == {arms.key_a, arms.key_b}
 
 
 def test_the_frontier_text_states_each_contestant_s_depth_and_the_common_depth() -> None:
     text = frontier_text(TwoArms(TWICE, ONCE, k_a=2, k_b=2).bundle.frontier)
 
     assert common_depth_sentence("subject Test subject", 1, left_out=0) in text
-    assert "ran each case twice over 4 case(s); pass^1 0.625 over 4 case(s) at the common depth" in text
-    assert "ran each case once over 4 case(s), 4 short of k=2; pass^1 0.75 over 4 case(s) at the common depth" in text
+    assert "ran each case twice over 4 case(s); pass^1 62.5% over 4 case(s) at the common depth" in text
+    assert "ran each case once over 4 case(s), 4 short of k=2; pass^1 75% over 4 case(s) at the common depth" in text
     assert "On subject Test subject, pass^2 is unmeasured for haiku" in text
 
 
@@ -225,7 +231,8 @@ def test_a_campaign_run_three_times_per_case_keeps_its_pass_k_and_precision_tabl
     assert "depth" not in tables
     assert tables["pass_k_depth"].section == "scorecard" and len(tables["pass_k_depth"].rows) == 3
     assert common_depth_sentence("answers", 3, left_out=0) in _lines(page, "scorecard")
-    assert tables["precision"].section == "scorecard"
+    # What limits each interval is a method, folded under the methods (visual pass V2).
+    assert tables["precision"].section == "methods" and tables["precision"].details
     assert [column.key for column in tables["precision"].columns][-1] == "between"
 
 
@@ -245,8 +252,10 @@ def test_precision_read_with_every_arm_run_once_sits_under_the_methods_without_i
     assert "between" not in [column.key for column in precision.columns]
     assert all(set(row) == {column.key for column in precision.columns} for row in precision.rows)
     assert "Between cases" not in campaign_report_markdown(page)
-    # Where a case repeated, the precision stays in the Scorecard with its between-case share.
-    assert _tables(s1_change().page())["precision"].section == "scorecard"
+    # Where a case repeated, the precision keeps its between-case share, folded under the methods too (visual pass V2).
+    repeated = _tables(s1_change().page())["precision"]
+    assert repeated.section == "methods" and repeated.details
+    assert [column.key for column in repeated.columns][-1] == "between"
 
 
 @pytest.mark.parametrize("build", [s1_change, s2_choice], ids=["s1", "s2"])
@@ -255,7 +264,8 @@ def test_what_extra_repeats_cannot_lower_is_said_once_in_design_and_provenance(b
 
     assert _lines(page, "provenance").count(REPEATS_FLOOR) == 1
     assert campaign_report_markdown(page).count(REPEATS_FLOOR) == 1
-    assert campaign_report_html(page).count(REPEATS_FLOOR) == 1
+    # Its words as a reader reads them: the line is where the page first says "between cases", so it links the term.
+    assert re.sub(r"<[^>]+>", "", campaign_report_html(page)).count(REPEATS_FLOOR) == 1
 
 
 @pytest.mark.parametrize("build", [s3_measurement, s4_change], ids=["s3", "s4"])
@@ -267,11 +277,11 @@ def test_a_campaign_that_repeated_no_compared_case_says_nothing_of_repeats(build
     assert REPEATS_FLOOR not in campaign_report_markdown(page)
 
 
-def test_the_writer_view_still_says_each_aspect_s_depth_where_the_page_says_it_once() -> None:
+def test_each_aspect_s_depth_sentence_is_read_off_its_bundle_where_the_page_says_it_once() -> None:
     shape = s1_change()
-    bundle = campaign_bundle(*shape.bundles.values(), arms=shape.arms, readings=shape.readings.readings)
+    labels = shape.readings.arm_labels()
 
-    said = {aspect["aspect"]: aspect["depth"].get("said") for aspect in writer_view(bundle)["aspects"]}
+    said = {label: aspect_depth(bundle, labels.__getitem__).said for label, bundle in shape.bundles.items()}
 
     assert said == {
         "billing": None,

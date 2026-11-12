@@ -1,22 +1,31 @@
-"""Names are declared, never derived: an aspect's short name and a goal check's display name.
+"""Names are declared, never derived: an aspect's and an arm's short name, and a goal check's display name.
 
-An aspect declares a ``short_name`` (``Aspect.short_name``) and a template a display name per goal check
-(``EvalTemplate.goal_check_names``). A page prints the declared name, and where none is declared it prints the full
-label or the full expression, unchanged and never shortened. Neither name is part of anything a run, a cell, a pool
-or a pairing keys on, nor of any fingerprint an analysis or a reporter case is checked against: naming an aspect or a
-check changes no reading and stales nothing.
+An aspect declares a ``short_name`` (``Aspect.short_name``), so may an arm (``CampaignArm.short_name``), and a
+template a display name per goal check (``EvalTemplate.goal_check_names``). A page prints the declared name. Where
+none is declared it prints an aspect's full label, unchanged and never shortened, a check by what it tests
+(``Shop cart check``), its expression the glossary's definition of that name (the owner's ruling of 2026-11-07), and computes an arm's short name from what differs from the control. No name is part of anything a run, a cell, a pool
+or a pairing keys on, nor of any fingerprint an analysis or a reporter case is checked against: naming an aspect, an
+arm or a check changes no reading and stales nothing.
 
 **Runs from before names existed stay poolable.** :data:`PINNED` holds every identity and digest of one fixed
 template and campaign as the tree at ``00107a5b7`` computed them (the commit names could first be declared on), byte
 for byte. The same fixture without names, and with every name declared, computes them alike today. The stored
 documents of the fixture without names are pinned too (:data:`PINNED_DOCUMENTS`): a template and a campaign that
 name nothing are written exactly as before.
+
+**A reason a bundle stores is never reworded** (:class:`TestAStoredReasonIsNeverReworded`). The fixture's cost
+reading stores :data:`~threetears.evals.analysis.stats.UNIFORM_MOVE_NEEDS_RANGE` as its ``not_separated_reason``, and
+the fingerprints read it: the presentation build reworded that constant (05996fcd5) and moved every aspect and
+campaign fingerprint here, which no capture of the hot-path oracle carries the reason to catch. A page rewords a
+stored reason at render time (:func:`~threetears.evals.analysis.report.words.reason_words`).
 """
 
 from __future__ import annotations
 
 import hashlib
+import html
 import json
+import re
 from typing import Any
 
 import pytest
@@ -24,18 +33,22 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import assemble_context_bundle, build_campaign_report, build_code_only_report
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, evidence_digest
-from threetears.evals.analysis.campaign_bundle import (
-    build_campaign_bundle,
-    build_campaign_user_message,
-    campaign_evidence_digest,
-)
+from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis.campaigns import create_campaign, update_campaign
 from threetears.evals.analysis.judge_profiles import judged_criteria
 from threetears.evals.analysis.cells import CELL_MODEL_VERSION
 from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name, legend, measure_name_of
+from threetears.evals.analysis.report.serialize_html import campaign_report_html
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.words import reason_words
+from threetears.evals.analysis.stats import (
+    EQUIVALENCE_NEEDS_RANGE,
+    GUARDRAIL_HELD_NEEDS_RANGE,
+    UNIFORM_MOVE_NEEDS_RANGE,
+    UNIFORM_MOVE_OUTSIDE_RANGE,
+)
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import Aspect, CampaignArm
@@ -80,6 +93,10 @@ LABELS = ("Queue discipline under a full queue", "Queue discipline under an empt
 SHORT_NAMES = {LABELS[0]: "Full queue", LABELS[1]: "Empty queue"}
 CHECK_NAMES = {CHECKS[0]: "Cart filled", CHECKS[1]: "Replied twice"}
 ARMS = ("production", "candidate")
+#: The short names the fixture's arms declare when it declares any names.
+ARM_SHORT_NAMES = {ARMS[0]: "Prod", ARMS[1]: "Cand"}
+#: What the fixture's one declared lever is called when the fixture declares names.
+LEVER_NAME = "Serving model"
 CASES = 6
 STAMP = "2026-10-01T00:00:00+00:00"
 
@@ -104,6 +121,7 @@ def _fixture(*, named: bool) -> dict[str, Any]:
             role="control" if index == 0 else "candidate",
             variant_key=fixture_variant_key(label),
             **({"named_at": ASKED_AT} if index == 0 else {}),
+            **({"short_name": ARM_SHORT_NAMES[label]} if named else {}),
         )
         for index, label in enumerate(ARMS)
     ]
@@ -169,7 +187,13 @@ def _fixture(*, named: bool) -> dict[str, Any]:
         )
         if named:
             (aspect,) = one.aspects
-            one = one.model_copy(update={"aspects": [aspect.model_copy(update={"short_name": SHORT_NAMES[label]})]})
+            assert aspect.design is not None
+            # A lever's stored reader name, as a campaign declares it: presentation, like every name here.
+            design = aspect.design.model_copy(
+                update={"axes": [axis.model_copy(update={"reader_name": LEVER_NAME}) for axis in aspect.design.axes]}
+            )
+            aspect = aspect.model_copy(update={"short_name": SHORT_NAMES[label], "design": design})
+            one = one.model_copy(update={"aspects": [aspect]})
         held.append(one)
         bundles[label] = assemble_context_bundle(
             one, storage=ToyhostStorage(runs, results, templates=[template]), profile=toyhost_profile()
@@ -224,26 +248,27 @@ def identities(*, named: bool) -> dict[str, str]:
     # Every reading as 00107a5b7 read it; the figures across aspects came later, read off these readings and the
     # bundles pinned above, and the campaign fingerprint below leaves them out.
     found["readings"] = _sha(built["readings"].model_dump(mode="json", exclude={"aggregate"}))
-    found["campaign fingerprint"] = campaign_bundle.fingerprint()
-    found["campaign_evidence_digest"] = campaign_evidence_digest(campaign_bundle.to_dict())
+    # Version 3, the one computed (no earlier version is: what was taken in one is regenerated), leaves the
+    # campaign's name out.
+    found["campaign fingerprint v3"] = campaign_bundle.fingerprint()
+    found["campaign document fingerprint v3"] = CampaignBundle.from_dict(campaign_bundle.to_dict()).fingerprint()
     return found
-
-
-def writer_message(*, named: bool) -> str:
-    """The digest of what the writer is sent over the fixture: no identity, but what a reporter case renders."""
-    return hashlib.sha256(build_campaign_user_message(_fixture(named=named)["campaign_bundle"]).encode()).hexdigest()
 
 
 #: The durable minor ``00107a5b7`` stamped on what it wrote. The names are durable v16.3, since 0.78.0 shipped v16.2
 #: without them, so a document this build writes carries the minor 3; every other byte of it is as before.
 _MINOR_AT_00107A5B7 = 2
 
+#: The durable major ``00107a5b7`` stamped on what it wrote: v16, before a lever's reader name was stored (v17).
+_MAJOR_AT_00107A5B7 = 16
+
 
 def _as_00107a5b7_stamped(document: dict[str, Any]) -> dict[str, Any]:
-    """``document`` with the durable minor ``00107a5b7`` stamped in place of this build's: what it wrote, byte for byte,
-    where nothing but the minor moved."""
-    assert document["schema_minor"] == DURABLE_SCHEMA_MINOR
-    return {**document, "schema_minor": _MINOR_AT_00107A5B7}
+    """``document`` with the durable version ``00107a5b7`` stamped in place of this build's (v16 and its minor, where
+    this build writes v17, whose step names a declared axis and touches nothing else): what it wrote, byte for byte,
+    where nothing but the version moved."""
+    assert (document["schema_version"], document["schema_minor"]) == (DURABLE_SCHEMA_VERSION, DURABLE_SCHEMA_MINOR)
+    return {**document, "schema_version": _MAJOR_AT_00107A5B7, "schema_minor": _MINOR_AT_00107A5B7}
 
 
 def documents() -> dict[str, str]:
@@ -253,17 +278,26 @@ def documents() -> dict[str, str]:
     return {
         "template": _sha(_as_00107a5b7_stamped(built["template"].to_dict())),
         "campaign": _sha(_as_00107a5b7_stamped(built["campaign"].to_dict())),
-        # Less the build that assembled it, which is no part of the bundle's shape.
+        # Less the build that assembled it, which is no part of the bundle's shape, and the names its host declares
+        # for its levers (`lever_names`): every host lever is named since durable v17, so a bundle names its levers
+        # wherever its host does, and no fingerprint or identity reads them (the pins above hold that).
         **{
             f"{label} bundle": hashlib.sha256(
-                identity_json({k: v for k, v in bundle.to_dict().items() if k != "package_version"}).encode()
+                identity_json(
+                    {k: v for k, v in bundle.to_dict().items() if k not in ("package_version", "lever_names")}
+                ).encode()
             ).hexdigest()
             for label, bundle in built["bundles"].items()
         },
     }
 
 
-#: Every identity and digest of the fixture, as the tree at ``00107a5b7`` computed them (:func:`identities`).
+#: Every identity and digest of the fixture, as the tree at ``00107a5b7`` computed them (:func:`identities`), but for
+#: those the bundle shape reaches: the shape itself, and each aspect's and the campaign's fingerprint and evidence
+#: digest, re-pinned at shapes 65 and 66 (see :data:`PINNED_DOCUMENTS`). No run, cell, pool or pairing key moved.
+#: The campaign fingerprint was re-pinned at campaign bundle shape 4: this build's bundle, read as the build before it
+#: fingerprinted a shape-3 frame (at shape 2, without ``readings.aggregate`` or ``arm_spellings``), computes the old
+#: pin; shape 4 reads its frame as it is, so only the shape, the empty ``arm_spellings`` and the aggregate moved it.
 PINNED: dict[str, str] = {
     "CELL_MODEL_VERSION": "14",
     "IDENTITY_VERSION": "25",
@@ -273,10 +307,10 @@ PINNED: dict[str, str] = {
         "c8030ab220f21fa1422945cfff2cfa7e62ca5159aa595e5b93112d321c9"
     ),
     "Queue discipline under a full queue evidence_digest": (
-        "v2:33bebed6922837b7b39074eeeac1f2dbca69d78d4e58e9a0570c5b48e798426e"
+        "v2:b7463b061085a09aafd925e9d4d8afbe835ed46641f4e6b3f9ebf419e61d4054"
     ),
     "Queue discipline under a full queue fingerprint": (
-        "v2:33bebed6922837b7b39074eeeac1f2dbca69d78d4e58e9a0570c5b48e798426e"
+        "v2:b7463b061085a09aafd925e9d4d8afbe835ed46641f4e6b3f9ebf419e61d4054"
     ),
     "Queue discipline under a full queue measure_catalog": (
         "be7db1240bcd8149ba17c91f78963c8632823d88d0f99674952fa7eb408d3141"
@@ -287,21 +321,23 @@ PINNED: dict[str, str] = {
         "c8030ab220f21fa1422945cfff2cfa7e62ca5159aa595e5b93112d321c9"
     ),
     "Queue discipline under an empty queue evidence_digest": (
-        "v2:d49f240f47bd76d1a7b1dfcb2e96a3523ea1203329e9f729ba5292f508dc8a1a"
+        "v2:414ea2044e50b78ff63d6feffaf5f7d58b0ef7f13dd7e48dedc4f00610bd4098"
     ),
     "Queue discipline under an empty queue fingerprint": (
-        "v2:d49f240f47bd76d1a7b1dfcb2e96a3523ea1203329e9f729ba5292f508dc8a1a"
+        "v2:414ea2044e50b78ff63d6feffaf5f7d58b0ef7f13dd7e48dedc4f00610bd4098"
     ),
     "Queue discipline under an empty queue measure_catalog": (
         "be7db1240bcd8149ba17c91f78963c8632823d88d0f99674952fa7eb408d3141"
     ),
-    "bundle schema_version": "64",
-    "campaign fingerprint": "v2:1896767143a9454239aebb4a33710a0d4167bd4fced79c5fd236c217a8f1834b",
-    "campaign_evidence_digest": "v2:1896767143a9454239aebb4a33710a0d4167bd4fced79c5fd236c217a8f1834b",
+    "bundle schema_version": "66",
+    "campaign fingerprint v3": "v3:0b67eb9218f25e0a8845cd936c8f874338cc8a4956f78e4aeff7a6d855b85752",
+    "campaign document fingerprint v3": "v3:0b67eb9218f25e0a8845cd936c8f874338cc8a4956f78e4aeff7a6d855b85752",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
-    # The one entry that moves with the durable minor: ``00107a5b7`` was at 16.2, and the names are 16.3. It is no part
-    # of what a run, cell, pool, pairing, analysis or reporter case keys on.
-    "durable version": "16.3",
+    # The one entry that moves with the durable version: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
+    # arm names 16.4, stratum names 16.5, plan reporter cases 16.6, the analyst's gap notes 16.7, a design's measure
+    # order 16.8, a carried case's source 16.9, a lever's stored reader name 17.0. It is no part of what a run, cell,
+    # pool, pairing, analysis or reporter case keys on.
+    "durable version": "17.0",
     "measured_template_digest": "16e80e0cbd36ae4d39ca180c5f08bcb9d165afaab0e7e014ff42464f11e4f3df",
     "readings": "29f0e8ce68005f27cfc8ff7c76ef3623a174125af4a46b8e587bb7af7d88ebc9",
     "run-0-candidate case_set_fingerprint": "89df90840e5dc430494c9d36ab9ae0dff05c199d54ddf7027f3f339c44bcfe56",
@@ -319,14 +355,6 @@ PINNED: dict[str, str] = {
     "template_digest": "2508d494320bd907e2d0bfeab1a6b53b37ccbcf645462cd754d319b9852f4553",
 }
 
-#: What the writer is sent over the fixture, naming nothing and naming everything. No run, cell, pool, pairing or
-#: fingerprint keys on it, so it is pinned apart from :data:`PINNED`: it moves whenever the writer's view does, and
-#: the names reach it, since the writer names an aspect by its short name and a check by its display name.
-PINNED_WRITER_MESSAGES: dict[bool, str] = {
-    False: "a1f054d06768eafd96a8a121486511ebc60742bd3a1522bbc9ec81eb9a46b05e",
-    True: "637d16a2d12009bf465a6ce55d034c9db7b3d2c96d3ef25f001fab19234f8937",
-}
-
 #: The fixture's stored documents naming nothing, as the tree at ``00107a5b7`` wrote them (:func:`documents`).
 #:
 #: A bundle is pinned in its identity form, every float to twelve figures, as its fingerprint reads it: it stores the
@@ -334,9 +362,19 @@ PINNED_WRITER_MESSAGES: dict[bool, str] = {
 #: differently, so its raw bytes differ between hosts while its identity does not. Its two values were computed by
 #: building this fixture on a checkout of ``00107a5b7``. The template and the campaign hold no computed figure and
 #: are pinned byte for byte.
+#: The two bundles were re-pinned in W4 (ENGINE) for the census's pricing alone: less ``scoreboard[].pricing`` each
+#: digests to the value ``00107a5b7`` wrote, so the names still move nothing.
+#: The two bundles, and in :data:`PINNED` each aspect's fingerprint and the campaign's, were re-pinned at bundle shape 65
+#: by building this fixture on this tree: the shape-64 bundles, moved to 65 by
+#: ``fixtures/report_inputs/migrate_bundle_shape_65.py`` (the shape, each rate contrast's interval and each corrected
+#: comparison's interval basis, and nothing else), are these bundles leaf for leaf, so the names still move nothing.
+#: They were re-pinned at shape 66 the same way: the shape-65 bundles, moved by
+#: ``fixtures/report_inputs/migrate_bundle_shape_66.py`` (the shape, the factor-pair scan's completeness and each
+#: trial's failed check held as its measure key, and nothing else), are these bundles leaf for leaf, less
+#: ``lever_names``.
 PINNED_DOCUMENTS: dict[str, str] = {
-    "Queue discipline under a full queue bundle": "288ea2bcd8e5712056b228e0b9d9f2ec7a06142980e05bbe7c3031ba3dbabe8e",
-    "Queue discipline under an empty queue bundle": "afacd41e1d17fed851434d220fede231de4dd800d96556371bf427585a490f20",
+    "Queue discipline under a full queue bundle": "6cecb73f534b2ab4eef7ecca16c67eca958d2df381557f7a339021b3b9b162d4",
+    "Queue discipline under an empty queue bundle": "1674792720401ffdeef819b8e0f5e5aa6f70218bd3adfbf85e82ee8ea63b4a72",
     "campaign": "6c2b383b36fc2664a2457021aac7d61d330ed17119760d15694105bb2a99c215",
     "template": "ebdd07699d7ce094a952d8f66505439368260a790589e08f69ae10ad3c10c755",
 }
@@ -354,10 +392,6 @@ class TestEveryIdentityIsAsBeforeNamesExisted:
     def test_naming_every_aspect_and_check_moves_no_identity(self) -> None:
         assert identities(named=True) == PINNED
 
-    @pytest.mark.parametrize("named", [False, True], ids=["naming nothing", "naming everything"])
-    def test_the_writer_is_sent_what_it_was_pinned_to_names_included(self, named: bool) -> None:
-        assert writer_message(named=named) == PINNED_WRITER_MESSAGES[named]
-
     def test_a_template_campaign_and_bundle_naming_nothing_are_written_as_before(self) -> None:
         assert documents() == PINNED_DOCUMENTS
 
@@ -368,6 +402,86 @@ class TestEveryIdentityIsAsBeforeNamesExisted:
         for label, bundle in built["bundles"].items():
             assert bundle.to_dict()["short_name"] == SHORT_NAMES[label]
             assert bundle.goal_check_names == CHECK_NAMES
+            assert bundle.to_dict()["declared"]["control"]["short_name"] == ARM_SHORT_NAMES[ARMS[0]]
+        frame = built["campaign_bundle"].to_dict()
+        assert [arm["short_name"] for arm in frame["arms"]] == [ARM_SHORT_NAMES[arm] for arm in ARMS]
+        assert [arm["short_name"] for arm in frame["declaration"]["arms"]] == [ARM_SHORT_NAMES[arm] for arm in ARMS]
+        for label, bundle in built["bundles"].items():
+            # The stored lever name is carried on the declared axis and in the names every page reads, by the lever.
+            assert [axis["reader_name"] for axis in bundle.to_dict()["declared"]["design"]["axes"]] == [LEVER_NAME]
+            assert bundle.lever_names["model"] == LEVER_NAME
+
+
+# --- a reason a bundle stores is never reworded -------------------------------------------------------------------
+
+#: What a failure below means, and the fix.
+STORED_REASON_MOVED = (
+    "a reason text is stored in the bundle and fingerprinted: rewording it moves every stored campaign's fingerprint "
+    "and evidence digest, and hosts regenerate their reports for a wording change (05996fcd5 did, to "
+    "UNIFORM_MOVE_NEEDS_RANGE). Restore the stored text and reword at render time, in "
+    "threetears.evals.analysis.report.words.reason_words"
+)
+
+#: The sha256 of each reason the statistics write into a bundle, as ``501dac039`` wrote it.
+STORED_REASONS = {
+    "UNIFORM_MOVE_NEEDS_RANGE": (
+        UNIFORM_MOVE_NEEDS_RANGE,
+        "a146ff23aeba58dd968170eca2fee5ab3d0b25a8f0eedafd482295b7d430cdc2",
+    ),
+    "UNIFORM_MOVE_OUTSIDE_RANGE": (
+        UNIFORM_MOVE_OUTSIDE_RANGE,
+        "ef88c46f55ec926bfb522d0bd45b29d669a982dc33ab6db9477872e81f0a504d",
+    ),
+    "EQUIVALENCE_NEEDS_RANGE": (
+        EQUIVALENCE_NEEDS_RANGE,
+        "0bcca759256ea9ca222ed142409272bf5fb2ae0e9e3c1ab7f9cf3dae6081024b",
+    ),
+    "GUARDRAIL_HELD_NEEDS_RANGE": (
+        GUARDRAIL_HELD_NEEDS_RANGE,
+        "92c353b375b83254020d8b402485fc652ab8feac060eaf0cec82a5246a184763",
+    ),
+}
+
+
+class TestAStoredReasonIsNeverReworded:
+    """A reason the bundle stores keeps its words; the page says it in the reader's."""
+
+    @pytest.mark.parametrize("name", sorted(STORED_REASONS))
+    def test_each_stored_reason_is_written_as_it_always_was(self, name: str) -> None:
+        text, digest = STORED_REASONS[name]
+        assert hashlib.sha256(text.encode()).hexdigest() == digest, f"{name}: {STORED_REASON_MOVED}"
+
+    def test_the_fixture_stores_the_reason_and_its_fingerprints_are_pinned(self) -> None:
+        built = _fixture(named=False)
+        assert UNIFORM_MOVE_NEEDS_RANGE in json.dumps(built["campaign_bundle"].to_dict()), (
+            "the pinned fixture no longer carries the reason it guards"
+        )
+        campaign = built["campaign_bundle"]
+        assert campaign.fingerprint() == PINNED["campaign fingerprint v3"], STORED_REASON_MOVED
+        for label, bundle in built["bundles"].items():
+            assert bundle.fingerprint() == PINNED[f"{label} fingerprint"], STORED_REASON_MOVED
+
+    def test_the_page_says_the_stored_reason_in_the_readers_words(self) -> None:
+        said = reason_words(UNIFORM_MOVE_NEEDS_RANGE)
+        assert said is not None and "can tell that from no move" in said and "not separated" not in said
+        _, page = _page(named=False)
+        markdown = campaign_report_markdown(page)
+        assert said in markdown
+        assert UNIFORM_MOVE_NEEDS_RANGE not in markdown
+
+    def test_a_reading_s_stored_unseparated_sentence_says_the_evidence_cannot_tell_its_arms_apart(self) -> None:
+        """A campaign reading stores ``its interval reaches zero, so v2 and production are not separated`` with an
+        analysis's readings (test_campaign_readings holds the stored words); a page says it in the glossary's
+        sentence (owner ruling), the arms as stored."""
+        stored = "its interval reaches zero, so v2 and production are not separated"
+        assert reason_words(stored) == "its interval reaches zero, so the evidence cannot tell v2 and production apart"
+        assert reason_words(f"{stored}; more") == (
+            "its interval reaches zero, so the evidence cannot tell v2 and production apart; more"
+        )
+
+    def test_any_other_reason_reads_as_stored(self) -> None:
+        assert reason_words(EQUIVALENCE_NEEDS_RANGE) == EQUIVALENCE_NEEDS_RANGE
+        assert reason_words(None) is None
 
 
 # --- an aspect's short name ---------------------------------------------------------------------------------------
@@ -547,7 +661,7 @@ def _page(*, named: bool) -> Any:
         )
         for label, bundle in built["bundles"].items()
     }
-    return built, build_campaign_report(built["campaign"], built["readings"], reports, None)
+    return built, build_campaign_report(built["campaign"], built["readings"], reports)
 
 
 def _cells(page: Any) -> list[str]:
@@ -576,6 +690,25 @@ class TestThePagePrintsDeclaredNames:
         assert any(cell in LABELS for cell in cells)
         assert not [cell for cell in cells if any(name in cell for name in SHORT_NAMES.values())]
 
+    def test_the_nav_names_each_aspect_by_its_short_name_and_its_fold_keeps_the_full_label(self) -> None:
+        # Discodon's 0.94.0 pass: the nav printed an aspect's fold heading, its full label, so a declared short name
+        # never reached it. Its link names the aspect by its short name; the fold it lands on keeps the full label as
+        # its heading. A label is a host's text, which no attribute carries (test_report_html_no_script).
+        _, page = _page(named=True)
+        served = campaign_report_html(page)
+        nav = served[served.index("<nav>") : served.index("</nav>")]
+        for label in LABELS:
+            assert f">{html.escape(SHORT_NAMES[label])}</a>" in nav, nav
+            assert html.escape(label) not in nav
+            assert f"<summary><h2>{html.escape(label)}</h2>" in served, "the fold's heading keeps the full label"
+
+    def test_with_no_name_the_nav_prints_the_full_label(self) -> None:
+        _, page = _page(named=False)
+        served = campaign_report_html(page)
+        nav = served[served.index("<nav>") : served.index("</nav>")]
+        for label in LABELS:
+            assert f">{html.escape(label)}</a>" in nav, nav
+
     def test_the_legend_pairs_each_short_name_with_its_label(self) -> None:
         named, _ = _page(named=True)
         unnamed, _ = _page(named=False)
@@ -591,19 +724,20 @@ class TestAnUndeclaredNameFallsBackWhole:
         assert aspect_name(long) == "An aspect label far longer than any short name could be"
         assert AspectNames.of([long])("an aspect no evidence was given for") == "an aspect no evidence was given for"
 
-    def test_a_check_with_no_display_name_is_its_whole_expression_as_code(self) -> None:
+    def test_a_check_with_no_display_name_is_named_by_what_it_tests(self) -> None:
         unnamed = _fixture(named=False)["bundles"][LABELS[0]]
         named = _fixture(named=True)["bundles"][LABELS[0]]
-        measure = goal_check_measure(CHECKS[0])
-        assert measure_name_of(unnamed, measure) == f"`{CHECKS[0]}`"
-        assert measure_name_of(named, measure) == CHECK_NAMES[CHECKS[0]]
+        # The owner ruled it (2026-11-07): never the expression, which the glossary defines the name by.
+        assert measure_name_of(unnamed, goal_check_measure(CHECKS[0])) == "Shop cart check"
+        assert measure_name_of(unnamed, goal_check_measure(CHECKS[1])) == "Chat messages check"
+        assert measure_name_of(named, goal_check_measure(CHECKS[0])) == CHECK_NAMES[CHECKS[0]]
 
     def test_measure_name_prints_a_declared_name_and_never_the_rate_name(self) -> None:
         measure = goal_check_measure(CHECKS[0])
         assert measure_name(measure, declared="Cart filled") == "Cart filled"
-        assert measure_name(measure, "Cart filled") == f"`{CHECKS[0]}`", "a reader name is never read for a check"
-        assert measure_name(measure, f"Pass rate of {CHECKS[0]}") == f"`{CHECKS[0]}`"
-        assert measure_name(measure) == f"`{CHECKS[0]}`"
+        assert measure_name(measure, "Cart filled") == "Shop cart check", "a reader name is never read for a check"
+        assert measure_name(measure, f"Pass rate of {CHECKS[0]}") == "Shop cart check"
+        assert measure_name(measure) == "Shop cart check"
 
 
 # --- a names-only edit moves no run's reading of its template -----------------------------------------------------
@@ -653,18 +787,18 @@ class TestNamingAStoredTemplateCutsNoRunOff:
             "fingerprint": assemble_context_bundle(campaign, storage=host.storage, profile=host.profile).fingerprint(),
         }
 
-    def test_naming_a_check_leaves_criteria_rejudging_take_up_and_fingerprint_as_they_were(self) -> None:
+    @pytest.mark.parametrize("field", ["goal_check_names", "stratum_names"])
+    def test_naming_leaves_criteria_rejudging_take_up_and_fingerprint_as_they_were(self, field: str) -> None:
         fixture, template, runs = self._stored()
         before = self._readings(fixture, template.id, runs)
+        names = {
+            "goal_check_names": {template.goal_state_checks[0]: "Every field"},
+            "stratum_names": {"off_lane": "Off-lane asks"},
+        }[field]
 
-        named = update_template(
-            fixture.host.eval_host,
-            template.id,
-            TOYHOST_SCOPE,
-            {"goal_check_names": {template.goal_state_checks[0]: "Every field"}},
-        )
+        named = update_template(fixture.host.eval_host, template.id, TOYHOST_SCOPE, {field: names})
 
-        assert named.goal_check_names == {template.goal_state_checks[0]: "Every field"}
+        assert getattr(named, field) == names
         after = self._readings(fixture, template.id, runs)
         assert after == before
         assert all(before["rejudgeable"]), "a run launched after its template's last edit may be rejudged"
@@ -679,13 +813,15 @@ class TestNamingAStoredTemplateCutsNoRunOff:
         assert after["updated_at"] > before["updated_at"]
         assert not any(after["rejudgeable"]) and not any(after["taken up as read"])
 
-    def test_names_beside_a_measured_edit_still_stamp_it(self) -> None:
+    @pytest.mark.parametrize("field", ["goal_check_names", "stratum_names"])
+    def test_names_beside_a_measured_edit_still_stamp_it(self, field: str) -> None:
         fixture, template, _ = self._stored()
+        names = {
+            "goal_check_names": {template.goal_state_checks[0]: "Every field"},
+            "stratum_names": {"off_lane": "Off-lane asks"},
+        }[field]
         edited = update_template(
-            fixture.host.eval_host,
-            template.id,
-            TOYHOST_SCOPE,
-            {"goal_check_names": {template.goal_state_checks[0]: "Every field"}, "description": "renamed"},
+            fixture.host.eval_host, template.id, TOYHOST_SCOPE, {field: names, "description": "renamed"}
         )
         assert edited.updated_at > template.updated_at
 
@@ -699,14 +835,24 @@ class TestANamedCheckPrintsByNameOnThePage:
         markdown = campaign_report_markdown(page)
         for check, name in CHECK_NAMES.items():
             assert name in markdown, name
-            # Only the check legend states the expression, beside the name; no row is headed by it.
-            assert markdown.count(f"| {name} | `{check}` |") == 1, f"{check} has no legend row"
+            # Only the glossary states the expression, defining the name; no row is headed by it.
+            anchor = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+            entry = (
+                f'- <a id="g-check-{anchor}"></a>**{name}**: The goal check `{check}`, which code runs on every trial.'
+            )
+            assert markdown.count(entry) == 1, f"{check} has no glossary entry"
             assert f"\n| `{check}` |" not in markdown, f"{check} still heads a row by its expression"
 
-    def test_with_no_name_each_check_prints_its_whole_expression(self) -> None:
+    def test_with_no_name_each_check_prints_by_what_it_tests_its_expression_in_the_glossary(self) -> None:
         _, page = _page(named=False)
         markdown = campaign_report_markdown(page)
-        assert all(f"`{check}`" in markdown for check in CHECKS)
+        for check, name in {CHECKS[1]: "Chat messages check", CHECKS[0]: "Shop cart check"}.items():
+            anchor = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+            entry = (
+                f'- <a id="g-check-{anchor}"></a>**{name}**: The goal check `{check}`, which code runs on every trial.'
+            )
+            assert markdown.count(entry) == 1, f"{check} has no glossary entry"
+            assert f"\n| `{check}` |" not in markdown, f"{check} still heads a row by its expression"
         assert not any(name in markdown for name in CHECK_NAMES.values())
 
 

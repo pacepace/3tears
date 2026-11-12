@@ -13,6 +13,7 @@ import math
 from collections.abc import Sequence
 
 
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.schema.base import EvalBaseModel
 
 
@@ -25,16 +26,20 @@ from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose, OutOf
 class OutOfRunSpendTotals(EvalBaseModel):
     """What a set of out-of-run calls spent, summed — with what could not be summed counted beside it.
 
-    **Missing is not zero.** A call that reported no cost, and every call that raised (which reports
-    nothing, and may have been billed), are counted in ``n_unpriced`` and left out of ``priced_usd``,
-    so ``priced_usd`` is a floor whenever ``n_unpriced`` is not 0.
+    **Missing is not zero.** A call that returned and reported no cost is counted in ``n_unpriced`` and left out of
+    ``priced_usd``, so ``priced_usd`` is a floor whenever ``n_unpriced`` is not 0. A call that raised (a one-call row
+    whose ``outcome`` is ``raised``, or a report's turn whose reply never came, ``OutOfRunSpend.raised_calls``) is
+    counted in ``n_raised`` alone: it reported no usage and adds nothing (owner, 2026-10-27). A row that ledgers
+    several calls (a report's turns, ``OutOfRunSpend.calls``) counts each of them.
 
     :ivar n_calls: The calls.
     :ivar n_raised: Those that raised rather than returning.
-    :ivar n_unpriced: Those whose cost is unknown — a completed call that reported none, or a raised call.
+    :ivar n_unpriced: Those that returned and reported no cost; a raised call is never one.
     :ivar priced_usd: The reported cost of the priced calls, summed.
     :ivar ceiling_usd: The ceilings the calls were admitted at, summed over those the client could price.
     :ivar n_unbounded: Those admitted with no ceiling (the client could not price them and no cap was enforced).
+    :ivar n_budgeted: Those a report's budget admitted (``OutOfRunSpend.admitted_by``), each turn on its own price
+        ceiling, which the ledger does not hold.
     """
 
     n_calls: int
@@ -43,6 +48,7 @@ class OutOfRunSpendTotals(EvalBaseModel):
     priced_usd: float
     ceiling_usd: float
     n_unbounded: int
+    n_budgeted: int = 0
 
     @classmethod
     def of(cls, rows: Sequence[OutOfRunSpend]) -> OutOfRunSpendTotals:
@@ -54,13 +60,40 @@ class OutOfRunSpendTotals(EvalBaseModel):
         :rtype: OutOfRunSpendTotals
         """
         return cls(
-            n_calls=len(rows),
-            n_raised=sum(1 for row in rows if row.outcome == "raised"),
-            n_unpriced=sum(1 for row in rows if row.cost_usd is None),
-            priced_usd=math.fsum(row.cost_usd for row in rows if row.cost_usd is not None),
+            n_calls=sum(_calls(row) for row in rows),
+            n_raised=sum(_raised(row) for row in rows),
+            n_unpriced=sum(_unpriced(row) for row in rows),
+            priced_usd=math.fsum(_priced(row) for row in rows),
             ceiling_usd=math.fsum(row.priced_ceiling_usd for row in rows if row.priced_ceiling_usd is not None),
-            n_unbounded=sum(1 for row in rows if row.priced_ceiling_usd is None),
+            n_unbounded=sum(_calls(row) for row in rows if row.priced_ceiling_usd is None and row.admitted_by is None),
+            n_budgeted=sum(_calls(row) for row in rows if row.admitted_by is not None),
         )
+
+
+def _calls(row: OutOfRunSpend) -> int:
+    """The calls one row ledgers: its ``calls``, or one."""
+    return row.calls if row.calls is not None else 1
+
+
+def _raised(row: OutOfRunSpend) -> int:
+    """The raised calls of one row: its ``raised_calls``, or one when its one call raised."""
+    if row.raised_calls is not None:
+        return row.raised_calls
+    return 1 if row.outcome == "raised" else 0
+
+
+def _unpriced(row: OutOfRunSpend) -> int:
+    """The unpriced calls of one row: its ``unpriced_calls``, or one when its one call returned with no cost."""
+    if row.unpriced_calls is not None:
+        return row.unpriced_calls
+    return 1 if row.outcome == "completed" and row.cost_usd is None else 0
+
+
+def _priced(row: OutOfRunSpend) -> float:
+    """What the priced calls of one row reported: its ``priced_usd``, or its one call's cost."""
+    if row.priced_usd is not None:
+        return row.priced_usd
+    return row.cost_usd if row.cost_usd is not None else 0.0
 
 
 class OutOfRunSpendReport(EvalBaseModel):
@@ -135,15 +168,24 @@ def scope_out_of_run_spend(
     )
 
 
-def _totals_line(totals: OutOfRunSpendTotals) -> str:
-    """One line of totals, saying when the sum is a floor."""
+def _totals_line(totals: OutOfRunSpendTotals, forms: PageForms) -> str:
+    """One line of totals, saying when the sum is a floor, then how the calls were admitted, each way counted, its
+    amounts as ``forms`` states them.
+
+    The ceiling sum is said of the calls it was summed over alone (those admitted at a priced ceiling), and left out
+    where none was: a call a report budget admitted, each turn on a ceiling the ledger does not hold, and a call
+    admitted unbounded, are each counted, never read as a ceiling of $0.
+    """
     floor = f", {totals.n_unpriced} unpriced (so at least)" if totals.n_unpriced else ""
     raised = f", {totals.n_raised} raised" if totals.n_raised else ""
-    unbounded = f", {totals.n_unbounded} admitted unbounded" if totals.n_unbounded else ""
-    return (
-        f"{totals.n_calls} call(s): ${totals.priced_usd:.4f} reported{floor}{raised}; admitted at up to "
-        f"${totals.ceiling_usd:.4f}{unbounded}"
-    )
+    reported = f"{totals.n_calls} call(s): {forms.money_ledger(totals.priced_usd).text} reported{floor}{raised}"
+    ceilinged = totals.n_calls - totals.n_unbounded - totals.n_budgeted
+    admitted = [
+        *([f"{ceilinged} admitted at up to {forms.money_ledger(totals.ceiling_usd).text}"] if ceilinged else []),
+        *([f"{totals.n_budgeted} admitted by a report budget"] if totals.n_budgeted else []),
+        *([f"{totals.n_unbounded} admitted unbounded"] if totals.n_unbounded else []),
+    ]
+    return f"{reported}; {', '.join(admitted)}" if admitted else reported
 
 
 def out_of_run_spend_text(report: OutOfRunSpendReport) -> str:
@@ -167,15 +209,21 @@ def out_of_run_spend_text(report: OutOfRunSpendReport) -> str:
     if not report.rows:
         lines.append("no out-of-run call is ledgered here")
         return "\n".join(lines)
-    lines.append(f"total: {_totals_line(report.totals)}")
-    lines += [f"purpose {name}: {_totals_line(totals)}" for name, totals in report.by_purpose.items()]
-    lines += [f"launch {name}: {_totals_line(totals)}" for name, totals in report.by_launch.items()]
+    forms = PageForms.off_page()
+    lines.append(f"total: {_totals_line(report.totals, forms)}")
+    lines += [f"purpose {name}: {_totals_line(totals, forms)}" for name, totals in report.by_purpose.items()]
+    lines += [f"launch {name}: {_totals_line(totals, forms)}" for name, totals in report.by_launch.items()]
     for row in report.rows:
-        cost = f"${row.cost_usd:.4f}" if row.cost_usd is not None else "unpriced"
-        ceiling = f"${row.priced_ceiling_usd:.4f}" if row.priced_ceiling_usd is not None else "unbounded"
+        cost = forms.money_ledger(row.cost_usd).text if row.cost_usd is not None else "unpriced"
+        ceiling = forms.money_ledger(row.priced_ceiling_usd).text if row.priced_ceiling_usd is not None else "unbounded"
+        admitted = f"admitted by {row.admitted_by}" if row.admitted_by is not None else f"ceiling {ceiling}"
+        if row.calls is not None:
+            # A row of several calls: how many, and the priced share beside the unpriced, never one figure for both.
+            unpriced = f", {row.unpriced_calls} unpriced (so at least)" if row.unpriced_calls else ""
+            cost = f"{row.calls} calls: {forms.money_ledger(_priced(row)).text} reported{unpriced}"
         failed = f" {row.failure}" if row.failure else ""
         lines.append(
-            f"  {row.created_at}  {row.purpose}  {row.model}  {row.outcome}{failed}  {cost} (ceiling {ceiling})"
+            f"  {row.created_at}  {row.purpose}  {row.model}  {row.outcome}{failed}  {cost} ({admitted})"
             f"  template {row.template_id}  launch {row.launch_group_id}"
             + (f"  campaign {row.campaign_id}" if row.campaign_id is not None else "")
         )

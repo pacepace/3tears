@@ -8,7 +8,9 @@ the control. Everything here is the engine's own path, composed:
   is the run's level of the host's arm lever (:data:`~threetears.evals.quick.one_call.ARM_LEVER`), every arm at one
   shared candidate model, so the report calls the arm ``candidate=<name>``. Named as ``k=v`` pairs
   (``"prompt=v2, effort=low"``), each pair is one factor of a factorial design: ``model`` is the run's candidate model
-  and every other factor is a lever the engine names ``callable.<factor>`` and keys into the variant.
+  and every other factor is a lever the engine names ``callable.<factor>`` and keys into the variant. Such an arm is
+  named by its factors, in the order the eval declares them, on every surface (:func:`_shown_arm_name`:
+  ``Prompt v2, effort low``), never by the lever the engine keys it under.
 - **Every arm is started in one launch**, so they share one launch's schedule and capacity, and a
   refusal on the last arm leaves none run.
 - **The campaign declares its design** — one axis per factor, a controlled stimulus, a commissioned apparatus and the
@@ -31,6 +33,9 @@ A factor's effect at another level of another factor is read against a second co
 from __future__ import annotations
 
 import csv
+import json
+import math
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -48,7 +53,6 @@ from threetears.evals.analysis import (
     CampaignReport,
     Report,
     TableBlock,
-    build_code_only_report,
     campaign_report,
     campaign_report_markdown,
     create_campaign,
@@ -58,6 +62,7 @@ from threetears.evals.analysis import (
     variant_key_of_run,
 )
 from threetears.evals.kernel import (
+    ACCURACY_MEASURE,
     CALIBRATION_MIN_RESULTS,
     CONFUSION_CELL_MEASURE,
     MATCH_MEASURE,
@@ -68,26 +73,45 @@ from threetears.evals.kernel import (
     agreement_statistic,
     calibration_criterion,
     confusion_cell,
+    confusion_of,
     separation_criterion,
     tier_of,
 )
 from threetears.evals.schema import CalibrationRating, EvalResult, RubricScale
+from threetears.evals.schema.models import DECLARED_NAME_CHARS
 from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.text_block import one_line
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.trials import trial_order
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
-from threetears.evals.analysis.summary import CaseResult, EvalSummary
-from threetears.evals.analysis.report.build import contrast_rows, report_cell_labels
+from threetears.evals.analysis.summary import CaseResult, DimensionSummary, EvalSummary
+from threetears.evals.analysis.quantities import PERCENT
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor, reads_as_rate, reads_as_share
+from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
+from threetears.evals.analysis.report.figures import report_rulers
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.blocks import DisclosureBlock
+from threetears.evals.analysis.report.build import (
+    aspect_verdict,
+    build_code_only_report_in_forms,
+    contrast_rows,
+    report_cell_labels,
+)
+from threetears.evals.analysis.report.campaign.names import measure_name_of
+from threetears.evals.analysis.report.verdict import VerdictLine
+from threetears.evals.analysis.style import arm_display_name, arm_name
+from threetears.evals.analysis.report.words import campaign_arm_tags, judged_heading, stratum_names
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, predicted_label
-from threetears.evals.quick.judged import Judge
+from threetears.evals.quick.judged import Judge, JudgeExamples
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
 from threetears.evals.run import get_result_trace, list_results
 
 #: Who an eval's campaign and its control are recorded as created by, unless the caller says.
 CREATED_BY = "eval"
+
 
 #: The factors that are levers of the engine or the host, never of the callable kind: no kind prefix names them.
 _UNPREFIXED = frozenset({CANDIDATE_MODEL_LEVER, ARM_LEVER})
@@ -114,11 +138,8 @@ LABEL_COLUMNS: tuple[str, ...] = (
     "criterion_fingerprint",
 )
 
-#: What an uncalibrated judge's line ends with: the step that calibrates it, at the calibrated tier's floor of labels.
-_NEXT_STEP = (
-    f"; next step: rate about {CALIBRATION_MIN_RESULTS} outputs in the {TO_LABEL} the report writes, without "
-    "looking at the judge's verdict"
-)
+#: How many characters of an answer a miss line shows where the graded field cannot be read off it.
+_MISS_ANSWER_CHARS = 120
 
 #: What a label is read as, on a pass/fail dimension.
 _PASS_FAIL = {"pass": 1, "fail": 0, "1": 1, "0": 0, "true": 1, "false": 0}
@@ -144,6 +165,30 @@ def coordinates(arm: str) -> dict[str, str] | None:
             raise ValueError(f"the arm {arm!r} names {factor.strip()!r} twice; each factor is at one level")
         pairs[factor.strip()] = level.strip()
     return pairs
+
+
+def _shown_arm_name(arm: str) -> str:
+    """The one name every surface prints for an arm: the campaign's page, the verdict line, the quiet print's
+    scoreboard and misses, and a program's rows.
+
+    An arm named as ``k=v`` pairs is named by its factors, in the order the eval declares them, each as its reader
+    name and its level, by the one rule a name code computes from levers is printed by
+    (:func:`~threetears.evals.analysis.style.arm_display_name`): ``"prompt=v2, effort=low"`` is ``Prompt v2, effort
+    low``. Never by the lever the engine keys a factor under (``callable.prompt``), whose kind is no reader's word,
+    nor in the order the variant sorts its levers in. An arm named plainly is printed as named.
+
+    :param arm: The arm, by its key in the eval's runners.
+    :ptype arm: str
+    :return: Its name as a reader is shown it.
+    :rtype: str
+    """
+    pairs = coordinates(arm)
+    if pairs is None:
+        return arm
+    # Each factor's reader name is the factor as the eval's author wrote it, as the campaign stores it on its axis.
+    named = {factor: factor for factor in pairs}
+    shown = arm_name(", ".join(f"{factor}={level}" for factor, level in pairs.items()), declared=named)
+    return arm_display_name(shown.label, shown.levers, named)
 
 
 @dataclass(frozen=True)
@@ -173,9 +218,11 @@ class JudgeCalibration:
         if self.kappa is None:
             figure = "kappa undefined"
         else:
-            figure = f"kappa {self.kappa:.2f}"
+            forms = PageForms.off_page()
+            # How far the judge agrees with people is no measure of the eval's, so it is keyed to none.
+            figure = f"kappa {forms.reading(self.kappa).text}"
             if self.lower is not None:
-                figure += f" (lower bound {self.lower:.2f})"
+                figure += f" (lower bound {forms.reading(self.lower).text})"
         return f"{self.dimension}: {self.labels} label(s), {figure}, calibration {self.calibration}; tier {self.tier}"
 
 
@@ -198,12 +245,23 @@ class Result:
     :ivar factors: The factors each arm name names a level of, in order: ``("candidate",)`` when the arms are named
         plainly on the arm lever, ``("model",)`` when the one arm or the arms are named as models.
     :ivar store: Where the runs are stored, in words: the file, or that they are held in memory.
-    :ivar fields: The eval's field graders, the classifier first.
+    :ivar fields: The eval's field graders, in the order listed; the classifier is the first not declared a guardrail.
+    :ivar grader_readings: The measure each grader reads, in the order the eval lists its graders: the classifier's
+        ``accuracy``, any other field's or function's own name, a judge's every dimension. A comparison's first line
+        leads on the first of these the contrasts tested; empty when the result was built without them.
+    :ivar question: The one sentence the comparison answers, as the eval declared it and its campaign asks it; ``None``
+        when none was declared, and every reading is a lead.
+    :ivar margin: How far the pass rate may fall below the control before it is shown worse, in the measure's units (a
+        share of 0 to 1), as the eval declared it: a non-inferiority question's. ``None`` declares none: a question
+        with no margin asks whether a candidate does better (a superiority question), read against zero.
     :ivar judge: The eval's judge, or ``None``.
     :ivar disclosures: What the run must say about how it was run, beside its readings: a tool recording replayed or
         made, a logged runner's file.
     :ivar calibrations: How the judge agrees with the labels ``Judge(labels=...)`` names, per dimension
         (:func:`calibrate`); empty with no judge, no labels, or no label that pairs.
+    :ivar judge_examples: How the judge graded its examples (``Judge(examples=...)``) in the run, each on every
+        repeat, beside its agreement with the labels and never pooled into it; ``None`` with no judge, or a judge
+        with no examples.
     :ivar to_label: Every judged answer on every dimension, as a row of :data:`TO_LABEL`, the verdict withheld.
     :ivar contrast_arms: The arm each row of the report's contrasts table tests, by name, row for row; ``None`` for a
         row no arm's variant matches.
@@ -212,6 +270,8 @@ class Result:
     :ivar guardrail_readings: Every guardrail, decided for each arm against the control; empty when none is declared.
     :ivar arm_variants: Each arm's variant key, by name: what the bundle names the arm by.
     :ivar labelled_arms: Each arm's name, by the words the report names it by (``baseline``).
+    :ivar arm_labels: The name every surface prints each arm named as factors by (:func:`_shown_arm_name`), by its
+        variant key; empty for arms named plainly, which every surface names by their variants.
     """
 
     name: str
@@ -228,6 +288,7 @@ class Result:
     judge: Judge | None = field(default=None, repr=False, compare=False)
     disclosures: tuple[str, ...] = ()
     calibrations: tuple[JudgeCalibration, ...] = ()
+    judge_examples: JudgeExamples | None = None
     to_label: tuple[dict[str, str], ...] = field(default=(), repr=False, compare=False)
     contrast_arms: tuple[str | None, ...] = field(default=(), repr=False, compare=False)
     contrast_measures: tuple[str | None, ...] = field(default=(), repr=False, compare=False)
@@ -235,6 +296,10 @@ class Result:
     guardrail_readings: GuardrailReadings = field(default_factory=GuardrailReadings, repr=False, compare=False)
     arm_variants: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
     labelled_arms: dict[str, str | None] = field(default_factory=dict, repr=False, compare=False)
+    arm_labels: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
+    grader_readings: tuple[str, ...] = field(default=(), repr=False, compare=False)
+    question: str | None = None
+    margin: float | None = None
 
     # --- one arm, or the arm named ----------------------------------------------------------------------------------
 
@@ -296,6 +361,13 @@ class Result:
         _refuse_an_unknown_arm(self.arms, arm)
         return self.arms[arm]
 
+    @property
+    def _classifier(self) -> str | None:
+        """The field the eval classifies on: the first field graded as no measure of its own name, since every other
+        field (one listed after it, or a guardrail listed before it) is graded as a pass/fail of its name."""
+        graded = {measure.name for summary in self.arms.values() for measure in summary.measures}
+        return next((name for name in self.fields if name not in graded), None)
+
     # --- labels and calibration --------------------------------------------------------------------------------------
 
     def labels(
@@ -303,7 +375,7 @@ class Result:
     ) -> tuple[list[ConfusionCount], list[LabelStatistics]]:
         """One field grader's confusion matrix and each label's precision, recall and F1.
 
-        The classifier's (the first field) are the run's own, as its summary carries them; any other field's are
+        The classifier's (the first field not declared a guardrail) are the run's own, as its summary carries them; any other field's are
         counted the same way, over the same results, from each answer's label in that field.
 
         :param grader: The field, by name; ``None`` for the classifier.
@@ -317,10 +389,11 @@ class Result:
         summary = self._arm(arm)
         if not self.fields:
             raise ValueError("this eval grades no field, so it has no labels; a field grader is one named by a string")
-        name = self.fields[0] if grader is None else grader
+        classifier = self._classifier
+        name = (classifier or self.fields[0]) if grader is None else grader
         if name not in self.fields:
             raise ValueError(f"{name!r} is no field grader of this eval; its fields are {', '.join(self.fields)}")
-        if name == self.fields[0] and summary.confusion:
+        if name == classifier and summary.confusion:
             return list(summary.confusion), list(summary.labels)
         cells: dict[str, int] = {}
         observations: list[tuple[str, str]] = []
@@ -339,13 +412,38 @@ class Result:
         if judge is None:
             return []
         if judge.labels is None:
-            return [f"judge: 0 labels: judge uncalibrated (Judge(labels=...) names a person's labels){_NEXT_STEP}"]
+            return [
+                f"judge: 0 labels: judge uncalibrated (Judge(labels=...) names a person's labels){self._next_step()}"
+            ]
         if not judge.labels.is_file():
-            return [f"judge: 0 labels: judge uncalibrated ({judge.labels} is not there yet){_NEXT_STEP}"]
+            return [f"judge: 0 labels: judge uncalibrated ({judge.labels.name} is not there yet){self._next_step()}"]
         read = self.calibrations
+        # The sheet by its name, never the path it was read from: a path is the machine's, not the reading's.
         if not read:
-            return [f"judge: 0 labels paired from {judge.labels}: judge uncalibrated{_NEXT_STEP}"]
-        return [f"judge against {judge.labels}: {entry.line()}" for entry in read]
+            return [f"judge: 0 labels paired from {judge.labels.name}: judge uncalibrated{self._next_step()}"]
+        return [f"judge against {judge.labels.name}: {entry.line()}" for entry in read]
+
+    def _next_step(self) -> str:
+        """What an uncalibrated judge's line ends with: the step that calibrates it, read off the sheet it is taken on.
+
+        The calibrated tier's floor is :data:`~threetears.evals.kernel.CALIBRATION_MIN_RESULTS` labelled results per
+        dimension, and :data:`TO_LABEL` holds one row per judged answer per dimension, so the step says how many rows
+        the sheet holds for each, and, where the fewest fall short of the floor, how many more judged answers it needs.
+        """
+        rows = {dim.name: 0 for dim in self.judge.dims} if self.judge is not None else {}
+        for row in self.to_label:
+            rows[row["dimension"]] = rows.get(row["dimension"], 0) + 1
+        fewest, most = min(rows.values(), default=0), max(rows.values(), default=0)
+        held = f"{fewest}" if fewest == most else f"{fewest} to {most}"
+        sheet = f"the {TO_LABEL} the report writes, which holds {held} per dimension"
+        unseen = "without looking at the judge's verdict"
+        if fewest >= CALIBRATION_MIN_RESULTS:
+            return f"; next step: rate about {CALIBRATION_MIN_RESULTS} outputs of each dimension in {sheet}, {unseen}"
+        return (
+            f"; next step: rate every output in {sheet}, {unseen}; the calibrated tier's floor is "
+            f"{CALIBRATION_MIN_RESULTS} per dimension, so it needs {CALIBRATION_MIN_RESULTS - fewest} more judged "
+            "answers per dimension"
+        )
 
     # --- the report --------------------------------------------------------------------------------------------------
 
@@ -365,47 +463,91 @@ class Result:
         :return: The text.
         :rtype: str
         """
+        # Every arm's total in one form, the page's for its test costs (plain dollars to two significant figures), and
+        # every role's share of one in another.
+        totals = money_ruler((summary.total_cost_usd for summary in self.arms.values()), per=0)
+        roles = money_ruler(
+            (role.cost_usd for summary in self.arms.values() for role in summary.spend if role.counted), per=0
+        )
+        forms = PageForms.off_page()
         if full:
             return "\n\n".join(
-                [*(summary.render() for summary in self.arms.values()), campaign_report_markdown(self.page)]
+                [
+                    *(self._full_summary(forms, summary, totals, roles) for summary in self.arms.values()),
+                    campaign_report_markdown(self.page),
+                ]
             )
         one_arm = len(self.arms) == 1
         lines = [self._verdict_line()]
+        # How far its judge can be trusted is read with the verdict: against people's labels, then on its examples.
+        judged = self.calibration_lines() + (self.judge_examples.lines() if self.judge_examples is not None else [])
         if one_arm:
             # One arm's verdict is how its cases came out, and how far its judge can be trusted is read with it.
-            lines += self.calibration_lines()
+            lines += judged
         for arm, summary in self.arms.items():
-            label = "" if len(self.arms) == 1 else f"{arm}{' (control)' if arm == self.control else ''}: "
+            label = (
+                "" if len(self.arms) == 1 else f"{_shown_arm_name(arm)}{' (control)' if arm == self.control else ''}: "
+            )
             lines.append(f"{label}{summary.results_text}")
             # an operator's reason for a cancel, a predicted label, a refused check's reason: each can run over lines
             lines += [f"  {one_line(line)}" for line in (summary.stopped_text,) if line is not None]
-            lines += [f"  {one_line(line)}" for line in self._measure_texts(summary, arm)]
+            lines += [f"  {one_line(line)}" for line in self._measure_texts(forms, summary, arm)]
             if summary.confusion:
                 lines.append("  per label:")
-                lines += [f"    {one_line(line)}" for line in summary.label_lines]
-            lines += [f"  {one_line(line)}" for line in summary.dimension_lines]
+                lines += [f"    {one_line(_label_text(forms, statistics))}" for statistics in summary.labels]
+            lines += [f"  {one_line(_dimension_text(forms, dimension))}" for dimension in summary.judged]
             lines += [f"  {one_line(line)}" for line in summary.goal_check_lines]
             # What it cost, priced or not, and the warnings no quiet print drops.
-            for line in (summary.total_spend_text, summary.self_judging_warning, summary.model_identity_warning):
+            for line in (
+                _total_spend(forms, summary, totals, roles),
+                summary.self_judging_warning,
+                summary.model_identity_warning,
+            ):
                 if line is not None:
                     lines.append(f"  {one_line(line)}")
             lines += [f"  error: {one_line(error)}" for error in summary.errors]
             lines += [f"  excluded: {cause}" for cause in _exclusion_causes(summary)]
         if not one_arm:
-            lines += self.calibration_lines()
+            lines += judged
         order = self._page_order()
         misses = sorted(
             ((arm, miss) for arm, summary in self.arms.items() for miss in summary.misses()),
             key=lambda pair: order(pair[0], pair[1]),
         )
         if misses:
-            lines.append(f"top misses ({min(len(misses), QUIET_MISSES)} of {len(misses)}):")
+            lines.append(f"top misses ({min(len(misses), QUIET_MISSES)} of {len(misses)} failed trials):")
             for arm, miss in misses[:QUIET_MISSES]:
-                who = "" if len(self.arms) == 1 else f"{arm}, "
-                lines.append(f"  case {miss.case} ({who}repeat {miss.repeat}): {'; '.join(miss.missed_because)}")
+                who = "" if len(self.arms) == 1 else f"{_shown_arm_name(arm)}, "
+                lines.append(f"  case {miss.case} ({who}repeat {miss.repeat}): {one_line('; '.join(self._why(miss)))}")
         lines += self.disclosures
         lines.append(f"stored in {self.store}, scope {self.scope_id!r}")
         return "\n".join(lines)
+
+    def _why(self, miss: CaseResult) -> list[str]:
+        """Why a miss missed, as the quiet print says it: a classifier's wrong label as the graded field's value, never
+        the whole answer it was read from (a runner's answer object can run to hundreds of characters).
+
+        A scored result whose classifier label did not match carries that reason first
+        (:meth:`~threetears.evals.analysis.summary.CaseResult.of`); every other reason is printed as the summary has it.
+        The label is the one the run graded, read off the result's confusion cell; an answer it read no label off is
+        shown cut to :data:`_MISS_ANSWER_CHARS`, as is a label that runs past it.
+        """
+        reasons = list(miss.missed_because)
+        field_name, answer = self._classifier, miss.answer
+        if field_name is None or miss.outcome != "scored" or miss.scores.get(MATCH_MEASURE) is not False or not reasons:
+            return reasons
+        cell = miss.scores.get(CONFUSION_CELL_MEASURE)
+        read = confusion_of(cell) if isinstance(cell, str) else None
+        label = read[1] if read is not None else predicted_label(answer, field_name)
+        if label == UNUSABLE_ANSWER:
+            graded = f"answered no {field_name} it can be graded on: {_compact(answer)}"
+        elif isinstance(answer, Mapping):
+            graded = f"answered {field_name} {_cut(repr(label))}"
+        else:
+            # The answer is its own label, so the label is what is shown.
+            graded = f"answered {_cut(repr(label))}"
+        expected = "" if miss.expected is None else f", expected {miss.expected!r}"
+        return [f"{graded}{expected}", *reasons[1:]]
 
     def _page_order(self) -> Callable[[str, CaseResult], tuple[str, int, str, int, int]]:
         """Where an arm's result stands in the page's Trials order (:func:`trial_order`), so the console lists misses
@@ -424,9 +566,10 @@ class Result:
                 check.name: "the guardrail the other arms are decided against"
                 for check in self.guardrail_readings.checks
             }
-        return {row["measure_id"]: f"guardrail {row['outcome']} against {self.control}" for row in self.guardrails(arm)}
+        control = _shown_arm_name(self.control)
+        return {row["measure_id"]: f"guardrail {row['outcome']} against {control}" for row in self.guardrails(arm)}
 
-    def _measure_texts(self, summary: EvalSummary, arm: str) -> list[str]:
+    def _measure_texts(self, forms: PageForms, summary: EvalSummary, arm: str) -> list[str]:
         """Each measure's line, the classifier's ``match`` under its field's name and its matrix's count left out.
 
         In a comparison a guardrail's line says what the comparison decided on it for ``arm``; alone, that a guardrail
@@ -436,29 +579,123 @@ class Result:
         lines = (
             summary.measure_lines if len(self.arms) == 1 else summary.compared_measure_lines(self._guardrail_said(arm))
         )
+        held = {measure.name: measure for measure in summary.measures}
+        catalog = self.report.bundle.measure_catalog
         for measure in lines:
             if measure.name == CONFUSION_CELL_MEASURE or measure.state == "not_carried":
                 continue
-            text = measure.text
-            if measure.name == MATCH_MEASURE and self.fields:
-                text = f"{self.fields[0]}{text.removeprefix(MATCH_MEASURE)}"
-            texts.append(text)
+            # prose-canary: allow — MeasureLine.text is the summary's own line, not anything a model wrote
+            said = measure.text.removeprefix(measure.name)
+            figures = held.get(measure.name)
+            descriptor = catalog.get(measure.name) or METRIC_DESCRIPTORS.get(measure.name)
+            if measure.state == "measured" and figures is not None:
+                counted = _counted_rate(measure.name, descriptor)
+                rate = counted or (descriptor is not None and reads_as_share(descriptor))
+                level = self._page_rate(measure.name, figures.mean) if rate else None
+                said = _measured_text(
+                    forms, measure.name, said, figures.mean, figures.n, rate=rate, counted=counted, level=level
+                )
+            # Each measure under the name the page gives it, never its key.
+            texts.append(f"{self._printed_name(measure.name)}{said}")
         if (omitted := summary.uncarried_text) is not None:
             texts.append(omitted)
         return texts
 
+    def _full_summary(self, forms: PageForms, summary: EvalSummary, totals: MoneyRuler, roles: MoneyRuler) -> str:
+        """An arm's whole summary as the full print writes it: the run summary's lines
+        (:meth:`~threetears.evals.analysis.summary.EvalSummary.render`), each figure in the form the quiet print and
+        the page state it (the review's P43, A4): a measure, its strata's included, under the page's name, a rate in
+        percent with its count of trials; each label's precision and recall in percent with their intervals; a judged
+        dimension as the quiet print says it; every amount of spend in the form of its set, a total as the page's test
+        cost. Every other line is the summary's own."""
+        said: dict[str, str] = {}
+        said.update(
+            zip(summary.label_lines, (_label_text(forms, statistics) for statistics in summary.labels), strict=True)
+        )
+        said.update(
+            zip(
+                summary.dimension_lines,
+                (_dimension_text(forms, dimension) for dimension in summary.judged),
+                strict=True,
+            )
+        )
+        if summary.total_spend_text is not None and summary.total_cost_usd is not None:
+            total = forms.money_on(totals, summary.total_cost_usd).text
+            said[summary.total_spend_text] = f"total spend: {total}, the results' cost"
+        spent = {role.role: role.cost_usd for role in summary.spend if role.cost_usd is not None}
+        lines = []
+        for line in summary.render().splitlines():
+            body = line.lstrip()
+            indent = line[: len(line) - len(body)]
+            if body in said:
+                body = said[body]
+            elif (measured := _FULL_MEASURE.fullmatch(body)) is not None:
+                body = self._full_measure(forms, measured)
+            elif (role := _ROLE_SPEND.fullmatch(body)) is not None and role["role"] in spent:
+                body = f"{role['role']} spend: {forms.money_on(roles, spent[role['role']]).text}{role['rest']}"
+            lines.append(indent + body)
+        return "\n".join(lines)
+
+    def _full_measure(self, forms: PageForms, measured: re.Match[str]) -> str:
+        """A run summary's measure line as the full print writes it: under the page's name, a rate in percent with its
+        count of trials, any other measure with its trials named (:func:`_measured_text`)."""
+        name = measured["name"]
+        descriptor = self.report.bundle.measure_catalog.get(name) or METRIC_DESCRIPTORS.get(name)
+        counted = not measured["unit"] and _counted_rate(name, descriptor)
+        rate = counted or (not measured["unit"] and descriptor is not None and reads_as_share(descriptor))
+        mean = float(measured["mean"]) if rate else 0.0
+        level = self._page_rate(name, mean) if rate else None
+        said = _measured_text(
+            forms, name, measured["said"], mean, int(measured["n"]), rate=rate, counted=counted, level=level
+        )
+        return f"{self._printed_name(name)}{said}"
+
     def _verdict_line(self) -> str:
-        """The first line: what the comparison decided, or how the one arm's cases came out (:func:`_cases_verdict`)."""
-        if len(self.arms) == 1:
-            (arm,) = self.arms
-            order = self._page_order()
-            return f"{self.name}: {_cases_verdict(self.summary, order=lambda result: order(arm, result))}"
-        decided = [row for row in self.contrasts() if row["outcome"] in ("improved", "regressed", "equivalent")]
-        if not decided:
-            others = " or ".join(arm for arm in self.arms if arm != self.control)
-            return f"{self.name}: nothing separated {others} from {self.control}"
-        # The report's words, which name both arms: ``Accuracy: v2 better than v1``.
-        return f"{self.name}: " + "; ".join(f"{row['reading']}: {row['verdict']}" for row in decided)
+        """The first line: the eval's name, then its aspect's verdict line as its page prints it
+        (:func:`~threetears.evals.analysis.report.build.aspect_verdict`): one arm's pass rate as its count, or what the
+        comparison came to on the measure the eval's first grader reads, what else the evidence tells apart, and each
+        guardrail an arm is not shown safe on. The page, its lead, this line and the exit line say one sentence.
+        """
+        return f"{self.name}: {self._verdict().text}"
+
+    def _verdict(self) -> VerdictLine:
+        """The eval's verdict line, as its aspect's page opens with it, led on its graders' order."""
+        return aspect_verdict(
+            self.report.bundle,
+            measure_order=self.grader_readings,
+            arm_labels=self.arm_labels or None,
+            forms=self._aspect_forms(),
+        )
+
+    def _page_rate(self, measure: str, rate: float | None) -> str | None:
+        """A measure's rate as :attr:`page` prints an arm's level of it (one form per measure, number rule 1): at the
+        places the code page's scorecard reads it at where that states it (one arm's campaign), else the places the
+        aspect's page reads its contrasts' levels at (a comparison's); None where neither states it, or for no rate.
+        """
+        if rate is None:
+            return None
+        code = PageForms.of_campaign(self.page.readings, {fold.aspect: fold.report for fold in self.page.aspects})
+        if any((form.key, form.kind) == (measure, "measure") for form in code.measures):
+            return code.level(measure, rate).text
+        aspect = self._aspect_forms()
+        places = aspect.contrast_places(measure, "measure")
+        if places is None:
+            return None
+        bundle = self.report.bundle
+        ruler = report_rulers(bundle_decision_surface(bundle), bundle.measure_catalog).of(measure, "measure")
+        return aspect.ruled_level(ruler, rate, places, measure=measure, kind="measure").text
+
+    def _aspect_forms(self) -> PageForms:
+        """The aspect page's forms, over the campaign's set of each measure, as the campaign's page reads them: so the
+        verdict line, the contrasts' rows and :attr:`report` print every figure as :attr:`page` does."""
+        return _aspect_forms(self.page, self.report.bundle)
+
+    def _printed_name(self, measure: str) -> str:
+        """A measure as the page names it (:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`):
+        ``Accuracy``, ``Number score``. The classifier's ``match`` is its accuracy, which the page leads on, so it is
+        named as the page names that."""
+        key = ACCURACY_MEASURE if measure == MATCH_MEASURE and self._classifier is not None else measure
+        return measure_name_of(self.report.bundle, key)
 
     def write(self, out_dir: Path | str) -> dict[str, Path]:
         """Write the campaign's page as one self-contained file, its Markdown, its JSON and its aspect's bundle, and the
@@ -490,6 +727,19 @@ class Result:
             return 4
         return 0
 
+    def why_failed(self) -> str | None:
+        """Why :meth:`exit_code` is 4, in one line and the report's words: the result's sentence, as the page leads
+        with it and the first line prints it, then ``the gate failed on ...``, naming each verdict it failed on
+        (:meth:`gate`); ``None`` for any other exit code, whose cause the summary already says.
+        """
+        if self.exit_code() != 4:
+            return None
+        lead, gate = self._verdict().lead, self.gate()
+        # A gate failing only on what the sentence already says names it once, in the sentence.
+        if all(f"{failed.heading}: {failed.words}" in lead for failed in gate.failures):
+            return f"{lead} The gate failed on it."
+        return f"{lead} The gate {gate.why()}."
+
     def contrasts(self, reading: str | None = None) -> list[dict[str, Any]]:
         """Every contrast against the control the report tested, the ones its page leaves out under the case floor too.
 
@@ -508,7 +758,7 @@ class Result:
             code branches on); empty when the report tested nothing.
         :rtype: list[dict[str, Any]]
         """
-        rows = contrast_rows(self.report.bundle)
+        rows = contrast_rows(self.report.bundle, forms=self._aspect_forms(), arm_labels=self.arm_labels or None)
         typed = [verdict for verdict in self.report.verdicts if verdict.kind == "contrast"]
         arms = self.contrast_arms if len(self.contrast_arms) == len(rows) else (None,) * len(rows)
         keys = self.contrast_measures if len(self.contrast_measures) == len(rows) else (None,) * len(rows)
@@ -570,17 +820,27 @@ class Result:
         :ptype reading: str | None
         :return: One row per arm and reading, keyed ``arm`` (the arm, by its key in :attr:`arms`), ``label`` (the arm as
             the report names it), ``reading``, ``all`` (the figure over every case) and ``strata`` (the figure
-            over each stratum's cases alone, by stratum name, the cases declaring none under ``"(no stratum)"``;
-            a stratum the arm has no case in is absent); empty when no case declares a stratum.
+            over each stratum's cases alone, by stratum: its declared name, else its id (``edge_case``), as the
+            case declared it, never the name the page prints (``edge case``); the cases declaring none under
+            ``"(no stratum)"``; a stratum the arm has no case in is absent); empty when no case declares a stratum.
         :rtype: list[dict[str, Any]]
         :raises ValueError: ``arm`` names no arm.
         """
         if arm is not None:
             _refuse_an_unknown_arm(self.arms, arm)
         tables = [block for block in self.report.blocks if isinstance(block, TableBlock) and block.name == "strata"]
+        # Each stratum by its key here (its declared name, else its id), from the name its column prints.
+        bundle = self.report.bundle
+        ids = sorted(
+            {held.stratum for cell in bundle.cell_measures for held in cell.strata if held.stratum is not None}
+        )
+        keyed = {
+            printed: bundle.stratum_names.get(stratum, stratum)
+            for stratum, printed in stratum_names(ids, bundle.stratum_names).items()
+        }
         rows: list[dict[str, Any]] = []
         for table in tables:
-            headers = {column.key: column.header for column in table.columns}
+            headers = {column.key: keyed.get(column.header, column.header) for column in table.columns}
             for row in table.values():
                 label = str(row["arm"]).removeprefix("▸ ")
                 key = self.labelled_arms.get(label)
@@ -662,26 +922,51 @@ class Result:
             return ArmGuardrails(breached=[], undecided=[], held=[])
         return self.guardrail_readings.of_arm(variant)
 
-    async def against(self, control: str, *, name: str | None = None, created_by: str = CREATED_BY) -> Result:
-        """The same runs read against another control: a second campaign over them, with no run repeated.
+    async def against(
+        self,
+        control: str,
+        *,
+        name: str | None = None,
+        created_by: str = CREATED_BY,
+        question: str | None = None,
+        margin: float | None = None,
+    ) -> Result:
+        """The same runs read against another control, or a question sharpened once they ran: a second campaign over
+        them, with no run repeated.
 
         The engine tests every arm against one control, so in a factorial the effect of one factor at the control's
         level of the other is in :attr:`report`, and its effect at another level is read here — the prompt's effect on
         the second model is the contrast against the first prompt on that model. Each campaign Holm-corrects its own
         contrasts, so the two reports are two families, not one.
 
-        :param control: The arm to test every other against, by name.
+        A question (or its margin) declared here is asked of runs whose readings already exist, as an exploratory run
+        read again once its question sharpens is: never refused, and read as asked, its page saying once that its
+        criteria were set after the results there existed, so they were not fixed in advance.
+
+        :param control: The arm to test every other against, by name; this result's own control reads the same arms
+            again.
         :ptype control: str
         :param name: The new campaign's name; ``None`` names it after this one and the new control.
         :ptype name: str | None
         :param created_by: Who the campaign and its control are recorded as created by.
         :ptype created_by: str
+        :param question: The question the new campaign asks; ``None`` asks this result's own, with its margin.
+        :ptype question: str | None
+        :param margin: The question's margin, in the measure's units, as :class:`~threetears.evals.Eval`'s ``margin``;
+            ``None`` keeps this result's own where no new question is given, and declares none with a new one.
+        :ptype margin: float | None
         :return: A result over the same arms and runs, against ``control``.
         :rtype: Result
-        :raises ValueError: ``control`` names no arm.
+        :raises ValueError: ``control`` names no arm; a blank question; a margin outside 0 to 1, or with no question
+            to read it under.
         :raises ValidationFailedError: The host refuses the campaign's declaration.
         """
         _refuse_an_unknown_arm(self.arms, control)
+        if question is not None and not question.strip():
+            raise ValueError("an eval's question is filed on its campaign, and this one is blank")
+        asked = question if question is not None else self.question
+        held = margin if margin is not None or question is not None else self.margin
+        refuse_an_unusable_margin(held, asked)
 
         def declared() -> Result:
             campaign = get_campaign(self.host.storage, self.campaign_id, self.scope_id)
@@ -698,21 +983,27 @@ class Result:
                 kind=self.kind,
                 control=control,
                 scope_id=self.scope_id,
-                name=name or f"{self.name}, against {control}",
+                name=name or f"{self.name}, against {_shown_arm_name(control)}",
                 behavior=campaign.behavior,
                 repetitions=design.intended_repetitions if design is not None else None,
                 created_by=created_by,
                 guardrail_margins=design.guardrail_margins if design is not None else (),
                 measure_latency=design.measure_latency if design is not None else False,
+                question=asked,
+                margin=held,
+                measure_order=self.grader_readings,
             )
-            return replace(
-                again,
-                store=self.store,
-                fields=self.fields,
-                judge=self.judge,
-                disclosures=self.disclosures,
-                calibrations=self.calibrations,
-                to_label=self.to_label,
+            return with_judge_examples(
+                replace(
+                    again,
+                    store=self.store,
+                    fields=self.fields,
+                    judge=self.judge,
+                    disclosures=self.disclosures,
+                    calibrations=self.calibrations,
+                    to_label=self.to_label,
+                ),
+                self.judge_examples,
             )
 
         # It reads this result's campaign and files a new one, so it runs off the loop.
@@ -732,47 +1023,198 @@ def _levels_of(
     return levels
 
 
+def refuse_an_unusable_margin(margin: float | None, question: str | None) -> None:
+    """Refuse a margin no reading could carry: one that is no share strictly between 0 and 1, or one with no question
+    to read it under.
+
+    :param margin: The margin, in the measure's units (a share of 0 to 1); ``None`` declares none.
+    :ptype margin: float | None
+    :param question: The question it would be read under; ``None`` asks none.
+    :ptype question: str | None
+    :raises ValueError: Naming what is wrong with it.
+    """
+    if margin is None:
+        return
+    if isinstance(margin, bool) or not isinstance(margin, int | float) or not math.isfinite(margin):
+        raise ValueError(f"margin= is a share of the pass rate strictly between 0 and 1, not {margin!r}")
+    if not 0 < margin < 1:
+        raise ValueError(
+            f"margin= is a share of the pass rate strictly between 0 and 1 (0.05 is 5 points), not {margin!r}"
+        )
+    if question is None:
+        raise ValueError(
+            "margin= is how far a candidate may fall below the control before the question's answer reads it worse, "
+            "and this eval asks no question for it to apply to: pass question= with it, or leave margin out"
+        )
+
+
 def _refuse_an_unknown_arm(arms: Mapping[str, Any], arm: str) -> None:
     if arm not in arms:
         raise ValueError(f"{arm!r} names no arm; the arms are {', '.join(map(repr, arms))}")
 
 
-def _cases_verdict(
-    summary: EvalSummary, *, order: Callable[[CaseResult], tuple[str, int, str, int, int]] | None = None
+#: A measure's line as the summary writes it: its mean, its count, its range, anything left out, and what follows.
+_MEASURE_LINE = re.compile(
+    r"^: mean (?P<mean>\S+) \(n=(?P<n>\d+), min (?P<low>[^,]+), max (?P<high>[^,)]+)(?P<rest>[^)]*)\)(?P<tail>.*)$"
+)
+
+
+#: A run summary's measure line, its name and what follows it: a measure carried by some result, with its mean.
+_FULL_MEASURE = re.compile(
+    r"^(?P<name>[^\s:]+(?: [^\s:]+)*?)(?P<said>: mean (?P<mean>-?[\d.]+)(?P<unit>[^\s(]*(?: [^\s(]+)?) \(n=(?P<n>\d+), .*)$"
+)
+
+#: A run summary's spend line for one role: ``candidate spend: $0.00175 over 40 call(s)``.
+_ROLE_SPEND = re.compile(r"^(?P<role>[\w-]+) spend: [<>]? ?\$[\d.,]+(?P<rest> over .*)$")
+
+
+def _aspect_forms(page: CampaignReport, bundle: AnalysisContextBundle) -> PageForms:
+    """An aspect's page's forms over its campaign's set of each measure, as the campaign's page lays the aspect out
+    (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_aspects`, its aspects and the code page's readings)."""
+    return PageForms.of_aspects([fold.report.bundle for fold in page.aspects], page.readings)[bundle.aspect]
+
+
+def _counted_rate(name: str, descriptor: MetricDescriptor | None) -> bool:
+    """Whether a measure is a rate counted over trials, which the quiet print states with its count: a label match,
+    a measure that reads as a rate (:func:`~threetears.evals.kernel.metrics.reads_as_rate`), or a boolean's share."""
+    return (
+        name == MATCH_MEASURE
+        or reads_as_rate("measure", name, descriptor=descriptor)
+        or (descriptor is not None and descriptor.data_type == "boolean")
+    )
+
+
+def _measured_text(
+    forms: PageForms,
+    measure: str,
+    said: str,
+    mean: float | None,
+    n: int,
+    *,
+    rate: bool,
+    counted: bool = True,
+    level: str | None = None,
 ) -> str:
-    """How one arm's cases came out, in plain words: passed of usable, the cases missed, the cases excluded by cause.
+    """A measure's figures as the quiet print says them, after its name: a rate in percent (number rule 4, as every
+    page reads it), with its count of trials where it is counted over them (``: 83%, 75 of 90 trials``), else with
+    its trials named (a host's fraction: ``: 38% (12 trials)``), the level as the campaign's page prints it (``level``,
+    one form per measure, number rule 1) where the page states it, else as a lone rate; any other measure's mean with
+    its trials named (``: mean 950 ms (90 trials, min 700 ms, max 1.2 s)``). Anything the line leaves out, and what
+    follows it (a guardrail's standing), is kept."""
+    read = _MEASURE_LINE.fullmatch(said)
+    if read is None or mean is None:
+        return said
+    rest, tail = read["rest"].removeprefix(", "), read["tail"]
+    if rate:
+        if level is None:
+            level = forms.in_unit(100 * mean, PERCENT, role="level", measure=measure).text
+        if not counted:
+            return f": {level} ({n} trials{f', {rest}' if rest else ''}){tail}"
+        hits = f"{forms.hits(mean, n, measure=measure).text} of {n} trials"
+        return f": {level}, {hits}{f' ({rest})' if rest else ''}{tail}"
+    left = f", {rest}" if rest else ""
+    return f": mean {read['mean']} ({n} trials, min {read['low']}, max {read['high']}{left}){tail}"
 
-    The cases missed are listed in ``order``, a case by its first result's place (the page's, from
-    :meth:`Result._page_order`), else in the summary's.
 
-    Counted as the page counts them, off each repeat's :attr:`~threetears.evals.analysis.summary.CaseResult.state`,
-    which the page's own trial reader decided: a case is usable when any of its repeats was not lost, and passed when
-    none of those failed — every check the template declares passed on each. A case every repeat of which was lost is
-    counted under the cause its first repeat records.
-    """
-    repeats: dict[str, list[CaseResult]] = {}
-    for result in summary.results():
-        repeats.setdefault(result.case, []).append(result)
-    usable = 0
-    missed: list[str] = []
-    excluded: dict[str, int] = {}
-    for case, results in repeats.items():
-        kept = [result for result in results if result.state != "lost"]
-        if not kept:
-            cause = (results[0].errors or ["no reason recorded"])[0]
-            excluded[cause] = excluded.get(cause, 0) + 1
-            continue
-        usable += 1
-        if any(result.state == "failed" for result in kept):
-            missed.append(case)
-    if order is not None:
-        missed.sort(key=lambda case: min(order(result) for result in repeats[case]))
-    text = f"{usable - len(missed)}/{usable} cases passed; {len(missed)} {'miss' if len(missed) == 1 else 'misses'}"
-    if missed:
-        text += f": {', '.join(missed[:QUIET_MISSES])}"
-        if len(missed) > QUIET_MISSES:
-            text += f", and {len(missed) - QUIET_MISSES} more"
-    return text + "".join(f"; {count} excluded: {cause}" for cause, count in excluded.items())
+def _proportion_text(
+    forms: PageForms,
+    name: str,
+    rate: float | None,
+    hits: int,
+    n: int,
+    cases: int,
+    interval: tuple[float, float] | None,
+) -> str:
+    """A rate with its count of trials, its cases where they repeat, and its interval, in percent."""
+    if rate is None:
+        return f"{name} none (no trial)"
+    over = f" over {cases} case{'' if cases == 1 else 's'}" if cases < n else ""
+    # The rate and its interval at one precision, its interval's own (number rules 1 to 3): ``90% (… 58 to 98%)``.
+    level, ends = forms.lone_rate(100 * rate, None if interval is None else (100 * interval[0], 100 * interval[1]))
+    return f"{name} {level.text} ({hits} of {n} trials{over}{'' if ends is None else f', {ends.text}'})"
+
+
+def _label_text(forms: PageForms, statistics: LabelStatistics) -> str:
+    """One label's line as the quiet print says it: precision and recall in percent with their counts and intervals
+    (``precision 100% (15 of 15 trials over 5 cases, [43.8%, 100%])``), then F1 in percent."""
+    label = statistics.label
+    shown = repr(label) if label != label.strip() or len(label.splitlines()) > 1 else label
+    precision = _proportion_text(
+        forms,
+        "precision",
+        statistics.precision,
+        statistics.correct,
+        statistics.predicted,
+        statistics.predicted_cases,
+        statistics.precision_interval,
+    )
+    recall = _proportion_text(
+        forms,
+        "recall",
+        statistics.recall,
+        statistics.correct,
+        statistics.expected,
+        statistics.expected_cases,
+        statistics.recall_interval,
+    )
+    f1 = "F1 none" if statistics.f1 is None else f"F1 {forms.in_unit(100 * statistics.f1, PERCENT, role='level').text}"
+    return f"{shown}: {precision}, {recall}, {f1}"
+
+
+def _dimension_text(forms: PageForms, dimension: DimensionSummary) -> str:
+    """One judged dimension's line as the quiet print says it: under the name the page gives it
+    (:func:`~threetears.evals.analysis.report.words.judged_heading`) and its scale, a pass/fail one in percent with its
+    count of trials, a scored one's mean with its trials named, and how often the judge could not tell."""
+    scale = {"ordinal": ", scored 1-5", "pass_fail": ", scored pass/fail", None: ""}[dimension.scale]
+    line = f"{judged_heading(dimension.name)}{scale}: "
+    if dimension.mean is None or dimension.minimum is None or dimension.maximum is None:
+        line += "no result carries a score"
+    elif dimension.scale == "pass_fail":
+        line += (
+            f"{forms.in_unit(100 * dimension.mean, PERCENT, role='level', measure=dimension.name, kind='judged').text}, "
+            f"{forms.hits(dimension.mean, dimension.n, measure=dimension.name, kind='judged').text} of "
+            f"{dimension.n} trials"
+        )
+    else:
+        line += (
+            f"mean {forms.lone(dimension.mean, measure=dimension.name, kind='judged').text} ({dimension.n} trials, "
+            f"min {forms.lone(dimension.minimum, measure=dimension.name, kind='judged').text}, "
+            f"max {forms.lone(dimension.maximum, measure=dimension.name, kind='judged').text})"
+        )
+    if dimension.cannot_tell:
+        line += f", the judge could not tell on {dimension.cannot_tell}"
+    return line
+
+
+def _compact(answer: Any) -> str:
+    """An answer the graded field cannot be read off, as a miss line shows it, cut by :func:`_cut`: a mapping as
+    compact JSON without its ``id``, the text an answer JSON could not hold was stored as (its ``repr``) as it is, and
+    any other value as compact JSON."""
+    if isinstance(answer, str):
+        return _cut(answer)
+    if isinstance(answer, Mapping):
+        answer = {key: value for key, value in answer.items() if key != "id"}
+    return _cut(json.dumps(answer, separators=(",", ":"), default=str))
+
+
+def _cut(text: str) -> str:
+    """``text`` cut at :data:`_MISS_ANSWER_CHARS`, an ellipsis marking the cut."""
+    return text if len(text) <= _MISS_ANSWER_CHARS else text[: _MISS_ANSWER_CHARS - 1] + "…"
+
+
+def _total_spend(forms: PageForms, summary: EvalSummary, totals: MoneyRuler, roles: MoneyRuler) -> str | None:
+    """The total-spend line, split by role where more than one role the total counts spent, each role's dollars read
+    off its usage rows (:attr:`~threetears.evals.analysis.summary.EvalSummary.spend`): the total in ``totals``' one
+    form, the form the page writes the arms' test costs in, each role's in ``roles``': ``total spend: $0.017, the
+    results' cost (candidate $0.0018, judge $0.015)``. A total unknown in full as the summary says it."""
+    said = summary.total_spend_text
+    if said is None or summary.total_cost_usd is None:
+        return said
+    said = f"total spend: {forms.money_on(totals, summary.total_cost_usd).text}, the results' cost"
+    spent = [(role.role, role.cost_usd) for role in summary.spend if role.counted and role.cost_usd]
+    if len(spent) < 2:
+        return said
+    return f"{said} ({', '.join(f'{role} {forms.money_on(roles, cost).text}' for role, cost in spent)})"
 
 
 def _exclusion_causes(summary: EvalSummary) -> list[str]:
@@ -885,6 +1327,35 @@ def calibrate(
     return calibrations
 
 
+#: The id the page's line on how the judge graded its examples carries.
+_JUDGE_EXAMPLES_ANCHOR = "judge-examples"
+
+
+def with_judge_examples(result: Result, examples: JudgeExamples | None) -> Result:
+    """``result`` carrying how its judge graded its examples, its page saying so; ``result`` itself for ``None``.
+
+    The page says it in Design & provenance, where it states how far the judge's scores can be read (the judge's
+    calibration against people's labels), after that table: one sentence, then the misses. It is the eval's reading,
+    taken in its call and not stored with the runs, so the line is set on this result's page; a page read again from
+    the store has none, as it has no ``to_label.csv``.
+
+    :param result: The result.
+    :ptype result: Result
+    :param examples: How the judge graded its examples, or ``None`` where it has none.
+    :ptype examples: JudgeExamples | None
+    :return: The result, its page with the line.
+    :rtype: Result
+    """
+    if examples is None:
+        return result
+    line = DisclosureBlock(
+        section="provenance", source="calibration", text=examples.sentence(), anchor=_JUDGE_EXAMPLES_ANCHOR
+    )
+    return replace(
+        result, judge_examples=examples, page=result.page.model_copy(update={"blocks": [*result.page.blocks, line]})
+    )
+
+
 def judged_rows(
     host: EvalHost, arms: Mapping[str, EvalSummary], scope_id: str, case_names: Mapping[str, str]
 ) -> list[dict[str, str]]:
@@ -928,6 +1399,17 @@ def judged_rows(
     return rows
 
 
+def _campaign_name(name: str) -> str:
+    """An eval's name as its campaign holds it: whole within :data:`DECLARED_NAME_CHARS`, else cut at a word to fit,
+    an ellipsis marking the cut (its first characters where its first word alone runs past)."""
+    if len(name) <= DECLARED_NAME_CHARS:
+        return name
+    text = " ".join(name.split())
+    room = text[: DECLARED_NAME_CHARS - 1]
+    cut = room.rsplit(" ", 1)[0] if " " in room else room
+    return cut.rstrip(" ,;:.-") + "…"
+
+
 def declare(
     host: EvalHost,
     arms: Mapping[str, EvalSummary],
@@ -944,8 +1426,19 @@ def declare(
     guardrail_margins: Sequence[GuardrailMargin] = (),
     measure_latency: bool = False,
     declared_at: str | None = None,
+    question: str | None = None,
+    margin: float | None = None,
+    measure_order: Sequence[str] = (),
 ) -> Result:
     """File the arms' runs as one campaign, one axis per factor, designate ``control``, and read its report.
+
+    ``question`` is the one sentence the comparison answers, filed as the campaign's question: every reading on the
+    aspect is then read as asked rather than as a lead. ``margin`` (a share of 0 to 1, the measure's units) is the
+    author's own, filed on the aspect in points: a non-inferiority question, the pass rate's drop read against it.
+    ``None`` files none, and nothing is assumed: a question with no margin is a superiority question, its drop read
+    against zero. ``question`` ``None`` asks none, and a margin without one is refused. ``measure_order`` is each
+    grader's measure in the order the eval lists them (:attr:`Result.grader_readings`), filed on the aspect's design so
+    the campaign's page leads on the first of them, as the printed line does; empty files none.
 
     ``declared_at`` is when the caller fixed the design and the control, where that was before its arms ran: an eval
     fixes both in the call that launches them, so the campaign filed once they have run is written once, dated then
@@ -960,17 +1453,22 @@ def declare(
     """
     ordered = [control, *(arm for arm in arms if arm != control)]
     prefix = host.profile.kind_contract(kind).lever_prefix
+    # An arm named as factors is labelled by them on the campaign, every arm, so no page names one by its variant's
+    # levers (`callable.effort=high, callable.prompt=v1`, sorted, the engine's kind in each lever's name).
+    shown = {arm: _shown_arm_name(arm) for arm in ordered if coordinates(arm) is not None}
     axes = []
     for factor in factors:
         values = list(dict.fromkeys(levels[arm][factor] for arm in ordered))
         axes.append(
             {
                 "axis_id": factor if factor in _UNPREFIXED else f"{prefix}.{factor}",
+                # What every page calls the lever: the factor as the eval's author wrote it, never the engine's key.
+                "reader_name": factor,
                 "values": [{"content": value, "display": value} for value in values],
                 "rationale": (
-                    f"does any arm do better than {control}"
+                    f"does any arm do better than {shown.get(control, control)}"
                     if len(factors) == 1
-                    else f"does moving {factor} change what the arms score, against {control}"
+                    else f"does moving {factor} change what the arms score, against {shown.get(control, control)}"
                 ),
             }
         )
@@ -981,22 +1479,49 @@ def declare(
         design["measure_latency"] = True
     if guardrail_margins:
         design["guardrail_margins"] = [entry.model_dump() for entry in guardrail_margins]
+    if measure_order:
+        design["measure_order"] = list(dict.fromkeys(measure_order))
     # One aspect, the eval's: every arm ran the one template the eval authored, so the aspect names it (a judged
-    # guardrail's margin is declared on a dimension of its rubric, which the declaration gate reads from it). The eval
-    # asks no question, so it declares no margin on the pass rate and none is assumed: its readings are never shown
-    # worse.
+    # guardrail's margin is declared on a dimension of its rubric, which the declaration gate reads from it). A margin
+    # on the pass rate is filed only where the eval's author wrote one; none is ever assumed.
     aspect: dict[str, Any] = {
         "label": aspect_label_for(behavior),
         "run_ids": [summary.run_id for summary in arms.values()],
         "design": design,
     }
+    refuse_an_unusable_margin(margin, question)
+    if margin is not None:
+        aspect["margin"] = round(100 * margin, 10)
     if arms[control].template_id is not None:
         aspect["template_id"] = arms[control].template_id
-    # The control arm is named as the eval names it, so every page reads `hasty (control) vs careful`.
-    control_arm = {"label": control, "role": "control", "from_run_ids": [arms[control].run_id]}
+    # The control arm is named as the eval names it, so every page reads `hasty (control) vs careful`; an arm named as
+    # factors by its factors, and every other such arm with it (`Prompt v1, effort low (control) vs Prompt v2, ...`).
+    declared_arms = [
+        {
+            "label": shown.get(arm, arm),
+            "role": "control" if arm == control else "candidate",
+            "from_run_ids": [arms[arm].run_id],
+        }
+        for arm in ordered
+        if arm == control or arm in shown
+    ]
+    # The campaign's name is held to the cap every write of one is (a qualifier beside its title): an eval's name that
+    # runs past it is cut at a word there, and kept whole in the campaign's description. The result keeps it whole.
+    stored = _campaign_name(name)
+    defined: dict[str, Any] = {
+        "name": stored,
+        "subject_id": name,
+        "behavior": behavior,
+        "aspects": [aspect],
+        "arms": declared_arms,
+    }
+    if stored != name:
+        defined["description"] = name
+    if question is not None:
+        defined["question"] = question
     campaign = create_campaign(
         host.storage,
-        {"name": name, "subject_id": name, "behavior": behavior, "aspects": [aspect], "arms": [control_arm]},
+        defined,
         scope_id=scope_id,
         created_by=created_by,
         profile=host.profile,
@@ -1007,15 +1532,29 @@ def declare(
     bundle = fold.report.bundle
     # The same bundle laid out alone, its arms named by their variants as the eval names them, not by the campaign's
     # labels the page's fold reads.
-    report = build_code_only_report(bundle, assembled_at=fold.report.source.generated_at, campaign_name=campaign.name)
     arm_variants = {
         arm: variant
         for arm, summary in arms.items()
         if (variant := variant_key_of_run(list_results(host.storage, summary.run_id, scope_id))) is not None
     }
+    # Its arms tagged as the campaign's page tags them, in the order the eval gives them (the control first, as the
+    # campaign and its report document list them), so an arm is one letter and one colour on all three pages.
+    control_key = next((arm.variant_key for arm in campaign.arms if arm.role == "control"), None)
+    # An arm named as factors by the name the campaign labels it by, on this report as on the page.
+    arm_labels = {arm_variants[arm]: name for arm, name in shown.items() if arm in arm_variants}
+    report = build_code_only_report_in_forms(
+        bundle,
+        assembled_at=fold.report.source.generated_at,
+        campaign_name=campaign.name,
+        arm_labels=arm_labels or None,
+        arm_tags=campaign_arm_tags([bundle], control_key, arms=list(arm_variants.values())),
+        measure_order=list(dict.fromkeys(measure_order)),
+        # In the campaign page's forms, so the report reads every figure as the page's fold of it does.
+        forms=_aspect_forms(page, bundle),
+    )
     arm_of_variant = {variant: arm for arm, variant in arm_variants.items()}
     surface = bundle_decision_surface(bundle)
-    labels = report_cell_labels(bundle)
+    labels = report_cell_labels(bundle, arm_labels=arm_labels or None)
     labelled_arms = {
         labels[cell_ref(cell.variant_key, cell.apparatus_class_id)]: arm_of_variant.get(cell.variant_key)
         for cell in surface.cells
@@ -1042,6 +1581,10 @@ def declare(
         guardrail_readings=bundle.guardrails,
         arm_variants=arm_variants,
         labelled_arms=labelled_arms,
+        arm_labels=arm_labels,
+        grader_readings=tuple(measure_order),
+        question=question,
+        margin=margin,
     )
 
 
@@ -1056,4 +1599,6 @@ __all__ = [
     "coordinates",
     "declare",
     "judged_rows",
+    "refuse_an_unusable_margin",
+    "with_judge_examples",
 ]

@@ -32,16 +32,25 @@ from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "compare-factors"
 
-#: Eight cases; the last four carry a second label's word, which only the careful rule reads past.
+#: Sixteen cases; the last eight carry a second label's word, which only the careful rule reads past. A gain on half
+#: the cases is a pass rate's, read on its bounded interval, which at eight cases still reaches zero: sixteen show it.
 CASES = [
     {"text": "refund please", "label": "billing"},
     {"text": "charged twice", "label": "billing"},
+    {"text": "refund for last month", "label": "billing"},
+    {"text": "charged the wrong card", "label": "billing"},
     {"text": "app crashes", "label": "bug"},
     {"text": "button broken", "label": "bug"},
+    {"text": "upload crashes", "label": "bug"},
+    {"text": "search box broken", "label": "bug"},
     {"text": "charged, but the page crashes", "label": "billing"},
     {"text": "refund page crashes", "label": "billing"},
     {"text": "crash after refund", "label": "billing"},
     {"text": "charged then crashed", "label": "billing"},
+    {"text": "refund form broken", "label": "billing"},
+    {"text": "charged and the app crashed", "label": "billing"},
+    {"text": "checkout crashes, refund me", "label": "billing"},
+    {"text": "charged though the button is broken", "label": "billing"},
 ]
 
 
@@ -139,7 +148,9 @@ ARMS = {
 
 
 async def _factorial(arms: Mapping[str, Any] | None = None, *, host: EvalHost | None = None) -> Result:
-    ev = Eval(CASES, ARMS if arms is None else arms, ["label"], k=2)
+    arms = ARMS if arms is None else arms
+    # Named as the cells read, as a title in these tests; an eval never builds that name itself.
+    ev = Eval(CASES, arms, ["label"], k=2, name=" vs ".join(arms))
     if host is not None:
         return await ev.run(host=host, scope=SCOPE)
     return await ev.run(store=":memory:", scope=SCOPE)
@@ -173,8 +184,8 @@ async def test_the_campaign_declares_one_axis_per_factor_at_the_levels_the_runs_
 async def test_every_arm_is_named_by_both_coordinates_and_tested_against_the_control() -> None:
     comparison = await _factorial()
     rows = {row["contrast"]: row for row in comparison.contrasts("accuracy")}
-    assert set(rows) == {"callable prompt v2, model a", "callable prompt v1, model b", "callable prompt v2, model b"}
-    assert {row["control"] for row in rows.values()} == {"callable prompt v1, model a"}
+    assert set(rows) == {"Model a, prompt v2", "Model b, prompt v1", "Model b, prompt v2"}
+    assert {row["control"] for row in rows.values()} == {"Model a, prompt v1"}
     # A row's figures are the page's, on its ruler: a share's change in points, and the row says so.
     assert all(row["delta"] == pytest.approx(50.0) for row in rows.values()), "the careful rule reads every case"
     assert {row["unit"] for row in rows.values()} == {"%"}
@@ -189,13 +200,13 @@ async def test_against_reads_the_same_runs_against_another_control_and_runs_noth
     assert len(off_loop(list_runs, comparison.host, SCOPE)) == n_runs
     assert on_b.campaign_id != comparison.campaign_id
     assert on_b.arms == comparison.arms and on_b.control == "model=b, prompt=v1"
-    assert on_b.name == f"{comparison.name}, against model=b, prompt=v1"
+    assert on_b.name == f"{comparison.name}, against Model b, prompt v1"
     rows = {row["contrast"]: row for row in on_b.contrasts("accuracy")}
-    assert rows["callable prompt v2, model b"]["control"] == "callable prompt v1, model b"
-    assert rows["callable prompt v2, model b"]["verdict"] == (
-        "callable prompt v2, model b and callable prompt v1, model b not separated"
+    assert rows["Model b, prompt v2"]["control"] == "Model b, prompt v1"
+    assert rows["Model b, prompt v2"]["verdict"] == (
+        "the evidence cannot tell Model b, prompt v2 and Model b, prompt v1 apart"
     )
-    assert rows["callable prompt v1, model a"]["delta"] == pytest.approx(-50.0)
+    assert rows["Model a, prompt v1"]["delta"] == pytest.approx(-50.0)
     with pytest.raises(ValueError, match="names no arm"):
         await comparison.against("model=c, prompt=v1")
 
@@ -255,7 +266,9 @@ async def test_a_callers_host_without_the_arm_lever_names_single_factor_arms_as_
 
 
 async def test_a_callers_host_declaring_the_arm_lever_names_arms_on_it() -> None:
-    host = as_host([Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"])], store=":memory:")
+    host = as_host(
+        [Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"], name="hasty vs careful")], store=":memory:"
+    )
     comparison = await _factorial({"hasty": hasty, "careful": careful}, host=host)
     (row,) = comparison.contrasts("accuracy")
     assert (row["arm"], row["contrast"], row["control"]) == ("careful", "careful", "hasty")

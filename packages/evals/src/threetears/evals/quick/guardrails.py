@@ -6,6 +6,7 @@ control in the contrasts table and traded against the other readings there. Some
 loss on one. Declared ``grader(..., guard=margin)`` or ``Judge(guard={dimension: margin})``, a reading is a guardrail instead: kept out of every contrast
 and composite, and decided on its own for each arm against the control, ``held``, ``breached`` or
 ``undecided``, in the report's guardrails table and :meth:`~threetears.evals.quick.result.Result.guardrails`.
+A guarded grader that returns a ``bool`` is still a check: a trial it fails is failed, in the pass rate and in pass^k.
 
 **A guardrail declares its margin and its direction, and neither is assumed.** The margin is how much worse
 than the control an arm may be and still hold, in the reading's own units (0.02 is two points on a pass rate);

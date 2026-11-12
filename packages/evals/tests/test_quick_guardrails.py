@@ -2,7 +2,7 @@
 
 A guardrail is declared with its margin, never assumed, and every grade is higher-is-better, so its direction is
 never stated; it joins no contrast; an arm that breached one is named above the contrasts as breached (a warning: code
-picks no arm), and the analysis writer cannot adopt it. A judged dimension is guarded on the :class:`~threetears.evals.Judge`
+picks no arm). A judged dimension is guarded on the :class:`~threetears.evals.Judge`
 (``guard={"dimension": margin}``), its margin declared on the campaign.
 
 Mutations that turn this file red: declaring a guardrail grader on a merit axis, or dropping its margin; reading a
@@ -15,36 +15,39 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any, Self
 
 import pytest
 
 from threetears.evals.analysis import (
-    EVAL_ANALYSIS_GEN_DEFAULT,
     DisclosureBlock,
     TableBlock,
-    generate_analysis,
     get_campaign,
-    inspect_campaign_bundle,
     report_markdown,
 )
-from threetears.evals.analysis.errors import SoundnessRefusal
 from threetears.evals.kernel import AspectDesign, GuardrailMargin, refuse_an_undeclarable_design
 from threetears.evals.schema import EvalTemplate, RubricDim, StopReason
 from threetears.evals.kernel.host import MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor
+from threetears.evals.analysis.style import check_held
 from threetears.evals.analysis.summary import CaseResult
 from threetears.evals import Eval, Judge, Result, grader
 from threetears.evals.quick import as_host
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.one_call import callable_host
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 #: Fifty cases: an arm alike with the control on every one is shown within 0.1 of it (the bounded test's interval
 #: at n=50 is ±0.081; at 40 it is ±0.1002, which does not), and twenty leaks in fifty are shown worse by more.
@@ -95,7 +98,8 @@ ARMS = {
 async def _compare(arms: Mapping[str, Any] | None = None, graders: list[Any] | None = None, **run: Any) -> Result:
     """Compare the arms (``current``, the control, first), graded by ``correct`` and the ``no_leak`` guardrail."""
     graded = [correct, grader(no_leak, guard=NO_LEAK)] if graders is None else graders
-    ev = Eval(CASES, ARMS if arms is None else arms, graded, k=1)
+    arms = ARMS if arms is None else arms
+    ev = Eval(CASES, arms, graded, k=1, name=" vs ".join(arms))
     if "host" not in run:
         run["store"] = ":memory:"
     return await ev.run(scope="quick-guardrails", **run)
@@ -121,12 +125,12 @@ class TestAScorerGuardrail:
         ]
         assert leaky[0]["delta"] == pytest.approx(-40.0) and leaky[0]["decision"].startswith("breached")
         (slip,) = comparison.guardrails("slip")
-        assert slip["decision"].startswith("undecided: not shown held, so not known to be safe")
+        assert slip["decision"].startswith("undecided: slip may be worse than current by more than the margin")
         # On the row's ruler, points for a pass/fail, as the margin column states it.
         assert "the interval reaches both sides of -10 pts, the declared margin" in slip["decision"]
         (same,) = comparison.guardrails("same")
         # The level sits once in the table's header; a pass/fail reads in points.
-        assert same["interval"] == "[-8.1, 8.1] pts", "a pass/fail is on 0 to 1: the bounded test's"
+        assert same["interval"] == "-8 to +8 pts", "a pass/fail is on 0 to 1: the bounded test's"
         assert comparison.guardrail_readings.checks[0].interval_basis == "bounded"
 
     async def test_the_standing_of_each_arm_and_none_for_the_control(self) -> None:
@@ -153,8 +157,9 @@ class TestAScorerGuardrail:
         for outcome in ("held", "breached", "undecided"):
             assert f"| {outcome}: " in markdown
         breach, undecided = _standing(comparison)
-        assert breach == "leaky breached the guardrail No leak score."
-        assert undecided == "slip is not known to be safe on the guardrail No leak score."
+        # The verdict line's own words for what each guardrail means for the decision.
+        assert breach == "leaky breaches the No leak score guardrail."
+        assert undecided == "slip may do worse than current on the No leak score guardrail."
         blocks = comparison.report.blocks
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "comparisons")
         assert [b.text for b in blocks[table - 2 : table]] == [breach, undecided], "directly above the contrasts"
@@ -166,10 +171,10 @@ class TestAScorerGuardrail:
         blocks = comparison.report.blocks
         assert comparison.contrasts() == [], "nothing but the guardrail is graded"
         named = [
-            i for i, b in enumerate(blocks) if isinstance(b, DisclosureBlock) and b.text.startswith("leaky breached")
+            i for i, b in enumerate(blocks) if isinstance(b, DisclosureBlock) and b.text.startswith("leaky breaches")
         ]
         assert len(named) == 1 and blocks[named[0]].section == "contrasts"
-        assert blocks[named[0]].text == "leaky breached the guardrail No leak score."
+        assert blocks[named[0]].text == "leaky breaches the No leak score guardrail."
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "guardrails")
         assert named[0] < table and all(b.section == "contrasts" for b in blocks[named[0] : table + 1])
 
@@ -216,74 +221,6 @@ class TestAScorerGuardrail:
         assert "grader(..., range=) beside the guard" in check.undecided_reason
 
 
-class TestABreachedArmIsNeverRecommended:
-    async def test_the_analysis_writer_cannot_adopt_it_whatever_it_gained(self) -> None:
-        comparison = await _compare()
-        bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, comparison.scope_id).bundle
-        # A campaign with no question declared adopts nothing at all; read it as one that declared its question, so
-        # the adoption reaches the guardrail it breached.
-        declared = bundle.reading_scope.model_copy(update={"questions_declared": True})
-        bundle = bundle.model_copy(update={"reading_scope": declared})
-        adopting = _adopting_writer()
-        with pytest.raises(SoundnessRefusal, match="breached the guardrail no_leak"):
-            await generate_analysis(
-                campaign_bundle(bundle),
-                prompt=EVAL_ANALYSIS_GEN_DEFAULT,
-                model="offline-writer",
-                client=adopting,
-                prompt_id="eval_analysis_gen",
-                bundle_assembled_at=datetime.now(UTC).isoformat(),
-                profile=comparison.host.profile,
-            )
-        assert adopting.drafts >= 1
-
-
-def _adopting_writer() -> Any:
-    """A scripted writer whose every draft adopts the arm that improved on the control, which breached the guardrail."""
-    writer = SimpleNamespace(drafts=0)
-
-    async def generate(*, system: str, user: str, response_format: dict | None = None) -> Any:
-        writer.drafts += 1
-        view, _ = json.JSONDecoder().raw_decode(user, user.index("{"))
-        (aspect,) = view["aspects"]
-        tested = next(comparison for comparison in aspect["contrasts"] if comparison["verdict"] == "improved")
-        arm, control = tested["cell"], tested["control"]
-        label = next(cell["arm"] for cell in aspect["cells"] if cell["cell"] == arm)
-        cite = {cell: "{{" + f"{cell}|{tested['name']}|measure|mean" + "}}" for cell in (arm, control)}
-        finding = {
-            "title": "Correct score by arm",
-            "body": f"The tested arm reads {cite[arm]}, the control {cite[control]}.",
-            "evidence": [{"cell": cell, "measure_id": tested["name"], "reading": "measure"} for cell in cite],
-            "trials": [],
-            "confidence": "low",
-            "axes": [],
-            "caveats": [],
-            "invalidates": [],
-            "durable": "",
-        }
-        recommendation = {
-            "arm": label,
-            "reasons": ["Ship the arm that answers more cases correctly."],
-            "confidence": "medium",
-            "rests_on": [0],
-            "floors_overridden": [],
-            "behind_on": [],
-            "bars_missed": [],
-        }
-        summary = {"aspect": aspect["aspect"], "what_changed": "", "how_sure": "", "means": ""}
-        memo = {
-            "findings": [finding],
-            "recommendation": [recommendation],
-            "aspect_summaries": [summary],
-            "summary": "The arm that answers more cases correctly is the one to ship.",
-            "next": [],
-        }
-        return _Reply(content=json.dumps(memo), temperature=None, model="offline-writer")
-
-    writer.generate = generate
-    return writer
-
-
 class TestARefusedGuardrail:
     @pytest.mark.parametrize("margin", [0, -0.1, float("nan"), True])
     def test_one_no_arm_could_be_decided_against(self, margin: Any) -> None:
@@ -327,26 +264,44 @@ class TestARefusedGuardrail:
             await _compare(graders=[guarded])
 
 
-class TestAMissIsTheWrongSideOfZeroForEveryDirection:
-    """A miss is a scorer on the wrong side of 0 for its direction, guardrail or not (``CaseResult.of``)."""
+class TestAMissIsACheckOnItsWrongSideForEveryDirection:
+    """A miss is a trial a check failed, on the wrong side for its direction, guardrail or not (``CaseResult.of``)."""
 
-    def _reasons(self, values: dict[str, float], directions: dict[str, bool | None] | None) -> list[str]:
+    @staticmethod
+    def _check(name: str, higher_is_better: bool | None) -> MetricDescriptor:
+        return MetricDescriptor(
+            name=name,
+            data_type="numeric",
+            family="mechanical",
+            transferability_class="mechanical",
+            attribution_scope="end_to_end",
+            description=f"Whether the answer held {name}.",
+            higher_is_better=higher_is_better,
+            value_range=(0.0, 1.0),
+            pass_fail=higher_is_better is not None,
+        )
+
+    def _reasons(self, values: dict[str, float], directions: dict[str, bool | None]) -> list[str]:
+        catalog = {name: self._check(name, direction) for name, direction in directions.items()}
         result = make_eval_result(goal_state_outcomes=[], rubric_scores=[], host_measures=values)
-        read = CaseResult.of(result, case="c", given=None, expected=None, answer=None, higher_is_better=directions)
+        read = CaseResult.of(result, case="c", given=None, expected=None, answer=None, catalog=catalog)
         return read.missed_because
 
     def test_lower_is_better_misses_above_zero_and_not_at_zero_guardrail_or_not(self) -> None:
-        directions = {"errors": False, "correct": True}
+        directions: dict[str, bool | None] = {"errors": False, "correct": True}
         assert self._reasons({"errors": 0.0, "correct": 1.0}, directions) == []
-        assert self._reasons({"errors": 2.0, "correct": 1.0}, directions) == ["errors gave 2"]
+        assert self._reasons({"errors": 1.0, "correct": 1.0}, directions) == [
+            check_held("errors", self._check("errors", False), failed=True)
+        ]
 
-    def test_higher_is_better_misses_at_zero_or_below(self) -> None:
-        assert self._reasons({"correct": 0.0}, {"correct": True}) == ["correct gave 0"]
-        assert self._reasons({"correct": 0.0}, None) == ["correct gave 0"], "a scorer's default is higher-is-better"
+    def test_higher_is_better_misses_at_zero(self) -> None:
+        assert self._reasons({"correct": 0.0}, {"correct": True}) == [
+            check_held("correct", self._check("correct", True), failed=True)
+        ]
 
     def test_a_measure_with_no_direction_never_misses(self) -> None:
         assert self._reasons({"length": 0.0}, {"length": None}) == []
-        assert self._reasons({"length": 7.0}, {"length": None}) == []
+        assert self._reasons({"length": 1.0}, {"length": None}) == []
 
     async def test_a_caller_s_own_lower_is_better_measure_lists_its_zeros_as_no_miss(self) -> None:
         """Before, only a lower-is-better *guardrail* missed above 0; a caller's own such measure missed at 0."""
@@ -363,7 +318,9 @@ class TestAMissIsTheWrongSideOfZeroForEveryDirection:
         result = await Eval(CASES, ARMS["leaky"], [correct, leaked], k=1).run(host=host, scope="own-measure")
         summary = result.summary
         reasons = [reason for miss in summary.misses() for reason in miss.missed_because]
-        assert reasons == ["leaked gave 1"] * 20, "a leak is the miss, and a clean answer is not"
+        (described,) = [descriptor for descriptor in own if descriptor.name == "leaked"]
+        leak = check_held("leaked", described, failed=True)
+        assert reasons == [leak] * 20, "a leak is the miss, and a clean answer is not"
 
 
 class TestTheSingleRunSummary:

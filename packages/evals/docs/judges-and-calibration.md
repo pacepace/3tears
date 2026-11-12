@@ -4,8 +4,8 @@
 what it should) who wants to know whether to trust the grades. **Answers:** first, what rung 2 needs: a judge on the
 quick path and the labels that check it. Then the engine's judge in full: rubric dimensions, person ratings,
 agreement with people and with itself, how many ratings that takes, how ratings correct the judge's mean, and how to
-measure a judge as a subject of its own. Grade with code wherever code can decide; a judge is for judgment
-([principles](design.md#principles)).
+measure a judge as a subject of its own; last, how the report writer's arms are judged side by side. Grade with
+code wherever code can decide; a judge is for judgment ([principles](design.md#principles)).
 
 ## At rung 2: a judge you can check
 
@@ -21,8 +21,16 @@ path: `Judge(model, rubric, *, examples=(), labels=None, case_material=None, gua
   reliably; a dimension on 1 to 5 is a `RubricDim` stating its scale ([Step 1](#step-1-choose-a-scale-and-prefer-passfail)).
 - **`case_material`** renders what the judge reads beside each answer: what the runner answered from. With none, the
   judge reads the case as JSON, with a classifier's answer key left out.
-- **`examples`** are hard negatives: answers that must be graded a known way, in pairs that look alike. They are
-  stored as cases a judge campaign calibrates on, calling no model ([Seeding hard negatives](#seeding-hard-negatives)).
+- **`examples`** are hard negatives: answers that must be graded a known way, in pairs that look alike. Every
+  judged eval grades each one `k` times as part of its run, through the call its answers are graded by, and says
+  how many it graded as they must be: one `judge:` line in the print, then a `missed:` line per miss, and one
+  sentence under the page's Design & provenance, each with what the calls cost. `result.judge_examples` holds each
+  example's verdicts and the spend, which is the judge's, counts against the eval's cost cap, and is written to the
+  out-of-run spend ledger (purpose `judge`), since the calls are made after the arms' runs. Each example is judged as
+  a run's answer is: its case without `id`, `stratum` or `world`, and without a classifier's answer key. An example is graded as it must be only if
+  every repeat gives its verdict. This reading sits beside the labels' and is never pooled into it: a few answers
+  written to be hard are not a sample of the run's, and reach no tier's floor. The examples are also stored as cases
+  a host's judge campaign calibrates on ([Seeding hard negatives](#seeding-hard-negatives)).
 - **`labels`** names a person's labels, a CSV. Every judged run's report writes `to_label.csv`: each judged answer on
   each dimension, the judge's verdict withheld. A person fills in `label` and `rater` for about 20 rows of a
   dimension, without looking at the judge's scores, and saves it as the file `labels=` names. The next run pairs
@@ -383,7 +391,8 @@ the same name merges two judges' evidence into one.
 
 **"Needs N more"** is the rest of the floor when there are too few results. When the bounds straddle the bar, it
 says about how many more results would carry them clear if agreement held at its estimate. Tiers are flagged and
-never hide a reading; a finding stands on the weakest tier among its rows.
+never hide a reading; a finding stands on the weakest tier among its rows. An improvement under an `undetermined`
+or `insufficient` judge is still shown, but code's decision read sets it aside: it makes no option better.
 
 ## Step 7b: combine the ratings with the judge's scores
 
@@ -720,8 +729,9 @@ negatives seeds them at boot instead: its definition seed corpus has a `judge_ca
 templates named by name), which `seed_eval_definitions` builds through the same door as `judge_case_author` and
 writes only into a judge template holding no cases yet; a case added or changed later waits for a definition reset
 ([Adopting the engine](adopting-a-host.md#what-the-judge-reads-and-conversations)). On the quick path, hand the
-`Judge` its examples, and every judged eval stores them as authored cases of the judge template
-`<template id>-judge`, listed by the case set of that name, calling no model:
+`Judge` its examples: every judged eval grades each one `k` times in its run and says how many it graded as they
+must be (`result.judge_examples`), and stores them as authored cases of the judge template `<template id>-judge`,
+listed by the case set of that name, for the judge campaign below:
 
 ```
 Judge(client, [GROUNDED], case_material=...,
@@ -808,6 +818,214 @@ were sent with (a client that starts reporting them included), or the rubric dim
 looks for a profile that does not exist. The old one is stale and is never read for the
 new judge. The wording comes from the template each run was judged against. A run with no template, or whose
 template was edited after the run was created, has an unknown criterion and reads no profile.
+
+## Pairwise preference for the report writer
+
+The report writer (the analyst and its editor, measured as a subject:
+[writer campaigns](serving.md#writer-campaigns-evaluating-the-report-writer)) is the one subject read pairwise
+([open problems](open-problems.md#pairwise-judging-adopted-for-the-report-writer-only-2026-11-03)). Its loop revises
+every page until the editor passes it on the rubric the absolute judge scores, so absolute scores bunch at the top,
+and a judge reading one page cannot see what it leaves out. Beside another arm's page of the same case, an omission
+shows. The pass and its read are in `ops/report_writer/`; no engine file knows about pairs.
+
+**What is asked.** One ordinal criterion, `report_writer.preferred`. Its description says the score is a direction
+between two reports, not a grade of either, then lists the editor rubric's seven items as `editor.md` states them,
+so the same `editor.md` always gives the same criterion fingerprint.
+
+| Score | Meaning |
+|---|---|
+| 1 | Report A serves the reader clearly better. |
+| 3 | No difference between the two reports that a reader would act on. |
+| 5 | Report B serves the reader clearly better. |
+
+The judge reads one `JudgeEvidence`: Report A's stored page then Report B's, and each page's computed facts labelled
+the same way. Nothing is re-rendered. The judge is the campaign's own scoring judge, held to another family than every
+writer it reads, as a launch holds it.
+
+**Both orders.** The pass (`writer_pairwise`, an action and a job) pairs each candidate result with the control's
+result of the same case and repeat, and asks each pair twice: the control as Report A, then the candidate as Report A.
+A side whose cell stored no page loses the pair without a call; both missing is a tie.
+
+**The share.** The candidate's share of one answer is its part of the preference, 0 to 1: `(score - 1) / 4` when it
+sat in B, `(5 - score) / 4` when it sat in A. 0.5 is no preference. A case's share is the mean of its two orders'
+shares, so a lean to one slot cancels. "Can't tell" is counted and left out of the share.
+
+**The verdict.** Each case's candidate share is read against the control's, one minus it, paired on the range 0 to 1,
+by the bounded test and interval every rate contrast reads, at α 0.05 and an interval level of 0.95. Its family is
+this one reading. It reads `improved`, `regressed` or `not_separated`, and on fewer than 5 cases it is marked too few.
+
+**The reliability readings**, reported beside the verdict:
+
+| Reading | What it is |
+|---|---|
+| Order consistency | Of the cases scored in both orders, the share whose two orders picked the same side. Below 0.7 the verdict is void. |
+| Cases scored in one order only | Counted apart, in no rate: one order cannot agree or disagree with itself. |
+| First-slot lean | The judge's mean lean to Report A, -0.5 to 0.5; 0 is none. |
+| Can't tell, failed calls | Answers that gave no score, in no share. |
+| Both pages finished | The same verdict over the pairs whose two pages were both stored finished. It decides nothing. |
+
+The last row is there because a draft's page carries its open editor findings, and a judge may simply prefer the page
+without them. A verdict the finished-only reading does not repeat may be that.
+
+**Spend.** Every call, parse retries included, is priced and admitted against the host's out-of-run cap before the
+first is sent, under purpose `judge`. A pass the cap cannot cover is refused with nothing spent. A pass that stops
+early sends fewer calls than it admitted.
+
+### The stopping rule
+
+A writer eval may give its pass a rule, declared as the eval starts, before any arm launches, over the side's cases
+(`WriterEval(stop_when=..., batch_size=...)`; the acceptance script's `--stop-when` and `--batch-size`):
+
+| `stop_when` | What the pass does |
+|---|---|
+| `separated` | Launches the planned cases in batches, in the bet's order, judges each batch's new pairs, and stops at the first case after which the preference separates, either way, on the 5 cases a rate needs. |
+| `never` | Judges every case, the fixed-n reading exactly as with no rule. The default. |
+
+The rule records the planned case ids, the held-out set as declared, and N, their count. A set that grows later
+leaves that run's cases as they were; the next run declares its own. Cases the pass finds that the rule did not plan,
+or planned cases it does not find, are said on the page, never refused.
+
+**Why a stop keeps its level.** The planned cases fix the bet before the first: the order they are read in
+(`bet_order(N)` over their sorted ids) and every stake (tuned to N). Each look over the first k is then a prefix of
+one bet, and Ville's inequality bounds the chance it ever crosses, so a stop at any k, on any rule, holds α. At
+k = N, with every planned case read, the reading is the fixed-n one, number for number. Without a fixed N, a look at
+k and one at k + 1 were two bets, and stopping at the first that separated was optional stopping. Cases are judged in
+the bet's order, whatever order or batch they ran in. A landslide over 25 cases first separates at case 7.
+
+**Batches.** Under `separated` every arm launches `batch_size` cases at a time (4 unless told), in the bet's order,
+each batch a run of every arm in one campaign. After each batch the pass judges only the new pairs, carrying the
+answers it already has, and reads the bet's prefix. The arms stop launching once every candidate's preference has
+separated, or at N. A host picks the batch from its concurrent-cell count and its admitted-runs limit: a batch of the
+cells a run holds in flight is one full wave. At k = N the side-by-side reading is the one-batch reading, number for
+number; the gated readings are too when every batch run stored a page. A batch run that stored no page judged nothing,
+so it is left out of the gated readings, its pairs read side by side (a missing page losing its pair, or tying it),
+and the run says so once.
+
+| At the stop | What the run does |
+|---|---|
+| Separated, either way | Stops launching. The gated readings and guardrails are fixed-n tests, read once, on the cases launched; the page says how many. |
+| Separated improved, a guardrail not shown held | Goes on to N, and says the gated readings and guardrails had a second look. The writer template declares no guardrail, so only a scope whose template a host gave one reaches this row. |
+| Cannot tell apart | Launches the next batch, or ends at N. |
+
+The money is in the arms: a landslide over 25 cases stops near case 7 or 8 and saves the rest of the writing.
+
+**The spend cap is a budget the run runs under.** Before each batch the run checks that the batch's worst case (its
+reports at `budget_usd`, their judging and its pairs at the judge's floor) fits what each part has left after its spend
+so far, as its runs and passes recorded it. Each batch's runs run under that reservation. The engine checks a run's
+cap between cells, so cells running when it is crossed finish past it, and the last admitted batch can take an arm
+past its part by what those cells go on to spend, as an unbatched run can (#1111). A batch that came in under
+its reservation leaves the rest to the next. The first batch that does not fit is not launched: the
+run stops at the spend cap, reads what it has, and its pass's record and line say so once, with the spend and the
+reservation (`stopped_on`: `separated`, `all_cases` or `spend_cap`). Only a spend cap that cannot admit the first batch
+is refused, naming the smallest that would. At `--cap-usd 45` each arm's part is $18. A batch of 4 reserves
+4 × ($1.50 + 7 dimensions × 2 attempts × the rung-5 judge's $0.0101 floor) = $6.57 (a judge that prices nothing: $6),
+so reservations alone admit two batches, 8 cases; at the recorded 25-case runs' $0.44 per case for the costlier arm,
+every batch of the 25 is admitted. A landslide that launches 8 cases costs about 8 × $0.66 (both arms: $16.62 over 25
+in the recorded no-editor run) + 7 pairs × $0.016 = $5.39. The recorded live no-editor run under the
+rule stopped at case 7 for $4.31, against about $13.53 for all 25.
+
+**A rule declared late.** A rule declared after the arms' first result, or with no time, is not refused and its
+verdict is not demoted. The record and the page say when it was declared, the same standing a late criterion has.
+
+**What is recorded.** The pass's report carries the rule, the cases it stopped at, the first case that separated,
+and the preference after each case (its p and interval), for a running chart. The page says what happened in one
+sentence:
+
+> Stopped at 7 of 25 cases under the rule declared before the first result: the judge preferred lead-first on 7 of 7,
+> separated.
+
+A run that reads every case says where it first separated, or that every look up to N was consistent with no
+preference.
+
+### The resolution floor
+
+Before a writer eval launches, and on its page, it states the smallest preference its held-out cases can separate:
+the share, held on every case, at which the pass's own test separates at N cases. It is the bounded test inverted,
+not a normal approximation, and it is a floor: a preference that varies across cases needs more. The figures are
+rounded up, as the line prints them, so none claims a share the test would not separate.
+
+| Cases | Smallest separable share |
+|---|---|
+| 7 | 0.89 |
+| 11 | 0.73 |
+| 25 | 0.60 |
+
+Given an earlier run on the same case files (`WriterEval(prior=WriterPrior(...))`; the acceptance script's
+`--prior acceptance.json`), the line adds what that run's read projected would settle its primary: "At 11 cases this
+run can separate only a preference of 73% or more, held on every case; the last run on these cases projected 43 to
+settle." An earlier run over other cases is said and not carried. It is a disclosure and never a refusal.
+
+### The promotion rule
+
+`writer_promotion(..., pairwise_job=)` reads the completed pass as its one pre-registered primary reading. The
+campaign's other corrected verdicts (the code measures and the seven absolute judged dimensions) gate on regression
+only, since a family that wide cannot separate on a small held-out set.
+
+| Decision | When |
+|---|---|
+| promote | The primary reads improved on 5 cases or more, no gated reading reads regressed, and every guardrail is held. |
+| keep | The primary reads regressed, a gated reading reads regressed (on too few cases too), or a guardrail is breached. |
+| undecided | Anything else: the evidence cannot tell the primary's arms apart, it improved on too few cases, it is untested, void or not read; or a guardrail not shown held. |
+
+A pass its rule stopped is read as any other: its primary at the stop, the gated readings and guardrails on every
+case run.
+Undecided never promotes, and a read with no pass named never promotes. A primary that does not separate states the
+held-out cases like these that would settle it: a size for the next campaign, never a reason to read this one again.
+The read refuses a pass over another campaign, candidate, control, judge or criterion, or over results the campaign no
+longer holds.
+
+### The spend rule
+
+The owner's rule: "Candidate trials run on Sonnet; Opus is for production reports only. One live run per
+candidate, pre-registered, with the stopping rule on. A standing monthly envelope is recorded beside each verdict in
+PROMOTIONS.toml instead of per-run approval. Everything else is replayed offline." The envelope is set to stop
+spending so much while the writer is iterated on, and may rise once the system is in production.
+
+It is each entry's `monthly_envelope_usd` in the skill ledger (`analysis/analyst/skill/PROMOTIONS.toml`).
+The acceptance readout states a run's spend against the shipped skill's envelope in one line, never as a refusal.
+
+### The calibration set, and its honesty rule
+
+`tests/fixtures/writer_cases/writer_calibration.py` turns the Opus editor's recorded reviews into judge-kind cases.
+Each recorded run of prototypes 4 and 5 is replayed once per round, so each replay ends on that round's page exactly as
+the gate's judge reads it, and is paired with the review of that round.
+
+| Case set | Cases | Expected verdict |
+|---|---|---|
+| `writer-opus-abs` | 196: 28 pages × the 7 items, on the gate's own criteria | the Opus item score, 2 → 5, 1 → 3, 0 → 1 |
+| `writer-opus-pair` | 42: every two rounds of one run, in both orders | from Δ, the Opus total of B less A's: +2 or more → 5, +1 → 4, 0 → 3, -1 → 2, -2 or less → 1 |
+
+A judge arm over each set is read per criterion through `judge_kind_readings`. `--reread` asks one judge the pair set
+again and compares the read with its own stored one on preference, order consistency and first-slot lean: a
+test-retest that detects a judge or version shift, never whether the judge is right (`--reread --help` says how).
+
+**These labels are an agent's, so they never calibrate a judge.** An authored case is read as its author's label,
+and agent ratings are never pooled with people's. So:
+
+- κ on these sets is reported as "agreement with the Opus editor", never as calibration;
+- `judge_profiles_record` is never run on these campaigns, so no campaign's tier reads `calibrated` from them;
+- the gate's tier stays `undetermined` until people label.
+
+A person can adopt an Opus review as theirs (a blind read, recorded with `result_rate_person`, or `judge_case_author`
+with `attests_person`); then it is a person's label. That is each app's work, never a package gate.
+
+### The acceptance check: a hollowed skill must read worse
+
+`tests/fixtures/writer_cases/writer_acceptance.py` checks the instrument end to end on a change whose direction is
+known. The control is the shipped skill. The candidate, **hollow**, is the shipped skill with `principles.md` and
+`statistics.md` each left as one stub line; every other file is byte-identical, `editor.md` included, so the in-loop
+editor is one instrument for both arms. Both arms run one writer over the held-out cases, then the pass, then the read.
+
+```bash
+uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --dry
+uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --cap-usd 45 --out <dir> --cases <dir>
+```
+
+`--dry` runs the whole path on scripted models and sends nothing; its verdict carries no signal. The live run spends
+under [the spend rule](#the-spend-rule). A case directory with fewer than 10 held-out cases runs, and its floor line says
+it is under them. Its pass criterion is code's: both arms ran every case, the read answers `keep`, the primary reads
+`regressed`, separated, its interval below 0, the order check stands, and bounces do not separate (a variant that moves
+bounces broke the format, so the run is void). Anything else fails, and nobody re-rolls.
 
 ## What to read next
 

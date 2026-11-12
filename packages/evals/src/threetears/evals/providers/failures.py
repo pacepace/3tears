@@ -79,6 +79,9 @@ class ProviderError(Exception):
     :ivar owner: Whose failure it was. ``account``: a 401 or 403 (OpenRouter's 403 is moderation, so not there), a
         402, Anthropic's 400 credit-balance notice, or OpenAI's 429 ``insufficient_quota``. ``provider``: any other
         429, a 529 or a 503. ``candidate``: everything else, a 500 and a 502 among it.
+    :ivar credit_spent: Whether the answer says the key's prepaid credit is spent: Anthropic's 400 credit-balance
+        notice, or a 402 (OpenRouter's insufficient credits). An ``account`` failure that another key may not meet,
+        so it is the one answer a model fails over to a fallback key on (``<VARIABLE>_FALLBACKS``).
     """
 
     def __init__(
@@ -112,6 +115,7 @@ class ProviderError(Exception):
             or (status == 429 and code == "insufficient_quota")
         )
         self.owner: FailureOwner = "account" if account else "provider" if status in _DECLINED else "candidate"
+        self.credit_spent = credit or status == 402
         said = f": {self.message}" if self.message else " (the response carried no message)"
         tried = f" (after {attempts} attempts)" if attempts > 1 else ""
         super().__init__(f"{provider} {status}{said}{tried}")

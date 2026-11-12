@@ -1,0 +1,405 @@
+"""An analysis a retired report writer stored reads, through every door, as code's page with one line saying so.
+
+The report planner and the memo writer no longer write analyses (``analysis_generate`` runs the report writer), and
+the planned page is retired with the planner. A host still holds the analyses they stored: the one the planner stored
+over the toy corpus campaign (``report_support.stored_plan_analysis``), its plan written beside it as the host's
+document store holds it (``report_support.stored_plan_document``), and the one the memo writer stored over it
+(``report_support.stored_memo_analysis``), its memo inside the analysis. Contracts held here
+(``threetears.evals.analysis.service``, ``threetears.evals.ops``):
+
+- **every door reads it**, never refusing and never blank: ``report_read`` in its four forms, ``campaign_report``,
+  ``analysis_report`` by its id and ``analyses_list``. Each is code's page (``basis="code_only"``) standing in for the
+  analysis (``unread_analysis_id``), with the retired writer's line (``retired_generation``, naming the report planner)
+  on its first screen and as ``needs_regeneration``; the listing counts no findings. ``analysis_report`` lays the page
+  over the bundles frozen with the analysis, every aspect's fold kept;
+- **its frozen bundle is still read**: by its id, a planned analysis frozen over a bundle of a shape this build no
+  longer reads is refused with the stated refusal (``RefusedInput``, naming the shape and ``analysis_generate``), as
+  any analysis is, while the campaign's page and the listing still read it;
+- **the plan is never read**: the reads are the same whether the plan stored beside it is the planner's own, a host's
+  plan the planned page could not draw, a plan no model reads, or no plan at all;
+- **the plan is still swept**: ``drop_derived`` deletes it, and deleting its analysis deletes it (its insights stay);
+- **a memo analysis reads the same way through every door**, the line naming the memo writer, its memo never read:
+  ``report_read`` in its four forms, ``campaign_report``, ``analysis_report`` by its id, ``analyses_list``, which
+  counts no findings, and ``campaigns_list``;
+- **a stored memo is held as the JSON it was stored as** (``EvalAnalysis.document``), never validated as a memo: one
+  no memo model would accept (a key the memo never had, its summary gone, a recommendation resting on a finding it
+  does not hold, its resolutions not matching its findings) still loads, round-trips byte for byte, and reads
+  through every door with the memo writer's line;
+- the actions round-trip a generated analysis as a report document, with no plan member.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from html import escape
+from pathlib import Path
+from typing import Any, Final
+
+import pytest
+
+from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
+from packages.evals.tests.report_support import stored_memo_analysis, stored_plan_analysis, stored_plan_document
+from threetears.evals.actions import eval_catalogue, standard_tools
+from threetears.evals.analysis import CampaignReport
+from threetears.evals.analysis.report.build import analysis_campaign_bundle
+from threetears.evals.analysis.report.campaign.answer_blocks import retired_generation
+from threetears.evals.analysis.report.serialize import serialize_report
+from threetears.evals.analysis.service import analysis_report, campaign_report
+from threetears.evals.kernel.campaign import EvalAnalysis
+from threetears.evals.kernel.errors import RefusedInput
+from threetears.evals.ops import analyses_list, analysis_delete, campaigns_list, report_read
+from packages.evals.tests.factories import empty_bundle
+from threetears.evals.storage import InMemoryDocumentStore
+
+#: A host's planned analysis of Kairo round 2, its plan as the host stored it: one chart of it the planned page
+#: refused to draw (a forest mixing a score change with changes in points).
+_HOST_PLAN: Final = Path(__file__).parent / "fixtures" / "retired_writers" / "01a177f6.plan.json"
+
+#: The line every door prints for a planned analysis.
+_LINE: Final = (
+    "written by a retired report writer (the report planner); regenerate with analysis_generate to read a report "
+    "over it"
+)
+
+#: The line every door prints for a memo analysis.
+_MEMO_LINE: Final = (
+    "written by a retired report writer (the memo writer); regenerate with analysis_generate to read a report over it"
+)
+
+#: What the store holds beside the analysis: the planner's own plan, the host's, a plan no model reads, or none.
+_STORED_PLANS = ("planners", "hosts", "unreadable", "none")
+
+
+def _plan_body(stored: str) -> dict[str, Any] | None:
+    if stored == "hosts":
+        loaded: dict[str, Any] = json.loads(_HOST_PLAN.read_text(encoding="utf-8"))
+        return loaded
+    return {"schema": "report-plan/0", "headline": {"not": "a plan"}} if stored == "unreadable" else None
+
+
+async def _planned(stored: str = "planners") -> tuple[OpsFixture, InMemoryDocumentStore, EvalAnalysis]:
+    """The toy campaign's host holding the planner's analysis, and beside it the plan ``stored`` names."""
+    store = InMemoryDocumentStore()
+    fixture = off_loop(ops_fixture, store=store)
+    analysis, _ = await stored_plan_analysis(fixture.host.eval_host, fixture.campaign)
+    if stored != "none":
+        document = off_loop(stored_plan_document, store, fixture.campaign, plan=_plan_body(stored))
+        assert document["id"] == analysis.report_plan_id
+    return fixture, store, analysis
+
+
+def _first_screen(body: str, form: str) -> str:
+    """What a reader sees before the page's first section: the HTML page's header, the Markdown before its first
+    section heading; the JSON form, which carries no blocks, says it in its ``needs_regeneration``."""
+    if form == "html":
+        return body[body.index("<header>") : body.index("</header>")]
+    if form == "markdown":
+        return body.split("\n## ", 1)[0]
+    said: str = json.loads(body)["needs_regeneration"] or ""
+    return said
+
+
+def _said(analysis: EvalAnalysis, form: str, line: str = _LINE) -> str:
+    if form == "json":
+        return line
+    said = f"This campaign's analysis {analysis.id} was {line}."
+    return escape(said) if form == "html" else said
+
+
+def _assert_stands_in(page: CampaignReport, analysis: EvalAnalysis, line: str = _LINE) -> None:
+    assert (page.basis, page.analysis_id, page.unread_analysis_id) == ("code_only", None, analysis.id)
+    assert page.needs_regeneration is not None and page.needs_regeneration.startswith(line)
+    assert page.doc_page is None
+    for form in ("markdown", "html", "json"):
+        assert _said(analysis, form, line) in _first_screen(serialize_report(page, form), form), form
+
+
+# -- every door ---------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("stored", _STORED_PLANS)
+async def test_report_read_is_code_s_page_with_the_line_on_its_first_screen_in_every_form(stored: str) -> None:
+    fixture, _, analysis = await _planned(stored)
+    host = fixture.host.eval_host
+
+    for form, static in (("markdown", False), ("html", False), ("html", True), ("json", False)):
+        read = off_loop(report_read, host, fixture.campaign.id, TOYHOST_SCOPE, format=form, static=static)
+
+        assert (read.basis, read.analysis_id, read.analysis_basis, read.doc) == ("code_only", analysis.id, "plan", None)
+        assert read.needs_regeneration == f"{_LINE} (analysis {analysis.id})", form
+        assert _said(analysis, form) in _first_screen(read.body, form), form
+        assert "No recommendation was written" not in read.body, form
+        if form == "json":
+            assert json.loads(read.body)["needs_regeneration"] == read.needs_regeneration
+
+
+@pytest.mark.parametrize("stored", _STORED_PLANS)
+async def test_the_campaign_s_page_and_the_page_by_id_stand_in_for_it_with_the_line(stored: str) -> None:
+    fixture, _, analysis = await _planned(stored)
+    host = fixture.host.eval_host
+
+    campaigns = off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE)
+    by_id = off_loop(analysis_report, host.storage, analysis.id, TOYHOST_SCOPE)
+    everything = off_loop(analysis_report, host.storage, analysis.id, TOYHOST_SCOPE, trials="all")
+
+    _assert_stands_in(campaigns, analysis)
+    _assert_stands_in(by_id, analysis)
+    assert by_id.needs_regeneration == _LINE, "by its id, the line alone: the page names the analysis"
+    # By its id, the page is laid over the bundles frozen with the analysis, every aspect's fold kept.
+    assert [fold.aspect for fold in by_id.aspects] == [
+        bundle.aspect for bundle in analysis_campaign_bundle(analysis).aspects
+    ]
+    assert serialize_report(everything, "html").count("<details") > serialize_report(by_id, "html").count("<details")
+
+
+@pytest.mark.parametrize("stored", _STORED_PLANS)
+async def test_the_listing_leads_its_line_with_the_line_and_counts_no_findings(stored: str) -> None:
+    fixture, _, analysis = await _planned(stored)
+    memo, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
+
+    lines = {
+        line.id: line
+        for line in off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    }
+
+    planned = lines[analysis.id]
+    assert (planned.basis, planned.report_plan_id, planned.findings) == ("plan", analysis.report_plan_id, 0)
+    assert planned.needs_regeneration == _LINE
+    assert lines[memo.id].needs_regeneration == _MEMO_LINE, "each retired writer's line names its own writer"
+
+
+def _assert_listed_with(fixture: OpsFixture, analysis: EvalAnalysis, line: str) -> None:
+    """The scope's campaign listing lists the campaign, its report needing regeneration with the retired writer's line
+    and code's headline, never blank."""
+    (listed,) = off_loop(campaigns_list, fixture.host.eval_host, TOYHOST_SCOPE).campaigns
+    assert listed.id == fixture.campaign.id and listed.title
+    assert listed.report_state == "needs_regeneration" and listed.report is not None
+    assert listed.report.analysis_id == analysis.id
+    assert listed.report.why_regenerate is not None and listed.report.why_regenerate.startswith(line)
+    assert listed.report.headline.strip()
+
+
+@pytest.mark.parametrize("stored", _STORED_PLANS)
+async def test_the_campaign_listing_lists_its_report_as_needing_regeneration_with_the_line(stored: str) -> None:
+    fixture, _, analysis = await _planned(stored)
+
+    _assert_listed_with(fixture, analysis, _LINE)
+
+
+async def test_the_line_is_said_once_and_every_form_s_page_reads_the_same_whatever_plan_is_stored() -> None:
+    bodies: dict[str, list[str]] = {}
+    for stored in _STORED_PLANS:
+        fixture, _, analysis = await _planned(stored)
+        page = off_loop(analysis_report, fixture.host.eval_host.storage, analysis.id, TOYHOST_SCOPE)
+        bodies[stored] = [_without_instants(serialize_report(page, form)) for form in ("markdown", "html", "json")]
+        markdown, html, _ = bodies[stored]
+        assert markdown.count(_LINE) == 1 and html.count(escape(_LINE)) == 1, stored
+    assert len({tuple(forms) for forms in bodies.values()}) == 1, "no stored plan is read"
+
+
+def _without_instants(body: str) -> str:
+    return re.sub(r"\d{4}-\d{2}-\d{2}T[0-9:.+]+", "", body)
+
+
+def test_the_line_is_worded_once_and_names_only_a_retired_writer() -> None:
+    assert retired_generation("plan") == _LINE
+    assert retired_generation("memo") == _MEMO_LINE
+    assert retired_generation("doc") is None, "the writer this version reads"
+
+
+async def test_by_its_id_a_planned_analysis_frozen_over_a_bundle_shape_no_longer_read_is_the_stated_refusal() -> None:
+    fixture, _, analysis = await _planned()
+    host = fixture.host.eval_host
+    shape = 60
+    moved = {**empty_bundle(campaign_id=analysis.campaign_id).to_dict(), "schema_version": shape}
+    frozen = analysis.model_copy(
+        update={"aspects": [aspect.model_copy(update={"bundle": moved}) for aspect in analysis.aspects]}
+    )
+    off_loop(host.storage.save_analysis, frozen)
+
+    with pytest.raises(RefusedInput) as refused:
+        off_loop(analysis_report, host.storage, analysis.id, TOYHOST_SCOPE)
+
+    assert f"shape {shape}" in refused.value.fault and "analysis_generate" in (refused.value.remedy or "")
+    page = off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE)
+    assert page.unread_analysis_id == analysis.id and page.needs_regeneration is not None, "the campaign's page reads"
+    (line,) = off_loop(analyses_list, host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    assert line.needs_regeneration is not None and line.needs_regeneration.startswith(_LINE), "the listing reads"
+
+
+# -- the plan is still swept --------------------------------------------------------------------------------------
+
+
+async def test_drop_derived_sweeps_the_plan() -> None:
+    fixture, store, analysis = await _planned()
+    assert analysis.report_plan_id is not None
+
+    dropped = off_loop(fixture.host.eval_host.storage.drop_derived, [TOYHOST_SCOPE])
+
+    assert dropped.counts["eval_report_plan"] == 1 and dropped.counts["eval_analysis"] == 1
+    assert store.get(analysis.report_plan_id, TOYHOST_SCOPE) is None
+
+
+async def test_deleting_the_analysis_deletes_its_plan_and_keeps_its_insights() -> None:
+    fixture, store, analysis = await _planned()
+    assert analysis.report_plan_id is not None
+
+    off_loop(analysis_delete, fixture.host.eval_host, analysis.id, TOYHOST_SCOPE, confirm=analysis.id)
+
+    assert store.get(analysis.report_plan_id, TOYHOST_SCOPE) is None
+    insights = off_loop(fixture.host.eval_host.storage.query_insights, TOYHOST_SCOPE)
+    assert insights and {insight.source_analysis_id for insight in insights} == {analysis.id}
+
+
+# -- a memo analysis ----------------------------------------------------------------------------------------------
+
+
+async def _memo() -> tuple[OpsFixture, EvalAnalysis]:
+    """The toy campaign's host holding the analysis the memo writer stored over it, its memo inside it."""
+    fixture = off_loop(ops_fixture)
+    memo, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
+    assert memo.document is not None and memo.document["findings"], "the stored record holds a memo with findings"
+    return fixture, memo
+
+
+async def test_report_read_of_a_memo_is_code_s_page_with_the_memo_writer_s_line_in_every_form() -> None:
+    fixture, memo = await _memo()
+    host = fixture.host.eval_host
+
+    for form, static in (("markdown", False), ("html", False), ("html", True), ("json", False)):
+        read = off_loop(report_read, host, fixture.campaign.id, TOYHOST_SCOPE, format=form, static=static)
+
+        assert (read.basis, read.analysis_id, read.analysis_basis, read.doc) == ("code_only", memo.id, "memo", None)
+        assert read.needs_regeneration == f"{_MEMO_LINE} (analysis {memo.id})", form
+        assert _said(memo, form, _MEMO_LINE) in _first_screen(read.body, form), form
+        assert "**Recommended:**" not in read.body and "Recommended:" not in read.body, "the memo is never read"
+        if form == "json":
+            assert json.loads(read.body)["needs_regeneration"] == read.needs_regeneration
+
+
+async def test_the_campaign_s_page_and_the_page_by_id_stand_in_for_a_memo_with_its_line() -> None:
+    fixture, memo = await _memo()
+    host = fixture.host.eval_host
+
+    campaigns = off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE)
+    by_id = off_loop(analysis_report, host.storage, memo.id, TOYHOST_SCOPE)
+
+    _assert_stands_in(campaigns, memo, _MEMO_LINE)
+    _assert_stands_in(by_id, memo, _MEMO_LINE)
+    assert by_id.needs_regeneration == _MEMO_LINE, "by its id, the line alone: the page names the analysis"
+    assert [fold.aspect for fold in by_id.aspects] == [
+        bundle.aspect for bundle in analysis_campaign_bundle(memo).aspects
+    ]
+    for page in (campaigns, by_id):
+        markdown = serialize_report(page, "markdown")
+        assert markdown.count(_MEMO_LINE) == 1, "said once"
+        assert memo.document is not None and str(memo.document["summary"]) not in markdown, "the memo is never read"
+
+
+async def test_the_listing_leads_a_memo_s_line_with_the_memo_writer_s_line_and_counts_no_findings() -> None:
+    fixture, memo = await _memo()
+
+    (line,) = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+
+    assert (line.id, line.basis, line.report_plan_id, line.report_doc_id) == (memo.id, "memo", None, None)
+    assert (line.findings, line.needs_regeneration) == (0, _MEMO_LINE)
+
+
+async def test_the_campaign_listing_lists_a_memo_s_report_as_needing_regeneration_with_its_line() -> None:
+    fixture, memo = await _memo()
+
+    _assert_listed_with(fixture, memo, _MEMO_LINE)
+
+
+async def test_the_actions_round_trip_a_generated_analysis_as_a_report_document() -> None:
+    """Generate, poll, list and read through the mounted tool: ``analysis_generate`` reaches the report writer, so the
+    listing and the read say a report document wrote it."""
+    fixture = off_loop(ops_fixture)
+    evals = eval_catalogue().mount_all(standard_tools())[0]
+
+    started = await evals.call(
+        {"action": "analysis_generate", "campaign_id": fixture.campaign.id}, host=fixture.host, caller=CALLER
+    )
+    assert not started.is_error and started.structured is not None, started.text
+    (job,) = started.structured["jobs"]
+    status = await settled(fixture.host, job["job_id"])
+    assert (status.state, status.status) == ("completed", "stored")
+
+    listed = await evals.call(
+        {"action": "analyses_list", "campaign_id": fixture.campaign.id}, host=fixture.host, caller=CALLER
+    )
+    assert listed.structured is not None, listed.text
+    (line,) = listed.structured["analyses"]
+    assert (line["id"], line["basis"], line["report_plan_id"]) == (status.analysis_id, "doc", None)
+    assert line["report_doc_id"] is not None
+    assert (line["findings"], line["recommendations"]) == (1, 0)
+
+    read = await evals.call(
+        {"action": "report_read", "campaign_id": fixture.campaign.id, "format": "json"},
+        host=fixture.host,
+        caller=CALLER,
+    )
+    assert read.structured is not None, read.text
+    # The page is the stored report document's, and the result carries the document.
+    assert (read.structured["basis"], read.structured["analysis_id"], read.structured["analysis_basis"]) == (
+        "analysis",
+        status.analysis_id,
+        "doc",
+    )
+    assert "plan" not in read.structured and read.structured["doc"]["schema"] == "report-doc/1"
+    body = json.loads(read.structured["body"])
+    assert body["analysis_id"] == status.analysis_id and body["report_doc"]["id"] == line["report_doc_id"]
+
+
+# -- a stored memo is held as JSON -------------------------------------------------------------------------------
+
+#: A memo no memo model accepts: a key it never had, no summary, a recommendation resting on a finding it does not
+#: hold, and one finding more than its resolutions cover.
+_UNREADABLE_MEMO: Final = {
+    "findings": [{"title": "One.", "trials": ["T1"]}, {"title": "Two."}],
+    "recommendation": [{"arm": "a label no arm has", "rests_on": [7]}],
+    "aspect_summaries": [{"aspect": "an aspect the campaign lacks"}],
+    "next": [],
+    "written_by": "a memo writer of another build",
+}
+
+
+async def _unreadable_memo() -> tuple[OpsFixture, EvalAnalysis]:
+    """The toy campaign's host holding the memo writer's stored analysis with its memo replaced, in the store, by a
+    memo no memo model accepts."""
+    fixture = off_loop(ops_fixture)
+    stored, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
+    record = stored.model_dump(mode="json")
+    record["document"] = _UNREADABLE_MEMO
+    memo = EvalAnalysis.model_validate(record)
+    off_loop(fixture.host.eval_host.storage.save_analysis, memo)
+    return fixture, memo
+
+
+async def test_a_stored_memo_no_memo_model_accepts_loads_and_round_trips_as_stored() -> None:
+    fixture, memo = await _unreadable_memo()
+
+    loaded = off_loop(fixture.host.eval_host.storage.load_analysis, memo.id, TOYHOST_SCOPE)
+
+    assert loaded is not None and loaded.basis == "memo"
+    assert loaded.document == _UNREADABLE_MEMO
+    assert json.dumps(loaded.model_dump(mode="json")["document"], sort_keys=True) == json.dumps(
+        _UNREADABLE_MEMO, sort_keys=True
+    )
+
+
+async def test_a_stored_memo_no_memo_model_accepts_reads_through_every_door_with_the_memo_writer_s_line() -> None:
+    fixture, memo = await _unreadable_memo()
+    host = fixture.host.eval_host
+
+    for form, static in (("markdown", False), ("html", False), ("html", True), ("json", False)):
+        read = off_loop(report_read, host, fixture.campaign.id, TOYHOST_SCOPE, format=form, static=static)
+        assert (read.basis, read.analysis_id, read.analysis_basis) == ("code_only", memo.id, "memo"), form
+        assert _said(memo, form, _MEMO_LINE) in _first_screen(read.body, form), form
+        assert "a memo writer of another build" not in read.body, "the memo is never read"
+    _assert_stands_in(off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE), memo, _MEMO_LINE)
+    _assert_stands_in(off_loop(analysis_report, host.storage, memo.id, TOYHOST_SCOPE), memo, _MEMO_LINE)
+    (line,) = off_loop(analyses_list, host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    assert (line.id, line.basis, line.findings, line.needs_regeneration) == (memo.id, "memo", 0, _MEMO_LINE)

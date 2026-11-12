@@ -21,6 +21,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.bundle.schema import CellCoordinate, CriterionKind, LateCriterion
 from threetears.evals.analysis.style import lint_prose
+from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
 from threetears.evals.analysis.report.model import (
     CAMPAIGN_JSON_SHAPE,
     DisclosureBlock,
@@ -79,15 +80,18 @@ def _criteria(page: CampaignReport) -> list[tuple[str, str, str]]:
     return [(row["criterion"].text, row["set_on"].text, row["aspects"].text) for row in table.rows]
 
 
-def _one(aspect: str) -> str:
-    """The one line a page says where criteria on ``aspect`` alone were set late, the aspect named."""
-    return f"Criteria on {aspect} were set after the results there existed, so they were not fixed in advance."
+def _one(aspect: str, what: str = "The aspect, control and margin") -> str:
+    """The one line a page says where criteria on ``aspect`` alone were set late, the aspect named and what was set
+    late named first (the line names what was set late)."""
+    if " and " not in what and "," not in what:
+        return f"{what} on {aspect} was set after the results there existed, so it was not fixed in advance."
+    return f"{what} on {aspect} were set after the results there existed, so they were not fixed in advance."
 
 
 async def test_a_margin_late_on_some_aspects_is_one_caveat_line_and_one_row_naming_them() -> None:
     page = await page_of("billing", "tone", bundle=_set_late(("margin", None, _SET), on=("tone",)))
-    assert _timing(page) == [_one("tone")]
-    assert _criteria(page) == [("margin", "1 Jan 2099", "tone")]
+    assert _timing(page) == [_one("tone", "The margin")]
+    assert _criteria(page) == [("Margin", "1 Jan 2099", "tone")]
     # Billing's margin came before its first result: nothing is said of it.
     assert "billing" not in [aspects for *_, aspects in _criteria(page)]
 
@@ -101,11 +105,10 @@ async def test_an_aspect_set_after_its_readings_reads_as_asked_and_its_timing_is
     first = first_screen_markdown(page)
     said = _timing(page)
     assert said == [_one("late")]
+    # Criteria set at one time on one aspect share a row.
     assert _criteria(page) == [
-        ("aspect", "1 Jan 2099", "late"),
-        ("control", "1 Jan 2099", "late"),
-        ("margin", "1 Jan 2099", "late"),
-    ], "billing was set in time, so each row names the aspect it holds on"
+        ("Aspect; control; margin", "1 Jan 2099", "late"),
+    ], "billing was set in time, so the row names the aspect it holds on"
     assert first.index(QUESTION) < first.index(_one("late"))
     assert "a lead" not in first
     assert "The question" not in " ".join(said) and "began" not in first and "after the runs" not in first
@@ -122,40 +125,33 @@ async def test_a_criterion_with_no_recorded_time_says_so_and_never_guesses() -> 
         "billing", "tone", bundle=_set_late(("aspect", None, None), ("control", None, None), ("margin", None, None))
     )
     assert _timing(page) == [
-        "Criteria on billing were set after the results there existed or have no recorded time, so they are "
-        "not shown fixed in advance."
+        "The aspect, control and margin on billing were set after its results existed or have no recorded time, so "
+        "they are not shown fixed in advance."
     ]
     assert [violation for line in _timing(page) for violation in lint_prose(line)] == []
-    assert _criteria(page) == [
-        ("aspect", "not recorded", "billing"),
-        ("control", "not recorded", "billing"),
-        ("margin", "not recorded", "billing"),
-    ]
+    assert _criteria(page) == [("Aspect; control; margin", "not recorded", "billing")]
 
 
 async def test_a_bar_and_a_floor_set_after_their_readings_are_each_named_by_what_they_hold() -> None:
     (floor,) = (await aspect_fixture("billing")).campaign.floors
     page = await page_of("billing", "tone", bundle=_set_late(("bar", "cost_usd", _SET), ("floor", floor.key, _SET)))
-    (bar, at, on), floored = _criteria(page)
-    assert bar.startswith("bar on ") and (at, on) == ("1 Jan 2099", "billing")
-    assert floored == ("floor that no pass rate drops by more than 10 points", "1 Jan 2099", "billing")
-    assert _timing(page) == [_one("billing")]
+    ((named, at, on),) = _criteria(page)
+    bar, floored = named.split("; floor that ")
+    assert bar.startswith("Bar on ") and (at, on) == ("1 Jan 2099", "billing")
+    assert floored == "no pass rate drops by more than 10 points"
+    assert _timing(page) == [_one("billing", "The bar and floor")]
 
 
 async def test_a_criterion_late_on_every_aspect_is_one_row_never_one_per_aspect() -> None:
     page = await page_of(
         "billing", "tone", bundle=_set_late(("aspect", None, _SET), ("margin", None, _SET), on=("billing", "tone"))
     )
-    assert _timing(page) == [
-        "Criteria on every aspect were set after the results there existed, so they were not fixed in advance."
-    ]
-    assert _criteria(page) == [("aspect", "1 Jan 2099", "every aspect"), ("margin", "1 Jan 2099", "every aspect")]
+    assert _timing(page) == [_one("every aspect", "The aspect and margin")]
+    assert _criteria(page) == [("Aspect; margin", "1 Jan 2099", "every aspect")]
     # The control, which the whole campaign shares, named late: one line, one row for every aspect.
     control = await page_of("billing", "tone", bundle=_set_late(("control", None, _SET), on=("billing", "tone")))
-    assert _timing(control) == [
-        "Criteria on every aspect were set after the results there existed, so they were not fixed in advance."
-    ]
-    assert _criteria(control) == [("control", "1 Jan 2099", "every aspect")]
+    assert _timing(control) == [_one("every aspect", "The control")]
+    assert _criteria(control) == [("Control", "1 Jan 2099", "every aspect")]
 
 
 @pytest.mark.parametrize("on", [("billing",), ("billing", "tone")])
@@ -183,9 +179,7 @@ async def test_the_one_aspect_page_says_one_timing_line_and_the_campaign_s_fold_
         for block in own.blocks
         if isinstance(block, DisclosureBlock) and block.section == "header" and block.source == "timing"
     ]
-    assert own_timing == [
-        "Criteria on late were set after the results there existed, so they were not fixed in advance."
-    ]
+    assert own_timing == [_one("late")]
     fold = next(fold for fold in page.aspects if fold.aspect == "late")
     assert not [block for block in fold.head if isinstance(block, DisclosureBlock) and block.source == "timing"]
     fold_markdown = campaign_report_markdown(page).split("## late", 1)[1]
@@ -194,9 +188,7 @@ async def test_the_one_aspect_page_says_one_timing_line_and_the_campaign_s_fold_
     (table,) = [block for block in own.blocks if isinstance(block, TableBlock) and block.name == "criteria_set"]
     assert table.section == "methods"
     assert [(row["criterion"].text, row["set_on"].text, row["aspects"].text) for row in table.rows] == [
-        ("aspect", "1 Jan 2099", "late"),
-        ("control", "1 Jan 2099", "late"),
-        ("margin", "1 Jan 2099", "late"),
+        ("Aspect; control; margin", "1 Jan 2099", "late"),
     ]
     assert report_markdown(own).count("**Criteria set late**") == 1
 
@@ -231,7 +223,7 @@ async def test_the_page_json_carries_each_aspect_s_late_criteria_beside_its_read
     page = await page_of("billing", "tone", bundle=_set_late(("margin", None, _SET)))
     aspects = page.json_document()["aspects"]
     assert isinstance(aspects, list)
-    assert CAMPAIGN_JSON_SHAPE == 5
+    assert CAMPAIGN_JSON_SHAPE == 6
     assert [aspect["late_criteria"] for aspect in aspects] == [
         [{"criterion": "margin", "name": None, "set_at": _SET}],
         [],
@@ -256,16 +248,16 @@ def _shape_page(name: str, change: Callable[[AnalysisContextBundle], AnalysisCon
         )
         for label, bundle in shape.bundles.items()
     }
-    return build_campaign_report(shape.campaign, shape.readings, reports, None)
+    return build_campaign_report(shape.campaign, shape.readings, reports)
 
 
 @pytest.mark.parametrize("name", ["s1", "s2", "s4"])
 def test_on_any_shape_late_criteria_on_k_aspects_are_one_line_and_k_listed(name: str) -> None:
     first = SHAPES[name]().campaign.aspects[0].label
     page = _shape_page(name, _set_late(("margin", None, _SET), ("aspect", None, _SET), on=(first,)))
-    assert _timing(page) == [_one(first)]
+    assert _timing(page) == [_one(first, "The aspect and margin")]
     assert {aspects for *_, aspects in _criteria(page)} == {first}
-    assert campaign_report_markdown(page).count(_one(first)) == 1
+    assert campaign_report_markdown(page).count(_one(first, "The aspect and margin")) == 1
 
 
 #: An aspect's own sentence for latency read under concurrency on part of its results, as the bundle writes it.
@@ -306,7 +298,9 @@ def test_latency_and_settings_are_one_caveat_line_each_their_detail_exact_once_a
     caveats = [
         block.text
         for block in page.blocks
-        if isinstance(block, DisclosureBlock) and block.section == "warnings" and block.source == "measurement"
+        if isinstance(block, DisclosureBlock)
+        and block.section == "warnings"
+        and block.anchor in ("caveat-latency", "caveat-settings")
     ]
     assert caveats == [
         "Latency read while other runs executed beside it is left out of every comparison on every aspect; launching "
@@ -316,14 +310,22 @@ def test_latency_and_settings_are_one_caveat_line_each_their_detail_exact_once_a
     ]
     assert [violation for line in caveats for violation in lint_prose(line)] == []
     setup = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "test_setup")
-    # The detail is each aspect's own sentence, verbatim, with the arms the latency holds for where not every arm.
+    # The detail is each aspect's own sentence, its execution mode's id left out and its launch setting as code
+    # (no ids or key=value in prose), with the arms the latency holds for where not
+    # every arm.
     first = shape.readings.arm_labels()[next(iter(shape.bundles.values())).scoreboard[0].variant_key]
     several = len(shape.arms) > 1
-    latency = _SOME_CONTENDED + (f" Read under concurrency: {first}." if several else "")
-    assert [(row["setup"].text, row["detail"].text, row["aspects"].text) for row in setup.rows] == [
-        ("latency read under concurrency", latency, "every aspect"),
-        ("request settings not confirmed", _SETTINGS, "every aspect"),
+    latency = _SOME_CONTENDED.replace(" (execution_mode `concurrent`)", "").replace(
+        "measure_latency=True", "`measure_latency=True`"
+    ) + (f" Read under concurrency: {first}." if several else "")
+    rows = [(row["setup"].text, row["detail"].text, row["aspects"].text) for row in setup.rows]
+    assert rows[:2] == [
+        ("Latency read under concurrency", latency, "every aspect"),
+        ("Request settings not confirmed", _SETTINGS, "every aspect"),
     ]
+    # After them, the report-wide disclosures this change does not touch: s3's unlabelled judge, and the cost's
+    # routing, a row here and never a first-screen line.
+    assert [row[0] for row in rows[2:]] == [*(["Judge scores directional"] if name == "s3" else []), "Cost as routed"]
     for rendered in (campaign_report_markdown(page), campaign_report_html(page)):
         # Each stated once, in Design & provenance; no fold says them again.
         assert rendered.count("20 of 40 results in 1 of 2 cells") == 1
@@ -339,12 +341,19 @@ def test_latency_and_settings_are_one_caveat_line_each_their_detail_exact_once_a
     said = [block for block in own.blocks if isinstance(block, DisclosureBlock)]
     lines = [b for b in said if b.text.startswith(("Latency read while", "Request settings on"))]
     assert [(b.section, b.anchor) for b in lines] == [("header", "caveat-latency"), ("header", "caveat-settings")]
-    assert [b.text for b in said if b.section == "methods" and b.anchor is not None] == [_SETTINGS, latency]
+    # The cost's routing is one more methods line, never a first-screen one.
+    assert [b.text for b in said if b.section == "methods" and b.anchor is not None] == [
+        _SETTINGS,
+        COST_ROUTING_CAVEAT,
+        latency,
+    ]
     markdown = report_markdown(own)
     assert markdown.count("20 of 40 results in 1 of 2 cells") == 1 and markdown.count(_SETTINGS) == 1
 
 
-def test_a_page_with_nothing_report_wide_has_no_caveat_and_no_design_and_provenance() -> None:
+def test_a_page_with_nothing_report_wide_has_no_caveat_and_only_its_cost_s_routing_in_design_and_provenance() -> None:
     page = SHAPES["s4"]().page()
-    assert _timing(page) == [] and not [block for block in page.blocks if block.section == "provenance"]
-    assert "## Design & provenance" not in campaign_report_markdown(page)
+    assert _timing(page) == [] and not [block for block in page.blocks if block.section == "warnings"]
+    # Its arms are priced, so Design & provenance holds the one row saying each cost is its routing's, and no other.
+    (setup,) = [block for block in page.blocks if block.section == "provenance"]
+    assert isinstance(setup, TableBlock) and [row["setup"].text for row in setup.rows] == ["Cost as routed"]

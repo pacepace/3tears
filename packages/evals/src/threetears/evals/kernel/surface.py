@@ -1,7 +1,7 @@
 """The decision surface — the campaign's per-cell numbers, as code computed them.
 
 An analysis has two layers, and this module is the one no model writes. The interpretation — the
-memo, the findings' verdicts — is prose, and whether it is right is an eval's question. The
+report, the findings' verdicts — is prose, and whether it is right is an eval's question. The
 numbers it rests on are arithmetic over the campaign's cells, and a number a model transcribes
 reaches the reader with the same authority as one code computed while nothing checks it. So the
 per-cell numbers are computed once, at bundle assembly, and frozen onto the analysis here.

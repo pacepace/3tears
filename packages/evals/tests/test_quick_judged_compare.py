@@ -143,7 +143,7 @@ def _judge(client: Any) -> Judge:
 
 
 async def _compare(arms: Mapping[str, Any], graders: list[Any]) -> Result:
-    return await Eval(CASES, arms, graders, k=1).run(store=":memory:", scope=SCOPE)
+    return await Eval(CASES, arms, graders, k=1, name=" vs ".join(arms)).run(store=":memory:", scope=SCOPE)
 
 
 async def _one(runner: Any, client: Any, host: Any = None) -> EvalSummary:
@@ -164,7 +164,7 @@ async def helpful(case: Mapping[str, Any]) -> str:
 async def test_a_judged_compare_contrasts_every_arm_on_each_judged_dimension_with_one_judge() -> None:
     client = _FakeJudgeClient()
     comparison = await _compare({"baseline": vague, "candidate": helpful}, [_judge(client)])
-    (row,) = comparison.contrasts("answer.helpful (judged)")
+    (row,) = comparison.contrasts("answer helpful (judged)")
     assert row["arm"] == "candidate" and row["delta"] == pytest.approx(1.5)
     assert row["verdict"] == "candidate better than baseline"
     runs = [off_loop(get_run, comparison.host.storage, summary.run_id, SCOPE) for summary in comparison.arms.values()]
@@ -176,7 +176,7 @@ async def test_a_judged_compare_contrasts_every_arm_on_each_judged_dimension_wit
 async def test_a_judged_comparison_reads_against_another_control_on_the_judged_kinds_levers() -> None:
     comparison = await _compare({"baseline": vague, "candidate": helpful}, [_judge(_FakeJudgeClient())])
     flipped = await comparison.against("candidate")
-    (row,) = flipped.contrasts("answer.helpful (judged)")
+    (row,) = flipped.contrasts("answer helpful (judged)")
     assert row["arm"] == "baseline" and row["delta"] == pytest.approx(-1.5)
 
 

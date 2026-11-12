@@ -11,7 +11,7 @@ as unverified and never refused, a wrong type refused by name. Pinned here:
 - the stored fields named for what they hold (``RubricScore.judge_sent_settings``, ``RoleUsage.sent_settings``, the
   first-score halves, ``OutOfRunSpend.sent_settings``, ``JudgeCaseSource.first_judge_sent_settings``, the run's
   ``judge_asked_settings``/``simulator_asked_settings``), and a judge case's digest untouched while its field is None;
-- the engine's own constants, which ask in effort words.
+- the engine's own constants: the judge asks a reasoning budget strictly under a derived cap.
 """
 
 from __future__ import annotations
@@ -22,12 +22,6 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis import analysis_gen_request_settings_for
-from threetears.evals.analysis.generator import (
-    DEFAULT_ANALYSIS_GEN_REASONING_EFFORT,
-    DEFAULT_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS,
-    MIN_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS,
-)
 from threetears.evals.kernel.judge_cases import JudgeCase, JudgeCaseSource
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 from threetears.evals.run import JUDGE_MAX_TOKENS, JUDGE_REQUEST_SETTINGS
@@ -305,28 +299,6 @@ def test_the_judge_asks_for_a_reasoning_budget_strictly_under_a_derived_cap() ->
     )
     assert JUDGE_REQUEST_SETTINGS.reasoning_max_tokens == JUDGE_REASONING_HEADROOM_TOKENS
     assert JUDGE_MAX_TOKENS == JUDGE_REASONING_HEADROOM_TOKENS + JUDGE_ANSWER_BUDGET_TOKENS == 10240
-
-
-def test_the_analysis_generator_asks_for_medium_effort_with_its_cap_sized_from_answer_and_headroom() -> None:
-    settings = analysis_gen_request_settings_for(answer_budget_tokens=32768)
-    assert (DEFAULT_ANALYSIS_GEN_REASONING_EFFORT, DEFAULT_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS) == ("medium", 8192)
-    assert settings == ClientRequestSettings(max_tokens=32768 + 8192, reasoning_effort="medium", strict_output=True)
-
-
-def test_the_analysis_generator_takes_a_host_s_effort_and_headroom() -> None:
-    settings = analysis_gen_request_settings_for(
-        answer_budget_tokens=4000, reasoning_effort="high", reasoning_headroom_tokens=2000
-    )
-    assert settings == ClientRequestSettings(max_tokens=6000, reasoning_effort="high", strict_output=True)
-    assert settings.reasoning_max_tokens is None, "the headroom sizes the cap and is never sent"
-
-
-def test_a_headroom_too_small_to_think_in_is_refused_by_name() -> None:
-    least = MIN_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS
-    assert least == 1024
-    analysis_gen_request_settings_for(answer_budget_tokens=4000, reasoning_headroom_tokens=least)
-    with pytest.raises(ValueError, match="reasoning_headroom_tokens=1023 leaves the analysis generator too little"):
-        analysis_gen_request_settings_for(answer_budget_tokens=4000, reasoning_headroom_tokens=least - 1)
 
 
 @pytest.mark.parametrize("role", ["candidate", "inner_agent"])

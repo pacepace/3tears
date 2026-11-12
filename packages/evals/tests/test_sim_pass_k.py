@@ -11,6 +11,7 @@ simulation can see the bias it had.
 from __future__ import annotations
 
 import math
+from functools import cache
 import random
 import statistics
 
@@ -35,15 +36,18 @@ def _true_pass_hat_k(k: int) -> float:
 
 #: One result per (run, case, attempt, outcome), built once: the estimator only reads them, and
 #: building a pydantic row per draw would cost the file its time budget.
-_BANK: dict[tuple[str, int, int, bool], EvalResult] = {
-    (run_id, case, attempt, passed): make_scored_result(
-        test_case_id=f"tc{case}", run_id=run_id, k=attempt, goal_passes=(passed,)
-    )
-    for run_id in ("r1", "r2")
-    for case in range(len(_P))
-    for attempt in range(1, 2 * _DEEPEST + 1)
-    for passed in (True, False)
-}
+@cache
+def _bank() -> dict[tuple[str, int, int, bool], EvalResult]:
+    """The rows, built on first use: a result stamps its id and clock, which an import must not."""
+    return {
+        (run_id, case, attempt, passed): make_scored_result(
+            test_case_id=f"tc{case}", run_id=run_id, k=attempt, goal_passes=(passed,)
+        )
+        for run_id in ("r1", "r2")
+        for case in range(len(_P))
+        for attempt in range(1, 2 * _DEEPEST + 1)
+        for passed in (True, False)
+    }
 
 
 def _attempts(rng: random.Random, depths: tuple[int, ...]) -> list[list[bool]]:
@@ -55,7 +59,7 @@ def _attempts(rng: random.Random, depths: tuple[int, ...]) -> list[list[bool]]:
 
 def _rows(attempts: list[list[bool]], *, run_id: str = "r1", first: int = 1) -> list[EvalResult]:
     return [
-        _BANK[(run_id, case, first + i, passed)]
+        _bank()[(run_id, case, first + i, passed)]
         for case, case_attempts in enumerate(attempts)
         for i, passed in enumerate(case_attempts)
     ]
@@ -82,7 +86,7 @@ def test_the_estimator_is_unbiased_at_the_issues_mixed_depths_and_the_old_one_wa
     old: list[float] = []
     for _ in range(_REPLICATES):
         attempts = _attempts(rng, _ISSUE_DEPTHS)
-        curve = compute_pass_hat_k(_rows(attempts), k=_DEEPEST)[("m1", "r1")]["pass_hat_k_curve"]
+        curve = compute_pass_hat_k(_rows(attempts), k=_DEEPEST, catalog={})[("m1", "r1")]["pass_hat_k_curve"]
         for k, values in estimates.items():
             point = pass_hat_k_at(curve, k)
             # The depth multiset is fixed, so the number of cases measured at least k deep is too.
@@ -106,7 +110,7 @@ def test_at_uniform_depth_the_estimator_is_the_all_pass_indicator():
     rng = random.Random(_SEED)
     for _ in range(200):
         attempts = _attempts(rng, (_DEEPEST,) * len(_P))
-        entry = compute_pass_hat_k(_rows(attempts), k=_DEEPEST)[("m1", "r1")]
+        entry = compute_pass_hat_k(_rows(attempts), k=_DEEPEST, catalog={})[("m1", "r1")]
         assert entry["pass_hat_k"] == pytest.approx(_all_pass_indicator(attempts))
 
 
@@ -121,8 +125,9 @@ def test_pooling_two_runs_of_one_cell_matches_one_run_of_the_combined_depth():
             _rows(first, run_id="r1") + _rows(second, run_id="r2"),
             cell_of_run={"r1": "cell", "r2": "cell"},
             k=_DEEPEST,
+            catalog={},
         )
-        one_run = compute_pass_hat_k(_rows(combined), k=_DEEPEST)[("m1", "r1")]
+        one_run = compute_pass_hat_k(_rows(combined), k=_DEEPEST, catalog={})[("m1", "r1")]
 
         assert pooled["pass_hat_k_curve"] == one_run["pass_hat_k_curve"]
         assert pooled["n_test_cases"] == one_run["n_test_cases"] == len(_P)

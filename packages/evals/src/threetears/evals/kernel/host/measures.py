@@ -127,6 +127,16 @@ class MeasureRegistry(HostAttributed):
                     f"{descriptor.name} names family {descriptor.family!r}, which neither the engine nor this host "
                     "declares — declare it as a MeasureFamily on the registry, or name one that exists"
                 )
+            # The bundle's measure surfaces keep only a typed measure, so a direction or a diagnostic declared without
+            # a data type would put a measure on no bundle at all, numbers included. Refused here, at startup, rather
+            # than discovered as a missing column. An undirected measure that is no diagnostic stays legal untyped:
+            # it is a raw count either way, and no surface would carry it whatever its type.
+            if descriptor.data_type is None and (descriptor.higher_is_better is not None or descriptor.diagnostic):
+                declared = "a better end" if descriptor.higher_is_better is not None else "itself a diagnostic"
+                defects.append(
+                    f"{descriptor.name} declares {declared} and no data_type — no bundle would carry it; declare "
+                    "its data_type (numeric, for a number)"
+                )
             if descriptor.value_range is not None:
                 low, high = descriptor.value_range
                 if low > high:

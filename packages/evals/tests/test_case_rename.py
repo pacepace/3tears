@@ -18,13 +18,12 @@ from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standa
 from threetears.evals.analysis import assemble_context_bundle, build_code_only_report, get_campaign, report_markdown
 from threetears.evals.kernel import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.ops import CaseRenamed, case_rename, reporter_case_archive
+from threetears.evals.ops import CaseRenamed, case_rename
 from threetears.evals.schema import CaseSet, EvalTestCase, case_set_doc_id
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
-from packages.evals.tests.reporter_case_support import freeze_corpus_campaign, reporter_fixture
 
 _SCOPE = TOYHOST_SCOPE
 
@@ -120,22 +119,24 @@ def test_an_unknown_case_is_refused() -> None:
 def test_a_write_landing_between_the_read_and_the_save_refuses_the_rename_rather_than_undoing_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fixture = reporter_fixture()
-    host = fixture.host.eval_host
-    case_id = freeze_corpus_campaign(fixture).test_case_id
+    host = ops_fixture().host.eval_host
+    case_id = "c1"
+    host.storage.save_test_case(_case(case_id, "double-charge"))
     read = host.storage.load_test_case_with_etag
 
     def retired_meanwhile(test_case_id: str, scope_id: str) -> tuple[EvalTestCase | None, str | None]:
-        loaded = read(test_case_id, scope_id)
-        reporter_case_archive(host, test_case_id, scope_id, archived=True, reason="orphaned")
-        return loaded
+        loaded, etag = read(test_case_id, scope_id)
+        assert loaded is not None
+        # Another writer retires the case between the rename's read and its save.
+        host.storage.save_test_case(loaded.model_copy(update={"archived": True, "archived_reason": "orphaned"}))
+        return loaded, etag
 
     monkeypatch.setattr(host.storage, "load_test_case_with_etag", retired_meanwhile)
     with pytest.raises(ConflictError, match="changed since it was read"):
-        case_rename(host, _SCOPE, case_id, "orphaned-memo")
+        case_rename(host, _SCOPE, case_id, "orphaned-case")
     stored = host.storage.load_test_case(case_id, _SCOPE)
     assert stored is not None and stored.archived and stored.archived_reason == "orphaned"
-    assert stored.name != "orphaned-memo"
+    assert stored.name == "double-charge"
 
 
 # --- the action -----------------------------------------------------------------------------------------------------

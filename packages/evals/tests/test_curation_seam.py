@@ -51,7 +51,7 @@ def _storage_double() -> MagicMock:
     rather than passing silently against a permissive mock.
     """
     storage = MagicMock(spec=EvalStorage)
-    storage.query_eval_results_by_run.return_value = []
+    storage.query_eval_result_ids_by_run.return_value = []
     storage.list_campaigns.return_value = []
     storage.delete_eval_result.return_value = True
     storage.delete_eval_run.return_value = True
@@ -177,9 +177,7 @@ def test_delete_run_destroys_results_before_the_run_document():
     that outlived their run are unreadable rows that still enter every aggregate.
     """
     storage = _storage_double()
-    result = MagicMock()
-    result.id = "res-1"
-    storage.query_eval_results_by_run.return_value = [result]
+    storage.query_eval_result_ids_by_run.return_value = ["res-1"]
     calls: list[str] = []
     storage.delete_eval_result.side_effect = lambda *a, **k: calls.append("result") or True
     storage.delete_eval_run.side_effect = lambda *a, **k: calls.append("run") or True
@@ -202,9 +200,7 @@ def test_delete_run_refuses_a_live_run_and_destroys_nothing():
 
 def test_a_failed_result_delete_leaves_the_run_document_alone():
     storage = _storage_double()
-    result = MagicMock()
-    result.id = "res-1"
-    storage.query_eval_results_by_run.return_value = [result]
+    storage.query_eval_result_ids_by_run.return_value = ["res-1"]
     storage.delete_eval_result.return_value = False
 
     with pytest.raises(StorageError):
@@ -216,9 +212,7 @@ def test_a_failed_result_delete_leaves_the_run_document_alone():
 def test_a_refused_result_delete_names_its_cause_and_leaves_the_run_alone():
     """#650: a result kept because its trace survived is a failed cascade, not a clean one."""
     storage = _storage_double()
-    kept, gone = MagicMock(), MagicMock()
-    kept.id, gone.id = "res-kept", "res-gone"
-    storage.query_eval_results_by_run.return_value = [kept, gone]
+    storage.query_eval_result_ids_by_run.return_value = ["res-kept", "res-gone"]
 
     def _delete(result_id: str, scope_id: str) -> bool:
         if result_id == "res-kept":

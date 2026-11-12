@@ -34,6 +34,7 @@ from threetears.evals.schema import (
     JudgeEvidence,
     RubricDim,
 )
+from threetears.evals.kernel import run_pages
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.schema import SweepableValue
 from threetears.evals.run import (
@@ -478,6 +479,35 @@ class TestAJudgedRunIsHeldToItsCeiling:
             await _record(host, stamped, case, _output())
         assert len(judge.calls) == 1, "only the cell inside the ceiling was judged"
 
+    async def test_the_ceiling_reads_the_saved_cells_a_page_at_a_time_and_counts_every_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The check runs once a cell, so it reads the run's keys and its cells by id a page at a time, never whole."""
+        judge = _ScriptedJudge()
+        host, template, run, case = off_loop(_setup, judge)
+        stamped = off_loop(_stamped, host, template, run, max_cost_usd=1.0)
+        off_loop(host.storage.save_eval_run, stamped)
+        for index in range(5):
+            off_loop(_judged_at, host, stamped, case, result_id=f"saved-{index}", judge_cost=0.25)
+        pages: list[int] = []
+        by_id = host.storage.load_eval_results
+
+        def page_read(result_ids: Any, scope_id: str) -> Any:
+            pages.append(len(result_ids))
+            return by_id(result_ids, scope_id)
+
+        def whole_read(*_args: Any) -> Any:
+            raise AssertionError("the ceiling read the run's results whole")
+
+        monkeypatch.setattr(run_pages, "RUN_RESULTS_PAGE", 2)
+        monkeypatch.setattr(host.storage, "load_eval_results", page_read)
+        monkeypatch.setattr(host.storage, "query_eval_results_by_run", whole_read)
+
+        with pytest.raises(BudgetStoppedError, match=r"\$1\.2500 spent against a \$1\.0000 cap"):
+            await _record(host, stamped, case, _output())
+        assert pages == [2, 2, 1], "every saved cell counted, two a read"
+        assert judge.calls == [], "refused before its judge"
+
     async def test_a_judged_cell_the_host_has_not_saved_counts_against_the_next(self) -> None:
         """The store holds only what the host saved; the run's judging counts what it judged and the host has not."""
         judge = _ScriptedJudge()
@@ -657,7 +687,7 @@ async def test_no_store_call_from_recording_a_judged_witnessed_cell_runs_on_the_
 
     assert [score.dim for score in result.rubric_scores] == [_DIM]
     called = {name for name, _ in threads}
-    assert {"load_template", "query_eval_results_by_run"} <= called, (
+    assert {"load_template", "query_eval_result_keys_by_run"} <= called, (
         f"the precondition: the store was read, so no call passes by not happening — {sorted(called)}"
     )
     assert all(ident != loop_thread for _, ident in threads), f"a store call ran on the loop: {threads}"

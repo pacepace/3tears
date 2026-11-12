@@ -1,19 +1,18 @@
-"""A finding's trace: from what the memo says to the figures and trials behind it, drawn by code, on both pages.
+"""Where a reading's figure is anchored on code's pages, and that every link on them lands where a reader sees it.
 
-Each figure in a finding's readings table links to a cell printing the same figure of the same reading at the same
-cell: a contrast's arm or control, a guardrail's mean, a one-arm page's reading, an arm's cost per reply; or, where
-that cell sits in a table shown closed (the bars), to the table's fold. Never to another number: a contrast's paired
-mean over fewer cases is not the cell's figure, and is not linked to. Each trial id a finding names links to the
-Trials section's heading. On a campaign's page each finding's ``Evidence`` fold lists what it cites, with its figure,
-linked to the heading of the aspect's fold that prints it. No trace link lands inside a closed ``<details>``, where a
-browser that does not open it would leave the reader nowhere. A finding whose trace reaches nothing says so, and the
-page model refuses a link to a place it does not hold.
+Every cell printing a reading's own figure at a cell carries that reading's id (``reading_anchor``), and one cell keeps
+it: a cell shown open before one in a closed table, a contrast before any other table, else the first on the page, and
+a table shown closed (the bars) carries the id of its own fold where a cell in it keeps one. A contrast's paired mean
+over fewer cases is not the cell's figure, and carries no id. Every link on an aspect's page and on a campaign's is
+fragment-only and lands on an id the page carries, outside any closed ``<details>`` the reader has not opened, and the
+page models refuse a link to a place they do not hold and one id carried twice.
+
+The stored analysis read here is the toy campaign's retired memo: its aspect's page is code's over the bundle frozen
+with it (``report_support.toy_report``), and its campaign's page is the one ``analysis_report`` lays out by its id.
 """
 
 from __future__ import annotations
 
-from html import escape
-import json
 import re
 from collections.abc import Mapping, Sequence
 from html.parser import HTMLParser
@@ -25,146 +24,52 @@ from threetears.evals import Answer, Eval, Result, grader
 from threetears.evals.analysis import (
     AnalysisContextBundle,
     CampaignReport,
-    DisclosureBlock,
     Report,
     TableBlock,
     TableCell,
     TableColumn,
     analysis_report,
-    build_report,
-    campaign_report,
+    build_code_only_report,
     campaign_report_html,
-    generate_analysis,
     report_html,
 )
-from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref
-from threetears.evals.analysis.references import campaign_cell_aliases, cell_aliases, resolve_reading
 from threetears.evals.analysis.report.model import fold_ids, reading_anchor
-from threetears.evals.analysis.report.words import UNTRACED
-from threetears.evals.kernel.authored import EvidenceRef, Finding
-from threetears.evals.kernel.campaign import EvalAnalysis, EvidenceRow, FindingResolution
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from packages.evals.tests.campaign_bundle_support import memo as authored_memo
+from threetears.evals.kernel.campaign import EvalAnalysis
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.surface import DecisionSurface
 from packages.evals.tests.g2_support import CANDIDATE, PRODUCTION, answering
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.report_support import toy_report
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
+from packages.evals.tests.page_contract_support import without_kit_script
 
 #: Production passes 30 of its 36 trials, the candidate 6: a contrast on accuracy the page tests and states.
 _CASES = [{"text": f"queue request {index}", "label": "queued"} for index in range(12)]
 
-#: The findings' headlines: one on a reading the contrasts state, one on a reading no table states, one on a trial.
-TESTED = "The candidate answers fewer requests right"
-UNSTATED = "The candidate matched fewer labels"
-ON_A_TRIAL = "One request went wrong"
 
-#: The tables a finding's trace is drawn from: its readings, its facts, and a campaign page's trace.
-_TRACE_TABLES = frozenset({"evidence", "finding_facts", "trace"})
+def _page(bundle: AnalysisContextBundle) -> Report:
+    """Code's page over ``bundle``."""
+    return build_code_only_report(bundle, assembled_at="2026-10-14T19:23:41+00:00", campaign_name="queue")
 
 
-def _finding(title: str, measure: str, cells: Mapping[str, str], trials: tuple[str, ...] = ()) -> dict[str, Any]:
-    return {
-        "title": title,
-        "body": "",
-        "confidence": "low",
-        "axes": [],
-        "evidence": [{"cell": cell, "measure_id": measure, "reading": "measure"} for cell in cells.values()],
-        "trials": list(trials),
-        "caveats": [],
-        "invalidates": [],
-        "durable": "",
-    }
-
-
-async def _generated(
-    comparison: Result, bundle: CampaignBundle | AnalysisContextBundle, findings: Sequence[dict[str, Any]] = ()
-) -> EvalAnalysis:
-    """A stored analysis of ``findings`` over ``bundle``, written by a fixtured writer; a campaign of one arm
-    recommends nothing."""
-    campaign = bundle if isinstance(bundle, CampaignBundle) else campaign_bundle(bundle)
-    memo = authored_memo(campaign, list(findings), means="Keep production.")
-    if len(campaign.arms) == 1:
-        memo["recommendation"] = []
-    analysis, _ = await generate_analysis(
-        campaign,
-        prompt=PROMPT,
-        model=MODEL,
-        client=FixturedClient(json.dumps(memo)),
-        prompt_id=PROMPT_ID,
-        bundle_assembled_at="2026-10-14T19:23:41+00:00",
-        profile=comparison.host.profile,
-    )
-    off_loop(comparison.host.storage.save_analysis, analysis)
-    return analysis
-
-
-async def _analysed() -> tuple[Result, EvalAnalysis]:
-    """Two arms, production the control, and a stored analysis of three findings: on accuracy, which the contrasts
-    test; on the label match, which no table on the page states; and on one trial alone."""
-    comparison = await Eval(
-        _CASES, {PRODUCTION: answering(30, 0.003092), CANDIDATE: answering(6, 0.003301)}, ["label"], k=3, name="queue"
-    ).run(store=":memory:")
-    bundle: AnalysisContextBundle = comparison.report.bundle
-    by_variant = {ref.split(":")[0]: alias for alias, ref in cell_aliases(bundle.cell_measures).items()}
-    cells = {name: by_variant[comparison.arm_variants[name]] for name in (PRODUCTION, CANDIDATE)}
-    findings = [
-        _finding(TESTED, "accuracy", cells),
-        _finding(UNSTATED, "match", cells),
-        _finding(ON_A_TRIAL, "match", {}, ("T40",)),
-    ]
-    return comparison, await _generated(comparison, bundle, findings)
-
-
-def _citing(analysis: EvalAnalysis, measure: str, title: str = "The arms read differently here") -> EvalAnalysis:
-    """``analysis`` holding one finding, citing ``measure`` on every cell of its one aspect, its figures as code
-    resolves them."""
-    (held,) = analysis.aspects
-    surface = held.decision_surface
-    rows: list[EvidenceRow] = []
-    for cell in surface.cells:
-        ref = cell_ref(cell.variant_key, cell.apparatus_class_id)
-        resolved = resolve_reading(surface, ref, measure, "measure")
-        rows.append(
-            EvidenceRow(
-                aspect=held.label,
-                cell_ref=ref,
-                measure_id=measure,
-                reading="measure",
-                value=resolved.mean,
-                n=resolved.n,
-                n_cases=resolved.n_cases,
-                dispersion=resolved.dispersion,
-            )
-        )
-    finding = Finding(
-        title=title,
-        body="",
-        confidence="low",
-        axes=[],
-        evidence=[EvidenceRef(cell=row.cell_ref, measure_id=measure, reading="measure") for row in rows],
-        trials=[],
-        caveats=[],
-        invalidates=[],
-        durable="",
-    )
-    recommendation = [item.model_copy(update={"rests_on": []}) for item in analysis.document.recommendation]
-    document = analysis.document.model_copy(update={"findings": [finding], "recommendation": recommendation})
-    return analysis.model_copy(update={"document": document, "resolutions": [FindingResolution(evidence=rows)]})
-
-
-def _tables(blocks: Sequence[Any], name: str, finding: int | None = None) -> list[TableBlock]:
+def _anchors(surface: DecisionSurface, measure: str, variants: Sequence[str] | None = None) -> list[str]:
+    """The id of ``measure``'s reading at each cell of ``surface`` (or at each of ``variants``' cells, in order)."""
+    cells = {cell.variant_key: cell for cell in surface.cells}
+    keys = list(variants) if variants is not None else list(cells)
     return [
-        block
-        for block in blocks
-        if isinstance(block, TableBlock) and block.name == name and (finding is None or block.finding == finding)
+        reading_anchor(cell_ref(cells[key].variant_key, cells[key].apparatus_class_id), measure, "measure")
+        for key in keys
     ]
 
 
-def _figures(page: Report, finding: int = 0) -> list[TableCell]:
-    """A finding's figures in its readings table, row by row."""
-    (evidence,) = _tables(page.blocks, "evidence", finding=finding)
-    return [cell for row in evidence.rows for key, cell in row.items() if key.startswith("reading_")]
+def _arms(comparison: Result) -> list[str]:
+    """Production's variant key, then the candidate's."""
+    return [comparison.arm_variants[name] for name in (PRODUCTION, CANDIDATE)]
+
+
+def _tables(blocks: Sequence[Any], name: str) -> list[TableBlock]:
+    return [block for block in blocks if isinstance(block, TableBlock) and block.name == name]
 
 
 def _carrying(page: Report, anchor: str) -> tuple[TableBlock, TableCell]:
@@ -180,9 +85,9 @@ def _carrying(page: Report, anchor: str) -> tuple[TableBlock, TableCell]:
     return found
 
 
-def _untraced(blocks: Sequence[Any]) -> list[int | None]:
-    """The findings whose trace says it reaches nothing, by position."""
-    return [block.finding for block in blocks if isinstance(block, DisclosureBlock) and block.text == UNTRACED]
+def _campaign_page(host: EvalHost, analysis: EvalAnalysis) -> CampaignReport:
+    """The campaign's page ``analysis_report`` lays out by the analysis's id, over the bundles frozen with it."""
+    return analysis_report(host.storage, analysis.id, analysis.scope_id)
 
 
 class _Landings(HTMLParser):
@@ -231,23 +136,23 @@ class _Landings(HTMLParser):
             pass
 
 
-def _trace_links_land_in_sight(page: str) -> list[str]:
-    """Every trace link's target, after checking every link on the page is fragment-only and lands where every
-    browser shows it: on an id the page carries, held by no closed ``<details>`` the reader has not already opened to
-    see the link (a fold's own ``<details>``, or the section around it, is outside it)."""
+def _links_land_in_sight(page: str) -> None:
+    """Check every link on the page is fragment-only and lands where every browser shows it: on an id the page
+    carries, held by no closed ``<details>`` the reader has not already opened to see the link (a fold's own
+    ``<details>``, or the section around it, is outside it)."""
     parsed = _Landings()
     parsed.feed(page)
     parsed.close()
     assert not parsed.stack, "an element is left open"
-    targets = []
-    for href, shut, table in parsed.links:
+    for href, shut, _ in parsed.links:
         assert href.startswith("#"), f"{href} is not a link to a place on the page"
         assert href[1:] in parsed.held, f"{href} lands nowhere"
+        # The one link that lands inside a closed fold: a goal check's name, on its own glossary row, the one place
+        # its expression stands (coordinator ruling, 2026-11-07).
+        if href.startswith("#g-check-"):
+            continue
         assert parsed.held[href[1:]] <= shut, f"{href} lands inside a closed fold"
-        if table in _TRACE_TABLES:
-            targets.append(href[1:])
-    assert "<base" not in page
-    return targets
+    assert "<base" not in without_kit_script(page)
 
 
 # =============================================================================
@@ -255,59 +160,22 @@ def _trace_links_land_in_sight(page: str) -> list[str]:
 # =============================================================================
 
 
-async def test_a_finding_s_figures_link_to_the_contrast_that_prints_each() -> None:
-    _, analysis = await _analysed()
-    page = build_report(analysis, campaign_name="queue")
-    linked = [cell.ref for cell in _figures(page)]
-    assert len(linked) == 2 and None not in linked
-    # Each figure lands on its arm's own figure in the contrast on that reading: the control's and the candidate's.
+async def test_a_contrast_s_figures_carry_their_readings_ids_on_the_page() -> None:
+    comparison = await Eval(
+        _CASES, {PRODUCTION: answering(30, 0.003092), CANDIDATE: answering(6, 0.003301)}, ["label"], k=3, name="queue"
+    ).run(store=":memory:")
+    bundle = comparison.report.bundle
+    page = _page(bundle)
     (contrasts,) = _tables(page.blocks, "comparisons")
     (accuracy,) = [row for row in contrasts.rows if row["reading"].text == "Accuracy"]
-    assert linked == [accuracy["control"].anchor, accuracy["arm"].anchor]
-    assert 0 not in _untraced(page.blocks)
+    # Each arm's own figure in the contrast on that reading carries its reading's id: the control's and the
+    # candidate's.
+    expected = _anchors(bundle_decision_surface(bundle), "accuracy", _arms(comparison))
+    assert [accuracy["control"].anchor, accuracy["arm"].anchor] == expected
     html = report_html(page)
-    for place in linked:
-        assert f'<a href="#{place}">' in html and f'<td id="{place}"' in html
-    assert set(_trace_links_land_in_sight(html)) >= set(linked)
-
-
-async def test_a_finding_whose_figures_no_table_prints_links_nothing_and_says_so_in_its_fold() -> None:
-    _, analysis = await _analysed()
-    page = build_report(analysis, campaign_name="queue")
-    assert all(cell.ref is None for cell in _figures(page, finding=1))
-    (said,) = [block for block in page.blocks if isinstance(block, DisclosureBlock) and block.text == UNTRACED]
-    assert said.finding == 1 and said.fold == "Evidence" and said.section == "memo"
-    html = report_html(page)
-    fold = html[html.index('id="F2"') :].split("</details>", 1)[0]
-    assert escape(UNTRACED) in fold and 'href="#r-' not in fold
-
-
-async def test_a_finding_s_trial_ids_link_to_the_trials_heading_and_trace_it() -> None:
-    _, analysis, page = await toy_report()
-    # The toy campaign has no control, so no table prints the turn time its one finding cites: the trace says so.
-    assert _untraced(page.blocks) == [0]
-    finding = analysis.document.findings[0].model_copy(update={"trials": ["T1"]})
-    traced = build_report(
-        analysis.model_copy(update={"document": analysis.document.model_copy(update={"findings": [finding]})})
-    )
-    assert _untraced(traced.blocks) == []
-    html = report_html(traced)
-    facts = html[html.index('data-table="finding_facts"') :].split("</table>", 1)[0]
-    # The record is in the closed Trials section; the link lands on its heading, which every browser shows.
-    assert '<a href="#trials">T1</a>' in facts and '<section id="trials">' in html
-    assert "trials" in _trace_links_land_in_sight(html)
-
-
-async def test_a_trial_id_the_page_does_not_hold_is_not_linked() -> None:
-    _, analysis, _ = await toy_report()
-    finding = analysis.document.findings[0].model_copy(update={"trials": ["T1", "T999"]})
-    page = build_report(
-        analysis.model_copy(update={"document": analysis.document.model_copy(update={"findings": [finding]})})
-    )
-    html = report_html(page)
-    facts = html[html.index('data-table="finding_facts"') :].split("</table>", 1)[0]
-    assert '<a href="#trials">T1</a>' in facts and "T999" in facts and 'href="#T999"' not in facts
-    _trace_links_land_in_sight(html)
+    for place in expected:
+        assert f'<td id="{place}"' in html
+    _links_land_in_sight(html)
 
 
 async def test_every_link_on_both_pages_lands_in_sight() -> None:
@@ -317,16 +185,17 @@ async def test_every_link_on_both_pages_lands_in_sight() -> None:
     html = report_html(page)
     nav = html[html.index("<nav>") : html.index("</nav>")]
     assert 'href="#cases"' in nav and "-body" not in nav
-    assert 'href="#glossary"' in html and 'href="#g-' not in html
-    _trace_links_land_in_sight(html)
-    campaign = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
+    # A term of art lands on the glossary's heading; only a goal check's name lands on its row.
+    assert 'href="#glossary"' in html and 'href="#g-' not in html.replace('href="#g-check-', "")
+    _links_land_in_sight(html)
+    campaign = off_loop(_campaign_page, host, analysis)
     campaign_html = campaign_report_html(campaign)
     (fold_id,) = campaign.fold_ids
     nav = campaign_html[campaign_html.index("<nav>") : campaign_html.index("</nav>")]
     assert f'href="#aspect-{fold_id}"' in nav and "-body" not in nav
     # A case's trial ids, inside the aspect's fold, land on that fold's Trials section, which the reader then opens.
-    assert f'href="#a-{fold_id}-trials"' in campaign_html
-    _trace_links_land_in_sight(campaign_html)
+    assert f'href="#a-{fold_id}--trials"' in campaign_html
+    _links_land_in_sight(campaign_html)
 
 
 async def test_a_link_keeps_its_exact_target_where_the_reader_sees_it() -> None:
@@ -341,7 +210,6 @@ async def test_a_link_keeps_its_exact_target_where_the_reader_sees_it() -> None:
     assert f'<a href="#{first}">{first}</a>' in table and f'id="{first}"' in html
     nav = html[html.index("<nav>") : html.index("</nav>")]
     assert re.findall(r'href="#([^"]+)"', nav) == [
-        "memo",
         "contrasts",
         "cases",
         "trials",
@@ -349,18 +217,18 @@ async def test_a_link_keeps_its_exact_target_where_the_reader_sees_it() -> None:
         "methods",
         "glossary",
     ]
-    campaign = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
+    campaign = off_loop(_campaign_page, host, analysis)
     campaign_html = campaign_report_html(campaign)
     (fold_id,) = campaign.fold_ids
-    folded = campaign_html[campaign_html.index(f'id="a-{fold_id}-trials"') :]
+    folded = campaign_html[campaign_html.index(f'id="a-{fold_id}--trials"') :]
     table = folded[folded.index('data-table="trials"') :].split("</table>", 1)[0]
-    assert f'<a href="#a-{fold_id}-{first}">{first}</a>' in table and f'id="a-{fold_id}-{first}"' in campaign_html
+    assert f'<a href="#a-{fold_id}--{first}">{first}</a>' in table and f'id="a-{fold_id}--{first}"' in campaign_html
 
 
-async def test_a_figure_never_lands_on_another_number() -> None:
+async def test_a_paired_mean_never_carries_the_cell_s_id() -> None:
     """The candidate never answers the last two cases, so the contrast on cost reads production over the ten cases
-    both ran: its paired mean, not production's own figure over twelve. The finding's figure lands where production's
-    own figure is printed, on its cost per reply, and the contrast's paired mean carries no id."""
+    both ran: its paired mean, not production's own figure over twelve. The contrast's paired mean carries no id;
+    production's own figure keeps it, on its cost per reply."""
 
     async def production(case: Mapping[str, Any]) -> Answer:
         index = int(case["text"].rsplit(" ", 1)[1])
@@ -374,15 +242,15 @@ async def test_a_figure_never_lands_on_another_number() -> None:
     comparison = await Eval(_CASES, {PRODUCTION: production, CANDIDATE: partial}, ["label"], k=1, name="queue").run(
         store=":memory:"
     )
-    page = build_report(_citing(await _generated(comparison, comparison.report.bundle), "production_replicating_cost"))
+    bundle = comparison.report.bundle
+    page = _page(bundle)
     (contrasts,) = _tables(page.blocks, "comparisons")
     (cost,) = [row for row in contrasts.rows if row["reading"].text.startswith("Production cost")]
     assert cost["control"].anchor is None, "a paired mean over ten cases is not production's figure over twelve"
-    for figure in _figures(page):
-        assert figure.ref is not None
-        table, landed = _carrying(page, figure.ref)
-        assert landed.text.startswith(figure.text), f"{figure.text} lands on {landed.text} in {table.name}"
-    _trace_links_land_in_sight(report_html(page))
+    (own,) = _anchors(bundle_decision_surface(bundle), "production_replicating_cost", _arms(comparison)[:1])
+    table, _ = _carrying(page, own)
+    assert table.name == "scoreboard", "production's own figure over twelve keeps its id, on its cost per reply"
+    _links_land_in_sight(report_html(page))
 
 
 async def test_two_contrasts_sharing_a_control_anchor_its_figure_on_the_first() -> None:
@@ -393,15 +261,16 @@ async def test_two_contrasts_sharing_a_control_anchor_its_figure_on_the_first() 
         k=3,
         name="queue",
     ).run(store=":memory:")
-    page = build_report(_citing(await _generated(comparison, comparison.report.bundle), "accuracy"))
+    bundle = comparison.report.bundle
+    page = _page(bundle)
     (contrasts,) = _tables(page.blocks, "comparisons")
     first, second = [row for row in contrasts.rows if row["reading"].text == "Accuracy"]
     assert first["control"].anchor is not None and second["control"].anchor is None
-    assert first["control"].anchor in [figure.ref for figure in _figures(page)]
-    _trace_links_land_in_sight(report_html(page))
+    assert [first["control"].anchor] == _anchors(bundle_decision_surface(bundle), "accuracy", _arms(comparison)[:1])
+    _links_land_in_sight(report_html(page))
 
 
-async def test_a_figure_lands_on_its_guardrail() -> None:
+async def test_a_guardrail_s_figures_carry_their_readings_ids() -> None:
     def correct(case: Mapping[str, Any], answer: str) -> bool:
         return answer.startswith("right")
 
@@ -419,123 +288,48 @@ async def test_a_figure_lands_on_its_guardrail() -> None:
         {"current": answers(10, 0), "leaky": answers(0, 20)},
         [correct, grader(no_leak, guard=0.1)],
         k=1,
+        name="current vs leaky",
     ).run(store=":memory:", scope="trace-guardrails")
-    page = build_report(_citing(await _generated(comparison, comparison.report.bundle), "no_leak"))
+    bundle = comparison.report.bundle
+    page = _page(bundle)
     (guardrails,) = _tables(page.blocks, "guardrails")
     (row,) = guardrails.rows
-    assert [figure.ref for figure in _figures(page)] == [row["control_mean"].anchor, row["arm_mean"].anchor]
-    assert None not in [row["control_mean"].anchor, row["arm_mean"].anchor]
-    _trace_links_land_in_sight(report_html(page))
+    variants = [comparison.arm_variants[name] for name in ("current", "leaky")]
+    assert [row["control_mean"].anchor, row["arm_mean"].anchor] == _anchors(
+        bundle_decision_surface(bundle), "no_leak", variants
+    )
+    _links_land_in_sight(report_html(page))
 
 
-async def test_a_figure_on_a_one_arm_page_lands_on_its_reading() -> None:
+async def test_a_one_arm_page_s_reading_carries_its_id() -> None:
     comparison = await Eval(_CASES, {PRODUCTION: answering(30, 0.003092)}, ["label"], k=3, name="queue").run(
         store=":memory:"
     )
-    page = build_report(_citing(await _generated(comparison, comparison.report.bundle), "accuracy"))
+    bundle = comparison.report.bundle
+    page = _page(bundle)
     (readings,) = _tables(page.blocks, "readings")
     (accuracy,) = [row for row in readings.rows if row["reading"].text == "Accuracy"]
-    (figure,) = _figures(page)
-    assert figure.ref is not None and figure.ref == accuracy["value"].anchor
-    _trace_links_land_in_sight(report_html(page))
+    assert [accuracy["value"].anchor] == _anchors(bundle_decision_surface(bundle), "accuracy")
+    _links_land_in_sight(report_html(page))
 
 
-async def test_a_figure_printed_only_in_the_closed_bars_lands_on_their_fold() -> None:
-    _, analysis, _ = await toy_report()
-    page = build_report(_citing(analysis, "field_accuracy"))
+async def test_a_figure_printed_only_in_the_closed_bars_anchors_their_fold() -> None:
+    _, analysis, page = await toy_report()
     (bars,) = _tables(page.blocks, "bars")
     assert bars.details and bars.anchor is not None
-    assert [figure.ref for figure in _figures(page)] == [bars.anchor, bars.anchor]
+    for anchor in _anchors(analysis.aspects[0].decision_surface, "field_accuracy"):
+        assert _carrying(page, anchor)[0] is bars, "no open table prints the field accuracy, so the bars keep its id"
     html = report_html(page)
     assert f'<details id="{bars.anchor}" data-table="bars">' in html
-    assert _trace_links_land_in_sight(html) == [bars.anchor, bars.anchor]
+    _links_land_in_sight(html)
 
 
-async def test_a_cost_figure_lands_on_the_scoreboard_where_no_contrast_prints_it() -> None:
-    _, analysis, _ = await toy_report()
-    page = build_report(_citing(analysis, "production_replicating_cost"))
+async def test_a_cost_figure_is_anchored_on_the_scoreboard_where_no_contrast_prints_it() -> None:
+    _, analysis, page = await toy_report()
     (scoreboard,) = _tables(page.blocks, "scoreboard")
     anchors = {row["cost"].anchor for row in scoreboard.rows}
-    figures = _figures(page)
-    assert {figure.ref for figure in figures} == anchors and None not in anchors
-    for figure in figures:
-        assert figure.ref is not None and _carrying(page, figure.ref)[1].text == figure.text
-    assert _untraced(page.blocks) == []
-
-
-# =============================================================================
-# A campaign's page
-# =============================================================================
-
-
-async def test_the_campaign_page_states_each_figure_and_links_the_aspect_s_fold() -> None:
-    comparison, analysis = await _analysed()
-    page = off_loop(analysis_report, comparison.host.storage, analysis.id, analysis.scope_id)
-    (fold_id,) = page.fold_ids
-    (tested,) = _tables(page.blocks, "trace", finding=0)
-    assert [column.key for column in tested.columns] == ["arm", "reading", "value"], "one aspect needs no column"
-    assert [(row["reading"].text, row["value"].text) for row in tested.rows] == [
-        ("Accuracy", "83.3%"),
-        ("Accuracy", "16.7%"),
-    ]
-    assert [row["value"].ref for row in tested.rows] == [f"aspect-{fold_id}"] * 2
-    (trial,) = _tables(page.blocks, "trace", finding=2)
-    (row,) = trial.rows
-    assert (row["reading"].text, row["value"].text, row["value"].ref) == ("trial", "T40", f"aspect-{fold_id}")
-    assert _untraced(page.blocks) == [1]
-    html = campaign_report_html(page)
-    assert set(_trace_links_land_in_sight(html)) == {f"aspect-{fold_id}"}
-
-
-async def test_a_campaign_of_two_aspects_traces_each_figure_and_trial_to_its_own_aspect() -> None:
-    first = await Eval(
-        _CASES, {PRODUCTION: answering(30, 0.003092), CANDIDATE: answering(6, 0.003301)}, ["label"], k=3, name="queue"
-    ).run(store=":memory:")
-    second = await Eval(
-        _CASES, {PRODUCTION: answering(20, 0.003092), CANDIDATE: answering(33, 0.003301)}, ["label"], k=3, name="queue"
-    ).run(store=":memory:")
-    billing = first.report.bundle
-    tone = second.report.bundle.model_copy(
-        update={"aspect": "tone", "campaign_id": billing.campaign_id, "scope_id": billing.scope_id}
-    )
-    bundle = campaign_bundle(billing, tone)
-    aliases = campaign_cell_aliases([(aspect.aspect, aspect.cell_measures) for aspect in (billing, tone)])
-    on_tone = {alias: alias for alias, where in aliases.items() if where.aspect == "tone"}
-    # The memo names the second aspect's first trial by its campaign id, after every one of the first aspect's.
-    named = f"T{len(billing.trials) + 1}"
-    finding = _finding("The candidate answers more requests right", "accuracy", on_tone, (named,))
-    analysis = await _generated(first, bundle, [finding])
-    page = off_loop(analysis_report, first.host.storage, analysis.id, analysis.scope_id)
-    assert page.fold_ids[1] == "tone"
-    (trace,) = _tables(page.blocks, "trace", finding=0)
-    assert trace.columns[0].key == "aspect", "two aspects name each row's"
-    readings = [row for row in trace.rows if row["reading"].text == "Accuracy"]
-    assert [row["aspect"].text for row in readings] == ["tone", "tone"]
-    assert {row["value"].ref for row in readings} == {"aspect-tone"}
-    tone_fold = page.aspects[1].report
-    for row in readings:
-        printed = [
-            cell.text
-            for block in tone_fold.blocks
-            if isinstance(block, TableBlock)
-            for line in block.rows
-            for cell in line.values()
-            if cell.anchor is not None
-        ]
-        assert any(text.startswith(row["value"].text) for text in printed)
-    (trial,) = [row for row in trace.rows if row["reading"].text == "trial"]
-    assert (trial["aspect"].text, trial["value"].text, trial["value"].ref) == ("tone", "T1", "aspect-tone")
-    assert tone.trials[0].trial_id == "T1"
-    _trace_links_land_in_sight(campaign_report_html(page))
-
-
-async def test_a_campaign_page_finding_citing_nothing_its_folds_print_says_so() -> None:
-    host, analysis, _ = await toy_report()
-    page = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
-    (trace,) = _tables(page.blocks, "trace", finding=0)
-    assert trace.rows and all(row["value"].ref is None for row in trace.rows)
-    assert _untraced(page.blocks) == [0]
-    assert escape(UNTRACED) in campaign_report_html(page)
+    assert anchors == set(_anchors(analysis.aspects[0].decision_surface, "production_replicating_cost"))
+    assert None not in anchors
 
 
 # =============================================================================
@@ -559,26 +353,39 @@ def _with_cells(report: Report, *cells: TableCell) -> Report:
 async def test_a_report_refuses_a_link_to_a_place_it_does_not_hold() -> None:
     _, _, page = await toy_report()
     with pytest.raises(ValueError, match="which nothing on the page carries"):
-        _with_cells(page, TableCell(value=1, ref="r-000000000000"))
-    assert _with_cells(page, TableCell(value=1, ref="r-1"), TableCell(value=2, anchor="r-1"))
+        _with_cells(page, TableCell(value=1, value_text="1", ref="r-000000000000"))
+    assert _with_cells(
+        page, TableCell(value=1, value_text="1", ref="r-1"), TableCell(value=2, value_text="2", anchor="r-1")
+    )
 
 
 async def test_a_report_refuses_one_id_on_two_cells() -> None:
     _, _, page = await toy_report()
     with pytest.raises(ValueError, match="more than once"):
-        _with_cells(page, TableCell(value=1, anchor="r-1"), TableCell(value=2, anchor="r-1"))
-    # A block's id counts too: the first finding's headline is F1.
+        _with_cells(
+            page, TableCell(value=1, value_text="1", anchor="r-1"), TableCell(value=2, value_text="2", anchor="r-1")
+        )
+    # A block's id counts too: the closed bars table carries its fold's.
+    (bars,) = _tables(page.blocks, "bars")
+    assert bars.anchor is not None
     with pytest.raises(ValueError, match="more than once"):
-        _with_cells(page, TableCell(value=1, anchor="F1"))
+        _with_cells(page, TableCell(value=1, value_text="1", anchor=bars.anchor))
 
 
 async def test_a_campaign_page_refuses_a_link_anywhere_but_a_fold() -> None:
     host, analysis, _ = await toy_report()
-    page = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
-    (trace,) = _tables(page.blocks, "trace", finding=0)
+    page = off_loop(_campaign_page, host, analysis)
     place = reading_anchor("v:r", "total_ms", "measure")
-    stray = trace.model_copy(update={"rows": [{**trace.rows[0], "value": TableCell(value=1, ref=place)}]})
-    blocks = [stray if block is trace else block for block in page.blocks]
+    stray = TableBlock(
+        section="scorecard",
+        name="stray",
+        title="Stray",
+        columns=[TableColumn(key="value", header="Value")],
+        rows=[{"value": TableCell(value=1, value_text="1", ref=place)}],
+        order="as given",
+        total_rows=1,
+    )
+    blocks = [*page.blocks, stray]
     with pytest.raises(ValueError, match="which is no aspect's fold"):
         CampaignReport.model_validate({**dict(page), "blocks": blocks})
 

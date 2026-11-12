@@ -9,10 +9,10 @@ prints once, so a reader can read each short name back to its label.
 
 A measure is named here too, by :func:`measure_name_of`: a goal check by the display name its template declares
 (``EvalTemplate.goal_check_names``, carried on the bundle beside the catalog and never in it, so a name moves no
-reading or fingerprint), else by its whole expression; every other measure as
-:func:`~threetears.evals.analysis.style.measure_name` names it. Where a name stands in for a check, the page prints the
-pair once, in its Design & provenance (:func:`check_legend_blocks`), so a reader can read each name back to the
-expression it stands for.
+reading or fingerprint), else by what it tests (``Refund amount check``,
+``AnalysisContextBundle.named_checks``); every other measure as :func:`~threetears.evals.analysis.style.measure_name`
+names it. No header or lead prints a check's expression: the page's glossary pairs each check's name with it, once
+(``CampaignReport.glossary``), so a reader can read each name back to the expression it stands for.
 """
 
 from __future__ import annotations
@@ -22,28 +22,29 @@ from dataclasses import dataclass, field
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.report.model import (
-    ReportBlock,
-    TableBlock,
     TableCell,
-    TableColumn,
     fold_anchor,
     fold_ids,
 )
-from threetears.evals.analysis.style import code, measure_name
+from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.declaration import printed_aspect_name
 
-__all__ = ["AspectNames", "aspect_name", "check_legend_blocks", "legend", "measure_name_of"]
+__all__ = ["AspectNames", "aspect_name", "legend", "measure_name_of"]
 
 
-def aspect_name(bundle: AnalysisContextBundle) -> str:
-    """What the page calls the aspect ``bundle`` reads: its declared short name, else its label, as declared.
+def aspect_name(bundle: AnalysisContextBundle, *, campaign: str | None = None) -> str:
+    """What the page calls the aspect ``bundle`` reads: its declared short name, else its label, as declared; a label
+    the engine gave (``classify``, ``score``) gives way to the campaign's name where the page has it
+    (:func:`~threetears.evals.kernel.declaration.printed_aspect_name`).
 
     :param bundle: The aspect's evidence.
     :ptype bundle: AnalysisContextBundle
+    :param campaign: The campaign's name; None keeps every label.
+    :ptype campaign: str | None
     :return: The aspect's name on the page.
     :rtype: str
     """
-    return printed_aspect_name(bundle.aspect, bundle.short_name)
+    return printed_aspect_name(bundle.aspect, bundle.short_name, campaign=campaign)
 
 
 @dataclass(frozen=True)
@@ -52,8 +53,8 @@ class AspectNames:
     and each aspect's goal checks, for a part that holds only an aspect's label.
 
     :ivar by_label: Each aspect's name, by its label, in the campaign's order.
-    :ivar checks: Each aspect's declared check display names (``AnalysisContextBundle.goal_check_names``: a check's
-        expression to its name), by the aspect's label.
+    :ivar checks: Each aspect's check names (``AnalysisContextBundle.named_checks``: a check's expression to its
+        declared name, else what it tests), by the aspect's label.
     :ivar folds: The id of the section around each aspect's fold on the campaign's page (:func:`~threetears.evals.analysis.report.model.fold_anchor`), by the aspect's label: where a cell naming the
         aspect links.
     """
@@ -63,19 +64,22 @@ class AspectNames:
     folds: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
-    def of(cls, bundles: Iterable[AnalysisContextBundle]) -> AspectNames:
+    def of(cls, bundles: Iterable[AnalysisContextBundle], *, campaign: str | None = None) -> AspectNames:
         """The names of the aspects ``bundles`` read.
 
         :param bundles: Each aspect's evidence, in the campaign's order.
         :ptype bundles: Iterable[AnalysisContextBundle]
+        :param campaign: The campaign's name, which an engine-given label gives way to (:func:`aspect_name`); None
+            keeps every label.
+        :ptype campaign: str | None
         :return: Their names.
         :rtype: AspectNames
         """
         held = list(bundles)
         labels = [bundle.aspect for bundle in held]
         return cls(
-            {bundle.aspect: aspect_name(bundle) for bundle in held},
-            {bundle.aspect: dict(bundle.goal_check_names) for bundle in held},
+            {bundle.aspect: aspect_name(bundle, campaign=campaign) for bundle in held},
+            {bundle.aspect: bundle.named_checks() for bundle in held},
             {label: fold_anchor(slug) for label, slug in zip(labels, fold_ids(labels), strict=True)},
         )
 
@@ -101,9 +105,9 @@ class AspectNames:
         return TableCell(value=self(label), ref=self.folds.get(label))
 
     def check_names(self, label: str) -> Mapping[str, str]:
-        """The display names the aspect labelled ``label`` declares for its goal checks, by check expression: what a
-        part naming a check on that aspect passes on (``floor_statement``'s ``check_names``); none for an aspect no
-        evidence was given for, whose checks print whole.
+        """The names the aspect labelled ``label`` gives its goal checks, by check expression
+        (``AnalysisContextBundle.named_checks``): what a part naming a check on that aspect passes on
+        (``floor_statement``'s ``check_names``); none for an aspect no evidence was given for.
 
         :param label: The aspect's label.
         :ptype label: str
@@ -127,73 +131,12 @@ def legend(names: AspectNames) -> list[tuple[str, str]]:
     return [(name, label) for label, name in names.by_label.items() if name != label]
 
 
-def _legend_rows(names: AspectNames) -> list[tuple[str, str, list[str]]]:
-    """The rows the check legend prints: each declared check name with the expression it stands for and the aspects,
-    by label, that declare it so, as ``(name, expression, labels)``.
-
-    One row per name and expression, in the campaign's order and then each aspect's declared order: a check two
-    aspects name alike is one row holding both, and a check two aspects name apart is a row per name. A check no
-    aspect names is printed whole wherever it is named, so it needs no row, and a campaign naming no check has an
-    empty legend.
-
-    :param names: What the page calls each aspect, with each one's declared check names.
-    :ptype names: AspectNames
-    :return: ``(name, expression, labels)`` for each declared name.
-    :rtype: list[tuple[str, str, list[str]]]
-    """
-    rows: dict[tuple[str, str], list[str]] = {}
-    for label in names.by_label:
-        for check, name in names.check_names(label).items():
-            rows.setdefault((name, check), []).append(label)
-    return [(name, check, labels) for (name, check), labels in rows.items()]
-
-
-def check_legend_blocks(names: AspectNames) -> list[ReportBlock]:
-    """A campaign's check legend, in its Design & provenance: each declared check name beside the expression it
-    stands for, once, as code; with the aspects declaring it only where some row holds on fewer than every aspect.
-    Nothing where no check is named.
-
-    :param names: What the page calls each aspect, with each one's declared check names.
-    :ptype names: AspectNames
-    :return: The legend's table, or nothing.
-    :rtype: list[ReportBlock]
-    """
-    rows = _legend_rows(names)
-    if not rows:
-        return []
-    every = list(names.by_label)
-    apart = any(labels != every for _, _, labels in rows)
-    columns = [TableColumn(key="name", header="Check"), TableColumn(key="expression", header="Expression")]
-    if apart:
-        columns.append(TableColumn(key="aspects", header="Aspects", term="aspect"))
-    cells: list[dict[str, TableCell]] = []
-    for name, check, labels in rows:
-        row = {"name": TableCell(value=name), "expression": TableCell(value=code(check))}
-        if apart:
-            # One aspect's cell links its fold; a list of several links none, since a cell links one place.
-            row["aspects"] = TableCell(
-                value=", ".join(names(label) for label in labels),
-                ref=names.folds.get(labels[0]) if len(labels) == 1 else None,
-            )
-        cells.append(row)
-    return [
-        TableBlock(
-            section="provenance",
-            name="check_names",
-            title="Checks",
-            columns=columns,
-            rows=cells,
-            order="as the aspects declare them, in the campaign's order",
-            total_rows=len(cells),
-        )
-    ]
-
-
 def measure_name_of(bundle: AnalysisContextBundle, measure: str) -> str:
     """What the page calls ``measure`` on the aspect ``bundle`` reads.
 
-    A goal check's measure by the display name the aspect's template declares for it, else by its whole expression,
-    as code; any other measure by its catalog reader name, else its key humanized
+    A goal check's measure by the display name the aspect's template declares for it, else by what it tests
+    (``Refund amount check``, ``AnalysisContextBundle.check_name``); any other measure by its catalog reader
+    name, else its key humanized
     (:func:`~threetears.evals.analysis.style.measure_name`).
 
     :param bundle: The aspect's evidence.

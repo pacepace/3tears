@@ -2,7 +2,7 @@
 
 Off unless the host asks for it (``HostProfile.model_pass_hat_k``). When on, each frontier point that scored no case
 at the subject's ``k`` carries a model's pass^k there, ``basis: "model"`` with what it assumes; nothing ranks, gates
-or bars on it, the page puts it in a table of its own with its assumption, and the writer reads it labelled.
+or bars on it, the page puts it in a table of its own with its assumption, and the frontier's text says it is one.
 
 Arm A ran each of four cases twice, passing 2, 1, 0 and 2 of them: shares 1, 1/2, 0, 1, so mean 5/8, sample variance
 11/48, and a mean ``1/n`` of 1/2. The per-case chance's variance is ``(11/48 - (5/8)(3/8)(1/2)) / (1 - 1/2) = 43/192``;
@@ -18,12 +18,10 @@ from fractions import Fraction
 import pytest
 
 from threetears.evals.analysis import build_campaign_report, build_code_only_report
-from threetears.evals.analysis.campaign_bundle import writer_view
 from threetears.evals.analysis.depth import MODEL_ASSUMES, model_pass_hat_k
 from threetears.evals.analysis.lens_text import frontier_text
 from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock
 from threetears.evals.analysis.style import lint_prose
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.depth_support import ONCE, PROFILE, TWICE, TwoArms
 
 #: A host that asks for the model.
@@ -104,32 +102,30 @@ def test_the_page_puts_the_model_in_a_table_of_its_own_labelled_with_what_it_ass
         arms.bundle, assembled_at="2026-10-24T00:00:00+00:00", campaign_name="depth", arm_labels=read.arm_labels()
     )
 
-    page = build_campaign_report(arms.campaign, read, {"character": report}, None)
+    page = build_campaign_report(arms.campaign, read, {"character": report})
 
     (table,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "model_pass_k"]
     assert [{key: cell.value for key, cell in row.items()} for row in table.rows] == [
-        {"aspect": "character", "arm": "A", "depth": 3, "model": round(100 * _A_PASS_3, 1)}
+        # At the pass rate's whole percent, which its interval sets (number policy, rule 2), rounded half to even.
+        {"aspect": "character", "arm": "A", "depth": 3, "model": float(round(100 * _A_PASS_3))}
     ]
     said = f"Each figure here is {MODEL_ASSUMES}. Its arm ran no case that deep, so nothing ranks on it."
     assert said in [block.text for block in page.blocks if isinstance(block, DisclosureBlock)]
     assert lint_prose(said) == []
 
 
-def test_the_writer_reads_the_model_labelled_and_the_text_says_it_is_one() -> None:
+def test_the_bundle_carries_the_model_labelled_and_the_text_says_it_is_one() -> None:
     arms = TwoArms(TWICE, ONCE, k_a=3, k_b=3, profile=_MODELLED)
-    bundle = campaign_bundle(arms.bundle, arms=arms.arms, readings=arms.readings().readings)
 
-    [aspect] = writer_view(bundle)["aspects"]
+    modelled = arms.point(arms.key_a).model_pass_hat_k
 
-    assert aspect["depth"]["pass_k_model"] == {
-        "character": {
-            "A": {"k": 3, "pass_hat_k": pytest.approx(_A_PASS_3, rel=1e-3), "basis": "model", "assumes": MODEL_ASSUMES}
-        }
-    }
+    assert modelled is not None
+    assert (modelled.k, modelled.basis, modelled.assumes) == (3, "model", MODEL_ASSUMES)
+    assert modelled.pass_hat_k == pytest.approx(_A_PASS_3, rel=1e-3)
     assert MODEL_ASSUMES in frontier_text(arms.bundle.frontier)
 
 
-def test_an_arm_modelled_on_two_subjects_keeps_each_subject_s_figure_in_the_view_and_on_the_page() -> None:
+def test_an_arm_modelled_on_two_subjects_keeps_each_subject_s_figure_on_the_page() -> None:
     arms = TwoArms(TWICE, ONCE, k_a=3, k_b=3, profile=_MODELLED)
     [first] = arms.bundle.frontier.subjects
     # The second subject's A is modelled at another depth, so its figure differs from the first's.
@@ -145,17 +141,12 @@ def test_an_arm_modelled_on_two_subjects_keeps_each_subject_s_figure_in_the_view
     )
     read = arms.readings(bundle)
 
-    [aspect] = writer_view(campaign_bundle(bundle, arms=arms.arms, readings=read.readings))["aspects"]
-    modelled = aspect["depth"]["pass_k_model"]
-    assert list(modelled) == ["character (Test subject)", "character (second)"]
-    assert [modelled[where]["A"]["k"] for where in modelled] == [3, 2]
-
     reports = {
         "character": build_code_only_report(
             bundle, assembled_at="2026-10-24T00:00:00+00:00", campaign_name="depth", arm_labels=read.arm_labels()
         )
     }
-    page = build_campaign_report(arms.campaign, read, reports, None)
+    page = build_campaign_report(arms.campaign, read, reports)
     (table,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "model_pass_k"]
     assert [(row["aspect"].value, row["arm"].value, row["depth"].value) for row in table.rows] == [
         ("character (Test subject)", "A", 3),

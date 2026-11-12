@@ -161,26 +161,29 @@ def test_a_mean_over_unevenly_repeated_cases_still_covers_the_truth() -> None:
     assert not short, f"below {FLOOR:.3f}: {short}"
 
 
-def test_a_rate_interval_covers_the_truth_at_every_case_count_and_depth() -> None:
+#: One item per configuration, so a parallel run spreads the rate simulations instead of serialising them.
+RATE_CONFIGURATIONS = [
+    pytest.param(rate, concentration, cases, repeats, id=f"rate{rate}-conc{concentration}-n{cases}-k{repeats}")
+    for rate, concentration in RATES
+    for cases in CASE_COUNTS
+    for repeats in (2, 3, 5)
+]
+
+
+@pytest.mark.parametrize(("rate", "concentration", "cases", "repeats"), RATE_CONFIGURATIONS)
+def test_a_rate_interval_covers_the_truth_at_every_case_count_and_depth(
+    rate: float, concentration: float, cases: int, repeats: int
+) -> None:
     """Proportions, repeated: the interval is approximate and leans wide at few cases, so only the floor is held.
 
     A single observation per case is the Wilson interval unchanged
     (:func:`test_one_observation_per_case_is_the_unclustered_interval_exactly`), and its own small-n behaviour
     is not what this file tests.
     """
-    rng = random.Random(5902)
-    short: list[str] = []
-    for rate, concentration in RATES:
-        for cases in CASE_COUNTS:
-            for repeats in (2, 3, 5):
-                coverage = _coverage(
-                    lambda: _binary(rng, cases, repeats, rate, concentration), _reported_rate, truth=rate
-                )
-                if coverage < FLOOR:
-                    short.append(
-                        f"rate {rate}, concentration {concentration}, {cases} cases x {repeats}: {coverage:.3f}"
-                    )
-    assert not short, f"below {FLOOR:.3f}: {short}"
+    # A string seed is hashed with SHA-512, not the salted hash(), so each configuration's draws are fixed.
+    rng = random.Random(f"5902-{rate}-{concentration}-{cases}-{repeats}")
+    coverage = _coverage(lambda: _binary(rng, cases, repeats, rate, concentration), _reported_rate, truth=rate)
+    assert coverage >= FLOOR, f"rate {rate}, concentration {concentration}, {cases} cases x {repeats}: {coverage:.3f}"
 
 
 @pytest.mark.parametrize(

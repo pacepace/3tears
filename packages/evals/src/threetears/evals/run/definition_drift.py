@@ -39,12 +39,23 @@ results of two revisions never pool (:mod:`threetears.evals.analysis.revisions`)
   afresh, and the corpus's case sets over a judge template are minted again over them. A case set whose cases are all
   current is minted alone. A template the corpus gives no cases (and not of the judge kind) is reset bare: its cases
   are generated, not authored.
+- **Live cases the corpus does not carry are carried on asking** (``carry_live_cases``): cases people froze into a
+  judge template's revision, or added to a template's own, are copied into the new revision beside the corpus's,
+  content, payload, labels, stratum and name unchanged, each copy naming its source (``EvalTestCase.carried_from``),
+  which stays on the archived revision with the runs measured against it. A copy is a case of the new revision, so
+  its runs never pool with its source's, and it reads as no definition: the template reads ``current`` after, and the
+  same reset again writes nothing; a judge-case freeze of the same labels into the new revision names the copy. A
+  case set outside the corpus that lists cases of the archived revision is not minted again; the result names each
+  one (``DefinitionReset.stranded_case_sets``).
 - **Refused, all or nothing, before anything is written**, naming every refusal: a definition reading ``customized``
   or ``unknown`` (unless ``overwrite_customized``, as a prompt reset takes it); a judge template, or a template the
-  corpus gives cases, whose current revision holds live cases the corpus does not carry (they would not be carried, so
-  the same flag); a judge config
-  contradicting a live config of another name for its dimension (always: archive one of them); and anything
-  authoring would refuse (``admit_template`` under the host's template checks, ``author_judge_case``).
+  corpus gives cases, whose current revision holds live cases the corpus does not carry, unless
+  ``carry_live_cases`` carries them into the new revision or ``overwrite_customized`` leaves them on the archived one;
+  under ``carry_live_cases`` alone, a corpus case of such a template reading ``unknown``, since a live case carried
+  beside it may be an unrecorded seeding of it (the host's ``seeded_digests`` answer it, or the overwrite); a judge
+  config contradicting a live config of another name for its dimension (always: archive one of them); and anything
+  authoring would refuse (``admit_template`` under the host's template checks, ``author_judge_case``). The two flags
+  are orthogonal: together they write the corpus over a customized definition and carry the live cases.
 """
 
 from __future__ import annotations
@@ -190,9 +201,22 @@ class DefinitionReset(EvalBaseModel):
     scope_id: str = Field(description="The scope reset.")
     reset: list[ResetDefinition] = Field(description="Each definition named or reset with one named, in write order.")
     after: DefinitionDrift = Field(description="The drift read after the reset.")
+    carried: dict[str, str] = Field(
+        default_factory=dict,
+        description="Each live case carried into a new revision under carry_live_cases: the id of the case copied, "
+        "which stays on the archived revision, -> the id of its copy (whose `carried_from` names the source). Empty "
+        "when nothing was carried.",
+    )
+    stranded_case_sets: list[str] = Field(
+        default_factory=list,
+        description="One line for each case set outside the corpus whose newest version lists cases of a revision "
+        "this reset archived: a reset mints no version of it, so it still points there until its next version is "
+        "minted over the new revision's cases.",
+    )
 
     def render(self) -> str:
-        """A printable account: each definition and what it became, then the drift after."""
+        """A printable account: each definition and what it became, each case set left on an archived revision, then
+        the drift after."""
         lines = []
         for entry in self.reset:
             if not entry.written_id:
@@ -202,7 +226,7 @@ class DefinitionReset(EvalBaseModel):
             if entry.replaced_id:
                 line += f", replacing {entry.replaced_id}{' (discarded)' if entry.discarded else ''}"
             lines.append(line)
-        return "\n".join([*lines, self.after.summary()])
+        return "\n".join([*lines, *self.stranded_case_sets, self.after.summary()])
 
 
 def definition_key(doc_type: str, *natural_key: str) -> str:
@@ -446,9 +470,16 @@ class _Survey:
         ]
 
     def uncarried_cases(self, template: EvalTemplate) -> list[EvalTestCase]:
-        """The live cases of a template's revision the corpus neither carries nor supersedes."""
-        carried = {digest for _key, _name, digest in self.cases_of(template.name)}
+        """The live cases of a template's revision the corpus neither carries nor supersedes.
+
+        A case the drift read takes for a corpus case's stored copy (matched by content, by the name it was seeded or
+        stored under, or by the host's supplied digest) is that corpus case's, written over by a reset, never one the
+        corpus does not carry.
+        """
+        cases = self.cases_of(template.name)
+        carried = {digest for _key, _name, digest in cases}
         superseded = {case.id for case in self.superseded_cases(template)}
+        superseded |= {self.readings[key].stored_id for key, _name, _digest in cases if key in self.readings}
         return [
             stored
             for stored in self.stored_cases(template)
@@ -712,10 +743,12 @@ class _Refusal:
     key: str
     why: str
     kept: bool = False
+    uncarried: bool = False
 
 
-def _reset_call(keys: Sequence[str]) -> str:
-    return f"run.reset_definitions(..., [{', '.join(repr(k) for k in keys)}], overwrite_customized=True)"
+def _reset_call(keys: Sequence[str], *, carry: bool, overwrite: bool) -> str:
+    flags = (", carry_live_cases=True" if carry else "") + (", overwrite_customized=True" if overwrite else "")
+    return f"run.reset_definitions(..., [{', '.join(repr(k) for k in keys)}]{flags})"
 
 
 def reset_definitions(
@@ -724,6 +757,7 @@ def reset_definitions(
     definitions: Sequence[str],
     *,
     overwrite_customized: bool = False,
+    carry_live_cases: bool = False,
     seeded_digests: Mapping[str, str] | None = None,
 ) -> DefinitionReset:
     """Write the corpus's content for the named definitions, each as a new revision or record, never in place.
@@ -740,18 +774,25 @@ def reset_definitions(
     :ptype corpus: SeedCorpus
     :param definitions: The keys to reset, as a drift read names them (:meth:`DefinitionDrift.keys`).
     :ptype definitions: Sequence[str]
-    :param overwrite_customized: Write over a definition reading ``customized`` or ``unknown``, and a judge template's
-        live cases the corpus does not carry. What is superseded stays stored, archived, readable by id.
+    :param overwrite_customized: Write over a definition reading ``customized`` or ``unknown``, and, without
+        ``carry_live_cases``, leave a template's live cases the corpus does not carry out of its new revision. What is
+        superseded stays stored, archived, readable by id.
     :ptype overwrite_customized: bool
+    :param carry_live_cases: Copy each live case the corpus does not carry from a template's current revision into
+        its new one, beside the corpus's cases, unchanged but for its id and template (``carried_from`` naming the
+        source). It answers only those cases: a definition reading ``customized`` or ``unknown`` still needs
+        ``overwrite_customized``.
+    :ptype carry_live_cases: bool
     :param seeded_digests: As :func:`definition_drift` takes it.
     :ptype seeded_digests: Mapping[str, str] | None
     :return: What was written, and the drift read after.
     :rtype: DefinitionReset
     :raises ValidationFailedError: A key names no corpus definition, or a template or judge case authoring would refuse;
         nothing was written, every refusal named.
-    :raises ConflictError: A definition may be an operator's (customized, unknown, or uncarried live cases) without
-        ``overwrite_customized``, or a judge config contradicts a live config of another name for its
-        dimension; nothing was written, every refusal named.
+    :raises ConflictError: A definition may be an operator's (customized or unknown) without
+        ``overwrite_customized``, a template's revision holds live cases the corpus does not carry under neither flag,
+        or a judge config contradicts a live config of another name for its dimension; nothing was written, every
+        refusal named.
     :raises StorageError: A write failed part-way. Every check ran first, so this is the store failing, and the
         definitions written before it stand; the drift read says which.
     :raises RefusedInput: The host supplies no template checks.
@@ -806,30 +847,48 @@ def reset_definitions(
                 )
             )
     # A template's corpus cases, and a judge template's case sets, are written with it.
-    pulled: list[str] = []
+    pulled: dict[str, str] = {}
+    carry: dict[str, list[EvalTestCase]] = {}
     for name in templates:
         if not survey.holds_cases(corpus_templates[name]):
             continue
-        pulled += [key for key, _name, _digest in survey.cases_of(name)]
-        pulled += [definition_key("case_set", s.name) for s in corpus.case_sets if s.template == name]
+        pulled |= {key: name for key, _name, _digest in survey.cases_of(name)}
+        pulled |= {definition_key("case_set", s.name): name for s in corpus.case_sets if s.template == name}
         stored = survey.current.get(name)
-        if stored is not None and (uncarried := survey.uncarried_cases(stored)) and not overwrite_customized:
+        if stored is None or not (uncarried := survey.uncarried_cases(stored)):
+            continue
+        if carry_live_cases:
+            carry[name] = uncarried
+        elif not overwrite_customized:
             refusals.append(
                 _Refusal(
                     definition_key("eval_template", name),
                     f"its revision {stored.revision} holds {len(uncarried)} live case(s) the seed corpus does not carry "
-                    f"({', '.join(case.id for case in uncarried)}), which the new revision would not carry",
+                    f"({', '.join(case.id for case in uncarried)}), which the new revision carries only under "
+                    "carry_live_cases",
                     kept=True,
+                    uncarried=True,
                 )
             )
-    for key in pulled:
+    for key, name in pulled.items():
         reading = readings[key]
         if key in asked or reading.state not in KEPT_STATES or overwrite_customized:
             continue
-        # A pulled case's own `unknown` is its template's question, which the uncarried cases answer.
-        if reading.definition_type == "case_set" or reading.state == "customized":
+        # A pulled case reading `unknown` with a stored copy would write over that copy, which may be an operator's.
+        # One with none is its template's question, which the template's uncarried cases answer: refused with them,
+        # or, when they are carried, here, since a carried case may be an unrecorded seeding of it.
+        if reading.definition_type == "case_set" or reading.state == "customized" or reading.stored_id:
             refusals.append(
                 _Refusal(key, f"it is written with its judge template and reads {reading.state}", kept=True)
+            )
+        elif name in carry:
+            refusals.append(
+                _Refusal(
+                    key,
+                    f"it is written with its judge template and reads {reading.state}, and a live case carried beside "
+                    "it may be an unrecorded seeding of it",
+                    kept=True,
+                )
             )
     for name in list(sets):
         if corpus_sets[name].template in templates:
@@ -869,9 +928,11 @@ def reset_definitions(
                 )
             )
     if refusals:
-        _refuse(scope, refusals)
+        _refuse(scope, refusals, carry_live_cases=carry_live_cases)
+    stranded = _stranded_case_sets(survey, list(templates), carried=bool(carry))
 
     entries: list[ResetDefinition] = []
+    carried: dict[str, str] = {}
     now = utc_now_iso()
     for dim in dims:
         key = definition_key("rubric_dim", dim.key)
@@ -903,7 +964,9 @@ def reset_definitions(
                 host.storage.save_judge_config(prior_config.model_copy(update={"archived": True}))
         entries.append(_entry(readings[key], written_config.id, "a new record"))
     for name in templates:
-        entries += _reset_template(survey, admitted[name], now)
+        written_entries, copies = _reset_template(survey, admitted[name], now, carry.get(name, []))
+        entries += written_entries
+        carried |= copies
     for name in sets:
         corpus_set = corpus_sets[name]
         judge = survey.current[corpus_set.template]
@@ -929,8 +992,14 @@ def reset_definitions(
                 entry.before,
                 entry.replaced_id or "nothing",
             )
+    if carried:
+        log.info("eval.reset_definitions scope=%s carried %d live case(s) into new revisions", scope, len(carried))
     return DefinitionReset(
-        scope_id=scope, reset=entries, after=definition_drift(host, corpus, seeded_digests=seeded_digests)
+        scope_id=scope,
+        reset=entries,
+        carried=carried,
+        stranded_case_sets=stranded,
+        after=definition_drift(host, corpus, seeded_digests=seeded_digests),
     )
 
 
@@ -985,9 +1054,44 @@ def _admitted(
     return admitted, refused
 
 
-def _reset_template(survey: _Survey, admitted: EvalTemplate, now: str) -> list[ResetDefinition]:
+def _stranded_case_sets(survey: _Survey, templates: Sequence[str], *, carried: bool) -> list[str]:
+    """A line for each case set outside the corpus whose newest version lists cases of a revision a reset of
+    ``templates`` archives: the reset mints the corpus's sets over the new revision, and no other."""
+    archived = {
+        record.id: (name, record.revision)
+        for name in templates
+        for record in survey.templates.get(name, [])
+        if not record.archived
+    }
+    if not archived:
+        return []
+    latest: dict[str, CaseSet] = {}
+    for case_set in survey.host.storage.query_case_sets(survey.corpus.scope_id):
+        if case_set.name not in latest or case_set.version > latest[case_set.name].version:
+            latest[case_set.name] = case_set
+    corpus_sets = {(s.template, s.name) for s in survey.corpus.case_sets}
+    lines = []
+    for case_set in latest.values():
+        if case_set.template_id not in archived:
+            continue
+        name, revision = archived[case_set.template_id]
+        if (name, case_set.name) in corpus_sets:
+            continue
+        lines.append(
+            f"{case_set.ref.label}, a case set outside the corpus, lists cases of {name!r} revision {revision}, now "
+            "archived, and still points there: a reset mints no version of it"
+            + ("; `carried` maps each live case carried to its copy" if carried else "")
+        )
+    return lines
+
+
+def _reset_template(
+    survey: _Survey, admitted: EvalTemplate, now: str, carry: Sequence[EvalTestCase]
+) -> tuple[list[ResetDefinition], dict[str, str]]:
     """Write a template's next revision, archive the one it supersedes, and write its corpus cases into it: a judge
-    template's battery, frozen, with its corpus case sets minted over it, or any other template's own cases."""
+    template's battery, frozen, with its corpus case sets minted over it, or any other template's own cases, beside a
+    copy of each of ``carry``, re-homed to the new revision and naming its source. Returns the entries, and each
+    carried case's id -> its copy's."""
     storage, scope = survey.host.storage, survey.corpus.scope_id
     key = definition_key("eval_template", admitted.name)
     prior = survey.templates.get(admitted.name, [])
@@ -1006,13 +1110,22 @@ def _reset_template(survey: _Survey, admitted: EvalTemplate, now: str) -> list[R
         if not record.archived:
             storage.save_template(record.model_copy(update={"archived": True, "updated_at": now}))
     reading = survey.readings[key]
-    entries = [_entry(reading, written.id, f"revision {revision}")]
+    carrying = f", carrying {len(carry)} live case(s)" if carry else ""
+    entries = [_entry(reading, written.id, f"revision {revision}{carrying}")]
+    copies: dict[str, str] = {}
+    for source in carry:
+        # Content, payload, labels, stratum, name and seed record are the source's: only where it lives moves.
+        copied = source.model_copy(
+            update={"id": _new_id(), "template_id": written.id, "carried_from": source.id, "created_at": now}
+        )
+        storage.save_test_case(copied)
+        copies[source.id] = copied.id
     if written.candidate_kind != JUDGE_KIND:
         for case_key, own_case in survey.own_of(admitted.name):
             written_case = own_case.test_case(written)
             storage.save_test_case(written_case)
             entries.append(_entry(survey.readings[case_key], written_case.id, f"a case of revision {revision}"))
-        return entries
+        return entries, copies
     frozen: dict[str, str] = {}
     for case_key, (case, authored, _digest) in survey.built_of(admitted.name):
         stored = freeze_seeded_judge_case(
@@ -1036,22 +1149,40 @@ def _reset_template(survey: _Survey, admitted: EvalTemplate, now: str) -> list[R
         entries.append(
             _entry(survey.readings[definition_key("case_set", corpus_set.name)], minted.id, minted.ref.label)
         )
-    return entries
+    return entries, copies
 
 
-def _refuse(scope: str, refusals: Sequence[_Refusal]) -> None:
-    """Raise one error naming every refusal: a conflict when each may be an operator's, else a validation failure."""
+def _refuse(scope: str, refusals: Sequence[_Refusal], *, carry_live_cases: bool) -> None:
+    """Raise one error naming every refusal: a conflict when each may be an operator's, else a validation failure.
+
+    A template refused for live cases the corpus does not carry is answered first by carrying them, which keeps them
+    all, and second by the overwrite, which leaves them on the archived revision alone.
+    """
     named = "; ".join(f"{refusal.key}: {refusal.why}" for refusal in refusals)
     message = f"nothing was reset in scope {scope!r}: {named}"
     kept = [refusal.key for refusal in refusals if refusal.kept]
     if len(kept) == len(refusals):
-        raise ConflictError(
-            message,
-            remedy=(
-                f"compare each with the seed corpus; {_reset_call(kept)} replaces them, keeping each superseded record "
-                "archived and readable by id (a judge config contradicting another stays refused until one is archived)"
-            ),
-        )
+        configs = " (a judge config contradicting another stays refused until one is archived)"
+        uncarried = [refusal.key for refusal in refusals if refusal.uncarried]
+        if uncarried and len(uncarried) == len(kept):
+            remedy = (
+                f"{_reset_call(kept, carry=True, overwrite=False)} carries each live case into the new revision beside "
+                f"the corpus's cases, keeping every one; {_reset_call(kept, carry=False, overwrite=True)} leaves them "
+                "out of it, kept only on the archived revision and readable by id"
+            )
+        elif uncarried:
+            remedy = (
+                f"compare each with the seed corpus; {_reset_call(kept, carry=True, overwrite=True)} replaces them, "
+                "keeping each superseded record archived and readable by id, and carries each live case into the new "
+                f"revision, keeping every one; {_reset_call(kept, carry=False, overwrite=True)} replaces them and "
+                f"leaves the live cases only on the archived revision{configs}"
+            )
+        else:
+            remedy = (
+                f"compare each with the seed corpus; {_reset_call(kept, carry=carry_live_cases, overwrite=True)} "
+                f"replaces them, keeping each superseded record archived and readable by id{configs}"
+            )
+        raise ConflictError(message, remedy=remedy)
     raise ValidationFailedError(
         message, remedy="correct each definition the refusals name in the seed corpus, and reset again"
     )

@@ -29,18 +29,18 @@ from threetears.evals.kernel.metrics import describe_measure, is_latency_measure
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.measures import MeasureRegistry
-    from threetears.evals.schema.models import EvalResult
+    from threetears.evals.kernel.result_reading import ResultView
 
 #: The covariate that marks a result's latency as read under concurrency, and the value that marks it.
 EXECUTION_MODE = "execution_mode"
 CONCURRENT = "concurrent"
 
 
-def latency_contended(result: EvalResult) -> bool:
+def latency_contended(result: ResultView) -> bool:
     """Whether ``result`` was recorded while other eval work executed beside it — its latency is not clean.
 
     :param result: The result.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: True when its ``execution_mode`` reads ``concurrent``. A result that recorded no mode (nothing sampled
         it) is not marked: nothing says it was contended, and its run's cells executed one at a time.
     :rtype: bool
@@ -48,7 +48,7 @@ def latency_contended(result: EvalResult) -> bool:
     return result.covariates.get(EXECUTION_MODE) == CONCURRENT
 
 
-def _carries_latency(result: EvalResult, measures: MeasureRegistry | None) -> bool:
+def _carries_latency(result: ResultView, measures: MeasureRegistry | None) -> bool:
     """Whether ``result`` holds any reading of elapsed time for :func:`withhold_contended_latency` to remove."""
     latency = result.latency
     if latency is not None and any(
@@ -68,34 +68,34 @@ def _latency_host_measure(name: str, measures: MeasureRegistry) -> bool:
     return is_latency_measure(describe_measure(name, measures))
 
 
-def withheld_latency(results: Iterable[EvalResult], measures: MeasureRegistry | None) -> list[EvalResult]:
+def withheld_latency[R: ResultView](results: Iterable[R], measures: MeasureRegistry | None) -> list[R]:
     """The results whose latency :func:`withhold_contended_latency` removes: marked, and holding some.
 
     :param results: The results.
-    :ptype results: Iterable[EvalResult]
+    :ptype results: Iterable[ResultView]
     :param measures: The host's measure registry, which says which of its own measures read elapsed time;
         ``None`` reads the engine's elapsed-time fields alone.
     :ptype measures: MeasureRegistry | None
     :return: The marked results that carry a reading of elapsed time, in the order given.
-    :rtype: list[EvalResult]
+    :rtype: list[ResultView]
     """
     return [result for result in results if latency_contended(result) and _carries_latency(result, measures)]
 
 
-def withhold_contended_latency(results: Sequence[EvalResult], measures: MeasureRegistry | None) -> list[EvalResult]:
+def withhold_contended_latency[R: ResultView](results: Sequence[R], measures: MeasureRegistry | None) -> list[R]:
     """``results`` as every analysis surface reads them: each marked result with its elapsed time removed.
 
     Idempotent, and a copy: the stored results are untouched, and a result with nothing to withhold is
     handed back as it is.
 
     :param results: The results, as loaded.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param measures: The host's measure registry, which says which of its own measures read elapsed time;
         ``None`` reads the engine's elapsed-time fields alone, for a surface that reads no host measure.
     :ptype measures: MeasureRegistry | None
     :return: The results in the order given, each marked one without its latency, phase timings, background-work
         elapsed time or host measures of elapsed time.
-    :rtype: list[EvalResult]
+    :rtype: list[ResultView]
     """
     withheld = {result.id for result in withheld_latency(results, measures)}
     if not withheld:
@@ -103,7 +103,7 @@ def withhold_contended_latency(results: Sequence[EvalResult], measures: MeasureR
     return [_without_latency(result, measures) if result.id in withheld else result for result in results]
 
 
-def _without_latency(result: EvalResult, measures: MeasureRegistry | None) -> EvalResult:
+def _without_latency[R: ResultView](result: R, measures: MeasureRegistry | None) -> R:
     """One result with every reading of elapsed time removed."""
     deliveries = (
         [delivery.model_copy(update={"elapsed_ms": None}) for delivery in result.async_deliveries]
@@ -157,6 +157,21 @@ def contended_latency_sentence(withheld: int, of: int, *, where: str = "", decla
     )
 
 
+def reader_latency_sentence(sentence: str) -> str:
+    """A stored latency sentence (:func:`contended_latency_sentence`, :func:`marked_latency_sentence`) as a page
+    prints it: without the execution mode's id, the launch setting set as code a reader copies. The stored sentence
+    stays as frozen; only its printing changes.
+
+    :param sentence: The sentence, as a bundle holds it.
+    :ptype sentence: str
+    :return: The sentence a page prints.
+    :rtype: str
+    """
+    return sentence.replace(f" (execution_mode `{CONCURRENT}`)", "").replace(
+        "measure_latency=True", "`measure_latency=True`"
+    )
+
+
 def marked_latency_sentence(marked: int, of: int) -> str | None:
     """The line a ONE-run surface prints beside latency it shows that was read under concurrency, or ``None``.
 
@@ -182,6 +197,7 @@ def marked_latency_sentence(marked: int, of: int) -> str | None:
 
 __all__ = [
     "CONCURRENT",
+    "reader_latency_sentence",
     "EXECUTION_MODE",
     "contended_latency_sentence",
     "marked_latency_sentence",

@@ -8,7 +8,7 @@ no word says one arm is better.
 
 Two seams, each with one caller:
 
-- :func:`equal_weight_cells` is each arm's figure across every aspect, which the scorecard
+- :func:`equal_weight_figures` is each arm's figure across every aspect, which the scorecard
   (:mod:`~threetears.evals.analysis.report.campaign.scorecard`) places in its :data:`EQUAL_WEIGHT_ROW`: in a change,
   the control's pass rate and each candidate's change against it; in a choice, each arm's pass rate. Given only where
   two or more aspects hold a matrix; one aspect's row would repeat it.
@@ -32,19 +32,21 @@ from threetears.evals.analysis.campaign_readings import (
     CampaignAggregate,
     CampaignReadings,
 )
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names
 from threetears.evals.analysis.report.model import (
     ChartBlock,
     CostQualityPoint,
     DisclosureBlock,
     Report,
     ReportBlock,
-    TableCell,
 )
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.campaign import EvalCampaign
 
-__all__ = ["EQUAL_WEIGHT_ROW", "aggregate_blocks", "equal_weight_cells"]
+__all__ = ["EQUAL_WEIGHT_ROW", "WITHHELD", "aggregate_blocks", "equal_weight_figures"]
 
 #: What a figure across every aspect, each aspect weighed alike, is headed by.
 _ACROSS = "all aspects (equal weight)"
@@ -61,14 +63,15 @@ _WEIGHTING_LINES: dict[tuple[str, str], str] = {
 }
 
 #: The marker a withheld cell carries, the line under the matrix naming the aspects that lack its figure.
-_WITHHELD = "withheld"
+WITHHELD = "withheld"
 
 
-def equal_weight_cells(
+def equal_weight_figures(
     campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]
-) -> dict[str, TableCell]:
-    """Each arm's cell in the scorecard's :data:`EQUAL_WEIGHT_ROW`, by its variant key: the figure, its interval drawn
-    beside it, in its column's unit; a withheld figure is a dash marked as withheld.
+) -> dict[str, tuple[AggregateFigure, str]]:
+    """Each arm's figure in the scorecard's :data:`EQUAL_WEIGHT_ROW`, by its variant key, with its unit: a
+    candidate's change in points, else the pass rate in percent, as read; the scorecard decides each figure's text
+    where its cell prints it. A withheld figure holds no value.
 
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
@@ -76,22 +79,18 @@ def equal_weight_cells(
     :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
     :ptype reports: Mapping[str, Report]
-    :return: One cell per arm the matrix holds a column for; none on one aspect, for a measurement, or where no matrix
-        is laid out.
-    :rtype: dict[str, TableCell]
+    :return: One figure per arm the matrix holds a column for; none on one aspect, for a measurement, or where no
+        matrix is laid out.
+    :rtype: dict[str, tuple[AggregateFigure, str]]
     """
     aggregate = _row_aggregate(readings)
     if aggregate is None:
         return {}
-    cells = {}
-    for arm in aggregate.arms:
-        figure, unit = _row_figure(arm)
-        cells[arm.arm] = _cell(figure, unit)
-    return cells
+    return {arm.arm: _row_figure(arm) for arm in aggregate.arms}
 
 
 def aggregate_blocks(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]
+    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, forms: PageForms
 ) -> list[ReportBlock]:
     """The cost/quality chart where it is drawn, a line per figure withheld from the row or the chart, and the
     weighting once in the methods.
@@ -102,13 +101,15 @@ def aggregate_blocks(
     :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
     :ptype reports: Mapping[str, Report]
+    :param forms: The page's forms.
+    :ptype forms: PageForms
     :return: The blocks; none for a measurement, or where neither the row nor the chart is laid out.
     :rtype: list[ReportBlock]
     """
     aggregate = readings.aggregate
     if aggregate is None:
         return []
-    names = AspectNames.of(report.bundle for report in reports.values())
+    names = AspectNames.of((report.bundle for report in reports.values()), campaign=campaign.name or None)
     row = _row_aggregate(readings) is not None
     charted = _charted(readings, aggregate)
     blocks: list[ReportBlock] = []
@@ -120,17 +121,39 @@ def aggregate_blocks(
             if (figure := _row_figure(arm)[0]).value is None
         ]
     if charted:
-        points = [point for arm in aggregate.arms if (point := _point(arm)) is not None]
+        # The campaign's tags, which each aspect's page is built with too, so an arm is one tag, and one colour, on
+        # this chart and on every aspect's outcome bar the page lays out.
+        labels = readings.arm_labels()
+        tags = campaign_arm_tags(
+            (report.bundle for report in reports.values()),
+            readings.control,
+            arms=[arm.variant_key for arm in campaign.arms],
+            also=(arm.arm for arm in aggregate.arms),
+            label_of=lambda key: labels.get(key, key),
+        )
+        declared = declared_arm_names(campaign.arms)
+        points = [
+            point
+            for arm in aggregate.arms
+            if (point := _point(arm, tags[arm.arm], declared.get(arm.arm), forms)) is not None
+        ]
         if len(points) >= 2:
-            blocks.append(
-                ChartBlock(
-                    section="scorecard",
-                    chart="cost_quality",
-                    title=f"Cost and pass rate, {_ACROSS}" if len(readings.aspects) > 1 else "Cost and pass rate",
-                    unit=MONEY,
-                    points=points,
-                )
+            level = forms.confidence_share(aggregate.level).text
+            chart = ChartBlock(
+                section="scorecard",
+                chart="cost_quality",
+                title="Pass rate and cost",
+                unit=MONEY,
+                level=level,
+                points=points,
             )
+            # The title says what is compared and in what unit: the count each cost is per as the chart's own axis
+            # states it, from the block's one money ruler, never a count chosen here.
+            drawn = chart.kit_chart()
+            per = str(drawn[1].get("x_title") or "").removeprefix("Cost ") if drawn is not None else ""
+            measured = f"Pass rate and cost {per}, each arm, {level} intervals"
+            title = f"{measured}, {_ACROSS}" if len(readings.aspects) > 1 else measured
+            blocks.append(chart.model_copy(update={"title": title}))
         lines += [line for arm in aggregate.arms for line in _chart_withheld_lines(arm, names)]
     blocks += [DisclosureBlock(section="scorecard", source="comparisons", text=line) for line in lines]
     if len(readings.aspects) > 1 and (row or blocks):
@@ -161,33 +184,39 @@ def _row_figure(arm: ArmAggregate) -> tuple[AggregateFigure, str]:
     return (arm.change, POINTS) if arm.change is not None else (arm.pass_rate, PERCENT)
 
 
-def _cell(figure: AggregateFigure, unit: str) -> TableCell:
-    """One figure as the row's cell: rounded as the matrix's own cells are, its interval drawn beside it, a change
-    against zero; a withheld one a dash marked as withheld."""
-    if figure.value is None or figure.interval is None:
-        return TableCell(value=None, flag=_WITHHELD)
-    low, high = figure.interval
-    return TableCell(value=round(figure.value, 1), unit=unit, low=low, high=high, zero_line=unit == POINTS)
-
-
 def _charted(readings: CampaignReadings, aggregate: CampaignAggregate) -> bool:
     """Whether the campaign compares more than one pair of figures: two or more aspects, or three or more arms."""
     return len(aggregate.arms) >= 2 and (len(readings.aspects) >= 2 or len(aggregate.arms) >= 3)
 
 
-def _point(arm: ArmAggregate) -> CostQualityPoint | None:
-    """An arm's point on the chart; None where its cost or its pass rate is withheld."""
+def _point(arm: ArmAggregate, tag: str, short_name: str | None, forms: PageForms) -> CostQualityPoint | None:
+    """An arm's point on the chart, tagged as the page tags it and named by its label, which a campaign gives each
+    arm, and in tight places by the short name it declares, else that label, its pass rate and interval as the page's
+    forms decide every figure of the pass rate; None where its cost or its pass rate is withheld."""
     rate, cost = arm.pass_rate, arm.cost
     if rate.value is None or rate.interval is None or cost.value is None or cost.interval is None:
         return None
+    texts: dict[str, str] = {}
+    held = next((form for form in forms.measures if form.key == TRIAL_PASS_NAME), None)
+    if held is not None:
+        # The pass rate is held in percent here, as a code page draws it; its interval's ends as shares.
+        texts = {
+            "pass_rate_text": forms.drawn_level(held.key, rate.value, kind=held.kind).digits,
+            "pass_rate_interval_text": forms.interval(
+                held.key, rate.interval[0] / held.factor, rate.interval[1] / held.factor, kind=held.kind
+            ).digits,
+        }
     return CostQualityPoint(
         arm=arm.arm_label,
+        tag=tag,
+        short_name=short_name or arm.arm_label,
         cost=cost.value,
         cost_low=cost.interval[0],
         cost_high=cost.interval[1],
         pass_rate=rate.value,
         pass_rate_low=rate.interval[0],
         pass_rate_high=rate.interval[1],
+        **texts,
     )
 
 

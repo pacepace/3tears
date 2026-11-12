@@ -1,72 +1,43 @@
-"""Where the campaign's question stands, and where the authored document lives.
+"""Where a stored analysis keeps what its retired memo writer authored, and the fields no analysis carries.
 
-The generator authors one document per campaign (:class:`~threetears.evals.kernel.authored.AuthoredCampaignAnalysis`)
-and the stored analysis keeps it verbatim. These pin the two projection rules code still holds it to: the question is
-answered by the one recommendation and one summary per aspect — never a list of answers keyed by question — and the
-document as the only carrier of what was authored. That each aspect is summarised exactly once is pinned in
-``test_memo_refusals.py``; the position links inside the document (``rests_on``, ``invalidates``) are the stored
-model's own rule and are pinned beside it in ``test_analysis_models.py``.
+The memo writer authored one document per campaign, and the stored analysis keeps it as the JSON it was stored as
+(``EvalAnalysis.document``), never validated as a memo and never read: so the stored memo over the toy corpus campaign
+reads back byte for byte, a key off the retired contract included. The document is the only carrier of what was
+authored: an analysis without the field does not construct, the fields from before it are gone, and a stored read
+refuses an old top-level copy.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from typing import Any, Final
 
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis.errors import SoundnessRefusal
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
-from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from threetears.evals.analysis.generator import generate_analysis
-from threetears.evals.kernel.campaign import EvalAnalysis
-from threetears.evals.schema.models import utc_now_iso
 from packages.evals.tests.factories import make_analysis
+from threetears.evals.kernel.campaign import EvalAnalysis
+
+#: The analysis the memo writer stored over the toy corpus campaign, as its record holds it.
+_STORED_MEMO: Final = Path(__file__).parent / "fixtures" / "retired_writers" / "memo_analysis.json"
 
 
-class TestTheQuestionIsAnsweredByTheRecommendation:
-    """A campaign asks one question, and the memo answers it with one recommendation and a summary per aspect."""
+class TestTheStoredMemoIsHeldAsStored:
+    """A retired memo is JSON the analysis holds, never a model it validates."""
 
-    @staticmethod
-    async def _generate(question: str | None, **extra: object) -> EvalAnalysis:
-        profile = toyhost_profile()
-        aspect = toyhost_bundle(profile=profile)
-        assert aspect.declared is not None, "the toy campaign declares a design; this check replaces its question"
-        declared = None if question is None else aspect.declared.model_copy(update={"question": question})
-        bundle = campaign_bundle(aspect.model_copy(update={"declared": declared}), question=question or "")
-        payload = {**memo_payload(bundle), **extra}
-        analysis, _ = await generate_analysis(
-            bundle,
-            prompt=PROMPT,
-            model=MODEL,
-            client=FixturedClient(json.dumps(payload)),
-            prompt_id=PROMPT_ID,
-            bundle_assembled_at=utc_now_iso(),
-            profile=profile,
-        )
-        return analysis
-
-    @pytest.mark.parametrize("question", ["Which chunk width?", "", None], ids=["asked", "asks-none", "no-design"])
-    async def test_whatever_the_campaign_asks_the_memo_recommends_one_arm_and_summarises_each_aspect(
-        self, question: str | None
-    ) -> None:
-        analysis = await self._generate(question)
-        assert analysis.document.recommendation[0].arm
-        assert [summary.aspect for summary in analysis.document.aspect_summaries] == [
-            aspect.label for aspect in analysis.aspects
-        ]
-        assert analysis.design_snapshot.question == (question or "")
-
-    async def test_a_list_of_answers_keyed_by_question_is_refused_as_off_contract(self) -> None:
+    def test_the_stored_memo_reads_back_as_it_was_stored_whatever_it_holds(self) -> None:
+        record: dict[str, Any] = json.loads(_STORED_MEMO.read_text(encoding="utf-8"))
+        document = record["analysis"]["document"]
+        analysis = EvalAnalysis.model_validate(record["analysis"])
+        assert (analysis.basis, analysis.document) == ("memo", document)
         answers = [{"question_id": "q-1", "resolution": "answered", "answer": "Narrow.", "rests_on": [0]}]
-        with pytest.raises(SoundnessRefusal, match="questions"):
-            await self._generate("Which chunk width?", questions=answers)
+        held = EvalAnalysis.model_validate({**record["analysis"], "document": {**document, "questions": answers}})
+        assert held.document is not None and held.document["questions"] == answers
 
 
 class TestTheDocumentIsTheOnlyCarrier:
-    """One home for what the generator authored, so nothing can hold a second copy."""
+    """One home for what the memo writer authored, so nothing can hold a second copy."""
 
     def test_an_analysis_without_a_document_does_not_construct(self):
         """An analysis with nothing to read is unrepresentable."""

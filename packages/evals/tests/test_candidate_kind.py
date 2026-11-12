@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import logging
+import re
 import sys
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -1467,13 +1468,14 @@ async def test_a_kind_without_a_declaration_is_refused_by_name_before_it_is_buil
 def test_every_shipped_kind_declares_what_a_judge_reads_of_it():
     """The declaration is what picks the axes, so each kind this package ships is pinned.
 
-    The engine ships the reporter kinds; a host's own kinds (a conversational turn, a classifier)
-    are pinned by that host's suite.
+    The engine ships the judge kind and the report writer's; a host's own kinds (a conversational turn, a
+    classifier) are pinned by that host's suite.
     """
-    from threetears.evals.analysis.reporter_kind import AsRecordedReporterKind, ReporterKind
+    from threetears.evals.ops.report_writer.writer_kind import ReportWriterKind
+    from threetears.evals.run import JudgeKind
 
-    assert ReporterKind.judged_artifact is JudgedArtifact.DOCUMENT
-    assert AsRecordedReporterKind.judged_artifact is JudgedArtifact.DOCUMENT
+    assert ReportWriterKind.judged_artifact is JudgedArtifact.DOCUMENT
+    assert JudgeKind.judged_artifact is JudgedArtifact.UNJUDGED
 
 
 def test_an_account_refusal_must_record_the_apparatus_fault_it_is():
@@ -1535,6 +1537,163 @@ async def test_the_runner_refuses_a_kind_landing_any_engine_owned_measure_before
     with pytest.raises(ValueError, match=f"landed {name!r} on host_measures, which only the engine measures"):
         await _run(kind, template, judge_service=service)
     assert judge.calls == []
+
+
+@pytest.mark.parametrize(
+    ("measured", "named"),
+    [
+        ({"match": 1.0}, "'match' (declared boolean, recorded as a number)"),
+        ({"fields_stripped": "three"}, "'fields_stripped' (declared numeric, recorded as text)"),
+    ],
+)
+async def test_the_runner_refuses_a_host_measure_its_declared_type_does_not_fit_before_paying_its_judge(
+    measured: dict[str, float | str], named: str
+) -> None:
+    """A float under a boolean measure, or text under a numeric one, is refused at write and never coerced."""
+    from threetears.evals.schema.models import JudgeEvidence, RubricDim
+    from threetears.evals.run import JudgeService
+
+    kind = _FakeSingleShotKind(
+        CandidateOutput(
+            output=[{"document": "report"}],
+            judge_evidence=JudgeEvidence(case_material="the material", artifact="the report"),
+            host_measures=measured,
+        ),
+        judged_artifact=JudgedArtifact.DOCUMENT,
+    )
+    judge = _RecordingJudgeLLM()
+    service = JudgeService(
+        client_factory=lambda model, temperature: judge, configs={}, failure_describer=withhold_failure_detail
+    )
+    template = _template(rubric=[RubricDim(name="doc.groundedness", description="grounded", scale="ordinal")])
+    with pytest.raises(ValueError, match=re.escape(f"a candidate kind landed {named} on host_measures")):
+        await _run(kind, template, judge_service=service)
+    assert judge.calls == []
+
+
+@pytest.mark.parametrize("held", [True, False])
+async def test_the_runner_stores_a_bool_under_a_boolean_measure_and_a_number_under_a_numeric_one(held: bool) -> None:
+    kind = _FakeSingleShotKind(
+        CandidateOutput(
+            output=[{"turn": 0, "role": "candidate", "content": "label=on_topic"}],
+            host_measures={"match": held, "fields_stripped": 3},
+        )
+    )
+
+    result, _ = await _run(kind, _template())
+
+    assert result.host_measures == {"match": held, "fields_stripped": 3}
+
+
+def test_a_host_declared_boolean_measure_refuses_every_number_and_names_each_misfit() -> None:
+    from threetears.evals.kernel import MetricDescriptor
+    from threetears.evals.kernel.host import MeasureRegistry
+    from threetears.evals.run.runner import refuse_misfit_host_measures
+
+    measures = MeasureRegistry(
+        tuple(
+            MetricDescriptor(
+                name=name,
+                reader_name=name,
+                data_type=data_type,
+                family="mechanical",
+                transferability_class="mechanical",
+                attribution_scope="end_to_end",
+                description=f"{name}, for the test.",
+                higher_is_better=True,
+            )
+            for name, data_type in (("top_up_never", "boolean"), ("arrival_greeting_never", "boolean"))
+        )
+    )
+
+    refuse_misfit_host_measures({"top_up_never": True, "arrival_greeting_never": False, "undescribed": 1.0}, measures)
+    with pytest.raises(ValueError) as refused:
+        refuse_misfit_host_measures({"top_up_never": 1.0, "arrival_greeting_never": 0}, measures)
+    assert str(refused.value).startswith(
+        "a candidate kind landed 'arrival_greeting_never' (declared boolean, recorded as a number), "
+        "'top_up_never' (declared boolean, recorded as a number) on host_measures"
+    )
+
+
+def test_the_assembly_every_completed_cell_passes_through_refuses_a_misfit_host_measure_itself() -> None:
+    """Held where every completed cell is built, not only by the callers that refuse it before their judge pays."""
+    from threetears.evals.kernel import MetricDescriptor
+    from threetears.evals.kernel.host import MeasureRegistry
+    from threetears.evals.run.runner import assemble_completed_cell
+    from threetears.evals.schema.models import JudgedArtifact
+
+    measures = MeasureRegistry(
+        (
+            MetricDescriptor(
+                name="top_up_never",
+                reader_name="top up never",
+                data_type="boolean",
+                family="mechanical",
+                transferability_class="mechanical",
+                attribution_scope="end_to_end",
+                description="top_up_never, for the test.",
+                higher_is_better=True,
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError, match=r"'top_up_never' \(declared boolean, recorded as a number\)"):
+        assemble_completed_cell(
+            scope_id="u",
+            eval_run_id="run-1",
+            test_case_id="case-1",
+            model="test/model",
+            candidate_kind=_FAKE_KIND,
+            k_iteration=1,
+            subject_id="subj-1",
+            variant=DerivedVariantIdentity(
+                variant_key=compute_variant_key(_MODEL_ONLY), identity_version=IDENTITY_VERSION, levers=_MODEL_ONLY
+            ),
+            judge_model=None,
+            output=CandidateOutput(output=[], host_measures={"top_up_never": 1.0}),
+            measures=measures,
+            goal_checks=(),
+            judged_artifact=JudgedArtifact.TRANSCRIPT,
+            rate_table=None,
+            result_id="result-1",
+            scored_at="2026-10-31T00:00:00+00:00",
+            judged=None,
+            judge_ms=None,
+            spans=None,
+            concurrent_eval_jobs=None,
+            metered_cell=None,
+            world_events=None,
+            end_state=None,
+        )
+
+
+def test_a_host_measure_declaring_no_data_type_is_read_as_numeric_and_refuses_text_and_bools() -> None:
+    """A run's summary states an untyped measure as a mean and range of numbers, so only a number fits one."""
+    from threetears.evals.kernel import MetricDescriptor
+    from threetears.evals.kernel.host import MeasureRegistry
+    from threetears.evals.run.runner import refuse_misfit_host_measures
+
+    measures = MeasureRegistry(
+        (
+            MetricDescriptor(
+                name="queue_jumps",
+                reader_name="queue jumps",
+                family="mechanical",
+                transferability_class="mechanical",
+                attribution_scope="end_to_end",
+                description="queue_jumps, for the test.",
+            ),
+        )
+    )
+
+    refuse_misfit_host_measures({"queue_jumps": 2.0, "trace_id": "t-1", "undescribed_flag": True}, measures)
+    for value, recorded in (("two", "text"), (True, "true or false")):
+        with pytest.raises(ValueError) as refused:
+            refuse_misfit_host_measures({"queue_jumps": value}, measures)
+        assert str(refused.value).startswith(
+            f"a candidate kind landed 'queue_jumps' (declared no data type, read as numeric, recorded as {recorded}) "
+            "on host_measures"
+        )
 
 
 def test_the_classifier_track_s_own_keys_are_the_only_core_named_host_measures() -> None:

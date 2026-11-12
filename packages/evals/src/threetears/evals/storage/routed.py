@@ -29,9 +29,19 @@ in the routing scope its host names, under a ``doc_type`` no engine call names. 
 to, when a store's record names another store (two stores passed under each other's names), when the records
 disagree, and when no store holds a record at all, since a store adopted with documents already in it cannot be
 told from an empty one through the port. :meth:`RoutedDocumentStore.relocate` is the operation: it moves every
-document of the scopes its host names to its placement, then writes the record. A type the record does not name
-(new in this release) is read where the record's store for unregistered types is, so a new type changes nothing
-unless it is placed elsewhere.
+document of the scopes its host names to its placement, then writes the record.
+
+**A type new to the stores needs no relocation, wherever it is placed.** A record lists every type registered
+when it was written, and the engine writes only registered types, so a registered type the record does not name
+(new in this release) has no document in these stores: the router places it by the rule, rewrites every record to
+name it, and does not count it as moved. The one assumption is that no document of a type the engine registers was written by anyone else: a host
+that keeps its own documents under an ``eval_*`` name the engine later registers has them read from the type's
+placement rather than its store for unregistered types, and runs :meth:`RoutedDocumentStore.relocate` to move
+them. A rollback goes the same way: an older build cannot start on a newer build's record (it reads a type placed
+apart from its store for unregistered types as moved), so the operator runs the older build's
+:meth:`~RoutedDocumentStore.relocate`, which moves that type's documents to the store for unregistered types; relocate
+again once the newer build is back. A type the record does
+name still refuses to start when its placement moved, and so does a changed store for unregistered types.
 
 **A core baseline is one call, and the stores boot after it.** :meth:`RoutedDocumentStore.reset_core` deletes every
 core and regenerable document of the scopes its host names from every store, wherever it sits, never a durable
@@ -46,6 +56,16 @@ job records (runs, sweeps, analysis attempts) are kept in, so every process stam
 When any store has none, neither has the router, and the engine reads each process's own clock, as it would over
 that store alone: a router that answered from one store's clock while another could not keep time would promise an
 agreement it cannot keep.
+
+**So do narrowed and grouped reads, when every store a type is placed in offers them.** A read of
+:class:`~threetears.evals.schema.ResultReadings` names one ``doc_type``, so it goes, whole, to the one store that type
+is placed in, as ``by_doc_type`` does; a read is never split across stores. The router offers the capability exactly
+when every store the placements name (the store for unregistered types included) offers it, so every read it could
+be asked is one a store can answer. A store no type is placed in (one being drained) is never asked by a typed read,
+so it neither gives nor takes the capability. Offering it whenever some store did and refusing the reads of a type
+placed elsewhere would make ``isinstance(router, ResultReadings)`` a promise some reads break, and the engine picks
+its read path on that check alone. The router's class is chosen when it is built, from a table keyed by (clock,
+readings), so each capability it offers is a method it has and none is a method that raises.
 
 The record is the router's bookkeeping about the stores, not an engine document: it is not routed by facts, it
 is written to every store alike, and it is not in :data:`~threetears.evals.schema.models.EVAL_DOC_TYPES` because
@@ -70,7 +90,7 @@ from typing import Any, Final, Literal, get_args
 
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS, DocLifecycle, DocOrigin, DocTypeFacts
 from threetears.evals.schema.hashing import canonical_digest
-from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict
+from threetears.evals.schema.store_port import DocumentStore, GroupMeasure, ResultReadings, StoreClock, StoreConflict
 from threetears.evals.schema.versioning import CORE_RESET_DOC_TYPES
 from threetears.evals.schema.logs import get_logger
 
@@ -199,7 +219,7 @@ def _record(child: str, placements: Mapping[str, str], unregistered: str, routin
     """The placement record written to the store named ``child``: the placements whole, and their fingerprint.
 
     The placements are kept whole rather than as the digest alone so a start can tell a type that moved (refused)
-    from a type that is merely new (placed where unregistered types were, and recorded).
+    from a type that is merely new (placed by the rule, and recorded).
     """
     return {
         "id": _RECORD_ID,
@@ -266,10 +286,19 @@ class RoutedDocumentStore:
     def __new__(
         cls, children: Mapping[str, DocumentStore], route: DocTypeRoute, *, routing_scope: str
     ) -> RoutedDocumentStore:
-        """Build the clocked router when every store offers a clock, so ``isinstance(router, StoreClock)`` says so."""
-        if cls is RoutedDocumentStore and children and all(isinstance(s, StoreClock) for s in children.values()):
-            return super().__new__(_ClockedRoutedDocumentStore)
-        return super().__new__(cls)
+        """Build the router class that offers what its stores can honour, so ``isinstance`` says exactly that.
+
+        The clock when every store offers one; the readings when every store a type is placed in offers them (the
+        module docstring). The class comes from :data:`_ROUTER_CLASSES`. A route or a set of stores the router
+        refuses is refused here, as :meth:`__init__` would refuse it.
+        """
+        if cls is not RoutedDocumentStore:
+            return super().__new__(cls)
+        placements = _checked_children(children, route)
+        placed = {*placements.values(), route.unregistered}
+        clock = all(isinstance(store, StoreClock) for store in children.values())
+        readings = all(isinstance(children[name], ResultReadings) for name in placed)
+        return super().__new__(_ROUTER_CLASSES[clock, readings])
 
     def __init__(self, children: Mapping[str, DocumentStore], route: DocTypeRoute, *, routing_scope: str) -> None:
         """Resolve the route, and refuse to start unless every store was written under these placements."""
@@ -297,8 +326,11 @@ class RoutedDocumentStore:
     def _check_records(self) -> None:
         """Refuse to start when a store's record says documents were placed otherwise, or no store has one.
 
-        When nothing moved but the record is not this router's whole — a type new in this release, placed where
-        unregistered types were, or a store added that holds no record yet — every store's record is rewritten.
+        Only a type the record names can have moved. A registered type it does not name is new to these stores
+        (registered after the record was written), so it is placed by the rule wherever that puts it, and is not
+        counted as moved; this assumes no document of it is already kept elsewhere (the module docstring). When
+        nothing moved but the record is not this router's whole — a new type, or a store added that holds no record
+        yet — every store's record is rewritten, so the next start finds the new type named at its placement.
 
         :raises RouteChanged: See the module docstring.
         """
@@ -324,10 +356,12 @@ class RoutedDocumentStore:
         first = next(iter(held.values()))
         was: Mapping[str, str] = first["placements"]
         was_unregistered: str = first["unregistered"]
+        # Only a type the record names can have moved. A registered type it does not name was not registered when
+        # it was written, so no earlier start wrote a document of it here (the module docstring's one assumption),
+        # and it is placed by the rule. A type it names that this build does not register is read from the store
+        # for unregistered types, so it moved when that store is not where the record kept it.
         moved = sorted(
-            doc_type
-            for doc_type in {*was, *self._placements}
-            if was.get(doc_type, was_unregistered) != self._placements.get(doc_type, self.unregistered)
+            doc_type for doc_type, store in was.items() if store != self._placements.get(doc_type, self.unregistered)
         )
         if was_unregistered != self.unregistered:
             moved.append("(unregistered types)")
@@ -727,3 +761,67 @@ class _ClockedRoutedDocumentStore(RoutedDocumentStore):
         if not isinstance(store, StoreClock):
             raise TypeError("a clocked router is built only over stores that each keep a clock")
         return store.now()
+
+
+class _ReadingRoutedDocumentStore(RoutedDocumentStore):
+    """A :class:`RoutedDocumentStore` whose every placed store offers readings: it offers them too.
+
+    Each read goes, whole, to the one store its ``doc_type`` is placed in, as ``by_doc_type`` does, and is answered by
+    that store's own :class:`~threetears.evals.schema.ResultReadings`: its order, its one backend call, its failures.
+    """
+
+    def _reading(self, doc_type: str) -> ResultReadings:
+        """The store ``doc_type`` is placed in, as the readings it offers."""
+        store = self._routed(doc_type)
+        if not isinstance(store, ResultReadings):
+            raise TypeError("a router offering readings is built only when every store a type is placed in offers them")
+        return store
+
+    def iter_narrowed(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> Iterator[dict[str, Any]]:
+        """See :meth:`~threetears.evals.schema.ResultReadings.iter_narrowed`; from the store the type is kept in.
+
+        The store's own iterator is returned, not wrapped in a generator of the router's, so its backend call is made
+        at this call, as the capability promises.
+        """
+        return self._reading(doc_type).iter_narrowed(
+            doc_type, scope_id, exclude=exclude, exclude_in_items=exclude_in_items, field_in=field_in, **field_eq
+        )
+
+    def grouped(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`~threetears.evals.schema.ResultReadings.grouped`; from the store the type is kept in."""
+        return self._reading(doc_type).grouped(
+            doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq
+        )
+
+
+class _ClockedReadingRoutedDocumentStore(_ClockedRoutedDocumentStore, _ReadingRoutedDocumentStore):
+    """A :class:`RoutedDocumentStore` offering both the clock and the readings."""
+
+
+#: The router class built for each (clock, readings) its stores can honour: the one place the capabilities compose.
+_ROUTER_CLASSES: Final[Mapping[tuple[bool, bool], type[RoutedDocumentStore]]] = MappingProxyType(
+    {
+        (False, False): RoutedDocumentStore,
+        (True, False): _ClockedRoutedDocumentStore,
+        (False, True): _ReadingRoutedDocumentStore,
+        (True, True): _ClockedReadingRoutedDocumentStore,
+    }
+)

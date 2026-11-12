@@ -427,25 +427,33 @@ async def test_an_unplanned_arm_naming_no_model_is_refused_at_the_tail_for_a_kin
     assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
 
 
-_OTHER_SCOPE_CASE = EvalTestCase(scope_id="another-scope", template_id=toyhost_template().id)
-_OTHER_TEMPLATE_CASE = EvalTestCase(scope_id=TOYHOST_SCOPE, template_id="another-template")
+def _other_scope_case() -> EvalTestCase:
+    return EvalTestCase(scope_id="another-scope", template_id=toyhost_template().id)
+
+
+def _other_template_case() -> EvalTestCase:
+    return EvalTestCase(scope_id=TOYHOST_SCOPE, template_id="another-template")
 
 
 @pytest.mark.parametrize(
     ("overrides", "arguments", "said"),
     [
         (
-            {"subject": TOYHOST_SUBJECT.model_copy(update={"subject_id": "a-constant"})},
+            lambda: {"subject": TOYHOST_SUBJECT.model_copy(update={"subject_id": "a-constant"})},
             {},
             "captured subject 'a-constant'",
         ),
-        ({"test_cases": [_OTHER_SCOPE_CASE]}, {}, "from outside template"),
-        ({"test_cases": [_OTHER_TEMPLATE_CASE]}, {}, "from outside template"),
-        ({"default_candidate_model": "a-default"}, {}, "a default is for an arm that named none"),
-        ({}, {"judge_model": "judge-a"}, "a pinned judge is the judge"),
-        ({"simulator_model": "sim-b"}, {"simulator_model": "sim-a"}, "a pinned simulator is the simulator"),
-        ({}, {"n_variations": 2}, "asked for 2 generated case"),
-        ({"variation_counts": VariationCounts(requested=3, kept=3, reused=0)}, {}, "asked for 0 generated case"),
+        (lambda: {"test_cases": [_other_scope_case()]}, {}, "from outside template"),
+        (lambda: {"test_cases": [_other_template_case()]}, {}, "from outside template"),
+        (lambda: {"default_candidate_model": "a-default"}, {}, "a default is for an arm that named none"),
+        (lambda: {}, {"judge_model": "judge-a"}, "a pinned judge is the judge"),
+        (lambda: {"simulator_model": "sim-b"}, {"simulator_model": "sim-a"}, "a pinned simulator is the simulator"),
+        (lambda: {}, {"n_variations": 2}, "asked for 2 generated case"),
+        (
+            lambda: {"variation_counts": VariationCounts(requested=3, kept=3, reused=0)},
+            {},
+            "asked for 0 generated case",
+        ),
     ],
     ids=[
         "another-subject",
@@ -460,7 +468,7 @@ _OTHER_TEMPLATE_CASE = EvalTestCase(scope_id=TOYHOST_SCOPE, template_id="another
 )
 async def test_a_wiring_that_contradicts_its_request_is_refused_and_creates_no_run(overrides, arguments, said):
     """Where the request and the wiring speak to one fact they must agree, or the run records one thing and runs another."""
-    host, storage, _handed = off_loop(_launching_with, lambda request, world: _wired(request, world, **overrides))
+    host, storage, _handed = off_loop(_launching_with, lambda request, world: _wired(request, world, **overrides()))
 
     with pytest.raises(ValueError, match=said):
         await _launch_one(host, **arguments)

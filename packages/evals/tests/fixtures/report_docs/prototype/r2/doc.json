@@ -1,0 +1,339 @@
+{
+  "schema": "report-doc/1",
+  "story": "decision",
+  "headline": "{arm:brisk-s.low.r1} is the only configuration inside both gates, but by just {criteria.pass_rate.brisk-s.low.r1.gap|abs|pts} points on pass rate: re-test it on fresh cases before shipping, and decide now which gate gives if it fails.",
+  "lede": "It is the cheapest configuration that clears the pass-rate gate, at {cost_per_month.brisk-s.low.r1} a month. If a re-test puts it below {criteria.pass_rate.threshold}, no configuration clears both gates.",
+  "flag": "The snapshot holds no interval on pass rate or latency, so the pick's clearance rests on point estimates, and it is the one configuration of {n_candidates|int} that landed inside both gates, which makes its estimate optimistic.",
+  "recommends": [
+    "brisk-s.low.r1"
+  ],
+  "confidence": {
+    "form": "low",
+    "caveats": [
+      {
+        "id": "pick_clears_gate_on_point_estimate",
+        "label": null,
+        "material_if": "only if the pick's true pass rate is below the gate, which a clearance this thin with no interval leaves open; then no configuration passes both gates.",
+        "checked": null
+      },
+      {
+        "id": "selection_of_the_one_inside",
+        "label": null,
+        "material_if": "only if the pick landed inside the gate partly by luck, as the one configuration of the sweep that did; a re-run on fresh cases would show it.",
+        "checked": null
+      },
+      {
+        "id": "case_mix_vs_traffic",
+        "label": null,
+        "material_if": "only if production carries more multi-hop or ambiguous-entity queries than the eval set, since the pick is below the gate on both and the gate reads the overall rate.",
+        "checked": null
+      },
+      {
+        "id": "latency_from_harness",
+        "label": null,
+        "material_if": "only if production p95 under load runs more than {criteria.p95.brisk-s.low.r1.gap} above the eval harness's, which is the pick's whole headroom.",
+        "checked": null
+      }
+    ]
+  },
+  "decision": [
+    {
+      "slot": "recommendation",
+      "text": "Re-test {arm:brisk-s.low.r1} and ship it if it holds. It passes {pass_rate.brisk-s.low.r1} of queries against a gate of {criteria.pass_rate.threshold}, its p95 latency is {measure.latency_ms.brisk-s.low.r1.p95} against a budget of {criteria.p95.threshold}, and nothing else passes both."
+    },
+    {
+      "slot": "why_not",
+      "text": "{arm:brisk-s.high.r1} passes more often but its p95 is {measure.latency_ms.brisk-s.high.r1.p95}. Every Atlas-M configuration misses the latency budget, the fastest at {measure.latency_ms.atlas-m.off.r0.p95}. No Nano-XS configuration reaches the pass-rate gate; the best is {measure.pass_rate.nano-xs.high.r1.mean}. Brisk-S without a retry stays below the pass-rate gate at every reasoning level."
+    },
+    {
+      "slot": "watch",
+      "text": "The pass-rate clearance of {criteria.pass_rate.brisk-s.low.r1.gap|abs|pts} points is the weakest margin on the page, and it sits on the pick. The latency headroom, {criteria.p95.brisk-s.low.r1.gap}, is one harness measurement with no interval, not production latency under load. Multi-hop queries, at {task.multihop.brisk-s.low.r1.pass_rate.mean}, are where the pick is weakest."
+    },
+    {
+      "slot": "next",
+      "text": "Re-test the pick on fresh cases, pass rate and p95 both. If it holds, ship it; if it falls below either gate, the owner's declared fallback decides."
+    }
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "{arm:brisk-s.low.r1} is the only one of the {n_candidates|int} configurations inside both gates, and it clears the pass-rate gate by {criteria.pass_rate.brisk-s.low.r1.gap|abs|pts} points. A retry is what lifts it over: a retry raises pass rate in every model and reasoning setting, for a few cents per thousand.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "lattice",
+          "query": {
+            "source": "configs",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": "floor",
+          "emphasis": "brisk-s.low.r1",
+          "caption": "Every model, reasoning level and retry setting: pass rate, cost, p95 latency and whether it passes both gates. The cost label is the renderer's; Method gives the basis."
+        },
+        {
+          "block": "gate_scatter",
+          "query": {
+            "source": "configs",
+            "aspect": "",
+            "measures": [
+              "pass_rate",
+              "latency_ms"
+            ],
+            "arms": [
+              "brisk-s.off.r0",
+              "brisk-s.off.r1",
+              "brisk-s.low.r0",
+              "brisk-s.low.r1",
+              "brisk-s.high.r0",
+              "brisk-s.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "The Brisk-S configurations, which sit nearest the corner where both gates hold; the lattice above holds all of them."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c2",
+      "text": "On Brisk-S the retry lengthens only the latency tail: without it the pick's p95 would be {measure.latency_ms.brisk-s.low.r0.p95}. The step from low to high reasoning is what crosses the budget.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "range_bars",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "latency_ms"
+            ],
+            "arms": [
+              "brisk-s.off.r0",
+              "brisk-s.off.r1",
+              "brisk-s.low.r0",
+              "brisk-s.low.r1",
+              "brisk-s.high.r0",
+              "brisk-s.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": "budget",
+          "emphasis": "brisk-s.low.r1",
+          "caption": "Brisk-S latency from p50 to p95 against the p95 budget; one eval-harness measurement per configuration, no interval."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c3",
+      "text": "Only relaxing the latency budget reaches a configuration that clears the pass-rate gate by more than the pick; the cheapest it would admit, {arm:brisk-s.high.r1}, runs {cost_per_month.brisk-s.high.r1} a month.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "table",
+          "query": {
+            "source": "configs",
+            "aspect": "",
+            "measures": [
+              "cost_per_1k",
+              "pass_rate",
+              "latency_ms"
+            ],
+            "arms": [
+              "brisk-s.low.r1",
+              "brisk-s.high.r1",
+              "atlas-m.low.r1",
+              "atlas-m.high.r0",
+              "atlas-m.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "The pick and every configuration that clears the pass-rate gate: pass rate, cost per thousand calls as the snapshot measures it, and p95 latency."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c4",
+      "text": "Multi-hop queries are the pick's weakest type, at {task.multihop.brisk-s.low.r1.pass_rate.mean}; the one multi-hop failure the snapshot froze collapses the chain of lookups into a single search. Its ambiguous-entity failure is scored wrong for answering without asking which entity was meant, so that type's rate also rests on the gold answers requiring a clarifying question.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "bars",
+          "query": {
+            "source": "tasks",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "brisk-s.low.r1",
+              "brisk-s.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "brisk-s.low.r1",
+          "caption": "Pass rate by query type for the pick and the same model with high reasoning; the gate reads the overall rate, so no line is drawn."
+        },
+        {
+          "block": "examples",
+          "query": {
+            "source": "examples",
+            "aspect": "",
+            "measures": [],
+            "arms": [
+              "brisk-s.low.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "The snapshot froze one failure per query type for the pick, three in all; they illustrate and don't measure."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    }
+  ],
+  "explore": [
+    {
+      "control": "Pass-rate gate",
+      "binds": "which configuration is the cheapest that passes both gates",
+      "outcome": "Above {pass_rate.brisk-s.low.r1} nothing passes. The pick holds for any gate above {pass_rate.brisk-s.low.r0}. Lower the gate and the pick steps down: {arm:brisk-s.low.r0} at or below {pass_rate.brisk-s.low.r0}, {arm:nano-xs.high.r1} at or below {pass_rate.nano-xs.high.r1}, {arm:nano-xs.low.r1} at or below {pass_rate.nano-xs.low.r1}, {arm:nano-xs.off.r1} at or below {pass_rate.nano-xs.off.r1}, and {arm:nano-xs.off.r0} at or below {pass_rate.nano-xs.off.r0}."
+    },
+    {
+      "control": "Latency budget (p95)",
+      "binds": "whether the pick has a rival",
+      "outcome": "Below {measure.latency_ms.brisk-s.low.r1.p95} nothing passes. From {measure.latency_ms.brisk-s.high.r1.p95} up, {arm:brisk-s.high.r1} passes too and clears the pass-rate gate by {criteria.pass_rate.brisk-s.high.r1.gap|abs|pts} points. The pick stays the call there only if the cheaper option wins; the campaign declared no rule ranking cost against clearance."
+    }
+  ],
+  "omitted": [
+    {
+      "what": "Calls per task",
+      "why": "Describes planner behavior and no gate reads it. It bears on cost only if cost is per call, which Method addresses; the order of the configurations that clear the pass-rate gate is the same on either basis."
+    },
+    {
+      "what": "Extra calls and outcome measures",
+      "why": "Listed in the campaign but hold no figures in this snapshot."
+    },
+    {
+      "what": "p50 latency outside Brisk-S",
+      "why": "The budget is on p95; the median binds nothing. It is in the appendix tables."
+    },
+    {
+      "what": "The two-gate scatter over all configurations",
+      "why": "Its point labels print internal ids once every configuration is drawn; the lattice shows all of them by name and the scatter keeps the Brisk-S row, which holds the corner."
+    },
+    {
+      "what": "Per-task rates for the other configurations",
+      "why": "The gate is overall; only the pick's and its higher-reasoning sibling's task rates bear on Watch. Full table in the appendix."
+    },
+    {
+      "what": "A priced trade",
+      "why": "Only one configuration survives, so there is nothing to price; the fallbacks' cost is shown in the table instead."
+    },
+    {
+      "what": "A per-task routing mix",
+      "why": "No gate is per task and nobody ran a routed mix; it would be a modeled figure no key states."
+    },
+    {
+      "what": "The date-math failure card's detail",
+      "why": "Shown on the card; date math is above the gate for the pick, so it doesn't bear on Watch."
+    }
+  ],
+  "next": [
+    {
+      "text": "The owner declares which gate gives if the re-test fails: the latency budget (then {arm:brisk-s.high.r1} passes, at {cost_per_month.brisk-s.high.r1} a month) or the pass-rate gate (then the step-down in Explore applies).",
+      "settles": "The fallback, decided before the re-test result can bias it."
+    },
+    {
+      "text": "Re-run {arm:brisk-s.low.r1} on fresh cases, several times the current set, reporting intervals on pass rate and p95.",
+      "settles": "Whether it really clears both gates, or the pass-rate clearance was the luck of being the one configuration inside."
+    },
+    {
+      "text": "Measure the pick's p95 under production-like load.",
+      "settles": "Whether its latency headroom survives outside the eval harness."
+    },
+    {
+      "text": "Read a sample of the pick's multi-hop failures, then, if the collapsed-chain pattern holds, add a multi-hop planning directive and re-run multi-hop and ambiguous-entity queries.",
+      "settles": "Whether the thin margin can widen without paying for more reasoning; today the pattern rests on one frozen failure."
+    },
+    {
+      "text": "Declare the production mix of query types, or weight the eval set to it.",
+      "settles": "Whether the overall rate the gate reads matches the traffic the planner will see."
+    }
+  ],
+  "method": [
+    {
+      "term": "Cases",
+      "text": "{scoreboard.brisk-s.low.r1.cases|int} queries per configuration, the same for all {n_candidates|int}; no repeats are recorded and no trials were lost.",
+      "caveats": []
+    },
+    {
+      "term": "Design",
+      "text": "Every model at every reasoning level, with and without a retry, fully crossed; no control or production configuration was included, so nothing is read as a change from current behavior.",
+      "caveats": []
+    },
+    {
+      "term": "Pass",
+      "text": "The snapshot doesn't define what makes a query pass. The failures it records are a missing call, wrong arguments or the wrong tool against an expected plan; an ambiguous query answered without a clarifying question counts as a failure.",
+      "caveats": []
+    },
+    {
+      "term": "Intervals",
+      "text": "None. Every figure on the page is a point estimate, latency included; no correction applies because no contrast is tested.",
+      "caveats": []
+    },
+    {
+      "term": "Gates",
+      "text": "Pass rate at least {criteria.pass_rate.threshold} overall and p95 latency at most {criteria.p95.threshold}, measured in the eval harness; neither is marked as set after the results.",
+      "caveats": []
+    },
+    {
+      "term": "Judge",
+      "text": "None: pass is a recorded check, not a judged score.",
+      "caveats": []
+    },
+    {
+      "term": "Cost basis",
+      "text": "The snapshot names its cost measure per thousand calls, the lattice prints it as per 1,000 replies, and the monthly figures multiply it by the monthly volume of {meta.volume_per_month|int} as if both counted queries. If cost is per tool call, each query costs more by its calls per task ({measure.calls_per_task.brisk-s.low.r1.mean} for the pick) and the monthly figures understate. The order of the configurations that clear the pass-rate gate is the same on either basis.",
+      "caveats": []
+    },
+    {
+      "term": "Source",
+      "text": "Synthetic example data, as the snapshot's provenance states.",
+      "caveats": []
+    }
+  ]
+}

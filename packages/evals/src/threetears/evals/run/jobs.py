@@ -31,12 +31,14 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
 from concurrent.futures import Executor
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, TypeVar
 
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.kernel.errors import AdmissionRefusedError, ConflictError, JobFenced, StorageError
 from threetears.evals.schema.models import (
     TERMINAL_RUN_STATUSES,
@@ -662,7 +664,7 @@ class EvalJobManager:
         return True
 
     async def shutdown(self, timeout: float = SHUTDOWN_SETTLE_TIMEOUT_S) -> list[str]:
-        """Cancel all active jobs and wait up to ``timeout`` for each to settle.
+        """Cancel all active jobs and wait for them to settle, the whole shutdown bounded by ``timeout``.
 
         A cancelled job settles as it unwinds. One whose writes outlast ``timeout`` is given up on,
         logged by id and returned rather than folded into a success: runs and tasks apart, since a
@@ -672,29 +674,45 @@ class EvalJobManager:
         **Every job this process holds a lease on ends lost first** (:meth:`JobLeases.shut_down
         <threetears.evals.kernel.job_leases.JobLeases.shut_down>`), its cause the shutdown, its lease released: its
         record reads lost at once in every process, rather than ``running`` until the lease lapses. The jobs are
-        cancelled after, and the endings they write as they unwind are refused — the record has ended. So what a
-        shutdown records of a run it held is the loss alone: ``cancelled``, ``completed_at`` the store's time as
-        it shut down, ``cancellation_reason`` ``lost: process shut down``; nothing is broadcast for it and the
-        run-end hook is not called, since no ending of the run's own was recorded. A run whose loss could not be
-        written (logged) keeps its own ending as it unwinds, which is recorded and heard as any other.
+        cancelled once those losses are written, or once half of ``timeout`` has passed without the store taking
+        them, whichever is first, so a store that hangs keeps no job spending past that; the endings the jobs write
+        as they unwind are refused where the loss landed — the record has ended. So what a shutdown records of a
+        run it held is the loss alone: ``cancelled``, ``completed_at`` the store's time as it shut down,
+        ``cancellation_reason`` ``lost: process shut down``; nothing is broadcast for it and the run-end hook is not
+        called, since no ending of the run's own was recorded. A run whose loss could not be written (logged) keeps
+        its own ending as it unwinds, which is recorded and heard as any other. A lease expiry already under way is
+        let finish within the same bound, the jobs unwinding meanwhile, and nothing here waits past ``timeout``.
 
-        :param timeout: Seconds to wait for every cancelled job to finish.
+        :param timeout: Seconds the whole shutdown may take: the losses, the expiries under way, and every cancelled
+            job finishing.
         :ptype timeout: float
         :return: The ids of the jobs still unfinished when the wait ended; empty when all settled.
         :rtype: list[str]
         """
+        deadline = time.monotonic() + timeout
+        cancelled: set[asyncio.Task[None]] = set()
+
+        def cancel_every() -> None:
+            # Detached tasks are cancelled with the runs: each records its own ending as it unwinds
+            # (a generation writes a `cancelled` attempt), which is the settling this waits for. Each once: a
+            # second cancel would land inside the unwinding of the first, cutting its ending's write short.
+            for task in [*self._tasks.values(), *self._detached.values()]:
+                if not task.done() and task not in cancelled:
+                    cancelled.add(task)
+                    task.cancel()
+
         if self._leases is not None:
-            ended = await self._leases.shut_down()
+            try:
+                ended = await self._leases.shut_down(within=timeout, then=cancel_every)
+            finally:
+                cancel_every()  # however the leases' shutdown ended; a task it already cancelled is not cancelled again
             if ended:
                 log.info("eval.shutdown wrote %d held job(s) lost: %s", len(ended), ", ".join(ended))
-        # Detached tasks are cancelled with the runs: each records its own ending as it unwinds
-        # (a generation writes a `cancelled` attempt), which is the settling this waits for.
-        every = {**self._tasks, **self._detached}
-        for task in list(every.values()):
-            if not task.done():
-                task.cancel()
+        else:
+            cancel_every()
+        every = [*self._tasks.values(), *self._detached.values()]
         if every:
-            await asyncio.wait(list(every.values()), timeout=timeout)
+            await asyncio.wait(every, timeout=max(0.0, deadline - time.monotonic()))
         unsettled_runs = [job_id for job_id, task in self._tasks.items() if not task.done()]
         unsettled_tasks = [job_id for job_id, task in self._detached.items() if not task.done()]
         if unsettled_runs:
@@ -774,13 +792,26 @@ class EvalJobManager:
         :ptype epoch: int
         :return: ``job_id``.
         :rtype: str
-        :raises ConflictError: A live task already holds ``key``.
+        :raises ConflictError: A live task already holds ``key``, or the process is shutting down, which holds no
+            lease meanwhile (:meth:`JobLeases.hold <threetears.evals.kernel.job_leases.JobLeases.hold>`): no task is
+            started, and ``discard`` is the caller's to await, as for any refusal here.
         :raises ValueError: ``record`` is given to a manager with no leases.
         """
         if key is not None:
             self._refuse_held(key)
         if record is not None and self._leases is None:
             raise ValueError(f"task {job_id!r} names a leased record, but this manager holds no leases")
+        if record is not None and self._leases is not None:
+            # Held before the task exists, so a hold refused (a shutdown under way) leaves no task running unleased.
+            kind, scope_id = record
+            self._leases.hold(
+                kind,
+                job_id,
+                scope_id,
+                cancel=lambda _reason: self.cancel_task(job_id),
+                stop=lambda: self.cancel_task(job_id),
+                epoch=epoch,
+            )
         began: list[bool] = []
 
         async def begun() -> None:
@@ -795,16 +826,6 @@ class EvalJobManager:
         self._detached[job_id] = task
         if key is not None:
             self._task_keys[job_id] = key
-        if record is not None and self._leases is not None:
-            kind, scope_id = record
-            self._leases.hold(
-                kind,
-                job_id,
-                scope_id,
-                cancel=lambda _reason: self.cancel_task(job_id),
-                stop=lambda: self.cancel_task(job_id),
-                epoch=epoch,
-            )
         return job_id
 
     def _discard(self, job_id: str, discard: Callable[[], Awaitable[None]]) -> None:
@@ -912,7 +933,9 @@ class EvalJobManager:
             log.error(
                 "Task %s timed out after %.0fs (attribution=%s)", job_id, timed_out.elapsed_s, timed_out.attribution
             )
-            await self._end_task_record(job_id, f"its task ran out of its {timed_out.elapsed_s:.0f}s budget")
+            await self._end_task_record(
+                job_id, f"its task ran out of its {round_half_even(timed_out.elapsed_s, 0)}s budget"
+            )
         # prawduct:ok-broad-except — top-level task boundary: the work records its own ending; one it did not is written lost
         except Exception as broke:
             # NOSILENT: its record is written lost below, its cause this error, unless its work ended it first.
@@ -977,6 +1000,9 @@ class EvalJobManager:
         :raises ValueError: ``members`` is empty.
         :raises asyncio.CancelledError: The caller was cancelled while the runs were being saved; they
             were settled ``cancelled`` and none started.
+        :raises ConflictError: The process began shutting down while the runs were being saved, and holds no lease
+            meanwhile (:meth:`JobLeases.hold <threetears.evals.kernel.job_leases.JobLeases.hold>`): they were settled
+            ``cancelled`` with that cause, and none started.
         """
         if not members:
             raise ValueError("a launch group needs at least one run")
@@ -1028,7 +1054,20 @@ class EvalJobManager:
                     task.add_done_callback(functools.partial(_tell_member_end, on_member_end, run.id))
                 self._tasks[run.id] = task
                 started.add(run.id)
-        except BaseException:
+        except BaseException as failed:
+            if isinstance(failed, ConflictError):
+                # A hold refused by a shutdown under way (JobLeases.hold): the loop awaits nothing, so it is refused
+                # before any member started. Every run left without a task is settled `cancelled` with that cause,
+                # rather than left `pending` for a slot nothing gives it.
+                unstarted = [run for run in runs if run.id not in started]
+                await _finish_even_if_cancelled(
+                    run_blocking(
+                        self._blocking_executor,
+                        self._settle_unstarted,
+                        unstarted,
+                        f"its launch was refused before it started: {failed.message}",
+                    )
+                )
             # A member left without a task is never told ended by its task, so whatever its siblings wait on from it
             # (an interleaved launch's turns) is told here, before the failure goes on.
             if on_member_end is not None:

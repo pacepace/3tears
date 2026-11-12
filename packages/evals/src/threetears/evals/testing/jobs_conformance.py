@@ -47,6 +47,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from threetears.evals.kernel.numbers import spell_declared
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.actions import Action, ActionCatalogue, Caller, ConformanceSample, ConformanceStage
@@ -102,16 +103,21 @@ class _GuardedClient:
         self._role = role
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self._inner, name)
+        found = getattr(self._inner, name)
+        if name != "turn_session":
+            return found
+        # A turn model's (the ``analyst`` role's) session client, its every turn watched as a request. Forwarded only
+        # where the host's client has one, so a client that is no turn model reads as none here too.
+        model = getattr(self._inner, "model_name", "?")
+
+        def turn_session(session: str, *, snapshot: str) -> _GuardedTurns:
+            return _GuardedTurns(found(session, snapshot=snapshot), self._guard, f"{self._role} {session}", model)
+
+        return turn_session
 
     async def generate(self, **request: Any) -> Any:
         """Count the request; refuse it outside a job; inside one, send it once no call is running."""
-        where = f"a {self._role} request to {getattr(self._inner, 'model_name', '?')}"
-        if running_job() is None:
-            self._guard.outside.append(where)
-            raise CompletionOutsideJob(f"{where} was made outside any job's work")
-        await self._guard.after_the_call(where)
-        self._guard.inside += 1
+        await self._guard.counted(f"a {self._role} request to {getattr(self._inner, 'model_name', '?')}")
         return await self._inner.generate(**request)
 
     async def aclose(self) -> None:
@@ -130,6 +136,23 @@ class _GuardedClient:
             await self._inner.__aexit__(exc_type, exc, tb)
         else:
             await self._inner.aclose()
+
+
+class _GuardedTurns:
+    """A turn model's session client, each turn counted — and refused outside a job — as a completion request is."""
+
+    def __init__(self, inner: Any, guard: CompletionGuard, session: str, model: str) -> None:
+        self._inner = inner
+        self._guard = guard
+        self._where = f"a turn of the {session} session on {model}"
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def turn(self, **request: Any) -> Any:
+        """Count the turn; refuse it outside a job; inside one, send it once no call is running."""
+        await self._guard.counted(self._where)
+        return await self._inner.turn(**request)
 
 
 @dataclass
@@ -177,9 +200,23 @@ class CompletionGuard:
         except TimeoutError:
             self.awaited_by_call.append(where)
             raise JobAwaitedByItsCall(
-                f"{where}, made by a job, waited {self.call_return_timeout_s:g}s for the call that started the job "
+                f"{where}, made by a job, waited {spell_declared(self.call_return_timeout_s)}s for the call that started the job "
                 "to return, and it had not: the call waits on its own job's model work"
             ) from None
+
+    async def counted(self, where: str) -> None:
+        """Count one request (a completion or a turn): refuse it outside a job; inside one, once no call is running.
+
+        :param where: The request, described.
+        :ptype where: str
+        :raises CompletionOutsideJob: It was made outside any job's work.
+        :raises JobAwaitedByItsCall: The running call did not return in time (:meth:`after_the_call`).
+        """
+        if running_job() is None:
+            self.outside.append(where)
+            raise CompletionOutsideJob(f"{where} was made outside any job's work")
+        await self.after_the_call(where)
+        self.inside += 1
 
     def wrap(self, clients: CompletionClients) -> CompletionClients:
         """The host's client factory, every client it builds watched.
@@ -325,7 +362,9 @@ def _happy_path_case(action: Action, timeout_s: float, call_return_timeout_s: fl
                 try:
                     await _settled(host, job.job_id, caller.scope_id, timeout_s)
                 except TimeoutError:
-                    raise _fail(action, rule, f"its job {job.job_id} did not end within {timeout_s:g}s") from None
+                    raise _fail(
+                        action, rule, f"its job {job.job_id} did not end within {spell_declared(timeout_s)}s"
+                    ) from None
             if guard.outside:
                 raise _fail(action, rule, f"a request was made outside its job: {', '.join(guard.outside)}")
             if guard.inside == 0:

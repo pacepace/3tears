@@ -1,4 +1,4 @@
-"""The blocks a report is made of — text, tables, charts, trials and disclosures — and the vocabulary they share.
+"""The blocks a report is made of — tables, charts, trials and disclosures — and the vocabulary they share.
 
 The pieces a :class:`~threetears.evals.analysis.report.model.Report` and a
 :class:`~threetears.evals.analysis.report.model.CampaignReport` hold, defined below both the documents and the
@@ -12,16 +12,39 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Mapping, Sequence
-from typing import Annotated, Literal, Self, get_args
+from collections.abc import Callable, Mapping, Sequence
+from typing import Annotated, Any, Literal, Self, get_args
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, JsonValue, ModelWrapValidatorHandler, ValidationError, model_validator
 
-from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement, TrialState
-from threetears.evals.analysis.quantities import PERCENT, number_in, render_cell, unit_label, with_unit
+from threetears.evals.analysis.bundle.schema import TrialState
+from threetears.evals.analysis.quantities import (
+    PERCENT,
+    is_money,
+    number_in,
+    render_cell,
+    unit_label,
+    with_unit,
+)
+from threetears.evals.analysis.report.charts import (
+    KIT_CHARTS,
+    BarRow,
+    BarSegment,
+    BarsChart,
+    ChartPattern,
+    ChartStatus,
+    KitChart,
+    LegendItem,
+    ScatterChart,
+    ScatterPoint,
+    Token,
+)
+from threetears.evals.analysis.report.cost_unit import REPLIES, money_ruler, per_count
+from threetears.evals.analysis.report.parts.look import arm_shape, arm_token, cost_axis_format
 from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.analysis.report.unit_once import ends_beside, interval_beside
+from threetears.evals.analysis.report.words import label_case
 from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.schema.prose import ModelProse
 
 #: A table cell's value: a number, words, a boolean, or None where there is none.
 CellValue = str | int | float | bool | None
@@ -136,28 +159,17 @@ SECTION_TITLES: dict[str, str] = {
     "glossary": "Glossary",
 }
 
+#: An aspect fold's section headings where its campaign's page heads a section of the same name at its foot, so no
+#: heading prints twice on one page: the fold's methods are the aspect's.
+FOLD_SECTION_TITLES: dict[str, str] = {"methods": "Aspect methods"}
+
 #: The sections the first screen is made of: a campaign's answer and warnings are on it too.
 FIRST_SCREEN: frozenset[str] = frozenset({"header", "answer", "warnings", "scoreboard"})
 
+#: The report-wide caveat a page sets apart as its one flag, by the id it carries: criteria set after their results
+#: existed, which changes how every reading is read. Every other report-wide caveat is a plain line under it.
+FLAGGED_CAVEATS: frozenset[str] = frozenset({"caveat-late"})
 
-#: What a text block's author wrote it as. ``summary`` is the memo's read across every aspect, which a campaign's page
-#: opens on after its warnings.
-TextRole = Literal[
-    "summary",
-    "answer",
-    "recommendation",
-    "reason",
-    "override",
-    "what_changed",
-    "how_sure",
-    "means",
-    "finding_title",
-    "finding_body",
-    "caveat",
-    "carried_forward",
-    "next_step",
-    "next_step_why",
-]
 
 #: Who a disclosure speaks for. ``arms``: the first screen's arms line, each arm named in full once by the version
 #: that answered it, the control marked, and the design (``30 cases × 3 repeats``). ``caveat``: a line under the
@@ -167,15 +179,14 @@ TextRole = Literal[
 #: screen, a broken floor's warning, the page's first line; in the Decision section, the lines under the floors table
 #: saying a floor warns and never decides, and how the cases that would settle one were counted. ``verdict``: the
 #: verdict line. ``design``, ``charts`` and ``cost``: how the run was laid out, what was not charted and where a cost
-#: is a floor, in the methods; ``cost`` is also the first-screen line saying each cost figure is its runs' provider
-#: routing's. ``memo``: who wrote the memo, or that no one did. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
+#: is a floor, in the methods; ``cost`` is also the detail saying each cost figure is its runs' provider routing's. ``memo``: where the campaign's report is, where it has one. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
 #: were launched and measured. ``apparatus``: the test setup — controls, confounds, cells that did not pool, a judge
 #: grading its own model's answers. ``comparisons``: how the contrasts against the control were tested and
 #: corrected. ``strata``: a stratum too small to read alone. ``guardrails``: how guardrails were decided.
 #: ``scope``: which readings no declared question asked about. ``not_tested``: something the campaign could not
 #: speak to. ``calibration``: a judge not yet calibrated against people's labels — a state with its next step, never a
-#: failure. ``generation``: how the report itself was made. ``call``: on a campaign's page, the person's call, or that
-#: none is recorded yet, and every broken floor it overrides. ``bar``: on a campaign's page, a bar an arm misses, a
+#: failure. ``generation``: how the report itself was made. ``call``: on a campaign's page, the person's call, once
+#: one is recorded, and every broken floor it overrides. ``bar``: on a campaign's page, a bar an arm misses, a
 #: line as loud as a broken floor's and as early.
 DisclosureSource = Literal[
     "arms",
@@ -254,7 +265,9 @@ class Verdict(EvalDocumentModel):
     """One verdict the report states, typed: what a program reads instead of the words printed from it.
 
     The source of truth for every verdict the report prints: the contrasts table's ``verdict`` cell and the
-    guardrails table's ``decision`` cell are each a verdict's :attr:`words`, rendered from it, never the reverse.
+    guardrails table's ``decision`` cell are each a verdict's :attr:`words`, rendered from it, never the reverse; an
+    undecided contrast's cell in its short form (:data:`~threetears.evals.analysis.style.CANNOT_TELL_APART`), since
+    its row names both arms.
     """
 
     kind: VerdictKind = Field(description="A contrast against the control, a bar on one cell, or a guardrail.")
@@ -334,25 +347,10 @@ class Verdict(EvalDocumentModel):
         return self
 
 
-class Fact(EvalDocumentModel):
-    """A labelled fact code states beside an author's words — a confidence, a disposition, a tier."""
-
-    name: str = Field(min_length=1, description="What the fact is, e.g. `Confidence`.")
-    value: str = Field(min_length=1, description="The fact, in words.")
-
-
 class _Block(EvalDocumentModel):
-    """What every block carries: where it sits, and which findings it belongs to or rests on."""
+    """What every block carries: where it sits, the id a link names, and the fold it sits in."""
 
     section: ReportSection = Field(description="The section the block sits in.")
-    finding: int | None = Field(
-        default=None,
-        ge=0,
-        description="The finding this block belongs to, by its position (0 is the first); None when it belongs to none.",
-    )
-    rests_on: list[int] = Field(
-        default_factory=list, description="Positions of the findings this block rests on, as the author linked them."
-    )
     anchor: str | None = Field(
         default=None, description="The id a link to this block names (`F1`, `case-3`, `T7`); None when none does."
     )
@@ -363,41 +361,6 @@ class _Block(EvalDocumentModel):
             "it. None for a block shown open."
         ),
     )
-
-    @property
-    def finding_number(self) -> int | None:
-        """``finding`` counted from one, as a reader counts findings; None when the block names none."""
-        return None if self.finding is None else self.finding + 1
-
-    @property
-    def rests_on_numbers(self) -> list[int]:
-        """``rests_on`` counted from one, as a reader counts findings."""
-        return [position + 1 for position in self.rests_on]
-
-
-#: The text roles that are part of one finding, and so name it.
-FINDING_ROLES: frozenset[str] = frozenset({"finding_title", "finding_body", "caveat", "carried_forward"})
-
-
-class TextBlock(_Block):
-    """What the analysis's author wrote, exactly as written, with the facts code states beside it."""
-
-    kind: Literal["text"] = Field(default="text", description="Which kind of block this is.")
-    role: TextRole = Field(description="What the author wrote it as.")
-    body: ModelProse = Field(
-        description="The author's words, Markdown allowed; empty where the author left a required field blank."
-    )
-    facts: list[Fact] = Field(default_factory=list, description="Facts code states beside the words, in reading order.")
-
-    @model_validator(mode="after")
-    def _a_findings_own_words_name_it(self) -> Self:
-        """Refuse a finding's title, body, caveat or carried-forward claim that names no finding.
-
-        :raises ValueError: A block in one of those roles has no ``finding``.
-        """
-        if self.role in FINDING_ROLES and self.finding is None:
-            raise ValueError(f"a {self.role} block belongs to a finding and names none")
-        return self
 
 
 class TableColumn(EvalDocumentModel):
@@ -423,10 +386,17 @@ class TableColumn(EvalDocumentModel):
 class TableCell(EvalDocumentModel):
     """One cell of a report table: its value, and the text a reader is shown for it.
 
-    The value is what a program sorts by; the text is what every serializer prints, spelled by the one number rule
-    (:func:`~threetears.evals.analysis.quantities.render_cell`: an absent value is a dash, never a zero; a
-    boolean is yes or no).
+    The value is what a program sorts by; the text is what every serializer prints. A number's text is the one its
+    page decided (``value_text``), which every number cell carries: a cell is refused without it, since a figure
+    spelled anywhere but its page's forms is a second owner of its form. Anything else prints as it is (an absent
+    value is a dash, never a zero; a boolean is yes or no).
+
+    A cell is frozen, so its text never outlives what it was decided from: a changed cell is a copy, which carries the
+    texts decided for what changed (:meth:`model_copy`). ``model_construct`` skips every check, as pydantic documents
+    it, so a cell built that way is the builder's to keep whole.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     value: CellValue = Field(description="The cell's value: a number, words, a boolean, or null where there is none.")
     unit: str = Field(
@@ -486,6 +456,83 @@ class TableCell(EvalDocumentModel):
             "serializer prints it after the value, in parentheses. None for none."
         ),
     )
+    level: float | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "For a change from a baseline, the level the arm reads at, in percent, so a program reads where the change "
+            "lands; the cell's decided text states it before the change (`23.0% · +2.5 pts`). None for none."
+        ),
+    )
+    level_text: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The level as its page decided it (`23.0%`), which `value_text` opens with before the change: set with "
+            "`level`, and absent with it."
+        ),
+    )
+    value_text: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The number as its page decided it, the text every serializer prints for `value` (without `flag`): set "
+            "on every number cell, so a reader of the JSON prints the page's text and never spells `value` again. A "
+            "copy that changes what the number is spelled from (its value, its unit or its level) carries its new "
+            "text, decided afresh. Absent on a cell of words, a boolean or nothing, which prints as it is."
+        ),
+    )
+    low_text: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The interval's low end as its page decided it, as it is written beside the figure, which carries the "
+            "unit (`80` of `85% (80 to 89)`; money's ends each keep their `$`): what the glyph's title and the line "
+            "under the table print. Set with `low`, and absent with it."
+        ),
+    )
+    high_text: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description="The interval's high end as its page decided it, written as `low_text` is; set with `high`.",
+    )
+    status: ChartStatus | None = Field(
+        default=None,
+        description=(
+            "A status the cell reads as, drawn in HTML as the kit's pill: its colour and icon beside the cell's text, "
+            "which says the status in words, so it never rests on a colour alone. Markdown prints the words. None for "
+            "none."
+        ),
+    )
+    tag: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z]+$",
+        description=(
+            "An arm's letter tag, where the cell names an arm: HTML draws the cell as the kit's arm chip, the tag on "
+            "the arm's identity colour (`color`) before the cell's text, its name; Markdown prints `<tag> · <name>`. "
+            "None for none."
+        ),
+    )
+    color: Token | None = Field(
+        default=None,
+        description="The arm chip's colour token, set with `tag`; the kit's ink-gray where the chip names none.",
+    )
+
+    @model_validator(mode="after")
+    def _a_chip_or_a_pill_is_drawn_whole(self) -> Self:
+        """Refuse a chip's colour with no chip, and a pill and a chip on one cell.
+
+        :raises ValueError: ``color`` is set without ``tag``, or ``status`` and ``tag`` are both set.
+        """
+        if self.color is not None and self.tag is None:
+            raise ValueError("a cell's colour colours its arm chip's tag, and this cell has no tag")
+        if self.status is not None and self.tag is not None:
+            raise ValueError("a cell is drawn as a status pill or as an arm chip, and this cell sets both")
+        return self
 
     @model_validator(mode="after")
     def _a_unit_qualifies_a_number(self) -> Self:
@@ -498,23 +545,93 @@ class TableCell(EvalDocumentModel):
         return self
 
     @model_validator(mode="after")
+    def _a_level_qualifies_a_number(self) -> Self:
+        """Refuse a level on anything but a number, and one without the text its cell opens with.
+
+        :raises ValueError: ``level`` is set and ``value`` is not a number, ``level`` and ``level_text`` are not set
+            together, or the cell's text does not open with the level's (``23.0% · +2.5 pts``).
+        """
+        if self.level is not None and not self.is_number:
+            raise ValueError(f"a cell's level qualifies a change, and this cell holds {self.value!r}")
+        if (self.level is None) != (self.level_text is None):
+            raise ValueError(f"{_cell_named(self.value, self.unit)} sets its level and the level's text apart")
+        if self.level_text is not None and not (self.value_text or "").startswith(f"{self.level_text}{LANDS_AT}"):
+            raise ValueError(f"{_cell_named(self.value, self.unit)} does not open with the level it lands at")
+        return self
+
+    @model_validator(mode="after")
+    def _a_number_carries_its_decided_text(self) -> Self:
+        """Refuse a number without the text its page decided for it, and a decided text on anything but a number:
+        one owner decides every figure's form, so a cell never spells its own number, and words print as written.
+
+        :raises ValueError: ``value`` is a number and ``value_text`` is absent, or ``value_text`` is set and ``value``
+            is not a number.
+        """
+        if self.is_number and self.value_text is None:
+            raise ValueError(
+                f"{_cell_named(self.value, self.unit)} holds a number with no decided text: its page's forms print it"
+            )
+        if self.value_text is not None and not self.is_number:
+            raise ValueError(f"a cell's decided text states a number, and this cell holds {self.value!r}")
+        return self
+
+    @model_validator(mode="after")
     def _an_interval_brackets_a_number(self) -> Self:
-        """Refuse an interval with one end, on anything but a number, or running backwards, and a margin alone.
+        """Refuse an interval with one end, on anything but a number, running backwards, or without its ends' decided
+        texts, and a margin alone.
 
         :raises ValueError: ``low`` and ``high`` are not both set or both absent, the cell holds no number, ``low`` is
-            above ``high``, or ``margin`` is set with no interval.
+            above ``high``, an end's text is set without the interval or absent with it, or ``margin`` is set with no
+            interval.
         """
         if (self.low is None) != (self.high is None):
             raise ValueError("a cell's interval has two ends, and this cell sets one")
         if self.low is None:
             if self.margin is not None:
                 raise ValueError("a cell's margin is drawn beside its interval, and this cell has none")
+            if self.low_text is not None or self.high_text is not None:
+                raise ValueError(f"{_cell_named(self.value, self.unit)} carries an interval's text with no interval")
             return self
         if not self.is_number:
             raise ValueError(f"a cell's interval brackets a number, and this cell holds {self.value!r}")
         if self.high is not None and self.low > self.high:
             raise ValueError(f"the cell's interval runs from {self.low} down to {self.high}")
+        if self.low_text is None or self.high_text is None:
+            raise ValueError(f"{_cell_named(self.value, self.unit)} has an interval with no decided text for its ends")
         return self
+
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
+        """A copy, as every model makes one, except that a change to what the number is spelled from (its value, unit
+        or level) or to its interval's ends must carry the text decided for the new ones: a copy never prints a figure
+        its value no longer states, and nothing but the page's forms decides the new text.
+
+        :param update: The fields to change on the copy.
+        :ptype update: Mapping[str, Any] | None
+        :param deep: Whether to copy the cell's values deeply.
+        :ptype deep: bool
+        :return: The copy.
+        :rtype: Self
+        :raises ValueError: The update changes what a number or its interval is spelled from without its new text.
+        """
+        if update and "value_text" not in update and not _SPELLED_FROM.isdisjoint(update):
+            update = {**update, "value_text": None}
+        if update and "level" in update and "level_text" not in update:
+            update = {**update, "level_text": None}
+        ends_changed = bool(update) and not _ENDS.isdisjoint(update or {})
+        if ends_changed and not _ENDS_TEXT <= set(update or {}):
+            # An interval's ends are decided together, so a copy that moves either carries both ends' texts.
+            update = {**(update or {}), "low_text": None, "high_text": None}
+        copied = super().model_copy(update=update, deep=deep)
+        named = _cell_named(copied.value, copied.unit)
+        if copied.is_number and copied.value_text is None:
+            raise ValueError(f"{named} is copied with no decided text: its page's forms print the copy's")
+        if copied.low is not None and (copied.low_text is None or copied.high_text is None):
+            raise ValueError(f"{named} is copied with an interval but no decided text for both its ends")
+        if copied.level is not None and copied.level_text is None:
+            raise ValueError(f"{named} is copied with a level but no decided text for it")
+        if copied.level_text is not None and not (copied.value_text or "").startswith(f"{copied.level_text}{LANDS_AT}"):
+            raise ValueError(f"{named} is copied and does not open with the level it lands at")
+        return copied
 
     @property
     def is_number(self) -> bool:
@@ -525,11 +642,48 @@ class TableCell(EvalDocumentModel):
     def text(self) -> str:
         """``value`` as every serializer prints it, its ``flag`` after it in parentheses; the interval, where the cell
         has one, is the glyph's and the row's own interval column's, never spelled here twice."""
-        if self.unit and isinstance(self.value, int | float) and not isinstance(self.value, bool):
-            said = with_unit(self.value, self.unit)
-        else:
-            said = render_cell(self.value)
+        said = self.figure
         return said if self.flag is None else f"{said} ({self.flag})"
+
+    @property
+    def figure(self) -> str:
+        """``value`` as every serializer prints it, without its ``flag``: a number's decided text (``value_text``),
+        anything else as it is."""
+        return self.value_text if self.value_text is not None else render_cell(self.value)
+
+
+def _cell_named(value: CellValue, unit: str) -> str:
+    """A cell, named by what it holds, as a refusal names it."""
+    return f"the cell holding {value!r}" + (f" in {unit!r}" if unit else "")
+
+
+#: The fields a cell's number is spelled from: a copy that changes one carries the text decided for the new ones
+#: (:meth:`TableCell.model_copy`).
+_SPELLED_FROM = frozenset({"value", "unit", "level"})
+
+#: What joins a change's level to the change in a cell's decided text (``78% · -8 pts``).
+LANDS_AT = " · "
+
+#: A cell's interval's ends, and their decided texts, which a copy changes together.
+_ENDS = frozenset({"low", "high"})
+_ENDS_TEXT = frozenset({"low_text", "high_text"})
+
+
+#: The ends of a column head that names its cells' unit, so the cells state bare figures (``Pass rate (%)``,
+#: ``Change (pts)``): the page's forms record them as a rate's (:meth:`~threetears.evals.analysis.report.forms.
+#: PageForms.recorded`).
+BARE_UNIT_HEADS = ("(%)", "(pts)")
+
+
+def bare_columns(columns: Sequence[TableColumn]) -> dict[str, str]:
+    """The columns whose head names their cells' unit (:data:`BARE_UNIT_HEADS`), each by the unit it names.
+
+    :param columns: A table's columns.
+    :ptype columns: Sequence[TableColumn]
+    :return: Each such column's key, by its unit's head.
+    :rtype: dict[str, str]
+    """
+    return {column.key: unit for column in columns for unit in BARE_UNIT_HEADS if column.header.endswith(unit)}
 
 
 def table_row(values: Mapping[str, CellValue | TableCell]) -> dict[str, TableCell]:
@@ -570,6 +724,48 @@ class TableBlock(_Block):
             "are; otherwise each column has its own."
         ),
     )
+    key_columns: Literal[1, 2] = Field(
+        default=1,
+        description=(
+            "How many leading columns a row is told apart by (2 where one column alone repeats, as a reading's row "
+            "on each arm): HTML keeps that many in view while the table scrolls sideways."
+        ),
+    )
+    glyph_key: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What each interval glyph of a table on one scale draws, in a sentence the line under the table opens "
+            "with before the scale's ends: `Each mark is a candidate's change from v1 (the tick) with its 95% "
+            "interval; right is better.` None where the line names the columns each range is drawn for alone."
+        ),
+    )
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _a_refused_cell_names_its_table(cls, data: Any, handler: ModelWrapValidatorHandler[Self]) -> Self:
+        """Name the table, row and column of each cell refused while a table is read from data (a stored page, a
+        host's), which a cell's own refusal cannot know, so a host can find it. A cell built on its own is refused by
+        what it holds (its value and unit).
+
+        :raises ValueError: Every refusal is a cell's; each is named in the table.
+        """
+        try:
+            return handler(data)
+        except ValidationError as error:
+            name = data.get("name") if isinstance(data, Mapping) else None
+            refused = error.errors()
+            if not isinstance(name, str) or not all(
+                len(found["loc"]) >= 3 and found["loc"][0] == "rows" for found in refused
+            ):
+                raise
+            raise ValueError(
+                "; ".join(
+                    f"table {name!r}, row {found['loc'][1]}, column {found['loc'][2]!r}: "
+                    f"{found.get('ctx', {}).get('error', found['msg'])}"
+                    for found in refused
+                )
+            ) from error
 
     @model_validator(mode="after")
     def _rows_fit_the_table(self) -> Self:
@@ -593,8 +789,55 @@ class TableBlock(_Block):
         return [{key: cell.value for key, cell in row.items()} for row in self.rows]
 
 
-#: The charts a report draws: an outcome bar, interval rows, and a campaign's cost against its pass rate.
-ChartKind = Literal["outcome_bar", "interval_rows", "cost_quality"]
+#: The charts a report draws: the report's own three (an outcome bar, interval rows, and a campaign's cost against its
+#: pass rate), each drawn by the eval report kit as its nearest kind; and the kit's own kinds
+#: (:data:`~threetears.evals.analysis.report.charts.KIT_CHARTS`), each carrying its data as the kit's contract names
+#: it. A plan's ``table`` kind is a :class:`TableBlock`, which the kit does not draw.
+ChartKind = Literal[
+    "outcome_bar",
+    "interval_rows",
+    "cost_quality",
+    "bars",
+    "diverging_bars",
+    "forest",
+    "lines",
+    "scatter_frontier",
+    "gate_scatter",
+    "dot_interval",
+    "range_bars",
+    "gate_matrix",
+    "lattice",
+    "heatmap",
+    "diff_heatmap",
+    "confusion",
+    "examples",
+]
+
+#: The report's own chart kinds, which carry their marks in fields of the block rather than as the kit's data.
+_OWN_CHARTS = frozenset({"outcome_bar", "interval_rows", "cost_quality"})
+
+#: The textures a failure cause or a loss cause takes, in order.
+_PATTERNS: tuple[ChartPattern, ...] = ("hatch", "cross", "dots", "rows", "cols")
+
+#: Each outcome's look on an outcome bar, by state, as ``(colour token, pattern)``, each cause taking the next in its
+#: state's order. Never a series colour, since series colours name arms (GENERATOR.md §5.2): passed is ink (the kit's
+#: secondary text), solid, so the status green means a status pill alone; every failure cause is the kit's bad, each
+#: under a texture of its own, so a failure never reads as a pass even without colour, and the five failure causes
+#: (``FailCause``) are five looks; a loss cause is a neutral, solid and then textured, so a loss reads as neither. Loss causes past the twelfth repeat a look; the
+#: legend and the tooltip name every cause in words.
+_OUTCOME_STYLES: dict[TrialState, tuple[tuple[str, ChartPattern | None], ...]] = {
+    "passed": (("--ink-2", None),),
+    "failed": tuple(("--bad", pattern) for pattern in _PATTERNS),
+    "lost": (
+        ("--base", None),
+        ("--muted", None),
+        *((token, pattern) for pattern in _PATTERNS for token in ("--base", "--muted")),
+    ),
+}
+
+
+#: An outcome bar's note: the share of its arm's trials that passed, and of how many.
+_OUTCOME_NOTE = "{share} passed · {passed} of {trials}"
 
 
 class OutcomeSegment(EvalDocumentModel):
@@ -610,6 +853,32 @@ class OutcomeBar(EvalDocumentModel):
 
     arm: str = Field(min_length=1, description="The arm, as the report names it.")
     segments: list[OutcomeSegment] = Field(description="Passed, then failed, then lost, each cause its own segment.")
+    tag: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z]+$",
+        description=(
+            "The arm's letter tag (GENERATOR.md §6.1): P for the control, then A, B, C… in the page's order; it names "
+            "the arm in tight places and picks its colour. None for a bar stored before arms carried one."
+        ),
+    )
+    short_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The arm's short name, drawn where `arm` does not fit: its given label, else what differs from the "
+            "control (GENERATOR.md §6.1). None to cut `arm`."
+        ),
+    )
+    passed_text: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The share of the arm's trials that passed as its page decided it, with its `%` (`84%`): what the bar's "
+            "note prints, in the pass rate's one form on the page, so the note and the scorecard read one rate alike. "
+            "None for a bar no page decided (a host's own), whose note spells the share by the number rule."
+        ),
+    )
 
     @property
     def total(self) -> int:
@@ -642,12 +911,44 @@ class CostQualityPoint(EvalDocumentModel):
     """One arm on a cost/quality chart: what a reply costs it, on x, and its pass rate, on y, each with its interval."""
 
     arm: str = Field(min_length=1, description="The arm, as the page names it.")
+    tag: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z]+$",
+        description=(
+            "The arm's letter tag (GENERATOR.md §6.1): P for the control, then A, B, C… in the page's order; it labels "
+            "the point on a phone and picks its colour and mark. None for a point stored before arms carried one."
+        ),
+    )
+    short_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The arm's short name, the point's label: its given label, else what differs from the control.",
+    )
     cost: float = Field(ge=0, allow_inf_nan=False, description="What a reply costs the arm, in the chart's `unit`.")
     cost_low: float = Field(allow_inf_nan=False, description="The low end of the cost's interval.")
     cost_high: float = Field(allow_inf_nan=False, description="The high end of the cost's interval.")
     pass_rate: float = Field(ge=0, le=100, description="The arm's pass rate, in percent.")
     pass_rate_low: float = Field(ge=0, le=100, description="The low end of the pass rate's interval, in percent.")
     pass_rate_high: float = Field(ge=0, le=100, description="The high end of the pass rate's interval, in percent.")
+    pass_rate_text: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The pass rate as its page decided it, bare (its unit is the column's): what the chart's values table "
+            "prints, at the precision every figure of the pass rate reads at on the page. None where no page decided "
+            "it, and the number rule spells `pass_rate`."
+        ),
+    )
+    pass_rate_interval_text: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The pass rate's interval as its page decided it, bare, in the one form (`16 to 24`). None where no page "
+            "decided it, and the number rule spells its ends."
+        ),
+    )
 
     @model_validator(mode="after")
     def _each_interval_holds_its_value(self) -> Self:
@@ -666,10 +967,14 @@ class CostQualityPoint(EvalDocumentModel):
 
 
 class ChartBlock(_Block):
-    """One of the charts a report draws, with every value it draws, so it prints as a table too."""
+    """One of the charts a report draws, with every value it draws, so it prints as a table too.
+
+    A report's own kinds (``outcome_bar``, ``interval_rows``, ``cost_quality``) carry their marks in ``bars``, ``rows``
+    and ``points``; every other kind carries ``data``, the kit's chart data for that kind, field for field as the
+    kit's contract names it."""
 
     kind: Literal["chart"] = Field(default="chart", description="Which kind of block this is.")
-    chart: ChartKind = Field(description="`outcome_bar`, `interval_rows` or `cost_quality`.")
+    chart: ChartKind = Field(description="Which chart: one of the report's own three, or one of the kit's kinds.")
     title: str = Field(min_length=1, description="What the chart shows.")
     bars: list[OutcomeBar] = Field(default_factory=list, description="An outcome bar's arms, one bar each.")
     rows: list[IntervalRow] = Field(default_factory=list, description="An interval chart's rows, in drawn order.")
@@ -678,53 +983,276 @@ class ChartBlock(_Block):
     )
     unit: str = Field(
         default="",
-        description="The unit an interval chart's values, or a cost/quality chart's costs, are stated in; empty for none.",
+        description="The unit an interval chart's values, or a cost/quality chart's costs, are stated in; for a kit "
+        "chart of what an analysis computes (two arms' difference, a lever's effect), the unit its values table spells "
+        "its values at where its format names none (a point to one decimal); empty for none.",
     )
     zero_line: bool = Field(default=False, description="Whether the chart draws a line at zero (a difference's).")
     margin: float | None = Field(
         default=None, description="A margin band either side of zero, on the chart's ruler; None when none declared."
     )
+    level: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The level a cost/quality chart's intervals are read at (`95%`), which its scatter draws them at; None "
+            "where it states none, and its intervals are in its table alone."
+        ),
+    )
+    data: KitChart | None = Field(
+        default=None,
+        description=(
+            "A kit kind's chart data, as the kit's `data-chart` contract names it (kit/API.md); None for the report's "
+            "own three kinds."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _data_of_its_kind(cls, data: Any) -> Any:
+        """Read a kit chart's data as the model of the kind the block names, since several kinds' data share field
+        names and only the kind tells them apart."""
+        if isinstance(data, dict) and isinstance(data.get("data"), dict) and data.get("chart") in KIT_CHARTS:
+            return {**data, "data": KIT_CHARTS[data["chart"]].model_validate(data["data"])}
+        return data
 
     @model_validator(mode="after")
     def _draws_what_its_kind_draws(self) -> Self:
         """Refuse a chart with nothing to draw, or one carrying another kind's marks.
 
         :raises ValueError: An outcome bar with rows, points or no bar; an interval chart with bars, points or no
-            row; or a cost/quality chart with bars, rows or fewer than two points, since a chart is never drawn for
-            one point.
+            row; a cost/quality chart with bars, rows or fewer than two points, since a chart is never drawn for
+            one point; one of those three with kit data; or a kit kind without its data, with data of another kind,
+            or with an outcome bar's, interval chart's or cost/quality chart's marks.
         """
+        if self.chart in _OWN_CHARTS and self.data is not None:
+            raise ValueError(f"a {self.chart} chart carries its marks in its own fields, not kit data")
         if self.chart == "outcome_bar" and (self.rows or self.points or not self.bars):
             raise ValueError("an outcome bar draws one bar per arm and no interval row")
         if self.chart == "interval_rows" and (self.bars or self.points or not self.rows):
             raise ValueError("an interval chart draws at least one row and no outcome bar")
         if self.chart == "cost_quality" and (self.bars or self.rows or len(self.points) < 2):
             raise ValueError("a cost/quality chart draws one point per arm, for two arms or more, and nothing else")
+        if self.chart in KIT_CHARTS:
+            if not isinstance(self.data, KIT_CHARTS[self.chart]):
+                raise ValueError(f"a {self.chart} chart carries the kit's {self.chart} data")
+            if self.bars or self.rows or self.points:
+                raise ValueError(f"a {self.chart} chart draws its data, not an outcome bar's, interval or cost marks")
         return self
 
+    def kit_chart(self) -> tuple[str, dict[str, JsonValue]] | None:
+        """The chart as the eval report kit draws it: its kind and its data, as computed.
+
+        A page serves the data in ``data-chart`` with every float to twelve significant figures (``chart_html``), and the
+        static page's SVG rounds its coordinates the same way, so this is the one form both are drawn from.
+
+        A kit kind is its data. An outcome bar is ``bars``, each arm's census stacked from zero, a look per outcome
+        named in the legend, each arm's tag in its colour beside its label. A cost/quality chart is
+        ``scatter_frontier``, each arm in its colour and mark at its cost per 1,000 replies across and its pass rate
+        up, on axes set to the data, each interval a whisker where the chart states its level. Interval rows are ``None``: they carry no
+        interval level, and the kit never draws an interval without one, so they read as their table alone.
+
+        :return: ``(kind, data)``, or None for a chart the kit does not draw.
+        :rtype: tuple[str, dict[str, JsonValue]] | None
+        """
+        if self.data is not None:
+            return self.chart, self.data.kit_data()
+        if self.chart == "outcome_bar":
+            return "bars", self._outcome_bars().kit_data()
+        if self.chart == "cost_quality":
+            return "scatter_frontier", self._cost_quality_scatter().kit_data()
+        return None
+
+    def _outcome_bars(self) -> BarsChart:
+        """An outcome bar as the kit's stacked bars: one row per arm, its tag in its colour beside its label (its short
+        name where the label does not fit), a segment per outcome as its share of the arm's trials, so every bar runs
+        0 to 100% and arms with unequal trials read alike, each outcome's look (:data:`_OUTCOME_STYLES`) the same on
+        every arm and named in the legend; each row's note says what share passed and of how many (``20% passed · 167
+        of 836``), the whole label and the census in its tooltip."""
+        looks: dict[str, tuple[str, ChartPattern | None]] = {}
+        used = dict.fromkeys(_OUTCOME_STYLES, 0)
+        for bar in self.bars:
+            for segment in bar.segments:
+                if segment.label not in looks:
+                    styles = _OUTCOME_STYLES[segment.state]
+                    looks[segment.label] = styles[used[segment.state] % len(styles)]
+                    used[segment.state] += 1
+
+        def passed(bar: OutcomeBar) -> int:
+            return sum(segment.count for segment in bar.segments if segment.state == "passed")
+
+        rows = [
+            BarRow(
+                label=bar.arm,
+                short_label=bar.short_name if bar.short_name != bar.arm else None,
+                tag=bar.tag,
+                color=arm_token(bar.tag),
+                segments=[
+                    BarSegment(
+                        value=segment.count / bar.total * 100,
+                        color=looks[segment.label][0],
+                        pattern=looks[segment.label][1],
+                    )
+                    for segment in bar.segments
+                ],
+                note=_OUTCOME_NOTE.format(
+                    share=bar.passed_text or with_unit(passed(bar) / bar.total * 100, PERCENT),
+                    passed=passed(bar),
+                    trials=bar.total,
+                )
+                if bar.total
+                else f"{bar.total} trials",
+                tip=[bar.arm, f"{bar.total} trials", *(f"{s.label} {s.count}" for s in bar.segments)],
+            )
+            for bar in self.bars
+        ]
+        legend = [
+            LegendItem(label=label, color=colour, mark="square", pattern=pattern)
+            for label, (colour, pattern) in looks.items()
+        ]
+        return BarsChart(rows=rows, domain=(0, 100), fmt="pct", legend=legend)
+
+    def _cost_drawn(self) -> tuple[Callable[[float], str], float, str, int | None]:
+        """How a cost/quality chart draws its costs: the speller of one cost as stored, the scale it is drawn at, and
+        the words of the count it is drawn per. Money is on the one owner's ruler over every point's cost and its
+        interval's ends (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`, #993): per 1,000 replies, or
+        per 1,000,000 where a cost is under a cent per 1,000, every amount in the chart's one form; any other unit per
+        1,000 replies by the number rule. The last is money's decimals, which the axis's ticks are written to; None for
+        any other unit."""
+        if not is_money(self.unit):
+            return (
+                lambda amount: with_unit(amount * _REPLIES_PER_COST_UNIT, self.unit),
+                _REPLIES_PER_COST_UNIT,
+                per_count(REPLIES),
+                None,
+            )
+        ruler = money_ruler(
+            (amount for point in self.points for amount in (point.cost, point.cost_low, point.cost_high)),
+            per=1,
+            start=_REPLIES_PER_COST_UNIT,
+        )
+        return ruler.spell, ruler.scale, ruler.words(REPLIES), ruler.form.decimals
+
+    def _cost_quality_scatter(self) -> ScatterChart:
+        """A cost/quality chart as the kit's scatter: each arm a point in its colour and mark at its cost per 1,000
+        replies and its pass rate, with both intervals as whiskers where the chart states their level, labelled by its
+        short name (by its tag on a phone), the legend naming each tag's arm. Each axis is set to the data: from a
+        little below the lowest interval end to a little above the highest, the cost never below zero and the pass
+        rate within 0 to 100%, so arms that sit close are drawn apart and their intervals show whether they overlap
+        (the review's P46); a scatter reads positions, never lengths from a baseline. Cost is drawn per 1,000 replies,
+        since a reply's own cost is a fraction of a cent an axis cannot print, its ticks in the chart's one money form.
+        No frontier is drawn, since none is tested. Money's ruler is the one owner's over every point's cost and
+        interval (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`, #993): per 1,000 replies, or per
+        1,000,000 where a cost is under a cent per 1,000, each tip's cost and its interval in the chart's one form."""
+        cost, scale, per, decimals = self._cost_drawn()
+        x_domain = _data_domain(
+            [end * scale for point in self.points for end in (point.cost_low, point.cost_high, point.cost)], floor=0.0
+        )
+        y_domain = _data_domain(
+            [end for point in self.points for end in (point.pass_rate_low, point.pass_rate_high)],
+            floor=0.0,
+            ceiling=100.0,
+        )
+        # Its ticks carry the dollar sign, so the title names the count alone; any other unit is named in it.
+        unit = f" ({self.unit})" if self.unit and not is_money(self.unit) else ""
+        tagged = all(point.tag is not None for point in self.points)
+        drawn = self.level is not None
+        points = [
+            ScatterPoint(
+                x=point.cost * scale,
+                y=point.pass_rate,
+                x_lo=point.cost_low * scale if drawn else None,
+                x_hi=point.cost_high * scale if drawn else None,
+                y_lo=point.pass_rate_low if drawn else None,
+                y_hi=point.pass_rate_high if drawn else None,
+                label=point.short_name or point.arm,
+                narrow_label=point.tag or point.short_name or point.arm,
+                color=arm_token(point.tag),
+                shape=arm_shape(point.tag),
+                # Each figure, its unit on it, then its interval in its one form in parentheses; the pass rate as its
+                # page decided it where it did.
+                tip=[
+                    point.arm,
+                    f"{cost(point.cost)} ({interval_beside(cost(point.cost_low), cost(point.cost_high))}) {per}",
+                    f"pass rate {point.pass_rate_text or with_unit(point.pass_rate, PERCENT).removesuffix(PERCENT)}% ("
+                    + (
+                        point.pass_rate_interval_text
+                        or interval_beside(
+                            *ends_beside(
+                                (with_unit(point.pass_rate_low, PERCENT), with_unit(point.pass_rate_high, PERCENT)),
+                                PERCENT,
+                            )
+                        )
+                    )
+                    + ")",
+                ],
+            )
+            for point in self.points
+        ]
+        legend = (
+            [
+                LegendItem(label=f"{point.tag} · {point.arm}", color=arm_token(point.tag), mark=arm_shape(point.tag))
+                for point in self.points
+            ]
+            if tagged
+            else None
+        )
+        return ScatterChart(
+            points=points,
+            x_domain=x_domain,
+            y_domain=y_domain,
+            x_fmt=f"usd:{decimals}" if decimals is not None else cost_axis_format(x_domain[1], money=False),
+            y_fmt="pct",
+            x_title=f"Cost {per}{unit}",
+            y_title="Pass rate",
+            level=self.level,
+            legend=legend,
+        )
+
     def values_table(self) -> tuple[list[str], list[list[str]]]:
-        """The chart's values as a table — what Markdown prints and what HTML keeps beside the picture.
+        """The chart's values as a table — what Markdown prints and what HTML keeps beside the picture, each value as
+        its chart's text prints it, which its page's forms decided (number rule 5).
 
         :return: ``(headers, rows)``, each row's cells as text.
         :rtype: tuple[list[str], list[list[str]]]
         """
+        return self._values_table()
+
+    def _values_table(self) -> tuple[list[str], list[list[str]]]:
+        if self.data is not None:
+            return self.data.values_table(self.unit)
         if self.chart == "outcome_bar":
             labels = list(dict.fromkeys(segment.label for bar in self.bars for segment in bar.segments))
-            headers = ["Arm", "ran", *labels]
+            # The headers are labels, each starting with a capital; the segments keep their words as the legend and
+            # the tooltips say them.
+            headers = ["Arm", "Ran", *(label_case(label) for label in labels)]
             body = []
             for bar in self.bars:
                 counts = {segment.label: segment.count for segment in bar.segments}
                 body.append([bar.arm, str(bar.total), *(str(counts.get(label, 0)) for label in labels)])
             return headers, body
         if self.chart == "cost_quality":
-            cost = f" ({unit_label(self.unit)})" if self.unit else ""
-            headers = ["Arm", f"Cost{cost}", f"Cost interval{cost}", "Pass rate (%)", "Interval (%)"]
+            # On the chart's own scale, per 1,000 replies, and saying so, so the table beside the figure (or in its
+            # place where no script runs) reads what the axis does; each figure's interval follows it, as the pass
+            # rate's does.
+            # Money carries its sign on every cell, as the scoreboard writes it ($1.89), its count in the head; any
+            # other unit is named once in the head.
+            money = is_money(self.unit)
+            cost = f" ({self.unit})" if self.unit and not money else ""
+            spelled, scale, per, _ = self._cost_drawn()
+
+            def said(amount: float) -> str:
+                return spelled(amount) if money else number_in(amount * scale, self.unit)
+
+            headers = ["Arm", f"Cost {per}{cost}", f"Interval{cost}", "Pass rate (%)", "Interval (%)"]
             return headers, [
                 [
                     point.arm,
-                    interval_value_text(point.cost, self.unit),
-                    interval_text(point.cost_low, point.cost_high, self.unit),
-                    interval_value_text(point.pass_rate, PERCENT),
-                    interval_text(point.pass_rate_low, point.pass_rate_high, PERCENT),
+                    said(point.cost),
+                    interval_beside(said(point.cost_low), said(point.cost_high)),
+                    point.pass_rate_text or interval_value_text(point.pass_rate, PERCENT),
+                    point.pass_rate_interval_text or interval_text(point.pass_rate_low, point.pass_rate_high, PERCENT),
                 ]
                 for point in self.points
             ]
@@ -750,6 +1278,23 @@ class ChartBlock(_Block):
         return headers, body
 
 
+#: The replies a cost/quality chart states each cost over: a reply's cost per 1,000 replies, as the scoreboard's
+#: cost ruler states a cost under a cent.
+_REPLIES_PER_COST_UNIT = 1000
+
+#: How far past the data's ends a scatter's axis runs, as a share of the data's span, so no mark sits on its edge.
+_DATA_PAD = 0.08
+
+
+def _data_domain(ends: Sequence[float], *, floor: float, ceiling: float | None = None) -> tuple[float, float]:
+    """A scatter axis set to its data: from a little below the lowest end to a little above the highest, never below
+    ``floor`` or above ``ceiling``; a span of one value alone padded either side of it."""
+    low, high = min(ends), max(ends)
+    pad = (high - low) * _DATA_PAD or abs(high) * _DATA_PAD or 1.0
+    low, high = max(floor, low - pad), high + pad
+    return (low, min(high, ceiling) if ceiling is not None else high)
+
+
 def interval_value_text(value: float, unit: str = "") -> str:
     """A charted value as text, by the one number rule, at the precision its unit is read to; the unit itself is
     the header's."""
@@ -757,8 +1302,50 @@ def interval_value_text(value: float, unit: str = "") -> str:
 
 
 def interval_text(low: float, high: float, unit: str = "") -> str:
-    """A charted interval as text: ``[low, high]``, each end at the precision its unit is read to."""
-    return f"[{number_in(low, unit)}, {number_in(high, unit)}]"
+    """A charted interval as text, in the one form every page prints an interval in: ``low to high``, each end at the
+    precision its unit is read to; the unit itself is the header's.
+
+    :param low: The low end.
+    :ptype low: float
+    :param high: The high end.
+    :ptype high: float
+    :param unit: The unit the ends are read in, which sets their precision.
+    :ptype unit: str
+    :return: The text.
+    :rtype: str
+    """
+    return interval_beside(number_in(low, unit), number_in(high, unit))
+
+
+class PrintedCheck(EvalDocumentModel):
+    """A check a trial failed, as a page prints it: the name the page gives it, and its expression.
+
+    A page's own type, apart from the bundle's :class:`~threetears.evals.analysis.bundle.schema.TrialCheck`, which holds
+    the check by its measure's key: a page names the check when it is rendered (a goal check by its declared name, any
+    other by the catalog's reader name), so a key where a name belongs, or a name where a key does, is a type error,
+    never a silent non-match.
+    """
+
+    name: str = Field(min_length=1, description="What the page calls the check.")
+    expression: str = Field(min_length=1, description="What it evaluates, as written.")
+
+
+class PrintedJudgement(EvalDocumentModel):
+    """What the judge said of one dimension on one trial, as a page prints it: the dimension by the name the page
+    gives it.
+
+    A page's own type, apart from the bundle's :class:`~threetears.evals.analysis.bundle.schema.TrialJudgement`, which
+    holds the dimension by its id (``dim``: ``RubricDim.name``, ``__outcome__``): a page names it when it is rendered
+    (a reserved axis by its word, ``outcome``).
+    """
+
+    name: str = Field(min_length=1, description="What the page calls the judged dimension.")
+    criterion: str | None = Field(
+        default=None, description="The rubric criterion the judge was asked; None when the template is not to hand."
+    )
+    score: int | None = Field(default=None, description="The score, on the dimension's scale; None for can't tell.")
+    scale: str = Field(min_length=1, description="`ordinal` (1 to 5) or `pass_fail` (1 pass, 0 fail).")
+    reason: str = Field(description="The judge's reasoning, or why it could not tell; capped.")
 
 
 class TrialBlock(_Block):
@@ -776,12 +1363,26 @@ class TrialBlock(_Block):
     why: str | None = Field(
         default=None, description="Which check or judged dimension failed it, or why it was lost, on one line."
     )
-    first_input: str = Field(default="", description="What the case asked.")
+    first_input: str = Field(default="", description="What the case asked, without its world state.")
+    world: str = Field(
+        default="",
+        description=(
+            "The world state the case began in, as its host wrote it (JSON, one part under each `## <name>`), "
+            "which a page folds under the case's name and never prints open; empty where the case states none."
+        ),
+    )
+    world_parts: list[str] = Field(
+        default_factory=list, description="The names of the world state's parts, in its order: what a page counts."
+    )
     excerpt: str = Field(default="", description="The tail of what the judge was handed.")
-    failed_checks: list[TrialCheck] = Field(default_factory=list, description="Each check it failed.")
-    judge: list[TrialJudgement] = Field(default_factory=list, description="What the judge said, per dimension.")
+    failed_checks: list[PrintedCheck] = Field(
+        default_factory=list, description="Each check it failed, by the name the page prints for it."
+    )
+    judge: list[PrintedJudgement] = Field(
+        default_factory=list, description="What the judge said, per dimension, each by the name the page prints for it."
+    )
     error_words: str | None = Field(default=None, description="The recorded error, for a lost or failed trial.")
-    result_id: str = Field(min_length=1, description="The stored result, for `result_get`.")
+    result_id: str = Field(min_length=1, description="The stored result's id.")
     open: bool = Field(
         default=False,
         description="Whether the record is shown open, in HTML and Markdown: a failed or lost trial, up to a cap.",
@@ -822,6 +1423,14 @@ class DisclosureBlock(_Block):
             "arm) — which HTML sets the line apart by. None on every other disclosure."
         ),
     )
+    emphasis: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The phrases of `text` a page sets in bold, in the order `text` says them, none empty and none cutting a "
+            "code span: on the verdict line, each decision, its figures and guardrails left regular. Empty for a line "
+            "read at one weight; a caller's lead with none renders without bold."
+        ),
+    )
 
     @staticmethod
     def verdict_tone(rule: str) -> Literal["decided", "open", "failed", "summary"]:
@@ -834,6 +1443,31 @@ class DisclosureBlock(_Block):
         """
         return _VERDICT_TONES[rule]
 
+    @staticmethod
+    def code_emphasis(text: str, decisions: Sequence[str]) -> list[str]:
+        """The decisions code's own line sets in bold: every one, or none where one would start or end inside a code
+        span. A host's name may hold a stray backtick, and code's own verdict then reads at one weight rather than
+        refusing the page; a caller's emphasis is held to :meth:`emphasis_pieces`, and refused there instead.
+
+        :param text: The line.
+        :ptype text: str
+        :param decisions: Each decision the line says, word for word and in its order.
+        :ptype decisions: Sequence[str]
+        :return: The decisions to set in bold.
+        :rtype: list[str]
+        """
+        at = 0
+        for decision in decisions:
+            found = text.find(decision, at) if decision else -1
+            if found < 0:
+                # A decision the line does not say is code's own fault, which the model refuses where it is made.
+                return list(decisions)
+            end = found + len(decision)
+            if text.count("`", 0, found) % 2 or text.count("`", 0, end) % 2:
+                return []
+            at = end
+        return list(decisions)
+
     @model_validator(mode="after")
     def _the_term_is_defined(self) -> Self:
         """Refuse a link to a term the glossary does not define.
@@ -842,6 +1476,39 @@ class DisclosureBlock(_Block):
         """
         if self.term is not None and self.term not in GLOSSARY:
             raise ValueError(f"a disclosure links the term {self.term!r}, which the glossary does not define")
+        return self
+
+    def emphasis_pieces(self) -> list[tuple[str, bool]]:
+        """``text`` cut where each phrase of ``emphasis`` starts and ends, in order, each piece with whether it is set
+        in bold: the raw text, so a page escapes each piece itself and never searches its own markup.
+
+        :return: The pieces, which join back to ``text``.
+        :rtype: list[tuple[str, bool]]
+        :raises ValueError: a phrase is empty, is not said after the one before it, or starts or ends inside a code
+            span (between backticks), where bold would cut the span in two.
+        """
+        pieces: list[tuple[str, bool]] = []
+        at = 0
+        for phrase in self.emphasis:
+            # prose-canary: allow — only code's verdict rules or a host's own lead set emphasis; no model does
+            found = self.text.find(phrase, at) if phrase else -1
+            if found < 0:
+                raise ValueError(f"a disclosure sets {phrase!r} in bold, which its text does not say there")
+            end = found + len(phrase)
+            # prose-canary: allow — only code's verdict rules or a host's own lead set emphasis; no model does
+            if self.text.count("`", 0, found) % 2 or self.text.count("`", 0, end) % 2:
+                raise ValueError(f"a disclosure sets {phrase!r} in bold, which cuts a code span in two")
+            pieces += [(self.text[at:found], False), (phrase, True)]
+            at = end
+        return [piece for piece in [*pieces, (self.text[at:], False)] if piece[0]]
+
+    @model_validator(mode="after")
+    def _each_emphasis_is_said_in_order(self) -> Self:
+        """Refuse a phrase to set in bold that the line does not say, says out of order, or says cutting a code span.
+
+        :raises ValueError: :meth:`emphasis_pieces` refuses the phrases.
+        """
+        self.emphasis_pieces()
         return self
 
     @model_validator(mode="after")
@@ -856,13 +1523,15 @@ class DisclosureBlock(_Block):
 
 
 #: A report block, discriminated by ``kind``.
-ReportBlock = Annotated[TextBlock | TableBlock | ChartBlock | TrialBlock | DisclosureBlock, Field(discriminator="kind")]
+ReportBlock = Annotated[TableBlock | ChartBlock | TrialBlock | DisclosureBlock, Field(discriminator="kind")]
 
 
 __all__ = [
-    "FINDING_ROLES",
     "FIRST_SCREEN",
+    "FLAGGED_CAVEATS",
+    "FOLD_SECTION_TITLES",
     "FOLDED_SECTIONS",
+    "LANDS_AT",
     "SECTION_TITLES",
     "VERDICT_OUTCOMES",
     "BarOutcome",
@@ -873,19 +1542,18 @@ __all__ = [
     "CostQualityPoint",
     "DisclosureBlock",
     "DisclosureSource",
-    "Fact",
     "GuardrailOutcome",
     "IntervalRow",
     "OutcomeBar",
     "OutcomeSegment",
     "ReportBasis",
     "ReportBlock",
+    "PrintedCheck",
+    "PrintedJudgement",
     "ReportSection",
     "TableBlock",
     "TableCell",
     "TableColumn",
-    "TextBlock",
-    "TextRole",
     "TrialBlock",
     "TrialDetail",
     "Verdict",

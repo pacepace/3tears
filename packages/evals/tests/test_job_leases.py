@@ -10,7 +10,8 @@ are to the engine. Pinned:
   later read in either process answers from that write.
 - **Fencing**: a holder whose record was written lost writes nothing more — its paid analysis is not stored, its
   run's progress write stops the run, and its ending does not overwrite the loss; a holder that finds its own lease
-  lapsed at renewal writes itself lost and stops.
+  lapsed at renewal writes itself lost and stops, and one whose renewals fail for a whole lease stops its job however
+  long the writes before the stop take.
 - **A graceful shutdown** writes every job its process holds lost at once, its cause the shutdown, lease released.
 - **Store time**: a store offering a clock stamps and reads every lease; a clock with no zone is refused.
 - **Old records**: a record that has not ended and carries no lease reads lost.
@@ -28,8 +29,8 @@ are to the engine. Pinned:
 from __future__ import annotations
 
 import asyncio
-import collections
 import dataclasses
+import logging
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -58,18 +59,19 @@ from threetears.evals.kernel import (
     settle_job_record,
 )
 from threetears.evals.kernel import job_leases
-from threetears.evals.ops import OpsHost, analyses_list, analysis_generate, job_cancel, job_poll, run_job_id, run_launch
-from threetears.evals.ops import LAUNCH_JOB_PREFIX, LaunchArguments, SweepArguments, generation_key, sweep_launch
+from threetears.evals.ops import OpsHost, analyses_list, job_cancel, job_poll, run_job_id, run_launch
+from threetears.evals.ops import LaunchArguments, SweepArguments, generation_key, sweep_launch
 from threetears.evals.ops import sweeps
-from threetears.evals.run import sweep_abandoned_runs
+from threetears.evals.run import EvalJobManager, sweep_abandoned_runs
 from threetears.evals.schema import EvalResult, EvalRun, JobLease, StoreConflict
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.kind import TOY_SCRIPTS, ScriptedExtractionClient
 from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT, ops_fixture, settled
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT, generate, ops_fixture, settled
 from packages.evals.tests.lease_support import (
+    LIVE_HOLDER_LEASE_S,
     T0,
     ClockedStore,
     held_extraction,
@@ -154,17 +156,19 @@ def _heard(host: OpsHost) -> tuple[OpsHost, _Heard]:
 
 async def test_a_generation_another_process_runs_reads_running_and_is_cancelled_from_there() -> None:
     gate = asyncio.Event()
-    holder = off_loop(ops_fixture, gate=gate, job_lease_s=0.3)
+    # The store's clock held still and a lease a stall cannot outlast: the holder stays live by every count while the
+    # other process acts, so a `lost` read here could only be the other process ending the job itself.
+    holder = off_loop(ops_fixture, gate=gate, store=ClockedStore(), job_lease_s=LIVE_HOLDER_LEASE_S)
     elsewhere = other_process(holder.host)
-    (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
     await asyncio.sleep(0)
 
     polled = await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)
     assert (polled.state, polled.done) == ("running", False), "the other process reads the holder's live job"
 
     asked = await job_cancel(elsewhere, job.job_id, TOYHOST_SCOPE, reason="stop it from over here")
-    # request-then-converge: the holder ends it at its next renewal, which with a 0.3 s lease may come before
-    # job_cancel's own read-back on a loaded machine; what the other process may never do is end it itself
+    # request-then-converge: the holder ends it at its next renewal, which may come before job_cancel's own read-back
+    # on a loaded machine; what the other process may never do is end it itself
     assert asked.state in ("running", "cancelled"), f"the other process's cancel reads {asked.state!r}"
     ended = await settled(elsewhere, job.job_id)
 
@@ -201,7 +205,7 @@ async def test_a_holder_that_stops_renewing_reads_lost_after_its_lease_and_the_l
     store = ClockedStore()
     holder = off_loop(ops_fixture, gate=gate, store=store)  # a 60s lease: no renewal comes due while the test runs
     elsewhere = other_process(holder.host)
-    (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
     await asyncio.sleep(0)
     assert (await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)).state == "running"
 
@@ -255,30 +259,19 @@ class LostOnStoreStore(ClockedStore):
                 settle_job_record(storage, ANALYSIS_JOB, attempt.id, scope_id)
 
 
-async def test_a_generation_whose_attempt_is_lost_while_it_stores_withdraws_what_it_stored(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import packages.evals.tests.ops_support as support
-
-    memo = support.memo_payload
-
-    def durable_memo(bundle: Any) -> dict[str, Any]:
-        payload = memo(bundle)
-        payload["findings"][0]["durable"] = "the wide chunk is slower per document than the narrow one"
-        return payload
-
-    monkeypatch.setattr(support, "memo_payload", durable_memo)
+async def test_a_generation_whose_attempt_is_lost_while_it_stores_withdraws_what_it_stored() -> None:
+    # The toy document's one claim is durable, so each stored analysis mints an insight.
     store = LostOnStoreStore()
     fixture = off_loop(ops_fixture, store=store)
     storage = fixture.host.eval_host.storage
-    (first,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (first,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     assert (await settled(fixture.host, first.job_id)).state == "completed"
     (kept,) = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
     ledger = off_loop(storage.query_insights, TOYHOST_SCOPE)
     assert ledger and all(insight.source_analysis_id == kept.id for insight in ledger)
 
     store.lose_next = True
-    (second,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (second,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     attempt_id = second.job_id.rsplit(":", 1)[1]
     await until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id))
 
@@ -306,7 +299,7 @@ async def test_a_withdrawal_that_fails_is_not_reported_as_done(caplog: pytest.Lo
     store = UnwithdrawableStore()
     fixture = off_loop(ops_fixture, store=store)
     store.lose_next = True
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     attempt_id = job.job_id.rsplit(":", 1)[1]
     with caplog.at_level("WARNING"):
         await until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id))
@@ -323,7 +316,7 @@ async def test_a_holder_whose_own_lease_lapsed_writes_itself_lost_at_renewal_and
     gate = asyncio.Event()
     store = ClockedStore()
     holder = off_loop(ops_fixture, gate=gate, store=store, job_lease_s=0.3)
-    (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
     attempt_id = job.job_id.rsplit(":", 1)[1]
     await asyncio.sleep(0)
 
@@ -399,28 +392,25 @@ class RenewalRefusingStore(ClockedStore):
     The writes moving a lease are its renewals and the holder's own writes of its record, each of which extends it. A
     store a holder cannot renew through while the store's clock has not reached the lease's expiry: no reader
     writes the loss yet, so only the holder's own count can tell it its lease is gone.
+
+    ``doc_type`` narrows the refusal to the records of that type, so a job holding records of other types (a run's
+    launch) keeps renewing them, and only the narrowed record's own count can stop it.
     """
 
-    def __init__(self) -> None:
-        """Start accepting every write."""
+    def __init__(self, *, doc_type: str | None = None) -> None:
+        """Start accepting every write; refuse, once told to, the lease moves of every record or of ``doc_type``'s."""
         super().__init__()
         self.refusing = False
-        #: Records whose writes are taken while refusing, as though the store still reached them.
-        self.spared: set[str] = set()
-        self.leased_writes: collections.Counter[str] = collections.Counter()
-        self.refused: collections.Counter[str] = collections.Counter()
+        self.doc_type = doc_type
 
     def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
-        """Refuse a write that moves a stored record's lease while refusing, unless the record is spared; write
-        anything else. Each landed write carrying a lease, and each refused one, is counted by its record."""
-        if self.refusing and document.get("lease") is not None and str(document["id"]) not in self.spared:
+        """Refuse a write that moves a stored record's lease while refusing; write anything else."""
+        refused_type = self.doc_type is None or document.get("doc_type") == self.doc_type
+        if self.refusing and refused_type and document.get("lease") is not None:
             stored = self.get(str(document["id"]), str(document["scope_id"]))
             if stored is not None and stored.get("lease") != document["lease"]:
-                self.refused[str(document["id"])] += 1
                 raise RuntimeError("the store refused the renewal")
         super().upsert(document, if_match=if_match, create_only=create_only)
-        if document.get("lease") is not None:
-            self.leased_writes[str(document["id"])] += 1
 
     def refuse_from(self, at: datetime) -> None:
         """Start refusing, then move the clock to ``at``: in that order, so a renewal landing between the two
@@ -532,25 +522,14 @@ async def test_a_run_whose_renewals_fail_for_a_whole_lease_is_stopped_and_writes
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gate = held_extraction(monkeypatch)
-    store = RenewalRefusingStore()
+    # Only the run's lease is refused: its launch keeps renewing. Refusing both raced the launch's count against the
+    # run's, and a launch reaching its whole lease a renewal before the run cancelled the run while the run still held
+    # its lease by its own count — so the run rightly wrote its own `cancelled`, and its own expiry went untested.
+    store = RenewalRefusingStore(doc_type="eval_run")
     holder, heard = _heard(off_loop(ops_fixture, store=store, job_lease_s=0.3).host)
     elsewhere = other_process(holder)
-    launch_job_id, run_id = await _running_launch(holder)
-    launch_id = launch_job_id.removeprefix(LAUNCH_JOB_PREFIX)
-    # The run's lease must lapse before its launch's. A launch lapsing first by this process's count cancels the run
-    # while the run still holds its lease, and the run then writes its own ending, as a holder may. Which of two
-    # leases renewed in one interval lapses first is otherwise a race: the run's `running` write extends its lease
-    # up to an interval past its launch's, and each renewal is reckoned from when its own task ran, tens of
-    # milliseconds apart on a loaded loop. So: a renewal of both after that write, then the run's refused while the
-    # launch's still lands, and only then the launch's refused too — every write moving a lease, as before.
-    since = {record_id: store.leased_writes[record_id] for record_id in (launch_id, run_id)}
-    await until(lambda: all(store.leased_writes[record_id] > count for record_id, count in since.items()))
-    store.spared.add(launch_id)
+    run_id = await _running_run(holder)
     store.refuse_from(T0 + timedelta(seconds=0.1))  # inside the lease by the store's clock, for the whole test
-    launch_renewals = store.leased_writes[launch_id]
-    await until(lambda: store.refused[run_id] > 0 and store.leased_writes[launch_id] > launch_renewals)
-    store.spared.clear()
-    store.at = T0 + timedelta(seconds=0.15)  # the launch's next renewal moves its lease again, and is refused
     heard.broadcasts.clear()
 
     await until(lambda: not holder.launch.job_manager.is_active(run_id), timeout=5)
@@ -569,7 +548,7 @@ async def test_a_generation_whose_renewals_fail_for_a_whole_lease_is_stopped_bef
     gate = asyncio.Event()
     store = RenewalRefusingStore()
     fixture = off_loop(ops_fixture, gate=gate, store=store, job_lease_s=0.3)
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     attempt_id = job.job_id.rsplit(":", 1)[1]
     await asyncio.sleep(0)
     store.refuse_from(T0 + timedelta(seconds=0.1))
@@ -602,16 +581,17 @@ class SlowFaultRenewalRefusingStore(RenewalRefusingStore):
 
 
 async def test_a_job_whose_lease_lapsed_is_stopped_though_the_writes_before_its_stop_outlast_its_renewer() -> None:
-    """The renewer exits once nothing is held, cancelling the renewal task still writing why the job stopped.
+    """An expiry lets go of the job's record before it writes why the job stopped, so with nothing else held the
+    renewer's next wake finds nothing held — while that write is still running.
 
-    The job's record was let go first, so with nothing else held the renewer's next wake ends it, and cancels every
-    renewal task it started — the expiring one among them, mid-write. The stop comes regardless: a store slower
-    than one renewal interval must not leave the job spending past the lease it gave up.
+    A renewer that exited then cancelled every renewal task it started, the expiring one among them, mid-write, and
+    the job was never stopped. The stop comes regardless: a store slower than one renewal interval must not leave
+    the job spending past the lease it gave up.
     """
     gate = asyncio.Event()
     store = SlowFaultRenewalRefusingStore()
     fixture = off_loop(ops_fixture, gate=gate, store=store, job_lease_s=0.3)
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     attempt_id = job.job_id.rsplit(":", 1)[1]
     await asyncio.sleep(0)
     store.refuse_from(T0 + timedelta(seconds=0.1))
@@ -686,7 +666,7 @@ async def test_a_start_whose_slot_claim_fails_ends_its_attempt_and_releases_its_
     fixture = off_loop(ops_fixture, store=SlotClaimFailingStore())
 
     with pytest.raises(RuntimeError, match="dropped the connection"):
-        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+        await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
 
     (attempt,) = off_loop(
         fixture.host.eval_host.storage.list_analysis_attempts_by_campaign, fixture.campaign.id, TOYHOST_SCOPE
@@ -710,7 +690,7 @@ async def test_a_start_whose_attempt_cannot_be_written_starts_nothing() -> None:
     fixture = off_loop(ops_fixture, store=AttemptRefusingStore())
 
     with pytest.raises(StorageError, match="refused the attempt"):
-        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+        await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
 
     assert fixture.writers == [], "no client was built"
     assert fixture.host.launch.job_manager.active_task_ids(generation_key(fixture.campaign.id, TOYHOST_SCOPE)) == []
@@ -728,7 +708,7 @@ async def test_a_graceful_shutdown_writes_every_held_job_lost_at_once(monkeypatc
     fixture = off_loop(ops_fixture, gate=gate, store=store)
     holder, heard = _heard(fixture.host)
     elsewhere = other_process(holder)
-    (generation,) = (await analysis_generate(holder, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (generation,) = (await generate(holder, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     launch_id, run_id = await _running_launch(holder)
     heard.broadcasts.clear()
 
@@ -759,7 +739,7 @@ async def test_a_graceful_shutdown_writes_every_held_job_lost_at_once(monkeypatc
 async def test_a_store_offering_a_clock_stamps_every_lease_in_its_time() -> None:
     gate = asyncio.Event()
     holder = off_loop(ops_fixture, gate=gate, store=ClockedStore())
-    (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
 
     lease = off_loop(_attempt, holder.host, job.job_id).lease
     assert lease == JobLease(
@@ -836,7 +816,7 @@ async def test_a_sweep_reading_running_with_no_lease_reads_lost() -> None:
 async def test_another_scopes_job_reads_absent_and_its_cancel_is_refused() -> None:
     gate = asyncio.Event()
     fixture = off_loop(ops_fixture, gate=gate)
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     await asyncio.sleep(0)
 
     with pytest.raises(NotFoundError):
@@ -1108,8 +1088,8 @@ async def test_two_processes_racing_a_generation_start_one_wins_and_the_other_is
     second = other_process(first.host)
 
     outcomes = await asyncio.gather(
-        analysis_generate(first.host, first.campaign.id, TOYHOST_SCOPE),
-        analysis_generate(second, first.campaign.id, TOYHOST_SCOPE),
+        generate(first.host, first.campaign.id, TOYHOST_SCOPE),
+        generate(second, first.campaign.id, TOYHOST_SCOPE),
         return_exceptions=True,
     )
 
@@ -1140,13 +1120,13 @@ async def test_a_generation_slot_is_taken_over_once_its_attempt_has_ended_or_lap
     store = ClockedStore()
     holder = off_loop(ops_fixture, gate=gate, store=store)
     elsewhere = other_process(holder.host)
-    (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
 
     with pytest.raises(ConflictError, match=f"job {job.job_id}"):
-        await analysis_generate(elsewhere, holder.campaign.id, TOYHOST_SCOPE)
+        await generate(elsewhere, holder.campaign.id, TOYHOST_SCOPE)
 
     store.at = T0 + timedelta(seconds=61)  # the holder's process went away
-    (taken,) = (await analysis_generate(elsewhere, holder.campaign.id, TOYHOST_SCOPE)).jobs
+    (taken,) = (await generate(elsewhere, holder.campaign.id, TOYHOST_SCOPE)).jobs
     assert taken.job_id != job.job_id
     assert (await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)).state == "lost"
     slot, _ = off_loop(elsewhere.eval_host.storage.load_generation_slot_with_etag, holder.campaign.id, TOYHOST_SCOPE)
@@ -1572,6 +1552,310 @@ async def test_hangs_retire_the_lease_pool_so_they_never_take_renewal_capacity_f
         assert stopped == [] and not leases.fenced("run-b") and _live_lease(storage, "run-b"), (
             "the healthy record renewed on a fresh pool after every hang"
         )
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
+class FaultHoldingStore(InMemoryDocumentStore):
+    """A store that refuses every renewal (a conditional write moving only a run's lease), and holds a write of a run's
+    faults until released: an expiry is under way, writing why its record stopped, for as long as a test needs."""
+
+    def __init__(self) -> None:
+        """Refuse renewals; hold fault writes until :attr:`release` is set, noting in :attr:`fault_held` that one is."""
+        super().__init__()
+        self.fault_held = threading.Event()
+        self.release = threading.Event()
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Refuse a renewal, hold a fault write, and write anything else."""
+        if if_match is not None and document.get("doc_type") == "eval_run":
+            stored = self.get(str(document["id"]), str(document["scope_id"]))
+            if stored is not None and {**stored, "lease": None} == {**document, "lease": None}:
+                raise RuntimeError("the store refuses renewals")
+            if stored is not None and stored.get("faults") != document.get("faults"):
+                self.fault_held.set()
+                self.release.wait(timeout=10.0)
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def test_a_shutdown_lets_an_expiry_already_running_write_why_and_stop_its_job() -> None:
+    """A shutdown cancels the renewer, which cancelled every renewal it had started, an expiry partway through
+    included: the record, already let go, was skipped by the shutdown's pass, its fault never written and its job
+    never stopped, so it read lost by lapse with no cause. The expiry now runs on, and the shutdown waits for it."""
+    store = FaultHoldingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)  # renewed every 0.4 s; every renewal fails, so it expires at 1.2 s
+    stopped: list[str] = []
+    try:
+        _seeded_run(storage, "run-lapsing", off_loop(leases.grant))
+        leases.hold(
+            RUN_JOB, "run-lapsing", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: stopped.append("x")
+        )
+        await until(store.fault_held.is_set, timeout=5.0)  # the expiry let it go and is writing why
+        assert leases.fenced("run-lapsing") and stopped == []
+
+        threading.Timer(0.3, store.release.set).start()  # the fault write lands once the shutdown is under way
+        began = time.monotonic()
+        assert await leases.shut_down() == [], "a record an expiry was stopping is not the shutdown's to write lost"
+
+        assert time.monotonic() - began < 2 * 1.2 + 0.4, "within the expiry's own bound"
+        assert stopped == ["x"], "the expiry ran on and stopped its job"
+        run, _ = off_loop(_stored_run, storage, "run-lapsing")
+        (fault,) = run.faults
+        assert "could not renew it for 1.2s, its whole lease" in fault and "the store refuses renewals" in fault
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
+class HangingStore(InMemoryDocumentStore):
+    """A store whose writes of the records named in :attr:`hanging` hang until :attr:`release` is set — a degraded
+    store a process meets at SIGTERM — noting in :attr:`fault_hung` that a write of a record's faults is hanging."""
+
+    def __init__(self) -> None:
+        """Hang nothing yet."""
+        super().__init__()
+        self.hanging: set[str] = set()
+        self.fault_hung = threading.Event()
+        self.release = threading.Event()
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Hang a write of a record named in :attr:`hanging`; write anything else."""
+        if str(document.get("id")) in self.hanging:
+            stored = self.get(str(document["id"]), str(document["scope_id"]))
+            if stored is not None and stored.get("faults") != document.get("faults"):
+                self.fault_hung.set()
+            self.release.wait(timeout=30.0)
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def test_a_shutdown_over_a_store_whose_writes_hang_cancels_every_job_and_returns_within_its_timeout() -> None:
+    """SIGTERM on a degraded store: a held job's loss write hangs, and another job's lease expiry hangs writing why.
+    The shutdown waited on both — the loss with no bound, the expiry for two leases — before it cancelled a job, so
+    live runs went on making model calls until the pod was killed. Now the jobs are cancelled once half the timeout
+    has passed, the expiry is let run only until the timeout, and the shutdown returns within it."""
+    store = HangingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)  # renewed every 0.4 s
+    manager = EvalJobManager(storage, leases=leases)
+    stopped: dict[str, bool] = {}
+
+    def work(job_id: str) -> Any:
+        async def forever() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                stopped[job_id] = True
+                raise
+
+        return forever
+
+    try:
+        for job_id in ("run-lapsing", "run-live"):
+            _seeded_run(storage, job_id, off_loop(leases.grant))
+            manager.start_task(job_id, work(job_id), budget_s=None, record=(RUN_JOB, TOYHOST_SCOPE))
+        store.hanging.add("run-lapsing")  # its renewal hangs past its lease, so its expiry begins, and hangs too
+        await until(store.fault_hung.is_set, timeout=5.0)
+        assert leases.fenced("run-lapsing") and not leases.fenced("run-live")
+        store.hanging.add("run-live")  # and now the shutdown's write of the held job's loss hangs as well
+
+        began = time.monotonic()
+        unsettled = await manager.shutdown(timeout=0.6)
+        took = time.monotonic() - began
+
+        assert took < 1.0, f"the shutdown took {took:.2f}s past its 0.6s timeout"
+        assert unsettled == [] and stopped == {"run-lapsing": True, "run-live": True}, "every job was cancelled"
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
+def _lease_threads() -> set[threading.Thread]:
+    """The lease pools' threads alive now."""
+    return {thread for thread in threading.enumerate() if thread.name.startswith("eval-lease")}
+
+
+async def test_an_expiry_cut_short_by_a_shutdown_makes_no_store_call_after_it() -> None:
+    """An expiry still running when a shutdown's wait ended went on to its next write, which made a new lease pool
+    after the shutdown had closed the last one — a pool, and a thread, nothing would ever close. It is cancelled at
+    the shutdown's bound now, its job stopped, and no store call is made after the shutdown returns."""
+    store = HangingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)
+    stopped: list[str] = []
+    try:
+        _seeded_run(storage, "run-lapsing", off_loop(leases.grant))
+        leases.hold(
+            RUN_JOB, "run-lapsing", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: stopped.append("x")
+        )
+        store.hanging.add("run-lapsing")
+        await until(store.fault_hung.is_set, timeout=5.0)  # the expiry is writing why, and the store hangs
+
+        await leases.shut_down(within=0.3)
+        after = _lease_threads()
+        await asyncio.sleep(1.5)  # past the lease that bounded the fault write: the expiry's next write was due
+
+        assert stopped == ["x"], "the cancelled expiry stopped its job"
+        assert _lease_threads() <= after, "no lease thread was started after the shutdown returned"
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
+async def _a_shutdown_under_way(store: HangingStore, storage: EvalStorage, leases: JobLeases) -> asyncio.Future[Any]:
+    """A shutdown of ``leases`` that has taken the one lease it holds and hangs writing its loss: under way until the
+    store is released or its 1-second bound ends."""
+    _seeded_run(storage, "run-held", off_loop(leases.grant))
+    leases.hold(RUN_JOB, "run-held", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+    store.hanging.add("run-held")
+    shutting = asyncio.ensure_future(leases.shut_down(within=1.0))
+    await until(lambda: not leases.holds("run-held"), timeout=5.0)
+    assert not shutting.done(), "the shutdown is still writing its loss"
+    return shutting
+
+
+async def test_a_lease_asked_for_during_a_shutdown_is_refused_naming_it_and_held_again_once_it_ends() -> None:
+    """A hold during a shutdown reset the shutdown's state: its deadline was cleared (an expiry then wrote unbounded by
+    it), its loss pass had already passed the new lease over, and the shutdown then marked the process down with that
+    lease still held and renewing, its job never written lost. A hold is refused while a shutdown runs now, naming it,
+    and the next one after it ends opens the leases again."""
+    store = HangingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)
+    try:
+        shutting = await _a_shutdown_under_way(store, storage, leases)
+        _seeded_run(storage, "run-late", off_loop(leases.grant))
+
+        with pytest.raises(ConflictError, match="shutting down") as refused:
+            leases.hold(RUN_JOB, "run-late", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+
+        assert f"({SHUTDOWN_CAUSE})" in refused.value.message and "run-late" in refused.value.message
+        assert not leases.holds("run-late"), "nothing was held"
+        assert await shutting == [], "the hung loss is not among those written"
+        assert not leases.holds("run-late"), "the shutdown ended holding nothing"
+
+        store.release.set()
+        _seeded_run(storage, "run-after", off_loop(leases.grant))
+        leases.hold(RUN_JOB, "run-after", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+        assert leases.holds("run-after"), "a hold once the shutdown ended opens the leases again"
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
+@pytest.mark.parametrize("ends", ["raises", "is cancelled", "is cancelled waiting for its renewer"])
+async def test_a_shutdown_cut_short_leaves_the_leases_down_and_the_next_hold_opens_them(
+    ends: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A shutdown that raised, or was cancelled, left the leases shutting down for the life of the process: every
+    later hold was refused. It ends down however it ends, the cut logged, and the next hold opens the leases again."""
+    store = HangingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)
+
+    def broke() -> None:
+        raise RuntimeError("the caller's cancel broke")
+
+    try:
+        with caplog.at_level(logging.ERROR, logger="threetears.evals.kernel.job_leases"):
+            if ends == "raises":
+                _seeded_run(storage, "run-held", off_loop(leases.grant))
+                leases.hold(RUN_JOB, "run-held", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+                with pytest.raises(RuntimeError, match="cancel broke"):
+                    await leases.shut_down(then=broke)
+            elif ends == "is cancelled":
+                shutting = await _a_shutdown_under_way(store, storage, leases)
+                shutting.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await shutting
+            else:
+                # Cut short at its first await, the wait for its renewer: the lease it took is not held after it.
+                _seeded_run(storage, "run-held", off_loop(leases.grant))
+                leases.hold(RUN_JOB, "run-held", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+                shutting = asyncio.ensure_future(leases.shut_down())
+                await asyncio.sleep(0)
+                shutting.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await shutting
+        assert any("was cut short" in record.getMessage() for record in caplog.records)
+        assert not leases.holds("run-held"), "no lease the shutdown took is held after it, for a renewer to renew"
+
+        store.release.set()
+        _seeded_run(storage, "run-after", off_loop(leases.grant))
+        leases.hold(RUN_JOB, "run-after", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+        assert leases.holds("run-after"), "a hold after the cut-short shutdown opens the leases again"
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
+async def test_a_task_or_a_launch_started_during_a_shutdown_is_refused_and_starts_nothing() -> None:
+    """The job manager held a task's lease after it had made the task, so a hold refused would leave a task running
+    with no lease; it holds first now, and a refused hold starts no task. A launch group refused while it saved its
+    runs settles every one ``cancelled`` with the shutdown's cause, rather than leave them pending for a slot."""
+    store = HangingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)
+    manager = EvalJobManager(storage, leases=leases)
+    began: list[str] = []
+
+    async def work() -> None:
+        began.append("ran")
+
+    async def run_work(_progress: Any) -> None:
+        began.append("ran")
+
+    try:
+        shutting = await _a_shutdown_under_way(store, storage, leases)
+        _seeded_run(storage, "task-late", off_loop(leases.grant))
+
+        with pytest.raises(ConflictError, match="shutting down"):
+            manager.start_task("task-late", work, budget_s=None, record=(RUN_JOB, TOYHOST_SCOPE))
+        assert not manager.is_task_active("task-late") and not leases.holds("task-late")
+
+        late = make_eval_run(id="run-group-late", scope_id=TOYHOST_SCOPE)
+        with pytest.raises(ConflictError, match="shutting down"):
+            await manager.start_group([(late, run_work, None)])
+        settled_run, _ = off_loop(_stored_run, storage, "run-group-late")
+        assert settled_run.status == "cancelled"
+        assert settled_run.cancellation_reason is not None and "shutting down" in settled_run.cancellation_reason
+        assert not leases.holds("run-group-late")
+
+        await shutting
+        await asyncio.sleep(0.05)
+        assert began == [], "no refused work ran"
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
+async def test_what_an_expiry_raises_after_its_renewal_was_cancelled_is_retrieved_and_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A shutdown cancels the renewal awaiting an expiry, so nothing awaited the expiry any more: what it raised
+    went unretrieved. Its own done-callback retrieves it now, and logs it with the expiry it came from."""
+    store = FaultHoldingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)
+
+    def stop() -> None:
+        raise RuntimeError("the job's stop broke")
+
+    try:
+        _seeded_run(storage, "run-lapsing", off_loop(leases.grant))
+        leases.hold(RUN_JOB, "run-lapsing", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=stop)
+        await until(store.fault_held.is_set, timeout=5.0)
+        threading.Timer(0.2, store.release.set).start()
+        with caplog.at_level(logging.ERROR, logger="threetears.evals.kernel.job_leases"):
+            await leases.shut_down()
+
+        (line,) = [
+            r
+            for r in caplog.records
+            if "eval.job_lease expiry eval-job-lease-expiry-run-lapsing raised" in r.getMessage()
+        ]
+        assert line.exc_info is not None and "the job's stop broke" in str(line.exc_info[1])
     finally:
         store.release.set()
         await leases.shut_down()

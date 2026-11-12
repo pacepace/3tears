@@ -34,9 +34,10 @@ a rare large drop is absent from a few agreeing cases. So at 7 cases a 10-point 
 (the candidate passes every trial the control fails), and `broken` only on a drop far past its margin; otherwise it
 reads `unclear`, saying how far the interval reaches, and its `To show the floors hold` row says how many cases
 would settle it. Discodon's G2 re-ask at 7 cases should expect `unclear` on its rate floor unless the candidate
-collapses. A floor only warns, so an unclear one blocks nothing; it is the reader who is left without the warning's
-answer. Fix, on the host's side: more cases, or a wider margin the decision can live with. The t interval would
-settle sooner, but at the margin it read `held` up to 14% of the time against the 2.5% it states.
+collapses. A floor never blocks, and only a broken one caps a standing, so an unclear one changes nothing; it is
+the reader who is left without the warning's answer. Fix, on the host's side: more cases, or a wider margin the
+decision can live with. The t interval would settle sooner, but at the margin it read `held` up to 14% of the time
+against the 2.5% it states.
 
 ### A guardrail is held only on a declared range (accepted limit)
 
@@ -70,22 +71,17 @@ was read under (the way an unpriced cost is a floor the page names), and what a 
 silence, on the first screen, when the one reading a question asks about was withheld. Discodon's G2 (2026-10) hit
 this: 19 of 24 results were concurrent, and the only trace was a memo finding citing no reading.
 
-### A reader cannot ask a memo a follow-up question (deferred)
+### A reader cannot yet question a report's analyst (designed, not built)
 
-Decided in [#629](https://github.com/pacepace/3tears/issues/629): a reader who wants more of the data behind a
-finding follows its trace (each finding links to the readings and trials it cites, drawn by code), and free-text
-questions over the frozen bundle are deferred until readers using the trace still ask for more. Answering one would
-need a new metered generation over one analysis's frozen bundle that may cite only bundle readings, every number in
-it a code-rendered reference as in a memo, stored with its question and the bundle's fingerprint; and its own writer
-evaluation, since an answer is a second way for a model to state a finding and nothing yet measures how well it does.
-
-### The analysis writer may propose a next step naming no reading
-
-No issue filed yet. A memo's next step is the writer's words held to the
-page's style, and nothing holds them to a reading: G2's "revisit when at least 20 independent cases confirm whether
-the candidate meets the queue checks and yields lower cost" said nothing about latency, the reading its own finding
-had just said was withheld. The generator should refuse a next step that names no reading the
-surface holds, as it refuses a finding whose evidence names a cell it does not hold. Not built: the next-step model carries no `evidence`, so there is nothing to resolve yet.
+Designed in [#1002](https://github.com/pacepace/3tears/issues/1002). A report's analyst had the whole context it
+wrote from, and today that context is only an audit record. Chat would keep it available: a reader asks a stored
+report's analyst a question, and the analyst answers from its own stored session, resumed, with read-only tools on
+the same snapshot. A revision asked for in chat takes a draft's path (the invariants, then the editor) and stores a
+new version, never an edit; and what readers teach it reaches the skill only as an owner-approved proposal in the
+gap loop, never applied automatically. It would ship as an optional extra built on the agent framework, so the core
+install stays as it is, and the host supplies the chat UI: a page or panel beside the report, never inside the
+report's sandboxed frame. Open: how a reader conversation maps onto the framework's sessions, the turn contract
+hosts build against, and whether a reader sees a question's cost before asking.
 
 ## Judging
 
@@ -110,14 +106,33 @@ separation needs 120 results.
 
 *Evidence:* seeded simulation, 20 to 140 results, six marginals, 2026-10, `tests/test_simulated_agreement.py`.
 
-### Pairwise judging (declined for now)
+### Pairwise judging (adopted for the report writer only, 2026-11-03)
 
-Decided in [#599](https://github.com/pacepace/3tears/issues/599): declined for now. Every judged score stays a
-single-trial score.
+Decided in [#599](https://github.com/pacepace/3tears/issues/599): declined engine-wide, and that stands. Every judged
+score the engine stores is a single-trial score.
 
-All judging scores one trial alone. For subjective comparisons (tone, style), practitioners find pairwise
-judging with position swap more reliable. It was deliberately not adopted, but "is arm B better than arm
-A" is exactly the pairwise case.
+Reversed for the report writer alone on 2026-11-03. Its promotion read takes a pairwise preference as its primary
+reading, built in `ops/report_writer/` with no engine change
+([pairwise preference for the report writer](judges-and-calibration.md#pairwise-preference-for-the-report-writer)).
+The writer is the exception because absolute scores cannot separate its arms:
+
+- its loop revises every page toward the rubric the absolute judge scores, so absolute scores bunch at the top;
+- a judge reading one page cannot see what the page leaves out, and beside another arm's page of the same case an
+  omission shows.
+
+**Why engine-wide pairwise stays declined.** A pair has no per-result value, so every layer that reads one would grow
+a second shape:
+
+- a pair score model, and a core schema bump;
+- a pairwise prompt with its built-in identity;
+- a post-run pass, since a cell never sees the other arm;
+- a pair label key, pair ratings and their agreement;
+- a preference summary, and a fourth comparison reading with its family, words and verdict;
+- a bundle-shape bump, and pair cases in the judge kind.
+
+That is about 2,700 source lines and 1,500 test lines: a program, not a fix. It is not planned. For subjective
+comparisons elsewhere (tone, style), practitioners still find pairwise judging with position swap more reliable, and
+"is arm B better than arm A" is still the pairwise case.
 
 ## Host contract
 
@@ -132,11 +147,35 @@ quota together. Rejected when the ceiling shipped: a credit cap (provider-specif
 the dollar cap (fails open with no rate card), a separate eval provider key. A fix needs a per-provider
 quota the host declares, shared across runs.
 
+### A price bound on rates the host does not guarantee is an estimate (accepted limit)
+
+Decided by the owner, 2026-10-28; no issue filed. A cap is checked against each call's bound, computed from the rates the host's pricer answers. Where the host
+cannot guarantee them (a router that may serve the call from another provider, the host's own key on a router), the
+bound is an estimate, and a call it admits may cost more. Refusing such calls would refuse every routed call, so the
+call is admitted and the estimate disclosed: a report says its cap was checked against estimates.
+
+### Only the report writer has a token and turn budget (accepted limit)
+
+Decided by the owner, 2026-10-28; no issue filed. A host with no price for a model can write reports on it under a budget in tokens and turns, and the page says the
+report is unpriced. A run launch keeps its dollar rule: an arm nobody can price is refused under an enforced cap. No
+host has yet needed an unmetered candidate.
+
+### An aggregate over a scope past its read budget is refused (accepted limit)
+
+Decided by the owner, 2026-10-27, and set per reader from measurement on 2026-10-30. The aggregating reads (a pivot,
+a frontier, a history, a comparison grouping) and a campaign's bundle work in Python over every result they read, so
+past their measured budget (`threetears.evals.analysis`: about 66,000 results for a history, a frontier or a
+grouping; about 27,000 for a pivot and 28,000 for a bundle; about 105,000 for the spend lenses) they refuse, naming
+the filters that narrow the call. Answering such a scope in one
+call needs the aggregation pushed down into the store's SQL
+([#996](https://github.com/pacepace/3tears/issues/996)). No run has a size limit: its reads are paged, though a few
+readers still read a run whole (the CHANGELOG lists them).
+
 ## Worlds
 
 ### A world with state has no recorded lookups
 
 Not built (no issue filed yet). A `World` with state refuses `recording=`, since its tools move the state it
 is graded on, and one world cannot also hold stateless lookups whose answers are recorded, while `as_host` refuses
-evals on two worlds, so no host can pair the two. Rung 4 (`examples/4-booking/`) therefore has no recorded tool
+evals on two worlds, so no host can pair the two. Rung 4a (`examples/4-booking/agent.py`) therefore has no recorded tool
 lookup beside its calendar: every tool it calls runs live in each cell.

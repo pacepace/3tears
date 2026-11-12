@@ -3,8 +3,9 @@
 A product's agent has capability (things it should do well) and guardrails (things it must not do: leak,
 take a destructive action, break policy). Read on one score, a capability gain hides a guardrail loss. So:
 
-- a boundary judged dimension and a measure declared ``guardrail`` enter no composite, no pass^k and no
-  comparison family;
+- a boundary judged dimension enters no composite, no pass^k and no comparison family, and a measure declared
+  ``guardrail`` no comparison family (a pass/fail one is still a check, and fails its trials:
+  ``test_pass_k_reads_host_checks.py``);
 - the bundle decides each guardrail for every arm against the control (``guardrails``): ``held``,
   ``breached`` or ``undecided``, by the bar rule read on the difference, never reading undecided as safe;
 - both reports show them in their own section, and an adopted arm's decision states any guardrail not held.
@@ -21,16 +22,13 @@ sentence when questions are declared, or a per-row label when none are.
 
 from __future__ import annotations
 
-from typing import Any
 
 from dataclasses import replace
 
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.report import build_code_only_report
 from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock
 from threetears.evals.analysis.stats import GUARDRAIL_HELD_NEEDS_RANGE, GUARDRAIL_OUTSIDE_RANGE
@@ -91,7 +89,7 @@ class TestABoundaryScoreIsNeverAveragedWithCapability:
             RubricScore(dim=CAPABILITY, scale="pass_fail", axis="capability", score=1, judge_temperature=0.0),
             RubricScore(dim=BOUNDARY, scale="pass_fail", axis="boundary", score=0, judge_temperature=0.0),
         )
-        (summary,) = compute_pass_hat_k([result]).values()
+        (summary,) = compute_pass_hat_k([result], catalog={}).values()
         assert summary["pass_hat_k"] == 1.0
 
     def test_a_cannot_tell_on_a_boundary_dim_neither_drops_the_composite_nor_pass_k(self):
@@ -104,7 +102,7 @@ class TestABoundaryScoreIsNeverAveragedWithCapability:
             judge_cannot_tell_boundary=[BOUNDARY],
         )
         assert result_composite(result) == 1.0
-        (summary,) = compute_pass_hat_k([result]).values()
+        (summary,) = compute_pass_hat_k([result], catalog={}).values()
         assert summary["pass_hat_k"] == 1.0 and summary["n_cannot_tell_excluded"] == 0
 
     def test_a_catalog_boundary_dim_copied_into_a_template_stays_boundary(self):
@@ -129,7 +127,8 @@ class TestABoundaryScoreIsNeverAveragedWithCapability:
     def test_a_boundary_dimension_joins_no_comparison_family(self):
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST))
         tested = {(c.name, c.verdict) for f in bundle.multiple_comparisons.families for c in f.comparisons}
-        assert tested == {(CAPABILITY, "improved")}
+        # The question's pass rate is the family's other member (owner, 2026-11-06); the boundary dimension is none.
+        assert tested == {(CAPABILITY, "improved"), ("passed", "improved")}
         assert {m.name: m.axis for m in bundle.judged_measures} == {CAPABILITY: "capability", BOUNDARY: "boundary"}
 
 
@@ -158,10 +157,6 @@ class TestEachGuardrailIsDecidedAgainstTheControl:
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST), control=False)
         assert bundle.guardrails.checks == []
         assert bundle.guardrails.withheld is not None and "not the same as held" in bundle.guardrails.withheld
-
-    def test_the_writer_sees_the_guardrails_by_cell_alias(self):
-        message = _writer_message(two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST)))
-        assert '"guardrails"' in message and '"decision":"breached"' in message
 
 
 # --- a measure may be a guardrail too ------------------------------------------------------------------------
@@ -264,7 +259,7 @@ class TestTheCodeOnlyReportShowsTheGuardrails:
         (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "guardrails"]
         assert table.section == "contrasts"
         (row,) = table.values()
-        assert row["guardrail"] == f"{BOUNDARY} (judged)"
+        assert row["guardrail"] == "boundary correct (judged)"
         assert str(row["decision"]).startswith("breached")
         assert any(
             b.section == "contrasts" and b.source == "guardrails"
@@ -310,14 +305,11 @@ class TestReadingsNoQuestionAskedAboutAreExploratory:
             _scored(CAPABILITY_GAIN, GUARDRAIL_LOST), question="is it cheaper?", merit_axes=["cost"]
         )
         report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
-        (said,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "scope"]
-        # One sentence, then the readings listed once each in a table beside it.
+        # The readings listed once each in a table, with no sentence saying what the question did not ask: the table
+        # says what the readings are.
+        assert not [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "scope"]
         (listed,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "unasked"]
         named = [str(row["reading"]) for row in listed.values()]
-        assert said.section == listed.section == "not_tested" and f"{CAPABILITY} (judged)" in named
-        assert not any(BOUNDARY in name for name in named) and BOUNDARY not in said.text
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))
+        assert listed.section == "not_tested" and listed.title == "Unasked readings"
+        assert "task correct (judged)" in named
+        assert not any(BOUNDARY in name for name in named)

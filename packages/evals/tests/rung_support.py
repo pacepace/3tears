@@ -1,41 +1,16 @@
-"""What the ladder's rung tests share: a rung's directory copied out to run in, and what its recordings say.
+"""What the ladder's rung tests share about a rung's files: what its recordings say, and what its program holds.
 
-Each rung under ``examples/<n>-<name>/`` is run from its own directory, as its README says, against the recordings
-beside it. A test copies the directory first, so the store and the report a run writes land in the test's own
-directory and never beside the committed files.
+A rung is copied out to run in by :func:`~packages.evals.tests.ladder_support.offline_copy`, its one owner.
 """
 
 from __future__ import annotations
 
 import ast
 import json
-import shutil
 from pathlib import Path
 
-import pytest
 
 from threetears.evals.schema import ClientRequestSettings
-from packages.evals.tests.example_loader import EXAMPLES
-
-
-def rung_copy(name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Copy ``examples/<name>`` into ``tmp_path`` and make it the working directory, with no key and no ``RECORD``.
-
-    :param name: The rung's directory, ``"1-triage"``.
-    :ptype name: str
-    :param tmp_path: The test's directory.
-    :ptype tmp_path: Path
-    :param monkeypatch: The test's monkeypatch.
-    :ptype monkeypatch: pytest.MonkeyPatch
-    :return: The copy.
-    :rtype: Path
-    """
-    copy = tmp_path / name
-    shutil.copytree(EXAMPLES / name, copy)
-    for variable in ("RECORD", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
-        monkeypatch.delenv(variable, raising=False)
-    monkeypatch.chdir(copy)
-    return copy
 
 
 def recorded(path: Path) -> list[dict[str, object]]:
@@ -86,4 +61,4 @@ def root_only_imports(path: Path) -> list[str]:
     return reaching
 
 
-__all__ = ["program_lines", "recorded", "recorded_cost", "recorded_settings", "root_only_imports", "rung_copy"]
+__all__ = ["program_lines", "recorded", "recorded_cost", "recorded_settings", "root_only_imports"]

@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Self
 
 import pytest
@@ -21,14 +23,16 @@ import pytest
 from threetears.evals import Eval, Example, Judge
 from threetears.evals.providers.failures import error_from_response
 from threetears.evals.schema import JudgedArtifact, RubricDim, StopReason
+from threetears.evals.testing import RecordedCompletions
 from threetears.evals.kernel.host import EvalHost, KindContract, TemplateChecks
+from threetears.evals.quick import one_call
 from threetears.evals.quick.one_call import (
     CALLABLE_KIND_CONTRACT,
     JUDGED_CALLABLE_KIND,
     JUDGED_CALLABLE_KIND_CONTRACT,
     callable_host,
 )
-from threetears.evals.analysis import summarize_run
+from threetears.evals.analysis import campaign_report, campaign_report_markdown, summarize_run
 from threetears.evals.run import (
     get_result_trace,
     get_template,
@@ -38,6 +42,17 @@ from threetears.evals.run import (
     update_template,
 )
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.report_support import page_violations
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Every stamp reads a frozen clock, not the wall's, that steps on with each read: a template edited after its run
+    is stamped after it."""
+    with frozen_clock(step_seconds=0.001):
+        yield
+
 
 SCOPE = "eval-judged-tests"
 CASES = [{"question": "What is two plus two?"}, {"question": "What is the capital of France?"}]
@@ -147,9 +162,9 @@ async def test_each_dimension_is_scored_by_the_engines_judge_and_summarised_besi
     assert summary.role_spend("judge").cost_usd == pytest.approx(4 * JUDGE_COST_USD)
 
     rendered = summary.render()
-    assert "  answer.helpful (judged 1-5): mean 3.5 (n=2, min 2, max 5)" in rendered
-    assert "  answer.honest (judged 1-5): mean 3.5 (n=2, min 2, max 5)" in rendered
-    assert "  judge spend: $0.00120 over 4 call(s)" in rendered  # 4 x $0.0003
+    assert "  answer helpful (judged), scored 1-5: mean 3.5 (n=2, min 2, max 5)" in rendered
+    assert "  answer honest (judged), scored 1-5: mean 3.5 (n=2, min 2, max 5)" in rendered
+    assert "  judge spend: $0.0012 over 4 call(s)" in rendered  # 4 x $0.0003
 
     (run,) = off_loop(list_runs, host, SCOPE)
     assert run.judge_model == JUDGE_MODEL
@@ -264,7 +279,7 @@ async def test_a_judge_that_cannot_tell_is_counted_apart_and_excludes_nothing() 
     (dimension,) = summary.judged
     assert (dimension.name, dimension.n, dimension.mean, dimension.cannot_tell) == ("answer.helpful", 0, None, 1)
     assert summary.n_excluded == 0
-    assert "answer.helpful (judged): no result carries a score, the judge could not tell on 1" in summary.render()
+    assert "answer helpful (judged): no result carries a score, the judge could not tell on 1" in summary.render()
 
 
 async def test_a_run_the_judge_could_not_tell_on_anywhere_still_completes() -> None:
@@ -308,7 +323,7 @@ async def test_a_rubric_of_engine_dimensions_keeps_their_names_and_scales() -> N
     summary = await _summary(CASES[:1], answer, [_judge(client, rubric=dims)])
     (dimension,) = summary.judged
     assert (dimension.name, dimension.scale, dimension.mean) == ("faq.correct", "pass_fail", 1.0)
-    assert "faq.correct (judged pass/fail): mean 1" in summary.render()
+    assert "faq correct (judged), scored pass/fail: mean 1" in summary.render()
 
 
 async def test_a_judged_eval_and_an_unjudged_one_over_the_same_cases_are_two_templates() -> None:
@@ -491,7 +506,7 @@ async def test_a_judge_s_examples_are_seeded_as_authored_cases_its_calibration_s
 
     summary = await _summary(CASES, answer, [_judge(client, examples=examples)], host=host)
 
-    assert len(client.calls) == 4, "seeding the examples asks the judge nothing"
+    assert len(client.calls) == 4 + 2, "one call per case per dimension, and one per example per repeat to grade it"
     seeded = f"{summary.template_id}-judge"
     (case_set,) = off_loop(host.storage.query_case_sets, SCOPE, name=seeded)
     assert case_set.template_id == seeded and len(case_set.test_case_ids) == 2
@@ -519,3 +534,391 @@ def test_an_example_its_dimension_cannot_hold_or_that_names_none_is_refused_when
         _judge(_FakeJudgeClient(), examples=[Example("tone", "4", 1, "no such dimension")])
     pass_fail = [RubricDim(name="answer.correct", description="The answer is right.", scale="pass_fail")]
     assert _judge(_FakeJudgeClient(), rubric=pass_fail, examples=[Example("correct", "5", "fail", "it is 4")])
+
+
+# --- a judge's examples, graded in the run ---------------------------------------------------------------------------
+
+#: Two examples on the ordinal rubric: a hedge the scripted judge scores 2, as it must, and an honest "not sure" it
+#: must score 5 and scores 2: a miss.
+EXAMPLES = [
+    Example("helpful", "Probably 4, but I am not sure.", 2, "a hedge on arithmetic does not resolve it", case=CASES[0]),
+    Example("honest", "I am not sure.", 5, "saying so is the honest answer", case=CASES[1]),
+]
+
+
+async def test_each_example_is_graded_k_times_through_the_call_the_run_s_answers_are_graded_by() -> None:
+    client = _FakeJudgeClient()
+    result = await Eval(CASES, answer, [_judge(client, examples=EXAMPLES)], k=2).run(store=MEMORY, scope=SCOPE)
+
+    run_calls, example_calls = client.calls[:8], client.calls[8:]
+    assert len(run_calls) == 2 * 2 * 2 and len(example_calls) == 2 * 2, "each example once per repeat, after the run"
+    # The run's own prompt for the case and dimension, with the example's answer in the reply's place: the same
+    # instructions, criterion, scale and intent, the case as its variation, and its material rendered as a run's is.
+    for (system, user), example in zip(example_calls[::2], EXAMPLES, strict=True):
+        dim = f"answer.{example.dimension}"
+        (ran,) = {
+            (run_system, run_user)
+            for run_system, run_user in run_calls
+            if f'"{dim}"' in run_system
+            and json.dumps(example.case["question"]) in run_user
+            and run_user.endswith(f"# Output under review\n{ANSWERS[example.case['question']]}")
+        }
+        assert system == ran[0]
+        assert user == ran[1].removesuffix(ANSWERS[example.case["question"]]) + example.answer
+    assert example_calls[0] == example_calls[1] and example_calls[2] == example_calls[3]
+
+    read = result.judge_examples
+    assert read is not None and read.repeats == 2
+    assert [(grade.dimension, grade.expected, grade.verdicts) for grade in read.grades] == [
+        ("answer.helpful", "2", ("2", "2")),
+        ("answer.honest", "5", ("2", "2")),
+    ]
+    assert [grade.as_it_must for grade in read.grades] == [True, False]
+    assert (read.as_they_must, read.misses, read.unread) == (1, (read.grades[1],), ())
+
+
+async def test_a_miss_is_said_with_its_verdicts_in_the_print_and_on_the_page_beside_the_judge_s_calibration() -> None:
+    result = await Eval(CASES, answer, [_judge(_FakeJudgeClient(), examples=EXAMPLES)], k=2).run(
+        store=MEMORY, scope=SCOPE
+    )
+
+    miss = '"I am not sure." graded 2 on honest, must 5 (saying so is the honest answer)'
+    lines = str(result).splitlines()
+    said = "judge: 1 of 2 examples graded as they must be on every one of 2 repeats ($0.0012 over 4 call(s))"
+    at = lines.index(said)
+    assert lines[at - 1].startswith("judge: 0 labels: judge uncalibrated"), "read beside its labels, never pooled"
+    assert lines[at + 1] == f"  missed: {miss}"
+    (block,) = [block for block in result.page.blocks if block.anchor == "judge-examples"]
+    assert block.section == "provenance" and block.source == "calibration"
+    assert block.text == (
+        "The judge graded 1 of 2 of its examples as they must be on every one of 2 repeats ($0.0012 over 4 call(s)). "
+        f"Missed: {miss}."
+    ), "the page states what the examples cost, as the print does"
+    # Laid out after the test setup table, whose row says how far the judge's scores can be read.
+    provenance = [block for block in result.page.blocks if block.section == "provenance"]
+    assert provenance[-1] is block and any(getattr(table, "name", None) == "test_setup" for table in provenance)
+    assert block.text in result.render(full=True)
+    assert page_violations(result.report) == []
+
+
+async def test_the_examples_spend_is_the_judge_s_ledgered_out_of_run_and_beside_every_arm_s_results() -> None:
+    result = await Eval(CASES, answer, [_judge(_FakeJudgeClient(), examples=EXAMPLES)], k=1).run(
+        store=MEMORY, scope=SCOPE
+    )
+    read = result.judge_examples
+    assert read is not None
+    assert (read.spend.role, read.spend.calls, read.stopped) == ("judge", 2, None)
+    assert read.spend.cost_usd == pytest.approx(2 * JUDGE_COST_USD)
+    assert result.summary.role_spend("judge").calls == 4, "the arm's results hold their own calls and no example's"
+
+    # Made outside any run, so each is a row of the out-of-run ledger, under the judge's purpose and the template.
+    rows = off_loop(result.host.storage.query_out_of_run_spend, SCOPE, purpose="judge")
+    assert len(rows) == 2 and all(row.outcome == "completed" for row in rows)
+    assert {(row.model, row.template_id, row.run_id) for row in rows} == {(JUDGE_MODEL, result.template_id, None)}
+    assert [row.cost_usd for row in rows] == [JUDGE_COST_USD] * 2
+    assert math.fsum(row.cost_usd or 0.0 for row in rows) == pytest.approx(read.spend.cost_usd)
+
+
+async def test_the_examples_are_held_to_the_eval_s_cap_on_landed_spend_so_the_call_that_crosses_it_goes_over() -> None:
+    """The eval's cap is read before each example's call against the spend landed so far, as a run's cap is read
+    before each cell: the call that crosses it lands whole, so the eval ends over its cap, and the reading says so."""
+    # The arms land 4 calls ($0.0012) of a $0.0013 cap: the first example's call is made inside what is left, lands the
+    # eval at $0.0015, over the cap, and no other is made.
+    capped = Eval(CASES, answer, [_judge(_FakeJudgeClient(), examples=EXAMPLES)], k=1, max_cost_usd=0.0013)
+    result = await capped.run(store=MEMORY, scope=SCOPE)
+    assert result.summary.role_spend("judge").calls == 4, "the arm's results hold their own calls and no example's"
+    read = result.judge_examples
+    over = "the eval's cost cap stopped the grading, the eval having landed $0.0015, over its $0.0013 cap"
+    assert read is not None and read.stopped == over and read.spend.calls == 1
+    assert [grade.verdicts for grade in read.grades] == [("2",), ()]
+    assert read.lines()[0] == (
+        f"judge: 1 of 2 examples graded as they must be; 1 not graded in full, since {over} ($0.00030 over 1 call(s))"
+    )
+    assert len(off_loop(result.host.storage.query_out_of_run_spend, SCOPE, purpose="judge")) == 1
+
+
+async def test_under_a_cap_arms_whose_spend_nobody_priced_stop_the_examples_and_the_line_says_that_not_the_cap() -> (
+    None
+):
+    """A cap cannot bound spend nobody priced, so an enforcing run stops at it; the examples stop at it too, and the
+    reading names it, never the cap as though the cap had been reached."""
+    capped = Eval(CASES, answer, [_judge(_FakeJudgeClient(priced=False), examples=EXAMPLES)], k=1, max_cost_usd=1.0)
+    read = (await capped.run(store=MEMORY, scope=SCOPE)).judge_examples
+    assert read is not None and read.spend.calls == 0
+    assert read.stopped == "the arms spent what nobody priced, which the eval's cost cap cannot bound"
+    assert read.lines() == [
+        "judge: 2 examples not graded, since the arms spent what nobody priced, which the eval's cost cap cannot bound"
+    ]
+    assert "cost cap stopped" not in read.sentence()
+
+    # Uncapped, nothing bounds the grading, and the unpriced calls are said as such.
+    read = (
+        await Eval(CASES, answer, [_judge(_FakeJudgeClient(priced=False), examples=EXAMPLES)], k=1).run(
+            store=MEMORY, scope=SCOPE
+        )
+    ).judge_examples
+    assert read is not None and read.stopped is None and read.spend.calls == 2 and read.spend.cost_usd is None
+
+
+async def test_an_example_the_judge_s_call_failed_on_is_not_graded_in_full_never_a_miss() -> None:
+    # parity-with: threetears.evals.schema.CompletionClient
+    class _FakeRefusingJudge(_FakeJudgeClient):
+        """A judge whose call fails on one example's answer, as a recording that does not hold it fails."""
+
+        async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Reply:
+            if user.endswith("\nI am not sure."):
+                raise RuntimeError("not recorded")
+            return await super().generate(system=system, user=user, response_format=response_format)
+
+    read = (
+        await Eval(CASES[:1], answer, [_judge(_FakeRefusingJudge(), examples=EXAMPLES)], k=1).run(
+            store=MEMORY, scope=SCOPE
+        )
+    ).judge_examples
+    assert read is not None
+    (_, failed) = read.grades
+    assert failed.verdicts == () and len(failed.errors) == 1 and "RuntimeError" in failed.errors[0]
+    assert (read.as_they_must, read.misses, read.unread) == (1, (), (failed,))
+    assert read.lines()[0].startswith(
+        "judge: 1 of 2 examples graded as they must be; 1 not graded in full, since the judge's call failed: "
+    )
+
+
+async def test_a_judge_with_no_examples_makes_no_extra_call_and_its_result_and_page_are_as_they_were() -> None:
+    client = _FakeJudgeClient()
+    result = await Eval(CASES, answer, [_judge(client)], k=1).run(store=MEMORY, scope=SCOPE)
+    assert len(client.calls) == 4 and result.judge_examples is None
+    assert not [line for line in str(result).splitlines() if "examples graded" in line]
+    # The oracle is the engine's own page for the campaign, read from the store: the result's is it, byte for byte.
+    stored = off_loop(campaign_report, result.host, result.campaign_id, result.scope_id)
+    assert campaign_report_markdown(result.page) == campaign_report_markdown(stored)
+
+
+async def test_a_judge_with_examples_adds_one_line_to_the_engine_s_page_and_nothing_else() -> None:
+    result = await Eval(CASES, answer, [_judge(_FakeJudgeClient(), examples=EXAMPLES)], k=1).run(
+        store=MEMORY, scope=SCOPE
+    )
+    stored = off_loop(campaign_report, result.host, result.campaign_id, result.scope_id)
+    added = [block for block in result.page.blocks if block not in stored.blocks]
+    assert [block.anchor for block in added] == ["judge-examples"]
+    without = result.page.model_copy(update={"blocks": [block for block in result.page.blocks if block not in added]})
+    assert campaign_report_markdown(without) == campaign_report_markdown(stored)
+
+
+# --- a judge's recording, replayed ------------------------------------------------------------------------------------
+
+
+async def other_answer(case: Mapping[str, Any]) -> str:
+    """Answer a question in a few words, as :func:`answer` does."""
+    return ANSWERS[case["question"]]
+
+
+async def test_two_arms_sending_the_judge_one_prompt_replay_the_verdicts_they_were_recorded_with_every_time(
+    tmp_path: Path,
+) -> None:
+    """Two arms giving one answer send the judge one prompt, so their repeats share each recorded call's index. A run's
+    cells start in an order shuffled by its fresh id, several at once: a replay that served the first asker the first
+    call swapped the arms' verdicts between replays. Each cell is served the call recorded for it."""
+
+    # parity-with: threetears.evals.schema.CompletionClient
+    class _FakeDrawingJudge(_FakeJudgeClient):
+        """A judge whose every call scores the next of 1 to 5 in turn, so no two neighbouring calls agree."""
+
+        async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Reply:
+            reply = await super().generate(system=system, user=user, response_format=response_format)
+            match = re.search(r'single key "([^"]+)"', system)
+            assert match is not None
+            score = len(self.calls) % 5 + 1
+            return dataclasses.replace(
+                reply, content=json.dumps({"reasoning": "drawn", "criteria_scores": {match[1]: score}})
+            )
+
+    recording = tmp_path / "judge.jsonl"
+
+    async def verdicts(client: Any) -> dict[str, list[tuple[str, int, list[tuple[str, int]]]]]:
+        twin = Eval(CASES, {"a": answer, "b": other_answer}, [_judge(client)], k=2, name="twin")
+        result = await twin.run(store=MEMORY, scope=SCOPE)
+        return {
+            arm: sorted(
+                (row.case_id, row.repeat, [(grade.dimension, grade.score) for grade in row.judged])
+                for row in result.results(arm)
+            )
+            for arm in ("a", "b")
+        }
+
+    recorded = await verdicts(RecordedCompletions.record(_FakeDrawingJudge(), recording, settings=None))
+    assert len({str(rows) for rows in recorded.values()}) == 2, "the arms were recorded with different verdicts"
+    for _ in range(2):
+        assert await verdicts(RecordedCompletions.replay(recording, settings=None)) == recorded
+
+
+# --- an example is judged as a run's answer is ------------------------------------------------------------------------
+
+
+async def test_on_a_classifier_eval_an_example_s_judge_never_reads_the_label_its_case_expects() -> None:
+    """A cell's judge reads its case without the label the case expects (the answer key); an example's must too, or
+    the reading is of a judge shown the answer."""
+    client = _FakeJudgeClient()
+    cases = [{"question": "What is two plus two?", "label": "math"}]
+
+    async def classify(case: Mapping[str, Any]) -> dict[str, str]:
+        return {"label": "math"}
+
+    example = Example("helpful", {"label": "math"}, 5, "a right label resolves it", case=cases[0])
+    await Eval(cases, classify, ["label", _judge(client, examples=[example])], k=1).run(store=MEMORY, scope=SCOPE)
+
+    run_users = [user for system, user in client.calls[:2]]
+    (example_user,) = [user for system, user in client.calls[2:] if '"answer.helpful"' in system]
+    assert all('"math"' not in user.split("# Output under review\n", 1)[0] for user in [*run_users, example_user])
+    (ran,) = [user for system, user in client.calls[:2] if '"answer.helpful"' in system]
+    assert example_user == ran, "the example asked exactly as the run's own answer was"
+
+
+async def test_an_example_and_its_seeded_case_read_the_case_without_the_keys_a_run_withholds() -> None:
+    """``id``, ``stratum`` and ``world`` name, sort and seed a case and never reach its judge: an example's case, and the
+    authored case seeded from it, are read without them as a cell's is."""
+    from threetears.evals.kernel import judge_case_of
+
+    client = _FakeJudgeClient()
+    host = callable_host([short])
+    case = {"id": "arith", "stratum": "easy", **CASES[0]}
+    example = Example("helpful", "Probably 4, but check.", 2, "a hedge does not resolve it", case=case)
+
+    summary = await _summary(CASES, answer, [_judge(client, examples=[example])], host=host)
+
+    (ran,) = [user for system, user in client.calls[:4] if '"answer.helpful"' in system and "two plus two" in user]
+    (asked,) = [user for system, user in client.calls[4:]]
+    assert asked == ran.removesuffix("4") + "Probably 4, but check.", "the example's case as the cell's, keys withheld"
+    assert '"arith"' not in asked and '"easy"' not in asked
+    (case_set,) = off_loop(host.storage.query_case_sets, SCOPE, name=f"{summary.template_id}-judge")
+    (stored,) = off_loop(host.storage.load_test_cases_by_ids, case_set.test_case_ids, SCOPE)
+    seeded = judge_case_of(stored)
+    assert seeded is not None
+    assert seeded.evidence.case_material == json.dumps(CASES[0], indent=2, sort_keys=True), "the case as a cell's"
+    assert seeded.evidence.case_material in ran
+
+
+# --- a grading that fails ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.expect_contained(
+    TypeError, why="a CompletionProtocolDefect (a TypeError) met grading the examples is contained into the reading"
+)
+async def test_a_grading_that_fails_is_stated_on_the_result_and_the_arms_spent_results_still_land() -> None:
+    """A judge completion that breaks the protocol fails the grading after the arms have spent: the reading says it was
+    not graded and why, and the eval files its campaign and returns its result."""
+
+    @dataclass(frozen=True)
+    class _TemperaturelessReply:
+        """A completion that left ``temperature`` out of the CompletionResult protocol: the host's defect."""
+
+        content: str
+        input_tokens: int | None = 100
+        output_tokens: int | None = 30
+        cost_usd: float | None = JUDGE_COST_USD
+        price_source: str | None = "scripted rate"
+        model: str = JUDGE_MODEL
+        served_model: str | None = None
+        reasoning_tokens: int | None = None
+        stop_reason: StopReason = "end_turn"
+
+    # parity-with: threetears.evals.schema.CompletionClient
+    class _FakeBreakingJudge(_FakeJudgeClient):
+        """A judge whose replies on an example's answer break the protocol: the host's defect, met past the arms."""
+
+        async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+            reply = await super().generate(system=system, user=user, response_format=response_format)
+            if user.endswith("\nProbably 4, but I am not sure."):
+                return _TemperaturelessReply(content=reply.content)
+            return reply
+
+    result = await Eval(CASES, answer, [_judge(_FakeBreakingJudge(), examples=EXAMPLES)], k=1).run(
+        store=MEMORY, scope=SCOPE
+    )
+
+    read = result.judge_examples
+    assert read is not None and read.stopped is not None
+    assert read.stopped.startswith("the grading failed (CompletionProtocolDefect: ")
+    assert [grade.verdicts for grade in read.grades] == [(), ()] and read.unread == read.grades
+    # The call the defect surfaced on was made and ledgered, so the reading counts it though no outcome came back.
+    assert len(off_loop(result.host.storage.query_out_of_run_spend, SCOPE, purpose="judge")) == read.spend.calls == 1
+    assert read.lines()[0].startswith(
+        "judge: 2 examples not graded, since the grading failed (CompletionProtocolDefect"
+    )
+    (block,) = [block for block in result.page.blocks if block.anchor == "judge-examples"]
+    assert block.text.startswith("The judge's 2 examples were not graded, since the grading failed")
+    assert result.summary.role_spend("judge").calls == 4 and result.campaign_id, "the arms' results and campaign land"
+
+
+@dataclass(frozen=True)
+class _TemperaturelessJudgeReply:
+    """A judge completion that left ``temperature`` out of the CompletionResult protocol: the host's defect."""
+
+    content: str
+    input_tokens: int | None = 100
+    output_tokens: int | None = 30
+    cost_usd: float | None = JUDGE_COST_USD
+    price_source: str | None = "scripted rate"
+    model: str = JUDGE_MODEL
+    served_model: str | None = None
+    reasoning_tokens: int | None = None
+    stop_reason: StopReason = "end_turn"
+
+
+# parity-with: threetears.evals.schema.CompletionClient
+class _FakeWrongThenBrokenJudge(_FakeJudgeClient):
+    """A judge that grades the hedge on arithmetic 5 (it must get 2) twice, then breaks the protocol on it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hedges = 0
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        reply = await super().generate(system=system, user=user, response_format=response_format)
+        if not user.endswith("\nProbably 4, but I am not sure."):
+            return reply
+        self.hedges += 1
+        if self.hedges > 2:
+            return _TemperaturelessJudgeReply(content=reply.content)
+        dim = re.search(r'single key "([^"]+)"', system)
+        assert dim is not None
+        return dataclasses.replace(reply, content=json.dumps({"reasoning": "sure", "criteria_scores": {dim[1]: 5}}))
+
+
+@pytest.mark.expect_contained(
+    TypeError, why="a CompletionProtocolDefect (a TypeError) met grading the examples is contained into the reading"
+)
+async def test_an_example_graded_wrong_before_the_grading_failed_reads_as_a_miss_with_its_verdicts() -> None:
+    """A grading failing on an example's third repeat re-added it with no verdicts, so two wrong grades read "not
+    graded": the miss was hidden. It keeps the verdicts it was given and reads as the miss it is."""
+    result = await Eval(CASES, answer, [_judge(_FakeWrongThenBrokenJudge(), examples=EXAMPLES)], k=3).run(
+        store=MEMORY, scope=SCOPE
+    )
+
+    read = result.judge_examples
+    assert read is not None and read.stopped is not None
+    assert read.stopped.startswith("the grading failed (CompletionProtocolDefect: ")
+    hedge, honest = read.grades
+    assert (hedge.verdicts, hedge.expected) == (("5", "5"), "2")
+    assert read.misses == (hedge,) and read.unread == (honest,), "the miss is a miss; only the unreached is unread"
+    first, missed = read.lines()
+    assert first.startswith(
+        "judge: 0 of 2 examples graded as they must be on every one of 3 repeats; 1 not graded in full, since the "
+        "grading failed (CompletionProtocolDefect"
+    )
+    assert (
+        missed
+        == '  missed: "Probably 4, but I am not sure." graded 5 on helpful, must 2 (a hedge on arithmetic does not resolve it)'
+    )
+
+
+async def test_a_grading_that_raises_what_no_grading_meets_reaches_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The grading's failures were caught as any ValueError, so an engine bug (a zip of unequal lengths, a call sent
+    unadmitted) read as "the grading failed" on the result. Only the conditions a grading meets are contained now."""
+
+    async def broken(**_kwargs: Any) -> Any:
+        raise ValueError("zip() argument 2 is shorter than argument 1")
+
+    monkeypatch.setattr(one_call, "judge_dims", broken)
+    with pytest.raises(ValueError, match="zip"):
+        await Eval(CASES, answer, [_judge(_FakeJudgeClient(), examples=EXAMPLES)], k=1).run(store=MEMORY, scope=SCOPE)

@@ -30,9 +30,8 @@ from threetears.evals.analysis import (
     report_markdown,
 )
 from threetears.evals.analysis.bundle.schema import ArmScoreboard, MultipleComparisons
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.decision import (
     CasesNeeded,
     FloorReadings,
@@ -200,14 +199,14 @@ def test_a_character_shaped_floor_projects_its_cases_with_their_cost() -> None:
         cases=12, if_none=CasesNeeded("more", 121), if_observed=CasesNeeded("more", 223), per_case_usd=PER_CASE
     )
     assert floors_projection([verdict], per_case_usd=PER_CASE) == projection
-    assert projected_cell(projection, projection.if_none) == "121 cases, $3.1"
-    assert projected_cell(projection, projection.if_observed) == "223 cases, $5.7"
+    assert projected_cell(projection, projection.if_none, forms=PageForms.off_page()) == "121 cases, $3.1"
+    assert projected_cell(projection, projection.if_observed, forms=PageForms.off_page()) == "223 cases, $5.7"
 
 
 def test_the_note_says_each_count_is_about_and_more_than_the_run_used() -> None:
     projection = floors_projection(_read(RULE, CHARACTER), per_case_usd=PER_CASE)
     assert projection is not None
-    note = projection_note([projection], run_cases=12)
+    note = projection_note([projection], run_cases=12, forms=PageForms.off_page())
     assert note == (
         "Each count is about: it reads the interval again over this run's cases repeated to that many, so it assumes "
         "new cases vary as these did. Repeats of a case narrow an interval far less than new cases. This run used 12 "
@@ -224,7 +223,7 @@ def test_a_drop_past_the_margin_says_no_number_of_cases_shows_it_within() -> Non
     projection = project_rate(rate, cases=12, margin=10.0)
     assert projection is not None and projection.if_observed == CasesNeeded("never")
     assert projection.if_none.kind == "more" and projection.if_none.cases > 12
-    assert projected_cell(projection, projection.if_observed) == "none would"
+    assert projected_cell(projection, projection.if_observed, forms=PageForms.off_page()) == "none would"
 
 
 def test_a_floor_kept_open_by_lost_trials_says_so_never_fewer_cases_than_the_run() -> None:
@@ -256,8 +255,8 @@ def test_a_floor_kept_open_by_lost_trials_says_so_never_fewer_cases_than_the_run
     projection = floors_projection([verdict])
     assert projection is not None
     assert (projection.if_none, projection.if_observed) == (CasesNeeded("enough", 60), CasesNeeded("lost"))
-    assert projected_cell(projection, projection.if_none) == "this run's 60 cases"
-    assert projected_cell(projection, projection.if_observed) == "re-run the lost trials"
+    assert projected_cell(projection, projection.if_none, forms=PageForms.off_page()) == "this run's 60 cases"
+    assert projected_cell(projection, projection.if_observed, forms=PageForms.off_page()) == "re-run the lost trials"
     # A count is always past the run's own: a search that clears below it reads as more than the run, at the floor.
     assert project_sample(half_width=4.0, cases=12, margin=10.0, observed=8.0).if_observed == CasesNeeded("more", 48)
     assert project_sample(half_width=1.0, cases=3, margin=10.0, observed=0.0).if_none == CasesNeeded("more", 5)
@@ -327,7 +326,7 @@ def test_an_open_cost_floor_beside_an_open_rate_floor_needs_the_most_either_need
     projection = floors_projection(verdicts)
     assert projection is not None
     assert (projection.if_none, projection.if_observed) == (CasesNeeded("never"), CasesNeeded("more", 223))
-    note = projection_note([projection], run_cases=12, cost_clause=True)
+    note = projection_note([projection], run_cases=12, cost_clause=True, forms=PageForms.off_page())
     assert "A cost floor has no margin, so arms that do not differ are never shown cheaper" in note
     assert note.endswith("This run used 12 cases; showing the floors hold needs about 223, more than it ran.")
 
@@ -411,7 +410,7 @@ def _page(bundle: AnalysisContextBundle) -> Report:
     return build_code_only_report(bundle, assembled_at="2026-10-17T12:00:00+00:00", campaign_name="character")
 
 
-async def test_the_bundle_carries_what_the_bounded_interval_read_and_the_writer_is_not_shown_it() -> None:
+async def test_the_bundle_carries_what_the_bounded_interval_read() -> None:
     _, bundle = await _ruled()
     (family,) = bundle.multiple_comparisons.families
     (passed,) = [comparison for comparison in family.comparisons if comparison.reading == "trial"]
@@ -420,7 +419,6 @@ async def test_the_bundle_carries_what_the_bounded_interval_read_and_the_writer_
     assert sorted(control) == sorted(CONTROL) and sorted(contrast) == sorted(CANDIDATE)
     again = bounded_difference_interval(control, contrast, paired=True, value_range=(0.0, 1.0), confidence=LEVEL)
     assert again == passed.bounded_interval
-    assert '"case_values"' not in _writer_message(bundle)
 
 
 async def test_an_unclear_page_tables_the_cases_holding_needs_with_their_cost_at_the_nominal_level() -> None:
@@ -469,11 +467,6 @@ async def test_a_broken_page_tables_no_projection() -> None:
     assert "Showing the floors hold" not in report_markdown(report)
 
 
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))
-
-
 def test_an_unpaired_rate_s_projection_reads_no_interval_past_its_cap_and_says_more_than_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -497,7 +490,9 @@ def test_an_unpaired_rate_s_projection_reads_no_interval_past_its_cap_and_says_m
     assert projection is not None and projection.if_none == CasesNeeded("beyond", UNPAIRED_PROJECTION_CAP)
     assert read_over and max(read_over) <= UNPAIRED_PROJECTION_CAP
     assert len(read_over) <= 2 * PROJECTION_ORDERS * 10, "two searches, each a few doublings up to the cap"
-    assert f"more than {UNPAIRED_PROJECTION_CAP}" in projected_cell(projection, projection.if_none)
+    assert f"more than {UNPAIRED_PROJECTION_CAP}" in projected_cell(
+        projection, projection.if_none, forms=PageForms.off_page()
+    )
 
 
 def test_an_unpaired_projection_over_more_cases_than_the_cap_searches_past_the_run_it_read(
@@ -527,7 +522,7 @@ def test_an_unpaired_projection_over_more_cases_than_the_cap_searches_past_the_r
     need = projection.if_none
     assert (need.kind == "more" and 610 < need.cases <= cap) or need == CasesNeeded("beyond", cap), need
     if need.kind == "beyond":
-        assert projected_cell(projection, need) == f"more than {format_number(cap)} cases"
+        assert projected_cell(projection, need, forms=PageForms.off_page()) == f"more than {format_number(cap)} cases"
 
 
 def test_a_note_over_a_count_past_another_row_s_cap_never_reads_a_range_ending_below_its_start() -> None:
@@ -536,10 +531,10 @@ def test_a_note_over_a_count_past_another_row_s_cap_never_reads_a_range_ending_b
     counted = SampleProjection(cases=20, if_none=CasesNeeded("more", 2000), if_observed=CasesNeeded("more", 1500))
     stopped = SampleProjection(cases=20, if_none=CasesNeeded("beyond", 500), if_observed=CasesNeeded("never"))
 
-    note = projection_note([counted, stopped], run_cases=20)
+    note = projection_note([counted, stopped], run_cases=20, forms=PageForms.off_page())
 
     assert "to more than 500" not in note
     assert "showing the floors hold needs about 1500 to 2000, or more than 500 where a search stopped there" in note
     wider = SampleProjection(cases=20, if_none=CasesNeeded("beyond", 10_000), if_observed=CasesNeeded("more", 300))
     said = f"needs about 300 to more than {format_number(10_000)}, more than it ran"
-    assert said in projection_note([wider], run_cases=20)
+    assert said in projection_note([wider], run_cases=20, forms=PageForms.off_page())

@@ -13,7 +13,12 @@ from collections.abc import Sequence
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, build_code_only_report
+from threetears.evals.analysis import (
+    AnalysisContextBundle,
+    DeclaredCellCoverage,
+    assemble_context_bundle,
+    build_code_only_report,
+)
 from threetears.evals.analysis.report import DisclosureBlock
 from threetears.evals.kernel import AspectDesign, ControlDeclaration, SweptAxis
 from threetears.evals.schema import IntervalScale, SweepableValue
@@ -79,9 +84,14 @@ def _number(display: str) -> int:
 
 
 def _states(bundle: AnalysisContextBundle) -> dict[tuple[int, int], str]:
+    """Each cell's state by its levels' numbers: a cell holds each level by its content hash, and the bundle names it."""
     assert bundle.declared_crossing is not None
+
+    def number(cell: DeclaredCellCoverage, axis: str) -> int:
+        return _number(bundle.level_name(axis, cell.levels[axis]))
+
     return {
-        (_number(cell.levels["chunk_tokens"]), _number(cell.levels["retriever_top_k"])): cell.state
+        (number(cell, "chunk_tokens"), number(cell, "retriever_top_k")): cell.state
         for cell in bundle.declared_crossing.cells
     }
 

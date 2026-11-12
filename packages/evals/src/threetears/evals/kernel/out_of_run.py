@@ -1,9 +1,8 @@
 """Calls the engine makes outside any run: priced before they are made, and ledgered once they are.
 
-Five engine calls have no run around them: a launch's case generation (an ``llm`` variation axis's
+Four engine calls have no run around them: a launch's case generation (an ``llm`` variation axis's
 writer, :func:`~threetears.evals.gen.generate_variations`), the rubric proposer
-(:func:`~threetears.evals.gen.propose_draft`), an analysis generation
-(:func:`~threetears.evals.analysis.run_analysis_generation`), a judge repeat
+(:func:`~threetears.evals.gen.propose_draft`), a judge repeat
 (:func:`~threetears.evals.run.judge_repeat_work`) and a second judge
 (:func:`~threetears.evals.run.second_judge_work`). A run's own calls are bounded by its cost
 cap as their spend arrives (``EvalRunCostCap``); these happen before any run exists, with none coming, or
@@ -43,6 +42,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
 
 from pydantic import TypeAdapter, ValidationError
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.schema.models import ClientRequestSettings, EvalTemplate, EvalTestCase, VariationAxis
 from threetears.evals.kernel.offload import run_blocking
@@ -301,15 +301,17 @@ class OutOfRunBudget:
         if None in ceilings:
             raise ValidationFailedError(
                 f"{what} cannot be priced before they are made: the client cannot bound what a call on "
-                f"{client.model_name!r} costs (price_ceiling returned None), and the out-of-run cap ${self.cap_usd:.2f} "
+                f"{client.model_name!r} costs (price_ceiling returned None), and the out-of-run cap ${round_half_even(self.cap_usd, 2)} "
                 "is enforced, so an unpriced call is refused rather than made — unknown is not $0. Nothing was called",
                 remedy="give the host's client a rate for that model, or name a model it can price",
             )
         priced = math.fsum(c for c in ceilings if c is not None)
         if self._committed_usd + priced > self.cap_usd:
-            already = f" on top of ${self._committed_usd:.4f} already admitted" if self._committed_usd else ""
+            already = (
+                f" on top of ${round_half_even(self._committed_usd, 4)} already admitted" if self._committed_usd else ""
+            )
             raise ValidationFailedError(
-                f"{what} are priced at up to ${priced:.4f}{already}, above the out-of-run cap ${self.cap_usd:.2f}. "
+                f"{what} are priced at up to ${round_half_even(priced, 4)}{already}, above the out-of-run cap ${round_half_even(self.cap_usd, 2)}. "
                 "Nothing was called",
                 remedy=(
                     "fewer generated cases, a cheaper model or a smaller output cap brings them under; a larger cap "

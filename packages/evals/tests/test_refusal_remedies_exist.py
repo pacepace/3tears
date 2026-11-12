@@ -34,7 +34,7 @@ def _catalogue() -> set[str]:
 #: Catalogue nouns spelled in two words. Split at the first underscore, ``case_set_mint`` would read as the
 #: noun ``case`` and the verb ``set_mint`` — and ``set_[a-z_]+`` is a write verb, so the launch fields
 #: ``case_set_name`` and ``case_set_version`` would read as remedies. They are fields; the noun is ``case_set``.
-_COMPOUND_NOUNS = ("reporter_cases", "reporter_case", "case_sets", "case_set")
+_COMPOUND_NOUNS = ("reporter_cases", "reporter_case", "writer_case", "case_sets", "case_set")
 
 
 def _action_shaped() -> re.Pattern[str]:
@@ -103,10 +103,10 @@ def test_a_two_word_noun_s_fields_are_not_remedies_but_its_actions_are() -> None
     """``case_set`` is one noun: its fields pass, a verb after it is still checked."""
     pattern = _action_shaped()
     assert pattern.findall("case_set_name and case_set_version name one version of one set together") == []
-    assert pattern.findall("call case_set_mint, or case_set_update, or reporter_case_delete") == [
+    assert pattern.findall("call case_set_mint, or case_set_update, or writer_case_delete") == [
         "case_set_mint",
         "case_set_update",
-        "reporter_case_delete",
+        "writer_case_delete",
     ]
 
 

@@ -8,11 +8,13 @@ family by Holm's method (:func:`_corrected_family`) and decides every guardrail 
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping
+from itertools import batched
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from threetears.evals.analysis.contention import withhold_contended_latency
 from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE
 from threetears.evals.analysis.reporting import (
     METRIC_SCORE,
     ScoreRecord,
@@ -52,11 +54,13 @@ from threetears.evals.kernel.metrics import (
     describe_rubric_dim,
     is_latency_measure,
     materiality,
+    reads_as_rate,
     summary_population,
 )
+from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.schema.models import (
-    EvalResult,
     RubricScale,
+    rubric_dim_scale,
 )
 from threetears.evals.kernel.surface import (
     GuardrailCell,
@@ -82,8 +86,15 @@ from threetears.evals.analysis.bundle.schema import (
     question_axes,
 )
 from threetears.evals.analysis.bundle.measures import (
-    _failures_as_misses,
-    _measure_collection,
+    _answered_unclassified,
+    _as_miss,
+    _classifies,
+    _grades_otherwise,
+    _measure_walk_memo,
+    _pool_measures,
+    _pooled_means,
+    _pooled_rates,
+    _miss_counts,
 )
 from threetears.evals.analysis.bundle.mechanisms import (
     _MechanismObservations,
@@ -101,6 +112,7 @@ from threetears.evals.analysis.bundle.cell_reads import (
 )
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
+    from threetears.evals.kernel.result_reading import ResultView
     from threetears.evals.schema.models import EvalRun
 
 
@@ -117,26 +129,27 @@ _NO_CONTROL_TO_COMPARE_AGAINST = (
 
 
 def _per_case_values(
-    members: list[EvalResult], judged_rows: dict[str, list[ScoreRecord]], *, profile: HostProfile
+    members: list[ResultView], judged_rows: dict[str, list[ScoreRecord]], *, profile: HostProfile
 ) -> dict[tuple[ReadingKind, str], dict[str, float]]:
-    """Every numeric reading of one cell, as one mean per case — the unit a family comparison tests.
+    """Every numeric or boolean reading of one cell, as one value per case — the unit a family comparison tests.
 
     A case is the independent draw (rule: count cases, not attempts), so repeats of one case are
     averaged before any test sees them. A measure's per-case value is read off the same walk the
-    cell's own collection is (:func:`_measure_collection`, each measure over its own population), so
-    the value tested and the value the cell reports are one computation; a judged dimension's, off the
-    non-faulted results' scores, as :func:`_bar_reading` reads one.
+    cell's own collection is (:func:`_pool_measures`, each measure over its own population), so the value tested and
+    the value the cell reports are one computation: a numeric measure's is the summary's mean (:func:`_pooled_means`),
+    a boolean's the summary's rate, a share on 0 to 1 (:func:`_pooled_rates`). A judged dimension's is read off the
+    non-faulted results' scores, as :func:`_bar_reading` reads one. A text or categorical measure has none.
 
     :param members: One cell's results, faulted ones included.
-    :ptype members: list[EvalResult]
+    :ptype members: list[ResultView]
     :param judged_rows: Projected judged-score rows by result id.
     :ptype judged_rows: dict[str, list[ScoreRecord]]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
-    :return: ``{(reading, name): {test_case_id: per-case mean}}`` for every reading with a numeric value.
+    :return: ``{(reading, name): {test_case_id: per-case value}}`` for every reading with a per-case value.
     :rtype: dict[tuple[ReadingKind, str], dict[str, float]]
     """
-    by_case: dict[str, list[EvalResult]] = defaultdict(list)
+    by_case: dict[str, list[ResultView]] = defaultdict(list)
     for result in members:
         by_case[result.test_case_id].append(result)
     values: dict[tuple[ReadingKind, str], dict[str, float]] = defaultdict(dict)
@@ -144,9 +157,14 @@ def _per_case_values(
         # The candidate's own spend among them (``production_replicating_cost``, which the walk yields over the
         # turns the candidate took and only where a result measured it): a contrast on cost tests it, never
         # ``cost_usd``, which sums the judge's spend too.
-        for summary in _measure_collection(by_case[case_id], profile=profile, undeclared="scored").measures:
-            if summary.mean is not None:
-                values[("measure", summary.name)][case_id] = summary.mean
+        # Each summary's mean, in the collection's name order, with no summary built (:func:`_pooled_means`).
+        pooled = _pool_measures(by_case[case_id], profile=profile, undeclared="scored")
+        for name, mean in _pooled_means(pooled).items():
+            values[("measure", name)][case_id] = mean
+        # A boolean's per-case value is its rate, the share of the case's observations held True: the cell's own
+        # ``rate`` over that case alone (:func:`_pooled_rates`), as the pass rate is a case's share of trials passed.
+        for name, rate in _pooled_rates(pooled).items():
+            values[("measure", name)][case_id] = rate
     scores: dict[tuple[str, str], list[float]] = defaultdict(list)
     for result in _non_faulted(members):
         for dimension, record in _judged_values(judged_rows.get(result.id, [])):
@@ -169,8 +187,28 @@ class PlanningReading(NamedTuple):
     repeats: dict[str, dict[str, list[float]]]
 
 
+class _KeptResult(NamedTuple):
+    """What :func:`planning_readings` keeps of one result once it is read: its values, not the result."""
+
+    #: Where it sits among its run's results: its case, ``k`` and id.
+    order: tuple[str, int, str]
+    #: Its per-case value of each reading (:func:`_per_case_values`).
+    values: dict[tuple[ReadingKind, str], dict[str, float]]
+    #: Its values read as a miss, when it is a failure that landed no verdict; which of the two counts turns on every
+    #: run's verdicts, known only once all are read (:func:`_miss_counts`).
+    as_miss: dict[tuple[ReadingKind, str], dict[str, float]] | None
+
+
+class _RunRepeats(NamedTuple):
+    """What :func:`planning_readings` keeps of one run once its results are read."""
+
+    #: The cases the run answered without failing and without landing a verdict (:func:`_grades_otherwise`).
+    answered_unclassified: set[str]
+    kept: list[_KeptResult]
+
+
 def planning_readings(
-    runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], *, profile: HostProfile
+    runs: list[EvalRun], results: Iterable[ResultView], *, profile: HostProfile
 ) -> list[PlanningReading]:
     """Every reading an unscoped comparison family would test, with each earlier run's per-repeat values.
 
@@ -180,34 +218,90 @@ def planning_readings(
     so a repeat's value here and a case's mean in a comparison are one computation. Guardrails are left out:
     they are held, not tested for a difference; so is latency read under concurrency, which no comparison reads.
 
+    **Each result is read down to its values before the next page is read.** A template's history is every result of
+    every run of it, so nothing here holds more than a page of results and the values read so far: ``results`` is
+    read once, lazily (a walk of the runs' readings,
+    :meth:`~threetears.evals.kernel.storage.EvalStorage.iter_result_readings`), a page at a time, and each page's
+    results are read run by run. The runs' results may come in any order across runs; within a run, in the store's
+    order. What reads across runs (a failure that landed no verdict counts as a miss on a case another run classified,
+    :func:`_failures_as_misses`; a dimension any result scored as a boundary is a guardrail; the scale a dimension was
+    answered on, the last run in ``runs`` order to answer it deciding) is kept as the few facts it needs and applied
+    once every run is read, so the readings are the ones every run's results read at once give. A run none of
+    ``results`` belongs to is read as no earlier run: nothing of it, its launch scales included, is planned from.
+
     :param runs: The earlier runs.
     :ptype runs: list[EvalRun]
-    :param results_by_run: Each run's results.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :param results: Their results, each read once: in any order across runs, and in the store's order within one.
+    :ptype results: Iterable[ResultView]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: One entry per reading with a value, sorted by reading kind and name.
     :rtype: list[PlanningReading]
+    :raises ValueError: A result belongs to none of ``runs``.
     """
-    results_by_run = _failures_as_misses({run.id: results_by_run.get(run.id, []) for run in runs})
-    # Latency read under concurrency is in no comparison (#701), so it plans none either.
-    results_by_run = {
-        run_id: withhold_contended_latency(run_results, profile.measures)
-        for run_id, run_results in results_by_run.items()
-    }
-    results = [result for run in runs for result in results_by_run[run.id]]
-    projection = project_score_records(runs, results, known_run_ids=None, archived_run_ids=None, profile=profile)
-    judged_rows: dict[str, list[ScoreRecord]] = {}
-    scales: dict[str, RubricScale] = {}
-    for record in projection.records:
-        judged_rows.setdefault(record.result_id, []).append(record)
-        if record.metric == METRIC_SCORE and record.rubric_dim and record.rubric_scale is not None:
-            scales[record.rubric_dim] = record.rubric_scale
-    boundary = _boundary_dimensions(results)
+    listed = {run.id: run for run in runs}
+    # The scale each template dim was answered on, as each run's scores carried it: laid, in ``runs`` order, over what
+    # each run recorded at launch once every run is read.
+    answered_scales: dict[str, dict[str, RubricScale]] = {}
+    classified_cases: set[str] = set()
+    boundary: set[str] = set()
+    kept: dict[str, _RunRepeats] = {}
+    for page in batched(results, RUN_RESULTS_PAGE):
+        page_runs: dict[str, list[ResultView]] = {}
+        for result in page:
+            page_runs.setdefault(result.eval_run_id, []).append(result)
+        for run_id, members in page_runs.items():
+            run = listed.get(run_id)
+            if run is None:
+                raise ValueError(f"the planning read handed out a result of run {run_id!r}, none of the runs it read")
+            run_repeats = kept.setdefault(run_id, _RunRepeats(answered_unclassified=set(), kept=[]))
+            run_scales = answered_scales.setdefault(run_id, {})
+            for result in members:
+                if _classifies(result):
+                    classified_cases.add(result.test_case_id)
+                if _answered_unclassified(result):
+                    run_repeats.answered_unclassified.add(result.test_case_id)
+            boundary |= _boundary_dimensions(members)
+            # Latency read under concurrency is in no comparison (#701), so it plans none either.
+            read = withhold_contended_latency(members, profile.measures)
+            as_misses = [miss for miss in map(_as_miss, members) if miss is not None]
+            misses = {result.id: result for result in withhold_contended_latency(as_misses, profile.measures)}
+            # A judged score is read off the judge's scores, which a verdict read as a miss leaves as they were.
+            projection = project_score_records([run], read, known_run_ids=None, archived_run_ids=None, profile=profile)
+            judged_rows: dict[str, list[ScoreRecord]] = {}
+            for record in projection.records:
+                judged_rows.setdefault(record.result_id, []).append(record)
+                if record.metric == METRIC_SCORE and record.rubric_dim and record.rubric_scale is not None:
+                    run_scales[record.rubric_dim] = record.rubric_scale
+            # One memo per page, not per read: it holds each walked result, so a read-long memo would hold the history
+            # the page-at-a-time walk exists not to hold. Within the page, each name is described once.
+            with _measure_walk_memo():
+                for result in read:
+                    miss = misses.get(result.id)
+                    run_repeats.kept.append(
+                        _KeptResult(
+                            order=(result.test_case_id, result.k_iteration, result.id),
+                            values=_per_case_values([result], judged_rows, profile=profile),
+                            as_miss=(
+                                _per_case_values([miss], judged_rows, profile=profile) if miss is not None else None
+                            ),
+                        )
+                    )
+    read_runs = [run for run in runs if run.id in kept]
+    scales: dict[str, RubricScale] = {dim: scale for run in read_runs for dim, scale in run.rubric_scales.items()}
+    for run in read_runs:
+        scales.update(answered_scales[run.id])
     repeats: dict[tuple[ReadingKind, str], dict[str, dict[str, list[float]]]] = {}
-    for run in runs:
-        for result in sorted(results_by_run[run.id], key=lambda one: (one.test_case_id, one.k_iteration, one.id)):
-            for reading, by_case in _per_case_values([result], judged_rows, profile=profile).items():
+    for run in read_runs:
+        run_repeats = kept[run.id]
+        grading_otherwise = _grades_otherwise(run_repeats.answered_unclassified, classified_cases)
+        for kept_result in sorted(run_repeats.kept, key=lambda one: one.order):
+            values = kept_result.values
+            if kept_result.as_miss is not None and _miss_counts(
+                kept_result.order[0], classified_cases, grading_otherwise=grading_otherwise
+            ):
+                values = kept_result.as_miss
+            for reading, by_case in values.items():
                 for case_id, value in by_case.items():
                     repeats.setdefault(reading, {}).setdefault(run.id, {}).setdefault(case_id, []).append(value)
     readings = []
@@ -220,11 +314,11 @@ def planning_readings(
                 or not axis_in_question_scope(descriptor.merit_axis, [])
             ):
                 continue
-            higher, value_range = descriptor.higher_is_better, descriptor.value_range
+            higher, value_range = descriptor.higher_is_better, _measure_range(descriptor)
         else:
             if name in boundary:
                 continue
-            judged = describe_rubric_dim(name, scale=scales.get(name, "ordinal"))
+            judged = describe_rubric_dim(name, scale=rubric_dim_scale(name, scales))
             if judged.higher_is_better is None:
                 continue
             higher, value_range = judged.higher_is_better, judged.value_range
@@ -238,9 +332,11 @@ def _family_readings(
     """The readings a question with these axes could draw a verdict from, each with its better direction.
 
     A measure qualifies when it has a better end (a reading with none cannot improve or regress) and
-    sits on one of the axes; a per-label classifier statistic does not, because it is computed from a
-    whole cell's confusion counts and has no per-case value to test. A capability judged dimension sits on
-    the quality axis. A guardrail — a boundary judged dimension, or a measure declared one, which serves no
+    sits on one of the axes. A boolean one is tested on its rate per case, the share of a case's observations held
+    True, as the pass rate is tested on a case's share of trials passed; a text or categorical one has no value with
+    an order to test, whatever it declares, so it is in no family. A per-label classifier statistic does not qualify
+    either, because it is computed from a whole cell's confusion counts and has no per-case value to test. A
+    capability judged dimension sits on the quality axis. A guardrail — a boundary judged dimension, or a measure declared one, which serves no
     axis — is in no family: it is held, never traded against a gain, and is decided on its own
     (:func:`_guardrails`). An unscoped question (no axes) asks about every axis — every axis, not every measure:
     a measure that serves no merit axis contributes to no verdict (:data:`MeritAxis`), scoped or not
@@ -261,7 +357,11 @@ def _family_readings(
     """
     readings: dict[tuple[ComparisonReading, str], bool] = {}
     for name, descriptor in catalog.items():
-        if descriptor.higher_is_better is None or classifier_label_of(name) is not None:
+        if (
+            descriptor.higher_is_better is None
+            or descriptor.data_type in ("text", "categorical")
+            or classifier_label_of(name) is not None
+        ):
             continue
         if axis_in_question_scope(descriptor.merit_axis, axes):
             readings[("measure", name)] = descriptor.higher_is_better
@@ -276,8 +376,25 @@ def _family_readings(
 _TRIAL_PASS_RANGE = (0.0, 1.0)
 
 
+def _is_rate(
+    reading: tuple[ComparisonReading, str],
+    catalog: Mapping[str, MetricDescriptor],
+    judged_ranges: Mapping[str, tuple[float, float]],
+) -> bool:
+    """Whether a family reading is a rate (:func:`~threetears.evals.kernel.metrics.reads_as_rate`), by the bundle's
+    measure catalog and its judged dimensions' scales."""
+    kind, name = reading
+    return reads_as_rate(kind, name, descriptor=catalog.get(name), value_range=judged_ranges.get(name))
+
+
+def _measure_range(descriptor: MetricDescriptor) -> tuple[float, float] | None:
+    """The range a measure's per-case values lie on: a boolean's is its rate's, a share on 0 to 1 as the pass rate's
+    is, whatever it declares; any other measure's is its declared range, or None where it declares none."""
+    return _TRIAL_PASS_RANGE if descriptor.data_type == "boolean" else descriptor.value_range
+
+
 def _trial_pass_counts(
-    members: list[EvalResult], *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]
+    members: list[ResultView], *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]
 ) -> dict[str, tuple[int, int]]:
     """One cell's overall pass rate per case, as counts: each case's usable trials passed and its usable trials, the
     case's share passed being the one over the other.
@@ -290,7 +407,7 @@ def _trial_pass_counts(
     of its trials passed only because nothing could fail it.
 
     :param members: One cell's results.
-    :ptype members: list[EvalResult]
+    :ptype members: list[ResultView]
     :param rubric_threshold: The 1–5 level a judged dimension must reach to pass.
     :ptype rubric_threshold: int
     :param catalog: The bundle's measure catalog, which says which checks a trial is graded on.
@@ -335,6 +452,8 @@ class _Tested(NamedTuple):
     samples: tuple[list[float], list[float]]
     #: The reading's declared range, which bounds the interval on its delta (:func:`difference_interval`).
     value_range: tuple[float, float] | None = None
+    #: Whether the reading is a rate (:func:`_is_rate`), whose contrast is drawn on the bounded interval.
+    rate: bool = False
 
 
 def _compare(
@@ -525,6 +644,18 @@ def _family_disclosure(
     return f"{_NO_QUESTION_FAMILY} {sentence}" if campaign_wide else sentence
 
 
+def _interval_withholds(interval: tuple[float, float] | None, *, rate: bool) -> str:
+    """Why a comparison whose adjusted p is below the family's alpha is not separated: its interval reaches zero, or a
+    rate has no bounded interval at all."""
+    if interval is None:
+        return (
+            "the adjusted p is below the family's alpha, but no bounded interval exists on this rate, so no difference "
+            "is shown"
+        )
+    drawn = "the bounded interval on this rate" if rate else "the interval on the difference"
+    return f"the adjusted p is below the family's alpha, but {drawn} reaches zero, so no difference is shown"
+
+
 def _corrected_family(aspect: str | None, axes: list[MeritAxis], tested: list[_Tested]) -> ComparisonFamily:
     """Correct one family's tests together, and read each comparison's verdict and interval off the result.
 
@@ -536,18 +667,24 @@ def _corrected_family(aspect: str | None, axes: list[MeritAxis], tested: list[_T
 
     **A separation is read off its interval as well as its adjusted p** (#597): ``improved`` or ``regressed``
     needs the interval, where one exists, to exclude zero. Holm's later steps reject some comparisons whose
-    Bonferroni interval still reaches zero, and a reader must never see a separation beside an interval that
-    includes no change. An interval that excludes zero has ``m · p_raw < α``, which Holm always rejects, so the
-    rule is Bonferroni's wherever an interval exists: a subset of Holm's rejections, so the family's error stays
-    at α, at the cost of the separations Holm alone would add. Where every case moved by one amount no t
-    interval exists, and the interval is the bounded test's on the declared range, the test whose p was
-    corrected (#597); with no range that comparison was never tested and is not in the family.
+    interval still reaches zero, and a reader must never see a separation beside an interval that includes no
+    change. The rule only removes Holm's rejections, so the family's error stays at α; a comparison it withholds
+    says so (``not_separated_reason``). Where every case moved by one amount no t interval exists, and the interval
+    is the bounded test's on the declared range, the test whose p was corrected (#597); with no range that comparison
+    was never tested and is not in the family. Each comparison names the method its interval was drawn by
+    (``interval_basis``).
 
     **A claim of no worse by more than a margin reads the bounded interval** (``bounded_interval``), the bounded
     test's on the declared range at the same level, valid at every n; the t interval is not. Read for non-inferiority
     on a pass rate's coarse per-case shares at the margin, it let a ``switch`` on a rate through up to 12% of
     the time against the 2.5% it states (``docs/measuring-soundly.md``), the failure a guardrail's ``held`` was moved
     off it for. A reading with no declared range has none.
+
+    **A rate is drawn on its bounded interval** (:func:`_is_rate`): its ``interval`` is its ``bounded_interval``, and
+    a separation needs that interval to exclude zero. A rate is read by one method everywhere: a campaign's reading of
+    the pass rate and a floor are the bounded test's on the same per-case shares, so at a looser level either nests
+    inside the contrast's, and the two part only by level, never by method. The p's stay the t test's, so no other
+    comparison's adjusted p moves; the rule only removes separations, so the family's error stays at α.
 
     :param aspect: The aspect whose question the family serves, or None for the exploratory family.
     :ptype aspect: str | None
@@ -570,35 +707,9 @@ def _corrected_family(aspect: str | None, axes: list[MeritAxis], tested: list[_T
             p_adjusted = next(adjusted)
             equivalence_p_adjusted = next(adjusted) if one.equivalence_p_raw is not None else None
             control_sample, contrast_sample = one.samples
-            interval = (
-                # No spread: no t interval exists, and on the declared range the bounded test gives one, so a
-                # separation is never shown with no interval beside it (#597), nor identical values without bounds.
-                bounded_difference_interval(
-                    control_sample,
-                    contrast_sample,
-                    paired=comparison.test == "paired",
-                    value_range=one.value_range,
-                    confidence=interval_level,
-                )
-                if comparison.basis in ("bounded", "identical") and one.value_range is not None
-                else difference_interval(
-                    control_sample,
-                    contrast_sample,
-                    paired=comparison.test == "paired",
-                    confidence=interval_level,
-                    value_range=one.value_range,
-                )
-            )
-            verdict: ComparisonVerdict = "not_separated"
-            if p_adjusted < SIGNIFICANCE_ALPHA and comparison.delta and interval_permits_separation(interval):
-                verdict = "improved" if (comparison.delta > 0) == comparison.higher_is_better else "regressed"
-            elif equivalence_p_adjusted is not None and equivalence_p_adjusted < SIGNIFICANCE_ALPHA:
-                verdict = "equivalent"
             bounded = (
                 None
                 if one.value_range is None
-                else interval
-                if comparison.basis in ("bounded", "identical")
                 else bounded_difference_interval(
                     control_sample,
                     contrast_sample,
@@ -607,11 +718,39 @@ def _corrected_family(aspect: str | None, axes: list[MeritAxis], tested: list[_T
                     confidence=interval_level,
                 )
             )
+            # A rate is drawn on its bounded interval, the method every reading of a rate is read by, so a reading's
+            # interval nests inside its contrast's. With no spread no t interval exists, and the bounded test's stands
+            # for it too, so a separation is never shown with no interval beside it (#597).
+            on_bounded = one.value_range is not None and (one.rate or comparison.basis in ("bounded", "identical"))
+            interval = (
+                bounded
+                if on_bounded
+                else difference_interval(
+                    control_sample,
+                    contrast_sample,
+                    paired=comparison.test == "paired",
+                    confidence=interval_level,
+                    value_range=one.value_range,
+                )
+            )
+            # A rate's separation needs its bounded interval to exist and exclude zero; its p stays the t test's.
+            permits = interval_permits_separation(interval) and (interval is not None or not one.rate)
+            verdict: ComparisonVerdict = "not_separated"
+            if p_adjusted < SIGNIFICANCE_ALPHA and comparison.delta and permits:
+                verdict = "improved" if (comparison.delta > 0) == comparison.higher_is_better else "regressed"
+            elif equivalence_p_adjusted is not None and equivalence_p_adjusted < SIGNIFICANCE_ALPHA:
+                verdict = "equivalent"
+            # A p the interval withholds says why, or a reader sees a p under alpha beside "not separated" and no cause.
+            withheld = verdict == "not_separated" and p_adjusted < SIGNIFICANCE_ALPHA and bool(comparison.delta)
             comparison = comparison.model_copy(
                 update={
+                    "not_separated_reason": (
+                        _interval_withholds(interval, rate=one.rate) if withheld else comparison.not_separated_reason
+                    ),
                     "p_adjusted": p_adjusted,
                     "equivalence_p_adjusted": equivalence_p_adjusted,
                     "interval": interval,
+                    "interval_basis": None if interval is None else ("bounded" if on_bounded else "t"),
                     "bounded_interval": bounded,
                     # What the bounded interval read, so a projection can read it again at more cases.
                     "case_values": None if bounded is None else (list(control_sample), list(contrast_sample)),
@@ -638,7 +777,7 @@ def _multiple_comparisons(
     aspect: str,
     declared: AspectDeclaration | None,
     realized: RealizedDesign,
-    results_by_cell: dict[_CellKey, list[EvalResult]],
+    results_by_cell: dict[_CellKey, list[ResultView]],
     records: list[ScoreRecord],
     *,
     catalog: dict[str, MetricDescriptor],
@@ -663,10 +802,11 @@ def _multiple_comparisons(
     The guardrails are read over the same pairs and the same per-case values, and kept out of every
     family: each is decided on its own (:func:`_guardrails`), so no capability gain can offset one.
 
-    **The overall pass rate joins the question's family when a question is asked and the aspect declares a
-    margin**: the margin is how far the pass rate may fall, so the pass rate is a hypothesis the question
-    asks and its family grows by one, every adjusted p in it moving with it. It never joins the exploratory family,
-    whose size it would move over unchanged runs. Each case's value is the share of its usable trials that passed
+    **The overall pass rate joins the question's family whenever a question is asked**, with a margin (how far the
+    pass rate may fall) or with none (a superiority question, its drop read against zero): either way the pass rate is
+    a hypothesis the question asks and its family grows by one, every adjusted p in it moving with it, so a gate and a
+    campaign's verdicts read the question's pass rate as its page does. It never joins the exploratory family, whose
+    size it would move over unchanged runs. Each case's value is the share of its usable trials that passed
     (:func:`_trial_pass_counts`), tested and bounded as a check's pass rate is, on its 0-1 range.
 
     **The floors read their own values, whatever the family compares** (:class:`FloorContrast`): each arm against the
@@ -681,7 +821,7 @@ def _multiple_comparisons(
     :param realized: The derived design, for the control arm.
     :ptype realized: RealizedDesign
     :param results_by_cell: Each cell's results.
-    :ptype results_by_cell: dict[_CellKey, list[EvalResult]]
+    :ptype results_by_cell: dict[_CellKey, list[ResultView]]
     :param records: The assembly's score projection rows, where judged scores live.
     :ptype records: list[ScoreRecord]
     :param catalog: The bundle's measure catalog — direction and axis per measure.
@@ -724,9 +864,10 @@ def _multiple_comparisons(
     # An aspect that asked nothing is not thereby licensed to report chance differences: its family is every
     # comparison it holds, on every reading, corrected as one.
     scopes: list[tuple[str | None, list[MeritAxis]]] = [(aspect, axes_asked) if axes_asked is not None else (None, [])]
-    # The pass rate is a hypothesis only of an asked question with a margin to fall by (never the exploratory
-    # family's: it would move every other reading's adjusted p there over unchanged runs).
-    pass_rate_asked = axes_asked is not None and declared is not None and declared.margin is not None
+    # The pass rate is a hypothesis of every asked question, with a margin to fall by or none (a superiority question
+    # reads its drop against zero), and never of the exploratory family: it would move every other reading's adjusted
+    # p there over unchanged runs.
+    pass_rate_asked = axes_asked is not None
     control_variant = realized.control_arm.variant_key
     # The control's cells under an earlier identity predicate are the control, not a rival arm: compared with the
     # control they would read the control against itself under another digest, so they are in no pair.
@@ -789,7 +930,7 @@ def _multiple_comparisons(
                     threshold=threshold,
                     margin_source=margin_source,
                     value_range=(
-                        catalog[reading[1]].value_range
+                        _measure_range(catalog[reading[1]])
                         if reading[0] == "measure"
                         else _TRIAL_PASS_RANGE
                         if reading[0] == "trial"
@@ -806,7 +947,10 @@ def _multiple_comparisons(
                 )
                 confounds = pair_confounds[(control_key, contrast_key)]
                 tested.append(
-                    one._replace(comparison=one.comparison.model_copy(update={"mechanism_confounds": confounds}))
+                    one._replace(
+                        comparison=one.comparison.model_copy(update={"mechanism_confounds": confounds}),
+                        rate=_is_rate(reading, catalog, judged_ranges),
+                    )
                 )
         families.append(_corrected_family(family_aspect, axes, tested))
     checks = [
@@ -840,7 +984,7 @@ def _multiple_comparisons(
 
 
 def _choice_contrasts(
-    results_by_cell: dict[_CellKey, list[EvalResult]], *, rubric_threshold: int, catalog: dict[str, MetricDescriptor]
+    results_by_cell: dict[_CellKey, list[ResultView]], *, rubric_threshold: int, catalog: dict[str, MetricDescriptor]
 ) -> list[FloorContrast]:
     """With no control, every pair of arms under one rig on the overall pass rate, per case: what a choice's pairwise
     readings read. The pair's ``control`` is the arm first in variant-key order, a position and never a role.
@@ -979,7 +1123,7 @@ def _guardrail_readings(
     judged_margins = {entry.dimension: entry.margin for entry in declared.guardrail_margins} if declared else {}
     readings: dict[tuple[ReadingKind, str], _Guardrail] = {
         ("measure", name): _Guardrail(
-            descriptor.higher_is_better, descriptor.materiality_threshold, descriptor.value_range
+            descriptor.higher_is_better, descriptor.materiality_threshold, _measure_range(descriptor)
         )
         for name, descriptor in catalog.items()
         if descriptor.guardrail and descriptor.higher_is_better is not None

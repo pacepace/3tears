@@ -34,12 +34,8 @@ A run's results are read by :func:`results_list` — one light row per result, p
 the cell that came out wrong — and :func:`result_get`, which reads one result back as stored with one part of its
 trace: by default the output its kind stored and the roles' spend, and the judge's evidence or the spans by name.
 
-The reporter case bank's operations — :func:`reporter_case_freeze`, :func:`reporter_cases_list` and
-:func:`reporter_case_archive` — are how a surface makes the cases a reporter run measures: each is one
-campaign's analysis bundle, frozen, and a reporter template launches nothing until one is. A host launching
-reporter runs makes every refusal a reporter arm meets with :func:`admit_reporter_launch` — and plans the arm
-with :func:`plan_reporter_arm` and prices its largest generator call with :func:`price_largest_reporter_call` —
-over its own prompt registry (:class:`ReporterPrompts`) and model resolution (:data:`ReporterModelResolver`).
+A campaign's closure is exported by :func:`campaign_export` (a :class:`CampaignExport`): its documents as stored, the
+host's profile declaration and a manifest, the three files a writer case is minted from.
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.
@@ -50,6 +46,7 @@ from __future__ import annotations
 from threetears.evals.ops.analysis import (
     AnalysisDeleted,
     AnalysisGenerationEstimate,
+    AnalysisBasis,
     AnalysisLine,
     AnalysisListing,
     BarProposals,
@@ -57,6 +54,10 @@ from threetears.evals.ops.analysis import (
     CampaignDefinition,
     CampaignCallLine,
     CampaignLine,
+    CampaignLineArm,
+    CampaignLineCall,
+    CampaignLineReport,
+    ReportState,
     CampaignListing,
     InsightDeleted,
     InsightDetail,
@@ -87,8 +88,31 @@ from threetears.evals.ops.analysis import (
     insights_list,
     report_read,
 )
+from threetears.evals.ops.campaign_closure import (
+    CampaignExport,
+    CampaignExportManifest,
+    CampaignExportPage,
+    KindDeclaration,
+    ProfileDeclaration,
+    SweepableDeclaration,
+    UnresolvedLink,
+    campaign_export,
+)
 from threetears.evals.ops.cases import CaseRenamed, case_rename
 from threetears.evals.ops.host import ANALYSIS_PREPARATION_BUDGET_S, AnalysisGeneration, OpsHost
+from threetears.evals.ops.analysis import ReportWriter
+from threetears.evals.ops.report_writer.analyst import AnalystLimits
+from threetears.evals.ops.report_writer.editor import EditorLimits
+from threetears.evals.ops.report_writer.loop import TurnModel, WriterLimits
+from threetears.evals.ops.report_writer.session import SessionLimits
+from threetears.evals.ops.report_writer.tally import ReportBudget, WriterRole
+from threetears.evals.ops.report_writer.writer_contract import (
+    WRITER_KIND_CONTRACT,
+    WRITER_KIND_MEASURES,
+    WriterArm,
+    WriterModelFactory,
+)
+from threetears.evals.ops.report_writer.writer_launch import ModelFamily
 from threetears.evals.ops.jobs import (
     ACTION_JOB_PREFIX,
     JUDGE_TEMPERATURE_JOB_PREFIX,
@@ -161,7 +185,6 @@ from threetears.evals.analysis.out_of_run_spend import (
     scope_out_of_run_spend,
 )
 from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.reporter_bank import FrozenReporterCase
 from threetears.evals.ops.judge_cases import (
     JudgeCaseAuthor,
     JudgeCasesFreeze,
@@ -179,24 +202,6 @@ from threetears.evals.ops.judge_profiles import (
     judge_profiles_record,
 )
 from threetears.evals.ops.regressions import RegressionAlert, RegressionSink, RegressionWatch
-from threetears.evals.ops.reporter import (
-    REPORTER_UNHONOURED_LAUNCH_ARGUMENTS,
-    AmbiguousReporterPair,
-    ReporterAdmitted,
-    ReporterModelResolver,
-    ReporterModelRole,
-    ReporterPrompts,
-    admit_reporter_launch,
-    plan_reporter_arm,
-    price_largest_reporter_call,
-    ReporterCaseEntry,
-    ReporterCaseFreeze,
-    ReporterCaseListing,
-    UnreadableReporterCase,
-    reporter_case_archive,
-    reporter_case_freeze,
-    reporter_cases_list,
-)
 from threetears.evals.ops.results import (
     ResultDetail,
     ResultLine,
@@ -247,6 +252,17 @@ from threetears.evals.ops.runs import (
 from threetears.evals.analysis.summary import EvalSummary, dollars_text
 
 __all__ = [
+    "CampaignExport",
+    "CampaignExportManifest",
+    "CampaignExportPage",
+    "KindDeclaration",
+    "ProfileDeclaration",
+    "SweepableDeclaration",
+    "UnresolvedLink",
+    "campaign_export",
+    "AnalystLimits",
+    "EditorLimits",
+    "SessionLimits",
     "ANALYSIS_PREPARATION_BUDGET_S",
     "ACTION_JOB_PREFIX",
     "EXPORT_PAGE_RESULTS",
@@ -279,11 +295,11 @@ __all__ = [
     "ANALYSIS_JOB_PREFIX",
     "RUN_JOB_PREFIX",
     "TERMINAL_JOB_STATES",
-    "AmbiguousReporterPair",
     "AnalysisDeleted",
     "AnalysisGenerationEstimate",
     "ArmEstimate",
     "AnalysisGeneration",
+    "AnalysisBasis",
     "AnalysisLine",
     "AnalysisListing",
     "BarProposals",
@@ -291,11 +307,14 @@ __all__ = [
     "CampaignDefinition",
     "CampaignCallLine",
     "CampaignLine",
+    "CampaignLineArm",
+    "CampaignLineCall",
+    "CampaignLineReport",
+    "ReportState",
     "CampaignListing",
     "DetectableEffect",
     "DetectableEffects",
     "EvalSummary",
-    "FrozenReporterCase",
     "FrontierResult",
     "JudgeTemperatureComparison",
     "HistoryResult",
@@ -312,6 +331,8 @@ __all__ = [
     "LaunchArguments",
     "LaunchEstimate",
     "OpsHost",
+    "ReportBudget",
+    "ReportWriter",
     "OutOfRunSpendReport",
     "PivotTable",
     "ProposedBar",
@@ -328,17 +349,6 @@ __all__ = [
     "JudgeProfileListing",
     "JudgeProfileRecording",
     "JudgeProfilesRecord",
-    "REPORTER_UNHONOURED_LAUNCH_ARGUMENTS",
-    "ReporterAdmitted",
-    "ReporterModelResolver",
-    "ReporterModelRole",
-    "ReporterPrompts",
-    "admit_reporter_launch",
-    "plan_reporter_arm",
-    "price_largest_reporter_call",
-    "ReporterCaseEntry",
-    "ReporterCaseFreeze",
-    "ReporterCaseListing",
     "ResultDetail",
     "ResultLine",
     "ResultListing",
@@ -359,7 +369,9 @@ __all__ = [
     "TraceState",
     "UndescribableArmsLine",
     "UndescribableArmsListing",
-    "UnreadableReporterCase",
+    "WriterLimits",
+    "WRITER_KIND_CONTRACT",
+    "WRITER_KIND_MEASURES",
     "analyses_list",
     "analyses_undescribable",
     "analysis_archive",
@@ -401,9 +413,6 @@ __all__ = [
     "parse_job_id",
     "pivot_text",
     "report_read",
-    "reporter_case_archive",
-    "reporter_case_freeze",
-    "reporter_cases_list",
     "result_get",
     "result_rate",
     "result_rate_person",
@@ -434,4 +443,9 @@ __all__ = [
     "judge_drift_check",
     "judge_second",
     "judge_second_estimate",
+    "ModelFamily",
+    "TurnModel",
+    "WriterArm",
+    "WriterModelFactory",
+    "WriterRole",
 ]

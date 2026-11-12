@@ -49,8 +49,10 @@ from threetears.evals.kernel.candidate_kind import (
     CellSpanWindow,
     VariantConfig,
 )
-from threetears.evals.kernel.capped_completion import call_ceiling, refresh_prices
+from threetears.evals.kernel.capped_completion import call_ceiling, ceiling_is_estimate, refresh_prices
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.failed_call import failed_call_output
+from threetears.evals.kernel.run_pages import iter_keyed_results
 from threetears.evals.kernel.judge_cases import (
     JUDGE_CASE_KEY,
     JUDGE_KIND,
@@ -306,6 +308,24 @@ def _cases_of_result(
 _AUTHORED_SOURCE = "authored"
 
 
+def _carried_copies(storage: EvalStorage, template: EvalTemplate, scope_id: str) -> dict[tuple[str, str, str], str]:
+    """Every case a definition reset carried into ``template`` (``EvalTestCase.carried_from``), by the identity a
+    freeze derives a case's id from: its source (a result's id, or :data:`_AUTHORED_SOURCE`), its dim and its content.
+
+    A copy keeps its source's content but not its id, so the derived id alone would not find it, and a freeze of the
+    same labels or results into the new revision would store the case a second time beside it.
+
+    :raises ValueError: A carried case holds a judge case this build cannot read.
+    """
+    copies: dict[tuple[str, str, str], str] = {}
+    for stored in storage.query_test_cases(scope_id, template_id=template.id):
+        if stored.carried_from is None or (case := judge_case_of(stored)) is None:
+            continue
+        source = _AUTHORED_SOURCE if case.source.result_id is None else case.source.result_id
+        copies.setdefault((source, case.dim, stored.content_hash or case.content_digest()), stored.id)
+    return copies
+
+
 def _store_case(
     storage: EvalStorage,
     template: EvalTemplate,
@@ -316,16 +336,21 @@ def _store_case(
     seen: set[str],
     *,
     seed_name: str | None = None,
+    copies: Mapping[tuple[str, str, str], str] | None = None,
 ) -> FrozenJudgeCase | None:
     """Write one frozen case as a test case of ``template`` unless it is stored already; ``None`` for a repeat.
 
     The id is derived from the template, the source result (an authored case: :data:`_AUTHORED_SOURCE`), the dim
-    and the case's content, so freezing or authoring the same thing twice names the stored case. ``seed_name`` is
-    the corpus name a seeded case is written with; a case already stored is never rewritten to carry one.
+    and the case's content, so freezing or authoring the same thing twice names the stored case. A case a reset
+    carried into the template under that same identity (``copies``, :func:`_carried_copies`) is the stored case too.
+    ``seed_name`` is the corpus name a seeded case is written with; a case already stored is never rewritten to carry
+    one.
     """
     digest = case.content_digest()
     source = _AUTHORED_SOURCE if source_result_id is None else source_result_id
     case_id = str(uuid.uuid5(_CASE_ID_NAMESPACE, f"{template.id}|{source}|{dim}|{digest}"))
+    if copies is not None and (copied := copies.get((source, dim, digest))) is not None:
+        case_id = copied
     if case_id in seen:
         return None
     seen.add(case_id)
@@ -536,7 +561,9 @@ def freeze_judge_cases(
     after its run, or whose run did not record its judging, is skipped with that reason), the criterion as its
     template worded it, and the person labels :func:`judge_case_labels` finds for it. A case's id is derived from
     the template, the result, the dim and everything the case freezes, so freezing the same thing twice names the
-    stored case, and a re-freeze after a label changed mints a new case beside the old one.
+    stored case, and a re-freeze after a label changed mints a new case beside the old one. A case a definition reset
+    carried into the template (``EvalTestCase.carried_from``) is named by the same identity, so a freeze of the same
+    labels into the new revision names the copy rather than storing the case beside it.
 
     **From labels** (``from_labels=True``, and no runs or results named): the cases are the scope's durable person
     labels, one per output and criterion (:func:`_cases_of_labels`), each frozen from the content its labels carry
@@ -601,26 +628,32 @@ def freeze_judge_cases(
     cases: list[FrozenJudgeCase] = []
     skipped: list[JudgeCaseSkip] = []
     seen: set[str] = set()
+    copies = _carried_copies(storage, template, scope_id)
     wanted = None if result_ids is None else set(result_ids)
     found: set[str] = set()
     for written in authored:
         case = JudgeCase.from_authored(written)
-        minted_case = _store_case(storage, template, scope_id, None, case.dim, case, seen)
+        minted_case = _store_case(storage, template, scope_id, None, case.dim, case, seen, copies=copies)
         if minted_case is not None:
             cases.append(minted_case)
     if from_labels:
         labelled, skipped = _cases_of_labels(storage, scope_id, dims)
         for source_result_id, case in labelled:
-            minted_case = _store_case(storage, template, scope_id, source_result_id, case.dim, case, seen)
+            minted_case = _store_case(
+                storage, template, scope_id, source_result_id, case.dim, case, seen, copies=copies
+            )
             if minted_case is not None:
                 cases.append(minted_case)
     for run_id in run_ids:
         run = storage.load_eval_run(run_id, scope_id)
         if run is None:
             raise NotFoundError("run", run_id, remedy=FIND_RUN)
-        for result in storage.query_eval_results_by_run(run.id, scope_id):
-            if wanted is not None and result.id not in wanted:
-                continue
+        # The run's keys, then its results by id a page at a time (the named ones alone when results are named),
+        # each frozen and let go before the next page is read.
+        keys = storage.query_eval_result_keys_by_run(run.id, scope_id)
+        for result in iter_keyed_results(
+            storage, scope_id, [key for key in keys if wanted is None or key.id in wanted]
+        ):
             found.add(result.id)
             try:
                 frozen = _cases_of_result(storage, template, run, result, scope_id, dims)
@@ -630,7 +663,7 @@ def freeze_judge_cases(
             if not frozen:
                 skipped.append(JudgeCaseSkip(result_id=result.id, reason="none of the dims asked for was judged on it"))
             for dim, case in frozen:
-                minted_case = _store_case(storage, template, scope_id, result.id, dim, case, seen)
+                minted_case = _store_case(storage, template, scope_id, result.id, dim, case, seen, copies=copies)
                 if minted_case is not None:
                     cases.append(minted_case)
     if wanted is not None and (stray := sorted(wanted - found)):
@@ -819,6 +852,16 @@ class JudgeKind:
             self._built[sent] = self._clients("judge", self._model, temperature=sent)
         return self._built[sent]
 
+    def ceiling_is_estimate(self) -> bool:
+        """Whether the judge clients this kind has built bound their calls on estimates (rates the host's pricer does
+        not guarantee): asked once its cases are priced, for its largest call's
+        :attr:`~threetears.evals.run.CallCeiling.estimate`.
+
+        :return: Whether any of them does.
+        :rtype: bool
+        """
+        return any(ceiling_is_estimate(client) for client in self._built.values())
+
     async def aclose(self) -> None:
         """Release every client this kind built, the first failure re-raised after all were offered a release."""
         built = list(self._built.values())
@@ -882,7 +925,7 @@ class JudgeKind:
         return PreparedJudge(model=self._model, span_window=span_window)
 
     def price_case(self, test_case: EvalTestCase) -> float | None:
-        """The ceiling :meth:`invoke` reserves for ``test_case``'s call, built and priced as it builds and prices it.
+        """The ceiling of the call :meth:`invoke` makes for ``test_case``, built as it builds it.
 
         What a launch prices an arm's largest call by before anything is spent
         (:attr:`~threetears.evals.run.LaunchableKind.price_largest_call`): a call whose ceiling is above the run's
@@ -894,7 +937,7 @@ class JudgeKind:
         :rtype: float | None
         :raises ValueError: The case carries no readable judge case, or its criterion cannot be asked — the plan refuses
             every such case before this is asked (:func:`launchable_judge_kind`), so reaching one is a defect —
-            or the client priced the call at an amount no reservation could hold.
+            or the client priced the call at an amount no ceiling can be (negative, or not finite).
         """
         case = judge_case_of(test_case)
         if case is None:
@@ -931,8 +974,8 @@ class JudgeKind:
         :ptype instance: PreparedJudge
         :param test_case: The cell's case, carrying the judge case in its ``host_payload``.
         :ptype test_case: EvalTestCase
-        :param sink: This cell's sink, which keeps the one call in the cell's spend: reserved at its ceiling
-            before it is sent, settled to what it cost when it returns. It refuses nothing.
+        :param sink: This cell's sink, which keeps the one call in the cell's spend: what it cost is added when it
+            returns. It refuses nothing.
         :ptype sink: CellSink
         :return: The answer, its code grade on ``host_measures``, the trial on ``kind_payload``, and the call's spend as
             the ``judge`` role's usage.
@@ -964,18 +1007,15 @@ class JudgeKind:
             except ValueError as exc:
                 return CandidateOutput(infra_errors=[f"apparatus: test case {test_case.id}'s judge case: {exc}"])
             await refresh_prices(service.client_for(request))
-            held = sink.reserve("candidate", service.price_ceiling(request))
             try:
                 with scopes.collecting():
                     outcome = await service.score_request(request, case_id=test_case.id)
             except CompletionProtocolDefect as defect:
                 # The host's completion type fails the run (raised through ``invoke``), but its billed calls are
-                # settled and reported as this cell's spend, so the runner records them.
+                # added and reported as this cell's spend, so the runner records them.
                 billed = defect_usage(defect)
-                if billed is None:
-                    held.release()
-                else:
-                    held.settle(billed.cost_usd)
+                if billed is not None:
+                    sink.add_spend("candidate", billed.cost_usd)
                     ledger = RoleUsageLedger(role=JUDGE_KIND_ROLE)
                     ledger.add_llm_result(replace(billed, model=billed.model or self._model))
                     rows = ledger.rows()
@@ -984,10 +1024,7 @@ class JudgeKind:
                         lambda: CandidateOutput(telemetry=CandidateTelemetry(usage=rows, turns_delivered=turns))
                     )
                 raise
-            except BaseException:
-                held.release()
-                raise
-            held.settle(outcome.usage.cost_usd if outcome.usage is not None else 0.0)
+            sink.add_spend("candidate", outcome.usage.cost_usd if outcome.usage is not None else 0.0)
         return self._graded(case, test_case, request, outcome, cell)
 
     def _graded(
@@ -1040,24 +1077,18 @@ class JudgeKind:
         payload = trial.model_dump(mode="json")
         if outcome_kind == "no_reply":
             error = outcome.error or "the judge's call failed"
-            if outcome.owner == "account":
-                return CandidateOutput(
-                    infra_errors=[f"apparatus: judge: the call was refused for the calling account: {error}"],
-                    account_refused=True,
-                    telemetry=telemetry,
-                    kind_payload=payload,
-                )
-            if outcome.owner == "provider":
-                # The provider declined to serve the call at that moment, as it would any request: the trial measured
-                # the provider, not the judge under test, so it is excluded and the run goes on.
-                log.warning("Judge kind's call was declined by the provider for case %s: %s", test_case.id, error)
-                return CandidateOutput(
-                    infra_errors=[f"apparatus: judge: the provider declined the call: {error}"],
-                    telemetry=telemetry,
-                    kind_payload=payload,
-                )
-            log.warning("Judge kind's call failed for case %s: %s", test_case.id, error)
-            return CandidateOutput(candidate_errors=[f"judge: {error}"], telemetry=telemetry, kind_payload=payload)
+            # An account's refusal or a provider's decline measured them, not the judge under test, so the trial is
+            # excluded; a failure no describer placed is the judge's.
+            return failed_call_output(
+                outcome.owner or "candidate",
+                error,
+                refused="judge: the call was refused for the calling account",
+                declined="judge: the provider declined the call",
+                failed="judge",
+                log=lambda what, level: log.log(level, "%s, case %s: %s", what, test_case.id, error),
+                telemetry=telemetry,
+                kind_payload=payload,
+            )
         measures: dict[str, bool | float | str] = {JUDGE_PARSE_VALID_MEASURE: outcome_kind != "invalid"}
         if score is not None and case.labels:
             measures[JUDGE_LABEL_AGREEMENT_MEASURE] = sum(
@@ -1246,17 +1277,19 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         return kind, request.cases_or(_template_cases(host.storage, request.template, request.scope_id))
 
     async def price_largest_call(request: LaunchRequest) -> CallCeiling | None:
-        # Every case's call is priced as invoke reserves it — the prompt is the case's frozen evidence, so the
+        # Every case's call is priced as invoke builds it — the prompt is the case's frozen evidence, so the
         # largest call is the case with the most of it — on the clients the run's cells would call through.
         kind, cases = await run_blocking(launch_host().eval_host.blocking_executor, built, request)
         try:
             priced = [(ceiling, case.id) for case in cases if (ceiling := kind.price_case(case)) is not None]
+            estimate = kind.ceiling_is_estimate()
         finally:
             await kind.aclose()
         if not priced:
             return None
         usd, case_id = max(priced)
         return CallCeiling(
+            estimate=estimate,
             usd=usd,
             call=(
                 f"the judge call on case {case_id!r} ({JUDGE_CALL_ATTEMPTS} request(s): the first and its parse "
@@ -1275,7 +1308,10 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         host = launching.eval_host
         model = require_candidate_model(request, None)
         overlays = request.overlays_as(JudgeKindOverlays) if request.overlays is not None else JudgeKindOverlays()
-        kind = judge_kind(
+        # Building the kind reads each overlaid judge config from the store, so it is built off the loop.
+        kind = await run_blocking(
+            host.blocking_executor,
+            judge_kind,
             host.storage,
             host.completion_clients("a judge campaign"),
             model=model,

@@ -21,8 +21,8 @@ naming the prompt and the remedy, a prompt that declares another fingerprint (``
 (``undeclared`` — a copy seeded before contracts were stated). A copy that declares the current one passes,
 however else an operator has edited it: the line is the operator's statement that the edit was written for this
 contract, and the strict ``response_format`` the call sends, with the validation of its reply, still stands behind
-it. A prompt with no output contract (the analysis generator's, whose shape is sent as a schema and whose grammar
-is appended from code) is ``unbound`` and never refused.
+it. A prompt with no output contract (one whose shape is sent as a schema and whose grammar is appended from code)
+is ``unbound`` and never refused.
 """
 
 from __future__ import annotations

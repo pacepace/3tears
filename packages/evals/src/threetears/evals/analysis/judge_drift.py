@@ -54,7 +54,7 @@ from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.models import SCALES, ClientRequestSettings, JudgeTemperature, RubricScale
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import EvalResult
+    from threetears.evals.kernel.result_reading import ResultView
 
 #: What a drift reading can and cannot say, stated on every one.
 DRIFT_DETECTS_MOVEMENT: Final = (
@@ -202,11 +202,11 @@ def _paired_test(
     return bounded, p
 
 
-def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) -> JudgeDrift:
+def judge_drift(results: Iterable[ResultView], *, pass_id: str | None = None) -> JudgeDrift:
     """Read how far each dimension's scores moved from the run's judge to a second judge on the same evidence.
 
     :param results: The results whose second-judge scores to read.
-    :ptype results: Iterable[EvalResult]
+    :ptype results: Iterable[ResultView]
     :param pass_id: Read only this pass's pairs; ``None`` for every pass.
     :ptype pass_id: str | None
     :return: The movement per (dimension, scale, first judge, second judge), tested as one family.
@@ -232,11 +232,11 @@ class JudgeDriftTally:
         self._pairs: dict[SecondJudgeGroup, dict[str, list[tuple[int, int]]]] = {}
         self._unanswered: dict[SecondJudgeGroup, int] = {}
 
-    def add(self, result: EvalResult) -> None:
+    def add(self, result: ResultView) -> None:
         """Read one result's second-judge scores.
 
         :param result: The result.
-        :ptype result: EvalResult
+        :ptype result: ResultView
         """
         pairs, unanswered = self._pairs, self._unanswered
         for judging in result.judge_seconds:

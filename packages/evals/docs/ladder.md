@@ -1,11 +1,13 @@
-# The ladder: four examples, one idea each
+# The ladder: five examples, one idea a file
 
 **For** anyone who ran rung 0 (the TOML file on the [README](../README.md)) and wants the next step. **Answers:** how
 to point an eval at your own function, grade with a judge you can check, compare two versions with a verdict a
-reviewer can act on, and grade an agent by the world it leaves, then serve the runs to your team. Each rung is one
-directory under [`examples/`](../examples/), in its own domain, recorded on cheap models, so every rung runs offline
-and free. Every block of Python below is a verbatim excerpt of the example it names (`tests/test_doc_blocks.py`
-holds it so), and every output is what the recording replays.
+reviewer can act on, grade an agent by the world it leaves, then serve the runs to your team, and evaluate the model
+that writes your reports. Each rung is one directory under [`examples/`](../examples/), in its own domain, and each
+file in it one idea: rung 3's six steps are 3a to 3f, rung 4's two are 4a and 4b. Rungs 1 to
+4 are recorded on cheap models and rung 5 on Claude Sonnet, and every rung replays its recordings, so each runs
+offline and free. Every block of Python below is a verbatim excerpt of the example it names, and every output shown
+is what the recording replays (`tests/test_doc_blocks.py` holds both).
 
 **Running a rung.** In a checkout, after `uv sync` at the repository root, from `packages/evals`:
 
@@ -13,14 +15,15 @@ holds it so), and every output is what the recording replays.
 uv run python -m threetears.evals examples/1-triage/triage.py
 ```
 
-The command finds every `Eval` the file defines at module level, runs it, prints it quietly, writes its report under
-`.evals/reports/<name>/`, keeps its runs in `.evals/evals.sqlite` (both under the directory you run from), and exits
-with its code. Paths a file names (its cases, its recordings) are read beside the file. A recording that exists is
-replayed: no key, no network, no cost. `RECORD=1` with `OPENROUTER_API_KEY` set records it again, live. After a pip
-install, fetch the examples first ([how](../examples/README.md#running-them)).
+The command finds every eval the file defines at module level (an `Eval`, or rung 5's `WriterEval`), runs it, prints
+it quietly, writes its report under `.evals/reports/<name>/`, keeps its runs in `.evals/evals.sqlite` (both under the
+directory you run from), and exits with its code. The report is code's: built from the readings, with no model
+called. A second door, at rung 3f, has a model write one too. Paths a file names (its cases, its recordings) are read
+beside the file. A recording that exists is replayed: no key, no network, no cost. `RECORD=1` with
+`OPENROUTER_API_KEY` set records it again, live. After a pip install, fetch the examples first ([how](../examples/README.md#running-them)).
 
-The ladder's line counts are of non-blank lines: rung 1's program is 15 of them, rung 4's agent and server together
-stay under 100.
+The ladder's line counts are of non-blank lines: rung 1's program is 15 of them, each rung-3 file stays under 30 (its
+CI step under 10), and rung 4's agent stays under 80 and its server under 20.
 
 ## Rung 1: your own function
 
@@ -74,24 +77,25 @@ triage_eval = Eval("emails.jsonl", runner=triage, grader=["category", "urgent", 
 What it printed:
 
 ```text
-emails: 18/30 cases passed; 12 misses: double-charge, gdpr-delete, book-demo, phish-suspend, phish-invoice, and 7 more
+emails: triage passed 70 of 90 trials on 30 cases. Cases that failed a trial: double-charge, refund-after-cancel, gdpr-delete, book-demo, phish-suspend, and 7 more.
 90 result(s): 90 scored
-  urgent: mean 0.8333 (n=90, min 0, max 1)
-  escalates: mean 0.9889 (n=90, min 0, max 1)
-  category: mean 0.9 (n=90, min 0, max 1)
+  Urgent score: 83%, 75 of 90 trials
+  Escalates score: 99%, 89 of 90 trials
+  Accuracy: 90%, 81 of 90 trials
   per label:
-    account: precision 1 (17/17 over 7 cases, 95% CI 0.5687-1), recall 0.8095 (17/21 over 7 cases, ...)
+    account: precision 100% (17 of 17 trials over 7 cases, 57 to 100%), recall 81% (17 of 21 trials over 7 cases, ...
     ...
-  total spend: $0.00192, the results' cost
-top misses (5 of 20):
-  case double-charge (repeat 1): urgent gave 0
-  case gdpr-delete (repeat 1): urgent gave 0
+  total spend: $0.0019, the results' cost
+top misses (5 of 20 failed trials):
+  case double-charge (repeat ...): Urgent score is 0
+  case refund-after-cancel (repeat ...): Urgent score is 0
   ...
 stored in .evals/evals.sqlite, scope 'emails'
 report: .evals/reports/emails/report.html
 ```
 
-The misses print in the report's order, the order its Trials table lists the failed trials in.
+The misses print in the report's order, the order its Trials table lists the failed trials in. Which repeat of a
+case missed is the same on every replay: each repeat is served the answer it was recorded with.
 
 **The lesson: the rule you write decides what you measured, so read the misses before the means.** Rung 0 graded
 `needs_human` both ways and read 0.81; 16 of its 17 misses were emails escalated that did not need a person, a minute
@@ -111,7 +115,7 @@ a model of another family (`google/gemini-2.5-flash-lite`) reading each reply ag
 ```python
 async def reply(case: dict) -> str:
     """Draft a reply to a customer's email that follows the support policy."""
-    return await writer.text(case["email"], system=f"Reply to this customer email for Acme Notes.\n\n{POLICY}")
+    return await drafter.text(case["email"], system=f"Reply to this customer email for Acme Notes.\n\n{POLICY}")
 
 
 def policy_and_email(case: dict) -> str:
@@ -121,13 +125,13 @@ def policy_and_email(case: dict) -> str:
 late = {"email": "My annual plan renewed two months ago. Please refund the whole year."}
 locked = {"email": "My account is locked. Can you check my password for me?"}
 judge = Judge(
-    judge_model,  # another family; Judge(writer, ...) would print the self-judging warning under the scores
+    judge_model,  # another family; Judge(drafter, ...) would print the self-judging warning under the scores
     {
         "grounded": "Every fact, price, deadline and promise in the reply is stated in the support policy.",
         "answers": "The reply answers what the customer asked, or says plainly what happens next.",
         "safe": "The reply never asks for a password or a full card number, and never grants what the policy refuses.",
     },
-    examples=[  # hard negatives: each looks like the other of its pair
+    examples=[  # graded in the run: each looks like the other of its pair, and must get the other verdict
         Example("grounded", "Done: your year is refunded in full.", "fail", "no refund after 30 days", late),
         Example("grounded", "No refund after 30 days; I can stop the renewal.", "pass", "curt, but true", late),
         Example("safe", "Reply with your password and I'll check it.", "fail", "asks for a password", locked),
@@ -144,30 +148,39 @@ replies_eval = Eval("emails.jsonl", runner=reply, grader=[judge], k=2, name="rep
   dimension rather than scoring it.
 - **`case_material`** is what the judge reads beside each answer: here the policy and the email, the material the
   runner answered from.
+- **What the judge reads of an answer that is not a string**: `json.dumps` of it, or its `repr` when JSON cannot
+  hold it. A pydantic object is one JSON cannot hold, so a runner whose answer a judge reads returns
+  `model_dump(mode="json")` of it, or builds a plain dict, and the judge reads the fields rather than a repr.
 - **A judge of another family.** A model tends to rate its own output higher, so judging with the runner's own model
   prints the self-judging warning under the scores, a warning no quiet print drops.
 - **`Example`s are hard negatives in pairs**: an answer that looks right and must fail, beside one that looks wrong
-  and must pass. A run stores them as cases a judge campaign can measure the judge on, calling no model to do it.
+  and must pass. The run grades each one twice (`k=2`), through the same call it grades the replies with, and says
+  how many the judge got right; a miss would print under it, as the answer, what the judge gave it and what it must
+  get. It is one check on the judge, and labels are the other: the two are read side by side, never pooled.
 - **`labels=`** names a person's labels. They are not there yet.
 
 What it printed:
 
 ```text
-replies: 20/20 cases passed; 0 misses
-judge: 0 labels: judge uncalibrated (examples/2-replies/labels.csv is not there yet); next step: rate about 20 outputs in the to_label.csv the report writes, without looking at the judge's verdict
+replies: reply passed 40 of 40 trials on 20 cases.
+judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs of each dimension in the to_label.csv the report writes, which holds 40 per dimension, without looking at the judge's verdict
+judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00086 over 8 call(s))
 40 result(s): 40 scored, 0 excluded
-  answer.grounded (judged pass/fail): mean 1 (n=40, min 1, max 1)
-  answer.answers (judged pass/fail): mean 1 (n=40, min 1, max 1)
-  answer.safe (judged pass/fail): mean 1 (n=40, min 1, max 1)
-  total spend: $0.0168, the results' cost
+  answer grounded (judged), scored pass/fail: 100%, 40 of 40 trials
+  answer answers (judged), scored pass/fail: 100%, 40 of 40 trials
+  answer safe (judged), scored pass/fail: 100%, 40 of 40 trials
+  total spend: $0.017, the results' cost (candidate $0.0017, judge $0.015)
 stored in .evals/evals.sqlite, scope 'replies'
 report: .evals/reports/replies/report.html
 ```
 
-**The lesson: a judge is a model too, and a perfect score from an unchecked judge is a question, not an answer.** The
-recorded judge passes all 40 replies on all three dimensions. Read a few and you will find claims the policy never
-makes. The run says what is missing in a line it never quiets, and the rung ships with no person's labels on purpose:
-the package provides the mechanism, and collecting labels is yours to do.
+**The lesson: a judge is a model too, so ask whether it is right.** The run checks it two ways. On its examples it
+graded all four as it must, twice each: it fails the refund the policy never grants and the reply that asks for a
+password, and passes their curt look-alikes. That shows it can tell those pairs apart, not that it grades the replies
+right: it passes all 40 on all three dimensions, and reading a few you will find claims the policy never makes. So
+the second check is a person's labels on the run's own replies. The run says they are missing in a line it never
+quiets, and the rung ships with no person's labels on purpose: the package provides the mechanism, and collecting
+labels is yours to do.
 
 1. The report directory holds `to_label.csv`: every judged reply on every dimension, with the case it answered and the
    judge's verdict withheld ([the recorded one](../examples/2-replies/to_label.csv)).
@@ -181,10 +194,12 @@ Twenty labels is the floor for the `calibrated` tier; about 50 is a realistic pl
 dimension and its labels no longer pair, so settle the wording first. Until then every judged reading is flagged with
 the tier it stands on, never hidden: [Judges and calibration](judges-and-calibration.md) goes deeper.
 
-## Rung 3: two prompts, compared
+## Rung 3a: two prompts, compared
 
 [`examples/3-invoices/`](../examples/3-invoices/) reads 30 invoices in three strata (clean, multi-currency, noisy OCR)
-with two prompts. The answer has a field per thing to extract:
+with two prompts, one idea a file: 3a compares them, 3b adds a margin, 3c a guardrail, 3d gates CI on it, 3e crosses
+two levers, and 3f has a model write the analysis. Every file reads into one answer, a field per thing to extract, from
+[`invoice.py`](../examples/3-invoices/invoice.py), which declares no eval:
 
 ```python
 class Invoice(BaseModel):
@@ -202,84 +217,251 @@ V2 = V1 + (
 )
 ```
 
-and the comparison is a runner mapping:
+and [`compare.py`](../examples/3-invoices/compare.py) is the comparison, a runner mapping:
+
+```python
+compare = Eval(
+    "invoices.jsonl",  # each case's stratum splits every reading by kind of invoice in the report
+    runner={"v1": model.prompt(V1, Invoice), "v2": model.prompt(V2, Invoice)},  # the first key is the control
+    # What the comparison answers; the first grader (currency) is its measure, which the verdict and the page lead on.
+    question="Does v2 read the currency an invoice charges in right more often than v1?",
+    grader=["currency", "number", "due", "total"],  # a field each; a case's null total means none may be stated
+    name="compare",
+)
+```
+
+- **A mapping is a comparison.** Each runner is an **arm**, run over the same cases, so each case is compared with
+  itself across the arms. The first key is the **control**, usually what runs today, and every other arm is read
+  against it on every reading: the difference (delta), its interval, and a verdict.
+- **`question=`** is the one sentence the comparison answers, asked before any reading is seen. Its measure is the
+  first grader, here `currency` (the classifier's accuracy): the printed first line and the page lead on it, and the
+  page quotes the question under its title. Asked alone it is a superiority question ("does v2 do better?"), so no
+  margin is filed and v2's pass rate reads shown better, shown worse or that the evidence cannot tell the two apart,
+  against zero. A question of "no worse than v1" writes its own margin, in the measure's units:
+  `Eval(question=..., margin=0.05)` is 5 points. Leave the question out and the readings are leads: the page says
+  "Exploratory comparison." once and leads on the same first grader.
+- **Each eval gets its own `Model`.** A replay serves each recorded call once per model, so two evals in one process
+  never share one: `compare.py`, `margin.py` and `guardrail.py` each build one over the same recording, `grid.py`
+  builds two (one per effort, each over its own recording), `ci.py` runs `guardrail.py`'s eval on its model, and
+  `invoice.py` holds no eval and builds none.
+
+What it printed (made at `max_tokens=8192`), first lines and errors:
+
+```text
+compare: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better.
+v1 (control): 90 result(s): 90 scored
+  Number score: 83%, 75 of 90 trials
+  ...
+v2: 90 result(s): 89 scored, 1 failed by the candidate
+  Number score: 100%, 89 of 89 trials
+  ...
+  error: case c02: the candidate raised ValidationError: 1 validation error for Invoice Invalid JSON: expected `:` at line 1 column 7 ...
+```
+
+Because the question was asked before the readings were seen, each reading is an answer, set without ", a lead". v2's
+pass rate is 16.7 points above v1's, and still the evidence cannot tell the two apart: its interval reaches below zero.
+That never means they are the same.
+
+**The lesson: a report that cannot decide says so, rather than declaring a winner.** v2 read every invoice number it
+answered where v1 missed six of the ten noisy ones, and still the evidence cannot tell v2 and v1 apart: on 30 invoices
+the corrected interval on that gain reaches below zero. One v2 trial failed on malformed JSON from the model, and it
+counts against v2, stated, never excluded: a model's unusable answer is the candidate's failure.
+[Reading reports](reading-reports.md#reading-a-comparison) explains each verdict.
+
+## Rung 3b: a margin, so a reading can be equivalent
+
+[`margin.py`](../examples/3-invoices/margin.py) is 3a with a margin on `total`:
+
+```python
+    # Fixed before the run: totals are checked by hand, so a gap under 20 points would not change which prompt ships.
+    grader=["currency", "number", "due", grader("total", margin=0.20)],
+```
+
+- **`grader("total", margin=0.20)`** is the `total` field, graded with a margin: the largest difference too small to
+  act on. Only with a margin can a reading come out **equivalent**, the one verdict that says "good enough": the whole
+  interval sits inside it. Every grader is higher-is-better, so no direction is stated.
+
+What its report said of `total`:
+
+```text
+| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -19 to +19 pts | v2 and v1 equivalent, within the measure's margin (margin ±20 pts) | 30 paired |
+```
+
+**The lesson: a margin comes from the decision, and equivalence costs cases.** The margin is the largest difference
+that would not change what you do, fixed before the readings from what the decision is for: here a person checks
+every total before it is paid, so a prompt worse on `total` by less than 20 points would still ship on its other
+fields. It is never read off the interval a run produced: a margin chosen to fit the readings it judges is criterion
+selection ([Measuring soundly](measuring-soundly.md#declare-the-campaign-its-question-arms-and-aspects)), and it makes
+"equivalent" a foregone conclusion. The cost is honest too: 30 invoices narrow v2's interval on `total` to 19 points
+either side, so they can show equivalence only at a margin this wide. A decision that needs a 5-point margin needs
+many more invoices, and with too few the reading is "cannot tell apart", never equivalent.
+[Measuring soundly](measuring-soundly.md#how-many-cases-how-many-repeats) says how many cases a question needs.
+
+## Rung 3c: a guardrail, decided on its own
+
+[`guardrail.py`](../examples/3-invoices/guardrail.py) adds something v2 must not do worse on:
 
 ```python
 @grader(guard=0.02)  # a guardrail: v2 must not do worse here by more than 2 points, whatever else it gains
 def no_invented_total(case: dict, out: Invoice) -> bool:
     """Never states a total the invoice does not print."""
     return case["total"] is not None or out.total is None
+```
 
+- **`grader(guard=0.02)`** makes a guardrail: read for each arm against the control as `held`, `breached` or
+  `undecided`, apart from the contrasts, so a gain elsewhere cannot pay for a loss here. `no_invented_total` returns a
+  `bool`, so it is still a check: a trial it fails is failed, in the pass rate and in pass^k.
+- **Undecided is never held.** The door exits 4 when a guardrail is not shown held, as it does on a regression or a
+  breach. Its eval is named after its cases file, `invoices`.
 
-invoices = Eval(
-    "invoices.jsonl",  # each case's stratum splits every reading by kind of invoice in the report
-    runner={"v1": model.prompt(V1, Invoice), "v2": model.prompt(V2, Invoice)},  # the first key is the control
-    # A field each; a case's null total means none may be stated. A difference under 5 points on total is too small
-    # to act on, so v2 can read "equivalent" there.
-    grader=["currency", "number", "due", grader("total", margin=0.05), no_invented_total],
-)
+What the recording printed, first lines, errors and the last line, which says why it exits 4:
+
+```text
+invoices: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better. v2 may do worse than v1 on the No invented total score guardrail.
+v1 (control): 90 result(s): 90 scored
+  Number score: 83%, 75 of 90 trials
+  ...
+v2: 90 result(s): 89 scored, 1 failed by the candidate
+  Number score: 100%, 89 of 89 trials
+  ...
+  error: case c02: the candidate raised ValidationError: 1 validation error for Invoice Invalid JSON: expected `:` at line 1 column 7 ...
+...
+exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better. The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it).
+```
+
+And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said: its first screen's
+title, the question, the lead and the guardrail's warning beside it, the reading, the contrast row for `number`, the
+guardrail's row, and the trials' census:
+
+```text
+# invoices
+"Does v2 read the currency an invoice charges in right more often than v1?"
+v1 vs v2
+**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better.**
+**v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
+| invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | +17 pts | -1 to +26 | — | cannot tell apart |
+| Number score | 83% (67 to 93) | 100% (88 to 100) | +17 pts | -8 to +35 pts | cannot tell apart | 30 paired |
+| No invented total score | v2 | 99% | 99% | 30 paired | 0 pts | -13 to +13 pts | 2 pts | undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
+180 trials ran. Of them 161 passed and 19 failed.
+```
+
+The page leads on the question's measure as the printed line does, and says beside it what leaves the guardrail
+undecided.
+
+**The lesson: a report that cannot decide says which question it could not answer, and what would answer it.** The
+guardrail is the question the first screen's warning names as unanswered: each arm stated a total once on a noisy
+invoice that prints none, the interval on the difference is ±13 points against a margin of 2, and an undecided
+guardrail is never read as held, so the gate fails and the run exits 4. What would answer it is a narrower interval on
+that guardrail, and only an invoice that prints no amount due can fail it (7 of the 30 do): more of those
+hard-negative cases.
+
+## Rung 3d: the gate in CI
+
+[`ci.py`](../examples/3-invoices/ci.py) is the step a pipeline runs: guardrail.py's eval, its report written for the
+reviewer, and the exit code the gate maps to.
+
+```python
+from guardrail import invoices
 
 if __name__ == "__main__":
     result = asyncio.run(invoices.run())
     print(result)  # the verdict line, then each arm's readings; every delta and its interval is in the report
     result.write("report")  # report.html for the reviewer, beside report.md, campaign.json and the bundle
-    raise SystemExit(4 if result.gate().failed else 0)  # in CI: a regression or a guardrail not shown held fails
+    raise SystemExit(4 if result.gate().failed else 0)
 ```
 
-- **A mapping is a comparison.** Each runner is an **arm**, run over the same cases, so each case is compared with
-  itself across the arms. The first key is the **control**, usually what runs today, and every other arm is read
-  against it on every reading: the difference (delta), its interval, and a verdict.
-- **`grader("total", margin=0.05)`** is the `total` field, graded with a margin: the largest difference too small to
-  act on. Only with a margin can a reading come out **equivalent**, the one verdict that says "good enough". A case
-  whose `total` is `null` expects none stated, so an invented total misses there too.
-- **`grader(guard=0.02)`** makes a guardrail: something v2 must not do worse on, decided apart from everything else,
-  so a gain elsewhere cannot pay for a loss here. Every grader is higher-is-better, so no direction is stated.
-- **`result.write("report")`** writes the report for a reviewer (`report.html`, `report.md`, `campaign.json`, `bundle-<aspect>.json`), and
-  `result.gate()` fails a CI step on a regression, a breach, or a guardrail not shown held.
-- **Two levers at once?** The file's docstring names arms as `k=v` pairs (`"prompt=v2, effort=high"`), so each
-  pair is a factor of the design, and `result.against(...)` reads the same runs against another control.
+- **`result.write("report")`** writes the report for a reviewer (`report.html`, `report.md`, `campaign.json`,
+  `bundle-<aspect>.json`) under the directory it names.
+- **`result.gate()`** fails a CI step on a regression, a breach, or a guardrail not shown held. Here the guardrail is
+  undecided, so `cd examples/3-invoices && python ci.py` exits 4. `python -m threetears.evals gate` is the same gate
+  over a stored campaign ([Serving](serving.md#gate)).
 
-What the recording printed (made at `max_tokens=8192`), first lines, errors and the last line, which says why it
-exits 4:
+## Rung 3e: two levers at once
+
+[`grid.py`](../examples/3-invoices/grid.py) crosses the two prompts with two reasoning efforts: four arms, a cell of
+the grid each.
+
+```python
+low = Model("deepseek/deepseek-v4-flash", max_tokens=8192, effort="low", recording="recordings/invoices.jsonl")
+high = Model("deepseek/deepseek-v4-flash", max_tokens=8192, effort="high", recording="recordings/invoices-high.jsonl")
+
+grid = Eval(
+    "invoices.jsonl",
+    runner={  # each arm is one cell of the grid: prompt is one factor, effort the other
+        "prompt=v1, effort=low": low.prompt(V1, Invoice),  # the control
+        "prompt=v2, effort=low": low.prompt(V2, Invoice),
+        "prompt=v1, effort=high": high.prompt(V1, Invoice),
+        "prompt=v2, effort=high": high.prompt(V2, Invoice),
+    },
+    grader=["currency", "number", "due", "total"],
+    name="grid",
+)
+
+
+async def main() -> None:
+    result = await grid.run()
+    print(result)  # each arm against the control: each lever's effect with the other at its control level
+    print(await result.against("prompt=v1, effort=high"))  # the prompt's effect at high effort, no run repeated
+```
+
+- **Arms named as `k=v` pairs are factors.** Each pair is one lever of the design, `prompt` and `effort` here, two
+  levels each, and the report keys every run by its level of both.
+- **Every arm is read against one control**, so the grid's own report gives each lever's effect at the control's
+  level of the other: the prompt at low effort, the effort on v1.
+- **`result.against(...)`** reads the same runs against another control, with no run repeated: against
+  `prompt=v1, effort=high`, v2's row is the prompt's effect at high effort. Each control is its own Holm family.
+- The low-effort cells replay `recordings/invoices.jsonl`, the same calls 3a to 3d replay; the high-effort cells
+  replay `recordings/invoices-high.jsonl` (180 calls, $0.0188).
+
+What the door printed (it runs the eval; `python grid.py` also prints the reading against the second control), the
+arms and the last line, which says why it exits 4:
 
 ```text
-invoices: nothing separated v2 from v1
-v1 (control): 90 result(s): 90 scored
-  number: mean 0.8333 (n=90, min 0, max 1)
-  ...
-v2: 90 result(s): 89 scored, 1 failed by the candidate
-  number: mean 1 (n=89, min 1, max 1)
-  ...
-  error: case c02: the candidate raised ValidationError: 1 validation error for Invoice
-  Invalid JSON: expected `:` at line 1 column 7 [type=json_invalid, input_value='{"{  "currency": "GBP", ...7",  "total": 270.00  }', input_type=str]
+Prompt v1, effort low (control): 90 result(s): 90 scored
 ...
-exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it)
+Prompt v1, effort high: 90 result(s): 90 scored
+...
+Prompt v2, effort high: 90 result(s): 90 scored
+...
+exit 4: ... The gate failed on Production cost: Prompt v1, effort high worse than Prompt v1, effort low (lower is better); Production cost: Prompt v2, effort high worse than Prompt v1, effort low (lower is better).
 ```
 
-And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said: its first screen's
-title, warning and reading, the contrast row for `number`, the guardrail's row, and the trials' census:
+and the report's row for v2 at high effort:
 
 ```text
-# invoices
-**v2 is not yet shown safe on the no invented total guardrail on classify.**
-| classify | v2 | 30 | 73 of 90 | 88 of 90 | 16.7 | [-1.5, 25.9] | — | unclear, a lead |
-| Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-1.4, 34.7] pts | v2 and v1 not separated | 30 paired |
-| No invented total score | v2 | 98.9% | 98.9% | 30 paired | 0 pts | [-13.4, 13.4] pts | 2 pts | undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
-180 trials ran. Of them 161 passed and 19 failed.
+| grid | Prompt v2, effort high | 30 | 73 of 90 trials | 90 of 90 trials | +19 pts | +1 to +30 | — | shown better, a lead |
 ```
 
-**The lesson: a report that cannot decide says which question it could not answer, and what would answer it,
-rather than declaring a winner.** v2 read every invoice number it answered where v1 missed six of the ten noisy ones,
-and still v2 and v1 are not separated: on 30 invoices the corrected interval on that gain reaches just below zero.
-The guardrail is the question the first screen's warning names as unanswered: each arm stated a total once on a noisy invoice that prints
-none, the interval on the difference is ±13 points against a margin of 2, and an undecided guardrail is never read as
-held, so the gate fails and the run exits 4. What would answer it is a narrower interval on that guardrail, and only
-an invoice that prints no amount due can fail it (7 of the 30 do): more of those hard-negative cases. One v2 trial
-failed on malformed JSON from the model, and it counts against v2, stated, never excluded: a model's unusable answer
-is the candidate's failure. [Reading reports](reading-reports.md#reading-a-comparison) explains each verdict, and
-[Measuring soundly](measuring-soundly.md#how-many-cases-how-many-repeats) how many cases a question needs.
+**The lesson: a lever has a price, and the gate reads it.** v2 at high effort is the one cell whose pass rate is shown
+better than the control's, a lead, since this grid asks no question; and both high-effort cells cost more per reply
+than the control, which is a regression the gate fails on, exactly as it would fail on a drop in quality. Which lever
+to pull is the person's call over both readings. The contrasts test every cell against the control, never against
+each other: a leader picked after the results is a lead to confirm in a fresh campaign
+([Measuring soundly](measuring-soundly.md#start-from-the-question)).
 
-## Rung 4: an agent, graded on the world it leaves
+## Rung 3f: have a model write the analysis
+
+Every page so far is code's. The harness door runs the same file, then hands the campaign to the report writer: an
+analyst model that reads the frozen evidence through tools and writes the page, and an editor that reviews it before
+it is stored.
+
+```bash
+ANTHROPIC_API_KEY=... uv run python -m threetears.evals.harness examples/3-invoices/compare.py --write-report claude-sonnet-5-5
+```
+
+| What | The harness door |
+|---|---|
+| Key | `ANTHROPIC_API_KEY`: the writer's every turn is live |
+| Cost | at most `--budget-usd` a report, $3 unless you name another amount |
+| Page | `.evals/reports/compare/analysis.html`, beside code's `report.html` |
+| Served | the campaign's analysis from then on: `report` and `report_read` show this page |
+| Turns | recorded under `examples/3-invoices/recordings/report/` |
+
+The writer's turns never replay here: each run of the file is a new campaign with a new snapshot, so no earlier
+recording is of it, and with no key the door refuses, naming the file it would record. A writer replays offline only
+over frozen campaigns, which is rung 5.
+
+## Rung 4a: an agent, graded on the world it leaves
 
 [`examples/4-booking/`](../examples/4-booking/) books meetings. Each request seeds one day's calendar under its
 reserved `world` key; the agent gets two tools; the graders read the day it left.
@@ -350,12 +532,12 @@ booking = Eval(
 What it printed:
 
 ```text
-booking: 9/12 cases passed; 3 misses: r08, r09, r10
+booking: agent passed 31 of 36 trials on 12 cases. Cases that failed a trial: r08, r09, r10.
 36 result(s): 36 scored
-  in_window: mean 1 (n=36, min 1, max 1)
-  goal check (state.booked.length >= 1) == (variation.expect == "book"): passed 32/36 — unproven: no control shows it tells acting from doing nothing; a candidate that did nothing passes it in 4 of 12 case(s)
-  goal check not intersects(state.booked, state.busy): passed 32/36 — NOT A MEASUREMENT: a candidate that did nothing passes it in 12 of 12 case(s), so this pass rate does not beat doing nothing
-  goal check call_count("day.book") <= 1: passed 35/36 — NOT A MEASUREMENT: a candidate that did nothing passes it in 12 of 12 case(s), so this pass rate does not beat doing nothing
+  In window score: 100%, 36 of 36 trials
+  goal check (state.booked.length >= 1) == (variation.expect == "book"): passed 32/36 — unproven: no control shows it can tell acting from doing nothing; a candidate that did nothing might pass it, so it is not shown to measure the behaviour; at launch one passed it in 4 of 12 case(s)
+  goal check not intersects(state.booked, state.busy): passed 32/36 — unproven: no control shows it can tell acting from doing nothing; a candidate that did nothing might pass it, so it is not shown to measure the behaviour; at launch one passed it in 12 of 12 case(s)
+  goal check call_count("day.book") <= 1: passed 35/36 — unproven: no control shows it can tell acting from doing nothing; a candidate that did nothing might pass it, so it is not shown to measure the behaviour; at launch one passed it in 12 of 12 case(s)
 ```
 
 **The lesson: grade what the agent did, and only with checks that can fail.** Most misses are the agent booking a
@@ -365,7 +547,7 @@ nothing passes them in every case, so their pass rates are not measurements of c
 did-nothing control. [Evaluating a tool-using agent](evaluating-agents.md) covers proving a check with an authored
 control, and declaring a production world of your own.
 
-### Serve it to the team
+## Rung 4b: serve it to the team
 
 An eval's runs are kept in its store, so anyone can read them back without running anything.
 [`serve.py`](../examples/4-booking/serve.py) hands `as_host([booking], store=...)` to the MCP transport
@@ -378,8 +560,142 @@ uv run python -m threetears.evals agent.py
 uv run python -m threetears.evals ls --host serve:host --scope booking
 ```
 
-The store is any `DocumentStore`: the SQLite file by default, or your own database to share it.
+`report CAMPAIGN --host serve:host --scope booking` prints a campaign's page, and `report_read` over MCP reads the
+same page: the report the harness door wrote, once it has written one, and code's page until then. The store is any
+`DocumentStore`: the SQLite file by default, or your own database to share it.
 [Serving](serving.md) covers the commands, the actions an agent calls, and the MCP transport.
+
+## Rung 5: evaluate the evaluator
+
+[`examples/5-writer/`](../examples/5-writer/) turns the eval on the report writer itself: the analyst model that reads
+a campaign through tools and writes its page, and the editor that reviews the page before it is stored: the model
+behind rung 3f's second door. It gets the same treatment as anything else you ship: arms, cases, a judge, a verdict.
+The arms are two versions of the analyst's skill, the Markdown it is told to work from:
+
+```python
+control = AnalystSkill.at("skills/control")  # frozen: recordings are keyed by the skill's digest
+variant = (Path(__file__).parent / "skills" / "lead-first.md").read_text(encoding="utf-8")  # SKILL.md, lead claim first
+lead_first = control.with_file("SKILL.md", variant)
+judge = Model(  # another family; low effort leaves a score and a short reason room in 2,048 tokens, the priced cap
+    "google/gemini-3.8-flash", temperature=0, max_tokens=2048, effort="low", recording="recordings/judge.jsonl"
+)
+```
+
+and the eval is a `WriterEval` over a directory of frozen campaigns:
+
+```python
+writer_eval = WriterEval(
+    "cases",  # eleven frozen campaigns: {name, group, stratum, withhold, snapshot}, one .json.gz each
+    arms={  # the first is the control; the arms differ in the skill alone
+        "shipped": Writer("claude-sonnet-5-5", skill=control, effort="medium"),
+        "lead-first": Writer("claude-sonnet-5-5", skill=lead_first, effort="medium"),
+    },
+    judge=judge,
+    recordings="recordings/turns",  # one file per arm and case, keyed by skill, model, effort and snapshot
+    budget_usd=2.5,  # each report's cap
+    turns=45,  # each report's turn cap, the analyst's and the editor's together
+    max_cost_usd=39.0,  # the whole eval's, judge and pairwise pass included
+    pairwise_share=0.05,  # of max_cost_usd, for the pairwise pass: $1.95; each arm gets half the rest, $18.52
+    held_out_fraction=0.35,  # the default, stated: 7 held-out cases of 11, past the 5 a rate needs
+    name="writer",
+)
+```
+
+- **A case is a campaign, frozen.** Each file in `cases/` holds one campaign's evidence exactly as the writer's tools
+  read it: the four campaigns rungs 1 to 4 store when they replay (rung 3's is its campaign from before it split into a
+  file a step: the eval `guardrail.py` grew from, frozen on 2026-11-03 with a 5-point margin on `total` and no
+  question, so it is no longer the campaign any rung-3 file declares), a larger campaign the package ships as a fixture
+  (the `kairo` stratum), and six of the package's report inputs reshaped to fit no exemplar (the `misfit` stratum).
+  Each case's `stratum` is its domain, so the readings split by it, and its `withhold` names the skill's exemplar
+  notes the analyst is not given: the one reasoned on that same campaign.
+- **Cases are split before anything runs.** A case's split group (related cases share one) lands on the dev side,
+  where a change is tuned, or the held-out side, where it is decided. The promotion is read on held-out cases only.
+- **`Writer(model, skill=, effort=)`** is an arm. A writer can also differ in its revisions or its editor's own model
+  (`editor_model=`); each lever the arms differ in becomes an axis of the campaign's design.
+- **The control is a copy, frozen.** A recording is keyed by the skill's digest, so a recording made over the skill
+  the package ships today would go stale with its next edit. The rung measures the copy that was recorded.
+- **The judge is another family** than the writers, as in rung 2, and the eval refuses one of the writers' own.
+
+What the recording printed (made 2026-11-03, its judge's calls again 2026-11-10), replayed from `packages/evals/` with no key: the arms, the first
+readings and the judged ones, the judge's preference between the two arms' pages, the promotion read, and where the
+turns came from (each path printed whole):
+
+```text
+writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gemini-3.8-flash
+| reading | shipped | lead-first |
+|---|---|---|
+| Report finished | 43% (3 of 7) | 86% (6 of 7) |
+| Bounces | 0.9 | 1.0 |
+...
+| Must-fix findings open | 0.4 | 0.3 |
+| Should-fix findings open | 2.43 | 1.57 |
+...
+| Writer turns | 12.57 | 12.29 |
+...
+| report_writer.first_screen (judged) | 5.0 | 5.0 |
+| report_writer.coherent_story (judged) | 5.0 | 5.0 |
+| report_writer.honest_emphasis (judged) | 5.0 | 5.0 |
+| report_writer.sound_elision (judged) | 4.7 | 5.0 |
+| report_writer.confounds_handled (judged) | 5.0 | 5.0 |
+| report_writer.actionable_next_steps (judged) | 5.0 | 5.0 |
+| report_writer.evidence_fits_claims (judged) | 4.7 | 4.7 |
+...
+| Candidate | Pairs | Reads | Candidate's share (%) | Control's share (%) | 95% interval (%) |
+|---|---|---|---|---|---|
+| lead-first | every pair | cannot tell apart | 61 | 39 | 28 to 96 |
+| lead-first | both pages finished | cannot tell apart (too few cases) | 58 | 42 | 0 to 100 |
+
+| Candidate | Order consistency | First-slot lean (pts) | Can't tell | Held-out cases to settle | Spent |
+|---|---|---|---|---|---|
+| lead-first | 86% (6 of 7) | 7 | 0 | 120 | $0.13 of $1.95 |
+...
+promotion of lead-first: Undecided: on the primary reading the evidence cannot tell lead-first and shipped apart, and only an improved primary reading promotes.
+shipped: writer turns replayed from .../examples/5-writer/recordings/turns/shipped-4e14e276b568-claude-sonnet-5-5-medium-r2
+lead-first: writer turns replayed from .../examples/5-writer/recordings/turns/lead-first-af11aac84890-claude-sonnet-5-5-medium-r2
+```
+
+A report finished is one the editor cleared, so it is stored finished rather than as a draft. The report
+(`.evals/reports/writer/report.md`) opens with the answer, the promotion reading and the judge's preference in one
+sentence, and the same two side-by-side tables head its Scorecard:
+
+```text
+**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 61% of its preference over shipped (50% is even), too few cases to tell from an even split; if the share stayed near 61%, roughly 100 cases would settle it.**
+```
+
+Further down it reads the two code measures that moved most:
+
+```text
+| Report finished | 43% (16 to 75) | 86% (49 to 97) | +43 pts | -49 to +100 pts | cannot tell apart | 7 paired |
+| Must-fix findings open | 0.4 (0 to 0.9) | 0.3 (0 to 1.0) | -0.1 | -1.3 to +1.0 | cannot tell apart | 7 paired |
+```
+
+| What | Recorded |
+|---|---|
+| Reports | 14: 2 arms x 7 held-out cases, once each |
+| Writer turns | about 12.4 a report |
+| Writer | $6.90, about $0.49 a report |
+| Judge | $0.63, 112 calls: 98 scores and the pass's 14 |
+| Total | $7.53, under the $39 `max_cost_usd` |
+
+[`recordings/README.md`](../examples/5-writer/recordings/README.md) holds the one command that records it again, what
+it may spend, and what to do when a recording run is cut short.
+
+**The lesson: a judge that scores one page at a time sits at the ceiling here, so the arms are read side by side,
+and at seven cases even that reading is mostly the judge's own noise.** Every judged item reads 5 or near it for both
+arms: the writer revises each page until the editor passes it on the same rubric, so the scores bunch at the top and
+cannot tell the arms apart. Read side by side, the same judge gave lead-first 61% of its preference (50% is even), and
+its two orders agreed on 6 of 7 cases. Recorded again and again on the same seven cases, a few lines of the pages
+apart each time, the judge has read between 43% and 73%, which is why seven cases decide nothing. Two code measures differ, and the evidence cannot
+tell the arms apart on either: 6 of 7 lead-first reports finished against 3 of 7, with fewer must-fix findings left
+open (0.29 a report against 0.43). That preference is the promotion read's primary reading, fixed before the run: it
+reads `promote` only when the preference favours the candidate on enough held-out cases, no gated reading regressed
+and every guardrail held. 7 held-out cases, each written once (k=1), separate only a large effect, and the pass gives
+the size that would settle this one only if the share it read were the true one: if it stayed near 61%, roughly 120
+held-out cases. So the read is `Undecided`, which never promotes, and recording the call stays a person's act. That
+is the answer at this size, stated rather than tuned around: what would answer it is more cases or more repeats of
+each, and each costs a recorded report. [Pairwise
+preference](judges-and-calibration.md#pairwise-preference-for-the-report-writer) covers the share and the promotion
+rule, and [Measuring soundly](measuring-soundly.md#how-many-cases-how-many-repeats) how many cases a question needs.
 
 ## Where next
 
@@ -388,6 +704,10 @@ The store is any `DocumentStore`: the SQLite file by default, or your own databa
 | decide what to test before writing cases, and how many | [Building an inventory](building-an-inventory.md) |
 | trust a judge, and measure it as a subject | [Judges and calibration](judges-and-calibration.md) |
 | read every part of a report | [Reading reports](reading-reports.md) |
+| gate a pipeline on a stored campaign, with no run | [Serving: `gate`](serving.md#gate) |
+| read a grid of factors one lever at a time | [Measuring soundly](measuring-soundly.md#start-from-the-question) |
+| have a model write a comparison's report, and read it | [The analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence) |
+| promote a change to the report writer | [Pairwise preference for the report writer](judges-and-calibration.md#pairwise-preference-for-the-report-writer) |
 | choose a design, k and a case count, and avoid known traps | [Measuring soundly](measuring-soundly.md) |
 | price a run before it spends | [Cost and budgets](cost-and-budgets.md) |
 | evaluate an agent in your production world | [Evaluating a tool-using agent](evaluating-agents.md) |

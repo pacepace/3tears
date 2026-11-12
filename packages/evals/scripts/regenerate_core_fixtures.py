@@ -28,16 +28,17 @@ the newest final release tag's tree already holds ``v{CORE_SCHEMA_VERSION}/``: t
 and a shape change from it is a core major with a directory of its own. A checkout without the release tags cannot
 tell, and refuses rather than guessing.
 
-**Why a run on an unchanged tree changes nothing.** ``stored_sample`` reads the clock and draws UUIDs, so two
-samples of one model never agree byte for byte, and writing each one would move every fixture and every digest on
-every run. A fixture is therefore left as it is when the new sample matches it in structure and in every value but
-the ones that are a clock reading (an ISO-8601 timestamp) or a generated id (a UUID) at the same place in both,
-SPELLED alike: those are what a sample draws fresh, and a corpus document that differs only in them is the same
-document. Spelled alike means the two agree once every digit and hex letter is masked, and a UUID also keeps its
-version digit, so a switch from ``+00:00`` to ``Z``, a change in fractional seconds, or uuid4 to uuid7 is a change
-of what the build writes, not a fresh draw, and is written. Any other difference (a field added, removed or
-retyped, a fixed value changed) is written too. A sample whose fixed timestamp or id was changed on purpose to
-another value of the same spelling reads as unchanged by that rule; ``--all`` writes every file regardless.
+**Why a run on an unchanged tree changes nothing.** ``stored_sample`` draws UUIDs, and the corpus on disk holds the
+clock readings earlier samples took (a sample now reads a frozen clock), so two samples of one model never agree
+byte for byte, and writing each one would move every fixture and every digest on every run. A fixture is therefore
+left as it is when the new sample matches it in structure and in every value but the ones that are a clock reading
+(an ISO-8601 timestamp) or a generated id (a UUID) at the same place in both, SPELLED alike: those are what a sample
+draws fresh, and a corpus document that differs only in them is the same document. Spelled alike means the two agree
+once every digit and hex letter is masked, and a UUID also keeps its version digit, so a switch from ``+00:00`` to
+``Z``, a change in fractional seconds, or uuid4 to uuid7 is a change of what the build writes, not a fresh draw, and
+is written. Any other difference (a field added, removed or retyped, a fixed value changed) is written too. A sample
+whose fixed timestamp or id was changed on purpose to another value of the same spelling reads as unchanged by that
+rule; ``--all`` writes every file regardless.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""A measure reads in one unit on every surface of a report: its tables, its words and its summary lines.
+"""A measure reads in one unit on every surface of a report: its tables, its charts and its summary lines.
 
 The report chooses each measure's ruler once (:func:`~threetears.evals.analysis.report.figures.measure_rulers`, over
 every cell's mean and every threshold and verdict of a bar on it), and every table, chart and sentence restates onto
@@ -9,14 +9,8 @@ surface below is held to the ruler instead.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 
-import pytest
-
-from threetears.evals.analysis.cells import cell_ref
-from threetears.evals.analysis.prose_refs import render_reference
 from threetears.evals.analysis.report.figures import measure_rulers
-from threetears.evals.analysis.report.words import evidence_rows
 from threetears.evals.analysis.summary import EvalSummary, RunMeasureSummary
 from threetears.evals.kernel.analysis_measures import (
     BarAdjudication,
@@ -24,12 +18,11 @@ from threetears.evals.kernel.analysis_measures import (
     MeasureCollection,
     MeasureSummary,
 )
-from threetears.evals.kernel.campaign import EvidenceRow, VariantIndexEntry
+from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
 from threetears.evals.schema.values import SweepableValue
 
-from packages.evals.tests.report_shapes_support import s4_change
 
 AXIS = "candidate_model"
 CANDIDATE = "model-b-rev2"
@@ -127,81 +120,6 @@ class TestTheRulerIsChosenOverEveryFigureTheReportStates:
 
     def test_a_threshold_past_a_second_moves_the_ruler_to_s(self) -> None:
         assert measure_rulers(_surface(threshold=1500.0))[LATENCY].unit == "s"
-
-
-class TestWordsAndEvidenceReadOnTheRuler:
-    def test_a_figure_in_prose_states_the_measures_ruler(self) -> None:
-        surface = _surface(threshold=1500.0)
-        alias = "c1" if surface.cells[0].variant_key == entry(INCUMBENT).variant_key else "c2"
-        assert render_reference(surface, f"{alias}|{LATENCY}|measure|mean") == "0.9 s"
-        assert render_reference(_surface(), f"{alias}|{LATENCY}|measure|mean") == "900 ms"
-
-    def test_an_evidence_row_states_its_value_and_spread_on_the_ruler(self) -> None:
-        surface = _surface(threshold=1500.0)
-        # What evidence_rows reads of an analysis: the decision surface it was resolved under, and the frozen
-        # bundle's catalog, which says which measures are shares (none here).
-        # evidence_columns counts the aspects (one here, so no aspect column).
-        held = SimpleNamespace(decision_surface=surface, bundle={})
-        subject = SimpleNamespace(aspect=lambda label: held, aspects=[held])
-        slow = next(c for c in surface.cells if c.variant_key == entry(CANDIDATE).variant_key)
-        row = EvidenceRow(
-            aspect="conversation",
-            cell_ref=cell_ref(slow.variant_key, slow.apparatus_class_id),
-            measure_id=LATENCY,
-            reading="measure",
-            value=950.0,
-            n=18,
-            n_cases=6,
-            dispersion="sem 40; 95% CI [800, 1100]",
-        )
-        (stated,) = evidence_rows(subject, [row], lambda ref: ref)  # type: ignore[arg-type]
-        assert (stated["value"].value, stated["value"].unit, stated["value"].text) == (
-            pytest.approx(0.95),
-            "s",
-            "0.95 s",
-        )
-        assert stated["spread"].text == "sem 0.04; 95% CI [0.8, 1.1]"
-
-    def test_a_goal_check_s_pass_rate_is_stated_as_its_count(self) -> None:
-        surface = _surface(threshold=1500.0)
-        held = SimpleNamespace(decision_surface=surface, bundle={})
-        subject = SimpleNamespace(aspect=lambda label: held, aspects=[held])
-        cell = surface.cells[0]
-        row = EvidenceRow(
-            aspect="conversation",
-            cell_ref=cell_ref(cell.variant_key, cell.apparatus_class_id),
-            measure_id='goal_state:call_count("music.queue_track") >= 2',
-            reading="measure",
-            value=11 / 12,
-            n=12,
-            n_cases=4,
-            dispersion="sem 0.08",
-        )
-        (stated,) = evidence_rows(subject, [row], lambda ref: ref)  # type: ignore[arg-type]
-        # As the scoreboard counts, never 0.9167; the check named by its expression, as code.
-        assert stated["value"].text == "11 of 12"
-        assert stated["measure"].text == '`call_count("music.queue_track") >= 2`'
-
-    def test_a_goal_check_its_template_names_is_stated_by_its_name(self) -> None:
-        surface = _surface(threshold=1500.0)
-        check = 'call_count("music.queue_track") >= 2'
-        # The frozen bundle is a real one's stored form, naming the check as its template declared it.
-        named = s4_change().bundles["billing"].model_copy(update={"goal_check_names": {check: "Two queued"}})
-        held = SimpleNamespace(decision_surface=surface, bundle=named.to_dict())
-        subject = SimpleNamespace(aspect=lambda label: held, aspects=[held])
-        cell = surface.cells[0]
-        row = EvidenceRow(
-            aspect="conversation",
-            cell_ref=cell_ref(cell.variant_key, cell.apparatus_class_id),
-            measure_id=f"goal_state:{check}",
-            reading="measure",
-            value=11 / 12,
-            n=12,
-            n_cases=4,
-            dispersion="sem 0.08",
-        )
-        (stated,) = evidence_rows(subject, [row], lambda ref: ref)  # type: ignore[arg-type]
-        assert (stated["measure"].text, stated["value"].text) == ("Two queued", "11 of 12")
 
 
 class TestARunSummaryStatesAMeasureOnOneRuler:

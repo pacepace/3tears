@@ -23,8 +23,7 @@ import statistics
 
 from pydantic import Field
 
-from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.summary import dollars_text
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.agreement import JudgeSelfAgreement, self_agreement_of_repeats
 from threetears.evals.kernel.judge_temperature import (
     TEMPERATURE_SETTINGS,
@@ -149,17 +148,18 @@ class JudgeTemperatureComparison(EvalBaseModel):
 
     def render(self) -> str:
         """The comparison as text: what was asked and spent, then each dimension's two settings side by side."""
-        cost = "unpriced" if self.cost_usd is None else dollars_text(self.cost_usd)
+        forms = PageForms.off_page()
+        cost = "unpriced" if self.cost_usd is None else forms.money_total(self.cost_usd).text
         requested = {read.setting: read for read in self.settings}
         pinned = requested["pinned"].requested
         lines = [
             f"judge temperature comparison on run {self.run_id} (judge {self.judge_model}): {self.cases} "
             f"{self.selection} case(s) over {self.results} result(s), {self.repeats} repeat(s) at temperature "
-            f"{format_number(pinned)} and at the provider default; {self.calls_made} call(s), {cost} — measurement cost, "
+            f"{forms.lone(pinned).text} and at the provider default; {self.calls_made} call(s), {cost} — measurement cost, "
             "ledgered under judge, never the candidate's",
         ]
         if not self.comparable:
-            lines.append(f"NOT COMPARABLE: {self.incomparable}")
+            lines.append(f"NOT COMPARABLE: {forms.stored_counts(self.incomparable or '')}")
         if self.stopped:
             lines.append(f"stopped: {self.stopped}")
         lines += [f"skipped {skip.result_id}: {skip.reason}" for skip in self.skipped]
@@ -170,18 +170,19 @@ class JudgeTemperatureComparison(EvalBaseModel):
         )
         for row in self.dimensions:
             lines.append(f"- {row.rubric_dim} ({row.scale})")
-            lines.append(f"    temperature {format_number(pinned)}:      {_side_text(row.pinned)}")
-            lines.append(f"    provider default:   {_side_text(row.provider_default)}")
+            # one line: a figure printed by the lone figure rule holds no line break
+            lines.append(f"    temperature {forms.lone(pinned).text}:      {_side_text(row.pinned, forms)}")
+            lines.append(f"    provider default:   {_side_text(row.provider_default, forms)}")
         return "\n".join(lines)
 
 
-def _side_text(side: TemperatureSide) -> str:
-    """One setting of one dimension, in a line."""
-    agreement = "n/a" if side.exact_agreement is None else f"{side.exact_agreement:.0%}"
+def _side_text(side: TemperatureSide, forms: PageForms) -> str:
+    """One setting of one dimension, in a line, its figures as ``forms`` states them."""
+    agreement = "n/a" if side.exact_agreement is None else forms.share(side.exact_agreement).text
     kappa = side.weighted_kappa if side.weighted_kappa is not None else side.kappa
     return (
-        f"{side.cases} case(s), variance {format_number(side.mean_variance)} / {format_number(side.max_variance)}, "
-        f"{side.unstable_cases} unstable, exact agreement {agreement}, kappa {format_number(kappa)}"
+        f"{side.cases} case(s), variance {forms.lone(side.mean_variance).text} / {forms.lone(side.max_variance).text}, "
+        f"{side.unstable_cases} unstable, exact agreement {agreement}, kappa {forms.lone(kappa).text}"
     )
 
 
@@ -189,7 +190,7 @@ def _recorded_text(temperature: JudgeTemperature | None) -> str:
     """A recorded temperature as the report spells it."""
     if temperature is None:
         return "unrecorded"
-    return temperature if isinstance(temperature, str) else format_number(temperature)
+    return temperature if isinstance(temperature, str) else PageForms.off_page().lone(temperature).text
 
 
 def _case(answered: TemperatureCaseAnswers, expected: JudgeTemperature) -> tuple[TemperatureCase, set[str]]:

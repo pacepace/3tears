@@ -1,9 +1,9 @@
-"""A bundle's fingerprint, the page JSON and the writer's message are the same across Python builds.
+"""A bundle's fingerprint and the page JSON are the same across Python builds.
 
 The bundle's intervals and multipliers come from C maths (``math.lgamma``, ``math.exp``, ``NormalDist().inv_cdf``)
 whose last bits differ between two builds of one Python: a uv-managed CPython 3.14.6 and Debian's give
 ``NormalDist().inv_cdf(0.975)`` as ``...0534`` and ``...0536``. Hashed in full, one evidence fingerprinted
-differently on a laptop and in a container, and a reporter case re-frozen on the other was refused as moved evidence.
+differently on a laptop and in a container, and a frozen case re-frozen on the other was refused as moved evidence.
 Pinned here:
 
 - **The helper**: :func:`identity_json` is canonical JSON with every float, at any depth, to twelve significant
@@ -11,15 +11,14 @@ Pinned here:
 - **A bundle moved by a ULP fingerprints alike** (but for a figure on a twelfth-figure rounding boundary, which the
   toy's are not): every nonzero float of the toy corpus's bundle nudged one ULP up, or down,
   leaves the ``v2:`` fingerprint as it was, the aspect's and the campaign's; and the same holds for the readings the
-  page JSON serves.
+  page JSON serves, and for a chart's figures, which every form of the page (the kit's ``data-chart`` JSON in the
+  HTML, the static page's SVG, Markdown, JSON) serves alike.
 - **A build whose C maths differs fingerprints alike**: a fresh interpreter whose ``math`` and ``NormalDist`` answer
-  one ULP off assembles the toy campaign to the same ``v2:`` fingerprint, serves the same page JSON and sends the
-  writer the same message, while the unrounded digest moves, which is the defect.
-- **Every section the writer reads is served to twelve figures**: a judge tier's calibration bounds, a time axis and
-  a guardrail's interval, each from an existing fixture, reach the message rounded as every other figure does.
+  one ULP off assembles the toy campaign to the same ``v2:`` fingerprint and serves the same page JSON, while the
+  unrounded digest moves, which is the defect.
 - **A real difference still moves it**: a statistic changed in its tenth figure is another fingerprint.
 - **A fingerprint stored before the rounding still matches**: an unprefixed (version 1) fingerprint is compared as it
-  was taken, by a frozen case's own bundle, by a re-freeze of the same evidence, by the limits and by an inspection.
+  was taken, by a bundle, a campaign's frame and an inspection.
 """
 
 from __future__ import annotations
@@ -29,26 +28,19 @@ import math
 import os
 import subprocess
 import sys
-from collections.abc import Callable
 from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import assemble_campaign_bundle, assemble_context_bundle, campaign_report
-from threetears.evals.analysis.bundle.schema import BundleInspection, evidence_digest
-from threetears.evals.analysis.campaign_bundle import (
-    CAMPAIGN_MESSAGE_HEADING,
-    CampaignBundle,
-    aspect_view,
-    build_campaign_user_message,
-    campaign_evidence_digest,
-    writer_view,
+from threetears.evals.analysis import (
+    assemble_campaign_bundle,
+    campaign_report,
+    serialize_report,
 )
+from threetears.evals.analysis.bundle.schema import BundleInspection, evidence_digest
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
-from threetears.evals.analysis.report.model import CampaignReport
-from threetears.evals.analysis.reporter_bank import case_limits
-from threetears.evals.analysis.reporter_kind import rebuild_bundle, reporter_case_of, reporter_case_payload
-from threetears.evals.run import rate_result
+from threetears.evals.analysis.report.model import CampaignReport, ChartBlock, ReportBlock, TableBlock
 from threetears.evals.schema.hashing import (
     UnhashableContentError,
     canonical_digest,
@@ -57,25 +49,26 @@ from threetears.evals.schema.hashing import (
     identity_json,
     round_figures,
 )
-from packages.evals.tests.aspect_support import with_aspect
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle, toyhost_campaign
-from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, ToyhostStorage
-from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.guardrail_support import BOUNDARY, CAPABILITY, two_arm_bundle
-from packages.evals.tests.ops_support import TOYHOST_SCOPE
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
+from packages.evals.tests.report_shapes_support import s1_change
 from packages.evals.tests.report_support import toy_campaign_host
-from packages.evals.tests.reporter_case_support import freeze_corpus_campaign, reporter_fixture, reporter_template
 from packages.evals.tests.test_package_matrix import REPO_ROOT
-from packages.evals.tests.test_viz_timeseries import timeseries_batches
 
-#: What the bundle's fingerprint leaves out, as version 1 did.
-_NOT_EVIDENCE = ("package_version", "first_result_at")
+#: What the bundle's fingerprint leaves out, as version 1 did, and what no build of that version wrote: the lever
+#: names (``lever_names``), which a page reads and a build since writes only when a lever is named.
+_NOT_EVIDENCE = ("package_version", "first_result_at", "lever_names")
 
 
 def _v1_aspect(document: dict[str, Any]) -> str:
-    """An aspect bundle's fingerprint as version 1 took it: every float in full, no prefix."""
-    return canonical_digest({key: value for key, value in document.items() if key not in _NOT_EVIDENCE})
+    """An aspect bundle's fingerprint as version 1 took it: every float in full, no prefix, over the document as a build
+    of that version wrote it, so with no census pricing (``scoreboard[].pricing``) and no lever names, which no such
+    build read."""
+    held = {key: value for key, value in document.items() if key not in _NOT_EVIDENCE}
+    if "scoreboard" in held:
+        held["scoreboard"] = [
+            {key: value for key, value in row.items() if key != "pricing"} for row in held["scoreboard"]
+        ]
+    return canonical_digest(held)
 
 
 def _v1_campaign(document: dict[str, Any]) -> str:
@@ -185,7 +178,14 @@ def test_every_float_of_a_campaign_bundle_moved_one_ulp_leaves_its_fingerprint(t
     nudged = _nudged(document, toward)
     assert _v1_campaign(nudged) != _v1_campaign(document)
 
-    assert campaign_evidence_digest(nudged) == campaign_evidence_digest(document) == bundle.fingerprint()
+    # The campaign's fingerprint is its frame's, which names each aspect by its fingerprint: every aspect's document
+    # and the frame's own floats, each moved one ULP, leave it.
+    assert [evidence_digest(aspect) for aspect in nudged["aspects"]] == [
+        aspect.fingerprint() for aspect in bundle.aspects
+    ]
+    frame = _nudged(bundle.frame(), toward)
+    assert frame != bundle.frame(), "the frame's readings carry floats"
+    assert CampaignBundle.from_frame(frame, bundle.aspects).fingerprint() == bundle.fingerprint()
 
 
 @pytest.mark.parametrize("toward", [math.inf, -math.inf], ids=["up", "down"])
@@ -198,6 +198,64 @@ def test_readings_moved_one_ulp_serve_the_same_page_json(toward: float) -> None:
     assert nudged.readings.to_dict() != readings, "the readings did move"
 
     assert json.dumps(nudged.json_document()) == json.dumps(report.json_document())
+
+
+def _figures_nudged(blocks: list[ReportBlock], toward: float) -> list[ReportBlock]:
+    """``blocks`` with every float of every chart and table among them one ULP toward ``toward`` (a table's interval
+    cells are what its glyphs draw), each validated again."""
+    return [
+        type(block).model_validate(_nudged(block.model_dump(), toward))
+        if isinstance(block, ChartBlock | TableBlock)
+        else block
+        for block in blocks
+    ]
+
+
+def _page_nudged(report: CampaignReport, toward: float) -> CampaignReport:
+    """``report`` with its own and every aspect page's charts and tables nudged (:func:`_figures_nudged`)."""
+    folds = [
+        fold.model_copy(
+            update={"report": fold.report.model_copy(update={"blocks": _figures_nudged(fold.report.blocks, toward)})}
+        )
+        for fold in report.aspects
+    ]
+    return report.model_copy(update={"blocks": _figures_nudged(report.blocks, toward), "aspects": folds})
+
+
+def _glyph_cells(report: CampaignReport) -> list[Any]:
+    """Every interval cell a glyph draws, on the page and in its folds."""
+    blocks = [*report.blocks, *(block for fold in report.aspects for block in fold.report.blocks)]
+    return [
+        cell
+        for block in blocks
+        if isinstance(block, TableBlock)
+        for row in block.rows
+        for cell in row.values()
+        if cell.low is not None and cell.zero_line
+    ]
+
+
+@pytest.mark.parametrize("toward", [math.inf, -math.inf], ids=["up", "down"])
+def test_charts_and_tables_moved_one_ulp_serve_the_same_page_in_every_form(toward: float) -> None:
+    """A chart's figures and a table's intervals are computed, so their last bits differ between builds: the kit's
+    ``data-chart`` JSON serves them to twelve figures, as the page's JSON form does, the static page's SVG and each
+    interval glyph round their coordinates there first, and every form of the page is the same bytes."""
+    shape = s1_change()
+    report = campaign_report(shape.host(), shape.campaign.id, shape.campaign.scope_id)
+    assert isinstance(report, CampaignReport)
+    charts = [block for block in report.blocks if isinstance(block, ChartBlock) and block.kit_chart() is not None]
+    assert [
+        value for chart in charts for value in _floats(list(chart.kit_chart() or ())) if round_figures(value) != value
+    ], "the page draws a chart whose figures run past twelve"
+    nudged = _page_nudged(report, toward)
+    assert [block.kit_chart() for block in nudged.blocks if isinstance(block, ChartBlock)] != [
+        chart.kit_chart() for chart in charts
+    ], "the charts did move"
+    assert _glyph_cells(report), "the page draws an interval glyph"
+    assert _glyph_cells(nudged) != _glyph_cells(report), "the glyphs' intervals did move"
+
+    for form, static in (("html", False), ("html", True), ("markdown", False), ("json", False)):
+        assert serialize_report(nudged, form, static=static) == serialize_report(report, form, static=static), form
 
 
 def test_the_page_json_serves_every_figure_to_twelve_figures_and_a_declared_one_unchanged() -> None:
@@ -216,101 +274,13 @@ def test_the_page_json_serves_every_figure_to_twelve_figures_and_a_declared_one_
     ]
 
 
-def test_the_writer_reads_a_bars_figures_and_a_rows_costs_to_its_four_figures() -> None:
-    _, _, bundle = _toy_campaign()
-    view = writer_view(bundle)
-    verdicts = [verdict for aspect in view["aspects"] for bar in aspect["bars"] for verdict in bar["verdicts"]]
-    figures = [verdict[key] for verdict in verdicts for key in ("value", "sem", "ci_low", "ci_high")]
-    figures += [
-        row[key]
-        for aspect in view["aspects"]
-        for row in aspect["scoreboard"]
-        for key in ("test_cost_usd", "reply_cost_usd")
-    ]
-    held = [figure for figure in figures if figure is not None]
-    assert held, "the toy campaign holds a bar and a priced reply"
-    assert all(float(f"{figure:.4g}") == figure for figure in held)
-    assert all(round_figures(value) == value for value in _floats(view)), "nothing the writer reads runs past 12"
-
-
-def _rated_toy_campaign() -> CampaignBundle:
-    """The toy campaign with a person's rating agreeing with every judged result: its judge tier has calibration bounds."""
-    host, campaign = toy_campaign_host()
-    for run_id in campaign.run_ids:
-        for result in host.storage.query_eval_results_by_run(run_id, campaign.scope_id):
-            if (score := result.judge_score(TOYHOST_JUDGED_DIMENSION)) is not None:
-                rate_result(
-                    host.storage,
-                    result_id=result.id,
-                    scope_id=campaign.scope_id,
-                    rubric_dim=TOYHOST_JUDGED_DIMENSION,
-                    rater="reviewer-1",
-                    rater_kind="person",
-                    score=score.score,
-                    reason="read it against the source",
-                )
-    return assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
-
-
-def _timed_toy_campaign() -> CampaignBundle:
-    """The toy campaign re-run on two days: its bundle has a time axis."""
-    profile = toyhost_profile()
-    campaign, _ = toyhost_campaign(profile=profile)
-    runs, results = timeseries_batches(
-        [("2026-03-14T09:30:00Z", None), ("2026-03-15T09:30:00Z", None)], profile=profile
-    )
-    timed = with_aspect(campaign, run_ids=[run.id for run in runs])
-    return campaign_bundle(assemble_context_bundle(timed, storage=ToyhostStorage(runs, results), profile=profile))
-
-
-def _guarded_campaign() -> CampaignBundle:
-    """A control and a contrast, the contrast losing a guardrail the control holds: its bundle has a guardrail check."""
-    cases = 15
-    return campaign_bundle(
-        two_arm_bundle(
-            [
-                (CAPABILITY, "capability", ([0] * 10 + [1] * 5, [1] * 14 + [0])),
-                (BOUNDARY, "boundary", ([1] * cases, [0] * cases)),
-            ]
-        )
-    )
-
-
-@pytest.mark.parametrize(
-    ("build", "section"),
-    [
-        (_rated_toy_campaign, "judge_evidence_tiers"),
-        (_timed_toy_campaign, "time_axis"),
-        (_guarded_campaign, "guardrails"),
-    ],
-    ids=["judge-tiers", "time-axis", "guardrails"],
-)
-def test_every_section_of_the_writer_view_is_served_to_twelve_figures(
-    build: Callable[[], CampaignBundle], section: str
-) -> None:
-    bundle = build()
-    walked = aspect_view(bundle, 0)[section]
-    assert [value for value in _floats(walked) if round_figures(value) != value], (
-        f"the fixture's {section}, as the view walks it, carries a figure past the twelfth"
-    )
-    if section == "judge_evidence_tiers":
-        assert [row for row in aspect_view(bundle, 0)["coverage"] if row["mechanism"]["level_means"]], (
-            "the rated toy campaign's coverage carries its levels' means too"
-        )
-
-    view = writer_view(bundle)
-    assert all(round_figures(value) == value for value in _floats(view))
-    message = build_campaign_user_message(bundle)
-    assert json.loads(message.removeprefix(CAMPAIGN_MESSAGE_HEADING)) == view, "the message is the rounded view"
-
-
 # =============================================================================
 # A build whose C maths answers one ULP off
 # =============================================================================
 
 #: Run in a fresh interpreter, since the stats module caches what it computed: ``math``'s transcendental functions
 #: and ``NormalDist``'s two maths methods answer one ULP toward ``argv[1]`` (or as they do, for ``none``), then the
-#: toy campaign, rated, is assembled, its page served and its writer message rendered.
+#: toy campaign, rated, is assembled and its page served.
 _ANOTHER_BUILD = """
 import json, math, sys
 from statistics import NormalDist
@@ -331,7 +301,6 @@ if step != "none":
     NormalDist.cdf = nudged(NormalDist.cdf)
 
 from threetears.evals.analysis import assemble_campaign_bundle, campaign_report
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from threetears.evals.run import rate_result
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.report_support import toy_campaign_host
@@ -351,7 +320,6 @@ print(json.dumps({
     "fingerprint": bundle.fingerprint(),
     "document": bundle.to_dict(),
     "page": campaign_report(host, campaign.id, campaign.scope_id).json_document(),
-    "message": build_campaign_user_message(bundle),
 }))
 """
 
@@ -380,7 +348,6 @@ def test_a_build_whose_c_maths_answers_one_ulp_off_fingerprints_and_serves_alike
         )
         assert other["fingerprint"] == this["fingerprint"]
         assert json.dumps(other["page"]) == json.dumps(this["page"])
-        assert other["message"] == this["message"], "the writer is sent the same message"
 
 
 # =============================================================================
@@ -418,49 +385,22 @@ def test_a_statistic_changed_in_its_tenth_figure_is_another_fingerprint() -> Non
 # =============================================================================
 
 
-def test_an_unprefixed_fingerprint_is_compared_as_it_was_taken() -> None:
+def test_a_fingerprint_stored_in_an_earlier_version_never_matches_and_names_no_bundle() -> None:
+    """A version 1 (unprefixed) fingerprint was taken over a bundle of a shape no build reads, so none computes one
+    again (no back compat, owner ruling 2026-11-11): recorded on an analysis it reads as not reproducing, and a frame
+    naming its aspects by one is refused, so what holds either is regenerated."""
     bundle = toyhost_bundle()
     v1 = _v1_aspect(bundle.to_dict())
 
-    assert bundle.fingerprint(like=v1) == v1
-    assert evidence_digest(bundle.to_dict(), like=v1) == v1
-    assert bundle.fingerprint(like=bundle.fingerprint()) == bundle.fingerprint() != v1
     inspected = BundleInspection.over(bundle, analysis_id="a", recorded_fingerprint=v1)
-    assert (inspected.reproduces_generation, inspected.fingerprint) == (True, bundle.fingerprint())
-
-
-def test_a_frame_stored_with_unprefixed_fingerprints_still_names_its_bundles() -> None:
-    _, _, bundle = _toy_campaign()
-    frame = bundle.frame()
-    assert all(entry["fingerprint"].startswith("v2:") for entry in frame["aspects"])
+    assert (inspected.reproduces_generation, inspected.mismatch_cause) == (False, "package_shape")
+    _, _, campaign = _toy_campaign()
     stored = {
-        **frame,
-        "aspects": [{"aspect": a.aspect, "fingerprint": _v1_aspect(a.to_dict())} for a in bundle.aspects],
+        **campaign.frame(),
+        "aspects": [{"aspect": a.aspect, "fingerprint": _v1_aspect(a.to_dict())} for a in campaign.aspects],
     }
-
-    assert CampaignBundle.from_frame(stored, bundle.aspects).fingerprint() == bundle.fingerprint()
-    v1 = _v1_campaign(bundle.to_dict())
-    assert bundle.fingerprint(like=v1) == v1
-    assert not [limit for limit in case_limits(bundle, recorded_fingerprint=v1) if "does not reproduce" in limit]
-    assert [limit for limit in case_limits(bundle, recorded_fingerprint=_another(v1)) if "does not reproduce" in limit]
-
-
-def test_a_reporter_case_frozen_before_the_rounding_still_holds_its_bundle_and_is_its_evidences_case() -> None:
-    fixture = reporter_fixture()
-    storage = fixture.host.eval_host.storage
-    receipt = freeze_corpus_campaign(fixture)
-    assert receipt.bundle_fingerprint.startswith("v2:")
-    (stored,) = storage.query_test_cases(TOYHOST_SCOPE, template_id=reporter_template().id)
-    case = reporter_case_of(stored)
-    assert case is not None
-    # As a build before the rounding froze it: the same case, its fingerprint unprefixed.
-    before = case.model_copy(update={"bundle_fingerprint": _v1_campaign(case.bundle)})
-    storage.save_test_case(stored.model_copy(update={"host_payload": reporter_case_payload(before)}))
-
-    assert rebuild_bundle(before).fingerprint() == case.bundle_fingerprint
-    again = freeze_corpus_campaign(fixture)
-    assert again.test_case_id == stored.id, "the same evidence re-frozen on the same machine is its live case"
-    assert again.bundle_fingerprint == before.bundle_fingerprint
+    with pytest.raises(ValueError, match="names aspects"):
+        CampaignBundle.from_frame(stored, campaign.aspects)
 
 
 def _another(fingerprint: str) -> str:

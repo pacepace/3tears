@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from pydantic import ValidationError
 
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.prompts.catalogue import BOUNDARY_GEN_PROMPT, PROPOSER_PROMPT
 from threetears.evals.kernel.prompts.contract import require_output_contract, template_text
@@ -246,7 +247,11 @@ async def propose_draft(
 
 def _spent(spend: OutOfRunSpend) -> str:
     """What the refused draft's call cost, for the refusal to say — it was paid either way."""
-    return "the call cost an unreported amount" if spend.cost_usd is None else f"the call cost ${spend.cost_usd:.4f}"
+    return (
+        "the call cost an unreported amount"
+        if spend.cost_usd is None
+        else f"the call cost ${round_half_even(spend.cost_usd, 4)}"
+    )
 
 
 def _drop_unwritten_levels(payload: Any) -> None:

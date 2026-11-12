@@ -21,7 +21,8 @@ from threetears.evals.analysis import (
     inspect_campaign_bundle,
     report_markdown,
 )
-from threetears.evals.analysis.quantities import with_unit
+from threetears.evals.analysis.report.forms import policy_places
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.metrics import classifier_label_of
 from threetears.evals import Eval, Result
@@ -50,15 +51,18 @@ async def guess(case: Mapping[str, Any]) -> str:
 
 async def _classifier() -> Result:
     """Two arms over four cases twice: the control right every time, the candidate never saying ``animal``."""
-    return await Eval(CASES, {"control": right, "candidate": guess}, ["label"], k=2).run(store=":memory:", scope=SCOPE)
+    return await Eval(CASES, {"control": right, "candidate": guess}, ["label"], k=2, name="control vs candidate").run(
+        store=":memory:", scope=SCOPE
+    )
 
 
 def _table(report: Report, name: str) -> TableBlock | None:
     return next((block for block in report.blocks if isinstance(block, TableBlock) and block.name == name), None)
 
 
-def _figure(summary: MeasureSummary) -> str:
-    """A per-label figure as the table states it: a rate as a count under the case floor, else with its interval.
+def _figure(summary: MeasureSummary, places: int) -> str:
+    """A per-label figure as the table states it: a rate as a count under the case floor, else with its interval, at
+    its measure's places.
 
     The n names the cases it is over where they repeat — k=2 here — since those are the draws the interval counts.
     """
@@ -69,14 +73,15 @@ def _figure(summary: MeasureSummary) -> str:
     # A rate, and F1 on 0–1, read as percents on the one percent ruler.
     if summary.rate is not None:
         assert summary.ci_low is not None and summary.ci_high is not None
-        return f"{_percent(summary.rate)} [{_percent(summary.ci_low)}, {_percent(summary.ci_high)}] {n}"
+        low, high = _percent(summary.ci_low, places).removesuffix("%"), _percent(summary.ci_high, places)
+        return f"{_percent(summary.rate, places)} ({low} to {high}) {n}"
     assert summary.mean is not None
-    return f"{_percent(summary.mean)} {n}"
+    return f"{_percent(summary.mean, places)} {n}"
 
 
-def _percent(share: float) -> str:
-    """A share as the table states it: a percent to one decimal."""
-    return with_unit(100 * share, "%")
+def _percent(share: float, places: int) -> str:
+    """A share as the table states it: a percent at its measure's places, rounded half to even."""
+    return f"{round_half_even(100 * share, places)}%"
 
 
 class TestPerLabelStatisticsAreOneTable:
@@ -89,14 +94,34 @@ class TestPerLabelStatisticsAreOneTable:
         # What the bundle holds, per label: one (precision, recall, F1) triple per arm.
         bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, SCOPE).bundle
         held: dict[str, Counter[tuple[str | None, ...]]] = {}
+        # Each label's statistic is a measure of its own, read at one precision across the arms: the places its
+        # narrowest interval sets, an arm's own or a contrast's, else two significant figures of its least figure but
+        # zero (the number policy's rule 2), in percent, at most a tenth.
+        figures_of: dict[str, list[float]] = {}
+        widths_of: dict[str, list[float]] = {}
+        for cell in bundle.cell_measures:
+            for summary in cell.measures.measures:
+                if classifier_label_of(summary.name) is None:
+                    continue
+                if summary.mean is not None:
+                    figures_of.setdefault(summary.name, []).append(100 * summary.mean)
+                if summary.ci_low is not None and summary.ci_high is not None and summary.ci_high > summary.ci_low:
+                    widths_of.setdefault(summary.name, []).append(50 * (summary.ci_high - summary.ci_low))
+        for family in bundle.multiple_comparisons.families:
+            for compared in family.comparisons:
+                if compared.interval is not None and compared.interval[1] > compared.interval[0]:
+                    widths_of.setdefault(compared.name, []).append(50 * (compared.interval[1] - compared.interval[0]))
         for cell in bundle.cell_measures:
             by_label: dict[str, dict[str, str]] = {}
             for summary in cell.measures.measures:
                 if (classifier := classifier_label_of(summary.name)) is not None:
-                    by_label.setdefault(classifier[1], {})[classifier[0]] = _figure(summary)
+                    places = policy_places(
+                        widths_of.get(summary.name, []), figures_of.get(summary.name, []), capped=True
+                    )
+                    by_label.setdefault(classifier[1], {})[classifier[0]] = _figure(summary, places)
             for label, figures in by_label.items():
-                triple = tuple(figures.get(statistic) for statistic in ("precision", "recall", "f1"))
-                held.setdefault(label, Counter())[triple] += 1
+                spelled = tuple(figures.get(statistic) for statistic in ("precision", "recall", "f1"))
+                held.setdefault(label, Counter())[spelled] += 1
         assert set(held) == {"animal", "plant"}
 
         shown: dict[str, Counter[tuple[str | None, ...]]] = {}

@@ -423,7 +423,6 @@ markers = [
     # on it. scripts/ci-unit-tests.sh runs these apart, one process, after every parallel session.
     "loop_timing: asserts the event loop's responsiveness by wall clock; CI runs it apart and serially",
     "memory_probe: measures a run's peak heap with tracemalloc; deselect with -m 'not memory_probe' if slow",
-    "paid: spends money at a model provider; skipped unless opted in (THREETEARS_EVALS_PAID=1) with a provider key",
 ]
 # Note on the `allowed_objects` warning:
 # `langgraph.checkpoint.serde.jsonplus` instantiates a module-level

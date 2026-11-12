@@ -21,15 +21,19 @@ from threetears.evals.analysis import (
     EvalSummary,
     Report,
     UnconfirmedModelIdentity,
-    analysis_bundle,
     assemble_context_bundle,
     build_code_only_report,
-    build_report,
     report_markdown,
     run_summary,
     summarize_run,
 )
-from threetears.evals.analysis.reporting import model_identity_disclosure, unconfirmed_model_identities
+from threetears.evals.analysis.report.build import analysis_campaign_bundle
+from threetears.evals.analysis.reporting import (
+    RequestSettingsReading,
+    model_identity_disclosure,
+    request_settings_disclosure,
+    unconfirmed_model_identities,
+)
 from threetears.evals.kernel import EvalStorage
 from threetears.evals import Answer
 from threetears.evals.quick.one_call import callable_host
@@ -267,31 +271,52 @@ class TestTheBundleAndItsCodeOnlyReport:
         report = build_code_only_report(bundle, assembled_at="2026-10-12T00:00:00+00:00")
         assert _said(report) == []
 
+    def test_the_page_groups_the_stored_counts_and_the_bundle_keeps_them_as_stored(self) -> None:
+        # The bundle fingerprints its disclosures, so their counts stay bare as assembled ("6224 of 6224"); the page
+        # prints a count the one way the package spells it ("6,224 of 6,224"), grouping it on its way out.
+        identity = model_identity_disclosure(
+            [
+                UnconfirmedModelIdentity(role="candidate", requested=[_ALIAS], n_unrecorded=1234, n_total=5678),
+                UnconfirmedModelIdentity(role="judge", requested=[_ALIAS], n_unrecorded=6224, n_total=6224),
+            ]
+        )
+        settings = request_settings_disclosure(
+            [
+                RequestSettingsReading(
+                    role="judge", asked=[], sent=[], n_total=6224, n_unverified=6224, n_not_as_asked=0, n_unenforced=0
+                )
+            ]
+        )
+        assert identity is not None and settings is not None
+        bundle = _campaign_bundle(served=None).model_copy(
+            update={"model_identity_disclosure": identity, "request_settings_disclosure": settings}
+        )
+
+        page = report_markdown(build_code_only_report(bundle, assembled_at="2026-10-12T00:00:00+00:00"))
+
+        assert "in 1234 of 5678 result(s)" in identity and "produced 6224 of 6224 score(s)" in identity
+        assert "for 6224 of 6224 score(s)" in settings
+        assert "in 1,234 of 5,678 result(s)" in page and "produced 6,224 of 6,224 score(s)" in page
+        assert "for 6,224 of 6,224 score(s)" in page
+        assert "6224" not in page and "1234" not in page
+
 
 class TestTheAnalysisReport:
-    async def test_build_report_says_the_frozen_bundle_s_disclosure_once_among_the_methods(self) -> None:
+    async def test_an_analysis_s_page_says_the_frozen_bundle_s_disclosure_once_among_the_methods(self) -> None:
         sentence = f"{_HEADLINE} the candidate (asked for {_ALIAS}) made calls whose response named no model."
         _, analysis, _ = await toy_report()
-        frozen = analysis_bundle(analysis)
+        (frozen,) = analysis_campaign_bundle(analysis).aspects
         said = frozen.model_copy(update={"model_identity_disclosure": sentence})
+        assembled_at = analysis.generation.bundle_assembled_at
 
-        (aspect,) = analysis.aspects
-        report = build_report(
-            analysis.model_copy(update={"aspects": [aspect.model_copy(update={"bundle": said.to_dict()})]})
-        )
+        # An analysis's aspect page is code's, over the bundle frozen with it.
+        report = build_code_only_report(said, assembled_at=assembled_at)
 
         (block,) = [block for block in report.blocks if isinstance(block, DisclosureBlock) and block.text == sentence]
         assert (block.section, block.source) == ("methods", "measurement")
         assert report_markdown(report).count(_HEADLINE) == 1
         unsaid = frozen.model_copy(update={"model_identity_disclosure": None})
-        assert (
-            _said(
-                build_report(
-                    analysis.model_copy(update={"aspects": [aspect.model_copy(update={"bundle": unsaid.to_dict()})]})
-                )
-            )
-            == []
-        )
+        assert _said(build_code_only_report(unsaid, assembled_at=assembled_at)) == []
 
     async def test_reading_an_analysis_reads_the_disclosure_off_its_runs_results(self) -> None:
         host, analysis, report = await toy_report()

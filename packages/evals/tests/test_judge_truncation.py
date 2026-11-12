@@ -190,7 +190,11 @@ async def _compare(long_cases: int, judge: _FakeCuttingJudge) -> Any:
     # Scored 1-5, as the judge answers every answer it can finish.
     rubric = [RubricDim(name=DIM, description="It helps.", scale="ordinal")]
     comparison = await Eval(
-        _CASES, {"control": _control, "challenger": _challenger(long_cases)}, [Judge(judge, rubric)], k=1
+        _CASES,
+        {"control": _control, "challenger": _challenger(long_cases)},
+        [Judge(judge, rubric)],
+        k=1,
+        name="control vs challenger",
     ).run(store=":memory:")
     campaign = off_loop(get_campaign, comparison.host.storage, comparison.campaign_id, comparison.scope_id)
     bundle = off_loop(

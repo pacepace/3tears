@@ -20,7 +20,12 @@ the first stays short on its own record. :func:`resume_run` continues the run it
   none of that — its description, say — measures alike: the edit is disclosed on the holding that began after it,
   not refused. A run stored before it froze that digest cannot tell the two apart, so its take-up is refused once
   its template was edited after it began. Nor are the host's labels — a build, a version — the measurement: they
-  are recorded on the holding that began under them (``EvalRun.lifetimes``).
+  are recorded on the holding that began under them (``EvalRun.lifetimes``). Nor is what the host disclosed about the
+  launch (``EvalRun.run_disclosure``: its machine, its load, its build), which is printed as given and never compared:
+  the run keeps the launch's. Nor is the engine's build (``EvalRun.package_version``, ``package_rev``): a run taken
+  up across an engine upgrade goes ahead, and keeps the launch's build, the only one it records, since a holding
+  records none (``RunLifetime``). So a resumed run can span engine builds, and the framing its judge is sent may
+  change between holdings with no judge-prompt digest recording it.
 - **One holding at a time.** The run is reopened under its lease's next epoch, conditionally on the record as read,
   so two take-ups of one run cannot both win, and a holding the run has passed from writes nothing more into it.
 - **Its spend counts.** What its stored rows spent seeds its cost cap, and the metered calls they landed seed its
@@ -48,6 +53,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.kernel.campaign import EvalSweep
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.profile import HostProfile
@@ -121,6 +127,15 @@ _UNPINNED_FIELDS: frozenset[str] = frozenset(
         "subject_snapshot",
         # The host's own payload, which the engine never reads.
         "host_payload",
+        # What the host disclosed about the launch (its machine, its load, its build): printed as given, never
+        # compared. The run keeps the launch's; a holding has no field for its own (``RunLifetime``).
+        "run_disclosure",
+        # The engine's build: a resume across an engine upgrade is taken up, and the run keeps the launch's build.
+        "package_version",
+        "package_rev",
+        # Whether the cost cap was checked on estimated rates: about admission under the cap, not measurement. A
+        # take-up keeps it set when either holding was admitted on an estimate.
+        "cap_checked_on_estimates",
         # How the pinned roles, apparatus and cell deadline were arrived at, not what they are: those are pinned.
         "apparatus_provenance",
         "model_role_provenance",
@@ -438,7 +453,10 @@ class RunResumption:
         now, for a run never taken up before), and a new holding opens: this process, at :attr:`epoch`, under the
         labels the host captured now and the cost cap the launch resolved, which the run records as its own. A
         template edited after the run was created in nothing it measures (its digest unmoved) is disclosed on the new
-        holding.
+        holding. The host's disclosure and the engine's build are never compared, so a moved one refuses nothing,
+        and the run keeps the ones its launch stated: a holding records neither. The run reads admitted on estimated
+        rates (``cap_checked_on_estimates``) when either its launch or this take-up was, and records none when the take-up
+        drops the cap.
 
         :param fresh: The run the launch assembled and stamped.
         :ptype fresh: EvalRun
@@ -520,6 +538,14 @@ class RunResumption:
                 # A run stored before runs froze their template's measured content passed only with its template
                 # unedited since it began, so what the template measures now is what it measured: frozen from here.
                 "template_digest": stored.template_digest or fresh.template_digest,
+                # Admitted on estimated rates in any holding is admitted on an estimate: the flag stays set once set. A
+                # take-up that drops the cap leaves nothing to read against an estimate, and the field is not recorded
+                # for a run with no cap.
+                "cap_checked_on_estimates": None
+                if fresh.max_cost_usd is None
+                else True
+                if stored.cap_checked_on_estimates or fresh.cap_checked_on_estimates
+                else stored.cap_checked_on_estimates,
             }
         )
         return reopened, list(self.cases)
@@ -666,9 +692,9 @@ def _why_not_taken_up(
         reasons.append(
             ValidationFailedError(
                 f"run '{run.id}' was stopped by its budget ({run.budget_stop_reason}), and its stored rows have spent "
-                f"${spent:.4f} — at least that, since a cell in flight when it stopped may have spent more — against "
-                f"a cap of ${cap:.4f}",
-                remedy=f"call job_resume with max_cost_usd above ${spent:.4f}",
+                f"${round_half_even(spent, 4)} — at least that, since a cell in flight when it stopped may have spent more — against "
+                f"a cap of ${round_half_even(cap, 4)}",
+                remedy=f"call job_resume with max_cost_usd above ${round_half_even(spent, 4)}",
             )
         )
     if run.template_id is None:

@@ -71,7 +71,6 @@ HOST_TYPES: frozenset[str] = frozenset(
         "MeasureRegistry",
         "BarRegistry",
         "WorldRegistry",
-        "StyleProfile",
     }
 )
 
@@ -117,15 +116,29 @@ CACHES: frozenset[str] = frozenset({"cache", "lru_cache", "cached_property"})
 
 #: ``(module, name)`` -> why this module state holds nothing a host could read. The only entries.
 ALLOWED: dict[tuple[str, str], str] = {
+    ("threetears/evals/providers/model.py", "_SPENT_KEYS"): (
+        "digests of credit-spent provider keys, one-way; a host can read no key from it, and a spent key is spent "
+        "for every host holding it"
+    ),
     ("threetears/evals/kernel/job_leases.py", "_KIND_OF_MODEL"): (
         "each leased job kind, keyed by its record model, registered as the kind is constructed — code (how a "
         "record type ends and reads lost), not a host's data: one model reads the same way for every host, and a "
         "store read needs it to settle a record whose holder died"
     ),
+    ("threetears/evals/kernel/eval_scope.py", "_RUNNING_EVAL"): (
+        "a ContextVar, so each task sees its own value and none leaks between hosts: the eval run the calling task's "
+        "work belongs to, set and reset around one Eval.run, read only to name the eval a replayed call was already "
+        "served to. It holds no host data, and a second host in the process never sees the first's value"
+    ),
     ("threetears/evals/testing/recorded_completions.py", "_APPEND_LOCK"): (
         "serialises appends to recording files in the process, so two recording clients on one file never "
         "interleave a line or give two calls one index. It holds no value and nothing a host reads; a file is "
         "process-wide, so a per-host lock would let two hosts in one process corrupt a shared recording"
+    ),
+    ("threetears/evals/testing/recorded_turns.py", "_APPEND_LOCK"): (
+        "serialises appends to turn recording files in the process, as recorded_completions' lock does for "
+        "completions: two sessions recording onto one file never interleave a line. It holds no value and "
+        "nothing a host reads; a file is process-wide, so a per-host lock would let two hosts corrupt it"
     ),
     ("threetears/evals/kernel/campaign_writes.py", "_CAMPAIGN_WRITES"): (
         "serialises every read-modify-write of a campaign in the process. Shared across hosts, which "
@@ -151,6 +164,16 @@ ALLOWED: dict[tuple[str, str], str] = {
         "a ContextVar, so its value is per load and per task, never per process: loading_eval_file sets it around "
         "one eval file's execution and resets it on leaving; it holds that file's directory, never a host, and a "
         "second host in the same process cannot observe another task's value"
+    ),
+    ("threetears/evals/kernel/phase_log.py", "_OPEN"): (
+        "a ContextVar, so its value is per task, never per process: phase_logged sets it around one call's read and "
+        "resets it on leaving; it holds that call's open log lines and phase charges, never a host, and a second "
+        "host in the same process cannot observe another task's value"
+    ),
+    ("threetears/evals/analysis/bundle/measures.py", "_WALK_MEMO"): (
+        "a ContextVar, so its value is per task, never per process: one bundle assembly sets it around its folds and "
+        "resets it on leaving, raised or not; it holds that assembly's measure walks of the results it read, never "
+        "a host, and a second host in the same process cannot observe another task's value"
     ),
     ("threetears/evals/kernel/job_context.py", "_RUNNING_JOB"): (
         "a ContextVar, so its value is per task, never per process: the job manager sets it around one job's work, "

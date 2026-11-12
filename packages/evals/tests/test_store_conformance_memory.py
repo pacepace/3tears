@@ -300,6 +300,15 @@ class _FieldInIgnored(InMemoryDocumentStore):
         return super().by_doc_type(doc_type, scope_id, **kwargs)
 
 
+class _ExcludeDroppedBesideFieldIn(InMemoryDocumentStore):
+    """``by_doc_type`` drops ``exclude`` when ``field_in`` is given too, so a membership read ships every field."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        if kwargs.get("field_in") is not None:
+            kwargs.pop("exclude", None)
+        return super().by_doc_type(doc_type, scope_id, **kwargs)
+
+
 class _FieldInComparesPythonEquality(InMemoryDocumentStore):
     """``field_in`` is compared with Python ``in``, so a listed ``1`` matches ``true`` and a listed ``0`` ``false``."""
 
@@ -684,7 +693,10 @@ _FAULTS: dict[type[DocumentStore], frozenset[str]] = {
     _OrdersAsText: frozenset({"order.by_stored_type"}),
     _MissingSortsHighest: frozenset({"order.missing_sorts_lowest"}),
     _LimitsBeforeOrdering: frozenset({"order.limit_after_ordering"}),
-    _FieldInIgnored: frozenset({"query.field_in_matches_any", "query.field_in_empty_matches_nothing"}),
+    _FieldInIgnored: frozenset(
+        {"query.field_in_matches_any", "query.field_in_empty_matches_nothing", "projection.exclude_with_field_in"}
+    ),
+    _ExcludeDroppedBesideFieldIn: frozenset({"projection.exclude_with_field_in"}),
     _FieldInComparesPythonEquality: frozenset({"query.field_in_matches_any"}),
     _FieldInEmptyMatchesAll: frozenset({"query.field_in_empty_matches_nothing"}),
     _FieldInReadsOncePerValue: frozenset({"query.field_in_matches_any"}),

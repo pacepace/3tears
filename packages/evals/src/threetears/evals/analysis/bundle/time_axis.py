@@ -20,7 +20,7 @@ from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.reporting import ScoreRecord
 from threetears.evals.kernel.declaration import AspectDesign
 from threetears.evals.kernel.host.profile import HostProfile
-from threetears.evals.schema.models import EvalResult
+from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.kernel.surface import (
     EarlierControl,
     TimeAxis,
@@ -39,7 +39,7 @@ if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime i
 
 def _time_axis(
     runs: list[EvalRun],
-    results_by_run: dict[str, list[EvalResult]],
+    results_by_run: dict[str, list[ResultView]],
     observations: list[Observation],
     classes: dict[str, ApparatusClass],
     records: list[ScoreRecord],
@@ -65,7 +65,7 @@ def _time_axis(
     :param runs: The resolved member runs, in creation order.
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param observations: Every observation the cell algebra pooled.
     :ptype observations: list[Observation]
     :param classes: Apparatus class id → the class, as the campaign's pooling read them.
@@ -153,7 +153,7 @@ def _time_axis(
 
 
 def _time_positions(
-    runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], *, profile: HostProfile
+    runs: list[EvalRun], results_by_run: dict[str, list[ResultView]], *, profile: HostProfile
 ) -> tuple[TimeAxisBasis, list[tuple[str, list[EvalRun]]], str]:
     """Group the measuring runs into time positions, earliest first.
 
@@ -165,7 +165,7 @@ def _time_positions(
     :param runs: The runs that measured something, in creation order.
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results, which a label reader may read.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param profile: The host, whose ``release_label`` names its builds.
     :ptype profile: HostProfile
     :return: ``(basis, positions, why_not_builds)``: each position's key and its runs in creation order, and — on a

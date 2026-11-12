@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
 
 if TYPE_CHECKING:
+    from threetears.evals.kernel.result_reading import ResultView
     from threetears.evals.schema.models import (
-        EvalResult,
         EvalRun,
     )
 
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 ContestantKey = tuple[str, int]
 
 
-def contestant_key(result: EvalResult, run: EvalRun) -> ContestantKey:
+def contestant_key(result: ResultView, run: EvalRun) -> ContestantKey:
     """Key a result to its contestant, and to the identity version the contestant is placed at.
 
     One key, both lenses. ``frontier`` and ``history`` rank and trend the same
@@ -58,7 +58,7 @@ def contestant_key(result: EvalResult, run: EvalRun) -> ContestantKey:
     whose run recorded its map; only a key nothing here can reproduce keeps its stamped version.
 
     :param result: The observation to place.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :param run: The run the result belongs to, whose recorded lever map verifies its key.
     :ptype run: EvalRun
     :return: ``(variant_key, identity_version)`` — the key the runner stamped, and this build's version where

@@ -34,10 +34,12 @@ from threetears.evals.gen import (
 from threetears.evals.schema.models import RubricAxis
 from threetears.evals.kernel import (
     CONTRACT_MARKER,
+    KIND_TEXT,
     SEED_PROMPTS,
     ConflictError,
     OutputContract,
     PromptContractError,
+    SeedPrompt,
     SeedTemplate,
     contract_state,
     declared_contracts,
@@ -251,9 +253,10 @@ def test_the_shipped_default_reads_current_on_both_counts() -> None:
     assert (drift.state, drift.contract, drift.refused) == ("current", "current", False)
 
 
-def test_the_analysis_generators_prompt_binds_no_contract() -> None:
-    """Its reply shape is sent as a schema and its grammar appended from code, so its text states no shape."""
-    entry = _entry("eval_analysis_gen")
+def test_a_text_prompt_binds_no_contract() -> None:
+    """A text prompt's text states no reply shape (a host's own, declared through the same type; the engine's one, the
+    retired memo writer's, sent its shape as a schema), so its drift reads no contract."""
+    entry = SeedPrompt(kind=KIND_TEXT, prompt_type="host_notes", seed_module="host.prompts", constant="NOTES")
     drift = prompt_drift(entry, shipped="new text", stored="old text", reset=_RESET, seeded_digest=None)
     assert (drift.contract, drift.refused, drift.expected_contract) == ("unbound", False, "")
 

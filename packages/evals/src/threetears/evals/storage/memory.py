@@ -9,6 +9,9 @@ every write mints a fresh etag, a conditional write that presents a stale one ra
 moves the etag on as a whole-document write does. It passes every case of the store conformance
 kit (``threetears.evals.testing``).
 
+It offers :class:`~threetears.evals.schema.store_port.ResultReadings` too, computed in Python over a snapshot taken
+in one pass at the call, and passes every case of the readings conformance kit.
+
 It is for tests, examples and a host's first afternoon — nothing persists past the process — and it
 is the shape to compare a real adapter against. It injects nothing into a stored document, so it has
 nothing to strip on the way out: the etag lives beside the document, not in it. Documents are copied
@@ -26,9 +29,18 @@ import copy
 import itertools
 import threading
 from collections.abc import Iterator, Mapping, Sequence
+from types import MappingProxyType
 from typing import Any
 
-from threetears.evals.schema.store_port import StoreConflict, field_in_values, keep_fields, omit_paths
+from threetears.evals.schema.store_port import (
+    GroupMeasure,
+    StoreConflict,
+    field_in_values,
+    fold_groups,
+    keep_fields,
+    narrow_items,
+    omit_paths,
+)
 
 __all__ = ["InMemoryDocumentStore"]
 
@@ -174,12 +186,34 @@ class InMemoryDocumentStore:
         :raises TypeError: A ``field_in`` entry is a string rather than a sequence of values, or holds a value that is
             not a scalar.
         """
+        with self._lock:
+            rows = self._matching(doc_type, scope_id, field_in, field_eq)
+            if order_by is not None:
+                rows.sort(
+                    key=lambda d: (d.get(order_by) is not None, d.get(order_by)),
+                    reverse=descending,
+                )
+            if limit is not None:
+                rows = rows[:limit]
+            return [copy.deepcopy(omit_paths(d, exclude)) for d in rows]
+
+    def _matching(
+        self, doc_type: str, scope_id: str, field_in: Mapping[str, Sequence[Any]] | None, field_eq: Mapping[str, Any]
+    ) -> list[dict[str, Any]]:
+        """The documents a typed read selects, in insertion order: one pass over the stored documents.
+
+        Each is a shallow copy taken under the lock, so a later :meth:`merge_fields` (which sets top-level fields in
+        place) never reaches a snapshot; nested values are never changed in place, so sharing them is safe.
+
+        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+        :raises TypeError: A ``field_in`` entry is a string, or holds a value that is not a scalar.
+        """
         members = field_in_values(field_in, field_eq)
         if any(not values for values in members.values()):
             return []
         with self._lock:
-            rows = [
-                document
+            return [
+                dict(document)
                 for (scope, _), document in self.documents.items()
                 if scope == scope_id
                 and document.get("doc_type") == doc_type
@@ -189,14 +223,83 @@ class InMemoryDocumentStore:
                     for field, values in members.items()
                 )
             ]
-            if order_by is not None:
-                rows.sort(
-                    key=lambda d: (d.get(order_by) is not None, d.get(order_by)),
-                    reverse=descending,
-                )
-            if limit is not None:
-                rows = rows[:limit]
-            return [copy.deepcopy(omit_paths(d, exclude)) for d in rows]
+
+    def iter_narrowed(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield the rows :meth:`by_doc_type` would return for the same predicates, each narrowed.
+
+        The rows are a snapshot taken when this is called, in one pass over the stored documents; each is narrowed
+        and copied as it is yielded. See :meth:`~threetears.evals.schema.ResultReadings.iter_narrowed`.
+
+        :param doc_type: The discriminator to select on.
+        :ptype doc_type: str
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param exclude: Dotted paths left out of every row.
+        :ptype exclude: Sequence[str]
+        :param exclude_in_items: List-field path → dotted paths left out of each object item of that list.
+        :ptype exclude_in_items: Mapping[str, Sequence[str]]
+        :param field_in: Field-membership predicates: field → the values it may equal.
+        :ptype field_in: Mapping[str, Sequence[Any]] | None
+        :param **field_eq: Field-equality predicates.
+        :ptype field_eq: Any
+        :return: The narrowed rows, in insertion order.
+        :rtype: Iterator[dict[str, Any]]
+        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+        :raises TypeError: A ``field_in`` entry is a string rather than a sequence of values, or holds a value that is
+            not a scalar.
+        """
+        rows = self._matching(doc_type, scope_id, field_in, field_eq)
+        return (copy.deepcopy(narrow_items(omit_paths(row, exclude), exclude_in_items)) for row in rows)
+
+    def grouped(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        """Group the rows :meth:`by_doc_type` would return and compute each measure per group.
+
+        Folded in Python over a snapshot taken in one pass, by
+        :func:`~threetears.evals.schema.store_port.fold_groups`. See
+        :meth:`~threetears.evals.schema.ResultReadings.grouped` for the measures and their refusals.
+
+        :param doc_type: The discriminator to select on.
+        :ptype doc_type: str
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param by: Dotted paths to group by.
+        :ptype by: Sequence[str]
+        :param measures: Measure name → the measure.
+        :ptype measures: Mapping[str, GroupMeasure]
+        :param field_in: Field-membership predicates: field → the values it may equal.
+        :ptype field_in: Mapping[str, Sequence[Any]] | None
+        :param **field_eq: Field-equality predicates.
+        :ptype field_eq: Any
+        :return: One dict per group, in the order each group was first seen.
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: The grouping is refused, or a field is named in both ``field_in`` and ``field_eq``.
+        :raises TypeError: A measure met a value its kind refuses, a ``by`` value is an object or a list, or a
+            predicate is refused.
+        """
+
+        def matching() -> Iterator[dict[str, Any]]:
+            # Lazy, so fold_groups refuses a grouping before any document is read.
+            yield from self._matching(doc_type, scope_id, field_in, field_eq)
+
+        return fold_groups(matching(), by=by, measures=measures)
 
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
         """Yield the id of every document of one type within a scope.

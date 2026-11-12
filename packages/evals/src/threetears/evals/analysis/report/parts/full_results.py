@@ -1,0 +1,706 @@
+"""The Full results tables (GENERATOR §2.11): each a table block of the input's figures.
+
+Each table's rows are in the input's order, and every arm a column or a row in the input's order:
+
+====================  ============================================================================================
+table                 rows and cells
+====================  ============================================================================================
+``arms_by_measure``   an arm per row, its chip first: its pass rate (passes over usable trials beside it), its mean
+                      on each judged dimension, its figure on each measure (its mean, else the statistic a
+                      criterion on it reads, which the cell names), and, where no measure states a cost, its cost
+                      per 1,000 (of what it counts) by the package's one cost rule
+``contrasts``         a corrected comparison per row: the candidate, the measure (and the aspect, where the
+                      comparisons span several), the change and its interval in the measure's unit, the interval's
+                      level, the adjusted p, the verdict as a pill, the confounds named on it
+``strata``            a slice per row and measure: every stratum, then, as its own table, every task, each with its
+                      cases and every arm's figure on each measure the slice holds
+``gate_matrix_full``  each gate and guardrail at each place it is read (overall, a task, a cell) per row, its line,
+                      and every arm's status there as a pill, its figure beside it
+``configs``           an arm per row: its level of each factor
+``cells``             a target-matrix cell per row and measure: its cases and every arm's figure
+====================  ============================================================================================
+
+**More than one aspect.** Where more than one aspect holds a figure, every arm by measure is a row per aspect and arm,
+grouped by aspect in the input's order, the aspect named in its own column and every figure that aspect's own (a
+measure's ``per_arm`` on the lead aspect, its ``by_aspect`` entry on another; a dash where the aspect did not read it).
+
+**A page lays every arm by measure out the narrower way** (:func:`laid_out`): where the arms are fewer than the figures,
+a figure per row and an arm per column, headed by its tag and name, as every stratum is, so a frame as narrow as a
+host's (688 px) holds a two-arm campaign's fifteen figures; an arm per row where the arms are as many or more. The
+table's rows stay an arm each: the page's text form, which the editor and a writer eval's judge read, lays it out as
+it is.
+
+**Every table the input holds** (:func:`every_table`): a report document's full-results appendix. It is each table
+above, in that order, where the input holds a row of it: every arm by measure always, the
+rest as the input holds contrasts, strata or tasks, gates or guardrails, configurations and cells. Which tables print
+is read off the input's rows alone.
+
+**Numbers by the page's forms.** Every figure of a measure is stated in the one form the page decides for it
+(:class:`~threetears.evals.analysis.report.forms.PageForms`, built once per page and handed in), asked by its measure
+and its role: a rate as a percent, a change in points, money per reply per 1,000 replies, which the measure's name
+then says. A figure the input does not hold is a dash.
+
+**A status is said in words.** Every pill's text is its status (``Passes``, ``Regressed``), so Markdown and a screen
+reader, which lose the colour, lose nothing.
+
+**The gate matrix reads the gate check.** Each cell is
+:func:`~threetears.evals.analysis.report_gates.gate_check` narrowed to the row's place, over the input with that row's
+one criterion, so a cell's status is the one the options table, the survivors and every gate chart read: the matrix
+is the gate check spelled out, never a second reading of it.
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from dataclasses import replace
+
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
+from threetears.evals.analysis.quantities import MONEY
+from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, bare_columns
+from threetears.evals.analysis.report.charts import ChartStatus
+from threetears.evals.analysis.report.cost_unit import money_ruler, priced_in_part
+from threetears.evals.analysis.report.figure_keys import (
+    aspect_costs_per_thousand,
+    cost_basis,
+    cost_ruler,
+    format_figure,
+    held_figure,
+    resolve,
+)
+from threetears.evals.analysis.report.forms import ColumnMoney, MeasureForm, PageForms
+from threetears.evals.analysis.report.parts.charting import money_words, stat_value
+from threetears.evals.analysis.report.parts.look import GATE_STATUS, PageLook, Quantity
+from threetears.evals.analysis.report.parts.model import WRITER_SECTION
+from threetears.evals.analysis.report.parts.tables import pass_rate_cell
+from threetears.evals.analysis.report.words import given_name
+from threetears.evals.analysis.report.parts.words import (
+    ASPECTS_TABLE_ORDER,
+    CONTRAST_VERDICT_WORDS,
+    COST_HEADER,
+    FIGURES_BY_ASPECT_ORDER,
+    FIGURES_TABLE_ORDER,
+    FULL_RESULTS_HEADERS,
+    FULL_RESULTS_TITLES,
+    GATE_UNKNOWN,
+    GATE_WORDS,
+    LINE_TEMPLATES,
+    NO_FIGURE,
+    NOT_RECORDED,
+    OVERALL,
+)
+from threetears.evals.analysis.report_gates import GateCheck, gate_check
+from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, Judged, Measure, ReportInput, Stat
+from threetears.evals.analysis.report_margins import aspect_board, criterion_figures, criterion_places, on_aspect
+from threetears.evals.analysis.style import humanize, lever_reader_name
+
+__all__ = ["every_table", "laid_out"]
+
+
+#: Each corrected comparison's verdict's pill: a separated gain or equivalence good, a regression bad, the rest
+#: neutral.
+_VERDICT_STATUS: dict[str, ChartStatus] = {"improved": "good", "equivalent": "good", "regressed": "bad"}
+
+#: The criterion kinds the gate check reads.
+_GATING = frozenset({"gate", "guardrail"})
+
+#: A slice the strata, tasks and cells tables lay out: its reader name, its cases, each arm's figures by measure.
+_Slice = tuple[str, int | None, Mapping[str, Mapping[str, Stat]]]
+
+#: A Full results table's builder: the input, the page's look and its forms in; its tables out.
+_TableBuilder = Callable[[ReportInput, PageLook, PageForms], list[TableBlock]]
+
+
+def _table(
+    name: str,
+    columns: Sequence[TableColumn],
+    rows: Sequence[Mapping[str, TableCell | ColumnMoney]],
+    order: str,
+    forms: PageForms,
+    *,
+    by_row: Sequence[str | None] | None = None,
+    reconciles: Collection[str] = (),
+) -> TableBlock:
+    """A Full results table, each figure type's money in one form chosen from its own values (#993): a column's, or,
+    where ``by_row`` names each row's measure (a slice table, each row one measure across the arms), every row's on
+    that measure, across the table. Every column's head or row names the count its money is drawn per, so it never
+    carries the per-1,000 mark beside it. Every other figure prints its measure's decided text, which no column
+    respells; the page's forms record what each rate's cell prints, and hold the money column rule."""
+    money = forms.money_columns(rows, by_row=by_row, reconciles=reconciles)
+    laid = forms.as_printed(money, bare=bare_columns(list(columns)), keep=(_LEVEL,))
+    return TableBlock(
+        section=WRITER_SECTION,
+        name=name,
+        title=FULL_RESULTS_TITLES[name],
+        columns=list(columns),
+        rows=laid,
+        order=order,
+        total_rows=len(rows),
+    )
+
+
+#: The comparisons table's column holding each interval's level.
+_LEVEL = "level"
+
+
+def _column(key: str, header: str | None = None) -> TableColumn:
+    return TableColumn(key=key, header=header or FULL_RESULTS_HEADERS[key])
+
+
+def _chip(look: PageLook, arm: str) -> TableCell:
+    """An arm's cell, drawn as its chip; an arm the page has no look for, by its id."""
+    if arm not in look.arms:
+        return TableCell(value=arm)
+    seen = look.arm(arm)
+    return TableCell(value=seen.name, tag=seen.tag, color=seen.token)
+
+
+def _arm_columns(report_input: ReportInput, look: PageLook) -> list[TableColumn]:
+    """A column per arm, keyed ``arm:<id>`` and headed by its tag and name, in the input's order."""
+    return [_column(f"arm:{arm.id}", look.arm(arm.id).label) for arm in report_input.arms if arm.id in look.arms]
+
+
+def _levels(form: MeasureForm) -> Quantity:
+    """How a measure's levels are drawn on this written page, as its form holds it."""
+    if form.levels is None:
+        raise ValueError(f"the measure {form.key!r} holds no written page's quantity")
+    return form.levels
+
+
+def _named(report_input: ReportInput, forms: PageForms, key: str, *, kind: str | None = None) -> str:
+    """A measure's reader name, with the count its money is drawn per in it (the one owner of money's words: the
+    label's own count replaced, never a second), as every chart names it, starting with a capital as every measure
+    name does (:func:`~threetears.evals.analysis.report.parts.charting.measure_words`); a judged score with its
+    scale (``Outcome (1–5)``), so its two decimals read on a scale a reader knows."""
+    form = forms.measure(key, kind=kind)
+    named = money_words(report_input, key, _levels(form), kind=kind)
+    # A comparison that names its kind ``measure`` is never read as a score, whatever its measure's figures are.
+    return f"{named} ({form.scale})" if form.scale and kind != "measure" else named
+
+
+def _holds(report_input: ReportInput, key: str, stat: Stat | None) -> bool:
+    """Whether a figure is one a cell states (:func:`_stated` prints it, never a dash)."""
+    return stat is not None and stat_value(report_input, key, stat) is not None
+
+
+def _stated(
+    report_input: ReportInput,
+    forms: PageForms,
+    key: str,
+    stat: Stat | None,
+    *,
+    kind: str | None = None,
+    others: bool = False,
+) -> TableCell | ColumnMoney:
+    """One figure on a measure or judged dimension as a cell: its mean (else the statistic a criterion on it reads,
+    named beside it) in the measure's form, the mean's and any other statistic's alike; a dash where the input holds none, which says the arm recorded none where ``others`` (another arm in
+    the same place holds the figure) and the arm holds no entry at all: the control that made no delivery reads ``—
+    (not recorded)`` beside a candidate's ``0 items``, two facts a bare dash and a zero would print as one."""
+    read = stat_value(report_input, key, stat) if stat is not None else None
+    if read is None:
+        return TableCell(value=None, flag=NOT_RECORDED if stat is None and others else None)
+    value, statistic = read
+    form = forms.measure(key, kind=kind)
+    flag = statistic if statistic != "mean" else None
+    if form.reads_as == "money":
+        # An amount, which its column's one money form spells (:func:`_table`), never a form of its own.
+        return ColumnMoney(value=value * form.factor, flag=flag, measure=key, kind=form.kind)
+    cell = TableCell(value=forms.level(key, value, kind=kind).text, flag=flag)
+    # A figure of the measure, which the column rules record the cell under.
+    return forms.of_measure(cell, measure=key, kind=form.kind)
+
+
+# --- arms by measure -------------------------------------------------------------------------------------------------
+
+
+def _cost(report_input: ReportInput, arm: str, forms: PageForms) -> TableCell | ColumnMoney:
+    """The arm's cost by the package's one cost rule (the ``cost_per_1k`` figure), a number drawn per the count the
+    column's head names (:func:`~threetears.evals.analysis.report.figure_keys.cost_ruler`), its priced share beside it
+    where only part of its calls were priced: a figure of the cost's source, which the column rules record it under."""
+    figure = held_figure(f"cost_per_1k.{arm}", report_input)
+    if figure is None or not isinstance(figure.value, float):
+        return TableCell(value=None)
+    # The form is chosen over every arm's cost, a partly priced one's included, where the options table leaves that arm
+    # out of its choice: this table prints the partly priced cost, its share beside it, and the options table prints
+    # the share in its place, so each column's form fits the numbers it prints.
+    return ColumnMoney(
+        value=cost_ruler(report_input).drawn(figure.value),
+        flag=priced_in_part(report_input, arm),
+        measure=cost_basis(report_input).source,
+        kind="measure",
+    )
+
+
+def _arms_by_measure(report_input: ReportInput, look: PageLook, forms: PageForms) -> list[TableBlock]:
+    if len(aspects := _measured_aspects(report_input)) > 1:
+        return _arms_by_aspect_and_measure(report_input, look, forms, aspects)
+    arms = [arm.id for arm in report_input.arms]
+    # The scoreboard's own column, drawn where it counts passes: where it counts none, the ``pass_rate`` measure the
+    # lead aspect's cell falls back to is already a measure column below, and one figure takes one column.
+    board = aspect_board(report_input, None)
+    passing = any((row := board.get(arm)) is not None and row.passed is not None and row.usable for arm in arms)
+
+    judged = [key for key, held in report_input.judged.items() if any(arm in held.per_arm for arm in arms)]
+    measures = [
+        key
+        for key, held in report_input.measures.items()
+        if any(_holds(report_input, key, held.per_arm.get(arm)) for arm in arms)
+    ]
+    # The cost the decision reads, where no measure column already states a cost: the one cost rule's figure.
+    costed = not any(forms.measure(key).reads_as == "money" for key in measures) and any(
+        _cost(report_input, arm, forms).value is not None for arm in arms
+    )
+    columns = [
+        _column("arm"),
+        *([_column("pass_rate")] if passing else []),
+        *(_column(f"judged:{key}", _named(report_input, forms, key, kind="judged")) for key in judged),
+        *(_column(f"measure:{key}", _named(report_input, forms, key)) for key in measures),
+        *(
+            [
+                _column(
+                    "cost_per_1k", COST_HEADER.format(per=cost_ruler(report_input).words(cost_basis(report_input).noun))
+                )
+            ]
+            if costed
+            else []
+        ),
+    ]
+    rows = []
+    for arm in arms:
+        cells: dict[str, TableCell | ColumnMoney] = {"arm": _chip(look, arm)}
+        if passing:
+            cells["pass_rate"] = pass_rate_cell(report_input, arm, forms=forms)
+        # Every column is one some arm holds a figure in, so an arm with no entry recorded none.
+        for key in judged:
+            cells[f"judged:{key}"] = _stated(
+                report_input, forms, key, report_input.judged[key].per_arm.get(arm), kind="judged", others=True
+            )
+        for key in measures:
+            cells[f"measure:{key}"] = _stated(
+                report_input, forms, key, report_input.measures[key].per_arm.get(arm), others=True
+            )
+        if costed:
+            cells["cost_per_1k"] = _cost(report_input, arm, forms)
+        rows.append(cells)
+    return [
+        _table(
+            "arms_by_measure",
+            columns,
+            rows,
+            "in the campaign's arm order",
+            forms,
+            reconciles=_beside_a_month(report_input),
+        )
+    ]
+
+
+def _measured_aspects(report_input: ReportInput) -> list[Aspect]:
+    """The aspects some arm holds a figure on, in the input's order: a usable trial, a measure's or a judged
+    dimension's figure."""
+    tables: list[Measure | Judged] = [*report_input.measures.values(), *report_input.judged.values()]
+    return [
+        aspect
+        for aspect in report_input.aspects
+        if any(row.usable for row in aspect_board(report_input, aspect.id).values())
+        or any(on_aspect(report_input, table, aspect.id) for table in tables)
+    ]
+
+
+def _arms_by_aspect_and_measure(
+    report_input: ReportInput, look: PageLook, forms: PageForms, aspects: list[Aspect]
+) -> list[TableBlock]:
+    """Every arm by measure where more than one aspect holds figures: a row per aspect and arm, the aspect named in
+    its own column, each figure the aspect's own; the cost column, where no measure states one, by the one cost rule
+    read on each aspect, every aspect's cost in one form."""
+    arms = [arm.id for arm in report_input.arms]
+    places = [(aspect, arm) for aspect in aspects for arm in arms]
+    passing = {(aspect.id, arm): pass_rate_cell(report_input, arm, aspect.id, forms=forms) for aspect, arm in places}
+
+    def held(table: Measure | Judged, key: str) -> bool:
+        return any(_holds(report_input, key, on_aspect(report_input, table, aspect.id).get(arm)) for aspect, arm in places)
+
+    judged = [key for key, table in report_input.judged.items() if held(table, key)]
+    measures = [key for key, table in report_input.measures.items() if held(table, key)]
+    costs = {aspect.id: aspect_costs_per_thousand(report_input, aspect.id) for aspect in aspects}
+    # Over every cost this column prints, a partly priced arm's included (:func:`_cost`'s reason).
+    ruler = money_ruler(
+        [cost for held_costs in costs.values() for cost in held_costs.values()],
+        per=1000,
+        start=1000,
+        reconciles=report_input.meta.volume_per_month is not None,
+    )
+    costed = not any(forms.measure(key).reads_as == "money" for key in measures) and any(
+        arm in costs[aspect.id] for aspect, arm in places
+    )
+    columns = [
+        _column("arm"),
+        _column("aspect"),
+        *([_column("pass_rate")] if any(cell.value is not None for cell in passing.values()) else []),
+        *(_column(f"judged:{key}", _named(report_input, forms, key, kind="judged")) for key in judged),
+        *(_column(f"measure:{key}", _named(report_input, forms, key)) for key in measures),
+        *(
+            [_column("cost_per_1k", COST_HEADER.format(per=ruler.words(cost_basis(report_input).noun)))]
+            if costed
+            else []
+        ),
+    ]
+    keys = {column.key for column in columns}
+    def read_there(table: Measure | Judged, key: str, aspect: Aspect) -> bool:
+        """Whether some arm holds the figure on ``aspect``: a dash there is an arm's not recorded, not the aspect's
+        not read."""
+        return any(_holds(report_input, key, figure) for figure in on_aspect(report_input, table, aspect.id).values())
+
+    rows = []
+    for aspect, arm in places:
+        cells: dict[str, TableCell | ColumnMoney] = {
+            "arm": _chip(look, arm),
+            "aspect": TableCell(value=given_name(aspect.id, aspect.name)),
+        }
+        if "pass_rate" in keys:
+            cells["pass_rate"] = passing[aspect.id, arm]
+        for key in judged:
+            dimension = report_input.judged[key]
+            cells[f"judged:{key}"] = _stated(
+                report_input,
+                forms,
+                key,
+                on_aspect(report_input, dimension, aspect.id).get(arm),
+                kind="judged",
+                others=read_there(dimension, key, aspect),
+            )
+        for key in measures:
+            measure = report_input.measures[key]
+            cells[f"measure:{key}"] = _stated(
+                report_input,
+                forms,
+                key,
+                on_aspect(report_input, measure, aspect.id).get(arm),
+                others=read_there(measure, key, aspect),
+            )
+        if costed:
+            cost = costs[aspect.id].get(arm)
+            cells["cost_per_1k"] = (
+                ColumnMoney(value=ruler.drawn(cost), flag=priced_in_part(report_input, arm, aspect.id))
+                if cost is not None
+                else TableCell(value=None)
+            )
+        rows.append(cells)
+    return [
+        _table(
+            "arms_by_measure", columns, rows, ASPECTS_TABLE_ORDER, forms, reconciles=_beside_a_month(report_input)
+        )
+    ]
+
+
+def _beside_a_month(report_input: ReportInput) -> frozenset[str]:
+    """The columns holding the page's cost per 1,000 (its own, and the measure it is read from) where a monthly volume
+    is declared, so each cost reads as the month printed from it does (``reconciles``,
+    :class:`~threetears.evals.kernel.numbers.MoneyForm`); none without a volume."""
+    if report_input.meta.volume_per_month is None:
+        return frozenset()
+    source = cost_basis(report_input).source
+    return frozenset({"cost_per_1k", f"measure:{source}"})
+
+
+# --- the corrected comparisons ---------------------------------------------------------------------------------------
+
+
+def _change(forms: PageForms, contrast: Contrast) -> tuple[TableCell, TableCell]:
+    """A comparison's change and its interval, in its measure's form (a rate's in points, money in its changes' one
+    form), each end kept within how far the measure can move."""
+    change = (
+        TableCell(value=forms.change(contrast.measure, float(contrast.delta), kind=contrast.kind).text)
+        if contrast.delta is not None
+        else TableCell(value=None)
+    )
+    if contrast.interval is None:
+        interval = TableCell(value=None)
+    else:
+        low, high = (float(end) for end in contrast.interval)
+        interval = TableCell(value=forms.interval(contrast.measure, low, high, kind=contrast.kind, change=True).text)
+    # Both are figures of the comparison's measure, which the column rules record them under.
+    return (
+        forms.of_measure(change, measure=contrast.measure, kind=contrast.kind),
+        forms.of_measure(interval, measure=contrast.measure, kind=contrast.kind),
+    )
+
+
+def _level(report_input: ReportInput, forms: PageForms, contrast: Contrast) -> str | None:
+    """A comparison's interval level as every surface reads it (:meth:`PageForms.confidence`): its own, else its
+    family's (the family on its aspect)."""
+    family = next(
+        (family for family in report_input.contrast_families if family.aspect == contrast.aspect and family.level),
+        None,
+    )
+    level = contrast.level or (family.level if family is not None else None)
+    return forms.confidence(level, family).text if level else None
+
+
+def _verdict(contrast: Contrast) -> TableCell:
+    words = CONTRAST_VERDICT_WORDS.get(contrast.verdict) or humanize("dimension", contrast.verdict).capitalize()
+    return TableCell(value=words, status=_VERDICT_STATUS.get(contrast.verdict, "neutral"))
+
+
+def _contrasts(report_input: ReportInput, look: PageLook, forms: PageForms) -> list[TableBlock]:
+    held = report_input.contrasts
+    by_aspect = len({contrast.aspect for contrast in held}) > 1
+    columns = [
+        _column("arm"),
+        _column("measure"),
+        *([_column("aspect")] if by_aspect else []),
+        _column("change"),
+        _column("interval"),
+        _column("level"),
+        _column("p_adjusted"),
+        _column("verdict"),
+        _column("confounds"),
+    ]
+    rows = []
+    for contrast in held:
+        change, interval = _change(forms, contrast)
+        cells = {
+            "arm": _chip(look, contrast.arm),
+            "measure": TableCell(value=_named(report_input, forms, contrast.measure, kind=contrast.kind)),
+            "change": change,
+            "interval": interval,
+            "level": TableCell(value=_level(report_input, forms, contrast)),
+            "p_adjusted": TableCell(
+                value=forms.p(float(contrast.p_adjusted)).text if contrast.p_adjusted is not None else None
+            ),
+            "verdict": _verdict(contrast),
+            "confounds": TableCell(
+                value=", ".join(humanize("dimension", confound) for confound in contrast.confounds) or None
+            ),
+        }
+        if by_aspect:
+            cells["aspect"] = TableCell(
+                value=look.reader("aspect", contrast.aspect) if contrast.aspect is not None else None
+            )
+        rows.append(cells)
+    return [_table("contrasts", columns, rows, "in the pipeline's order", forms)]
+
+
+# --- strata, tasks and cells -----------------------------------------------------------------------------------------
+
+
+def _slices_table(
+    name: str,
+    slice_header: str,
+    slices: Sequence[_Slice],
+    report_input: ReportInput,
+    look: PageLook,
+    forms: PageForms,
+) -> TableBlock:
+    """A slice per row and measure, its cases, then every arm's figure on the measure there."""
+    measures = list(dict.fromkeys(key for _, _, per_arm in slices for figures in per_arm.values() for key in figures))
+    several = len(measures) > 1
+    columns = [
+        _column(name, slice_header),
+        *([_column("measure")] if several else []),
+        _column("cases"),
+        *_arm_columns(report_input, look),
+    ]
+    arms = [column.key.removeprefix("arm:") for column in columns if column.key.startswith("arm:")]
+    rows = []
+    kinds: list[str | None] = []
+    for label, cases, per_arm in slices:
+        for key in measures:
+            if not any(key in per_arm.get(arm, {}) for arm in arms):
+                continue
+            kind = "judged" if key in report_input.judged and key not in report_input.measures else None
+            cells: dict[str, TableCell | ColumnMoney] = {name: TableCell(value=label), "cases": forms.count_cell(cases)}
+            if several:
+                cells["measure"] = TableCell(value=_named(report_input, forms, key, kind=kind))
+            for arm in arms:
+                cells[f"arm:{arm}"] = _stated(report_input, forms, key, per_arm.get(arm, {}).get(key), kind=kind)
+            rows.append(cells)
+            kinds.append(key)
+    order = "in the input's order, each slice's measures in the order it holds them"
+    return _table(name, columns, rows, order, forms, by_row=kinds)
+
+
+def _strata(report_input: ReportInput, look: PageLook, forms: PageForms) -> list[TableBlock]:
+    tables = []
+    if report_input.strata:
+        strata = [
+            (look.reader("stratum", stratum.id, aspect=stratum.aspect), stratum.n_cases, stratum.per_arm)
+            for stratum in report_input.strata
+        ]
+        tables.append(_slices_table("strata", FULL_RESULTS_HEADERS["stratum"], strata, report_input, look, forms))
+    if report_input.tasks:
+        tasks = [(look.reader("task", task.id), task.n_cases, task.per_arm) for task in report_input.tasks]
+        tables.append(_slices_table("tasks", FULL_RESULTS_HEADERS["task"], tasks, report_input, look, forms))
+    return tables
+
+
+def _cell_name(report_input: ReportInput, cell_id: str) -> str:
+    """A target-matrix cell as a reader is shown it: its row's level, then its column's."""
+    cell = report_input.cells[cell_id]
+    matrix = report_input.target_matrix
+    if matrix is None:
+        return humanize("dimension", cell_id)
+    row = next((level.name or level.id for level in matrix.rows.levels if level.id == cell.row), cell.row)
+    column = next((level.name or level.id for level in matrix.columns.levels if level.id == cell.column), cell.column)
+    return f"{row} × {column}"
+
+
+def _cells(report_input: ReportInput, look: PageLook, forms: PageForms) -> list[TableBlock]:
+    cells = [(_cell_name(report_input, key), cell.n_cases, cell.per_arm) for key, cell in report_input.cells.items()]
+    return [_slices_table("cells", FULL_RESULTS_HEADERS["cell"], cells, report_input, look, forms)] if cells else []
+
+
+# --- the gate matrix -------------------------------------------------------------------------------------------------
+
+
+def _places(
+    report_input: ReportInput, criterion: Criterion, look: PageLook
+) -> Iterator[tuple[str | None, str | None, str]]:
+    """Every place a criterion is read at, with its name in the Where column."""
+    for task, cell in criterion_places(report_input, criterion):
+        if task is not None:
+            yield task, cell, look.reader("task", task)
+        elif cell is not None:
+            yield task, cell, _cell_name(report_input, cell)
+        else:
+            yield task, cell, OVERALL
+
+
+def _gate_cell(
+    report_input: ReportInput, forms: PageForms, criterion: Criterion, arm: str, task: str | None, cell: str | None
+) -> TableCell:
+    """One arm against one criterion at one place: the gate check's status in words, the figure beside it; where the
+    input holds no figure there, ``Unknown (no figure)``, never a fail: the gate check counts an unknown figure among
+    an arm's fails, but a reader of the grid reads what is known at that place, as the rest of the page does."""
+    figure = next(
+        (held for held in criterion_figures(report_input, criterion, arm) if (held.task, held.cell) == (task, cell)),
+        None,
+    )
+    if figure is None or not math.isfinite(figure.value):
+        return TableCell(value=GATE_UNKNOWN, status="neutral", flag=NO_FIGURE)
+    checked: GateCheck = gate_check(report_input, arm, task=task, cell=cell, criterion=criterion.id, forms=forms)
+    line = resolve(f"criteria.{criterion.id}.threshold", report_input)
+    said = format_figure(replace(line, value=figure.value), forms=forms)
+    return TableCell(value=GATE_WORDS[checked.status], status=GATE_STATUS[checked.status], flag=said)
+
+
+def _gate_matrix_full(report_input: ReportInput, look: PageLook, forms: PageForms) -> list[TableBlock]:
+    gating = [criterion for criterion in report_input.criteria if criterion.kind in _GATING]
+    arm_columns = _arm_columns(report_input, look)
+    columns = [_column("where"), _column("criterion"), _column("line"), *arm_columns]
+    rows = []
+    for criterion in gating:
+        line = format_figure(resolve(f"criteria.{criterion.id}.threshold", report_input), forms=forms)
+        for task, cell, where in _places(report_input, criterion, look):
+            cells = {
+                "where": TableCell(value=where),
+                "criterion": TableCell(value=look.reader("criterion", criterion.id)),
+                "line": TableCell(value=LINE_TEMPLATES[criterion.direction].format(line=line)),
+            }
+            for column in arm_columns:
+                arm = column.key.removeprefix("arm:")
+                cells[column.key] = _gate_cell(report_input, forms, criterion, arm, task, cell)
+            rows.append(cells)
+    return [_table("gate_matrix_full", columns, rows, "each criterion as declared, at each place it is read", forms)]
+
+
+# --- the configurations ----------------------------------------------------------------------------------------------
+
+
+def _configs(report_input: ReportInput, look: PageLook, forms: PageForms) -> list[TableBlock]:
+    factors = report_input.factors
+    columns = [
+        _column("arm"),
+        *(
+            _column(f"factor:{factor.id}", factor.name or lever_reader_name(factor.id, report_input.lever_names))
+            for factor in factors
+        ),
+    ]
+    rows = []
+    for config in report_input.configs:
+        cells = {"arm": _chip(look, config.arm)}
+        for factor in factors:
+            level = config.levels.get(factor.id)
+            named = next((held.name or held.id for held in factor.levels if held.id == level), level)
+            cells[f"factor:{factor.id}"] = TableCell(value=named)
+        rows.append(cells)
+    return [_table("configs", columns, rows, "in the input's order", forms)]
+
+
+#: Each table, to its builder, in the order the appendix lays them out.
+_TABLES: dict[str, _TableBuilder] = {
+    "arms_by_measure": _arms_by_measure,
+    "contrasts": _contrasts,
+    "strata": _strata,
+    "gate_matrix_full": _gate_matrix_full,
+    "configs": _configs,
+    "cells": _cells,
+}
+
+
+def every_table(report_input: ReportInput, look: PageLook, *, forms: PageForms) -> list[TableBlock]:
+    """Every Full results table the input holds a row of, in this module's order (this module's account).
+
+    :param report_input: The report input a report document was written from.
+    :ptype report_input: ReportInput
+    :param look: The page's look.
+    :ptype look: PageLook
+    :param forms: The page's forms (:meth:`PageForms.of` over the same input), which state every figure.
+    :ptype forms: PageForms
+    :return: The tables, each with one row at least.
+    :rtype: list[TableBlock]
+    :raises ValueError: The forms were built from another input.
+    """
+    forms = forms.checked(report_input)
+    return [table for build in _TABLES.values() for table in build(report_input, look, forms) if table.rows]
+
+
+def laid_out(table: TableBlock) -> TableBlock:
+    """A Full results table as a page lays it out: every arm by measure the way that gives it fewer columns, each cell as
+    it was, its money's form included; any other table as it is.
+
+    Built, the table is an arm per row and a figure per column. Where the arms are fewer than the figures (two or three
+    arms read on fifteen figures), it is turned a figure per row and an arm per column, its aspect first where it names
+    one; where the arms are as many as the figures or more (an eighteen-arm sweep read on six), it stays as built. The
+    HTML page and the Markdown both lay it out here, so the two read alike.
+
+    :param table: A table :func:`every_table` returned.
+    :ptype table: TableBlock
+    :return: The table to lay out.
+    :rtype: TableBlock
+    """
+    if table.name != "arms_by_measure" or not table.rows:
+        return table
+    grouped = any(column.key == "aspect" for column in table.columns)
+    places: dict[str, list[dict[str, TableCell]]] = {}
+    for row in table.rows:
+        places.setdefault(row["aspect"].text if grouped else "", []).append(row)
+    arms = next(iter(places.values()))
+    figures = [column for column in table.columns if column.key not in ("arm", "aspect")]
+    if len(arms) >= len(figures):
+        return table
+    heads = [
+        TableColumn(key=f"arm:{at}", header=f"{chip.tag} · {chip.text}" if chip.tag else chip.text)
+        for at, chip in enumerate(row["arm"] for row in arms)
+    ]
+    rows: list[dict[str, TableCell]] = []
+    for aspect, held in places.items():
+        for column in figures:
+            cells = {f"arm:{at}": row[column.key] for at, row in enumerate(held)}
+            if grouped and all(cell.value is None for cell in cells.values()):
+                continue
+            rows.append(
+                {
+                    **({"aspect": TableCell(value=aspect)} if grouped else {}),
+                    "measure": TableCell(value=column.header),
+                    **cells,
+                }
+            )
+    columns = [*([_column("aspect")] if grouped else []), _column("measure"), *heads]
+    return table.model_copy(
+        update={
+            "columns": columns,
+            "rows": rows,
+            "order": FIGURES_BY_ASPECT_ORDER if grouped else FIGURES_TABLE_ORDER,
+            "total_rows": len(rows),
+        }
+    )

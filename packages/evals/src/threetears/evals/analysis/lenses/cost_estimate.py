@@ -17,7 +17,7 @@ from pydantic import Field
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.models import utc_now_iso
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.reporting import _subject_id_of, pooled_cost_compositions
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
@@ -219,11 +219,13 @@ def _cost_band(history: Sequence[float], n_observations: int, estimate: float) -
     :rtype: tuple[float, float, str]
     """
     n = len(history)
+    forms = PageForms.off_page()
+    level = forms.share(INTERVAL_LEVEL).text
     if math.isclose(min(history), max(history), rel_tol=_BAND_ROUNDING_REL_TOL):
         return (
             estimate,
             estimate,
-            f"No spread in {n} past observations: each cost {format_number(history[0], prefix='$')}, so the band has "
+            f"No spread in {n} past observations: each cost {forms.lone(history[0], money=True).text}, so the band has "
             f"no width and is the estimate itself; a sweep whose total differs from it at all falls outside it. "
             f"{_COST_BAND_INDEPENDENCE}",
         )
@@ -233,7 +235,7 @@ def _cost_band(history: Sequence[float], n_observations: int, estimate: float) -
         return (
             low,
             high,
-            f"{INTERVAL_LEVEL:.0%} normal-theory prediction band for the sweep's total from {n} past observations — "
+            f"{level} normal-theory prediction band for the sweep's total from {n} past observations — "
             "some cost nothing, which the log scale cannot read, so this band assumes symmetric costs and is narrow "
             f"on the high side when a few cost far more than the rest. {_COST_BAND_INDEPENDENCE}",
         )
@@ -246,15 +248,15 @@ def _cost_band(history: Sequence[float], n_observations: int, estimate: float) -
         return (
             low,
             high,
-            f"{INTERVAL_LEVEL:.0%} prediction band for the sweep's total from a lognormal fit to {n} past "
+            f"{level} prediction band for the sweep's total from a lognormal fit to {n} past "
             f"observations, the fit's own uncertainty included. {_COST_BAND_INDEPENDENCE}",
         )
     end, share, side = (
         ("upper", 1.0 - high / estimate, "below") if high < estimate else ("lower", low / estimate - 1.0, "above")
     )
     missed = (
-        f"{end} end {format_number(high if end == 'upper' else low, prefix='$')}, "
-        f"{f'{share:.0%}' if share >= 0.01 else 'less than 1%'} {side}"
+        f"{end} end {forms.lone(high if end == 'upper' else low, money=True).text}, "
+        f"{forms.share(share).text if share >= 0.01 else 'less than 1%'} {side}"
     )
     normal_low, normal_high = _normal_theory_band(history, n_observations, estimate)
     low, high = min(low, normal_low), max(high, normal_high)
@@ -266,10 +268,10 @@ def _cost_band(history: Sequence[float], n_observations: int, estimate: float) -
     return (
         low,
         high,
-        f"At least {INTERVAL_LEVEL:.0%} prediction band for the sweep's total from {n} past observations, spanning two "
-        f"fits that disagree: a lognormal fit put its {missed} the {format_number(estimate, prefix='$')} the "
+        f"At least {level} prediction band for the sweep's total from {n} past observations, spanning two "
+        f"fits that disagree: a lognormal fit put its {missed} the {forms.lone(estimate, money=True).text} the "
         f"observations' mean predicts, so the band runs from the lower of that fit's and a normal-theory band's lower "
-        f"ends around the mean to the higher of their upper ends, and covers the sweep at least {INTERVAL_LEVEL:.0%} "
+        f"ends around the mean to the higher of their upper ends, and covers the sweep at least {level} "
         f"of the time if either fit holds: wider than one fit's band, because neither can be trusted alone."
         f"{floored} {_COST_BAND_INDEPENDENCE}",
     )

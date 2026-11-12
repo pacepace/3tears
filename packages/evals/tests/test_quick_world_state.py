@@ -9,7 +9,7 @@ was.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any, Literal
 
 import pytest
@@ -21,6 +21,15 @@ from threetears.evals.quick.world import ToolRefused
 from threetears.evals.schema import RecordedCall
 from threetears.evals.run import get_result_trace, list_results, list_runs, list_templates
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 SCOPE = "quick-world-state-tests"
 
@@ -119,15 +128,15 @@ def test_a_check_unevaluable_against_a_starting_state_loses_only_its_own_baselin
     assert baseline == {LIT_IFF_DARK: 0}
 
 
-async def test_a_check_doing_nothing_passes_in_every_case_never_reads_as_a_measurement() -> None:
+async def test_a_check_doing_nothing_passes_in_every_case_is_never_shown_to_measure_the_behaviour() -> None:
     never_needless = 'all(it.to != variation.lamp for it in calls("room.switch"))'
     summary = (await Eval(CASES, room()(sensible), [never_needless], k=1).run(store=":memory:")).summary
     (goal,) = summary.goal_checks
     assert (goal.passed, goal.n, goal.did_nothing_passed, goal.did_nothing_cases) == (2, 2, 2, 2)
     (line,) = [line for line in summary.render().splitlines() if "goal check" in line]
     assert line.endswith(
-        "passed 2/2 — NOT A MEASUREMENT: a candidate that did nothing passes it in 2 of 2 case(s), "
-        "so this pass rate does not beat doing nothing"
+        "passed 2/2 — unproven: no control shows it can tell acting from doing nothing; a candidate that did nothing "
+        "might pass it, so it is not shown to measure the behaviour; at launch one passed it in 2 of 2 case(s)"
     )
 
 

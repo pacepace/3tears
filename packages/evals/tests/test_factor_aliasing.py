@@ -5,10 +5,13 @@ in lockstep across every run, a reader saw four rows each confounded by the othe
 nothing could separate them. The bundle now:
 
 - groups factors whose partitions of the runs are identical into one ``aliased_factors`` entry with its run
-  count and ONE sentence, and the report says that sentence, not one per factor;
+  count, and the report says ONE sentence of it, not one per factor;
 - checks every pair of varying factors, carrying a two-factor pivot (unrun combinations as ``not_run``) for each
-  co-varying pair outside a group, and says how many pairs it examined;
+  co-varying pair outside a group, and the report says how many pairs it examined;
 - states that aliasing with an interaction is not checked.
+
+The bundle holds these as facts, by id (bundle shape 66: names left the evidence); the report words each sentence,
+every factor by the name every page calls it (``lever_names``), the toy host's levers by their declared names.
 """
 
 from __future__ import annotations
@@ -82,19 +85,20 @@ class TestLockstepFactorsAreOneGroup:
 
         assert tuple(group.factors) == LOCKSTEP
         assert (group.n_runs, group.n_levels) == (4, 2)
-        assert group.sentence.startswith(
-            "chunk_tokens, extraction_schema, ocr_engine_version and retriever_top_k move together across all 4 runs"
+        (sentence,) = [text for text in _disclosures(bundle) if "move together" in text]
+        assert sentence.startswith(
+            "Chunk tokens, extraction schema, ocr engine version and retriever top k move together across all 4 runs, "
+            "splitting them into the same 2 groups"
         )
-        assert "no comparison separates them" in group.sentence
+        assert "no comparison separates them" in sentence and "belongs to all 4 at once" in sentence
 
     def test_the_group_is_said_once_and_no_pair_of_its_factors_is_said_apart(self) -> None:
         """Ungrouped, the four would co-vary as six pairs, each with a pivot and a sentence of its own."""
         bundle = _lockstep()
-        (group,) = bundle.aliased_factors
 
         texts = _disclosures(bundle)
 
-        assert texts.count(group.sentence) == 1
+        assert len([text for text in texts if "move together" in text]) == 1
         assert bundle.factor_pairs is not None and bundle.factor_pairs.pivots == []
         assert not [text for text in texts if "co-vary;" in text], "a pair of lockstep factors said on its own"
 
@@ -149,13 +153,19 @@ class TestACoVaryingPairOutsideAnyGroupIsPivoted:
         assert sum(cell.status == "not_run" for cell in pivot.cells) == 3
         assert all(cell.n_runs == 0 for cell in pivot.cells if cell.status == "not_run")
         assert (scan.n_pairs_examined, scan.n_covarying) == (3, 1)
-        assert scan.completeness.startswith("3 factor pair(s) examined over the 3 factors that varied; 1 co-vary")
+        assert any(
+            text.startswith(
+                "3 factor pair(s) examined over the 3 factors that varied; 1 co-vary; the 1 outside any "
+                "group are shown in 1 pivot(s)"
+            )
+            for text in _disclosures(bundle)
+        )
 
     def test_the_report_lists_the_pairs_holes(self) -> None:
         texts = _disclosures(self._nested())
 
         assert any(
-            text.startswith("chunk_tokens and retriever_top_k co-vary; 3 of their 6 combinations never ran")
+            text.startswith("Chunk tokens and retriever top k co-vary; 3 of their 6 combinations never ran")
             for text in texts
         )
 
