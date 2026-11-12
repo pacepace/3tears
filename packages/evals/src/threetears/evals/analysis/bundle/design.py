@@ -877,6 +877,9 @@ def _apparatus_levels(
         result entirely rather than present with a ``None`` level. That absence is the claim the
         confound scan already makes about a dimension that held still, and it is what keeps the
         dimension out of the apparatus class as well, since that is built from these keys.
+
+        A result-level dimension none of a run's results exercised reads at the level its arm's runs read
+        (:func:`_level_where_nothing_exercised`), so a run whose every report went unscored joins its arm's setup.
     :rtype: dict[str, dict[str, str | None]]
     """
     levels: dict[str, dict[str, str | None]] = {}
@@ -908,6 +911,9 @@ def _apparatus_levels(
         if runs
         and profile.omits_apparatus(declared.name, [(run, values_by_run[run.id][declared.name]) for run in runs])
     }
+    # The runs whose results exercised none of a result-level dimension, by dimension: a judged run whose every
+    # report went unscored has no score to read its judge off.
+    unexercised: dict[str, set[str]] = {}
     for run in runs:
         values = values_by_run[run.id]
         for declared in apparatus:
@@ -918,6 +924,8 @@ def _apparatus_levels(
             # the code-only runs' judge as undecided.
             value = profile.apparatus_level(run, declared.name, values[declared.name])
             undecided = sweepables.is_indeterminate(declared.name, value)
+            if undecided and sweepables.unexercised(declared.name, value):
+                unexercised.setdefault(declared.name, set()).add(run.id)
             levels.setdefault(declared.name, {})[run.id] = None if undecided else canonical_json(value)
         # The world this run placed the subject in, on the same axis for the same reason. A run
         # that recorded no placements reads UNDECIDED rather than as having placed nothing: the
@@ -928,7 +936,43 @@ def _apparatus_levels(
             for dimension in profile.world.declarations:
                 key = world_dimension_key(dimension.name)
                 levels.setdefault(key, {})[run.id] = None if placements is None else placements.get(dimension.name)
+    if unexercised:
+        arm_of = {run.id: variant_key_of_run(results_by_run.get(run.id, [])) for run in runs}
+        for name, idle in unexercised.items():
+            _level_where_nothing_exercised(levels[name], idle, arm_of)
     return levels
+
+
+def _level_where_nothing_exercised(
+    by_run: dict[str, str | None], idle: Collection[str], arm_of: Mapping[str, str | None]
+) -> None:
+    """Give each run in ``idle`` the level of one rig dimension the runs that exercised it read, in place.
+
+    A result-level dimension a run's results never exercised (no score to read the judge off, because no report
+    was written to score) shaped none of that run's observations, so no level of it is a rival explanation for
+    anything they measured. Left undecided, it digests into an apparatus class of its own, and the run's every
+    observation sits in a second test setup beside its arm's: a reading a failure to write counts, such as
+    whether a report was finished, then never sees it. So it takes its arm's level, as an unscored result inside
+    a scored run already does, or, where nothing of its arm exercised the dimension, the level every run that
+    did exercise it shares, so an arm that wrote nothing at all still shares a setup with the arms it is read
+    against. Where those runs read more than one level, or an unrecorded one, there is no single setup to join,
+    and the run stays undecided, as before.
+
+    :param by_run: Run id → level key for one dimension, from :func:`_apparatus_levels`; updated in place.
+    :ptype by_run: dict[str, str | None]
+    :param idle: The runs whose results exercised none of it.
+    :ptype idle: Collection[str]
+    :param arm_of: Run id → the variant its results carry; ``None`` for a run with none.
+    :ptype arm_of: Mapping[str, str | None]
+    """
+    exercised = {run_id: level for run_id, level in by_run.items() if run_id not in idle}
+    everywhere = set(exercised.values())
+    for run_id in idle:
+        arm = arm_of.get(run_id)
+        own = {level for other, level in exercised.items() if arm is not None and arm_of.get(other) == arm}
+        held = own or everywhere
+        if len(held) == 1:
+            by_run[run_id] = next(iter(held))
 
 
 def _name_arms(

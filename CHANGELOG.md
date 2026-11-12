@@ -100,6 +100,20 @@ a page still loading a font after 15 s fails that render, naming the fonts. It l
 DejaVu, the faces the package's pages draw in on the dev box. The testament image runs it at build and CI's evals
 shards before their tests.
 
+### evals: a batch run that wrote no report counts as a failure to finish (#1115)
+
+**Fixed:** a judged run whose results nothing scored read the judge's served model, temperature, sent settings and
+configs as unknown, since they are read off scores, so its observations sat in a test setup of their own beside its
+arm's. A writer eval therefore kept a batch run that stored no page out of the campaign, and a whole batch of unwritten
+reports escaped Report finished while scattered ones counted. Now a rig dimension read off results that none of a
+run's results exercised takes the level its arm's runs read, or, where nothing of its arm was scored, the level every
+scored run shares; where those runs read two levels the run stays apart, as before. Runs whose results were scored
+group as they did. The writer eval files every batch run into the campaign, so Report finished counts an unwritten
+report against its arm, the judged readings find no score of it and leave it out, and the pass reads a missing page as
+losing its pair. Its disclosure names each arm by the cases its pageless runs launched, so a run that stored no result
+at all is still named and counted. `writer_pairwise` takes no `outside` runs; a report stored earlier still names them
+in `outside_run_ids`, which the promotion read honours.
+
 ### evals: a seed reads each template revision's cases once (#1148)
 
 **Fixed:** the seed read every stored case of a template revision again for each corpus case of it, to fill names on
