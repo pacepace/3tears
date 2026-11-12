@@ -60,6 +60,7 @@ from threetears.core.keyed._filters import (
     Pin,
     Selected,
     by_conditions,
+    narrowing,
     renumbered,
     selected_column,
 )
@@ -153,6 +154,7 @@ from threetears.core.keyed.writes import (
 
 __all__ = [
     "by_conditions",
+    "narrowing",
     "renumbered",
     "selected_column",
     "SQL_DIALECT_ATTRIBUTE",

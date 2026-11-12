@@ -44,7 +44,17 @@ from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.backends.schema_sql import decode_jsonb, encode_jsonb
 from threetears.core.collections.base import BaseCollection
 from threetears.core.data.gin import gin_filter
-from threetears.core.keyed import AnyOf, Fragment, Increment, delete_keyed, read_row, update_keyed
+from threetears.core.keyed import (
+    AnyOf,
+    Count,
+    Fragment,
+    Increment,
+    aggregate_keyed,
+    delete_keyed,
+    narrowing,
+    read_row,
+    update_keyed,
+)
 from threetears.core.serialization import (
     deserialize_from_json,
     serialize_to_json,
@@ -672,11 +682,16 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
             agent_id, user_id, enabled_only=enabled_only, tag_filter=tag_filter, query=query
         )
         # cache-bypass: aggregate COUNT(*) is not primary-key
-        # addressable; L1 row cache cannot serve.
-        where_clause = " AND ".join(filters.conditions)
-        sql = f"SELECT COUNT(*) FROM agent_skills WHERE {where_clause}"
-        value = await self.l3_pool.fetchval(sql, *filters.params)
-        return int(value or 0)
+        # addressable; L1 row cache cannot serve. Keyed by the user's
+        # prefix of uq_skills_agent_user_name; the filters narrow it.
+        (counted,) = await aggregate_keyed(
+            self.l3_pool,
+            "agent_skills",
+            aggregates={"skills": Count()},
+            by={"agent_id": agent_id, "user_id": user_id},
+            where=filters.narrowed,
+        )
+        return int(counted["skills"])
 
     async def bump_use_count(
         self,
@@ -1033,17 +1048,16 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
         """
         if self.l3_pool is None:
             return 0
-        conditions = ["agent_id = $1", "skill_id = $2"]
-        params: list[Any] = [agent_id, skill_id]
-        if outcome_filter is not None:
-            conditions.append("outcome = $3")
-            params.append(outcome_filter)
         # cache-bypass: aggregate COUNT(*) is not primary-key
-        # addressable; L1 row cache cannot serve.
-        where_clause = " AND ".join(conditions)
-        sql = f"SELECT COUNT(*) FROM agent_skill_invocations WHERE {where_clause}"
-        value = await self.l3_pool.fetchval(sql, *params)
-        return int(value or 0)
+        # addressable; L1 row cache cannot serve. Keyed by the skill's
+        # prefix of idx_skill_invocations_skill_time.
+        by: dict[str, Any] = {"agent_id": agent_id, "skill_id": skill_id}
+        if outcome_filter is not None:
+            by["outcome"] = outcome_filter
+        (counted,) = await aggregate_keyed(
+            self.l3_pool, "agent_skill_invocations", aggregates={"invocations": Count()}, by=by
+        )
+        return int(counted["invocations"])
 
     async def list_for_conversation(
         self,
@@ -1244,11 +1258,15 @@ class _SkillFilters:
     :ptype params: list[Any]
     :param query_param: placeholder carrying the FTS query text, or ``None`` when no query
     :ptype query_param: str | None
+    :param narrowed: the filters after the user's pins (enabled, tags, the query), each a fragment of its own
+        parameters: the count's ``where=``
+    :ptype narrowed: list[Fragment]
     """
 
     conditions: list[str]
     params: list[Any]
     query_param: str | None
+    narrowed: list[Fragment]
 
 
 def _skill_filter_conditions(
@@ -1282,16 +1300,20 @@ def _skill_filter_conditions(
     conditions = ["agent_id = $1", "user_id = $2"]
     params: list[Any] = [agent_id, user_id]
     query_param: str | None = None
+    narrowed: list[Fragment] = []
     if enabled_only:
-        conditions.append("enabled = true")
+        narrowed.append(Fragment("enabled = true"))
     if tag_filter:
-        params.append(list(tag_filter))
-        conditions.append(gin_filter(f"tags && ${len(params)}"))
-    if query is not None and query.strip():
-        params.append(query)
+        narrowed.append(Fragment(gin_filter("tags && $1"), (list(tag_filter),)))
+    searched = query is not None and query.strip()
+    if searched:
+        narrowed.append(Fragment(gin_filter("search_vector @@ websearch_to_tsquery('english', $1)"), (query,)))
+    for fragment in narrowed:
+        conditions.append(narrowing(fragment, len(params)))
+        params += list(fragment.params)
+    if searched:
         query_param = f"${len(params)}"
-        conditions.append(gin_filter(f"search_vector @@ websearch_to_tsquery('english', {query_param})"))
-    return _SkillFilters(conditions=conditions, params=params, query_param=query_param)
+    return _SkillFilters(conditions=conditions, params=params, query_param=query_param, narrowed=narrowed)
 
 
 def _skill_insert_params(data: dict[str, Any]) -> list[Any]:
