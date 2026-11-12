@@ -665,6 +665,73 @@ def test_migration_ddl_and_a_table_list_declare_keys_and_indexes(tmp_path: Path)
     assert not any("grants_by_status" in finding or "grants_by_agent" in finding for finding in findings), findings
 
 
+_DROPPED = '''
+UP = """
+CREATE TABLE grants (grant_id UUID PRIMARY KEY, agent_id UUID, status TEXT, status_note TEXT);
+CREATE INDEX grants_by_status ON grants (status);
+CREATE INDEX grants_live ON grants (agent_id) WHERE status = 'live';
+CREATE INDEX grants_wide ON grants (agent_id) INCLUDE (status);
+CREATE INDEX grants_lower ON grants (lower(status));
+CREATE INDEX grants_by_note ON grants (status_note);
+-- purpose: src/grants.py::agent_grants
+-- plan_test: tests/test_plans.py::test_agent_grants_uses_grants_by_agent
+CREATE INDEX grants_by_agent ON grants (agent_id);
+CREATE TABLE seats (seat_id UUID PRIMARY KEY, owner TEXT);
+CREATE INDEX seats_by_owner ON seats (owner);
+"""
+'''
+
+
+@pytest.mark.parametrize(
+    ("drop", "gone", "kept"),
+    [
+        (
+            'UP = "ALTER TABLE grants DROP COLUMN IF EXISTS status"\n',
+            ("grants_by_status", "grants_live", "grants_wide", "grants_lower"),
+            ("grants_by_note", "seats_by_owner"),
+        ),
+        (
+            'UP = "ALTER TABLE ONLY public.grants ADD COLUMN x TEXT, DROP status CASCADE"\n',
+            ("grants_by_status", "grants_live", "grants_wide", "grants_lower"),
+            ("grants_by_note", "seats_by_owner"),
+        ),
+        (
+            'UP = "ALTER TABLE grants ALTER COLUMN status DROP NOT NULL, DROP CONSTRAINT status"\n',
+            (),
+            ("grants_by_status", "grants_live", "grants_by_note", "seats_by_owner"),
+        ),
+        (
+            'UP = "DROP TABLE IF EXISTS seats CASCADE"\n',
+            ("seats_by_owner",),
+            ("grants_by_status", "grants_by_note"),
+        ),
+        (
+            'UP = "DROP TABLE IF EXISTS public.grants, seats CASCADE"\n',
+            ("seats_by_owner", "grants_by_status", "grants_live", "grants_by_note"),
+            (),
+        ),
+    ],
+    ids=["drop-column", "drop-column-among-actions", "drop-not-null-and-constraint", "drop-table", "drop-two-tables"],
+)
+def test_a_dropped_column_or_table_takes_its_indexes_with_it(
+    tmp_path: Path, drop: str, gone: tuple[str, ...], kept: tuple[str, ...]
+) -> None:
+    """Flips if an index a later migration's DROP COLUMN takes with it (the column in its key, its INCLUDE, its
+    predicate or an expression of it) or a DROP TABLE takes with its table (every table a DROP TABLE lists) is still
+    counted, or if a drop takes an index it does not (another column whose name starts the same, another table, an
+    ALTER COLUMN ... DROP NOT NULL or a DROP CONSTRAINT)."""
+    _plans(
+        tmp_path,
+        "def test_agent_grants_uses_grants_by_agent(plan):\n    assert plan_uses_index(plan, 'grants_by_agent')\n",
+    )
+    config = _config(tmp_path, {"migrations/v001.py": _DROPPED, "migrations/v002.py": drop, "grants.py": _GRANTS})
+    findings = [finding for finding in no_whole_reads_findings(config) if ": index-" in finding]
+    for index in gone:
+        assert not any(f"index {index} on" in finding for finding in findings), (index, findings)
+    for index in kept:
+        assert any(f"index {index} on" in finding for finding in findings), (index, findings)
+
+
 _ASSEMBLED = """
     from threetears.core.collections.schema_backed import TableSchema, UniqueConstraint
 

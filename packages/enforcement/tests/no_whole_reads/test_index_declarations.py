@@ -131,3 +131,69 @@ def test_an_index_declared_on_two_lines_is_declared_twice(tmp_path: Path) -> Non
     """Flips if a ledger may declare one index on two lines."""
     findings = _findings(tmp_path, f"{_LINE}\n{_LINE}")
     assert any("index-declared-twice -- datasources_by_kind is declared on line 2 too" in f for f in findings), findings
+
+
+_WIDE_INLINE = _INLINE.replace("(kind)", "(kind) INCLUDE (customer_id)")
+
+_REASON = "the digest answers each active datasource's customer from the index alone"
+
+_SUPPLEMENT = f"datasources_by_kind :: on datasources :: reason={_REASON}"
+
+
+def test_a_reason_line_supplements_a_frozen_index_declared_inline(tmp_path: Path) -> None:
+    """Flips if a frozen index whose purpose and plan test sit beside its DDL, but which needs a reason its migration
+    cannot be edited to give, cannot take that reason from a ledger line naming only the reason."""
+    assert any("index-wide-no-reason" in f for f in _findings(tmp_path, None, migration=_WIDE_INLINE))
+    findings = _findings(tmp_path, _SUPPLEMENT, migration=_WIDE_INLINE)
+    assert _index(findings) == [], findings
+
+
+@pytest.mark.parametrize(
+    ("line", "migration", "frozen", "kind"),
+    [
+        # too short to be a reason
+        ("datasources_by_kind :: on datasources :: reason=wide on purpose", _WIDE_INLINE, _FROZEN, "index-supplement"),
+        # the index's DDL is not frozen: the reason goes beside it
+        (_SUPPLEMENT, _WIDE_INLINE, (), "index-ledger-not-frozen"),
+        # a supplement names no purpose: purpose= on it is refused
+        (
+            f"datasources_by_kind :: on datasources :: purpose=src/registry.py::Digest.refresh_active :: reason={_REASON}",
+            _WIDE_INLINE,
+            _FROZEN,
+            "index-ledger-malformed",
+        ),
+        # nor a plan test alone
+        (
+            "datasources_by_kind :: on datasources :: plan_test=tests/test_plans.py::"
+            f"test_refresh_active_uses_datasources_by_kind :: reason={_REASON}",
+            _WIDE_INLINE,
+            _FROZEN,
+            "index-ledger-malformed",
+        ),
+        # a whole line on an index declared inline stays declared twice
+        (f"{_LINE} :: reason={_REASON}", _WIDE_INLINE, _FROZEN, "index-declared-twice"),
+        # nothing inline to supplement: the index is declared whole on its line, or not at all
+        (_SUPPLEMENT, _MIGRATION.replace("(kind)", "(kind) INCLUDE (customer_id)"), _FROZEN, "index-supplement"),
+        # the inline declaration gives its own reason: one each
+        (
+            _SUPPLEMENT,
+            _WIDE_INLINE.replace('"-- purpose:', f'"-- reason: {_REASON}\\n"\n        "-- purpose:'),
+            _FROZEN,
+            "index-declared-twice",
+        ),
+        # stale
+        (_SUPPLEMENT.replace("datasources_by_kind ::", "datasources_by_gone ::"), _WIDE_INLINE, _FROZEN, "stale"),
+    ],
+    ids=["short", "not-frozen", "purpose", "plan-test", "whole-line", "nothing-inline", "inline-reason", "stale"],
+)
+def test_a_wrong_reason_supplement_is_refused(
+    tmp_path: Path, line: str, migration: str, frozen: tuple[str, ...], kind: str
+) -> None:
+    """Flips if a reason-only line passes when its reason is under 30 characters, its index is not frozen, it carries
+    purpose= or plan_test= (a supplement gives the reason only), the index has no inline declaration to supplement,
+    the inline declaration already gives a reason, or no migration creates the index; and if a refused line's reason
+    is applied anyway."""
+    findings = _findings(tmp_path, line, migration=migration, frozen=frozen)
+    assert any(kind in f for f in findings), findings
+    if "-- reason:" not in migration:
+        assert any("index-wide-no-reason" in f for f in findings), f"a refused line's reason was applied: {findings}"

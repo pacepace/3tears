@@ -10,13 +10,23 @@ instead (beside its other ledgers, :attr:`NoWholeReadsConfig.ledger_dir`), one l
 
 A line is a declaration, not an exception: it is applied to the index exactly as its inline comments would be, so the
 same checks judge it (each purpose names a function whose keyed read uses the index, the plan test exists and names
-the index, a crowded or wide index gives its reason). Three findings are the ledger's own:
+the index, a crowded or wide index gives its reason).
+
+A frozen index whose purpose and plan test sit beside its DDL, but which needs a reason its migration cannot be edited
+to give (its table grew crowded later), takes that reason from a supplement line, the reason and nothing else::
+
+    <index> :: on <table> :: reason=<why, 30+ characters>
+
+The ledger's own findings:
 
 - ``index-ledger-not-frozen``: the index's DDL is in no frozen migration (``NoWholeReadsConfig.frozen_migrations``):
   it is declared inline, where its DDL is;
 - ``index-declared-twice``: the index carries inline notes too; one declaration each;
 - ``index-ledger-stale``: no migration the walk read creates the index (dropped, renamed, never there), or it is on
-  another table than the line says.
+  another table than the line says;
+- ``index-supplement-refused``: a reason-only line whose reason is under 30 characters, or whose index has no inline
+  purpose and plan test to supplement (declare it whole on its line). A supplement carrying ``purpose=`` or
+  ``plan_test=`` is malformed; one for an index already giving an inline reason is ``index-declared-twice``.
 """
 
 from __future__ import annotations
@@ -27,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from threetears.enforcement.no_whole_reads.schema import SchemaCatalog
+from threetears.enforcement.no_whole_reads.schema import MIN_REASON, SchemaCatalog
 
 __all__ = ["DECLARATIONS_NAME", "apply_index_declarations"]
 
@@ -44,7 +54,8 @@ class _Declaration:
     :ivar index: the index name, as its DDL creates it (lower case)
     :ivar table: the bare table it is on (lower case)
     :ivar purpose: ``<path>::<function>`` entries, ``; ``-separated, as an inline ``-- purpose:`` names them
-    :ivar plan_test: ``<test file>::<test>`` proving the purpose's read uses it
+    :ivar plan_test: ``<test file>::<test>`` proving the purpose's read uses it; with ``purpose``, empty on a
+        supplement (a reason-only line for an index declared inline)
     :ivar reason: why it is wide or its table crowded; empty when it gives none
     :ivar line: the line in the ledger
     """
@@ -55,6 +66,11 @@ class _Declaration:
     plan_test: str
     reason: str = ""
     line: int = 0
+
+    @property
+    def supplement(self) -> bool:
+        """whether the line only adds a reason to an index whose purpose and plan test are inline."""
+        return not self.purpose and not self.plan_test
 
 
 def _parse(path: Path) -> tuple[dict[str, _Declaration], list[str]]:
@@ -82,17 +98,19 @@ def _parse(path: Path) -> tuple[dict[str, _Declaration], list[str]]:
                 fields = {}
                 break
             fields[name.strip()] = value.strip()
+        whole = bool(fields.get("purpose")) and bool(fields.get("plan_test"))
+        supplement = set(fields) == {"reason"} and bool(fields["reason"])
         if (
-            len(parts) < 4
+            len(parts) < 3
             or not parts[0]
             or not parts[1].startswith("on ")
             or not parts[1][3:].strip()
-            or not fields.get("purpose")
-            or not fields.get("plan_test")
+            or not (whole or supplement)
         ):
             defects.append(
                 f"{where}: index-ledger-malformed -- write <index> :: on <table> :: purpose=<path>::<function> :: "
-                "plan_test=<file>::<test> [:: reason=<why>]"
+                "plan_test=<file>::<test> [:: reason=<why>], or, for an index declared inline, the reason alone: "
+                "<index> :: on <table> :: reason=<why>"
             )
             continue
         index = parts[0].strip('"').lower()
@@ -104,8 +122,8 @@ def _parse(path: Path) -> tuple[dict[str, _Declaration], list[str]]:
         declarations[index] = _Declaration(
             index=index,
             table=parts[1][3:].strip().strip('"').lower(),
-            purpose=fields["purpose"],
-            plan_test=fields["plan_test"],
+            purpose=fields.get("purpose", ""),
+            plan_test=fields.get("plan_test", ""),
             reason=fields.get("reason", ""),
             line=number,
         )
@@ -160,6 +178,19 @@ def apply_index_declarations(catalog: SchemaCatalog, path: Path, frozen: Sequenc
             )
             continue
         inline = [*sites, *([merged] if merged is not None else [])]
+        if declaration.supplement:
+            refusal = _supplement_refusal(
+                where,
+                declaration.reason,
+                declared=any(index.purpose and index.plan_test for index in inline),
+                reasoned=any(index.reason for index in inline),
+            )
+            if refusal is not None:
+                findings.append(refusal)
+                continue
+            for index in inline:
+                index.reason = declaration.reason
+            continue
         if any(index.purpose or index.plan_test or index.reason for index in inline):
             findings.append(
                 f"{where}: index-declared-twice -- it carries inline notes too: keep one declaration, the inline one "
@@ -171,3 +202,35 @@ def apply_index_declarations(catalog: SchemaCatalog, path: Path, frozen: Sequenc
             index.plan_test = declaration.plan_test
             index.reason = declaration.reason
     return findings
+
+
+def _supplement_refusal(where: str, reason: str, *, declared: bool, reasoned: bool) -> str | None:
+    """what refuses a reason-only line for a frozen index, or None when its reason applies.
+
+    :param where: the line, for the finding
+    :ptype where: str
+    :param reason: the line's reason
+    :ptype reason: str
+    :param declared: whether the index names its purpose and plan test beside its DDL
+    :ptype declared: bool
+    :param reasoned: whether it gives a reason beside its DDL already
+    :ptype reasoned: bool
+    :return: the finding, or None
+    :rtype: str | None
+    """
+    if reasoned:
+        return (
+            f"{where}: index-declared-twice -- it gives a reason beside its DDL already: keep that one, delete the line"
+        )
+    if not declared:
+        return (
+            f"{where}: index-supplement-refused -- a reason-only line supplements an index whose purpose and plan "
+            "test sit beside its DDL, and this one has none: declare it whole on the line (purpose= :: plan_test= "
+            ":: reason=)"
+        )
+    if len(reason) < MIN_REASON:
+        return (
+            f"{where}: index-supplement-refused -- its reason is {len(reason)} characters: say why the index is wide "
+            f"or its table crowded in {MIN_REASON}+"
+        )
+    return None

@@ -8,7 +8,8 @@ importing:
   ``Table("name", metadata, Column(..., primary_key=True), Index(...))``, in every module under the walked roots;
 - SQL DDL written anywhere in them (a migration's ``CREATE TABLE`` / ``CREATE INDEX`` / ``ALTER TABLE ... ADD
   PRIMARY KEY`` / ``DROP INDEX``, in ``.py`` strings and ``.sql`` files), applied in path order so a later
-  migration's drop or rename wins;
+  migration's drop or rename wins; a ``DROP TABLE`` takes every index of each table it lists, and an ``ALTER TABLE ...
+  DROP COLUMN`` every index whose key, ``INCLUDE``, expression or predicate names the column, as the database does;
 - a table list in YAML (a tool pod's ``tables.yaml``, an ``agent.yaml`` data section): every mapping with a
   ``name``, ``columns`` and a ``primary_key`` or ``indexes``.
 
@@ -44,6 +45,7 @@ from threetears.enforcement.common import dotted, iter_python_files, parse_pytho
 
 __all__ = [
     "COPY_PREFIX",
+    "MIN_REASON",
     "NEAREST_METHODS",
     "TENANT_COLUMNS",
     "SchemaCatalog",
@@ -75,7 +77,7 @@ MAX_PLAIN_INDEXES: Final[int] = 3
 CONSTRAINT_PURPOSE: Final[str] = "constraint"
 
 #: the shortest reason the rule accepts
-_MIN_REASON: Final[int] = 30
+MIN_REASON: Final[int] = 30
 
 #: the names a declared index is made with: 3tears' factory and dataclass, SQLAlchemy's ``Index``
 _INDEX_CALLS: Final[frozenset[str]] = frozenset({"Index", "IndexDef"})
@@ -101,7 +103,17 @@ _CREATE_INDEX: Final[re.Pattern[str]] = re.compile(
 _DROP_INDEX: Final[re.Pattern[str]] = re.compile(
     rf"\bDROP\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+EXISTS\s+)?({_QNAME}(?:\s*,\s*{_QNAME})*)", re.IGNORECASE
 )
-_DROP_TABLE: Final[re.Pattern[str]] = re.compile(rf"\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?{_QNAME}", re.IGNORECASE)
+_DROP_TABLE: Final[re.Pattern[str]] = re.compile(
+    rf"\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?({_QNAME}(?:\s*,\s*{_QNAME})*)", re.IGNORECASE
+)
+#: an ``ALTER TABLE``'s head: its actions follow, comma-separated, up to the statement's end
+_ALTER_TABLE: Final[re.Pattern[str]] = re.compile(
+    rf"\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?{_QNAME}\s+", re.IGNORECASE
+)
+#: one ``ALTER TABLE`` action dropping a column (``DROP [COLUMN] [IF EXISTS] name``); ``DROP CONSTRAINT`` is not one
+_DROP_COLUMN_ACTION: Final[re.Pattern[str]] = re.compile(
+    rf"^DROP\s+(?:COLUMN\s+)?(?:IF\s+EXISTS\s+)?(?!CONSTRAINT\b)({_IDENT})", re.IGNORECASE
+)
 _ADD_PK: Final[re.Pattern[str]] = re.compile(
     rf"\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?{_QNAME}\s+ADD\s+(?:CONSTRAINT\s+{_IDENT}\s+)?PRIMARY\s+KEY\s*\(",
     re.IGNORECASE,
@@ -497,6 +509,34 @@ class SchemaCatalog:
             entry.indexes.pop(name, None)
         self.sites = [site for site in self.sites if not (site.name == name and not site.pattern and site.table)]
 
+    def drop_column(self, table: str, column: str) -> None:
+        """forget what a later migration's ``DROP COLUMN`` takes with the column: every index of the table whose key,
+        ``INCLUDE``, expression or predicate names it (the database drops each, ``CASCADE`` or not), and every key
+        and tenant column holding it.
+
+        :param table: the bare table
+        :ptype table: str
+        :param column: the column, lower-cased
+        :ptype column: str
+        :return: nothing
+        :rtype: None
+        """
+        named = re.compile(rf'(?<![\w"]){re.escape(column)}(?![\w"])|"{re.escape(column)}"')
+
+        def names_it(index: _DeclaredIndex) -> bool:
+            items = [re.sub(r'\s+collate\s+"[^"]*"$', "", item) for item in (*index.columns, *index.include)]
+            predicate = re.sub(r"'(?:[^']|'')*'", "''", index.where.lower())
+            return any(named.search(item) for item in items) or named.search(predicate) is not None
+
+        entry = self.tables.get(table)
+        if entry is not None:
+            for name in [name for name, index in entry.indexes.items() if names_it(index)]:
+                entry.indexes.pop(name)
+            entry.primary_keys = [key for key in entry.primary_keys if column not in key]
+            entry.unique_keys = [key for key in entry.unique_keys if column not in key]
+            entry.tenant_columns.discard(column)
+        self.sites = [site for site in self.sites if not (site.table == table and not site.pattern and names_it(site))]
+
     def rename_index(self, old: str, new: str) -> None:
         """follow an index a later migration renames.
 
@@ -681,7 +721,8 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
     :param text: the SQL (comments kept, so a ``-- purpose:`` line before an index is read)
     :ptype text: str
     :return: ``("table", (name, key))``, ``("index", (name, table, columns, include, unique, notes))``,
-        ``("drop_index", name)``, ``("drop_table", name)``, ``("rename_table", (old, new))``,
+        ``("drop_index", name)``, ``("drop_table", name)``, ``("drop_column", (table, column))``,
+        ``("rename_table", (old, new))``,
         ``("rename_index", (old, new))``
     :rtype: Iterator[tuple[str, Any]]
     """
@@ -741,7 +782,14 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
         for name in _split_top(match.group(1)):
             events.append((match.start(), "drop_index", name))
     for match in _DROP_TABLE.finditer(text):
-        events.append((match.start(), "drop_table", match.group(1)))
+        for name in _split_top(match.group(1)):
+            events.append((match.start(), "drop_table", name))
+    for match in _ALTER_TABLE.finditer(text):
+        actions = _strip_comments(text[match.end() :]).split(";")[0]
+        for action in _split_top(actions):
+            dropped = _DROP_COLUMN_ACTION.match(action.strip())
+            if dropped is not None:
+                events.append((match.start(), "drop_column", (match.group(1), dropped.group(1))))
     for match in _RENAME_TABLE.finditer(text):
         events.append((match.start(), "rename_table", (match.group(1), match.group(2))))
     for match in _RENAME_COLUMN.finditer(text):
@@ -899,10 +947,15 @@ def _apply_ddl(catalog: SchemaCatalog, text: str, origin: str, *, local: bool) -
             if name is not None:
                 catalog.drop_index(name)
         elif kind == "drop_table":
+            # every table the statement lists, each with all its indexes
             table = bare_table(payload)
             if table is not None:
                 catalog.tables.pop(table, None)
                 catalog.sites = [site for site in catalog.sites if site.table != table]
+        elif kind == "drop_column":
+            table = bare_table(payload[0])
+            if table is not None:
+                catalog.drop_column(table, payload[1].strip('"').lower())
         elif kind == "rename_table":
             old, new = bare_table(payload[0]), bare_table(payload[1])
             if old is not None and new is not None:
@@ -1900,15 +1953,15 @@ def _index_site_findings(
             defect = f"{plan_test} never names an index {site.name} makes: it cannot prove one is used"
         if defect is not None:
             findings.append(f"{where}: index-plan-test -- the plan test {defect}")
-    if site.include and len(reason) < _MIN_REASON:
+    if site.include and len(reason) < MIN_REASON:
         findings.append(
             f"{where}: index-wide-no-reason -- carries INCLUDE {list(site.include)} with no written reason "
-            f"({_MIN_REASON}+ characters): a wide index is how a whole scan hides behind one"
+            f"({MIN_REASON}+ characters): a wide index is how a whole scan hides behind one"
         )
-    if crowded and len(reason) < _MIN_REASON and table is not None:
+    if crowded and len(reason) < MIN_REASON and table is not None:
         findings.append(
             f"{where}: index-crowded-no-reason -- {site.table} carries {len(table.indexes)} indexes, more than "
-            f"{MAX_PLAIN_INDEXES}, and this one gives no written reason ({_MIN_REASON}+ characters)"
+            f"{MAX_PLAIN_INDEXES}, and this one gives no written reason ({MIN_REASON}+ characters)"
         )
     readers = sorted(
         reader for table_name, index, reader in catalog.hashed_leads if (table_name, index) == (site.table, site.name)
