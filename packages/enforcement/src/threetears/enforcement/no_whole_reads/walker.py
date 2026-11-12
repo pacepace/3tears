@@ -140,8 +140,50 @@ _PARAMETER_DEPTH: Final[int] = 6
 #: sorted, so ``table.name`` reads as the object's ``name``
 Declared = tuple[tuple[str, str], ...]
 
-#: what a call site passes a parameter: a string, a declared object, or None for anything the walk cannot read
-Passed = str | Declared | None
+
+@dataclass(frozen=True)
+class Spelled:
+    """what a call site passes a parameter that is no string, rebuilt in the caller's own terms as a literal a keyed
+    helper's arguments read: a tuple of strings (a module tuple of key columns), or a mapping whose keys are strings
+    (``{"conversation_id": conv}``), its values opaque (:data:`_PASSED_VALUE`) unless literals.
+
+    :ivar text: the literal's source text
+    """
+
+    text: str
+
+    def node(self) -> ast.expr:
+        """the literal, parsed afresh.
+
+        :return: the expression
+        :rtype: ast.expr
+        """
+        return ast.parse(self.text, mode="eval").body
+
+
+#: a value a call site passes in a mapping that is not a literal: a bound value, read as a parameter is
+_PASSED_VALUE: Final[str] = "__passed_value__"
+
+#: what a call site passes a parameter: a string, a declared object, a rebuilt literal, or None for anything the walk
+#: cannot read
+Passed = str | Declared | Spelled | None
+
+
+@dataclass(frozen=True)
+class Site:
+    """one call site of a function: where it is, and what it passes each parameter.
+
+    :ivar path: the calling module's repo-relative path
+    :ivar line: the call's line
+    :ivar function: the calling scope's qualified name (``<module>`` at a top level)
+    :ivar values: each parameter onto what the site passes it
+    """
+
+    path: str
+    line: int
+    function: str
+    values: dict[str, list[Passed]]
+
 
 #: the calls that quote a relation's name, read through to the name they quote
 _QUOTING_CALLS: Final = frozenset({"quoted_table", "quote_identifier"})
@@ -967,6 +1009,7 @@ class _ModuleWalk(ast.NodeVisitor):
         cte_arguments: dict[tuple[str, str], list[tuple[str, bool]]] | None = None,
         producers: frozenset[str] = frozenset(),
         parameter_values: dict[tuple[str, str], list[Passed]] | None = None,
+        parameter_sites: dict[str, list[Site]] | None = None,
         view_producers: Mapping[str, tuple[tuple[str, ...], ...]] | None = None,
         tuples: dict[str, list[Passed]] | None = None,
         relation_producers: frozenset[str] = frozenset(),
@@ -1009,6 +1052,8 @@ class _ModuleWalk(ast.NodeVisitor):
         :param parameter_values: ``(function, parameter)`` onto what each call site passes it, None where the walk
             cannot read it (:func:`_parameter_values`)
         :ptype parameter_values: dict[tuple[str, str], list[Passed]] | None
+        :param parameter_sites: each function's call sites, what each passes each parameter (:func:`_parameter_values`)
+        :ptype parameter_sites: dict[str, list[Site]] | None
         :param tuples: the module tuples this module reads (its own and the ones it imports), onto their elements
             (:func:`_module_tuples`)
         :ptype tuples: dict[str, list[Passed]] | None
@@ -1036,6 +1081,7 @@ class _ModuleWalk(ast.NodeVisitor):
         #: the names the module's imports bind: ``x.read_by()`` on any other name is a method of an object
         self._module_names = _imported_names(tree)
         self._parameter_values = parameter_values or {}
+        self._parameter_sites = parameter_sites or {}
         self._tuples = tuples or {}
         self.source = source
         self.hits: list[WholeReadHit] = []
@@ -2505,11 +2551,13 @@ class _ModuleWalk(ast.NodeVisitor):
         statement: HelperStatement
         resolved = self._resolved_call(node)
         hits: dict[str, str] = {}
-        for call in (
-            matched
+        # a judged finding of a call one site's values make is that site's: recorded where the caller passes them
+        passed: dict[tuple[str, int, str, str], str] = {}
+        for call, at in (
+            (matched, at)
             for branched in _branch_calls(self._none_folded(resolved))
             for picked in self._mapping_calls(branched)
-            for each in self._parameter_calls(picked)
+            for each, at in self._parameter_calls(picked)
             for matched in self._match_calls(each)
         ):
             for statement in self._helper_statements(call):
@@ -2517,10 +2565,19 @@ class _ModuleWalk(ast.NodeVisitor):
                     hits.setdefault(f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(site))
                     continue
                 for finding in judge_sql(statement.sql, self._reader(site)):
-                    if finding.kind not in {HEAD, KEYED_COUNT} and not self._transient_table(finding.table):
-                        hits.setdefault(f"{finding.kind} {finding.table}", statement.sql)
+                    if finding.kind in {HEAD, KEYED_COUNT} or self._transient_table(finding.table):
+                        continue
+                    symbol = f"{finding.kind} {finding.table}"
+                    if at is None or finding.kind.startswith("unknown-"):
+                        hits.setdefault(symbol, statement.sql)
+                    else:
+                        passed.setdefault((at.path, at.line, at.function, symbol), statement.sql)
         for symbol, statement_text in hits.items():
             self._hit(site, symbol, statement_text)
+        for (path, line, function, symbol), statement_text in passed.items():
+            self.hits.append(
+                WholeReadHit(path, line, function, symbol, _one_line(f"{statement_text} (passed to {self._function})"))
+            )
 
     def _helper_statements(self, call: ast.Call) -> list[HelperStatement]:
         """the statements a keyed helper call sends; a read of a table its caller names at run time
@@ -2791,65 +2848,85 @@ class _ModuleWalk(ast.NodeVisitor):
             keywords=[ast.keyword(arg=keyword.arg, value=folded(keyword.value)) for keyword in call.keywords],
         )
 
-    def _parameter_calls(self, call: ast.Call) -> list[ast.Call]:
-        """the call once per combination of the strings its arguments are passed: an argument that is a parameter of
-        the calling function, never rebound in it, which every call site in the repo fills with a literal or a module
-        constant (``_held(conn, GEOS, key)``), followed up through callers that hand on their own parameter, reads as
-        each of those strings in turn; so does one bound by a loop over a module tuple (``for name in NAMES``), and an
-        attribute of either when it holds declared objects (``table.name``, ``for table in TABLES``); the call itself
-        when there is none, or one caller passes something the walk cannot read.
+    def _parameter_calls(self, call: ast.Call) -> list[tuple[ast.Call, Site | None]]:
+        """the call once per combination of what its arguments are passed: a name in an argument, at any depth, that
+        is a parameter of the calling function never rebound in it reads as what each call site in the repo fills it
+        with -- a literal or a module constant (``_held(conn, GEOS, key)``), a tuple of strings (a module tuple of key
+        columns), a mapping with string keys -- followed up through callers that hand on their own parameter, one
+        site at a time (one site's table never judged with another's key); so does one bound by a loop over a module
+        tuple (``for name in NAMES``), and an attribute of either when it holds declared objects (``table.name``,
+        ``for table in TABLES``). A comprehension over a tuple so passed reads as the mapping it builds
+        (``{c: data[c] for c in pk_cols}``). A name one site passes something the walk cannot read stays as written
+        at every site; the call itself when nothing is passed, or past :data:`_MAX_PARAMETER_COMBINATIONS`. Each call
+        comes with the site whose values it reads when that site passes any value read, so a finding it judges (one
+        the call's structure decides: never an unknown) is the site's, what that caller passes; None otherwise.
 
         :param call: the helper call, its known strings already literals
         :ptype call: ast.Call
-        :return: the calls to judge
-        :rtype: list[ast.Call]
+        :return: the calls to judge, each with its site or None
+        :rtype: list[tuple[ast.Call, Site | None]]
         """
         function = self._function_node
         if function is None or not (self._parameter_values or self._tuples):
-            return [call]
+            return [(call, None)]
         bindings = _function_bindings(function, self._tuples)
-        choices: dict[str, list[str]] = {}
         arguments = [*call.args, *(keyword.value for keyword in call.keywords)]
-        # a mapping's key that is a parameter (``by={user_column: source}``) reads as what its callers pass, as an
-        # argument does
-        keys = [key for value in arguments if isinstance(value, ast.Dict) for key in value.keys if key is not None]
-        for value in [*arguments, *keys]:
-            named = _bound_name(value)
-            if named is None:
-                continue
-            held = self._held_parameter(named[1]) if named[0] == "self" and named[1] is not None else None
-            if held is not None:
-                # an attribute the object keeps from its constructor: what every construction passes it
-                passed = self._parameter_values.get(held)
+        named = _argument_names(arguments)
+        # names every site reads alike: a loop over a module tuple, an attribute kept from the constructor
+        shared: dict[str, list[ast.expr]] = {}
+        parameters: dict[str, tuple[str, str | None]] = {}
+        for spelled, (name, attribute) in named.items():
+            if name == "self" and attribute is not None:
+                held = self._held_parameter(attribute)
+                passed = self._parameter_values.get(held) if held is not None else None
                 texts = _texts_of(passed, None) if passed and all(v is not None for v in passed) else None
                 if texts:
-                    choices[ast.unparse(value)] = sorted(set(texts))
-                continue
-            passed = _passed_values(function.name, named[0], bindings, self._parameter_values)
-            texts = _texts_of(passed, named[1]) if passed is not None else None
-            if texts:
-                choices[ast.unparse(value)] = sorted(set(texts))
-        combinations = list(itertools.product(*choices.values()))
-        if not choices or len(combinations) > _MAX_PARAMETER_COMBINATIONS:
-            return [call]
-
-        def bound(value: ast.expr, given: dict[str, str]) -> ast.expr:
-            if isinstance(value, ast.Dict):
-                keys = [None if key is None else bound(key, given) for key in value.keys]
-                return ast.Dict(keys=keys, values=value.values)
-            spelled = ast.unparse(value) if _bound_name(value) is not None else None
-            return ast.Constant(given[spelled]) if spelled is not None and spelled in given else value
-
-        calls = []
-        for combination in combinations:
-            given = dict(zip(choices, combination, strict=True))
-            calls.append(
-                ast.Call(
-                    func=call.func,
-                    args=[bound(argument, given) for argument in call.args],
-                    keywords=[ast.keyword(arg=k.arg, value=bound(k.value, given)) for k in call.keywords],
-                )
+                    shared[spelled] = [ast.Constant(text) for text in sorted(set(texts))]
+            elif name in bindings.loops:
+                nodes = _passed_nodes(bindings.loops[name], attribute)
+                if nodes:
+                    shared[spelled] = nodes
+            elif name in bindings.parameters:
+                parameters[spelled] = (name, attribute)
+        passings = self._parameter_sites.get(function.name, []) if parameters else []
+        read = [
+            {
+                spelled: _passed_nodes(passing.values.get(name, [None]), attribute)
+                for spelled, (name, attribute) in parameters.items()
+            }
+            for passing in passings
+        ]
+        # a parameter one site passes what the walk cannot read stays as written at every site (as one statement it
+        # is unknown; the sites it can read never judged alone)
+        readable = {spelled for spelled in parameters if read and all(each[spelled] for each in read)}
+        sites: list[tuple[dict[str, list[ast.expr]], Site | None]] = []
+        for passing, of_site in zip(passings, read, strict=True):
+            put = {spelled: of_site[spelled] for spelled in readable}
+            sites.append((put, passing if put else None))
+        if not any(put for put, _ in sites) and not shared:
+            return [(call, None)]
+        combinations: list[tuple[dict[str, ast.expr], Site | None]] = []
+        for given, at in sites or [({}, None)]:
+            choices = {**shared, **given}
+            for chosen in itertools.product(*choices.values()):
+                combinations.append((dict(zip(choices, chosen, strict=True)), at))
+                if len(combinations) > _MAX_PARAMETER_COMBINATIONS:
+                    return [(call, None)]
+        calls: list[tuple[ast.Call, Site | None]] = []
+        seen: set[str] = set()
+        for combination, site in combinations:
+            bound = _Substituted(combination)
+            made = ast.Call(
+                func=call.func,
+                args=[_folded_literals(bound.visit(_copied(argument))) for argument in call.args],
+                keywords=[
+                    ast.keyword(arg=k.arg, value=_folded_literals(bound.visit(_copied(k.value)))) for k in call.keywords
+                ],
             )
+            text = f"{ast.unparse(made)} {None if site is None else (site.path, site.line)}"
+            if text not in seen:
+                seen.add(text)
+                calls.append((made, site))
         return calls
 
     def _held_parameter(self, attribute: str) -> tuple[str, str] | None:
@@ -4417,6 +4494,191 @@ def _bound_name(value: ast.expr) -> tuple[str, str | None] | None:
     return None
 
 
+def _argument_names(arguments: list[ast.expr]) -> dict[str, tuple[str, str | None]]:
+    """each name, or attribute of a name, a call's arguments read at any depth (``table``, ``table.name``,
+    ``pk_cols`` in ``{c: data[c] for c in pk_cols}``, ``key`` in ``KeyBatch((key,), ...)``), by its spelling; a name a
+    comprehension inside the argument binds is its own, never read.
+
+    :param arguments: the arguments
+    :ptype arguments: list[ast.expr]
+    :return: spelling onto the name and attribute
+    :rtype: dict[str, tuple[str, str | None]]
+    """
+    found: dict[str, tuple[str, str | None]] = {}
+    for argument in arguments:
+        bound = {
+            target.id
+            for node in ast.walk(argument)
+            if isinstance(node, ast.comprehension)
+            for target in ast.walk(node.target)
+            if isinstance(target, ast.Name)
+        }
+        for node in ast.walk(argument):
+            read = _bound_name(node) if isinstance(node, (ast.Name, ast.Attribute)) else None
+            if read is not None and read[0] not in bound:
+                found.setdefault(ast.unparse(node), read)
+    return found
+
+
+def _passed_nodes(passed: list[Passed], attribute: str | None) -> list[ast.expr]:
+    """what each value one site (or one loop) passes reads as in a call: a string, a declared object's ``attribute``,
+    a rebuilt literal; empty when any one cannot be read.
+
+    :param passed: the values
+    :ptype passed: list[Passed]
+    :param attribute: the attribute read of each, or None for the value itself
+    :ptype attribute: str | None
+    :return: the expressions, in order, without repeats
+    :rtype: list[ast.expr]
+    """
+    nodes: dict[str, ast.expr] = {}
+    for value in passed:
+        node: ast.expr | None = None
+        if attribute is None and isinstance(value, str):
+            node = ast.Constant(value)
+        elif attribute is None and isinstance(value, Spelled):
+            node = value.node()
+        elif attribute is not None and isinstance(value, tuple):
+            text = dict(value).get(attribute)
+            node = None if text is None else ast.Constant(text)
+        if node is None:
+            return []
+        nodes.setdefault(ast.unparse(node), node)
+    return list(nodes.values())
+
+
+def _copied(node: ast.expr) -> ast.expr:
+    """a fresh copy of an argument, so substituting in it never touches the module's own tree.
+
+    :param node: the argument
+    :ptype node: ast.expr
+    :return: the copy
+    :rtype: ast.expr
+    """
+    return ast.parse(ast.unparse(node), mode="eval").body
+
+
+class _Substituted(ast.NodeTransformer):
+    """an argument with each name (or attribute) a site passes replaced by what it passes; a name a comprehension
+    binds is left as it is."""
+
+    def __init__(self, given: dict[str, ast.expr]) -> None:
+        """:param given: spelling onto the expression put in its place
+        :ptype given: dict[str, ast.expr]
+        """
+        self._given = given
+        self._bound: list[set[str]] = []
+
+    def _replaced(self, node: ast.expr) -> ast.expr | None:
+        read = _bound_name(node)
+        if read is None or any(read[0] in bound for bound in self._bound):
+            return None
+        put = self._given.get(ast.unparse(node))
+        return None if put is None else _copied(put)
+
+    def visit_Name(self, node: ast.Name) -> ast.expr:
+        """a name a site passes."""
+        return self._replaced(node) or node
+
+    def visit_Attribute(self, node: ast.Attribute) -> ast.expr:
+        """an attribute of a name a site passes, else its parts."""
+        replaced = self._replaced(node)
+        return replaced if replaced is not None else self.generic_visit(node)  # type: ignore[return-value]
+
+    def _comprehension(self, node: ast.AST) -> ast.AST:
+        generators = getattr(node, "generators", [])
+        for generator in generators:
+            generator.iter = self.visit(generator.iter)
+        self._bound.append(
+            {
+                target.id
+                for generator in generators
+                for target in ast.walk(generator.target)
+                if isinstance(target, ast.Name)
+            }
+        )
+        for field_name in ("key", "value", "elt"):
+            if hasattr(node, field_name):
+                setattr(node, field_name, self.visit(getattr(node, field_name)))
+        for generator in generators:
+            generator.ifs = [self.visit(test) for test in generator.ifs]
+        self._bound.pop()
+        return node
+
+    def visit_DictComp(self, node: ast.DictComp) -> ast.AST:
+        """a mapping comprehension: its own names kept."""
+        return self._comprehension(node)
+
+    def visit_ListComp(self, node: ast.ListComp) -> ast.AST:
+        """a list comprehension: its own names kept."""
+        return self._comprehension(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> ast.AST:
+        """a set comprehension: its own names kept."""
+        return self._comprehension(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> ast.AST:
+        """a generator expression: its own names kept."""
+        return self._comprehension(node)
+
+
+class _LiteralFolder(ast.NodeTransformer):
+    """a mapping comprehension over a literal tuple of strings read as the mapping it builds
+    (``{c: data[c] for c in ("a", "b")}`` -> ``{"a": data["a"], "b": data["b"]}``), and a literal mapping spread into
+    another (``{**{"a": x}, "b": y}``) read as its entries."""
+
+    def visit_DictComp(self, node: ast.DictComp) -> ast.expr:
+        """the mapping a comprehension over a literal tuple builds."""
+        self.generic_visit(node)
+        if len(node.generators) != 1:
+            return node
+        generator = node.generators[0]
+        over = generator.iter
+        if (
+            generator.ifs
+            or generator.is_async
+            or not isinstance(generator.target, ast.Name)
+            or not isinstance(over, (ast.Tuple, ast.List))
+            or not all(isinstance(each, ast.Constant) and isinstance(each.value, str) for each in over.elts)
+        ):
+            return node
+        keys: list[ast.expr | None] = []
+        values: list[ast.expr] = []
+        for each in over.elts:
+            given = {generator.target.id: each}
+            keys.append(_Substituted(given).visit(_copied(node.key)))
+            values.append(_Substituted(given).visit(_copied(node.value)))
+        return ast.Dict(keys=keys, values=values)
+
+    def visit_Dict(self, node: ast.Dict) -> ast.expr:
+        """a mapping with literal mappings spread into it, as their entries."""
+        self.generic_visit(node)
+        keys: list[ast.expr | None] = []
+        values: list[ast.expr] = []
+        for key, value in zip(node.keys, node.values, strict=True):
+            if key is None and isinstance(value, ast.Dict):
+                keys.extend(value.keys)
+                values.extend(value.values)
+            else:
+                keys.append(key)
+                values.append(value)
+        return ast.Dict(keys=keys, values=values)
+
+
+def _folded_literals(node: ast.expr) -> ast.expr:
+    """``node`` with its comprehensions over literal tuples and its spread literal mappings read as literals
+    (:class:`_LiteralFolder`).
+
+    :param node: the argument
+    :ptype node: ast.expr
+    :return: the folded argument
+    :rtype: ast.expr
+    """
+    folded = _LiteralFolder().visit(node)
+    assert isinstance(folded, ast.expr)
+    return folded
+
+
 def _texts_of(passed: list[Passed], attribute: str | None) -> list[str] | None:
     """the strings ``passed`` reads as: each string itself, or each declared object's ``attribute``; None when any one
     does not read as a string.
@@ -4553,6 +4815,9 @@ def _site_values(
     text = _constant_text(value, known)
     if text is not None:
         return [text]
+    spelled = _spelled_literal(value, known, caller)
+    if spelled is not None:
+        return [spelled]
     if isinstance(value, ast.Subscript) and isinstance(value.value, ast.Name) and caller is not None:
         looked = caller[1].tuples.get(f"{value.value.id}[]")
         return [None] if looked is None else list(looked)
@@ -4566,6 +4831,69 @@ def _site_values(
         return list(passed)
     texts = _texts_of(passed, named[1])
     return [None] if texts is None else list(texts)
+
+
+def _qualified_names(tree: ast.Module) -> dict[int, str]:
+    """each function of a module onto its qualified name as the walk spells it (``Class.method``,
+    ``outer.inner``).
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :return: ``id`` of each function node onto its name
+    :rtype: dict[int, str]
+    """
+    names: dict[int, str] = {}
+
+    def visit(body: list[ast.stmt], prefix: tuple[str, ...]) -> None:
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                names[id(node)] = ".".join((*prefix, node.name))
+                visit(node.body, (*prefix, node.name))
+            elif isinstance(node, ast.ClassDef):
+                visit(node.body, (*prefix, node.name))
+            else:
+                for child in ast.iter_child_nodes(node):
+                    if isinstance(child, ast.stmt):
+                        visit([child], prefix)
+
+    visit(tree.body, ())
+    return names
+
+
+def _spelled_literal(value: ast.expr, known: dict[str, str], caller: tuple[str, _Bindings] | None) -> Spelled | None:
+    """what a call site passes as a literal a keyed helper reads, rebuilt in its own terms: a tuple or list of
+    strings, or a module tuple of them (``SCHEDULE_PK``); a mapping whose every key is a string (none, ``{}``), its
+    values kept where literals and opaque otherwise; None for anything else.
+
+    :param value: the argument
+    :ptype value: ast.expr
+    :param known: the calling module's strings
+    :ptype known: dict[str, str]
+    :param caller: the calling function's name and bindings, None at a top level
+    :ptype caller: tuple[str, _Bindings] | None
+    :return: the literal, or None
+    :rtype: Spelled | None
+    """
+    texts: list[str | None] | None = None
+    if isinstance(value, (ast.Tuple, ast.List)) and value.elts:
+        texts = [_constant_text(element, known) for element in value.elts]
+    elif isinstance(value, ast.Name) and caller is not None and value.id in caller[1].tuples:
+        held = caller[1].tuples[value.id]
+        texts = [each if isinstance(each, str) else None for each in held] if held else None
+    if texts is not None:
+        if any(text is None for text in texts):
+            return None
+        return Spelled(ast.unparse(ast.Tuple(elts=[ast.Constant(text) for text in texts], ctx=ast.Load())))
+    if isinstance(value, ast.Dict):
+        keys = [None if key is None else _constant_text(key, known) for key in value.keys]
+        if any(key is None for key in keys):
+            return None
+        values: list[ast.expr] = [
+            each if isinstance(each, ast.Constant) else ast.Name(id=_PASSED_VALUE, ctx=ast.Load())
+            for each in value.values
+        ]
+        return Spelled(ast.unparse(ast.Dict(keys=[ast.Constant(key) for key in keys], values=values)))
+    return None
 
 
 @dataclass(frozen=True)
@@ -4660,6 +4988,7 @@ def _parameter_values(
     modules: list[tuple[str, ast.Module]],
     strings: dict[str, dict[str, str]],
     tuples: dict[str, dict[str, list[Passed]]] | None = None,
+    sites: dict[str, list[Site]] | None = None,
 ) -> dict[tuple[str, str], list[Passed]]:
     """for every function the repo defines once by its name, what each call site passes each of its parameters: a
     literal, or a module constant of the calling module (its own, or one it imports from the repo); a default the
@@ -4673,6 +5002,9 @@ def _parameter_values(
     :ptype strings: dict[str, dict[str, str]]
     :param tuples: every walked module's path onto its tuples (:func:`_module_tuples`); none when None
     :ptype tuples: dict[str, dict[str, list[Passed]]] | None
+    :param sites: filled, when given, with each function's call sites, one at a time: what each passes each
+        parameter, so a call is judged by one site's values together, never one site's crossed with another's
+    :ptype sites: dict[str, list[Site]] | None
     :return: ``(function, parameter)`` onto each site's value, or None
     :rtype: dict[tuple[str, str], list[Passed]]
     """
@@ -4683,7 +5015,7 @@ def _parameter_values(
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not _stub(node):
                 definitions.setdefault(node.name, []).append(node)
     constructors = _constructors(modules)
-    contexts: list[tuple[dict[str, str], tuple[str, _Bindings] | None, list[ast.Call]]] = []
+    contexts: list[tuple[dict[str, str], tuple[str, _Bindings] | None, list[ast.Call], tuple[str, str]]] = []
     for relative, tree in modules:
         known = {**_imported_strings(tree, strings), **strings.get(relative, {})}
         imported = _imported_names(tree)
@@ -4693,12 +5025,14 @@ def _parameter_values(
         scopes: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef | None, list[ast.stmt]]] = [
             (None, [statement for statement in tree.body if not isinstance(statement, definers)])
         ]
+        qualified = _qualified_names(tree)
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
                 scopes.append((None, [statement for statement in node.body if not isinstance(statement, definers)]))
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 scopes.append((node, node.body))
         for function, body in scopes:
+            where = (relative, "<module>" if function is None else qualified.get(id(function), function.name))
             caller = None if function is None else (function.name, _function_bindings(function, module_tuples))
             # a call on an imported module (``keyed.holds_any``) is that module's, not a method of the same name
             calls = [
@@ -4711,22 +5045,36 @@ def _parameter_values(
                     and node.func.value.id in imported
                 )
             ]
-            contexts.append((known, caller, calls))
+            contexts.append((known, caller, calls, where))
     found: dict[tuple[str, str], list[Passed]] = {}
     for _ in range(_PARAMETER_DEPTH):
         followed: dict[tuple[str, str], list[Passed]] = {}
-        for known, caller, calls in contexts:
+        followed_sites: dict[str, list[Site]] = {}
+        for known, caller, calls, where in contexts:
             for call in calls:
                 callee = _final(call) or ""
                 defined = definitions.get(callee, [])
                 if not defined and callee in constructors:
                     # a construction of a repo class: what it passes its ``__init__``, kept as ``<Class>.__init__``
-                    _record_site(call, constructors[callee], known, caller, found, followed, name=f"{callee}.__init__")
+                    _record_site(
+                        call,
+                        constructors[callee],
+                        known,
+                        caller,
+                        found,
+                        followed,
+                        name=f"{callee}.__init__",
+                        sites=followed_sites,
+                        where=where,
+                    )
                     continue
                 if len(defined) != 1:
                     # a name defined twice could be either: no site of it says what its parameters hold
                     continue
-                _record_site(call, defined[0], known, caller, found, followed)
+                _record_site(call, defined[0], known, caller, found, followed, sites=followed_sites, where=where)
+        if sites is not None:
+            sites.clear()
+            sites.update(followed_sites)
         if followed == found:
             break
         found = followed
@@ -4742,6 +5090,8 @@ def _record_site(
     followed: dict[tuple[str, str], list[Passed]],
     *,
     name: str | None = None,
+    sites: dict[str, list[Site]] | None = None,
+    where: tuple[str, str] = ("", "<module>"),
 ) -> None:
     """add what one call of ``function`` passes each of its parameters to ``followed``.
 
@@ -4760,6 +5110,10 @@ def _record_site(
     :param name: the name its parameters are kept under (a constructor's ``<Class>.__init__``, its ``self`` not
         passed); the function's own when None
     :ptype name: str | None
+    :param sites: each function's call sites so far, this one added; none kept when None
+    :ptype sites: dict[str, list[Site]] | None
+    :param where: the calling module's path and the calling scope's qualified name
+    :ptype where: tuple[str, str]
     :return: nothing
     :rtype: None
     """
@@ -4792,12 +5146,16 @@ def _record_site(
         zip([a.arg for a in positional], call.args if star is None else call.args[:star], strict=False)
     )
     passed.update({keyword.arg: keyword.value for keyword in call.keywords if keyword.arg})
+    site: dict[str, list[Passed]] = {}
     for place, argument in enumerate([*positional, *function.args.kwonlyargs]):
         value = passed.get(argument.arg)
         unknown = value is None and ((star is not None and place >= star) or spread)
         value = value if value is not None else defaults.get(argument.arg)
         values: list[Passed] = [None] if unknown or value is None else _site_values(value, known, caller, found)
         followed.setdefault((name or function.name, argument.arg), []).extend(values)
+        site[argument.arg] = values
+    if sites is not None:
+        sites.setdefault(name or function.name, []).append(Site(where[0], call.lineno, where[1], site))
 
 
 #: a value a forwarder reads off its ``self`` (``self._keys[table]``), as its caller's judgement of the write names it
@@ -5253,8 +5611,9 @@ def scan_whole_reads(
             for relative, path in modules
         }
     cte_arguments = _cte_arguments([(relative, parse_python_path(path)) for relative, path in modules])
+    parameter_sites: dict[str, list[Site]] = {}
     parameter_values = _parameter_values(
-        [(relative, parse_python_path(path)) for relative, path in modules], strings, tuples
+        [(relative, parse_python_path(path)) for relative, path in modules], strings, tuples, parameter_sites
     )
     match_builders = _match_builders([(relative, parse_python_path(path)) for relative, path in modules], strings)
     never_none = _never_none_parameters([(relative, parse_python_path(path)) for relative, path in modules])
@@ -5283,6 +5642,7 @@ def scan_whole_reads(
             cte_arguments=cte_arguments,
             producers=producers,
             parameter_values=parameter_values,
+            parameter_sites=parameter_sites,
             view_producers=view_producers,
             tuples=_imported_tuples(tree, relative, tuples),
             relation_producers=relation_producers,

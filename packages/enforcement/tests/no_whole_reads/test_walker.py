@@ -2350,12 +2350,107 @@ _TABLE_PARAMETER = """
 
 def test_a_keyed_helpers_table_parameter_resolves_when_every_caller_names_a_declared_table(tmp_path: Path) -> None:
     """Flips if a keyed helper called with a table parameter stays unknown when every caller of its function passes a
-    literal or a module constant (``_held``: keyed; ``_by_state``: judged against that table, so non-key), or
-    resolves when one caller passes a value the walk cannot read (``_loose``)."""
+    literal or a module constant (``_held``: keyed; ``_by_state``: judged against that table, so non-key, reported at
+    the caller that passes it), or resolves when one caller passes a value the walk cannot read (``_loose``)."""
     found = _symbols(_config(tmp_path, {"pkg/tables.py": _TABLES, "pkg/probe.py": _TABLE_PARAMETER}))
     assert not any(function == "_held" for function, _ in found), found
-    assert ("_by_state", 'non-key-where "geos"') in found, found
+    assert ("callers", 'non-key-where "geos"') in found, found
     assert ("_loose", "unknown-predicate holds_any(table)") in found, found
+
+
+_FORWARDED_SHAPES = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import KeyBatch, read_keyed, update_keyed
+
+    SCHEDULES = "schedules"
+    SUBSCRIPTIONS = "subscriptions"
+    SCHEDULE_PK = ("conversation_id", "schedule_id")
+    SUBSCRIPTION_PK = ("conversation_id", "subscription_id")
+    OWNER_KEY = ("owner_id", "subscription_id")
+    SCHEDULES_SCHEMA = TableSchema(name=SCHEDULES, primary_key=SCHEDULE_PK, columns=[])
+    SUBSCRIPTIONS_SCHEMA = TableSchema(name=SUBSCRIPTIONS, primary_key=SUBSCRIPTION_PK, columns=[])
+
+
+    async def _fenced(target, table, data, pk_cols, stamp):
+        return await update_keyed(
+            target, table, values={"x": 1}, by={**{column: data[column] for column in pk_cols}, "date_updated": stamp}
+        )
+
+
+    async def _fenced_loose(target, table, data, pk_cols, stamp):
+        return await update_keyed(
+            target, table, values={"x": 1}, by={**{column: data[column] for column in pk_cols}, "date_updated": stamp}
+        )
+
+
+    async def _fenced_unread(target, table, data, pk_cols, stamp):
+        return await update_keyed(
+            target, table, values={"x": 1}, by={**{column: data[column] for column in pk_cols}, "date_updated": stamp}
+        )
+
+
+    async def _one(pool, table, key, value, by):
+        rows = await read_keyed(pool, table, keys=KeyBatch((key,), [(value,)], ("uuid",)), columns=["x"], by=by)
+        return rows[0] if rows else None
+
+
+    async def _one_loose(pool, table, key, value, by):
+        rows = await read_keyed(pool, table, keys=KeyBatch((key,), [(value,)], ("uuid",)), columns=["x"], by=by)
+        return rows[0] if rows else None
+
+
+    async def save_schedule(target, data, stamp):
+        return await _fenced(target, SCHEDULES, data, SCHEDULE_PK, stamp)
+
+
+    async def save_subscription(target, data, stamp):
+        return await _fenced(target, SUBSCRIPTIONS, data, SUBSCRIPTION_PK, stamp)
+
+
+    async def save_crossed(target, data, stamp):
+        return await _fenced_loose(target, SCHEDULES, data, OWNER_KEY, stamp)
+
+
+    async def save_named(target, data, stamp, columns):
+        return await _fenced_unread(target, SCHEDULES, data, columns, stamp)
+
+
+    async def one_schedule(pool, conv, schedule):
+        return await _one(pool, SCHEDULES, "schedule_id", schedule, {"conversation_id": conv})
+
+
+    async def one_subscription(pool, conv, subscription):
+        return await _one(pool, SUBSCRIPTIONS, "subscription_id", subscription, {"conversation_id": conv})
+
+
+    async def one_anywhere(pool, subscription):
+        return await _one(pool, SUBSCRIPTIONS, "subscription_id", subscription, {})
+
+
+    async def one_by_owner(pool, owner, schedule):
+        return await _one_loose(pool, SCHEDULES, "schedule_id", schedule, {"owner_id": owner})
+"""
+
+
+def test_a_forwarder_s_key_parameters_are_judged_by_what_each_call_site_passes(tmp_path: Path) -> None:
+    """Flips if a forwarding helper's by= built over a key-column tuple its callers pass (a comprehension spliced
+    into a mapping), its KeyBatch key column or its by= mapping, stays unknown when every call site passes a module
+    tuple, a literal or a mapping with literal keys (``_fenced``, ``_one``: keyed at every site, nothing reported);
+    if one site's values are judged crossed with another's (``save_schedule``'s table with ``save_subscription``'s
+    key); if a site passing another table's key (``save_crossed``) or a mapping off the key (``one_by_owner``) is
+    not reported at that caller, where the read is chosen; or if a site passing what the walk cannot read
+    (``save_named``) is anything but unknown, at the forwarder, its caller calling a whole read."""
+    found = _symbols(_config(tmp_path, {"pkg/forward.py": _FORWARDED_SHAPES}))
+    quiet = {"_fenced", "_one", "save_schedule", "save_subscription", "one_schedule", "one_subscription"}
+    assert not any(function in quiet for function, _ in found), found
+    assert ("save_crossed", 'non-key-where "schedules"') in found, found
+    assert ("one_by_owner", 'non-key-where "schedules"') in found, found
+    # an empty mapping is read too: the key column alone, off the key's lead, judged (at the caller) not unknown
+    assert any(function == "one_anywhere" and '"subscriptions"' in symbol for function, symbol in found), found
+    assert not any(symbol.startswith("unknown-") and "read_keyed" in symbol for _, symbol in found), found
+    assert not any(function in {"_fenced_loose", "_one_loose"} for function, _ in found), found
+    assert ("_fenced_unread", "unknown-predicate update_keyed(by)") in found, found
+    assert ("save_named", "calls-whole-read _fenced_unread") in found, found
 
 
 _RENAMED_VIEWS = """
@@ -2585,10 +2680,11 @@ _LOOPED = """
 def test_a_table_bound_by_a_loop_over_a_declared_tuple_resolves_through_its_callers(tmp_path: Path) -> None:
     """Flips if a keyed helper's table, named by a loop over a module tuple of declared tables (``for t in TABLES``,
     ``t.name``) and handed down through parameters (``run`` -> ``_write`` -> ``_held`` -> ``Store.holds_state``),
-    stays unknown, or if one element whose key the read does not bind (``runs``) passes."""
+    stays unknown, or if one element whose key the read does not bind (``runs``) passes, at the call site whose loop
+    hands it on (``Pull.with_runs``)."""
     found = _symbols(_config(tmp_path, {"pkg/tables.py": _DECLARED_TABLES, "pkg/pull.py": _LOOPED}))
     assert not any(function in ("Store.holds_state", "Pull._held", "Pull.by_name") for function, _ in found), found
-    assert any(function == "Store.holds_run" and "runs" in symbol for function, symbol in found), found
+    assert any(function == "Pull.with_runs" and "runs" in symbol for function, symbol in found), found
 
 
 _SPLICED_TABLES = """
@@ -4852,12 +4948,13 @@ def test_a_forwarded_column_and_a_never_none_agent_judge_the_one_statement_sent(
 
 def test_an_agent_a_caller_may_leave_none_keeps_the_owner_only_arm_judged(tmp_path: Path) -> None:
     """Flips if the ``agent_id is None`` arm is folded away while a caller may pass None (``UUID | None``) or leaves
-    the default: its write by the owner alone has no index and stays a non-key write."""
+    the default: its write by the owner alone has no index and stays a non-key write, reported at the caller passing
+    that table and column (``move_files``)."""
     _plans(tmp_path, _REPOINT_PLANS)
     optional = _REPOINT_CALLERS.replace("agent_id: UUID)", "agent_id: UUID | None)")
     config = _config(tmp_path, {"helpers.py": _FORWARDED_REPOINT, "merge.py": optional})
     findings = no_whole_reads_findings(config)
-    assert ("repoint", 'non-key-where "files"') in _symbols(config), findings
+    assert ("move_files", 'non-key-where "files"') in _symbols(config), findings
     assert not [finding for finding in findings if "unknown-" in finding], findings
 
 
