@@ -38,13 +38,13 @@ upgrade command.
 **Changed:** the evals render tests (74: headless Chromium through playwright, no Docker) carry a new `browser`
 marker instead of `integration`, so they leave `./scripts/test-integration.sh`, where they were about 51 minutes of a
 local run, and run in the unit suite. On the testament pool the image (`docker/testament.Dockerfile`) installs Chromium
-with the locked playwright and the dev box's DejaVu fonts; CI's evals shards install the same. Where
-`THREETEARS_REQUIRE_CHROMIUM=1` (the pool's manifest and the evals shards set it), a browser that cannot launch fails
-these tests instead of skipping them; a successful launch is remembered for the process, and a failed one is retried
-once. The tests no longer reach the network: the reference memos' Google Fonts request is answered from a copy of IBM
-Plex in `packages/evals/tests/fixtures/plex_fonts` (SIL OFL 1.1). `tests/enforcement/test_browser_marker.py` holds
-every test that drives Chromium to the marker, and `tests/enforcement/test_testament_image_playwright.py` holds the
-image's playwright to `uv.lock`'s.
+with the locked playwright and the dev box's DejaVu fonts; the GitHub evals shards of `ci.yml` and `release.yml`
+install the same. Where `THREETEARS_REQUIRE_CHROMIUM=1` (the pool's manifest and those shards set it), a browser
+that cannot launch fails these tests instead of skipping them; a successful launch is remembered for the process,
+and a failed one is retried once. The tests no longer reach the network: the reference memos' Google Fonts request
+is answered from a copy of IBM Plex in `packages/evals/tests/fixtures/plex_fonts` (SIL OFL 1.1).
+`tests/enforcement/test_browser_marker.py` holds every test that drives Chromium to the marker, and
+`tests/enforcement/test_testament_image_playwright.py` holds the image's playwright to `uv.lock`'s.
 
 **Added:** `docs/eval-report-kit/scripts/check.py --fonts DIR` answers a page's Google Fonts requests from a local copy
 and fails every other http(s) request. Without it the script fetches as before.
@@ -3880,7 +3880,6 @@ name wins over the arm's label and over the short name a page computes from what
 arm declaring none takes the computed one. `campaign_create` takes `short_name` on each arm, adoption carries it, and
 `campaign_update` takes `arm_short_names`, which stays editable once runs have joined. No identity, digest or
 fingerprint moves. See `packages/evals/MIGRATIONS.toml`.
-
 
 ## v0.95.0 -- 2026-11-07
 

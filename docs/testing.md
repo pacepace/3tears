@@ -292,7 +292,8 @@ nats, epoch, scheduled-jobs and agent/acl against Postgres and NATS services, so
 packages are executed by nothing but a developer, locally.
 
 The evals render tests are not here. They need headless Chromium, not Docker, so they carry the
-`browser` marker and run in the unit suite: on the testament pool and on CI's evals shards (above).
+`browser` marker and run in the unit suite: on the testament pool and on the GitHub evals shards of
+`ci.yml` and `release.yml` (above).
 A local run without Chromium skips them; `-m "not browser"` leaves them out.
 
 **Run them before any PR.** Cross-pod behaviour lives entirely there, and a green
@@ -363,7 +364,8 @@ golden holds.
 **Goldens move only when a change to a page is intended** (owner ruling, 2026-11-06):
 
 1. Regenerate with `HOT_PATH_ORACLE_REGEN=1`, locally and on one process:
-   `TESTAMENT=off HOT_PATH_ORACLE_REGEN=1 ./scripts/test.sh evals -k hot_path_oracle`. Each
+   `TESTAMENT=off TESTAMENT_OFF_REASON="regenerating the hot-path goldens" HOT_PATH_ORACLE_REGEN=1
+   ./scripts/test.sh evals -k hot_path_oracle`. Each
    regenerating test fails, naming the entries it moved with their sizes before and after.
 2. Review the golden diff line by line (`git diff packages/evals/tests/fixtures/hot_path_oracle`).
 3. State the reason in the commit and in the chunk report.

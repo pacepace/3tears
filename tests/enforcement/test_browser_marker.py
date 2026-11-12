@@ -179,17 +179,17 @@ def test_a_module_pytestmark_marks_every_test_in_it() -> None:
 
 def test_the_walker_sees_the_render_tests() -> None:
     """The control on the tree: the evals render tests are found and every one of them is marked."""
-    tests = packages = 0
+    tests = files = 0
     for path in _test_files():
         tree = parse_python_path(path)
         if _imported_helpers(tree):
-            packages += 1
+            files += 1
             tests += sum(
                 1
                 for node in ast.walk(tree)
                 if isinstance(node, _Function) and any(_browser_mark(d) for d in node.decorator_list)
             )
-    assert packages >= 11 and tests >= 41, (packages, tests)
+    assert files >= 11 and tests >= 41, (files, tests)
 
 
 def test_every_browser_test_lives_in_packages_evals() -> None:
