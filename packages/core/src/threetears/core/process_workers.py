@@ -19,7 +19,7 @@ decides by a measured bound, never a guess.
 not inline -- on a thread, since a fresh pool spawns its processes on submission -- and keeps it. A worker that dies
 fails the jobs it held (``BrokenProcessPool``) and the pool is replaced at the next job. :meth:`ProcessWorkers.close`
 shuts it down; at interpreter exit ``concurrent.futures`` joins it anyway. Each worker starts below the serving
-process's priority.
+process's priority, and exits when the serving process dies.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any
 
+from threetears.core.processes import exit_with_parent
 from threetears.observe import get_logger
 
 __all__ = ["ProcessWorkers"]
@@ -88,7 +89,8 @@ def _plain_call(job: Callable[..., Any], args: tuple[Any, ...]) -> Any:
 
 
 def _below_the_server() -> None:
-    """a worker's start: scheduled below the serving process, so it stays responsive.
+    """a worker's start: it exits when the serving process dies (:func:`~threetears.core.processes.exit_with_parent`,
+    never an orphan waiting on its queue), and is scheduled below it, so the server stays responsive.
 
     A process already at the lowest priority cannot go lower: macOS refuses ``nice`` past it with ``EPERM`` (Linux
     clamps). The worker then keeps the priority it has and says so once, at its start; raising there would fail the
@@ -97,6 +99,7 @@ def _below_the_server() -> None:
     :return: nothing
     :rtype: None
     """
+    exit_with_parent()
     try:
         os.nice(5)
     except OSError as error:
