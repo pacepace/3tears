@@ -44,7 +44,7 @@ from threetears.nats import IncomingMessage, NatsClient, Subjects, set_default_n
 from threetears.nats.subject_permissions import Principal, PrincipalPermissions, build_permissions
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
-from .nats_support import running_nats
+from .nats_support import running_nats, until
 
 pytestmark = pytest.mark.integration
 
@@ -72,9 +72,35 @@ _SERVING_PW = "serving-pw"  # noqa: S105 - ephemeral testcontainer credential
 _UNGRANTED_PW = "ungranted-pw"  # noqa: S105 - ephemeral testcontainer credential
 _HUB_PW = "hub-pw"  # noqa: S105 - ephemeral testcontainer credential
 
-#: how long the negative half waits for a message that must never come. long enough that a delivery
-#: which merely raced the assertion would land inside it.
-_SILENCE_WINDOW_SECONDS = 1.5
+#: a failure-only bound on each thing the test waits for: a delivery, a violation's report.
+_WAIT_SECONDS = 10.0
+#: a message nats-py has read reaches its subscription's callback a few loop turns later; this is many.
+_DISPATCH_SECONDS = 0.05
+
+
+def _names_a_violation(record: logging.LogRecord) -> bool:
+    """whether a log record is the wrapper's report of a permissions violation.
+
+    :param record: the record
+    :ptype record: logging.LogRecord
+    :return: whether it is one
+    :rtype: bool
+    """
+    return record.name == _CLIENT_LOGGER and "PERMISSIONS VIOLATION" in record.getMessage()
+
+
+def _reports(record: logging.LogRecord, subject: str) -> bool:
+    """whether a log record is the wrapper's report of a permissions violation naming ``subject``.
+
+    :param record: the record
+    :ptype record: logging.LogRecord
+    :param subject: the refused subject
+    :ptype subject: str
+    :return: whether it is one
+    :rtype: bool
+    """
+    data = getattr(record, "extra_data", None)
+    return _names_a_violation(record) and isinstance(data, dict) and data.get("subject") == subject
 
 
 def _serving_permissions() -> PrincipalPermissions:
@@ -219,10 +245,12 @@ async def test_hitl_grant_delivers_and_its_absence_is_a_silent_dead_subscription
             async def _collect(msg: IncomingMessage) -> None:
                 received.append(msg.data)
 
+            # subscribe returns once the server holds the SUB, so the publish cannot cross it
             await serving.subscribe(subject, cb=_collect)
-            await asyncio.sleep(0.3)  # let the SUB register before the publish crosses
             await hub.publish_raw(subject=subject, payload=payload)
-            await asyncio.sleep(_SILENCE_WINDOW_SECONDS)
+            await until(lambda: bool(received), within=_WAIT_SECONDS, what="the granted subscription's delivery")
+            await serving.flush()  # anything else the server sent it is read by now, and dispatched soon after
+            await asyncio.sleep(_DISPATCH_SECONDS)
 
             assert received == [payload], "the granted pod's owner-routed subscription received nothing"
             assert serving.is_healthy, "a working grant must leave the connection healthy"
@@ -247,9 +275,19 @@ async def test_hitl_grant_delivers_and_its_absence_is_a_silent_dead_subscription
                     subscription = await ungranted.subscribe(subject, cb=_never)
                     assert subscription is not None
 
-                    await asyncio.sleep(0.3)  # let the async -ERR frame land in the error callback
+                    # the async -ERR frame lands in the error callback, which reports it
+                    await until(
+                        lambda: any(_reports(rec, subject.path) for rec in caplog.records),
+                        within=_WAIT_SECONDS,
+                        what="the refused subscription's report",
+                    )
                     await hub.publish_raw(subject=subject, payload=payload)
-                    await asyncio.sleep(_SILENCE_WINDOW_SECONDS)
+                    # the granted subscription on the same subject is the control: once the same publish
+                    # reached it, the server has routed it to every subscription it knows, and a round trip
+                    # on the refused connection reads anything routed there ahead of its PONG
+                    await until(lambda: len(received) == 2, within=_WAIT_SECONDS, what="the control's delivery")
+                    await ungranted.flush()
+                    await asyncio.sleep(_DISPATCH_SECONDS)
 
                 assert stranded == [], "a refused subscription must receive nothing"
                 # ...and the connection is UP and reports itself healthy while serving nothing: a
@@ -257,11 +295,7 @@ async def test_hitl_grant_delivers_and_its_absence_is_a_silent_dead_subscription
                 # nothing degrades. the log line below is the only evidence that exists.
                 assert ungranted.is_healthy
 
-                violations = [
-                    rec
-                    for rec in caplog.records
-                    if rec.name == _CLIENT_LOGGER and "PERMISSIONS VIOLATION" in rec.getMessage()
-                ]
+                violations = [rec for rec in caplog.records if _names_a_violation(rec)]
                 assert violations, "the silent failure produced no report at all"
 
                 # the report must be MACHINE-READABLE, and must name THIS subject -- asserting only
@@ -283,7 +317,11 @@ async def test_hitl_grant_delivers_and_its_absence_is_a_silent_dead_subscription
                 with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
                     mark = len(caplog.records)
                     await ungranted.subscribe(pipe_subject, cb=_never)
-                    await asyncio.sleep(0.5)
+                    await until(
+                        lambda: any(_reports(rec, pipe_subject.path) for rec in caplog.records[mark:]),
+                        within=_WAIT_SECONDS,
+                        what="the sibling family's report",
+                    )
                 refused = [
                     getattr(rec, "extra_data", None)
                     for rec in caplog.records[mark:]
