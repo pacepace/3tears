@@ -18,9 +18,8 @@ heartbeat ever reaches the bus.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -37,6 +36,7 @@ from threetears.nats import (
     Subjects,
     set_default_namespace,
 )
+from threetears.observe import cancel_and_wait
 
 # the canonical ``nats_container`` fixture is session-scoped on the
 # session event loop. align the test event loop with that scope so the
@@ -81,47 +81,117 @@ async def _declare_the_hubs_buckets(nats_url: str, namespace: str) -> None:
         await declarer.shutdown()
 
 
-async def _warm_the_replay_watermark(nc: NatsClient, pod_id: str) -> None:
-    """wait until the pod's replay guard will accept an assertion.
+#: how long a test waits for something that should happen promptly, before it fails. Only a
+#: failing run ever waits this long; a passing one moves on as soon as the event arrives.
+_FAILURE_DEADLINE_SECONDS = 30.0
 
-    The pod's replay guard refuses any assertion issued before its bucket's creation time plus
-    its reach: a nonce it cannot find might have been wiped rather than never seen. The tool-pod
-    guard passes a future tolerance of zero, so the reach is :data:`CLOCK_DRIFT_ALLOWANCE` alone
-    -- and the bucket was declared moments before the pod started, so a first call is inside that
-    window.
+#: how often the watermark wait re-presents an assertion while the refusal window is still open.
+_WATERMARK_TICK_SECONDS = 0.1
 
-    So this does what production does after a broker wipe: one call lands and is refused, and
-    every call after the window is accepted. That is the documented cost of failing closed after
-    a wipe -- 5s for tool-pod assertions in ``docs/design-durable-coordination.md`` -- and a
-    test that skipped it was asserting against the window rather than against the round trip.
 
-    :param nc: a connected client on the pod's namespace
-    :ptype nc: NatsClient
-    :param pod_id: the pod whose guard is being warmed
+def _stub_call(pod_id: str, message: str) -> bytes:
+    """a fully-authenticated call of the stub tool on ``pod_id``, with a fresh nonce.
+
+    :param pod_id: the pod the call is bound to
     :ptype pod_id: str
-    :return: nothing
-    :rtype: None
+    :param message: the stub tool's one argument
+    :ptype message: str
+    :return: the encoded request body
+    :rtype: bytes
     """
-    payload = json.dumps(
+    return json.dumps(
         _signed_call_payload(
             pod_id=pod_id,
             tool_name="integration.stub",
             tool_version="1.0",
-            arguments={"message": "warm"},
+            arguments={"message": message},
             correlation_id=str(uuid4()),
         )
     ).encode("utf-8")
+
+
+async def _wait_out_the_replay_watermark(nc: NatsClient, pod_id: str) -> None:
+    """wait until an UNANCHORED pod's replay guard will accept an assertion.
+
+    A pod's replay guard with no :class:`~threetears.core.coordination.replay_anchor.ReplayAnchor`
+    cannot tell a first run from a broker wipe, so it refuses any assertion issued before its
+    bucket's creation time plus its reach: a nonce it cannot find might have been wiped rather than
+    never seen. The tool-pod guard passes a future tolerance of zero, so the reach is
+    :data:`CLOCK_DRIFT_ALLOWANCE` alone -- and the bucket was declared moments before the pod
+    started, so a first call is inside that window.
+
+    So this does what production does after a broker wipe: one call lands and is refused, and
+    every call after the window is accepted. That is the documented cost of failing closed after
+    a wipe -- 5s for tool-pod assertions in ``docs/design-durable-coordination.md``. The wait ends
+    at the first accepted assertion, each one carrying a fresh nonce, rather than after a fixed
+    sleep sized for the window plus the whole-second ``iat`` margin.
+
+    :param nc: a connected client on the pod's namespace
+    :ptype nc: NatsClient
+    :param pod_id: the pod whose guard is being waited out
+    :ptype pod_id: str
+    :return: nothing
+    :rtype: None
+    """
+    subject = Subjects.tools_internal(pod_id)
     refused = json.loads(
-        await nc.request_raw(
-            subject=Subjects.tools_internal(pod_id),
-            payload=payload,
-            timeout=timedelta(seconds=5),
-        )
+        await nc.request_raw(subject=subject, payload=_stub_call(pod_id, "warm"), timeout=timedelta(seconds=5))
     )
     assert refused["success"] is False, "the first call after a bucket is declared must be refused"
-    # two seconds of margin, not a fraction: a proxy assertion's ``iat`` is whole seconds, so
-    # a freshly minted one can read up to a second EARLIER than the moment it was minted.
-    await asyncio.sleep(CLOCK_DRIFT_ALLOWANCE.total_seconds() + 2.0)
+    deadline = asyncio.get_running_loop().time() + CLOCK_DRIFT_ALLOWANCE.total_seconds() + _FAILURE_DEADLINE_SECONDS
+    while True:
+        answer = json.loads(
+            await nc.request_raw(subject=subject, payload=_stub_call(pod_id, "warm"), timeout=timedelta(seconds=5))
+        )
+        if answer["success"] is True:
+            return
+        assert asyncio.get_running_loop().time() < deadline, f"the refusal window never closed: {answer}"
+        await asyncio.sleep(_WATERMARK_TICK_SECONDS)
+
+
+#: the leave bound a test's teardown passes: no call is in flight by then, so the late-delivery grace a
+#: leaving subscription keeps (half this bound, at most a second) only ever waits out an empty bus.
+_TEARDOWN_LEAVE_SECONDS = 0.4
+
+
+async def _stop(server: ToolServer, serve_task: "asyncio.Task[None]") -> None:
+    """leave the call group within the teardown bound, shut the server down, and end its ``serve()``.
+
+    :param server: the server to stop
+    :ptype server: ToolServer
+    :param serve_task: the task running its ``serve()``
+    :ptype serve_task: asyncio.Task[None]
+    :return: nothing
+    :rtype: None
+    """
+    await server.leave_calls(timeout=_TEARDOWN_LEAVE_SECONDS)
+    await server.shutdown()
+    await cancel_and_wait(serve_task)
+
+
+# parity-with: threetears.core.coordination.replay_anchor.ReplayAnchor
+class FakeReplayAnchor:
+    """an in-memory claim-or-read anchor: the first caller records its ``now``, every later one reads it back.
+
+    A pod the SDK bootstraps carries a durable anchor (``CollectionReplayAnchor`` over its coordination
+    tables), so its guard knows a freshly declared bucket is a first run and pays no refusal window. This
+    stands in for those tables, shared by every replica of one pod as the table row is.
+    """
+
+    def __init__(self) -> None:
+        self._first: dict[str, datetime] = {}
+
+    async def first_existed(self, purpose: str, *, now: datetime) -> datetime:
+        """claim or read ``purpose``'s first-existence moment.
+
+        :param purpose: which ledger is being anchored
+        :ptype purpose: str
+        :param now: the caller's clock, recorded when nothing is
+        :ptype now: datetime
+        :return: the moment the ledger first existed
+        :rtype: datetime
+        """
+        return self._first.setdefault(purpose, now)
 
 
 class IntegrationStubTool(TearsTool):
@@ -217,7 +287,7 @@ class TestToolServerNatsIntegration:
         server.register(tool)
 
         serve_task = asyncio.create_task(server.serve())
-        await asyncio.sleep(0.2)
+        await server.wait_ready(timeout=_FAILURE_DEADLINE_SECONDS)
 
         try:
             set_default_namespace(namespace)
@@ -227,7 +297,7 @@ class TestToolServerNatsIntegration:
                 client_name="tool-server-itest",
             )
 
-            await _warm_the_replay_watermark(nc, pod_id)
+            await _wait_out_the_replay_watermark(nc, pod_id)
 
             call_subject = Subjects.tools_internal(pod_id)
             correlation_id = str(uuid4())
@@ -259,13 +329,7 @@ class TestToolServerNatsIntegration:
 
             await nc.shutdown()
         finally:
-            await server.shutdown()
-            await asyncio.sleep(0.1)
-            serve_task.cancel()
-            try:
-                await serve_task
-            except asyncio.CancelledError:
-                pass
+            await _stop(server, serve_task)
 
     async def test_composite_agent_pod_id_routes_end_to_end(
         self,
@@ -286,6 +350,9 @@ class TestToolServerNatsIntegration:
         the composite names, the only caller an agent's in-process server serves, and the same
         call made as any other agent is refused over the real bus before the tool runs.
 
+        the pod carries a replay anchor, as an SDK-bootstrapped pod does, so its freshly declared
+        bucket is a first run rather than a wipe and the very first call is accepted.
+
         :param nats_container: NATS URL from the canonical testcontainer fixture
         :ptype nats_container: str
         :return: nothing
@@ -304,12 +371,13 @@ class TestToolServerNatsIntegration:
             pod_id=composite_pod_id,
             heartbeat_interval=60.0,
             jwks_provider=_pod_jwks_provider,
+            assertion_replay_anchor=FakeReplayAnchor(),
         )
         tool = IntegrationStubTool()
         server.register(tool)
 
         serve_task = asyncio.create_task(server.serve())
-        await asyncio.sleep(0.2)
+        await server.wait_ready(timeout=_FAILURE_DEADLINE_SECONDS)
 
         try:
             set_default_namespace(namespace)
@@ -318,8 +386,6 @@ class TestToolServerNatsIntegration:
                 nats_subject_namespace=namespace,
                 client_name="composite-itest",
             )
-
-            await _warm_the_replay_watermark(nc, composite_pod_id)
 
             # the registry would forward on the registered (composite) pod-id verbatim; the rendered
             # subject is a TWO-token ``tools.internal.{agent_id}.{instance}`` under the agent subtree.
@@ -369,13 +435,7 @@ class TestToolServerNatsIntegration:
 
             await nc.shutdown()
         finally:
-            await server.shutdown()
-            await asyncio.sleep(0.1)
-            serve_task.cancel()
-            try:
-                await serve_task
-            except asyncio.CancelledError:
-                pass
+            await _stop(server, serve_task)
 
     async def test_heartbeat_visible_on_nats(
         self,
@@ -402,6 +462,7 @@ class TestToolServerNatsIntegration:
         server.register(tool)
 
         heartbeats: list[dict[str, Any]] = []
+        heard = asyncio.Event()
 
         set_default_namespace(namespace)
         nc = await NatsClient.connect(
@@ -415,25 +476,20 @@ class TestToolServerNatsIntegration:
         async def _on_heartbeat(msg: IncomingMessage) -> None:
             """collect heartbeat messages."""
             heartbeats.append(json.loads(msg.data))
+            heard.set()
 
         await nc.subscribe(subject=heartbeat_subject, cb=_on_heartbeat)
 
         serve_task = asyncio.create_task(server.serve())
-        await asyncio.sleep(0.5)
 
         try:
+            await asyncio.wait_for(heard.wait(), timeout=_FAILURE_DEADLINE_SECONDS)
             assert len(heartbeats) >= 1
             assert heartbeats[0]["pod_id"] == pod_id
             assert heartbeats[0]["tools_count"] == 1
             assert "timestamp" in heartbeats[0]
         finally:
-            await server.shutdown()
-            await asyncio.sleep(0.1)
-            serve_task.cancel()
-            try:
-                await serve_task
-            except asyncio.CancelledError:
-                pass
+            await _stop(server, serve_task)
             await nc.shutdown()
 
 
@@ -476,6 +532,9 @@ class TestReplicasJoinAndLeaveTheirCallGroup:
         namespace = f"integ_{uuid4().hex[:8]}"
         await _declare_the_hubs_buckets(nats_container, namespace)
 
+        # one anchor for both replicas, as both read one coordination-table row in production
+        anchor = FakeReplayAnchor()
+
         def replica(name: str) -> ToolServer:
             server = ToolServer(
                 nats_url=nats_container,
@@ -483,6 +542,7 @@ class TestReplicasJoinAndLeaveTheirCallGroup:
                 pod_id=pod_id,
                 heartbeat_interval=60.0,
                 jwks_provider=_pod_jwks_provider,
+                assertion_replay_anchor=anchor,
             )
             server.register(_ReplicaTool(name))
             return server
@@ -514,7 +574,6 @@ class TestReplicasJoinAndLeaveTheirCallGroup:
 
         try:
             await asyncio.wait_for(asyncio.gather(first.wait_ready(), second.wait_ready()), timeout=10.0)
-            await _warm_the_replay_watermark(nc, pod_id)
             assert first.serving_calls is True
             assert second.serving_calls is False, "a held replica stays out of the call group after it registers"
 
@@ -543,9 +602,5 @@ class TestReplicasJoinAndLeaveTheirCallGroup:
             assert {a["content"] for a in after} == {"b"}, "a replica that left gets no new call"
         finally:
             await nc.shutdown()
-            for server in (first, second):
-                await server.shutdown()
-            for task in tasks:
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+            for server, task in zip((first, second), tasks, strict=True):
+                await _stop(server, task)
