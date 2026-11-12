@@ -2686,8 +2686,8 @@ class SharedArrowPool:
         exits, in no order against the other files it closes then, the hand-off's lock among them; and it fails the
         job's future before it terminates and joins its processes. So the release that follows the death
         (:meth:`_Run.worker_done`) may find the dead worker's lock still held and leave its hand-off, its version
-        or its result in place, and nothing else would sweep until an unrelated hand, publish or claim (brooks-nas,
-        pacepace/3tears#1140). Once the pool's processes are reaped, none of their locks is held: a sweep then
+        or its result in place, and nothing else would sweep until an unrelated hand, publish or claim. Once the
+        pool's processes are reaped, none of their locks is held: a sweep then
         removes what they left. On a thread of its own: this runs on the executor's thread, which the reaping joins.
 
         :param pool: the pool the job was submitted to

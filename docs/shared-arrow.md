@@ -276,8 +276,8 @@ async def caller(pool, rows: pa.Table) -> None:
   always for a `RecordBatchReader`, whose size is not known before it is written.
 - It is released when the job's future is done: the job returned, raised, or its worker died. Its files go at once,
   or, when a worker still maps it, at the first sweep after the worker lets go (its `flock` dies with it). The pool
-  hears a worker die before the kernel has always let its locks go, so once a broken pool's processes are reaped the
-  pool sweeps again: a dead worker's hand-off, version or result never waits for an unrelated sweep.
+  can hear a worker die before the kernel has let that worker's locks go, so once a broken pool's processes are
+  reaped the pool sweeps again: a dead worker's hand-off, version or result never waits for an unrelated sweep.
 - `context.tables` is valid for the job's run only: copy what the job keeps past it.
 
 With your own executor, wait inside `handing` for the job, and map in the worker:

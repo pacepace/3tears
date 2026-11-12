@@ -24,6 +24,30 @@ longer signalled. Without `/proc` it reads signal 0 as before.
 The test suites lost about 315 s of fixed waiting per pass on the testament pool. Whether production timers may
 become settings for tests is pacepace/3tears#1154; the three parameters above are part of that ruling.
 
+### testing: the integration suite runs on the testament pool
+
+**Added:** `threetears.core.testing.services`, new public testing API: Postgres 16 with pgvector, NATS JetStream and a
+moto S3 endpoint started as child processes (`running_postgres`, `running_nats`, `running_s3`), so a container with
+no Docker daemon can run integration tests. The shared fixtures in `threetears.core.testing.fixtures` use an explicit
+service URL first, then these processes when `THREETEARS_TEST_SERVICES=process`, then testcontainers as before.
+`THREETEARS_REQUIRE_SERVICES=1` turns a missing service into a failure instead of a skip. In this repo's own tests
+(`tests/pg_template.py`, not the public API), a database migrated once is cloned per test from a template
+(`STRATEGY FILE_COPY`); migration-chain and schema tests still migrate a fresh database.
+
+**Changed:** `./scripts/test-integration.sh -rs` runs the integration suite (`[suites.integration]` in
+`.testament.toml`, manifest version 3) on the testament pool: 1,327 tests in a few minutes, where a laptop took 56-91
+minutes. `--here` runs only the tests marked `docker` (they drive a Docker daemon) or `secrets` (they read a
+credential) on this machine. `check-all.sh` runs the integration suite where the pool is reachable, and where it
+cannot (no testament installed, `CI` set, or `TESTAMENT=off`) it fails at the end saying the integration suite was
+not run, exit 2. CI's `integration` job is unchanged and keeps its own service containers.
+
+### core: a shared Arrow worker that dies leaves nothing behind (#1140)
+
+**Fixed:** when a `SharedArrowPool` worker died holding a hand-off, a version or a result, the pool could hear the
+death before the kernel let the worker's lock go, and its one sweep then left those files in shared memory, counted
+against the store's bound, until an unrelated hand, publish or claim swept. The pool now sweeps again once the broken
+pool's processes are reaped.
+
 ### testing: the pool is the only route, and the laptop runs tests only on purpose
 
 **Changed:** `.testament.toml` sets `fallback = "pool-only"` (testament 0.45.1 or later). A pool

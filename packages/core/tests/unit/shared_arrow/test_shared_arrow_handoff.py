@@ -183,9 +183,8 @@ class TestTheHandOffGoesWhenTheWorkerIsDone:
     ) -> None:
         """the pool hears a worker die when a pipe the worker holds closes, which the kernel does as the process exits,
         in no order against the hand-off's lock: the release that follows may find the lock still held, and the
-        executor fails the job's future before it reaps its workers. Nothing else sweeps, so the hand-off stayed until
-        some unrelated hand, publish or claim (brooks-nas, pacepace/3tears#1140). Here the worker closes that pipe
-        itself and holds the lock until the pool kills it.
+        executor fails the job's future before it reaps its workers, so the pool sweeps again once they are reaped.
+        Here the worker closes that pipe itself and holds the lock until the pool kills it.
         """
         with pytest.raises(BrokenProcessPool):
             await single.run(
