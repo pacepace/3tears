@@ -23,6 +23,12 @@ pytestmark = pytest.mark.integration
 
 _ROWS = 200_000
 
+#: every base table, as the comparison lists them
+_TABLES = (
+    "SELECT table_schema, table_name FROM information_schema.tables WHERE table_type = 'BASE TABLE' "
+    "AND table_schema NOT IN ('pg_catalog', 'information_schema') ORDER BY table_schema, table_name"
+)
+
 
 @pytest.fixture
 async def seeded(db_container: str) -> AsyncIterator[tuple[asyncpg.Connection, str]]:
@@ -48,28 +54,29 @@ async def seeded(db_container: str) -> AsyncIterator[tuple[asyncpg.Connection, s
 
 async def test_drift_checksums_speed_at_real_size(db_container: str, seeded: tuple[asyncpg.Connection, str]) -> None:
     """DriftComparator.compare (its _compare_table, _count and _count_and_checksum), both sides the same database,
-    against the bare count-and-checksum statement run twice for each table it compares."""
+    against the same work by hand: both sides connected and listed, each table's count-and-checksum read on both."""
     conn, _ = seeded
 
     async def connect(_dsn: str) -> asyncpg.Connection:
         return await asyncpg.connect(db_container, command_timeout=600)
 
     comparator = DriftComparator(connect, "restored", "live")
-    tables = [
-        (row["table_schema"], row["table_name"])
-        for row in await conn.fetch(
-            "SELECT table_schema, table_name FROM information_schema.tables WHERE table_type = 'BASE TABLE' "
-            "AND table_schema NOT IN ('pg_catalog', 'information_schema')"
-        )
-    ]
+    tables = [(row["table_schema"], row["table_name"]) for row in await conn.fetch(_TABLES)]
 
     async def bare() -> None:
-        for schema, table in tables:
-            statement = (
-                f'SELECT count(*) AS n, coalesce(sum(hashtext(t::text)::bigint), 0) AS s FROM "{schema}"."{table}" t'
-            )
-            await conn.fetchrow(statement)
-            await conn.fetchrow(statement)
+        # the same work written by hand: both sides connected and their tables listed, then each table's count and
+        # checksum read on both
+        sides = [await connect("restored"), await connect("live")]
+        try:
+            for side in sides:
+                await side.fetch(_TABLES)
+            for schema, table in tables:
+                statement = f'SELECT count(*) AS n, coalesce(sum(hashtext(t::text)::bigint), 0) AS s FROM "{schema}"."{table}" t'
+                for side in sides:
+                    await side.fetchrow(statement)
+        finally:
+            for side in sides:
+                await side.close()
 
     async def path() -> None:
         await comparator.compare(as_of=datetime.now(UTC))
