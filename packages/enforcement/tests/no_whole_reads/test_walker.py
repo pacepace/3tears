@@ -4496,3 +4496,70 @@ def test_a_step_a_builder_returns_is_judged_where_the_builder_writes_it(tmp_path
     assert ("Copy.built_whole", "calls-whole-read everything") in found, found
     assert ("Copy.unknown", "whole-select {}") in found, found
     assert ("Copy.replaced", "whole-delete copy.{}") in found, found
+
+
+_BRANCHED_BY = {
+    "merge.py": """
+        from threetears.core.collections.schema_backed import Index, TableSchema
+        from threetears.core.keyed import update_keyed
+
+        FILES = TableSchema(
+            name="files",
+            primary_key=("agent_id", "file_id"),
+            columns=[],
+            indexes=(
+                Index(
+                    "idx_files_agent_user",
+                    ("agent_id", "user_id"),
+                    purpose="src/merge.py::repoint",
+                    plan_test="tests/test_plans.py::test_repoint_uses_idx_files_agent_user",
+                ),
+                Index(
+                    "idx_files_user",
+                    ("user_id",),
+                    purpose="src/merge.py::repoint",
+                    plan_test="tests/test_plans.py::test_repoint_uses_idx_files_user",
+                ),
+            ),
+        )
+
+        async def repoint(conn, from_user, to_user, agent_id=None):
+            by = {"user_id": from_user} if agent_id is None else {"agent_id": agent_id, "user_id": from_user}
+            return await update_keyed(conn, "files", values={"user_id": to_user}, by=by, returning=("file_id",))
+
+        async def repoint_inline(conn, from_user, to_user, agent_id=None):
+            return await update_keyed(
+                conn,
+                "files",
+                values={"user_id": to_user},
+                by={"user_id": from_user} if agent_id is None else {"title": from_user},
+                returning=("file_id",),
+            )
+    """,
+}
+
+_BRANCHED_PLANS = """
+    from threetears.core.testing.plans import explain_write, plan_uses_index
+
+    async def test_repoint_uses_idx_files_agent_user(conn):
+        sql = "UPDATE files SET user_id = $1 WHERE agent_id = $2 AND user_id = $3"
+        assert plan_uses_index(await explain_write(conn, sql), "idx_files_agent_user")
+
+    async def test_repoint_uses_idx_files_user(conn):
+        sql = "UPDATE files SET user_id = $1 WHERE user_id = $2"
+        assert plan_uses_index(await explain_write(conn, sql), "idx_files_user")
+"""
+
+
+def test_a_by_that_is_one_literal_or_another_is_judged_per_branch(tmp_path: Path) -> None:
+    """Flips if a keyed write whose ``by=`` is one of two literal mappings by a condition (a local bound once to it, or
+    written inline) is unknown rather than judged branch by branch: each branch's index keeps its purpose's read, and a
+    branch by an unindexed column is a non-key write."""
+    _plans(tmp_path, _BRANCHED_PLANS)
+    config = _config(tmp_path, _BRANCHED_BY)
+    findings = no_whole_reads_findings(config)
+    assert not [finding for finding in findings if "unknown-" in finding], findings
+    assert not [finding for finding in findings if ": index-" in finding], findings
+    found = _symbols(config)
+    assert not any(function == "repoint" for function, _ in found), found
+    assert ("repoint_inline", 'non-key-where "files"') in found, found

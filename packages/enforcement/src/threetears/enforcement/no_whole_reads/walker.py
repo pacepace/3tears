@@ -2087,6 +2087,10 @@ class _ModuleWalk(ast.NodeVisitor):
             # ``order = [Sort("at")]``, ``pinned = Fragment(...)``): that shape, as a step local is read
             if isinstance(value, ast.Name) and (shaped := self._bound_shape(value.id)) is not None:
                 return literal(shaped)
+            # one literal or the other by a condition: each arm resolved, judged in turn (:meth:`_branch_calls`)
+            if _literal_branches(value):
+                assert isinstance(value, ast.IfExp)
+                return ast.IfExp(test=value.test, body=literal(value.body), orelse=literal(value.orelse))
             # a sequence copied (``list(where)``, ``tuple(order)``): what it copies
             if (
                 isinstance(value, ast.Call)
@@ -2491,7 +2495,8 @@ class _ModuleWalk(ast.NodeVisitor):
         hits: dict[str, str] = {}
         for call in (
             matched
-            for picked in self._mapping_calls(resolved)
+            for branched in _branch_calls(resolved)
+            for picked in self._mapping_calls(branched)
             for each in self._parameter_calls(picked)
             for matched in self._match_calls(each)
         ):
@@ -2580,15 +2585,16 @@ class _ModuleWalk(ast.NodeVisitor):
                 return bound[0]
         return None
 
-    def _bound_shape(self, name: str) -> ast.Dict | ast.Tuple | ast.List | ast.Call | None:
+    def _bound_shape(self, name: str) -> ast.Dict | ast.Tuple | ast.List | ast.Call | ast.IfExp | None:
         """the literal mapping or sequence the enclosing function binds ``name`` to, if it binds it exactly once and
         never changes it after (no item stored or deleted, no method called on it, no other binding): a ``by`` or
         ``order`` held in a local reads as the literal it holds, and one the function may change reads as unknown.
 
         :param name: the local name
         :ptype name: str
-        :return: the literal (a mapping, a sequence, a ``Fragment``), or None
-        :rtype: ast.Dict | ast.Tuple | ast.List | ast.Call | None
+        :return: the literal (a mapping, a sequence, a ``Fragment``, or one of two such literals by a condition), or
+            None
+        :rtype: ast.Dict | ast.Tuple | ast.List | ast.Call | ast.IfExp | None
         """
         if not self._function_nodes:
             return None
@@ -2616,6 +2622,9 @@ class _ModuleWalk(ast.NodeVisitor):
             return bound[0]
         if len(bound) == 1 and isinstance(bound[0], ast.Call) and _final(bound[0]) == "Fragment":
             return bound[0]
+        if len(bound) == 1 and _literal_branches(bound[0]):
+            # one literal or the other (``by = {...} if agent_id is None else {...}``): each judged in turn
+            return bound[0]  # type: ignore[return-value]
         return None
 
     def _producer_spellings(self) -> frozenset[str]:
@@ -3521,6 +3530,60 @@ def _filter_text(call: ast.Call) -> str | None:
     if given.get("not_null") is not None:
         parts.append("__not_null__ IS NOT NULL")
     return " AND ".join(parts) or None
+
+
+def _literal_branches(value: ast.expr) -> bool:
+    """whether an expression is one of two literal mappings or sequences by a condition (``{...} if c else {...}``).
+
+    :param value: the expression
+    :ptype value: ast.expr
+    :return: whether it is
+    :rtype: bool
+    """
+    return (
+        isinstance(value, ast.IfExp)
+        and isinstance(value.body, ast.Dict | ast.Tuple | ast.List)
+        and isinstance(value.orelse, ast.Dict | ast.Tuple | ast.List)
+    )
+
+
+def _branch_calls(call: ast.Call) -> list[ast.Call]:
+    """a helper call once for each arm of every argument that is one literal or another by a condition, every
+    combination, so each statement the call may send is judged; the call itself when it has none.
+
+    :param call: the call, its arguments resolved
+    :ptype call: ast.Call
+    :return: the calls
+    :rtype: list[ast.Call]
+    """
+    calls = [call]
+    for index, argument in enumerate(call.args):
+        if _literal_branches(argument):
+            assert isinstance(argument, ast.IfExp)
+            calls = [
+                ast.Call(
+                    func=each.func, args=[*each.args[:index], arm, *each.args[index + 1 :]], keywords=each.keywords
+                )
+                for each in calls
+                for arm in (argument.body, argument.orelse)
+            ]
+    for index, keyword in enumerate(call.keywords):
+        if _literal_branches(keyword.value):
+            assert isinstance(keyword.value, ast.IfExp)
+            calls = [
+                ast.Call(
+                    func=each.func,
+                    args=each.args,
+                    keywords=[
+                        *each.keywords[:index],
+                        ast.keyword(arg=keyword.arg, value=arm),
+                        *each.keywords[index + 1 :],
+                    ],
+                )
+                for each in calls
+                for arm in (keyword.value.body, keyword.value.orelse)
+            ]
+    return calls
 
 
 def _keyword_value(call: ast.Call, name: str) -> ast.expr | None:
