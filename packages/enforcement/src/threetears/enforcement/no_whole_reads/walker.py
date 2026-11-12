@@ -476,7 +476,7 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
     # an operator's reset
     "operator_reset": frozenset({"truncate", "truncate-call", "whole-delete"}),
     # a read serving writers older than a rolling upgrade, until the release it names (``until=``): the gate refuses it
-    # once the package reaches that release (coordinator ruling 2026-11-12)
+    # once the package reaches that release (Pace 2026-11-12: rolling_upgrade until 0.96.0)
     "rolling_upgrade": frozenset(
         {
             "whole-select",
