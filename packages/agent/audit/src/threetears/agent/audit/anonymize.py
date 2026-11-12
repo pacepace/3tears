@@ -6,41 +6,20 @@ audit row and never changes an id on it -- not the row id, not the actor id,
 not an entity id in its details. what erasure does is anonymize the row's
 content:
 
-- :func:`anonymize_details` keeps every key of ``details`` and the structure
-  beneath safe keys, keeps the value under a SAFE key, and replaces the whole
-  value under every other key with :data:`ANONYMIZED_MARKER`.
+- :func:`anonymize_details` keeps every key of ``details`` and every value as written, but the whole value under a
+  key that names a person (:data:`IDENTIFYING_DETAIL_KEYS`, at any depth), which becomes :data:`ANONYMIZED_MARKER`.
+  Pace's ruling (2026-11-12): audit rows hold ids, never a person's details; ids, the ip address and free text stay.
+- :func:`refuse_identifying_details` is the same rule at write time: :func:`~threetears.agent.audit.publish_audit` and
+  :func:`~threetears.agent.audit.persist.persist_audit_event` refuse an event whose details hold such a key
+  (:class:`IdentifyingAuditDetail`), so a new row never holds one and :func:`anonymize_details` is the pass over rows
+  written before. A family whose value under such a key is no person's (a workspace's own name) is allowed it in
+  :data:`_BUILT_IN_FAMILY_IDENTIFYING_ALLOWED`, never globally.
 - :func:`anonymize_ip` is the rule for an ``ip_address`` column.
 
-**the safe list is explicit.** a key is kept only because someone decided its
-value is structural (an entity id, a count, a status, a duration, a version, a
-flag) for every producer that publishes it. a key nobody classified is masked,
-so a new field fails safe rather than leaking. :data:`PERSONAL_DETAIL_KEYS`
-records the keys that were looked at and found able to carry personal data (a
-name, an email, an address, an IP, free or user-typed text, a path, exception
-text, a credential or a fragment of one); it changes nothing at runtime -- an
-unclassified key is masked exactly like a personal one -- and exists so the
-classification is a record a gate can hold producers to
-(:mod:`threetears.enforcement.audit_details`, which every producing repo runs
-over its own sources).
-
-**how nesting is judged.** the key a value sits under decides it:
-
-- under an unsafe key the WHOLE value becomes the marker -- a leaf, a list, a
-  dict and its keys alike. the key itself stays; what it held is the person's
-  content, and that includes keys a user chose (``doc_set`` publishes the
-  user's document under ``value``, whose field names can be an email address or
-  a name). a nested ``status`` in such a subtree earns nothing.
-- a dict under a safe key is judged key by key, by the same rule. safety does
-  not flow into a dict, so a key added inside a structural map later is masked
-  until someone classifies it. the cost is that a map keyed by data rather than
-  by schema (``permissions_before``: group uuid -> actions) keeps its keys but
-  loses each entry's value on erasure.
-- a list or tuple under a safe key keeps its elements, and a dict inside it is
-  judged by its own keys.
-- ``None`` stays ``None`` under any key: there is nothing in it to anonymize.
-
-no key at or above a safe level is removed or rewritten, and no key is ever
-deleted: an unsafe key survives with the marker as its value.
+**the classification.** every key a producer publishes is classified, safe or personal
+(:data:`SAFE_DETAIL_KEYS`, :data:`PERSONAL_DETAIL_KEYS`; :mod:`threetears.enforcement.audit_details` fails on a key
+nobody classified), so a new key that names a person under a new spelling is caught where it is first published and
+classified into :data:`IDENTIFYING_DETAIL_KEYS`.
 
 **families.** some keys are structural only inside one event family --
 ``reason`` is a closed enum on ``identity.impersonation.stop`` and exception
@@ -72,12 +51,16 @@ from threetears.observe.erasure import ANONYMIZED_MARKER
 
 __all__ = [
     "ANONYMIZED_MARKER",
+    "IDENTIFYING_DETAIL_KEYS",
     "PERSONAL_DETAIL_KEYS",
+    "IdentifyingAuditDetail",
     "SAFE_DETAIL_KEYS",
     "anonymize_details",
     "anonymize_ip",
     "declare_safe_detail_keys",
+    "identifying_keys_for",
     "is_classified_detail_key",
+    "refuse_identifying_details",
     "safe_detail_keys_for",
 ]
 
@@ -255,6 +238,19 @@ SAFE_DETAIL_KEYS: Final[frozenset[str]] = frozenset(
 #: (``reason`` below).
 PERSONAL_DETAIL_KEYS: Final[frozenset[str]] = frozenset(
     {
+        "actor_email",  # the acting person's email address (audit rows hold ids, Pace 2026-11-11)
+        "display_name",  # a person's display name
+        "email",  # an email address
+        "external_account_id",  # an IdP's or chat platform's account id for a person
+        "external_id",  # an external system's id for a person
+        "external_user_id",  # an external system's user id for a person
+        "full_name",  # a person's full name
+        "login",  # a login name
+        "login_name",  # a login name
+        "member_email",  # a group member's email address
+        "user_email",  # a user's email address
+        "user_name",  # a person's user name
+        "username",  # a person's user name
         "api_key_masked",  # a masked provider key is still a credential fragment, gateway.provider.* (hub)
         "cause",  # optional free-text cause, channel.delete (hub)
         "column_name",  # operator-typed column name, admin.action pii_rotation (hub)
@@ -313,6 +309,116 @@ PERSONAL_DETAIL_KEYS: Final[frozenset[str]] = frozenset(
         "workspace_resource_id",  # "{workspace}/{relative path}", the path chosen by the user (3tears)
     }
 )
+
+
+#: keys that name a person: never written to an audit row (Pace, 2026-11-11: audit rows hold ids, never personal
+#: details; free text stays as written). :func:`refuse_identifying_details` refuses them at any depth when an event is
+#: published or stored; a family may allow one where its value there is no person's (a resource's own name), in
+#: :data:`_BUILT_IN_FAMILY_IDENTIFYING_ALLOWED`. A subset of :data:`PERSONAL_DETAIL_KEYS`.
+IDENTIFYING_DETAIL_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "name",
+        "display_name",
+        "user_name",
+        "full_name",
+        "email",
+        "user_email",
+        "member_email",
+        "actor_email",
+        "from_address",
+        "email_domain",
+        "hosted_domain",
+        "login",
+        "login_name",
+        "username",
+        "subject",  # an IdP subject
+        "external_id",
+        "external_account_id",
+        "external_user_id",
+    }
+)
+
+#: identifying keys one event family may write, its value there no person's, keyed by event-type prefix (a prefix
+#: covers itself and every event type beneath it). Never global.
+_BUILT_IN_FAMILY_IDENTIFYING_ALLOWED: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
+    {
+        # the workspace's own name, a resource name its user chose, beside workspace_resource_id (3tears)
+        "workspace.create": frozenset({"name"}),
+        "workspace.delete": frozenset({"name"}),
+    }
+)
+
+
+class IdentifyingAuditDetail(ValueError):
+    """an audit event's details hold a key that names a person (:data:`IDENTIFYING_DETAIL_KEYS`): audit rows hold
+    ids. Raised when the event is published or stored; nothing is written.
+
+    :ivar key: the key
+    :ivar event_type: the event's type
+    """
+
+    def __init__(self, key: str, event_type: str) -> None:
+        super().__init__(
+            f"audit details of {event_type!r} hold {key!r}, which names a person: an audit row holds ids, never a "
+            "person's details (write the id; a family whose value there is no person's is allowed in "
+            "threetears.agent.audit.anonymize._BUILT_IN_FAMILY_IDENTIFYING_ALLOWED)"
+        )
+        self.key = key
+        self.event_type = event_type
+
+
+def _identifying_allowed_for(event_type: str) -> frozenset[str]:
+    """the identifying keys an event type's family may write (none for most).
+
+    :param event_type: the audit event's dotted ``event_type``
+    :ptype event_type: str
+    :return: the keys allowed
+    :rtype: frozenset[str]
+    """
+    segments = event_type.split(".")
+    allowed: frozenset[str] = frozenset()
+    for depth in range(1, len(segments) + 1):
+        declared = _BUILT_IN_FAMILY_IDENTIFYING_ALLOWED.get(".".join(segments[:depth]))
+        if declared is not None:
+            allowed = allowed | declared
+    return allowed
+
+
+def identifying_keys_for(event_type: str) -> frozenset[str]:
+    """the keys refused in an event type's details: :data:`IDENTIFYING_DETAIL_KEYS` but its family's allowances.
+
+    :param event_type: the audit event's dotted ``event_type``
+    :ptype event_type: str
+    :return: the refused keys
+    :rtype: frozenset[str]
+    """
+    return IDENTIFYING_DETAIL_KEYS - _identifying_allowed_for(event_type)
+
+
+def refuse_identifying_details(details: Mapping[str, Any], *, event_type: str) -> None:
+    """refuse details holding, at any depth (in a dict, a list or a tuple), a key that names a person with a value
+    (the marker of a value already anonymized, or None, names no one).
+
+    :param details: the event's details
+    :ptype details: Mapping[str, Any]
+    :param event_type: the event's dotted ``event_type``, which selects its family's allowances
+    :ptype event_type: str
+    :return: nothing
+    :rtype: None
+    :raises IdentifyingAuditDetail: naming the first such key found
+    """
+    refused = identifying_keys_for(event_type)
+    pending: list[Any] = [details]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                # a value already anonymized (the marker) or absent (None) names no one: an erased row stays storable
+                if key in refused and child is not None and child != ANONYMIZED_MARKER:
+                    raise IdentifyingAuditDetail(str(key), event_type)
+                pending.append(child)
+        elif isinstance(value, list | tuple):
+            pending.extend(value)
 
 
 #: keys structural only inside one event family, keyed by event-type prefix. a
@@ -525,57 +631,47 @@ def is_classified_detail_key(key: str, *, event_type: str) -> bool:
 
 def anonymize_details(details: Mapping[str, Any], *, event_type: str) -> dict[str, Any]:
     """
-    anonymize an audit record's details: same keys, safe skeleton, safe values only.
+    anonymize an audit record's details: every key that names a person masked, everything else as written.
 
-    keeps every key of ``details``. the value under a key safe for
-    ``event_type`` is kept, with any dict inside it judged key by key; the
-    whole value under any other key becomes :data:`ANONYMIZED_MARKER`, keys a
-    user chose included. ``None`` stays ``None``. pure: no I/O, the input is not
-    mutated and the result shares no container with it. idempotent: the marker
-    under an unsafe key is replaced by itself, so a second pass changes nothing.
+    Pace's ruling (2026-11-12): audit rows hold ids, never a person's details; ids, the ip address and free text stay
+    as written. So only a key of :data:`IDENTIFYING_DETAIL_KEYS` (but its family's allowances,
+    :func:`identifying_keys_for`) is masked, at any depth -- in a dict, under a list or a tuple -- its whole value
+    becoming :data:`ANONYMIZED_MARKER`; ``None`` stays ``None``. New rows cannot hold such a key
+    (:func:`refuse_identifying_details` refuses them when published or stored), so this is the pass over rows written
+    before the refusal. Every key stays. Pure: no I/O, the input is not mutated and the result shares no container with
+    it. Idempotent: the marker under a masked key is replaced by itself.
 
     :param details: the record's ``details`` mapping
     :ptype details: Mapping[str, Any]
-    :param event_type: the record's dotted ``event_type``, which selects its families
+    :param event_type: the record's dotted ``event_type``, which selects its family's allowances
     :ptype event_type: str
-    :return: a new details dict with every unsafe value anonymized
+    :return: a new details dict with every identifying value anonymized
     :rtype: dict[str, Any]
     """
-    return _anonymize_mapping(details, safe=safe_detail_keys_for(event_type))
+    refused = identifying_keys_for(event_type)
+    return {key: _mask(value) if key in refused else _copy_masking(value, refused) for key, value in details.items()}
 
 
-def _anonymize_mapping(mapping: Mapping[str, Any], *, safe: frozenset[str]) -> dict[str, Any]:
+def _copy_masking(value: Any, refused: frozenset[str]) -> Any:
     """
-    judge each key of one mapping: keep what a safe key holds, mask what any other holds.
+    copy a details value, masking the whole value under every refused key in any dict inside it.
 
-    :param mapping: ``details`` itself, or a dict found under a safe key
-    :ptype mapping: Mapping[str, Any]
-    :param safe: the safe keys for the record's event type
-    :ptype safe: frozenset[str]
-    :return: a new dict with the same keys
-    :rtype: dict[str, Any]
-    """
-    return {key: _keep(value, safe=safe) if key in safe else _mask(value) for key, value in mapping.items()}
-
-
-def _keep(value: Any, *, safe: frozenset[str]) -> Any:
-    """
-    copy a value held by a safe key, judging any dict inside it afresh.
-
-    :param value: the value under a safe key, or an element of a list or tuple there
+    :param value: a details value
     :ptype value: Any
-    :param safe: the safe keys for the record's event type
-    :ptype safe: frozenset[str]
-    :return: an equal value, except where a nested dict holds unsafe keys
+    :param refused: the keys masked
+    :ptype refused: frozenset[str]
+    :return: an equal value, but for the masked ones
     :rtype: Any
     """
     result: Any
     if isinstance(value, Mapping):
-        result = _anonymize_mapping(value, safe=safe)
+        result = {
+            key: _mask(child) if key in refused else _copy_masking(child, refused) for key, child in value.items()
+        }
     elif isinstance(value, list):
-        result = [_keep(child, safe=safe) for child in value]
+        result = [_copy_masking(child, refused) for child in value]
     elif isinstance(value, tuple):
-        result = tuple(_keep(child, safe=safe) for child in value)
+        result = tuple(_copy_masking(child, refused) for child in value)
     else:
         result = value
     return result

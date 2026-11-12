@@ -23,12 +23,16 @@ from __future__ import annotations
 
 from threetears.agent.audit.anonymize import (
     ANONYMIZED_MARKER,
+    IDENTIFYING_DETAIL_KEYS,
     PERSONAL_DETAIL_KEYS,
     SAFE_DETAIL_KEYS,
+    IdentifyingAuditDetail,
     anonymize_details,
     anonymize_ip,
     declare_safe_detail_keys,
+    identifying_keys_for,
     is_classified_detail_key,
+    refuse_identifying_details,
     safe_detail_keys_for,
 )
 from threetears.agent.audit.envelope import AuditEvent
@@ -65,6 +69,7 @@ __all__ = [
     "ANONYMIZED_MARKER",
     "AUDIT_ANONYMIZE_ERROR_CODES",
     "DEFAULT_ANONYMIZE_TIMEOUT_SECONDS",
+    "IDENTIFYING_DETAIL_KEYS",
     "MAX_ANONYMIZE_ACTORS",
     "PERSONAL_DETAIL_KEYS",
     "SAFE_DETAIL_KEYS",
@@ -75,11 +80,14 @@ __all__ = [
     "AuditAnonymizeRequest",
     "AuditAnonymizeUnavailableError",
     "AuditEvent",
+    "IdentifyingAuditDetail",
     "anonymize_details",
     "anonymize_ip",
     "declare_safe_detail_keys",
+    "identifying_keys_for",
     "is_classified_detail_key",
     "publish_audit",
+    "refuse_identifying_details",
     "request_audit_anonymization",
     "safe_detail_keys_for",
 ]

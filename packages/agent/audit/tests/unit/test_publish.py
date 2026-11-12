@@ -235,3 +235,16 @@ async def test_the_tool_pod_subject_is_inside_the_pods_own_grant() -> None:
     own = str(Subjects.tool_pod_audit_wildcard(pod_id, namespace="aibots"))
     assert own in granted
     assert published.startswith(own.removesuffix(">"))
+
+
+@pytest.mark.parametrize("nats", [None, "wired"])
+async def test_an_event_whose_details_name_a_person_is_refused_before_anything_is_sent(nats: str | None) -> None:
+    """Flips if publish_audit sends (or silently skips) an event whose details hold a key naming a person, at any
+    depth: an audit row holds ids (Pace 2026-11-11). Refused whether NATS is wired or not."""
+    from threetears.agent.audit import IdentifyingAuditDetail
+
+    wrapper = _FakeWrapper()
+    event = _build_event().model_copy(update={"details": {"target": {"member_email": "a@b.test"}}})
+    with pytest.raises(IdentifyingAuditDetail):
+        await publish_audit(event, nats_client=wrapper if nats else None, namespace="dev")
+    assert wrapper.jetstream_publish_calls == []

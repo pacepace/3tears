@@ -31,6 +31,7 @@ from uuid import UUID
 from threetears.nats import Subjects
 from threetears.observe import contain, get_logger
 
+from threetears.agent.audit.anonymize import refuse_identifying_details
 from threetears.agent.audit.envelope import AuditEvent
 
 if TYPE_CHECKING:
@@ -92,7 +93,10 @@ async def publish_audit(
     :ptype tool_pod_id: UUID | None
     :return: nothing
     :rtype: None
+    :raises IdentifyingAuditDetail: when ``event.details`` hold a key that names a person, at any depth (an audit
+        row holds ids: refused before anything is sent, whether NATS is wired or not)
     """
+    refuse_identifying_details(event.details, event_type=event.event_type)
     if nats_client is None:
         # bootstrap / test scenario; explicit no-op
         return

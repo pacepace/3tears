@@ -359,3 +359,35 @@ async def test_erasure_takes_no_replacement_for_the_rule() -> None:
         await anonymize_audit_rows(  # type: ignore[call-arg]
             _ErasureDb([]), actor_user_ids=[uuid.uuid4()], anonymize=lambda details, **_: dict(details)
         )
+
+
+async def test_a_direct_writer_storing_a_detail_naming_a_person_is_refused() -> None:
+    """Flips if persist_audit_event writes an event whose details hold a key naming a person: a direct writer is held
+    to the rule publish_audit holds a producer to."""
+    from threetears.agent.audit import IdentifyingAuditDetail
+    from threetears.agent.audit.persist import persist_audit_event
+
+    db = _Db()
+    event = AuditEvent.model_validate_json(_payload()).model_copy(update={"details": {"email": "a@b.test"}})
+    with pytest.raises(IdentifyingAuditDetail):
+        await persist_audit_event(db, event)
+    assert db.executed == []
+
+
+async def test_a_consumed_event_from_a_producer_not_yet_refusing_is_stored_masked() -> None:
+    """Flips if the consumer drops (or stores as written) an event a pod mid-rollout published with a key naming a
+    person: it is kept, that value masked, every id and other value as written."""
+    from threetears.agent.audit import ANONYMIZED_MARKER
+
+    event = AuditEvent.model_validate_json(_payload())
+    member = str(uuid.uuid4())
+    payload = (
+        event.model_copy(update={"details": {"member_id": member, "email": "a@b.test", "note": "kept"}})
+        .model_dump_json()
+        .encode()
+    )
+    db, msg = _Db(), _Msg(payload)
+    await handle_audit_message(db, msg)
+    assert msg.acked and len(db.executed) == 1
+    stored = next(json.loads(arg) for arg in db.executed[0] if isinstance(arg, str) and arg.startswith("{"))
+    assert stored == {"member_id": member, "email": ANONYMIZED_MARKER, "note": "kept"}

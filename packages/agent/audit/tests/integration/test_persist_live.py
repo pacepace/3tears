@@ -17,7 +17,7 @@ from typing import Any
 import asyncpg
 import pytest
 
-from threetears.agent.audit import ANONYMIZED_MARKER, AuditEvent, declare_safe_detail_keys
+from threetears.agent.audit import ANONYMIZED_MARKER, AuditEvent, IdentifyingAuditDetail, declare_safe_detail_keys
 from threetears.agent.audit.persist import (
     anonymize_audit_rows,
     ensure_audit_events_table,
@@ -60,10 +60,25 @@ def _event(**overrides: Any) -> AuditEvent:
         "customer_id": uuid.uuid4(),
         "action": "user.create",
         "correlation_id": uuid.uuid4(),
-        "details": {"user_id": str(uuid.uuid4()), "email": "a@b.test"},
+        "details": {"user_id": str(uuid.uuid4()), "status": "active"},
     }
     fields.update(overrides)
     return AuditEvent(**fields)
+
+
+async def _persist_old(db: asyncpg.Pool, event: AuditEvent, details: Any, **kwargs: Any) -> None:
+    """a row written before the refusal (Pace 2026-11-12): stored, then its details set as an old producer wrote them
+    (a key naming a person among them), which the erasure pass over old rows is for."""
+    await persist_audit_event(db, event.model_copy(update={"details": {}}), **kwargs)
+    await db.execute("UPDATE audit_events SET details = $1::text::jsonb WHERE id = $2", json.dumps(details), event.id)
+
+
+async def test_a_detail_naming_a_person_is_refused_and_nothing_is_written(db: asyncpg.Pool) -> None:
+    """Flips if a direct writer stores an event whose details name a person (at any depth): audit rows hold ids."""
+    for details in ({"email": "a@b.test"}, {"members": [{"member_id": "m", "member_email": "a@b.test"}]}):
+        with pytest.raises(IdentifyingAuditDetail):
+            await persist_audit_event(db, _event(details=details))
+    assert await db.fetchval("SELECT count(*) FROM audit_events") == 0
 
 
 async def test_an_event_round_trips_with_every_envelope_field(db: asyncpg.Pool) -> None:
@@ -150,7 +165,8 @@ async def test_erasure_rewrites_details_and_ip_but_keeps_every_row_and_id(db: as
     mine = [_event(actor_user_id=actor) for _ in range(3)]
     theirs = _event()
     for event in [*mine, theirs]:
-        await persist_audit_event(db, event, ip_address="203.0.113.7")
+        old = {"user_id": event.details["user_id"], "email": "a@b.test", "note": "free text stays"}
+        await _persist_old(db, event, old, ip_address="203.0.113.7")
     before = {r["id"]: dict(r) for r in await db.fetch("SELECT * FROM audit_events")}
 
     result = await anonymize_audit_rows(db, actor_user_ids=[actor], batch_size=2)
@@ -160,7 +176,11 @@ async def test_erasure_rewrites_details_and_ip_but_keeps_every_row_and_id(db: as
     assert set(after) == set(before), "erasure never deletes a row"
     for event in mine:
         row = after[event.id]
-        assert json.loads(row["details_text"]) == {"user_id": event.details["user_id"], "email": _MARKER}
+        assert json.loads(row["details_text"]) == {
+            "user_id": event.details["user_id"],
+            "email": _MARKER,
+            "note": "free text stays",
+        }
         assert row["ip_address"] is None
         assert (row["actor_user_id"], row["correlation_id"], row["event_type"]) == (
             actor,
@@ -189,7 +209,7 @@ async def test_erasure_handles_every_stored_details_shape(db: asyncpg.Pool) -> N
     await anonymize_audit_rows(db, actor_user_ids=[actor])
     stored = {r["id"]: json.loads(r["d"]) for r in await db.fetch("SELECT id, details::text AS d FROM audit_events")}
     assert json.loads(stored[ids["string-held object"]]) == {"email": _MARKER}, "judged as the object, kept string-held"
-    assert stored[ids["non-object"]] == _MARKER
+    assert stored[ids["non-object"]] == ["x@y.test"], "free text stays as written (Pace 2026-11-12)"
     assert stored[ids["json null"]] is None
 
 
@@ -198,12 +218,8 @@ async def test_erasure_is_idempotent_for_non_ascii_and_float_values(db: asyncpg.
     floats its own way, and a text comparison counted untouched rows as changed on every pass."""
     declare_safe_detail_keys(_KEEPING_FAMILY, ("label", "ratio", "tiny"))
     actor = uuid.uuid4()
-    event = _event(
-        actor_user_id=actor,
-        event_type=f"{_KEEPING_FAMILY}.value",
-        details={"label": "José 日本", "ratio": 1.10, "tiny": 1e-7, "email": "x"},
-    )
-    await persist_audit_event(db, event)
+    event = _event(actor_user_id=actor, event_type=f"{_KEEPING_FAMILY}.value")
+    await _persist_old(db, event, {"label": "José 日本", "ratio": 1.10, "tiny": 1e-7, "email": "x"})
 
     first = await anonymize_audit_rows(db, actor_user_ids=[actor])
     second = await anonymize_audit_rows(db, actor_user_ids=[actor])
@@ -218,10 +234,10 @@ async def test_a_batch_size_below_one_is_refused(db: asyncpg.Pool) -> None:
 
 
 async def test_erasure_with_the_platform_anonymizers(db: asyncpg.Pool) -> None:
-    """The production path on real column types: an address and an unsafe detail are gone."""
+    """The production path on real column types: an address and a detail naming a person are gone."""
     actor = uuid.uuid4()
-    event = _event(actor_user_id=actor, details={"email": "someone@example.test"})
-    await persist_audit_event(db, event, ip_address="203.0.113.9")
+    event = _event(actor_user_id=actor)
+    await _persist_old(db, event, {"email": "someone@example.test"}, ip_address="203.0.113.9")
     result = await anonymize_audit_rows(db, actor_user_ids=[actor])
     assert result.rows_matched == 1
     row = await db.fetchrow("SELECT details::text AS d, ip_address FROM audit_events")
@@ -273,7 +289,8 @@ async def _audit_stream_max_age(nats: Any) -> float | None:
     from threetears.agent.audit.persist import AUDIT_STREAM_NAME
 
     info = await nats.jetstream_context().stream_info(f"{nats.namespace}-{AUDIT_STREAM_NAME}")
-    return info.config.max_age
+    max_age: float | None = info.config.max_age
+    return max_age
 
 
 async def test_the_age_limit_reaches_the_live_stream_and_a_changed_one_updates_it(

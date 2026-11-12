@@ -1,12 +1,17 @@
 """unit tests for :mod:`threetears.agent.audit.anonymize`.
 
 the erasure rule for audit records: an audit row is never deleted and no id
-on it changes. what erasure does is anonymize the row's ``details``: every
-top-level key stays, the structure stays wherever the keys are safe, values
-under a SAFE key stay, and the whole value under any other key -- keys a user
-chose included -- becomes :data:`ANONYMIZED_MARKER`. the safe list is
-explicit, so a key nobody classified is masked -- the fail-safe property the
-tests below pin by name.
+on it changes. Pace's ruling (2026-11-12, a contract change by owner ruling,
+not a weakened test): audit rows hold ids, never a person's details; ids, the
+ip address and free text stay as written. So :func:`anonymize_details` masks
+the whole value under a key that names a person
+(:data:`IDENTIFYING_DETAIL_KEYS`, at any depth, but a family's allowance) and
+keeps every other key and value as written; :func:`refuse_identifying_details`
+refuses such a key when an event is published or stored. Before the ruling the
+rule masked every key not on the safe list; the tests that pinned that are
+rewritten here to the ruling. The safe and personal lists remain the
+classification every published key must be in (the gate
+``test_audit_details_keys_are_classified``).
 
 declarations made through :func:`declare_safe_detail_keys` live in one
 process-wide registry. every test that declares uses a prefix minted from a
@@ -25,12 +30,16 @@ from hypothesis import strategies as st
 
 from threetears.agent.audit import (
     ANONYMIZED_MARKER,
+    IDENTIFYING_DETAIL_KEYS,
     PERSONAL_DETAIL_KEYS,
     SAFE_DETAIL_KEYS,
+    IdentifyingAuditDetail,
     anonymize_details,
     anonymize_ip,
     declare_safe_detail_keys,
+    identifying_keys_for,
     is_classified_detail_key,
+    refuse_identifying_details,
     safe_detail_keys_for,
 )
 
@@ -51,53 +60,6 @@ def _fresh_prefix() -> str:
     :rtype: str
     """
     return f"anonymizetest{uuid4().hex}"
-
-
-def _shape(value: Any) -> Any:
-    """
-    reduce a details value to its shape: keys, container types, None-ness.
-
-    :param value: a details value
-    :ptype value: Any
-    :return: the same structure with every non-None leaf replaced by ``"leaf"``
-    :rtype: Any
-    """
-    result: Any
-    if isinstance(value, dict):
-        result = {key: _shape(child) for key, child in value.items()}
-    elif isinstance(value, list):
-        result = [_shape(child) for child in value]
-    elif isinstance(value, tuple):
-        result = tuple(_shape(child) for child in value)
-    elif value is None:
-        result = None
-    else:
-        result = "leaf"
-    return result
-
-
-def _mask_to_leaf(value: Any) -> Any:
-    """
-    collapse every subtree under a non-safe key to one leaf, so shapes compare at safe levels.
-
-    :param value: a value under a safe key
-    :ptype value: Any
-    :return: the same skeleton with each non-safe key's value replaced by ``"leaf"`` (or None)
-    :rtype: Any
-    """
-    result: Any
-    if isinstance(value, dict):
-        result = {
-            key: (_mask_to_leaf(child) if key in SAFE_DETAIL_KEYS else (None if child is None else "leaf"))
-            for key, child in value.items()
-        }
-    elif isinstance(value, list):
-        result = [_mask_to_leaf(child) for child in value]
-    elif isinstance(value, tuple):
-        result = tuple(_mask_to_leaf(child) for child in value)
-    else:
-        result = value
-    return result
 
 
 class TestMarkerAndClassification:
@@ -132,32 +94,39 @@ class TestMarkerAndClassification:
 
 
 class TestAnonymizeDetails:
-    """the rule itself: keep keys and the safe skeleton, keep safe values, mask the rest whole."""
+    """the rule itself (Pace 2026-11-12): every key and value as written, but the whole value under a key that names a
+    person, at any depth."""
 
-    def test_every_top_level_key_and_the_safe_skeleton_are_kept(self) -> None:
-        """no top-level key disappears, and structure beneath safe keys keeps its keys and types."""
+    def test_an_identifying_key_is_masked_at_any_depth_and_everything_else_kept(self) -> None:
+        """no key disappears; free text, ids and unclassified keys stay as written; every identifying key's value,
+        top-level, nested in a dict or in a list of dicts, becomes the marker."""
+        member = str(uuid7())
         details = {
             "tool_name": "fs_write",
             "failure_reason": "could not write /home/alice/notes.md",
             "nested": {"email": "alice@example.com", "count": 3},
-            "platform_repointed": {"member_count": 3, "email": "alice@example.com"},
-            "tool_names": [{"version": 2, "name": "Bob"}, "fs_edit"],
+            "platform_repointed": {"member_count": 3, "member_id": member, "display_name": "Alice Liddell"},
+            "tool_names": [{"version": 2, "full_name": "Bob"}, "fs_edit"],
             "retired_connection_ids": ("a", "b"),
+            _UNCLASSIFIED_KEY: "kept as written",
+            "subject": "alice@idp.example",
         }
 
         anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
 
         assert anonymized == {
             "tool_name": "fs_write",
-            "failure_reason": ANONYMIZED_MARKER,
-            "nested": ANONYMIZED_MARKER,
-            "platform_repointed": {"member_count": 3, "email": ANONYMIZED_MARKER},
-            "tool_names": [{"version": 2, "name": ANONYMIZED_MARKER}, "fs_edit"],
+            "failure_reason": "could not write /home/alice/notes.md",
+            "nested": {"email": ANONYMIZED_MARKER, "count": 3},
+            "platform_repointed": {"member_count": 3, "member_id": member, "display_name": ANONYMIZED_MARKER},
+            "tool_names": [{"version": 2, "full_name": ANONYMIZED_MARKER}, "fs_edit"],
             "retired_connection_ids": ("a", "b"),
+            _UNCLASSIFIED_KEY: "kept as written",
+            "subject": ANONYMIZED_MARKER,
         }
 
-    def test_values_under_safe_keys_are_untouched(self) -> None:
-        """a safe key's value comes back identical, whatever its type."""
+    def test_ids_and_values_under_safe_keys_are_untouched(self) -> None:
+        """a safe key's value comes back identical, whatever its type: erasure never changes an id."""
         agent_id = uuid7()
         details = {
             "tool_name": "fs_write",
@@ -177,102 +146,61 @@ class TestAnonymizeDetails:
     @pytest.mark.parametrize(
         "value",
         [
-            pytest.param("boom: alice@example.com", id="text"),
+            pytest.param("alice@example.com", id="text"),
             pytest.param(5551234567, id="integer"),
-            pytest.param(True, id="bool"),
-            pytest.param(0.5, id="float"),
             pytest.param({"street": "1 Main St", "zip": 12345}, id="dict"),
-            pytest.param(["name", "email"], id="list"),
-            pytest.param(("name", "email"), id="tuple"),
+            pytest.param(["alice", "bob"], id="list"),
+            pytest.param(("alice", "bob"), id="tuple"),
             pytest.param({}, id="empty-dict"),
-            pytest.param([], id="empty-list"),
         ],
     )
-    def test_the_whole_value_under_an_unsafe_key_becomes_the_marker(self, value: Any) -> None:
-        """whatever sits under an unsafe key -- a leaf or a whole subtree -- is replaced by the marker.
+    def test_the_whole_value_under_an_identifying_key_becomes_the_marker(self, value: Any) -> None:
+        """whatever sits under an identifying key -- a leaf or a whole subtree -- is replaced by the marker."""
+        anonymized = anonymize_details({"email": value}, event_type=_PLAIN_EVENT)
 
-        :param value: the value published under an unsafe key
-        :ptype value: Any
-        """
-        anonymized = anonymize_details({"failure_reason": value}, event_type=_PLAIN_EVENT)
+        assert anonymized == {"email": ANONYMIZED_MARKER}
 
-        assert anonymized == {"failure_reason": ANONYMIZED_MARKER}
+    @pytest.mark.parametrize("key", sorted(IDENTIFYING_DETAIL_KEYS))
+    def test_every_identifying_key_is_masked(self, key: str) -> None:
+        """each key of the identifying set is masked on an event type no family allows it for."""
+        assert anonymize_details({key: "Alice"}, event_type=_PLAIN_EVENT) == {key: ANONYMIZED_MARKER}
 
-    def test_keys_a_user_chose_under_an_unsafe_key_do_not_survive(self) -> None:
-        """``doc_set`` publishes the user's document under ``value``; its field names are the user's content."""
-        details = {"value": {"alice@example.com": {"diagnosis": "flu"}, "Alice Liddell": [1, 2]}}
+    def test_free_text_and_personal_keys_that_name_no_one_stay_as_written(self) -> None:
+        """the ruling keeps free text: a failure reason, a description, a user's document value."""
+        details = {
+            "failure_reason": "boom",
+            "description": "the quarterly group",
+            "value": {"status": "x", "rows": [1, 2]},
+            "reason": "SMTP refused",
+        }
 
-        anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
+        assert anonymize_details(details, event_type=_PLAIN_EVENT) == details
 
-        assert anonymized == {"value": ANONYMIZED_MARKER}
-        assert "alice" not in repr(anonymized).lower()
+    def test_a_familys_allowance_keeps_its_resource_name_for_its_events_alone(self) -> None:
+        """a workspace's own name is a resource name on workspace.create / delete; elsewhere ``name`` is masked."""
+        for event_type in ("workspace.create", "workspace.delete"):
+            assert anonymize_details({"name": "taxes"}, event_type=event_type) == {"name": "taxes"}
+            assert "name" not in identifying_keys_for(event_type)
+        assert anonymize_details({"name": "Alice"}, event_type=_PLAIN_EVENT) == {"name": ANONYMIZED_MARKER}
+        assert anonymize_details({"name": "Alice"}, event_type="workspace.fs_write") == {"name": ANONYMIZED_MARKER}
 
-    def test_an_unclassified_key_fails_safe_to_the_marker(self) -> None:
-        """a key on neither list is masked: nobody classified it, so it cannot leak."""
-        details = {_UNCLASSIFIED_KEY: "Alice Liddell, 1 Rabbit Hole"}
-
-        anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
-
-        assert anonymized == {_UNCLASSIFIED_KEY: ANONYMIZED_MARKER}
-
-    def test_an_unclassified_key_nested_under_a_safe_key_fails_safe(self) -> None:
-        """a dict under a safe key is judged key by key; its unknown keys are masked."""
-        details = {"platform_repointed": {"member_count": 3, _UNCLASSIFIED_KEY: {"name": "Alice"}}}
-
-        anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
-
-        assert anonymized == {"platform_repointed": {"member_count": 3, _UNCLASSIFIED_KEY: ANONYMIZED_MARKER}}
-
-    def test_a_safe_spelling_inside_an_unsafe_subtree_earns_nothing(self) -> None:
-        """a user document whose own field happens to be spelled ``status`` is not kept."""
-        details = {"value": {"status": "Alice's diagnosis", "version": 2}}
-
-        anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
-
-        assert anonymized == {"value": ANONYMIZED_MARKER}
-
-    def test_a_list_under_a_safe_key_keeps_its_leaves(self) -> None:
-        """a list of structural values under a safe key survives whole."""
-        ids = [str(uuid7()), str(uuid7())]
-        details = {"retired_connection_ids": ids}
-
-        anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
-
-        assert anonymized == {"retired_connection_ids": ids}
-
-    def test_a_list_of_dicts_under_a_safe_key_judges_each_dict_by_its_own_keys(self) -> None:
-        """safety does not flow into a dict: each nested dict is judged afresh."""
-        details = {"tool_names": [{"version": 2, _UNCLASSIFIED_KEY: "Alice"}]}
-
-        anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
-
-        assert anonymized == {"tool_names": [{"version": 2, _UNCLASSIFIED_KEY: ANONYMIZED_MARKER}]}
-
-    def test_a_tuple_under_a_safe_key_comes_back_a_tuple(self) -> None:
+    def test_a_tuple_comes_back_a_tuple(self) -> None:
         """the kept skeleton includes the container type, not just the nesting."""
-        details = {"tool_names": ("fs_write", "fs_edit")}
+        details = {"tool_names": ("fs_write", {"login": "alice"})}
 
         anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
 
-        assert anonymized == {"tool_names": ("fs_write", "fs_edit")}
+        assert anonymized == {"tool_names": ("fs_write", {"login": ANONYMIZED_MARKER})}
         assert isinstance(anonymized["tool_names"], tuple)
 
-    @pytest.mark.parametrize("key", ["failure_reason", _UNCLASSIFIED_KEY, "duration_ms"])
+    @pytest.mark.parametrize("key", ["email", _UNCLASSIFIED_KEY, "duration_ms"])
     def test_none_stays_none(self, key: str) -> None:
-        """None carries nothing to anonymize and stays None under any key, at any safe depth."""
+        """None carries nothing to anonymize and stays None under any key, at any depth."""
         details = {key: None, "platform_repointed": {key: None}, "tool_names": [None]}
 
         anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
 
         assert anonymized == {key: None, "platform_repointed": {key: None}, "tool_names": [None]}
-
-    def test_empty_containers_under_safe_keys_stay_empty(self) -> None:
-        """an empty dict or list under a safe key keeps its type."""
-        details: dict[str, Any] = {"platform_repointed": {}, "tool_names": [], "retired_connection_ids": ()}
-
-        anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
-
-        assert anonymized == {"platform_repointed": {}, "tool_names": [], "retired_connection_ids": ()}
 
     def test_empty_details_are_empty(self) -> None:
         """nothing in, nothing out."""
@@ -280,11 +208,7 @@ class TestAnonymizeDetails:
 
     def test_anonymizing_twice_equals_anonymizing_once(self) -> None:
         """a second pass over an erased record changes nothing."""
-        details = {
-            "tool_name": "fs_write",
-            "failure_reason": "alice@example.com",
-            "value": {"status": "x", "n": [1, None, {"k": "v"}]},
-        }
+        details = {"tool_name": "fs_write", "email": "alice@example.com", "value": {"name": "x", "n": [1, None]}}
 
         once = anonymize_details(details, event_type=_PLAIN_EVENT)
         twice = anonymize_details(once, event_type=_PLAIN_EVENT)
@@ -293,7 +217,7 @@ class TestAnonymizeDetails:
 
     def test_the_input_is_not_mutated(self) -> None:
         """the function is pure: the caller's dict comes back exactly as it went in."""
-        details = {"failure_reason": "alice", "value": {"a": [1, {"b": "c"}]}, "tool_name": "t"}
+        details = {"email": "alice", "value": {"a": [1, {"username": "c"}]}, "tool_name": "t"}
         before = copy.deepcopy(details)
 
         anonymize_details(details, event_type=_PLAIN_EVENT)
@@ -308,6 +232,41 @@ class TestAnonymizeDetails:
         anonymized["platform_repointed"]["member_count"].append(3)
 
         assert details == {"platform_repointed": {"member_count": [1, 2]}}
+
+
+class TestRefuseIdentifyingDetails:
+    """the write-time rule: an event whose details name a person is refused, at any depth."""
+
+    @pytest.mark.parametrize(
+        "details",
+        [
+            pytest.param({"email": "a@b.c"}, id="top"),
+            pytest.param({"target": {"user_email": "a@b.c"}}, id="nested"),
+            pytest.param({"members": [{"member_id": "x", "member_email": "a@b.c"}]}, id="list"),
+            pytest.param({"pairs": ({"external_user_id": "U1"},)}, id="tuple"),
+        ],
+    )
+    def test_an_identifying_key_anywhere_is_refused(self, details: dict[str, Any]) -> None:
+        """Flips if a key naming a person passes at any depth."""
+        with pytest.raises(IdentifyingAuditDetail) as refused:
+            refuse_identifying_details(details, event_type=_PLAIN_EVENT)
+        assert refused.value.event_type == _PLAIN_EVENT
+        assert refused.value.key in IDENTIFYING_DETAIL_KEYS
+
+    def test_ids_free_text_and_a_familys_allowance_pass(self) -> None:
+        """Flips if ids, free text or an allowed family's resource name are refused."""
+        refuse_identifying_details(
+            {"member_id": str(uuid7()), "failure_reason": "boom alice@example.com", "count": 3}, event_type=_PLAIN_EVENT
+        )
+        refuse_identifying_details({"name": "taxes", "workspace_resource_id": "w"}, event_type="workspace.create")
+
+    def test_a_value_already_anonymized_or_none_passes(self) -> None:
+        """Flips if an erased row (the marker under an identifying key) or an absent value cannot be stored."""
+        refuse_identifying_details({"email": ANONYMIZED_MARKER, "subject": None}, event_type=_PLAIN_EVENT)
+
+    def test_the_identifying_keys_are_personal(self) -> None:
+        """the identifying set is a subset of the personal one: every key in it was classified personal."""
+        assert IDENTIFYING_DETAIL_KEYS <= PERSONAL_DETAIL_KEYS
 
 
 class TestDeclaredExtensions:
@@ -334,9 +293,7 @@ class TestDeclaredExtensions:
         prefix = _fresh_prefix()
         declare_safe_detail_keys(prefix, [_UNCLASSIFIED_KEY])
 
-        anonymized = anonymize_details({_UNCLASSIFIED_KEY: "Alice"}, event_type=_PLAIN_EVENT)
-
-        assert anonymized == {_UNCLASSIFIED_KEY: ANONYMIZED_MARKER}
+        assert _UNCLASSIFIED_KEY not in safe_detail_keys_for(_PLAIN_EVENT)
         assert _UNCLASSIFIED_KEY not in SAFE_DETAIL_KEYS
 
     def test_a_prefix_matches_whole_segments_only(self) -> None:
@@ -370,16 +327,13 @@ class TestDeclaredExtensions:
 
         assert {_UNCLASSIFIED_KEY, "other_count"} <= safe_detail_keys_for(f"{prefix}.x")
 
-    def test_a_family_may_keep_a_personal_key_for_its_own_events_only(self) -> None:
-        """``reason`` is an enum in one family and free text in the rest; only the first keeps it."""
+    def test_a_family_may_classify_a_personal_key_safe_for_its_own_events_only(self) -> None:
+        """``reason`` is an enum in one family and free text in the rest; only the first counts it safe."""
         prefix = _fresh_prefix()
         declare_safe_detail_keys(prefix, ["reason"])
 
-        kept = anonymize_details({"reason": "target_blocked"}, event_type=f"{prefix}.stop")
-        masked = anonymize_details({"reason": "SMTP refused alice@example.com"}, event_type=_PLAIN_EVENT)
-
-        assert kept == {"reason": "target_blocked"}
-        assert masked == {"reason": ANONYMIZED_MARKER}
+        assert "reason" in safe_detail_keys_for(f"{prefix}.stop")
+        assert "reason" not in safe_detail_keys_for(_PLAIN_EVENT)
 
     def test_a_refused_declaration_declares_nothing(self) -> None:
         """one bad key in a batch leaves the registry as it was."""
@@ -389,25 +343,19 @@ class TestDeclaredExtensions:
 
         assert _UNCLASSIFIED_KEY not in safe_detail_keys_for(f"{prefix}.x")
 
-    def test_a_platform_family_is_declared_where_the_eraser_can_see_it(self) -> None:
-        """the hub erases identity's events, so identity's enum ``reason`` is declared in 3tears."""
-        kept = anonymize_details({"reason": "target_blocked"}, event_type="identity.impersonation.stop")
-        masked = anonymize_details({"reason": "relay said: bob@example.com"}, event_type="identity.email.send_failure")
+    def test_a_platform_family_is_declared_where_every_process_can_see_it(self) -> None:
+        """identity's enum ``reason`` is declared in 3tears: safe on its family, free text elsewhere."""
+        assert "reason" in safe_detail_keys_for("identity.impersonation.stop")
+        assert "reason" not in safe_detail_keys_for("identity.email.send_failure")
 
-        assert kept == {"reason": "target_blocked"}
-        assert masked == {"reason": ANONYMIZED_MARKER}
-
-    def test_an_invitations_status_is_kept_for_the_hubs_user_events_alone(self) -> None:
-        """``invitation`` is emailed / not_emailed / not_sent on the hub's ``user.create`` and ``user.invite``; any
-        other family's ``invitation`` stays masked, as a key nobody classified for it."""
+    def test_an_invitations_status_is_safe_for_the_hubs_user_events_alone(self) -> None:
+        """``invitation`` is emailed / not_emailed / not_sent on the hub's ``user.create`` and ``user.invite``."""
         for event_type in ("user.create", "user.invite"):
-            assert anonymize_details({"invitation": "emailed"}, event_type=event_type) == {"invitation": "emailed"}
-        assert anonymize_details({"invitation": "bob@example.com"}, event_type=_PLAIN_EVENT) == {
-            "invitation": ANONYMIZED_MARKER
-        }
+            assert "invitation" in safe_detail_keys_for(event_type)
+        assert "invitation" not in safe_detail_keys_for(_PLAIN_EVENT)
 
-    def test_a_grant_that_followed_its_renamed_node_keeps_its_ids_and_loses_the_names(self) -> None:
-        """``rbac.assignment.move``: the ids and the fixed reason are structural; the node names carry user segments."""
+    def test_a_grant_that_followed_its_renamed_node_keeps_every_key_and_value(self) -> None:
+        """``rbac.assignment.move``: ids, the fixed reason and the node names (a namespace's, no person's) stay."""
         details = {
             "datasource_id": str(uuid7()),
             "group_id": str(uuid7()),
@@ -420,34 +368,18 @@ class TestDeclaredExtensions:
             "scope_namespace_name_after": "datasources.agent_ab.summaries",
         }
 
-        erased = anonymize_details(details, event_type="rbac.assignment.move")
-
-        names = ("scope_namespace_name_before", "scope_namespace_name_after")
-        assert {key: erased[key] for key in names} == dict.fromkeys(names, ANONYMIZED_MARKER)
-        assert {key: value for key, value in erased.items() if key not in names} == {
-            key: value for key, value in details.items() if key not in names
-        }
+        assert anonymize_details(details, event_type="rbac.assignment.move") == details
         assert all(is_classified_detail_key(key, event_type="rbac.assignment.move") for key in details)
-        # the reason is an enum only for this family; elsewhere it stays free text and masked
-        assert anonymize_details({"reason": "datasource_renamed"}, event_type=_PLAIN_EVENT) == {
-            "reason": ANONYMIZED_MARKER
-        }
 
     @pytest.mark.parametrize("event_type", ["security.exploit.approval.approved", "security.exploit.approval.denied"])
     def test_the_approver_of_a_paused_tool_call_keeps_their_id(self, event_type: str) -> None:
-        """``decided_by`` is the deciding user's uuid on the hub's approval events, and erasure never changes an id.
-
-        the name does not say it holds an id, so it is declared for this family alone: under any
-        other event type the same key is masked, since a producer there could mean a name by it.
-        """
+        """``decided_by`` is the deciding user's uuid on the hub's approval events, and erasure never changes an id."""
         approver = str(uuid7())
 
         kept = anonymize_details({"decided_by": approver, "decision": "approve"}, event_type=event_type)
-        masked = anonymize_details({"decided_by": "Alice Liddell"}, event_type=_PLAIN_EVENT)
 
         assert kept == {"decided_by": approver, "decision": "approve"}
         assert is_classified_detail_key("decided_by", event_type=event_type)
-        assert masked == {"decided_by": ANONYMIZED_MARKER}
         assert "decided_by" not in SAFE_DETAIL_KEYS
 
     @pytest.mark.parametrize("prefix", ["", ".survey", "survey.", "survey..response", "survey response"])
@@ -520,12 +452,26 @@ class TestProperties:
         assert anonymize_details(details, event_type=_PLAIN_EVENT).keys() == details.keys()
 
     @given(details=_DETAILS)
-    def test_the_skeleton_under_safe_keys_is_preserved(self, details: dict[str, Any]) -> None:
-        """beneath a safe key the containers, their keys and every None survive."""
+    def test_the_shape_is_preserved_but_under_identifying_keys(self, details: dict[str, Any]) -> None:
+        """every key at every depth survives; only an identifying key's value is replaced (by the marker)."""
         anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
 
-        for key in details.keys() & SAFE_DETAIL_KEYS:
-            assert _shape(_mask_to_leaf(anonymized[key])) == _shape(_mask_to_leaf(details[key]))
+        def walk(before: Any, after: Any) -> None:
+            if isinstance(before, dict):
+                assert after.keys() == before.keys()
+                for key, value in before.items():
+                    if key in IDENTIFYING_DETAIL_KEYS:
+                        assert after[key] == (None if value is None else ANONYMIZED_MARKER)
+                    else:
+                        walk(value, after[key])
+            elif isinstance(before, list | tuple):
+                assert len(after) == len(before)
+                for one, other in zip(before, after, strict=True):
+                    walk(one, other)
+            else:
+                assert after == before
+
+        walk(details, anonymized)
 
     @given(details=_DETAILS)
     def test_anonymization_is_idempotent(self, details: dict[str, Any]) -> None:
@@ -533,16 +479,6 @@ class TestProperties:
         once = anonymize_details(details, event_type=_PLAIN_EVENT)
 
         assert anonymize_details(once, event_type=_PLAIN_EVENT) == once
-
-    @given(details=_DETAILS)
-    def test_nothing_under_a_non_safe_key_survives(self, details: dict[str, Any]) -> None:
-        """the whole value under any top-level key that is not safe is the marker, or None if it was None."""
-        anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
-
-        for key, value in anonymized.items():
-            if key in SAFE_DETAIL_KEYS:
-                continue
-            assert value == (None if details[key] is None else ANONYMIZED_MARKER)
 
     @given(details=_DETAILS)
     def test_the_input_is_never_mutated(self, details: dict[str, Any]) -> None:

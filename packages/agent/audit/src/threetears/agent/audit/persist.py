@@ -53,9 +53,8 @@ from threetears.agent.audit.migrations.v002_audit_time_range_index import AUDIT_
 from threetears.core.serialization import json_datetime, to_stored_json
 from threetears.nats import Subjects
 from threetears.observe import cancel_and_wait, get_logger, spawn_background
-from threetears.observe.erasure import ANONYMIZED_MARKER
 
-from threetears.agent.audit.anonymize import anonymize_details, anonymize_ip
+from threetears.agent.audit.anonymize import anonymize_details, anonymize_ip, refuse_identifying_details
 from threetears.agent.audit.envelope import AuditEvent
 from threetears.agent.audit.erasure import AuditAnonymization
 
@@ -184,7 +183,10 @@ async def persist_audit_event(db: AuditStore, event: AuditEvent, *, ip_address: 
     :return: None
     :rtype: None
     :raises ValueError: if ``details`` holds a naive datetime
+    :raises IdentifyingAuditDetail: when ``details`` hold a key that names a person, at any depth (a direct writer
+        is held to the rule :func:`~threetears.agent.audit.publish_audit` holds a producer to; nothing is written)
     """
+    refuse_identifying_details(event.details, event_type=event.event_type)
     await db.execute(
         _INSERT,
         event.id,
@@ -211,7 +213,8 @@ async def persist_audit_event(db: AuditStore, event: AuditEvent, *, ip_address: 
 
 
 async def handle_audit_message(db: AuditStore, msg: Any) -> None:  # noqa: ANN401 -- a JetStream message
-    """parse, persist, ack. A malformed event is acked and dropped; a database fault raises.
+    """parse, persist, ack. A malformed event is acked and dropped; a database fault raises. A key that names a person
+    (from a producer not yet refusing it) is stored masked, as :func:`anonymize_details` masks it.
 
     :param db: the deployment's database
     :ptype db: AuditStore
@@ -239,6 +242,11 @@ async def handle_audit_message(db: AuditStore, msg: Any) -> None:  # noqa: ANN40
         )
         await msg.ack()
         return
+    # a producer not yet on the refusal (a pod mid-rollout) may still publish a key that names a person: the event is
+    # kept, that key's value masked (the rule a new row is written under), never dropped
+    masked = anonymize_details(event.details, event_type=event.event_type)
+    if masked != event.details:
+        event = event.model_copy(update={"details": masked})
     await persist_audit_event(db, event)  # a database fault raises: the consumer retries, then dead-letters
     await msg.ack()
 
@@ -378,8 +386,9 @@ def _rowcount(status: Any) -> int:  # noqa: ANN401 -- a driver status string
 def _anonymize_stored(raw: str | None, *, event_type: str) -> str | None:
     """rewrite one stored ``details`` value by the platform rule, keeping the shape it was stored in.
 
-    an object is judged key by key; a JSON string holding an object is judged as that object and
-    written back string-held; SQL NULL and JSON null stay; anything else becomes the marker.
+    an object is judged as :func:`anonymize_details` judges it; a JSON string holding an object is judged as that
+    object and written back string-held; SQL NULL and JSON null stay; any other value (a list, a scalar, text) is
+    kept as written but for an identifying key in a dict inside it (Pace 2026-11-12: free text stays).
 
     :param raw: ``details::text``
     :ptype raw: str | None
@@ -401,13 +410,9 @@ def _anonymize_stored(raw: str | None, *, event_type: str) -> str | None:
             inner = json.loads(value)
         except ValueError:
             inner = None
-        result = (
-            json.dumps(anonymize_details(inner, event_type=event_type))
-            if isinstance(inner, Mapping)
-            else ANONYMIZED_MARKER
-        )
+        result = json.dumps(anonymize_details(inner, event_type=event_type)) if isinstance(inner, Mapping) else value
     else:
-        result = ANONYMIZED_MARKER
+        result = anonymize_details({"value": value}, event_type=event_type)["value"]
     return json.dumps(result, ensure_ascii=False)
 
 

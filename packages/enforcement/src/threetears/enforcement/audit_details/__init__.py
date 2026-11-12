@@ -30,6 +30,10 @@ from threetears.enforcement.audit_details.config import (
     AuditDetailsConfig,
     DetailKeyClassifier,
 )
+from threetears.enforcement.audit_details.identifying import (
+    IdentifyingDetailsConfig,
+    identifying_detail_findings,
+)
 from threetears.enforcement.audit_details.runner import (
     run_audit_details_enforcement,
 )
@@ -46,8 +50,10 @@ __all__ = [
     "AuditDetailsConfig",
     "AuditDetailsSite",
     "DetailKeyClassifier",
+    "IdentifyingDetailsConfig",
     "collect_audit_details_sites",
     "find_audit_details_violations",
+    "identifying_detail_findings",
     "read_audit_details_sites",
     "run_audit_details_enforcement",
     "unclassified_detail_paths",
