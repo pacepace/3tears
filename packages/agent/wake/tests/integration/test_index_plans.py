@@ -331,19 +331,36 @@ async def _wake_count(busy: SimpleNamespace, *, webhook: bool) -> tuple[str, tup
     return asked
 
 
-async def test_wake_schedules_conv_status(conn: asyncpg.Connection) -> None:
-    """Flips if a conversation's active schedules, listed or counted for its cap, stop reading
-    idx_wake_schedules_conv_status (they would read every schedule the conversation ever had)."""
+async def test_wake_schedules_conv_active(conn: asyncpg.Connection) -> None:
+    """Flips if a conversation's active schedules, counted for its cap or listed, stop reading
+    idx_wake_schedules_conv_active (on YugabyteDB: if the count stops reading it, or the listing reads past the
+    conversation's own schedules)."""
     busy = await _busy_conversation(conn)
     captured = _Captured()
     schedules = _collections(captured).schedules
     await schedules.list_active_for_conversation(busy.conversation)
+    listed = _of(captured, "agent_wake_schedules")
     await schedules.count_active_for_conversation(busy.conversation)
-    statements = _of(captured, "agent_wake_schedules")
-    assert len(statements) >= 2, captured.asked
-    for sql, args in statements:
+    counted = _of(captured, "agent_wake_schedules")[len(listed) :]
+    assert listed and counted, captured.asked
+    if not await on_yugabyte(conn):
+        for sql, args in [*listed, *counted]:
+            plan = await explain_statement(conn, sql, *args)
+            assert plan_uses_index(plan, "idx_wake_schedules_conv_active"), (sql, plan.plan)
+        return
+    for sql, args in counted:
         plan = await explain_statement(conn, sql, *args)
-        assert plan_uses_index(plan, "idx_wake_schedules_conv_status"), (sql, plan.plan)
+        assert plan_uses_index(plan, "idx_wake_schedules_conv_active"), (sql, plan.plan)
+    # YugabyteDB's cost model lists through the conversation's primary key prefix (40.17) over the partial index
+    # (43.16, even index-only), and keys-then-rows measured ~2x slower on both engines (S/o39/waketime.log, coordinator
+    # ruling 2026-11-12): the list must stay within this conversation's own rows, of the 5400 seeded
+    owned = await conn.fetchval(
+        "SELECT COUNT(*) FROM agent_wake_schedules WHERE conversation_id = $1", busy.conversation
+    )
+    for sql, args in listed:
+        plan = await explain_statement(conn, sql, *args)
+        assert plan.rows_returned == 10, plan
+        assert plan.rows_scanned <= owned, (owned, plan)
 
 
 async def test_wake_fires_schedule_time(conn: asyncpg.Connection) -> None:

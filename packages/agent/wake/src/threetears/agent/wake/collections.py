@@ -611,8 +611,9 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         """Return active schedules for a conversation.
 
         Powers per-conv cap enforcement (PLACEMENT §1.9) plus the
-        "what is this conversation waking on" admin view. Hits the
-        ``idx_wake_schedules_conv_status`` partial index.
+        "what is this conversation waking on" admin view. PostgreSQL reads
+        the ``idx_wake_schedules_conv_active`` partial index; YugabyteDB the
+        conversation's own primary key prefix (v013's docstring says why).
 
         :param conversation_id: partition column
         :ptype conversation_id: UUID

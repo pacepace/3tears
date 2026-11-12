@@ -28,6 +28,9 @@ subclasses in ``3tears-agent-tools``):
 - ``idx_wake_schedules_next_fire_asc`` (v012) -- the tick's due scan, range-sharded
   on YugabyteDB (``next_fire_at ASC``), built beside v001's
   ``idx_wake_schedules_next_fire``, which it drops.
+- ``idx_wake_schedules_conv_active`` (v013) -- a conversation's active
+  schedules, partial on ``status = 'active'``: the cap's count and the
+  active listing.
 
 The package declares
 ``depends_on=("conversations", "agent_skills")`` because:
@@ -121,6 +124,9 @@ from threetears.agent.wake.migrations.v011_dispatching_fires_index import (
 from threetears.agent.wake.migrations.v012_next_fire_range_index import (
     range_shard_next_fire_index,
 )
+from threetears.agent.wake.migrations.v013_active_schedules_index import (
+    add_active_schedules_index,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -160,6 +166,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(10)(create_webhook_refusals)
     pkg.version(11)(add_dispatching_fires_index)
     pkg.version(12)(range_shard_next_fire_index)
+    pkg.version(13)(add_active_schedules_index)
     runner.register(pkg)
     return pkg
 

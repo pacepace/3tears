@@ -242,13 +242,20 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
                 "reason": "agent_wake_schedules carries five indexes: the tick's due scan, the agent's and the user's reads",
             },
         ),
+        # v001's index over every schedule a conversation had: v013's partial index serves its reads; its drop waits
+        # for the held CONTRACT migration (old pods still plan through it mid-rollout)
         Index(
             "idx_wake_schedules_conv_status",
             "conversation_id",
             "status",
+        ),
+        Index(
+            "idx_wake_schedules_conv_active",
+            "conversation_id",
+            postgresql_where=sa_text("status = 'active'"),
             info={
                 "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WakeScheduleCollection.list_active_for_conversation; packages/agent/wake/src/threetears/agent/wake/collections.py::WakeScheduleCollection.count_active_for_conversation",
-                "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_schedules_conv_status",
+                "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_schedules_conv_active",
                 "reason": "agent_wake_schedules carries five indexes: one conversation's active schedules, for its cap",
             },
         ),
