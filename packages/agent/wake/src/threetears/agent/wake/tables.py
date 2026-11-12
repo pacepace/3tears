@@ -368,6 +368,15 @@ def wake_fires_table(metadata: MetaData) -> Table:
             ondelete="CASCADE",
             name="wake_fires_schedule_fk",
         ),
+        # v014: a schedule's fire holds its schedule's conversation. Added NOT VALID (the expand step); the held
+        # CONTRACT migration validates it, and then this flag goes. A CREATE TABLE validates it anyway (an empty table).
+        ForeignKeyConstraint(
+            ["conversation_id", "schedule_id"],
+            ["agent_wake_schedules.conversation_id", "agent_wake_schedules.schedule_id"],
+            ondelete="CASCADE",
+            name="wake_fires_schedule_conversation_fk",
+            postgresql_not_valid=True,
+        ),
         ForeignKeyConstraint(
             ["webhook_subscription_id"],
             ["webhook_subscriptions.subscription_id"],

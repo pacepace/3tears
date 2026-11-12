@@ -31,6 +31,10 @@ subclasses in ``3tears-agent-tools``):
 - ``idx_wake_schedules_conv_active`` (v013) -- a conversation's active
   schedules, partial on ``status = 'active'``: the cap's count and the
   active listing.
+- ``wake_fires_schedule_conversation_fk`` (v014) -- a schedule's fire holds its
+  schedule's conversation: ``(conversation_id, schedule_id)`` references the
+  schedule's primary key, added ``NOT VALID`` (its ``VALIDATE`` waits for the
+  held CONTRACT migration).
 
 The package declares
 ``depends_on=("conversations", "agent_skills")`` because:
@@ -127,6 +131,10 @@ from threetears.agent.wake.migrations.v012_next_fire_range_index import (
 from threetears.agent.wake.migrations.v013_active_schedules_index import (
     add_active_schedules_index,
 )
+from threetears.agent.wake.migrations.v014_fire_schedule_conversation_fk import (
+    FIRE_SCHEDULE_CONVERSATION_FK,
+    add_fire_schedule_conversation_fk,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -167,16 +175,19 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(11)(add_dispatching_fires_index)
     pkg.version(12)(range_shard_next_fire_index)
     pkg.version(13)(add_active_schedules_index)
+    pkg.version(14)(add_fire_schedule_conversation_fk)
     runner.register(pkg)
     return pkg
 
 
 __all__ = [
+    "FIRE_SCHEDULE_CONVERSATION_FK",
     "PACKAGE_NAME",
     "PROTECTED_GATE_SETTING",
     "add_checked_quiet_status",
     "add_dispatching_fires_index",
     "add_dispatching_status",
+    "add_fire_schedule_conversation_fk",
     "add_fire_source_and_manual_fires",
     "add_include_conversation_history",
     "agent_scope_protection_and_fire_links",

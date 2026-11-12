@@ -184,6 +184,59 @@ class TestScheduleDeleteCascadesFires:
             await conn.close()
 
 
+#: fires whose conversation differs from their schedule's (read-only): what VALIDATE of v014's key would refuse
+_MISMATCHED_FIRES_SQL = (
+    "SELECT count(*) FROM wake_fires f JOIN agent_wake_schedules s USING (schedule_id) "
+    "WHERE f.conversation_id <> s.conversation_id"
+)
+
+
+class TestFireHoldsItsScheduleConversation:
+    """v014: ``(conversation_id, schedule_id)`` of a fire references its schedule's primary key."""
+
+    async def test_fire_in_another_conversation_is_refused(self, pg_schema: tuple[str, str]) -> None:
+        """A fire written under its schedule's id but another conversation is refused; the right pair is written."""
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await _apply(conn, schema)
+            conv, user, agent = _new_uuid(), _new_uuid(), _new_uuid()
+            schedule_id = await _seed_schedule(conn, conv_id=conv, user_id=user, agent_id=agent)
+            with pytest.raises(asyncpg.ForeignKeyViolationError, match="wake_fires_schedule_conversation_fk"):
+                await _seed_fire(conn, conv_id=_new_uuid(), schedule_id=schedule_id)
+            await _seed_fire(conn, conv_id=conv, schedule_id=schedule_id)
+            assert await conn.fetchval(_MISMATCHED_FIRES_SQL) == 0
+        finally:
+            await conn.close()
+
+    async def test_added_not_valid_and_mismatches_counted(self, pg_schema: tuple[str, str]) -> None:
+        """The key is added NOT VALID (the expand step; VALIDATE waits for the held CONTRACT migration), and the
+        read-only mismatch count on a seeded schema finds exactly the rows written before it."""
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await _apply(conn, schema)
+            validated = await conn.fetchval(
+                "SELECT c.convalidated FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid "
+                "JOIN pg_namespace n ON n.oid = t.relnamespace "
+                "WHERE c.conname = 'wake_fires_schedule_conversation_fk' AND n.nspname = $1",
+                schema,
+            )
+            assert validated is False
+            conv, user, agent = _new_uuid(), _new_uuid(), _new_uuid()
+            schedules = [await _seed_schedule(conn, conv_id=conv, user_id=user, agent_id=agent) for _ in range(3)]
+            for schedule_id in schedules:
+                await _seed_fire(conn, conv_id=conv, schedule_id=schedule_id)
+            await _seed_fire(conn, conv_id=conv)
+            assert await conn.fetchval(_MISMATCHED_FIRES_SQL) == 0
+            # a row from before v014 (written with the key absent) is what the count is for
+            await conn.execute("ALTER TABLE wake_fires DROP CONSTRAINT wake_fires_schedule_conversation_fk")
+            await _seed_fire(conn, conv_id=_new_uuid(), schedule_id=schedules[0])
+            assert await conn.fetchval(_MISMATCHED_FIRES_SQL) == 1
+        finally:
+            await conn.close()
+
+
 class TestSubscriptionDeleteSetsFireSubIdNull:
     """``webhook_subscriptions`` DELETE sets ``wake_fires.webhook_subscription_id`` NULL."""
 

@@ -218,10 +218,28 @@ def _normalise_default(value: str | None) -> str | None:
     return base.strip()
 
 
+def _factory_not_valid() -> frozenset[str]:
+    """The foreign keys the factories declare not yet validated (``postgresql_not_valid=True``).
+
+    A ``CREATE TABLE`` validates every constraint it creates (Postgres ignores ``NOT VALID`` there), so the factory
+    schema's catalog cannot show the state; the factory declares it, and the migration schema's catalog must agree.
+
+    :return: their names
+    :rtype: frozenset[str]
+    """
+    return frozenset(
+        str(constraint.name)
+        for table in _factory_metadata().tables.values()
+        for constraint in table.constraints
+        if isinstance(constraint, sa.ForeignKeyConstraint) and constraint.dialect_options["postgresql"]["not_valid"]
+    )
+
+
 async def _constraints(
     conn: asyncpg.Connection,
     schema: str,
     table: str,
+    not_valid: frozenset[str] | None = None,
 ) -> dict[str, tuple]:
     """Return constraint signatures keyed by a stable, name-free key.
 
@@ -239,7 +257,10 @@ async def _constraints(
     :ptype schema: str
     :param table: table name
     :ptype table: str
-    :return: set-shaped dict of structural constraint signatures
+    :param not_valid: the foreign keys declared not yet validated, for a schema built by ``CREATE TABLE`` (whose
+        catalog shows every constraint validated); None reads the state from the catalog
+    :ptype not_valid: frozenset[str] | None
+    :return: set-shaped dict of structural constraint signatures; a foreign key's carries whether it is validated
     :rtype: dict[str, tuple]
     """
     rows = await conn.fetch(
@@ -249,6 +270,7 @@ async def _constraints(
             c.conname,
             pg_get_constraintdef(c.oid) AS def,
             c.confdeltype,
+            c.convalidated,
             (
                 SELECT array_agg(att.attname ORDER BY k.ord)
                   FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord)
@@ -283,12 +305,16 @@ async def _constraints(
             # with the current schema, which differs between the two
             # compared schemas; strip it so only the structural shape
             # (columns, referenced columns, ON DELETE action) compares.
-            fk_def = _norm_def(r["def"]).replace(f"{schema}.", "")
+            # The validation state is compared on its own: ``pg_get_constraintdef`` ends a key added ``NOT VALID``
+            # with those words, which a ``CREATE TABLE`` never shows.
+            fk_def = _norm_def(r["def"]).replace(f"{schema}.", "").removesuffix(" NOT VALID")
+            validated = r["convalidated"] if not_valid is None else r["conname"] not in not_valid
             result[f"f:{r['conname']}"] = (
                 "f",
                 r["conname"],
                 fk_def,
                 r["confdeltype"],
+                validated,
             )
     return result
 
@@ -443,7 +469,7 @@ class TestFactoryMigrationParity:
         conn = await asyncpg.connect(url)
         try:
             mig_cons = await _constraints(conn, mig, table)
-            fac_cons = await _constraints(conn, fac, table)
+            fac_cons = await _constraints(conn, fac, table, _factory_not_valid())
         finally:
             await conn.close()
         assert mig_cons == fac_cons

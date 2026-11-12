@@ -83,9 +83,10 @@ _ADVISORY_XACT_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)"
 # subscription since a point in time. Both are keyed by the wake's own
 # conversation, the fire rows' partition.
 # A wake's fires are found by its schedule alone: schedule_id is unique (agent_wake_schedules UNIQUE (schedule_id)), and
-# every writer stamps a fire with its own schedule's conversation (the tick's claim and the manual claim both take the
-# pair from the schedule row), so binding the conversation too selects the same rows. Bound, YugabyteDB's planner
-# reads the conversation's every fire through the hashed primary key prefix instead of this wake's day.
+# v014's wake_fires_schedule_conversation_fk ties a fire's (conversation_id, schedule_id) to its schedule's primary key
+# (every writer takes the pair from the schedule row), so one schedule's fires are one conversation's and binding the
+# conversation too selects the same rows. Bound, YugabyteDB's planner reads the conversation's every fire through the
+# hashed primary key prefix instead of this wake's day.
 _COUNT_WAKE_FIRES_SQL = (
     "SELECT COUNT(*) FROM wake_fires "
     "WHERE schedule_id = $1 AND actual_fired_at > $2 "
