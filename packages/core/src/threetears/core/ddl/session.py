@@ -30,6 +30,7 @@ from threetears.core.ddl.errors import SessionRequiredError
 __all__ = [
     "ConnectionSession",
     "MigrationSession",
+    "SessionReader",
     "SqlConnection",
 ]
 
@@ -177,3 +178,43 @@ class ConnectionSession:
         # convert at border: asyncpg Records iterate values, not keys
         result = [dict(row) for row in rows]
         return result
+
+
+class SessionReader:
+    """
+    a :class:`MigrationSession` (a migration's ``DataStore`` or :class:`ConnectionSession`) as the asyncpg-shaped
+    ``fetch`` / ``execute`` the keyed helpers take, so a migration's backfill pages its rows by key
+    (:func:`~threetears.core.data.migrations.backfill.backfill_pages`) on the run's own session.
+
+    :param session: the migration's session
+    :ptype session: MigrationSession
+    """
+
+    def __init__(self, session: MigrationSession) -> None:
+        self._session = session
+
+    async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        """
+        the rows ``query`` returns, on the session.
+
+        :param query: SQL query text
+        :ptype query: str
+        :param args: positional parameter values
+        :ptype args: Any
+        :return: rows as column-name-keyed dicts
+        :rtype: list[dict[str, Any]]
+        """
+        return await self._session.query(query, *args)
+
+    async def execute(self, query: str, *args: Any) -> str:
+        """
+        execute ``query`` on the session.
+
+        :param query: SQL statement text
+        :ptype query: str
+        :param args: positional parameter values
+        :ptype args: Any
+        :return: status tag
+        :rtype: str
+        """
+        return str(await self._session.execute(query, *args))

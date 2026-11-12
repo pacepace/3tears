@@ -143,7 +143,7 @@ class TestTheOrderHelpers:
             L2Order(datetime(2026, 9, 26), 1)  # noqa: DTZ001 - the naive value is the point
 
     def test_the_migration_refuses_anything_but_a_table_name(self) -> None:
-        assert len(l2_order_migration_statements("agent_ab.indexes")) == 3
+        assert len(l2_order_migration_statements("agent_ab.indexes")) == 2
         with pytest.raises(ValueError, match="plain SQL table name"):
             l2_order_migration_statements("indexes; DROP TABLE users")
 

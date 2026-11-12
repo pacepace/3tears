@@ -161,3 +161,45 @@ async def test_the_alters_run_under_the_ddl_lock_on_their_own_connection() -> No
     assert alters
     assert take < min(alters)
     assert max(alters) < give
+
+
+class _HeldConnection(_FakeConnection):
+    """the connection over two legacy rows: the backfill's keyset page answered from them."""
+
+    rows = [
+        {"conversation_id": "c1", "context_id": "x1", "long_desc": ""},
+        {"conversation_id": "c1", "context_id": "x2", "long_desc": "kept"},
+    ]
+
+    async def fetch(self, query: str, *args: Any) -> list[Any]:
+        """
+        answer the lock's statements, and the backfill's first page with the held rows.
+
+        :param query: SQL text
+        :ptype query: str
+        :param args: positional parameters
+        :ptype args: Any
+        :return: rows
+        :rtype: list[Any]
+        """
+        if "FROM context_items" in query and "> (" not in query:
+            self.statements.append(query)
+            return self.rows
+        return await super().fetch(query, *args)
+
+
+async def test_the_long_desc_backfill_writes_its_rows_by_key() -> None:
+    """Flips if ``long_desc`` is backfilled by one UPDATE of every row rather than by the keys of the rows a keyset page
+    read, or a row whose ``long_desc`` is set is written."""
+    pool = _FakePool()
+    pool.connection = _HeldConnection()
+
+    assert await migrate_context_items_schema(pool) is True
+
+    statements = pool.connection.statements
+    assert not [sql for sql in statements if sql.startswith("UPDATE context_items")], statements
+    writes = [sql for sql in statements if sql.startswith("UPDATE")]
+    assert writes == [
+        'UPDATE "context_items" SET "long_desc" = LEFT("content", 1000) '
+        'WHERE ("conversation_id", "context_id") IN (SELECT unnest($1::text[]::uuid[]), unnest($2::text[]::uuid[]))'
+    ], statements

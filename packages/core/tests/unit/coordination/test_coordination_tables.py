@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 from threetears.core.cache.sqlite import SQLiteBackend
-from threetears.core.collections.l2_order import l2_order_of
+from threetears.core.collections.l2_order import L2_ORDER_FLOOR, l2_order_of
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import BIGINT_TYPE, BYTES_TYPE, INT_TYPE, STRING_TYPE
@@ -77,6 +77,27 @@ class _RecordingStore:
         del params
         self.statements.append(" ".join(sql.split()))
         return "CREATE TABLE"
+
+
+#: an order a row already carries, which the backfill leaves alone
+_ORDERED_EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+class _BackfillStore:
+    """a migration's DataStore over held rows: records every statement, answers a keyset page's first read with a
+    table's rows (fewer than a page, so the read ends there)."""
+
+    def __init__(self, rows: dict[str, list[dict[str, Any]]]) -> None:
+        self.rows = rows
+        self.statements: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def execute(self, sql: str, *params: Any) -> str:
+        self.statements.append((" ".join(sql.split()), params))
+        return "UPDATE 1" if sql.startswith("UPDATE") else "ALTER TABLE"
+
+    async def query(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        self.statements.append((" ".join(sql.split()), params))
+        return next((rows for table, rows in self.rows.items() if f" FROM {table} " in sql), [])
 
 
 class _SweepStore:
@@ -300,19 +321,38 @@ class TestTheMigrationMatchesTheDeclaredSchemas:
             assert build < drop, store.statements
 
     @pytest.mark.asyncio
-    async def test_v002_adds_both_columns_then_backfills_each_compare_and_swap_table(self) -> None:
-        # one statement per execute, DDL before DML: YugabyteDB runs neither mixed into the other.
-        store = _RecordingStore()
+    async def test_v002_adds_both_columns_then_backfills_each_compare_and_swap_table_by_key(self) -> None:
+        # one statement per execute, DDL before DML: YugabyteDB runs neither mixed into the other. The backfill reads
+        # the rows a page at a time by key and writes the floor into the ones carrying no order by their keys: never
+        # one UPDATE of every row.
+        store = _BackfillStore(
+            {
+                "coordination_counters": [
+                    {"purpose": "login", "key": "ip-1", "l2_epoch": None, "l2_revision": None},
+                    {"purpose": "login", "key": "ip-2", "l2_epoch": _ORDERED_EPOCH, "l2_revision": 3},
+                ]
+            }
+        )
         await add_l2_order_columns(store)  # type: ignore[arg-type]
         for table in ("coordination_counters", "coordination_claims", "coordination_redemptions"):
-            statements = [s for s in store.statements if f" {table} " in f"{s} "]
-            assert statements == [
+            statements = [s for s, _ in store.statements if f" {table} " in f"{s} " or f'"{table}"' in s]
+            assert statements[:3] == [
                 f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS l2_epoch TIMESTAMPTZ",
                 f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS l2_revision BIGINT",
-                f"UPDATE {table} SET l2_epoch = '1970-01-01T00:00:00+00:00'::timestamptz, l2_revision = 0 "
-                f"WHERE l2_epoch IS NULL OR l2_revision IS NULL",
+                f'SELECT "purpose", "key", "l2_epoch", "l2_revision" FROM {table} ORDER BY "purpose", "key" LIMIT 501',
             ], f"{table}: wrong v002 statements"
-        assert not [s for s in store.statements if "coordination_revocations" in s], (
+            assert not [s for s in statements if s.startswith("UPDATE") and "unnest" not in s], (
+                f"{table}: an UPDATE named no key"
+            )
+        writes = [(s, p) for s, p in store.statements if s.startswith("UPDATE")]
+        assert writes == [
+            (
+                'UPDATE "coordination_counters" SET "l2_epoch" = $1, "l2_revision" = $2 '
+                'WHERE ("purpose", "key") IN (SELECT unnest($3::text[]), unnest($4::text[]))',
+                (L2_ORDER_FLOOR.epoch, 0, ["login"], ["ip-1"]),
+            )
+        ], "only the row carrying no order is written, by its key"
+        assert not [s for s, _ in store.statements if "coordination_revocations" in s], (
             "v002 touched a table nothing compare-and-swaps"
         )
 

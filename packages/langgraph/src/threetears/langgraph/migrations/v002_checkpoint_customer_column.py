@@ -34,14 +34,13 @@ Revision ID: 002
 from __future__ import annotations
 
 import re
-from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping
 from typing import Any, Final
 from uuid import UUID
 
 from threetears.core.data.store import DataStore
-from threetears.core.keyed import KeyBatch, update_keyed
-from threetears.core.keyset import keyset_pages
+from threetears.core.ddl.session import SessionReader
+from threetears.core.data.migrations.backfill import BACKFILL_PAGE, backfill_pages
 from threetears.observe import get_logger
 
 __all__ = ["add_checkpoint_customer_column"]
@@ -86,9 +85,6 @@ _DDL: Final[tuple[str, ...]] = (
     "WHERE customer_id IS NOT NULL",
 )
 
-#: rows a backfill page reads
-_BACKFILL_PAGE: Final = 500
-
 
 def customer_of(thread_id: str) -> UUID | None:
     """the customer a stored ``thread_id`` names, as the trigger reads it: its UUID prefix, or None.
@@ -102,22 +98,10 @@ def customer_of(thread_id: str) -> UUID | None:
     return None if found is None else UUID(found.group(1))
 
 
-class _StoreReader:
-    """a migration's :class:`DataStore` as the asyncpg-shaped reader the keyed helpers take."""
-
-    def __init__(self, store: DataStore) -> None:
-        self._store = store
-
-    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
-        return await self._store.query(query, *params)
-
-    async def execute(self, query: str, *params: Any) -> str:
-        return str(await self._store.execute(query, *params))
-
-
-async def backfill_customer_ids(conn: Any, *, page: int = _BACKFILL_PAGE) -> int:
+async def backfill_customer_ids(conn: Any, *, page: int = BACKFILL_PAGE) -> int:
     """set ``customer_id`` on every checkpoint row whose ``thread_id`` names a customer and whose column differs, a
-    page at a time in key order; each page one keyed ``UPDATE`` per customer it holds.
+    page at a time in key order (:func:`~threetears.core.data.migrations.backfill.backfill_pages`); each page one keyed ``UPDATE`` per
+    customer it holds.
 
     No cache holds ``customer_id`` (the saver caches checkpoint bundles, which do not carry it), so no row is evicted.
 
@@ -130,41 +114,25 @@ async def backfill_customer_ids(conn: Any, *, page: int = _BACKFILL_PAGE) -> int
     """
     written = 0
     for table, key in CUSTOMER_TABLES.items():
-        columns = ", ".join(f'"{column}"' for column in (*key, "customer_id"))
-        async for rows in keyset_pages(
-            conn, f"SELECT {columns} FROM {table}", key, page_size=page, lead_array="text[]"
-        ):
-            written += await _fill_page(conn, table, key, rows)
-    return written
-
-
-async def _fill_page(conn: Any, table: str, key: Sequence[str], rows: Sequence[dict[str, Any]]) -> int:
-    """write one page's customers, one keyed ``UPDATE`` per customer whose rows differ.
-
-    :param conn: the reader
-    :ptype conn: Any
-    :param table: the checkpoint table
-    :ptype table: str
-    :param key: its primary key
-    :ptype key: Sequence[str]
-    :param rows: the page's rows (key and ``customer_id``)
-    :ptype rows: Sequence[dict[str, Any]]
-    :return: the rows written
-    :rtype: int
-    """
-    by_customer: dict[UUID, list[tuple[Any, ...]]] = defaultdict(list)
-    for row in rows:
-        customer = customer_of(row["thread_id"])
-        if customer is not None and row["customer_id"] != customer:
-            by_customer[customer].append(tuple(row[column] for column in key))
-    written = 0
-    for customer, keys in by_customer.items():
-        casts = tuple(_KEY_CASTS.get(column, "text") for column in key)
-        updated = await update_keyed(
-            conn, table, values={"customer_id": customer}, keys=KeyBatch(tuple(key), keys, casts=casts)
+        written += await backfill_pages(
+            conn,
+            table,
+            key,
+            columns=("customer_id",),
+            fill=_customer_unless_held,
+            casts=tuple(_KEY_CASTS.get(column, "text") for column in key),
+            lead_array="text[]",
+            page_size=page,
         )
-        written += updated.count
     return written
+
+
+def _customer_unless_held(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    """the customer a row's ``thread_id`` names, when the row does not hold it already; None otherwise."""
+    customer = customer_of(row["thread_id"])
+    if customer is None or row["customer_id"] == customer:
+        return None
+    return {"customer_id": customer}
 
 
 async def add_checkpoint_customer_column(store: DataStore) -> None:
@@ -178,5 +146,5 @@ async def add_checkpoint_customer_column(store: DataStore) -> None:
     """
     for statement in _DDL:
         await store.execute(statement)
-    written = await backfill_customer_ids(_StoreReader(store))
+    written = await backfill_customer_ids(SessionReader(store))
     log.info("langgraph v002: checkpoint customer_id added, filled on %d existing row(s)", written)

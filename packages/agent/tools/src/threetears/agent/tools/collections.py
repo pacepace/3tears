@@ -11,6 +11,7 @@ by the L1 cache bootstrap.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
@@ -33,7 +34,8 @@ from threetears.core.collections.schema_backed import (
     Index as SchemaIndex,
 )
 from threetears.core.data.migrations import ConnectionSession, database_ddl_lock
-from threetears.core.keyed import update_keyed
+from threetears.core.keyed import Fragment, update_keyed
+from threetears.core.data.migrations.backfill import backfill_pages
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.observe import contain, get_logger
 
@@ -495,6 +497,11 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         return evicted
 
 
+def _long_desc_from_content(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    """an empty ``long_desc`` filled from the first 1000 characters of the row's ``content``; None for one set."""
+    return {"long_desc": Fragment('LEFT("content", 1000)')} if row["long_desc"] == "" else None
+
+
 async def migrate_context_items_schema(pool: Any) -> bool:
     """migrate context_items table from legacy schema to v0.5.0 schema.
 
@@ -549,7 +556,16 @@ async def migrate_context_items_schema(pool: Any) -> bool:
                 await conn.execute(
                     "ALTER TABLE context_items ADD COLUMN IF NOT EXISTS long_desc TEXT NOT NULL DEFAULT ''"
                 )
-                await conn.execute("UPDATE context_items SET long_desc = LEFT(content, 1000) WHERE long_desc = ''")
+                key = ContextItemCollection.schema.pk_columns
+                await backfill_pages(
+                    conn,
+                    "context_items",
+                    key,
+                    columns=("long_desc",),
+                    fill=_long_desc_from_content,
+                    casts=("uuid",) * len(key),
+                    lead_array=ContextItemCollection.schema.hashed_lead_array(key),
+                )
                 log.info("Added context_items.long_desc, backfilled from content")
 
             # Drop legacy check constraint (allow any context_type)

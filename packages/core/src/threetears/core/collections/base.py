@@ -5655,7 +5655,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 f"save_ordered_to_store). Without them two winners persisting in reverse leave L3 on the "
                 f"earlier row, and a broker restart then loses the later change. Declare both columns "
                 f"(threetears.core.collections.schema_backed.l2_order_columns()) and migrate the table "
-                f"(threetears.core.collections.l2_order.l2_order_migration_statements())"
+                f"(threetears.core.collections.l2_order.l2_order_migration_statements(), then backfill_l2_order())"
             )
 
     async def _l2_epoch(self, kv: NatsKvBucket) -> datetime:

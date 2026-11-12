@@ -8,10 +8,11 @@ whose persist lands last cannot overwrite a later one. The order lives in two co
 ``l2_cas_mutate`` before it touches L2.
 
 A table created by v001 on 0.55.0 or later already has them, because v001 renders the current
-schema; every statement here is ``IF NOT EXISTS`` or ``WHERE ... IS NULL``, so it is a no-op there
-and on a replay. A table created earlier gains both columns, and its existing rows are backfilled
-to the order floor -- below every order a live bucket can produce -- so the first swap after this
-migration supersedes them and every later one is fenced.
+schema; the DDL is ``IF NOT EXISTS`` and the backfill writes only a row that carries no order, so it is
+a no-op there and on a replay. A table created earlier gains both columns, and its existing rows are
+backfilled to the order floor -- below every order a live bucket can produce -- a page at a time by
+key (``backfill_l2_order``), so the first swap after this migration supersedes them and every later
+one is fenced.
 
 ``coordination_revocations`` is not touched: it is written through ``save_entity``, never
 compare-and-swapped, so it has no order to keep.
@@ -23,8 +24,11 @@ and DML in one transaction.
 from __future__ import annotations
 
 from threetears.core.collections.l2_order import l2_order_migration_statements
+from threetears.core.collections.schema_backed import sql_cast
 from threetears.core.coordination.tables import COORDINATION_TABLE_SCHEMAS
+from threetears.core.data.migrations.backfill import backfill_l2_order
 from threetears.core.data.store import DataStore
+from threetears.core.ddl.session import SessionReader
 from threetears.observe import get_logger
 
 __all__ = ["add_l2_order_columns"]
@@ -46,3 +50,11 @@ async def add_l2_order_columns(store: DataStore) -> None:
         log.info("adding L2 order columns to coordination table", extra={"extra_data": {"table": schema.name}})
         for statement in l2_order_migration_statements(schema.name):
             await store.execute(statement)
+        key = schema.pk_columns
+        await backfill_l2_order(
+            SessionReader(store),
+            schema.name,
+            key,
+            casts=tuple(sql_cast(schema.column(column).column_type) for column in key),
+            lead_array=schema.hashed_lead_array(key),
+        )

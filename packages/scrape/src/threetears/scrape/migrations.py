@@ -12,13 +12,23 @@ though several packages can apply against the same PLATFORM schema.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from typing import Any
 
 from threetears.core.data.migrations import ConnectionSession, MigrationRunner, MigrationScope, PackageMigrations
 from threetears.core.data.store import DataStore
+from threetears.core.ddl.session import SessionReader
+from threetears.core.data.migrations.backfill import backfill_pages
 from threetears.observe import get_logger
 
-__all__ = ["LEGACY_EMPTY_ENRICHMENT_FAILURE", "PACKAGE_NAME", "apply_migrations", "register"]
+__all__ = [
+    "LEGACY_EMPTY_ENRICHMENT_FAILURE",
+    "PACKAGE_NAME",
+    "apply_migrations",
+    "legacy_enrichment_translation",
+    "register",
+]
 
 log = get_logger(__name__)
 
@@ -349,22 +359,58 @@ async def v013_extraction_enrichment_status(store: DataStore) -> None:
 
     Each statement is its own ``execute``: YugabyteDB auto-commits DDL, so an UPDATE sharing a
     transaction with the ALTER that added its column runs against a stale snapshot and can
-    silently update nothing. Every UPDATE is gated on ``enrichment_status IS NULL``, so a replay
+    silently update nothing. The rows are read a page at a time by key and each page's rows of
+    one outcome written by one keyed ``UPDATE`` (:func:`~threetears.core.data.migrations.backfill.backfill_pages`),
+    never every row in one statement; :func:`legacy_enrichment_translation` decides each row, the
+    same rule the read side applies, and answers nothing for a row that has a status, so a replay
     touches no row the first run, or the pass itself, has already stamped.
     """
     await store.execute("ALTER TABLE scrape_extractions ADD COLUMN IF NOT EXISTS enrichment_status TEXT")
     await store.execute("ALTER TABLE scrape_extractions ADD COLUMN IF NOT EXISTS enrichment_failure TEXT")
-    await store.execute(
-        "UPDATE scrape_extractions SET enrichment_status = 'enriched' "
-        "WHERE enrichment_status IS NULL AND enrichment_notes IS NOT NULL "
-        "AND enrichment_notes NOT IN ('{}'::jsonb, '\"{}\"'::jsonb)"
+    await backfill_pages(
+        SessionReader(store),
+        "scrape_extractions",
+        ("id",),
+        columns=("enrichment_status", "enrichment_notes"),
+        fill=lambda row: legacy_enrichment_translation(row) or None,
     )
-    await store.execute(
-        "UPDATE scrape_extractions SET enrichment_status = 'failed', enrichment_notes = NULL, "
-        "enrichment_failure = $1 "
-        "WHERE enrichment_status IS NULL AND enrichment_notes IN ('{}'::jsonb, '\"{}\"'::jsonb)",
-        LEGACY_EMPTY_ENRICHMENT_FAILURE,
-    )
+
+
+def _json_value(raw: Any) -> Any:
+    """a JSONB field as Python: its text decoded, or the value a codec already decoded (a decoded string that is not
+    JSON text is that string)."""
+    if not isinstance(raw, str):
+        return raw
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
+
+
+def legacy_enrichment_translation(row: Mapping[str, Any]) -> dict[str, Any]:
+    """the enrichment fields a pre-0.55.0 row must read as, or ``{}`` when it needs none: v013's rule, and the read
+    side's for a copy cached before v013 ran (``collections.ScrapeExtraction``).
+
+    A row that has a status is never touched, and neither is one with no notes (the pass never ran). Non-empty
+    notes read ``'enriched'``; ``{}`` (or ``"{}"``, the empty object double-encoded as a JSON string) reads
+    ``'failed'`` with notes cleared and :data:`LEGACY_EMPTY_ENRICHMENT_FAILURE` as the reason.
+
+    :param row: the raw row (``enrichment_status``, ``enrichment_notes``)
+    :ptype row: Mapping[str, Any]
+    :return: the fields to overwrite, or ``{}``
+    :rtype: dict[str, Any]
+    """
+    raw_notes = row.get("enrichment_notes")
+    if row.get("enrichment_status") is not None or raw_notes is None:
+        return {}
+    notes = _json_value(raw_notes)
+    if notes == {} or notes == "{}":
+        return {
+            "enrichment_status": "failed",
+            "enrichment_notes": None,
+            "enrichment_failure": LEGACY_EMPTY_ENRICHMENT_FAILURE,
+        }
+    return {"enrichment_status": "enriched"}
 
 
 async def apply_migrations(pool: Any) -> None:

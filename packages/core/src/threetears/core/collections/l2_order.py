@@ -26,9 +26,9 @@ other path never blocks a compare-and-swap.
 - ``l2_epoch`` -- ``TIMESTAMPTZ``, nullable, mutable;
 - ``l2_revision`` -- ``BIGINT``, nullable, mutable (a busy bucket passes 2**31 revisions).
 
-:func:`l2_order_migration_statements` renders the migration that adds both to an existing table
-and backfills existing rows to :data:`L2_ORDER_FLOOR`, below every order a live bucket can
-produce, so the fence works on the first write after the migration.
+:func:`l2_order_migration_statements` renders the DDL that adds both to an existing table, and
+:func:`~threetears.core.data.migrations.backfill.backfill_l2_order` then writes :data:`L2_ORDER_FLOOR` into its existing rows, a page at a time by key,
+below every order a live bucket can produce, so the fence works on the first write after the migration.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
+
 
 __all__ = [
     "L2_EPOCH_COLUMN",
@@ -146,28 +147,21 @@ def without_l2_order(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def l2_order_migration_statements(table_name: str) -> tuple[str, ...]:
-    """the statements that give an existing table the order columns and backfill its rows.
+    """the statements that give an existing table the order columns;
+    :func:`~threetears.core.data.migrations.backfill.backfill_l2_order` then fills its rows.
 
-    Every statement is idempotent, so a migration replayed on recovery is safe, and the DDL and
-    the backfill are separate statements: YugabyteDB does not run DDL and DML in one transaction.
-    The backfill writes :data:`L2_ORDER_FLOOR` into rows that carry no order, so the first
-    compare-and-swap after the migration supersedes them and every later one is fenced.
+    Both are idempotent, so a migration replayed on recovery is safe. They are DDL only: YugabyteDB does not run
+    DDL and DML in one transaction, and the backfill reads the table by key, a page at a time.
 
     :param table_name: the table to migrate, unqualified or ``schema.table``
     :ptype table_name: str
-    :return: the ``ALTER TABLE`` statements, then the backfill ``UPDATE``
+    :return: the ``ALTER TABLE`` statements
     :rtype: tuple[str, ...]
     :raises ValueError: when ``table_name`` is not a plain SQL identifier
     """
     if not _TABLE_NAME.match(table_name):
         raise ValueError(f"{table_name!r} is not a plain SQL table name; refusing to interpolate it")
-    floor = L2_ORDER_FLOOR.epoch.isoformat()
     return (
         f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {L2_EPOCH_COLUMN} TIMESTAMPTZ",
         f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {L2_REVISION_COLUMN} BIGINT",
-        (
-            f"UPDATE {table_name} SET {L2_EPOCH_COLUMN} = '{floor}'::timestamptz, "
-            f"{L2_REVISION_COLUMN} = {L2_ORDER_FLOOR.revision} "
-            f"WHERE {L2_EPOCH_COLUMN} IS NULL OR {L2_REVISION_COLUMN} IS NULL"
-        ),
     )
