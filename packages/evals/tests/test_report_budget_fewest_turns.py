@@ -31,7 +31,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import socket
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Final
@@ -39,6 +38,7 @@ from typing import Any, Final
 import pytest
 
 from packages.evals.tests.analyst_support import fixture_snapshots
+from packages.evals.tests.offline_support import Connect, refuse_connects
 from packages.evals.tests.report_writer_support import (
     FakeToolTurnClient,
     FakeTurnModel,
@@ -185,18 +185,11 @@ async def test_a_report_that_runs_out_later_says_what_its_budget_admitted() -> N
 
 
 @pytest.fixture
-def offline(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+def offline(monkeypatch: pytest.MonkeyPatch) -> list[Connect]:
     """No key in the environment, and every socket connect refused and counted."""
     for variable in KEY_VARIABLES.values():
         monkeypatch.delenv(variable, raising=False)
-    attempts: list[object] = []
-
-    def connect(_self: socket.socket, address: object) -> None:
-        attempts.append(address)
-        raise AssertionError(f"a replay-only run connected to {address}")
-
-    monkeypatch.setattr(socket.socket, "connect", connect)
-    return attempts
+    return refuse_connects(monkeypatch)
 
 
 def _lines(path: Path, sessions: dict[str, Sequence[tuple[float, TurnReply | None]]]) -> None:
@@ -273,7 +266,7 @@ def _dollars(text: str) -> float:
 
 
 async def test_the_writer_eval_warns_once_and_says_what_the_paged_reports_needed(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     arms = {"two revisions": Writer(WRITER), "one revision": Writer(WRITER, revisions=1)}
     _laid(tmp_path, arms)
@@ -314,7 +307,7 @@ async def test_the_writer_eval_warns_once_and_says_what_the_paged_reports_needed
     ]
 
 
-async def test_the_writer_eval_gives_no_warning_where_two_ceilings_fit(tmp_path: Path, offline: list[object]) -> None:
+async def test_the_writer_eval_gives_no_warning_where_two_ceilings_fit(tmp_path: Path, offline: list[Connect]) -> None:
     arms = {"two revisions": Writer(WRITER), "one revision": Writer(WRITER, revisions=1)}
     _laid(tmp_path, arms)
 
@@ -324,7 +317,7 @@ async def test_the_writer_eval_gives_no_warning_where_two_ceilings_fit(tmp_path:
 
 
 async def test_a_writer_eval_whose_budget_cannot_admit_one_turn_is_refused_before_the_store_opens(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     arms = {"two revisions": Writer(WRITER), "one revision": Writer(WRITER, revisions=1)}
     _laid(tmp_path, arms)
@@ -354,7 +347,7 @@ def _floor(model: str, text: str, role: str = "analyst") -> float:
 
 
 async def test_an_editor_whose_first_turn_the_budget_cannot_admit_is_refused_by_name_before_the_store_opens(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     # An Opus editor under a Sonnet analyst, at a budget the analyst's first turn fits and the editor's does not.
     kairo = kairo_case(tmp_path / "cases")
@@ -382,7 +375,7 @@ async def test_an_editor_whose_first_turn_the_budget_cannot_admit_is_refused_by_
 
 
 async def test_a_warning_on_a_model_no_acceptance_run_recorded_cites_no_figures(
-    tmp_path: Path, offline: list[object]
+    tmp_path: Path, offline: list[Connect]
 ) -> None:
     arms = {"two revisions": Writer(HAIKU), "one revision": Writer(HAIKU, revisions=1)}
     _laid(tmp_path, arms, model=HAIKU)

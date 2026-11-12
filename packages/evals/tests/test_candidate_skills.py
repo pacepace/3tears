@@ -18,7 +18,6 @@ import asyncio
 import difflib
 import json
 import re
-import socket
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Final
@@ -41,6 +40,7 @@ from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
     read_candidate_skill,
     refuse_unlike_editors,
 )
+from packages.evals.tests.offline_support import Connect, refuse_connects
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.ops.report_writer.writer_contract import BOUNCES_MEASURE, MUST_FIX_OPEN_MEASURE
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion
@@ -70,18 +70,11 @@ HEADLINE_ANSWERS_CHANGES: Final = [
 KEYS: Final = ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY")
 
 
-def _offline(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+def _offline(monkeypatch: pytest.MonkeyPatch) -> list[Connect]:
     """No key in the environment, and every socket connect refused and counted."""
     for name in KEYS:
         monkeypatch.delenv(name, raising=False)
-    attempts: list[object] = []
-
-    def connect(_self: socket.socket, address: object) -> None:
-        attempts.append(address)
-        raise AssertionError(f"a dry acceptance run connected to {address}")
-
-    monkeypatch.setattr(socket.socket, "connect", connect)
-    return attempts
+    return refuse_connects(monkeypatch, run="a dry acceptance run")
 
 
 def _shipped_copy(directory: Path) -> Path:
@@ -93,7 +86,7 @@ def _shipped_copy(directory: Path) -> Path:
 
 
 @pytest.fixture(scope="module")
-def like_against_like(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[Acceptance, list[object]]]:
+def like_against_like(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[Acceptance, list[Connect]]]:
     """One dry run, offline, of the shipped skill as its own candidate: its files with only the README, which no
     session reads, changed, so the arms differ in their skill digest alone and every session's text is the control's.
     """
@@ -182,7 +175,7 @@ def test_the_door_refuses_the_shipped_skill_itself_a_control_name_and_two_candid
 
 
 def test_the_shipped_skill_as_its_own_candidate_reads_not_separated(
-    like_against_like: tuple[Acceptance, list[object]],
+    like_against_like: tuple[Acceptance, list[Connect]],
 ) -> None:
     found, attempts = like_against_like
     assert attempts == []
@@ -266,7 +259,7 @@ def _shaped(read: WriterPromotion, *, decision: str, outcome: str, low: float, h
 
 
 def test_a_candidate_skill_passes_only_when_the_gate_reads_it_better(
-    like_against_like: tuple[Acceptance, list[object]],
+    like_against_like: tuple[Acceptance, list[Connect]],
 ) -> None:
     found, _ = like_against_like
     variant, runs, report = found.variant, found.result.arms, found.report
@@ -318,7 +311,7 @@ def _finished(read: WriterPromotion, delta: float) -> WriterPromotion:
 
 
 def test_with_two_editors_the_editors_own_readings_and_the_finished_pairs_decide_nothing(
-    like_against_like: tuple[Acceptance, list[object]],
+    like_against_like: tuple[Acceptance, list[Connect]],
 ) -> None:
     found, _ = like_against_like
     variant, runs, report = found.variant, found.result.arms, found.report
