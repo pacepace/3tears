@@ -63,6 +63,7 @@ from threetears.evals.analysis.report.cost_unit import money_ruler, priced_in_pa
 from threetears.evals.analysis.report.figure_keys import (
     aspect_costs_per_thousand,
     cost_basis,
+    cost_in_measure_unit,
     cost_ruler,
     format_figure,
     held_figure,
@@ -231,6 +232,41 @@ def _cost(report_input: ReportInput, arm: str, forms: PageForms) -> TableCell | 
     )
 
 
+def _measure_cell(
+    report_input: ReportInput,
+    forms: PageForms,
+    key: str,
+    stat: Stat | None,
+    *,
+    arm: str,
+    aspect: str | None,
+    costs: Mapping[str, float],
+    others: bool,
+) -> TableCell | ColumnMoney:
+    """One arm's figure on a measure. Where the measure is the one the page reads its cost from and holds none for the
+    arm, the arm's cost is read by the page's one cost rule (``costs``, the cost per 1,000 the options table reads
+    too), in the measure's own unit, so the arm states the cost the options table does, with its priced share beside it
+    where only part of its calls were priced."""
+    cell = _stated(report_input, forms, key, stat, others=others)
+    if _holds(report_input, key, stat) or key != cost_basis(report_input).source or arm not in costs:
+        return cell
+    if key not in report_input.measures or report_input.measures[key].unit not in _DOLLAR_UNITS:
+        return cell
+    fallback = _stated(
+        report_input,
+        forms,
+        key,
+        Stat(mean=cost_in_measure_unit(report_input, key, costs[arm])),
+        others=others,
+    )
+    share = priced_in_part(report_input, arm, aspect)
+    return replace(fallback, flag=share) if isinstance(fallback, ColumnMoney) else fallback
+
+
+#: The units a dollar measure states its means in.
+_DOLLAR_UNITS = frozenset({"usd", "usd_per_1k", "usd_per_1m"})
+
+
 def _arms_by_measure(report_input: ReportInput, look: PageLook, forms: PageForms) -> list[TableBlock]:
     if len(aspects := _measured_aspects(report_input)) > 1:
         return _arms_by_aspect_and_measure(report_input, look, forms, aspects)
@@ -276,8 +312,15 @@ def _arms_by_measure(report_input: ReportInput, look: PageLook, forms: PageForms
                 report_input, forms, key, report_input.judged[key].per_arm.get(arm), kind="judged", others=True
             )
         for key in measures:
-            cells[f"measure:{key}"] = _stated(
-                report_input, forms, key, report_input.measures[key].per_arm.get(arm), others=True
+            cells[f"measure:{key}"] = _measure_cell(
+                report_input,
+                forms,
+                key,
+                report_input.measures[key].per_arm.get(arm),
+                arm=arm,
+                aspect=None,
+                costs=aspect_costs_per_thousand(report_input, None),
+                others=True,
             )
         if costed:
             cells["cost_per_1k"] = _cost(report_input, arm, forms)
@@ -370,11 +413,14 @@ def _arms_by_aspect_and_measure(
             )
         for key in measures:
             measure = report_input.measures[key]
-            cells[f"measure:{key}"] = _stated(
+            cells[f"measure:{key}"] = _measure_cell(
                 report_input,
                 forms,
                 key,
                 on_aspect(report_input, measure, aspect.id).get(arm),
+                arm=arm,
+                aspect=aspect.id,
+                costs=costs[aspect.id],
                 others=read_there(measure, key, aspect),
             )
         if costed:
