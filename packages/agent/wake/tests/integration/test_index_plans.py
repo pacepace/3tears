@@ -260,3 +260,150 @@ async def test_wake_fires_dispatching(conn: asyncpg.Connection) -> None:
     (sql, args), *_ = captured.asked
     plan = await explain_write(conn, sql, *args)
     assert plan_uses_index(plan, "idx_wake_fires_dispatching"), plan.plan
+
+
+async def _busy_conversation(conn: asyncpg.Connection) -> SimpleNamespace:
+    """one conversation's long history, past where its primary key prefix is the cheaper read: 400 schedules (ten
+    active), one subscription, and 6000 hourly fires of two schedules and the subscription (2000 each)."""
+    conversation, agent, user = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO agent_wake_schedules (conversation_id, schedule_id, user_id, agent_id, schedule_type, status,"
+        " next_fire_at) SELECT $1, gen_random_uuid(), $2, $3, 'cron', CASE WHEN g <= 10 THEN 'active' ELSE 'expired'"
+        " END, CASE WHEN g <= 10 THEN now() + g * interval '1 minute' END FROM generate_series(1, 400) g",
+        conversation,
+        user,
+        agent,
+    )
+    first, second = [
+        row["schedule_id"]
+        for row in await conn.fetch(
+            "SELECT schedule_id FROM agent_wake_schedules WHERE conversation_id = $1 ORDER BY schedule_id LIMIT 2",
+            conversation,
+        )
+    ]
+    subscription = uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO webhook_subscriptions (conversation_id, subscription_id, user_id, agent_id, name,"
+        " verification_scheme, secret_ciphertext) VALUES ($1, $2, $3, $4, 'busy', 'generic_hmac_sha256', 'x'::bytea)",
+        conversation,
+        subscription,
+        user,
+        agent,
+    )
+    await conn.execute(
+        "INSERT INTO wake_fires (conversation_id, fire_id, schedule_id, webhook_subscription_id, actual_fired_at,"
+        " status, fire_source) SELECT $1, gen_random_uuid(), CASE g % 3 WHEN 0 THEN $2::uuid WHEN 1 THEN $3::uuid END,"
+        " CASE WHEN g % 3 = 2 THEN $4::uuid END, now() - g * interval '1 hour', 'fired',"
+        " CASE WHEN g % 3 = 2 THEN 'webhook' ELSE 'scheduled_tick' END FROM generate_series(1, 6000) g",
+        conversation,
+        first,
+        second,
+        subscription,
+    )
+    for table in ("agent_wake_schedules", "webhook_subscriptions", "wake_fires"):
+        await conn.execute(f"ANALYZE {table}")
+    return SimpleNamespace(conversation=conversation, schedule=first, subscription=subscription)
+
+
+def _of(captured: _Captured, table: str) -> list[tuple[str, tuple[Any, ...]]]:
+    """the statements asked of ``table`` (a helper's one question of the server's version left out)."""
+    return [asked for asked in captured.asked if table in asked[0]]
+
+
+async def _wake_count(busy: SimpleNamespace, *, webhook: bool) -> tuple[str, tuple[Any, ...]]:
+    """the per-wake count check_fire_limits writes for one of the busy conversation's wakes: its schedule's, or with
+    ``webhook`` its subscription's."""
+    captured = _Captured()
+    trigger = SimpleNamespace(
+        conversation_id=busy.conversation,
+        schedule_id=None if webhook else busy.schedule,
+        webhook_subscription_id=busy.subscription if webhook else None,
+        fire_source="webhook" if webhook else "scheduled_tick",
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        protected=False,
+    )
+    limits = SimpleNamespace(manual_fires_count=True, per_wake=1, per_agent=1)
+    await rate_limit.check_fire_limits(trigger, captured, limits)  # type: ignore[arg-type]
+    (asked, *rest) = captured.asked
+    # a per-wake count of zero is under the cap: the agent's count follows it, which the agent's index serves
+    assert all("ws.agent_id" in sql for sql, _args in rest), captured.asked
+    return asked
+
+
+async def test_wake_schedules_conv_status(conn: asyncpg.Connection) -> None:
+    """Flips if a conversation's active schedules, listed or counted for its cap, stop reading
+    idx_wake_schedules_conv_status (they would read every schedule the conversation ever had)."""
+    busy = await _busy_conversation(conn)
+    captured = _Captured()
+    schedules = _collections(captured).schedules
+    await schedules.list_active_for_conversation(busy.conversation)
+    await schedules.count_active_for_conversation(busy.conversation)
+    statements = _of(captured, "agent_wake_schedules")
+    assert len(statements) >= 2, captured.asked
+    for sql, args in statements:
+        plan = await explain_statement(conn, sql, *args)
+        assert plan_uses_index(plan, "idx_wake_schedules_conv_status"), (sql, plan.plan)
+
+
+async def test_wake_fires_schedule_time(conn: asyncpg.Connection) -> None:
+    """Flips if one schedule's history page or its rate-limit count of the last day stops reading
+    idx_wake_fires_schedule_time."""
+    busy = await _busy_conversation(conn)
+    captured = _Captured()
+    await _collections(captured).fires.list_for_schedule(busy.conversation, busy.schedule)
+    statements = [
+        *_of(captured, "wake_fires"),
+        await _wake_count(busy, webhook=False),
+    ]
+    for sql, args in statements:
+        plan = await explain_statement(conn, sql, *args)
+        assert plan_uses_index(plan, "idx_wake_fires_schedule_time"), (sql, plan.plan)
+
+
+async def test_wake_fires_webhook_time(conn: asyncpg.Connection) -> None:
+    """Flips if one subscription's history page or its rate-limit count of the last day stops reading
+    idx_wake_fires_webhook_time."""
+    busy = await _busy_conversation(conn)
+    captured = _Captured()
+    await _collections(captured).fires.list_for_subscription(busy.conversation, busy.subscription)
+    statements = [
+        *_of(captured, "wake_fires"),
+        await _wake_count(busy, webhook=True),
+    ]
+    for sql, args in statements:
+        plan = await explain_statement(conn, sql, *args)
+        assert plan_uses_index(plan, "idx_wake_fires_webhook_time"), (sql, plan.plan)
+
+
+async def test_wake_fires_conv_time(conn: asyncpg.Connection) -> None:
+    """Flips if a conversation's newest fires stop reading idx_wake_fires_conv_time (the page would read and sort
+    every fire the conversation ever had)."""
+    busy = await _busy_conversation(conn)
+    captured = _Captured()
+    await _collections(captured).fires.list_for_conversation(busy.conversation)
+    (sql, args), *rest = _of(captured, "wake_fires")
+    assert not rest, captured.asked
+    plan = await explain_statement(conn, sql, *args)
+    assert plan_uses_index(plan, "idx_wake_fires_conv_time"), plan.plan
+
+
+async def test_webhook_refusals_sub_time(conn: asyncpg.Connection) -> None:
+    """Flips if a subscription's newest refusals stop reading idx_webhook_refusals_sub_time (the page would read and
+    sort every refusal window the subscription ever had)."""
+    busy = await _busy_conversation(conn)
+    await conn.execute(
+        "INSERT INTO webhook_refusals (conversation_id, subscription_id, reason, window_start, status_code,"
+        " last_refused_at) SELECT $1, $2, (ARRAY['paused', 'missing_signature', 'bad_signature', 'rate_limited'])"
+        "[1 + g % 4], now() - g * interval '1 minute', 401, now() - g * interval '1 minute'"
+        " FROM generate_series(1, 4000) g",
+        busy.conversation,
+        busy.subscription,
+    )
+    await conn.execute("ANALYZE webhook_refusals")
+    captured = _Captured()
+    await _collections(captured).subscriptions.list_refusals(busy.subscription)
+    (sql, args), *rest = _of(captured, "webhook_refusals")
+    assert not rest, captured.asked
+    plan = await explain_statement(conn, sql, *args)
+    assert plan_uses_index(plan, "idx_webhook_refusals_sub_time"), plan.plan
