@@ -17,6 +17,8 @@ _TAGGED = "src/hub/namespaces.py::tagged"
 _PLATFORM = "src/hub/namespaces.py::platform_rows"
 _LOWER = "src/hub/namespaces.py::by_lower_kind"
 _POD = "src/hub/namespaces.py::by_pod"
+_MCP = "src/hub/removal.py::tool_rows_by_mcp_name"
+_SPACED = "src/hub/namespaces.py::by_spaced"
 _BY_NAME = "src/hub/providers.py::ProviderCollection.get_by_name"
 _PAGED = "src/hub/grants.py::page_by_state"
 _NEWEST = "src/hub/results.py::newest_in_state"
@@ -58,6 +60,10 @@ CREATE UNIQUE INDEX namespaces_segment ON namespaces ((replace(name, '.', '-')))
 CREATE INDEX namespaces_lower_kind ON namespaces ((lower(kind)));
 -- purpose: {_POD}
 CREATE INDEX namespaces_by_pod ON namespaces ((tags->>'pod'));
+-- purpose: {_MCP}
+CREATE INDEX namespaces_tool_mcp_name ON namespaces ((tags ->> 'mcp_name')) WHERE kind = 'tool';
+-- purpose: {_SPACED}
+CREATE INDEX namespaces_by_spaced ON namespaces ((tags #>> '{{a,b}}'), customer_id);
 CREATE TABLE providers (id UUID PRIMARY KEY, name TEXT);
 -- purpose: {_BY_NAME}
 CREATE UNIQUE INDEX providers_by_name ON providers (name);
@@ -522,3 +528,20 @@ def test_a_range_bounded_both_sides_on_a_purposed_index_is_its_key(schema: Schem
         before = set(schema.used)
         assert _kinds(unkeyed, schema, _UNDER) == [("non-key-where", "paths")], unkeyed
         assert not {(t, i) for t, i, _ in schema.used - before} & {("paths", "paths_name_c")}, unkeyed
+
+
+def test_a_json_field_index_written_with_spaces_is_the_field_not_its_column(schema: SchemaCatalog) -> None:
+    """Flips if an expression index written with spaces (``(tags ->> 'mcp_name')``, hub v152) is catalogued under its
+    bare column, so the read of the field it holds (by ``= ANY``, the hub's removal read) is not keyed by it in the
+    function it names; or if it then keys a read of the bare column, or a read elsewhere."""
+    field = "SELECT * FROM namespaces WHERE kind = 'tool' AND tags ->> 'mcp_name' = ANY($1::text[])"
+    assert _kinds(field, schema, _MCP) == []
+    assert _kinds("SELECT * FROM namespaces WHERE tags->>'mcp_name' = $1 AND kind = 'tool'", schema, _MCP) == []
+    assert _kinds(field, schema) == [("non-key-where", "namespaces")]
+    assert _kinds("SELECT * FROM namespaces WHERE tags = $1", schema, _MCP) == [("non-key-where", "namespaces")]
+    # a path expression leading a two-column index: the expression, then its next column
+    spaced = "SELECT * FROM namespaces WHERE tags #>> '{a,b}' = $1 AND customer_id = $2"
+    assert _kinds(spaced, schema, _SPACED) == []
+    assert _kinds("SELECT * FROM namespaces WHERE tags = $1 AND customer_id = $2", schema, _SPACED) == [
+        ("non-key-where", "namespaces")
+    ]

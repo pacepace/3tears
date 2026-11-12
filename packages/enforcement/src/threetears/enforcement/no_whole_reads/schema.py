@@ -723,6 +723,11 @@ def _listed(value: Any) -> list[Any]:
     return [value] if isinstance(value, str) else list(value)
 
 
+#: what follows a column in an expression index's item written with spaces (``tags ->> 'mcp_name'``, ``a || b``,
+#: ``x::text``, ``n + 1``): an operator, so the item is that expression, never the bare column
+_OPERATOR_AFTER: Final = re.compile(r"(?:->>?|#>>?|\|\||::|[-+*/%<>=!~@#&|^?])")
+
+
 def _column_of(item: str) -> str:
     """the column a key or index item names (``(a) HASH`` -> ``a``, ``"b" DESC`` -> ``b``, ``lower(c)`` as written).
 
@@ -736,14 +741,19 @@ def _column_of(item: str) -> str:
     stripped = re.sub(
         r"\s+(?:(?:ASC|DESC)(?:\s+NULLS\s+(?:FIRST|LAST))?|NULLS\s+(?:FIRST|LAST))$", "", stripped, flags=re.I
     )
-    while stripped.startswith("(") and stripped.endswith(")") and "," not in stripped:
+    # a comma inside a literal (a json path ``'{a,b}'``) separates nothing
+    while stripped.startswith("(") and stripped.endswith(")") and "," not in re.sub(r"'(?:[^']|'')*'", "", stripped):
         stripped = stripped[1:-1].strip()
     collation = re.fullmatch(r"(.+?)\s+COLLATE\s+(\"[^\"]+\"|\w+)", stripped, re.IGNORECASE | re.DOTALL)
     if collation is not None:
         # ``(name COLLATE "C")``: the column in that collation, which serves only comparisons made in it
         return collated(_column_of(collation.group(1)), collation.group(2))
     match = re.match(r"^\(?\s*(\"[^\"]+\"|[\w{}]+)\s*\)?(?:\s|$)", stripped)
-    if match is None or stripped[len(match.group(1)) :].lstrip().startswith("("):
+    if (
+        match is None
+        or stripped[len(match.group(1)) :].lstrip().startswith("(")
+        or _OPERATOR_AFTER.match(stripped[len(match.group(1)) :].lstrip())
+    ):
         # an expression index's item (``(replace(name, '.', '-'))``): keyed by the expression itself
         return expression_key(re.sub(r"\s+(?:ASC|DESC)(?:\s+NULLS\s+(?:FIRST|LAST))?$", "", stripped, flags=re.I))
     return match.group(1).strip('"').lower()

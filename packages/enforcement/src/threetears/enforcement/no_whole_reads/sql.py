@@ -585,7 +585,9 @@ def _row_expression(text: str) -> bool:
     :return: whether it is
     :rtype: bool
     """
-    shaped = re.search(r"[A-Za-z_]\w*\s*\(", text) is not None or re.search(r"[A-Za-z_\"]\s*#?->>?", text) is not None
+    shaped = (
+        re.search(r"[A-Za-z_]\w*\s*\(", text) is not None or re.search(r"[A-Za-z_\"]\s*(?:->>?|#>>?)", text) is not None
+    )
     return shaped and not _bound_value(text)
 
 
