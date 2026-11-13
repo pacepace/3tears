@@ -5,8 +5,10 @@ Each of these reads asked a column no index of this package covered, so it read 
 
 - ``idx_namespaces_owner_agent_id`` (owner_agent_id): an agent's own namespace,
   :meth:`NamespaceCollection.get_by_agent_id`, and an owned one by its triple,
-  :meth:`NamespaceCollection.get_by_owner_and_customer`. The platform's schema already names it so, so a
-  deployment that has it creates nothing;
+  :meth:`NamespaceCollection.get_by_owner_and_customer`; the hub's discovery reads an agent's own namespaces by it
+  too (``HubNamespaceCollection.list_granted_candidates``, its plan test the hub's
+  ``test_namespace_index_plans.py::test_discovery_reads_its_candidates_from_the_agents_grants``). The platform's
+  schema already names it so, so a deployment that has it creates nothing;
 - ``idx_namespaces_customer_type`` (customer_id, namespace_type): a customer's namespaces of a type
   (:meth:`NamespaceCollection.find_by_type_and_customer`, :meth:`NamespaceCollection.list_ids_by_customer_and_type`)
   and an ownerless one by its triple, a platform row by its NULL customer;
@@ -35,7 +37,8 @@ log = get_logger(__name__)
 #: Every statement, in order. Each is safe to run twice.
 _ACL_NAMESPACE_INDEXES_DDL: tuple[str, ...] = (
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACE_OF_AGENT_SQL;"
-    " packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACE_OF_OWNER_SQL\n"
+    " packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACE_OF_OWNER_SQL;"
+    " src/aibots/hub/broker/namespaces.py::HubNamespaceCollection.list_granted_candidates\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespaces_owner_agent_id\n"
     "-- reason: an agent's own namespaces by its id, on every agent's provisioning and access check\n"
     "CREATE INDEX IF NOT EXISTS idx_namespaces_owner_agent_id ON namespaces (owner_agent_id)",
