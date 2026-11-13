@@ -907,6 +907,27 @@ def _status_edits(
     return edits
 
 
+def _class_constant_uses(module: _Module, owner: ast.ClassDef, name: str) -> list[ast.expr] | str:
+    """every read of the class-level constant ``name`` of ``owner``: ``self.name`` / ``cls.name`` /
+    ``<Class>.name`` anywhere in the module, and the bare name in the class body itself; or why it is left (read
+    through another object, which the rewrite cannot follow)."""
+    uses: list[ast.expr] = []
+    for node in ast.walk(module.tree):
+        if isinstance(node, ast.Attribute) and node.attr == name and isinstance(node.ctx, ast.Load):
+            if not (isinstance(node.value, ast.Name) and node.value.id in {"self", "cls", owner.name}):
+                return f"its class constant {name} is read through {ast.unparse(node.value)}"
+            uses.append(node)
+    for statement in owner.body:
+        if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            continue
+        uses += [
+            node
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)
+        ]
+    return uses
+
+
 def _sent_by(
     module: _Module, literal: ast.Constant, methods: frozenset[str] = frozenset(_HELPER_OF)
 ) -> tuple[list[ast.Call], ast.Assign | ast.AnnAssign | None] | str:
@@ -927,12 +948,19 @@ def _sent_by(
         if len(targets) != 1 or not isinstance(targets[0], ast.Name):
             return "bound to something other than one name"
         name = targets[0].id
-        scope = module.scope(parent)
-        uses = [
-            node
-            for node in ast.walk(scope)
-            if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)
-        ]
+        owner = module.parent(parent)
+        if isinstance(owner, ast.ClassDef):
+            # a class-level constant: sent as self.X / cls.X / Class.X (anywhere in the module), or by its bare name
+            # in the class body; read through any other object, it is left
+            uses = _class_constant_uses(module, owner, name)
+            if isinstance(uses, str):
+                return uses
+        else:
+            scope = module.scope(parent)
+            named = [node for node in ast.walk(scope) if isinstance(node, ast.Name) and node.id == name]
+            uses = [node for node in named if isinstance(node.ctx, ast.Load)]
+            if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef) and len(named) - len(uses) > 1:
+                return f"its local {name} is bound more than once (a statement chosen by branch)"
         if not uses:
             return f"its constant {name} is never used"
         calls = []
@@ -1240,7 +1268,8 @@ def _elsewhere(
     :return: the repoints (file, old entry, new entry) and the notes, or the refusal
     :rtype: tuple[list[tuple[str, str, str]], list[str]] | str
     """
-    if constant is None:
+    if constant is None or isinstance(module.scope(constant), ast.FunctionDef | ast.AsyncFunctionDef):
+        # a statement written at its call, or bound to a function's local: no other module can name it
         return [], []
     target = constant.targets[0] if isinstance(constant, ast.Assign) else constant.target
     assert isinstance(target, ast.Name)

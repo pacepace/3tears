@@ -371,6 +371,56 @@ def test_a_listing_s_source_check_holds_its_order(tmp_path: Path) -> None:
         assert_source_says(tmp_path, entry)
 
 
+_CLASS_CONSTANTS = """
+    class Agents:
+        #: an agent by its key
+        _ONE_SQL = "SELECT * FROM agents WHERE id = $1"
+        _NAME_SQL = "SELECT name FROM agents WHERE id = $1"
+
+        async def one(self, conn, agent_id):
+            return await conn.fetchrow(self._ONE_SQL, agent_id)
+
+        @classmethod
+        async def again(cls, conn, agent_id):
+            return await conn.fetchrow(cls._ONE_SQL, agent_id)
+
+        async def name(self, conn, agent_id):
+            return await conn.fetchval(self._NAME_SQL, agent_id)
+
+
+    async def name_elsewhere(other, conn, agent_id):
+        return await conn.fetchval(other._NAME_SQL, agent_id)
+
+
+    async def by_branch(conn, agent_id, live):
+        if live:
+            sql = "SELECT id FROM agents WHERE id = $1 AND live"
+        else:
+            sql = "SELECT id FROM agents WHERE id = $1"
+        return await conn.fetchrow(sql, agent_id)
+"""
+
+
+def test_a_class_constant_sent_through_self_or_cls_is_rewritten(tmp_path: Path) -> None:
+    """Flips if a class-level statement constant sent as ``self.X`` / ``cls.X`` is taken for unused (and left), if
+    one also read through another object is rewritten away, or if a local bound by branch is rewritten (two
+    statements onto one call) or refused as named elsewhere in the repo."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_CLASS_CONSTANTS), encoding="utf-8")
+    rewrites, refusals = plan_point_rewrites(config)
+    assert sorted(rewrite.function for rewrite in rewrites) == ["Agents.again", "Agents.one"]
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    assert "read through other" in refused["Agents"], refused
+    assert "bound more than once" in refused["by_branch"], refused
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    source = (tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8")
+    assert "_ONE_SQL" not in source and "an agent by its key" not in source
+    assert "await read_row(conn, 'agents', by={'id': agent_id}, records=True)" in source
+    assert "_NAME_SQL = " in source
+    for rewrite in rewrites:
+        assert_source_says(tmp_path, rewrite.record())
+
+
 def test_a_constant_named_elsewhere_is_left(tmp_path: Path) -> None:
     """Flips if a statement constant another module names in code (an import) is rewritten away."""
     config = _config(tmp_path)
