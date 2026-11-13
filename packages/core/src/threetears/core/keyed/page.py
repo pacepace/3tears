@@ -44,6 +44,7 @@ from threetears.core.keyed._filters import Derived, Fragment, Lock, Selected, se
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
+from threetears.interfaces.keyed.keys import refuse_non_unique_order
 from threetears.interfaces.keyed.page import (
     KeyPage,
     Sort,
@@ -102,10 +103,14 @@ async def keyset_page(
     :return: the page
     :rtype: KeyPage
     :raises ValueError: when the sort is empty, a sort column is not read, a sort expression's name is a column read,
-        or ``limit`` is under one
+        ``limit`` is under one, or a page past a cursor is in an order that with ``by`` holds none of the table's
+        registered keys (:func:`~threetears.interfaces.keyed.keys.refuse_non_unique_order`)
     :raises CursorError: when ``cursor`` is not one this sort issued
     """
     check_page(table, columns, order, limit)
+    if cursor is not None:
+        # a page past a cursor skips every row sharing its last row's order values unless the order holds a key
+        refuse_non_unique_order(table, by, order)
     past = None if cursor is None else cursor_values(order, cursor)
     by_row = past is not None and await _steps_by_row(conn, order)
     legs = past is not None and lock is None and await _seeks_by_legs(conn, order)
@@ -211,6 +216,8 @@ async def keyset_rows(
     :raises ValueError: as :func:`keyset_page`
     """
     check_page(table, columns, order, page)
+    # every statement after the first starts past the last row read: the order must hold a key
+    refuse_non_unique_order(table, by, order)
     rows: list[dict[str, Any]] = []
     past: list[Any] | None = None
     by_row: bool | None = None

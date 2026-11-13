@@ -101,6 +101,7 @@ from threetears.core.keyed.probes import access_probe_sql, probe_access
 from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_past_marks
 from threetears.core.keyed.options import with_options
 from threetears.core.keyed.point import read_by, read_row, read_value
+from threetears.interfaces.keyed.keys import TableKey, register_table_keys
 from threetears.core.keyed.page import KeyPage, Sort, copy_keyed, exists_keyed, keyset_cursor, keyset_page, keyset_rows
 from threetears.core.keyed.rows import (
     ANY_ROWS_CAP,
@@ -162,6 +163,8 @@ from threetears.core.keyed.writes import (
 )
 
 __all__ = [
+    "TableKey",
+    "register_table_keys",
     "by_conditions",
     "narrowing",
     "renumbered",

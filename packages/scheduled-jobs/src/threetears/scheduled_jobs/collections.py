@@ -46,6 +46,7 @@ from threetears.observe import get_logger
 from threetears.scheduled_jobs.entities import JobFireEntity, ScheduledJobEntity
 from threetears.scheduled_jobs.reschedule import compute_next_fire_at
 from threetears.scheduled_jobs.types import ScheduleStatus
+from threetears.core.keyed import TableKey, register_table_keys
 
 __all__ = [
     "REAPED_DISPATCH_ERROR",
@@ -1202,3 +1203,19 @@ class JobFireCollection(DeclaredTableCollection[JobFireEntity]):
             limit,
         )
         return [JobFireEntity(dict(row), is_new=False, collection=self) for row in rows]
+
+
+#: the scheduled-jobs migration's UNIQUE (job_id): the keys a keyset read of ``scheduled_jobs`` may end its order with (run-time refusal,
+#: :func:`threetears.interfaces.keyed.keys.refuse_non_unique_order`), as the database holds them
+register_table_keys(
+    "scheduled_jobs",
+    (TableKey(("job_id",)),),
+)
+
+
+#: the scheduled-jobs migration's UNIQUE (fire_id): the keys a keyset read of ``job_fires`` may end its order with (run-time refusal,
+#: :func:`threetears.interfaces.keyed.keys.refuse_non_unique_order`), as the database holds them
+register_table_keys(
+    "job_fires",
+    (TableKey(("fire_id",)),),
+)

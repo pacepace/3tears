@@ -36,6 +36,7 @@ from threetears.core.config import CoreConfig
 from threetears.core.keyed import read_by, read_row
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.observe import get_logger
+from threetears.core.keyed import TableKey, register_table_keys
 
 __all__ = [
     "WorkspaceCollection",
@@ -593,3 +594,27 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
             entity = self.entity_class(data, is_new=False, collection=self)
             entities.append(entity)
         return entities
+
+
+#: the workspace migrations' UNIQUE (agent_id, name): the keys a keyset read of ``workspaces`` may end its order with (run-time refusal,
+#: :func:`threetears.interfaces.keyed.keys.refuse_non_unique_order`), as the database holds them
+register_table_keys(
+    "workspaces",
+    (TableKey(("agent_id", "name")),),
+)
+
+
+#: the workspace migrations' UNIQUE (workspace_id, relative_path): the keys a keyset read of ``workspace_files`` may end its order with (run-time refusal,
+#: :func:`threetears.interfaces.keyed.keys.refuse_non_unique_order`), as the database holds them
+register_table_keys(
+    "workspace_files",
+    (TableKey(("workspace_id", "relative_path")),),
+)
+
+
+#: the workspace migrations' UNIQUE (workspace_id, relative_path, version): the keys a keyset read of ``workspace_file_versions`` may end its order with (run-time refusal,
+#: :func:`threetears.interfaces.keyed.keys.refuse_non_unique_order`), as the database holds them
+register_table_keys(
+    "workspace_file_versions",
+    (TableKey(("workspace_id", "relative_path", "version")),),
+)

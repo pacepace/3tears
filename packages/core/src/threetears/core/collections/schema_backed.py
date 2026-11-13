@@ -51,6 +51,7 @@ from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
+from threetears.interfaces.keyed.keys import TableKey, not_null_predicate, null_predicate, register_table_keys
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core.backends.protocol import (
     ANALYZE_AFTER_ROWS,
@@ -1154,6 +1155,40 @@ class TableSchema:
             )
         self._validate_cas_null_safe(pk_cols, by_name)
         self._validate_l2_order(pk_cols, by_name)
+        # the keys a keyset read of this table must hold (its order and pins), for the pagers' run-time refusal
+        register_table_keys(self.name, self._declared_keys(pk_cols, partition_column))
+
+    def _declared_keys(self, pk_cols: tuple[str, ...], partition_column: str | None) -> list[TableKey]:
+        """the keys this declaration says the table holds: its primary key, each ``UNIQUE`` constraint, each unique
+        index (a partial one by its ``IS NOT NULL`` or ``IS NULL`` predicate's column, or as a key outright when its
+        predicate is any other: the run-time refusal never refuses what it cannot prove). The partition column places a row only.
+
+        :param pk_cols: the primary key's columns
+        :ptype pk_cols: tuple[str, ...]
+        :param partition_column: the partition column, or None
+        :ptype partition_column: str | None
+        :return: the keys
+        :rtype: list[TableKey]
+        """
+        placement = (partition_column,) if partition_column is not None else ()
+
+        def key(columns: tuple[str, ...], not_null: tuple[str, ...] = (), null: tuple[str, ...] = ()) -> TableKey:
+            return TableKey(columns, not_null, tuple(c for c in placement if c in columns), null)
+
+        keys = [key(pk_cols), *(key(tuple(unique.columns)) for unique in self.unique_constraints)]
+        for index in self.indexes:
+            if not index.unique:
+                continue
+            valued = not_null_predicate(index.where) if index.where else None
+            nulled = null_predicate(index.where) if index.where else None
+            keys.append(
+                key(
+                    tuple(index.columns),
+                    (valued,) if valued is not None else (),
+                    (nulled,) if nulled is not None else (),
+                )
+            )
+        return keys
 
     def _validate_l2_order(self, pk_cols: tuple[str, ...], by_name: dict[str, Column]) -> None:
         """reject order columns a compare-and-swap persist could not fence on.

@@ -4643,7 +4643,7 @@ class _ModuleWalk(ast.NodeVisitor):
                 for k in (pinned.keys if isinstance(pinned, ast.Dict) else [])
                 if isinstance(k, ast.Constant) and isinstance(k.value, str)
             )
-            self._judge_pager_order(node, PagerOrder(_final(node), named.group(1), fixed, tuple(key)))
+            self._judge_pager_order(node, PagerOrder(_final(node) or "", named.group(1), fixed, tuple(key)))
 
     def _judge_backfill(self, node: ast.Call) -> None:
         """judge the key a migration's backfill pages by (``backfill_pages(conn, table, key, ...)``): it pins nothing,
@@ -4664,7 +4664,7 @@ class _ModuleWalk(ast.NodeVisitor):
         ):
             return
         key = tuple(e.value for e in key_node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str))
-        self._judge_pager_order(node, PagerOrder(_final(node), table.value, frozenset(), key))
+        self._judge_pager_order(node, PagerOrder(_final(node) or "", table.value, frozenset(), key))
 
     def _judge_pager_order(self, node: ast.Call, stepped: PagerOrder) -> None:
         """record a ``non-unique-order`` finding at a pager call whose key holds no primary key of its table.

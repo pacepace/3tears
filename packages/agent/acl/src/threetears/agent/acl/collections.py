@@ -82,6 +82,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.keyed import AnyOf, KeyPage, Pin, Selected, Sort, counts_by, keyset_page, read_by, update_keyed
+from threetears.interfaces.keyed.keys import TableKey, register_table_keys
 from threetears.core.keyset import keyset_pages
 from threetears.core.namespaces import NAMESPACE_NAME_SEPARATOR, namespace_contains
 from threetears.core.tenancy import no_tenant, tenant_column
@@ -337,6 +338,19 @@ class GroupCascade:
     group_id: UUID
     members: tuple[dict[str, Any], ...]
     assignments: tuple[dict[str, Any], ...]
+
+
+#: the keys the migrations give ``groups`` beyond its primary key (v001_create_acl_tables: ``UNIQUE (group_id)``,
+#: ``uq_groups_customer_name`` (customer_id, name) WHERE customer_id IS NOT NULL, ``uq_groups_platform_name`` (name)
+#: WHERE customer_id IS NULL): a keyset read by name within one customer, or across platform groups, reads every row
+register_table_keys(
+    "groups",
+    (
+        TableKey(("group_id",)),
+        TableKey(("customer_id", "name"), not_null=("customer_id",)),
+        TableKey(("name",), null=("customer_id",)),
+    ),
+)
 
 
 class GroupCollection(SchemaBackedCollection[GroupEntity]):
@@ -3583,3 +3597,37 @@ class ImpersonationGateCollection(SchemaBackedCollection[ImpersonationGateEntity
             return None
         data = self._coerce_row(dict(row))
         return self.entity_class(data, is_new=False, collection=self)
+
+
+#: the acl migrations' UNIQUE (namespace_id) and uq_namespaces_schema_name_non_workspace (its predicate is no IS NULL / IS NOT NULL one, so the key stands outright: the refusal never refuses what it cannot prove): the keys a keyset read of ``namespaces`` may end its order with (run-time refusal,
+#: :func:`threetears.interfaces.keyed.keys.refuse_non_unique_order`), as the database holds them
+register_table_keys(
+    "namespaces",
+    (
+        TableKey(("namespace_id",)),
+        TableKey(("schema_name",)),
+    ),
+)
+
+
+#: the acl migrations' UNIQUE (assignment_id) and the per-scope grant indexes (uq_role_assignments_namespace_grant, uq_role_assignments_all_grant; predicates on scope_type, so each key stands outright): the keys a keyset read of ``role_assignments`` may end its order with (run-time refusal,
+#: :func:`threetears.interfaces.keyed.keys.refuse_non_unique_order`), as the database holds them
+register_table_keys(
+    "role_assignments",
+    (
+        TableKey(("assignment_id",)),
+        TableKey(("group_id", "role_id", "scope_namespace_id", "managed_by")),
+        TableKey(("group_id", "role_id", "managed_by")),
+    ),
+)
+
+
+#: the acl migrations' uq_roles_platform_name (name) WHERE customer_id IS NULL and uq_roles_customer_name (customer_id, name) WHERE customer_id IS NOT NULL: the keys a keyset read of ``roles`` may end its order with (run-time refusal,
+#: :func:`threetears.interfaces.keyed.keys.refuse_non_unique_order`), as the database holds them
+register_table_keys(
+    "roles",
+    (
+        TableKey(("name",), null=("customer_id",)),
+        TableKey(("customer_id", "name"), not_null=("customer_id",)),
+    ),
+)

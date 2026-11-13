@@ -63,6 +63,7 @@ from threetears.interfaces.keyed.rows import (
     keyed_read_statement,
     read_keyed_statements,
 )
+from threetears.interfaces.keyed.keys import TableKey, register_table_keys
 from threetears.interfaces.keyed.page import (
     CursorError,
     KeyPage,
@@ -122,6 +123,8 @@ from threetears.interfaces.keyed.changed import (
 )
 
 __all__ = [
+    "TableKey",
+    "register_table_keys",
     "ANY_ROWS_CAP",
     "AnyOf",
     "BoundedCount",

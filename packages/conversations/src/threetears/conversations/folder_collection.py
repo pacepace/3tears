@@ -41,6 +41,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.config import CoreConfig
 from threetears.observe import get_logger
 from threetears.core.tenancy import TENANT_BY_SCHEMA
+from threetears.core.keyed import TableKey, register_table_keys
 
 __all__ = [
     "FolderCollection",
@@ -185,3 +186,14 @@ class FolderCollection(SchemaBackedCollection[Folder]):
             entity.original_date_updated = data.get("date_updated")
             entities.append(entity)
         return entities
+
+
+#: the folders migration's UNIQUE keys (uq_folders_agent_user_name, uq_folders_folder_id): the keys a keyset read of ``folders`` may end its order with (run-time refusal,
+#: :func:`threetears.interfaces.keyed.keys.refuse_non_unique_order`), as the database holds them
+register_table_keys(
+    "folders",
+    (
+        TableKey(("agent_id", "user_id", "name")),
+        TableKey(("folder_id",)),
+    ),
+)
