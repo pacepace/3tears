@@ -17,9 +17,10 @@ from collections.abc import AsyncIterator
 import asyncpg
 import pytest
 
+from threetears.core import keyed
 from threetears.core.ddl.write_marks import WRITE_MARKS_TABLE, write_marks_ddl
 from threetears.core.sql_fragments import quote_identifier
-from threetears.core.testing.plans import PlanRecorder, on_yugabyte, plan_problems
+from threetears.core.testing.plans import PlanRecorder, on_yugabyte, plan_problems, plan_uses_index
 
 pytestmark = pytest.mark.integration
 
@@ -64,3 +65,21 @@ async def test_a_commits_marks_are_read_by_their_table(marks: tuple[asyncpg.Conn
     if await on_yugabyte(conn):
         problems = plan_problems(checked.plans, scan_ratio=1.1)
         assert not problems, problems
+
+
+async def test_a_commits_marks_are_read_through_the_table_index(marks: tuple[asyncpg.Connection, str]) -> None:
+    """The plan test of ``collection_write_marks_table``: the hub broker's read of a commit's marks
+    (``QueryProxy._marks_for``: ``keyed.read_by`` pinned by ``table_name = ANY``, reading ``id`` and ``table_name``)
+    finds them through the index, on Postgres and YugabyteDB. Flips if the index goes or the read stops naming
+    the table."""
+    conn, queue = marks
+    checked = PlanRecorder(conn)
+
+    # the hub names the queue ``<schema>.collection_write_marks``, unquoted, as read_by takes a table
+    rows = await keyed.read_by(
+        checked, queue.replace('"', ""), by={"table_name": keyed.AnyOf(["written"])}, columns=("id", "table_name")
+    )
+
+    assert len(rows) == _OWN
+    [plan] = checked.plans
+    assert plan_uses_index(plan, "collection_write_marks_table"), plan

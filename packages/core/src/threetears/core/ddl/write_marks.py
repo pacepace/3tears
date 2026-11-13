@@ -33,6 +33,15 @@ _MARKS_TABLE_DDL: Final[str] = (
     "date_created TIMESTAMPTZ NOT NULL DEFAULT now())"
 )
 
+#: the queue's ``(table_name, id)`` index, ``{schema}`` its schema (quoted): written out whole with its declaration,
+#: so the hub's read of a commit's marks by table is judged keyed through it
+_MARKS_INDEX_DDL: Final[str] = (
+    "-- purpose: src/aibots/hub/broker/proxy.py::QueryProxy._marks_for\n"
+    "-- plan_test: packages/core/tests/integration/test_write_marks_by_table_live.py"
+    "::test_a_commits_marks_are_read_through_the_table_index\n"
+    'CREATE INDEX IF NOT EXISTS "collection_write_marks_table" ON {schema}."collection_write_marks" (table_name, id)'
+)
+
 #: the trigger function every switched-on table's trigger calls
 MARK_FUNCTION: Final[str] = "threetears_mark_collection_write"
 
@@ -77,8 +86,7 @@ def write_marks_index_sql(schema: str) -> str:
     :return: the ``CREATE INDEX`` statement
     :rtype: str
     """
-    marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
-    return f"CREATE INDEX IF NOT EXISTS {quote_identifier(WRITE_MARKS_TABLE + '_table')} ON {marks} (table_name, id)"
+    return _MARKS_INDEX_DDL.format(schema=quote_identifier(schema))
 
 
 def marks_page_sql(schema: str) -> str:
