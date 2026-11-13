@@ -64,3 +64,25 @@ async def test_a_whole_count_fails_the_guard(seeded: asyncpg.Connection) -> None
     guarded = WholeScanGuard(seeded, threshold_rows=1000)
     assert await guarded.fetchval("SELECT count(*) FROM results") == _STATES * _PER_STATE
     assert any("results (3000 rows" in problem for problem in guarded.problems)
+
+
+async def test_a_partial_index_walked_whole_through_a_bitmap_fails_the_guard(seeded: asyncpg.Connection) -> None:
+    """Flips if a bitmap heap scan over a bitmap index scan with no index condition passes: every entry of a partial
+    index read, the filter on another column applied after (hub: credit rates by model over the open-rates index)."""
+    await seeded.execute("ALTER TABLE results ADD COLUMN open BOOLEAN NOT NULL DEFAULT true, ADD COLUMN model INT")
+    await seeded.execute("UPDATE results SET model = id % 50")
+    await seeded.execute("CREATE INDEX results_open_by_id ON results (id) WHERE open")
+    await seeded.execute("ANALYZE results")
+    await seeded.execute("SET enable_seqscan = off")
+    try:
+        guarded = WholeScanGuard(seeded, threshold_rows=1000)
+        plan = await seeded.fetchval("EXPLAIN (FORMAT JSON) SELECT * FROM results WHERE open AND model = ANY($1)", [7])
+        rows = await guarded.fetch("SELECT * FROM results WHERE open AND model = ANY($1)", [7])
+    finally:
+        await seeded.execute("RESET enable_seqscan")
+    assert len(rows) == _STATES * _PER_STATE // 50
+    if "Bitmap Index Scan" not in plan or "Index Cond" in plan:
+        pytest.skip(f"the planner did not walk the partial index by a bitmap here: {plan}")
+    assert any("bitmap index scan with no index condition of" in problem for problem in guarded.problems), (
+        guarded.problems
+    )

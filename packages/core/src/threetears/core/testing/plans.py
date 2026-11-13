@@ -364,8 +364,9 @@ _INDEX_WALK = "with no index condition"
 
 
 def _whole_scans(plan: Mapping[str, Any], limit: int | None = None) -> Iterator[tuple[str, str]]:
-    """each relation ``plan`` reads whole: a sequential scan (with or without a filter), or an index scan with no
-    index condition (every entry of the index, in its order) -- unless, in an analysed plan, a ``Limit`` above it
+    """each relation ``plan`` reads whole: a sequential scan (with or without a filter), an index scan with no
+    index condition (every entry of the index, in its order), or a bitmap heap scan over a bitmap index scan with no
+    index condition (every entry of a partial index, the filter applied after) -- unless, in an analysed plan, a ``Limit`` above it
     stopped the walk: it read at most the rows the ``Limit`` answered plus :data:`_LIMIT_SLACK_ROWS` (a keyset
     listing's first page). A walk whose filter made it read far past its ``Limit`` stays whole.
 
@@ -388,10 +389,28 @@ def _whole_scans(plan: Mapping[str, Any], limit: int | None = None) -> Iterator[
             read = int(plan.get("Actual Loops", 1) or 1) * _read_a_loop(plan)
             if limit is None or read > limit + _LIMIT_SLACK_ROWS:
                 yield qualified, f"{node.lower()} {_INDEX_WALK}"
+        elif node == "Bitmap Heap Scan" and any(_bitmap_walks(child) for child in plan.get("Plans", ())):
+            # a bitmap is built whole before its first row is answered, so no Limit above it stops the walk
+            yield qualified, f"bitmap index scan {_INDEX_WALK}"
     if node == "Limit":
         limit = int(plan["Actual Rows"]) * int(plan.get("Actual Loops", 1) or 1) if "Actual Rows" in plan else None
     for child in plan.get("Plans", ()):
         yield from _whole_scans(child, limit)
+
+
+def _bitmap_walks(plan: Mapping[str, Any]) -> bool:
+    """whether a bitmap heap scan's input walks a whole index: a ``Bitmap Index Scan`` with no index condition (every
+    entry of the index; of a partial index, every row its predicate holds), alone or under a ``BitmapAnd`` /
+    ``BitmapOr``.
+
+    :param plan: a node under a ``Bitmap Heap Scan``
+    :ptype plan: Mapping[str, Any]
+    :return: whether it does
+    :rtype: bool
+    """
+    if plan.get("Node Type") == "Bitmap Index Scan":
+        return "Index Cond" not in plan
+    return any(_bitmap_walks(child) for child in plan.get("Plans", ()))
 
 
 def _under_a_limit(plan: Mapping[str, Any], limited: bool = False) -> bool:
