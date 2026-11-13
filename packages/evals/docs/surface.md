@@ -4,8 +4,10 @@
 where each is imported from. What a name does is in the [reference](reference.md#public-api), which lists the
 same names; what each tier promises is in [stability tiers](adopting-a-host.md#stability-tiers).
 
-497 names are declared: the `host-contract` and `stable` tiers. A root exports more, as `provisional` names, most of
-them the types a declared signature reaches; they import, and nothing about them is promised.
+498 names are declared: the `host-contract` and `stable` tiers. A root exports more, as `provisional` names, most of
+them the types a declared signature reaches; they import, and nothing about them is promised. The limit on declared
+names is 498: the latest slot is host contract for `failed_call_output`, the one routing of a failed model call that a
+host's own candidate kind uses.
 
 A declared name goes provisional once nothing outside the package imports it, unless one of these holds:
 
@@ -74,7 +76,7 @@ An agent acting on declared state, an app's own logged outputs, the host a produ
 - `kernel`: `MeasureFamily`
 - `kernel.host`: `ActsOn`, `ApparatusError`, `check_world_conformance`, `Interval`, `Ordinal`, `RolePins`, `Triggered`, `WorldConformanceError`
 - `run`: `ArmPlan`, `ArmPrice`, `ArmQuote`, `CellExecutor`, `create_template`, `FidelityContract`, `GoalCheckUnevaluable`, `grade_goal_checks`, `require_candidate_model`
-- `quick`: `as_host`, `WorldRunner`
+- `quick`: `as_host`, `WorldOutcome`, `WorldRunner`
 - `ops`: `OpsHost`, `RegressionWatch`
 - `actions`: `Action`, `ActionCatalogue`, `ActionOutcome`, `Caller`, `ConformanceStage`, `eval_catalogue`, `standard_tools`
 - `transports.fastmcp`: `CallerResolver`, `CallTimedOut`, `HostResolution`, `mount_fastmcp`, `ToolCall`

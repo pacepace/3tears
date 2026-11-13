@@ -1446,7 +1446,7 @@
 "threetears.evals.quick.Measure": "stable",
 "threetears.evals.quick.measure": "host-contract",
 "threetears.evals.quick.run_cli": "stable",
-"threetears.evals.quick.WorldOutcome": "provisional",
+"threetears.evals.quick.WorldOutcome": "stable",
 "threetears.evals.quick.WorldRunner": "stable",
 "threetears.evals.harness.AnalystSkill": "host-contract",
 "threetears.evals.harness.CaseMint": "provisional",

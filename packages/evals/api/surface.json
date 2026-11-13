@@ -7228,8 +7228,8 @@
     },
     "threetears.evals.quick.WorldOutcome": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "WorldOutcome(answer: Any, state: Any = None, calls: list[RecordedCall] = [])",
+      "tier": "stable"
     },
     "threetears.evals.quick.WorldRunner": {
       "kind": "dataclass",
