@@ -42,6 +42,7 @@ from threetears.scheduled_jobs.collections import ScheduledJobCollection
 from threetears.scheduled_jobs.protocols import DueSchedule, FireStore, ScheduleStore
 from threetears.scheduled_jobs.tick import UNROUTED_KIND_REASON
 from threetears.scheduled_jobs.types import JobFireResult, JobTrigger
+from threetears.core.backends.sql import SqlL3Backend
 
 
 _BILLING_KIND = "billing_export"
@@ -200,6 +201,7 @@ class _FakeFireStore(FireStore):
         *,
         error: str,
         latency_ms: int | None = None,
+        output: dict[str, Any] | None = None,
     ) -> None:
         self.failed.append({"fire_id": fire_id, "error": error})
 
@@ -414,7 +416,7 @@ class TestDueScanFiltersOnKind:
         """A refactor cannot quietly move the kind filter back into Python."""
         pool = _RecordingPool()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=pool)
+        registry.configure(l3_pool=SqlL3Backend(pool))  # the registry's own wrap of a raw pool
         cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
         collection = ScheduledJobCollection(registry=registry, config=cfg, nats_client=None)
 
@@ -428,7 +430,7 @@ class TestDueScanFiltersOnKind:
         """An empty kind list must never widen to "every kind"."""
         pool = _RecordingPool()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=pool)
+        registry.configure(l3_pool=SqlL3Backend(pool))  # the registry's own wrap of a raw pool
         cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
         collection = ScheduledJobCollection(registry=registry, config=cfg, nats_client=None)
 

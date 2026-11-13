@@ -110,20 +110,22 @@ class TestConcurrentFirstUse:
         import threading
         import time
 
-        prometheus_client = pytest.importorskip("prometheus_client")
+        pytest.importorskip("prometheus_client")
+        from prometheus_client import CollectorRegistry
+        from prometheus_client.registry import Collector
 
-        class _SlowRegistry(prometheus_client.CollectorRegistry):  # type: ignore[misc]
+        class _SlowRegistry(CollectorRegistry):
             """a registry that holds each registration open long enough for every thread to arrive."""
 
             def __init__(self) -> None:
                 super().__init__()
                 self.registrations = 0
 
-            def register(self, collector: object) -> None:
+            def register(self, collector: Collector) -> None:
                 """count, wait, register.
 
                 :param collector: the collector being registered
-                :ptype collector: object
+                :ptype collector: Collector
                 :return: None
                 :rtype: None
                 """
