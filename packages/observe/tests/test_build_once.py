@@ -134,3 +134,87 @@ class TestTakingValuesOut:
         assert sorted(disposed) == ["one", "two"]
         assert cache.peek("a") is None
         assert cache.peek("b") is None
+
+
+class TestACostBound:
+    """``cost`` + ``max_cost``: stored values cost at most the cap together; what does not fit is
+    handed out unstored, and nothing stored is evicted for it."""
+
+    def test_values_are_stored_until_the_next_one_would_pass_the_cap(self) -> None:
+        cache: BuildOnce[str, str] = BuildOnce(cost=len, max_cost=5)
+
+        for key in ("abc", "de", "f"):
+            assert cache.get(key, lambda key=key: key) == key  # type: ignore[misc]
+
+        assert cache.peek("abc") == "abc"
+        assert cache.peek("de") == "de"
+        assert cache.peek("f") is None
+
+    def test_a_value_that_does_not_fit_is_built_on_every_get(self) -> None:
+        cache: BuildOnce[str, str] = BuildOnce(cost=len, max_cost=3)
+        cache.get("held", lambda: "abc")
+        builds: list[int] = []
+
+        def build() -> str:
+            builds.append(1)
+            return "xyz"
+
+        assert [cache.get("over", build) for _ in range(3)] == ["xyz"] * 3
+        assert len(builds) == 3
+        assert cache.peek("held") == "abc"
+
+    def test_a_walk_in_the_same_order_again_keeps_finding_what_was_stored(self) -> None:
+        cache: BuildOnce[int, int] = BuildOnce(cost=lambda value: 1, max_cost=4)
+        builds: list[int] = []
+
+        def build(key: int) -> int:
+            builds.append(key)
+            return key
+
+        for _ in range(3):
+            for key in range(10):
+                cache.get(key, lambda key=key: build(key))  # type: ignore[misc]
+
+        assert builds.count(0) == 1
+        assert builds.count(3) == 1
+        assert builds.count(9) == 3
+
+    def test_a_stale_value_gives_its_cost_back(self) -> None:
+        live = {"old": True}
+        cache: BuildOnce[str, str] = BuildOnce(is_current=lambda value: live.get(value, True), cost=len, max_cost=3)
+        cache.get("key", lambda: "old")
+        live["old"] = False
+
+        assert cache.get("key", lambda: "new") == "new"
+        assert cache.peek("key") == "new"
+
+    def test_a_stale_value_whose_rebuild_does_not_fit_is_dropped(self) -> None:
+        live = {"old": True}
+        cache: BuildOnce[str, str] = BuildOnce(is_current=lambda value: live.get(value, True), cost=len, max_cost=3)
+        cache.get("key", lambda: "old")
+        live["old"] = False
+
+        assert cache.get("key", lambda: "longer") == "longer"
+        assert cache.peek("key") is None
+        assert cache.get("other", lambda: "abc") == "abc"
+        assert cache.peek("other") == "abc"
+
+    def test_pop_and_clear_give_the_cost_back(self) -> None:
+        cache: BuildOnce[str, str] = BuildOnce(cost=len, max_cost=3)
+        cache.get("a", lambda: "abc")
+        cache.pop("a")
+        cache.get("b", lambda: "def")
+        assert cache.peek("b") == "def"
+
+        cache.clear()
+        cache.get("c", lambda: "ghi")
+        assert cache.peek("c") == "ghi"
+
+    @pytest.mark.parametrize(("cost", "max_cost"), [(len, None), (None, 3)])
+    def test_cost_and_max_cost_come_together(self, cost: object, max_cost: int | None) -> None:
+        with pytest.raises(ValueError, match="both or neither"):
+            BuildOnce(cost=cost, max_cost=max_cost)  # type: ignore[arg-type]
+
+    def test_a_negative_cap_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="0 or more"):
+            BuildOnce(cost=len, max_cost=-1)
