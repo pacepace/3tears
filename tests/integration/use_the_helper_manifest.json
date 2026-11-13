@@ -2379,5 +2379,236 @@
   ],
   "shape": "write",
   "table": "job_fires"
+ },
+ {
+  "args": [
+   "group_id"
+  ],
+  "columns": null,
+  "function": "GroupCollection.find_by_id",
+  "helper": "read_row",
+  "line": 629,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'groups', by={'row_scope': AnyOf(('platform', 'customer'), cast=None), 'group_id': group_id}, records=True)",
+  "old_sql": "SELECT * FROM groups WHERE row_scope IN ('platform', 'customer') AND group_id = $1",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "row_scope",
+    "kind": "anylit",
+    "literal": [
+     "platform",
+     "customer"
+    ],
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "group_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "groups"
+ },
+ {
+  "args": [
+   "list(group_ids)"
+  ],
+  "columns": null,
+  "function": "GroupCollection.get_many",
+  "helper": "read_by",
+  "line": 788,
+  "method": "fetch",
+  "new_call": "read_by(self.l3_pool, 'groups', by={'row_scope': AnyOf(('platform', 'customer'), cast=None), 'group_id': AnyOf(list(group_ids), cast='uuid')}, records=True)",
+  "old_sql": "SELECT * FROM groups WHERE row_scope IN ('platform', 'customer') AND group_id = ANY($1::uuid[])",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "row_scope",
+    "kind": "anylit",
+    "literal": [
+     "platform",
+     "customer"
+    ],
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": "uuid",
+    "column": "group_id",
+    "kind": "any",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "groups"
+ },
+ {
+  "args": [
+   "assignment_id"
+  ],
+  "columns": null,
+  "function": "RoleAssignmentCollection.find_by_id",
+  "helper": "read_row",
+  "line": 1611,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'role_assignments', by={'row_scope': AnyOf(('platform', 'customer'), cast=None), 'assignment_id': assignment_id}, records=True)",
+  "old_sql": "SELECT * FROM role_assignments WHERE row_scope IN ('platform', 'customer') AND assignment_id = $1",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "row_scope",
+    "kind": "anylit",
+    "literal": [
+     "platform",
+     "customer"
+    ],
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "assignment_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "role_assignments"
+ },
+ {
+  "args": [
+   "namespace_id"
+  ],
+  "columns": [
+   "row_scope",
+   "customer_id"
+  ],
+  "function": "NamespaceCollection.rescope",
+  "helper": "read_row",
+  "line": 2488,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'namespaces', by={'row_scope': AnyOf(('platform', 'customer'), cast=None), 'namespace_id': namespace_id}, columns=('row_scope', 'customer_id'), records=True)",
+  "old_sql": "SELECT row_scope, customer_id FROM namespaces WHERE row_scope IN ('platform', 'customer') AND namespace_id = $1",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "row_scope",
+    "kind": "anylit",
+    "literal": [
+     "platform",
+     "customer"
+    ],
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "namespace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "namespaces"
+ },
+ {
+  "args": [
+   "namespace_id"
+  ],
+  "columns": null,
+  "function": "NamespaceCollection.find_by_id",
+  "helper": "read_row",
+  "line": 2595,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'namespaces', by={'row_scope': AnyOf(('platform', 'customer'), cast=None), 'namespace_id': namespace_id}, records=True)",
+  "old_sql": "SELECT * FROM namespaces WHERE row_scope IN ('platform', 'customer') AND namespace_id = $1",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "row_scope",
+    "kind": "anylit",
+    "literal": [
+     "platform",
+     "customer"
+    ],
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "namespace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "namespaces"
+ },
+ {
+  "args": [
+   "list(namespace_ids)"
+  ],
+  "columns": null,
+  "function": "NamespaceCollection.get_many",
+  "helper": "read_by",
+  "line": 2620,
+  "method": "fetch",
+  "new_call": "read_by(self.l3_pool, 'namespaces', by={'row_scope': AnyOf(('platform', 'customer'), cast=None), 'namespace_id': AnyOf(list(namespace_ids), cast='uuid')}, records=True)",
+  "old_sql": "SELECT * FROM namespaces WHERE row_scope IN ('platform', 'customer') AND namespace_id = ANY($1::uuid[])",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "row_scope",
+    "kind": "anylit",
+    "literal": [
+     "platform",
+     "customer"
+    ],
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": "uuid",
+    "column": "namespace_id",
+    "kind": "any",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "namespaces"
  }
 ]

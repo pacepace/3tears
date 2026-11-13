@@ -81,11 +81,22 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
 )
 from threetears.core.exceptions import GenerationUnavailableError
-from threetears.core.keyed import AnyOf, KeyPage, Pin, Selected, Sort, counts_by, keyset_page, read_by, update_keyed
-from threetears.interfaces.keyed.keys import TableKey, register_table_keys
+from threetears.core.keyed import (
+    AnyOf,
+    KeyPage,
+    Pin,
+    Selected,
+    Sort,
+    counts_by,
+    keyset_page,
+    read_by,
+    read_row,
+    update_keyed,
+)
 from threetears.core.keyset import keyset_pages
 from threetears.core.namespaces import NAMESPACE_NAME_SEPARATOR, namespace_contains
 from threetears.core.tenancy import no_tenant, tenant_column
+from threetears.interfaces.keyed.keys import TableKey, register_table_keys
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -625,9 +636,11 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         result: GroupEntity | None = None
         if self.l3_pool is not None:
             # both row scopes and the id: the whole primary key, two point reads
-            row = await self.l3_pool.fetchrow(
-                "SELECT * FROM groups WHERE row_scope IN ('platform', 'customer') AND group_id = $1",
-                group_id,
+            row = await read_row(
+                self.l3_pool,
+                "groups",
+                by={"row_scope": AnyOf(("platform", "customer"), cast=None), "group_id": group_id},
+                records=True,
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
@@ -784,9 +797,14 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         result: list[GroupEntity] = []
         if self.l3_pool is not None and len(group_ids) > 0:
             # both row scopes and the ids: whole primary keys
-            rows = await self.l3_pool.fetch(
-                "SELECT * FROM groups WHERE row_scope IN ('platform', 'customer') AND group_id = ANY($1::uuid[])",
-                list(group_ids),
+            rows = await read_by(
+                self.l3_pool,
+                "groups",
+                by={
+                    "row_scope": AnyOf(("platform", "customer"), cast=None),
+                    "group_id": AnyOf(list(group_ids), cast="uuid"),
+                },
+                records=True,
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
@@ -1607,9 +1625,11 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         result: RoleAssignmentEntity | None = None
         if self.l3_pool is not None:
             # both row scopes and the id: the whole primary key, two point reads
-            row = await self.l3_pool.fetchrow(
-                "SELECT * FROM role_assignments WHERE row_scope IN ('platform', 'customer') AND assignment_id = $1",
-                assignment_id,
+            row = await read_row(
+                self.l3_pool,
+                "role_assignments",
+                by={"row_scope": AnyOf(("platform", "customer"), cast=None), "assignment_id": assignment_id},
+                records=True,
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
@@ -2484,10 +2504,12 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             customer_id=customer_id,
         )
         if self.l3_pool is not None:
-            row = await self.l3_pool.fetchrow(
-                "SELECT row_scope, customer_id FROM namespaces"
-                " WHERE row_scope IN ('platform', 'customer') AND namespace_id = $1",
-                namespace_id,
+            row = await read_row(
+                self.l3_pool,
+                "namespaces",
+                by={"row_scope": AnyOf(("platform", "customer"), cast=None), "namespace_id": namespace_id},
+                columns=("row_scope", "customer_id"),
+                records=True,
             )
             if row is not None:
                 result = await self._rescope_existing(
@@ -2591,9 +2613,11 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         result: NamespaceEntity | None = None
         if self.l3_pool is not None:
             # both row scopes and the id: the whole primary key, two point reads
-            row = await self.l3_pool.fetchrow(
-                "SELECT * FROM namespaces WHERE row_scope IN ('platform', 'customer') AND namespace_id = $1",
-                namespace_id,
+            row = await read_row(
+                self.l3_pool,
+                "namespaces",
+                by={"row_scope": AnyOf(("platform", "customer"), cast=None), "namespace_id": namespace_id},
+                records=True,
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
@@ -2616,10 +2640,14 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         read_ticket = self.scan_ticket()  # before the first await
         result: dict[UUID, NamespaceEntity] = {}
         if self.l3_pool is not None and len(namespace_ids) > 0:
-            rows = await self.l3_pool.fetch(
-                "SELECT * FROM namespaces WHERE row_scope IN ('platform', 'customer')"
-                " AND namespace_id = ANY($1::uuid[])",
-                list(namespace_ids),
+            rows = await read_by(
+                self.l3_pool,
+                "namespaces",
+                by={
+                    "row_scope": AnyOf(("platform", "customer"), cast=None),
+                    "namespace_id": AnyOf(list(namespace_ids), cast="uuid"),
+                },
+                records=True,
             )
             for row in rows:
                 data = self._coerce_row(dict(row))

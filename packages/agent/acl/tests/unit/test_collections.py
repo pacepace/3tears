@@ -820,7 +820,7 @@ class TestNamespaceCollectionFindById:
         cid = uuid7()
         row = _namespace_row(customer_id=cid)
         pool = AsyncMock()
-        pool.fetchrow.return_value = row
+        pool.fetch.return_value = [row]
         coll = make_collection(NamespaceCollection, l3_pool=pool)
         result = await coll.find_by_id(row["namespace_id"])
         assert result is not None
@@ -829,7 +829,7 @@ class TestNamespaceCollectionFindById:
     @pytest.mark.asyncio
     async def test_returns_none_when_absent(self) -> None:
         pool = AsyncMock()
-        pool.fetchrow.return_value = None
+        pool.fetch.return_value = []
         coll = make_collection(NamespaceCollection, l3_pool=pool)
         result = await coll.find_by_id(uuid7())
         assert result is None

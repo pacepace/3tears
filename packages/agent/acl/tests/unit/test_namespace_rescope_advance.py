@@ -26,12 +26,11 @@ class _Pool:
     def __init__(self, namespace_id: Any) -> None:
         self.namespace_id = namespace_id
 
-    async def fetchrow(self, sql: str, *params: Any) -> dict[str, Any] | None:
-        if sql.startswith("SELECT row_scope, customer_id FROM namespaces"):
-            return {"row_scope": "platform", "customer_id": None}
-        raise AssertionError(sql)
-
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        # the row's scope read: a keyed point read (threetears.core.keyed.read_row) by its key
+        if sql.startswith('SELECT t."row_scope", t."customer_id" FROM "namespaces"'):
+            assert params[1] == self.namespace_id, params
+            return [{"row_scope": "platform", "customer_id": None}]
         # the move: a keyed write (threetears.core.keyed.update_keyed) returning the row it moved
         assert sql.startswith('UPDATE "namespaces"') and sql.endswith('RETURNING "namespace_id"'), sql
         return [{"namespace_id": self.namespace_id}]
