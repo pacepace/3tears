@@ -220,14 +220,34 @@ def _unchanged_on_disk(parse: _Parse) -> bool:
     return _stamp(parse.path) == parse.stamp
 
 
-#: every parse this process has made, by path. every gate walks every file, so without this a run
-#: parses each file once per gate. unbounded on purpose: the gates walk the same files in the
-#: same order, so any bound smaller than the file set evicts each entry just before it is wanted
-#: again. a file whose stamp moved is parsed again in place. a ``BuildOnce`` rather than a dict
-#: because a hand-filled module-level cache is a race between threads that ask first
+def _source_bytes(parse: _Parse) -> int:
+    """what keeping *parse* costs, priced by its file's size on disk.
+
+    :param parse: a parse
+    :ptype parse: _Parse
+    :return: the file's size in bytes when it was read
+    :rtype: int
+    """
+    return parse.stamp[1]
+
+
+#: the most source, in bytes, whose trees :data:`_PARSES` keeps. a tree costs about 30 times its
+#: source in memory (this repo: 63 MB of source parses to 1.8 GB), and a pool runner gives a test
+#: process about 1 GiB, so a cache of every tree in the workspace got enforcement batches killed
+#: (SIGKILL, out of memory) on the Mac runners. 8 MiB of source keeps about 250 MB of trees.
+_PARSE_CACHE_SOURCE_BYTES = 8 * 2**20
+
+#: parses this process keeps, by path, up to :data:`_PARSE_CACHE_SOURCE_BYTES` of source. every gate
+#: walks the same files in the same order, so the cache keeps the first files that fit and hands
+#: out the rest unstored rather than evicting: eviction would drop each tree just before the next
+#: gate asks for it, while a full cache that keeps what it has answers that share of every walk.
+#: a file whose stamp moved is parsed again. a ``BuildOnce`` rather than a dict because a
+#: hand-filled module-level cache is a race between threads that ask first
 #: (``tests/enforcement/test_build_once_is_the_only_lazy_fill.py``); its one lock serialises
 #: parses, which costs nothing here because the gates parse from one thread.
-_PARSES: BuildOnce[Path, _Parse] = BuildOnce(is_current=_unchanged_on_disk)
+_PARSES: BuildOnce[Path, _Parse] = BuildOnce(
+    is_current=_unchanged_on_disk, cost=_source_bytes, max_cost=_PARSE_CACHE_SOURCE_BYTES
+)
 
 
 @dataclass(frozen=True)
@@ -274,10 +294,26 @@ def _index_unchanged_on_disk(index: _NodeIndex) -> bool:
     return _unchanged_on_disk(index.parse)
 
 
-#: every file's nodes by type, beside :data:`_PARSES` and released with it. a gate that keeps one
-#: node type reads it here instead of walking the whole tree, so the walk is paid once per file
-#: however many gates ask.
-_NODE_INDEXES: BuildOnce[Path, _NodeIndex] = BuildOnce(is_current=_index_unchanged_on_disk)
+def _held_beside_its_parse(index: _NodeIndex) -> int:
+    """what keeping *index* costs: nothing while :data:`_PARSES` keeps its tree, else too much.
+
+    an index holds its tree's nodes, so keeping the index of a tree the parse cache let go would
+    hold that tree past the cache's bound.
+
+    :param index: an index
+    :ptype index: _NodeIndex
+    :return: 0 when its parse is the one kept for its file, else 1
+    :rtype: int
+    """
+    return 0 if _PARSES.peek(index.parse.path) is index.parse else 1
+
+
+#: every kept file's nodes by type, beside :data:`_PARSES`, kept only while its tree is, and
+#: released with it. a gate that keeps one node type reads it here instead of walking the whole
+#: tree, so the walk is paid once per kept file however many gates ask.
+_NODE_INDEXES: BuildOnce[Path, _NodeIndex] = BuildOnce(
+    is_current=_index_unchanged_on_disk, cost=_held_beside_its_parse, max_cost=0
+)
 
 
 def nodes_by_type[T: ast.AST](path: Path, node_type: type[T]) -> tuple[T, ...]:
@@ -306,8 +342,9 @@ def nodes_by_type[T: ast.AST](path: Path, node_type: type[T]) -> tuple[T, ...]:
 def parse_python_path(path: Path) -> ast.Module:
     """parse a python file as utf-8: ``ast.parse(path.read_text(encoding="utf-8"))``, once.
 
-    the result is cached by path, and reused while the file's modification
-    time, size and inode are unchanged, so a file rewritten in place is
+    the result is cached by path, up to :data:`_PARSE_CACHE_SOURCE_BYTES` of
+    source (a file past that is parsed on every call), and reused while the
+    file's modification time, size and inode are unchanged, so a file rewritten in place is
     parsed again -- unless the rewrite keeps the same size inside one tick of
     the filesystem's timestamp clock, which on Linux can be milliseconds wide.
     a scan over files that are not being edited under it never meets that; a
