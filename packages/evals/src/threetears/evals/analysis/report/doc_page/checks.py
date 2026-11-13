@@ -67,7 +67,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.block_spec import block_look, chart_faults, complete_chart, small_multiple_faults
-from threetears.evals.analysis.report.figure_keys import keys_in, page_arm_names, printed_arm_name, reader_names, render
+from threetears.evals.analysis.report.keys.names import page_arm_names, printed_arm_name, reader_names
+from threetears.evals.analysis.report.keys.resolve import keys_in, render
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.look import PageLook
 from threetears.evals.analysis.report.parts.resolve import resolve_chart

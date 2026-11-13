@@ -70,7 +70,7 @@ from threetears.evals.analysis.report.parts.charting import (
     unit_quantities,
     unit_refusal,
 )
-from threetears.evals.analysis.report.figure_keys import figure_unit
+from threetears.evals.analysis.report.keys.resolve import figure_unit
 from threetears.evals.analysis.report.parts.look import Quantity, band_domain
 from threetears.evals.analysis.report.parts.words import (
     BELOW_TEMPLATE,

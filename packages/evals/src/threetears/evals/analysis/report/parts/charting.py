@@ -76,14 +76,9 @@ from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.quantities import MONEY, POINTS
 from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem, ScatterPoint
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
-from threetears.evals.analysis.report.figure_keys import (
-    Figure,
-    figure_unit,
-    held_kind,
-    input_check_name,
-    reader_name,
-    resolve,
-)
+from threetears.evals.analysis.report.keys.figure import Figure
+from threetears.evals.analysis.report.keys.names import input_check_name, reader_name
+from threetears.evals.analysis.report.keys.resolve import figure_unit, held_kind, resolve
 from threetears.evals.analysis.report.parts.look import PageLook, Quantity, quantity, series_token
 from threetears.evals.analysis.report.words import judged_name, label_case
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
@@ -403,7 +398,13 @@ def money_noun(report_input: ReportInput, key: str) -> str:
 
 
 def money_words(
-    report_input: ReportInput, key: str, drawn: Quantity, *, kind: str | None = None, name: str = "", prose: bool = False
+    report_input: ReportInput,
+    key: str,
+    drawn: Quantity,
+    *,
+    kind: str | None = None,
+    name: str = "",
+    prose: bool = False,
 ) -> str:
     """What a reader calls a measure (:func:`measure_words`, or ``name`` where the chart names it otherwise) with the
     count its money is drawn per in it, as the one owner of money's words writes it

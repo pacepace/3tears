@@ -82,22 +82,20 @@ from threetears.evals.analysis.quantities import (
 from threetears.evals.analysis.report.campaign.measure_kinds import money_rulers, rate_measures, shown_measures
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report.figures import ContrastPlaces, MeasureRuler, Rulers, report_rulers
-from threetears.evals.analysis.report.figure_keys import (
-    MULTIPLE_UNIT,
+from threetears.evals.analysis.report.keys.figure import Figure
+from threetears.evals.analysis.report.keys.prices import MULTIPLE_UNIT
+from threetears.evals.analysis.report.keys.reads import criterion_ruler, held_means, held_stats
+from threetears.evals.analysis.report.keys.resolve import (
     RUBRIC_SCALE,
-    Figure,
-    criterion_ruler,
     figure_unit,
     format_figure,
     held_kind,
-    held_means,
-    held_stats,
     is_rubric_score,
-    joint_level,
     plus_signed,
     resolve,
     rubric_score,
 )
+from threetears.evals.analysis.report.keys.vocabulary import joint_level
 from threetears.evals.analysis.report.blocks import LANDS_AT, CellValue, TableCell
 from threetears.evals.analysis.report.charts import (
     KitChart,

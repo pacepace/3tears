@@ -30,7 +30,7 @@ from typing import Any, Final, NamedTuple
 from threetears.evals.analysis.bundle.insights import insight_restatement_key
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, LeverCoverageInput, RunSummary
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
-from threetears.evals.analysis.report.figure_keys import KeySubjects, key_subjects, keys_in, render
+from threetears.evals.analysis.report.keys.resolve import KeySubjects, key_subjects, keys_in, render
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.authored import Confidence

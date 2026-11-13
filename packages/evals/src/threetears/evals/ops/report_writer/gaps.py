@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.figure_keys import keys_in, render
+from threetears.evals.analysis.report.keys.resolve import keys_in, render
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.doc_page.checks import DocVerdict
 from threetears.evals.analysis.report_input import ReportInput

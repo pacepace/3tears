@@ -151,7 +151,7 @@ from itertools import combinations
 from typing import Literal
 
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.figure_keys import resolve
+from threetears.evals.analysis.report.keys.resolve import resolve
 from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS
 from threetears.evals.analysis.report.gates import GateCheck, GateStatus, gate_check, gate_findings
 from threetears.evals.analysis.report_input import (

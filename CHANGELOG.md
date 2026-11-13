@@ -15,6 +15,11 @@ packages (bumped in lock-step).
 `.store`. No public root changes. The flat `report_input`, `report_margins` and `reporting` never import the page, and a
 test holds that direction. `MIGRATIONS.toml` lists each move.
 
+The figure-key grammar's code moves out of `report.figure_keys` into the package `report.keys`, one module per part
+(`figure`, `vocabulary`, `names`, `reads`, `weakest`, `counts`, `prices`, `separation`, `settle`, `levers`, `families`,
+`resolve` and `grammar`), each reading only the parts before it. `report.figure_keys` still exports every name its
+`__all__` lists; the public names it did not list are importable from their new modules, which `MIGRATIONS.toml` names.
+
 ### evals: a negative value on a measure declared non-negative is named
 
 **Added:** `AnalysisContextBundle.negative_values` (a list of `NegativeValues`: measure, arm, the number of results, and

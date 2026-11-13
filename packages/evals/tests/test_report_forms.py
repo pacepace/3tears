@@ -50,14 +50,13 @@ from threetears.evals.analysis.report.build import (
 )
 from threetears.evals.analysis.report.figure_keys import (
     Figure,
-    cost_measure,
     figure_key_grammar,
     format_figure,
     key_form,
-    pass_rate_measure,
     render,
     resolve,
 )
+from threetears.evals.analysis.report.keys.reads import cost_measure, pass_rate_measure
 from threetears.evals.analysis.report.forms import ColumnMoney, MeasureForm, PageForms, Printed
 from threetears.evals.analysis.report.model import CampaignReport, Report, ReportBlock
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown

@@ -45,14 +45,9 @@ from threetears.evals.analysis.report.cost_unit import (
     per_one,
     priced_in_part,
 )
-from threetears.evals.analysis.report.figure_keys import (
-    Figure,
-    aspect_costs_per_thousand,
-    cost_basis,
-    cost_measure,
-    format_figure,
-    held_figure,
-)
+from threetears.evals.analysis.report.keys.figure import Figure
+from threetears.evals.analysis.report.keys.reads import aspect_costs_per_thousand, cost_basis, cost_measure
+from threetears.evals.analysis.report.keys.resolve import format_figure, held_figure
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.look import ArmLook, PageLook
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION, PageArmsKey
@@ -159,9 +154,7 @@ def arms_table(
     header, cells = _arm_costs(report_input, look, forms)
     costed = not aspects and any(cell.value is not None for cell in cells.values())
     cells = {arm: _unknown_cost(cell) for arm, cell in cells.items()} if costed else cells
-    grouped, by_aspect = _aspect_groups(
-        report_input, look, aspects, (_PASS_RATE, _COST, "usable"), per=1, forms=forms
-    )
+    grouped, by_aspect = _aspect_groups(report_input, look, aspects, (_PASS_RATE, _COST, "usable"), per=1, forms=forms)
     priced = {arm: _priced_by(_pricing(report_input, arm)) for arm in arms}
     sourced = any(cell.value is not None or cell.flag is not None for cell in priced.values())
     columns = [
@@ -246,9 +239,7 @@ def _costs(
                 costs[aspect, arm] = held[arm] * per / 1000
     # The one owner of money's scale states the column: per ``per``, or per 1,000 (1,000,000) times as many where a
     # cost is under a cent there.
-    ruler = money_ruler(
-        costs.values(), per=per, start=per, reconciles=report_input.meta.volume_per_month is not None
-    )
+    ruler = money_ruler(costs.values(), per=per, start=per, reconciles=report_input.meta.volume_per_month is not None)
     noun = cost_basis(report_input).noun
     return COST_HEADER.format(per=per_one(noun) if ruler.counted == 1 else ruler.words(noun)), costs, ruler
 
@@ -424,7 +415,10 @@ def _aspect_groups(
         return [], {arm.id: {} for arm in report_input.arms}
     cost_header, costs, ruler = _costs(report_input, [aspect.id for aspect in aspects], per=per)
     readers: dict[str, tuple[str, Callable[[Aspect, str], TableCell]]] = {
-        _PASS_RATE: (OPTION_HEADERS[_PASS_RATE], lambda aspect, arm: _aspect_pass_rate(report_input, arm, aspect, forms)),
+        _PASS_RATE: (
+            OPTION_HEADERS[_PASS_RATE],
+            lambda aspect, arm: _aspect_pass_rate(report_input, arm, aspect, forms),
+        ),
         _COST: (cost_header, lambda aspect, arm: _cost_cell(arm, report_input, look, costs, ruler, forms, aspect.id)),
         "usable": (ARM_HEADERS["usable"], lambda aspect, arm: _trials(report_input, arm, aspect.id)),
     }

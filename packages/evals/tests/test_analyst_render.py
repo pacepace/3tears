@@ -48,7 +48,8 @@ from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES, block_loo
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS, GateMatrixChart
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report.figure_keys import figure_key_grammar, held_means, resolve, figure_unit
+from threetears.evals.analysis.report.figure_keys import figure_key_grammar, figure_unit, resolve
+from threetears.evals.analysis.report.keys.reads import held_means
 from threetears.evals.analysis.report.parts.charting import figure_stat, money_words
 from threetears.evals.analysis.report.parts.look import figure_text, quantity, quantity_of
 from threetears.evals.analysis.report.parts.resolve import resolve_chart

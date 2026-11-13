@@ -125,7 +125,9 @@ from threetears.evals.analysis.report.parts.words import (
     change_words,
 )
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
-from threetears.evals.analysis.report.figure_keys import arm_settings, correction_words, pairing_contrast, figure_unit
+from threetears.evals.analysis.report.keys.levers import arm_settings
+from threetears.evals.analysis.report.keys.resolve import figure_unit
+from threetears.evals.analysis.report.keys.separation import correction_words, pairing_contrast
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.analysis.report.rows import lever_arms, query_aspect
@@ -387,9 +389,7 @@ def _passes(context: ChartContext, aspect: str | None) -> tuple[str | None, str]
     )
 
 
-def _figure_base(
-    context: ChartContext, key: str, arm: str, aspect: str, keys: Sequence[str]
-) -> tuple[str | None, str]:
+def _figure_base(context: ChartContext, key: str, arm: str, aspect: str, keys: Sequence[str]) -> tuple[str | None, str]:
     """An arm's level on one measure as the input states it, and what it counts (a mean over its cases): what each
     candidate's change on that measure is compared with where the arm is the control."""
     stat = figure_stat(context.report_input, key, arm, aspect)

@@ -27,7 +27,8 @@ import pytest
 from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.report_doc_support import snapshot_of
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.figure_keys import format_figure, parse_key, pass_rate_measure, render, resolve
+from threetears.evals.analysis.report.figure_keys import format_figure, parse_key, render, resolve
+from threetears.evals.analysis.report.keys.reads import pass_rate_measure
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import ReportInput, Unanswered
 from threetears.evals.analysis.report_margins import weakest_margin

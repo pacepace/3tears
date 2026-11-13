@@ -118,6 +118,11 @@ _PRIVATE_SET_HELPERS = frozenset(
     {
         ("threetears/evals/analysis/report/campaign/scorecard.py", "_one_precision"),
         ("threetears/evals/analysis/report/figure_keys.py", "_one_precision"),
+        # The figure-key grammar's own modules, one row each, so the helper is held wherever the grammar's code is.
+        *(
+            (path.relative_to(_SOURCE_ROOT).as_posix(), "_one_precision")
+            for path in sorted((_SOURCE_ROOT / "threetears/evals/analysis/report/keys").glob("*.py"))
+        ),
         ("threetears/evals/harness/writer_eval.py", "_places"),
     }
 )
@@ -337,16 +342,16 @@ _PERMANENT: dict[tuple[str, str, str], tuple[int, str]] = {
     ("threetears/evals/analysis/report/cost_unit.py", "per_count", "group_thousands()"): (1, _COST_UNIT),
     ("threetears/evals/analysis/report/decision.py", "_held", "round()"): (2, _WHOLE_COUNT),
     ("threetears/evals/analysis/report/decision.py", "floor_readings", "round()"): (2, _WHOLE_COUNT),
-    ("threetears/evals/analysis/report/figure_keys.py", "_assumed_cases", "round()"): (2, _WHOLE_CASES),
-    ("threetears/evals/analysis/report/figure_keys.py", "_unanswered_figure", "group_thousands()"): (
-        1,
-        _UNANSWERED_COUNT,
-    ),
     ("threetears/evals/analysis/report/html_parts.py", "_head_width", "round()"): (1, _CSS_WIDTH),
     ("threetears/evals/analysis/report/html_parts.py", "_id_rem", "round()"): (1, _CSS_WIDTH),
     ("threetears/evals/analysis/report/html_parts.py", "_key_rem", "round()"): (1, _CSS_WIDTH),
     ("threetears/evals/analysis/report/html_parts.py", "_lines_rem", "round()"): (1, _CSS_WIDTH),
     ("threetears/evals/analysis/report/input_build.py", "_level", "format_number()"): (1, _SNAPSHOT),
+    ("threetears/evals/analysis/report/keys/prices.py", "_unanswered_figure", "group_thousands()"): (
+        1,
+        _UNANSWERED_COUNT,
+    ),
+    ("threetears/evals/analysis/report/keys/settle.py", "_assumed_cases", "round()"): (2, _WHOLE_CASES),
     ("threetears/evals/analysis/report/kit/kit.js", "kConfusion", "namedFmt"): (1, _KIT_DEFAULT),
     ("threetears/evals/analysis/report/kit/kit.js", "kDiffHeatmap", "Math.round()"): (2, _KIT_COLOUR),
     ("threetears/evals/analysis/report/kit/kit.js", "kHeatmap", "toLocaleString()"): (1, _KIT_TOOLTIP_COUNT),

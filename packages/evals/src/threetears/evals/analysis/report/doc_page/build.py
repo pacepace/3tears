@@ -82,16 +82,9 @@ from threetears.evals.analysis.report.doc_page.words import (
     SLOT_TITLES,
     UNRESOLVED,
 )
-from threetears.evals.analysis.report.figure_keys import (
-    Figure,
-    NamedKind,
-    format_figure,
-    input_check_name,
-    is_figure_key,
-    render,
-    resolve,
-    written_arm,
-)
+from threetears.evals.analysis.report.keys.figure import Figure, written_arm
+from threetears.evals.analysis.report.keys.names import NamedKind, input_check_name
+from threetears.evals.analysis.report.keys.resolve import format_figure, is_figure_key, render, resolve
 from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.analysis.report.unit_once import interval_beside
 from threetears.evals.kernel.metrics import goal_check_of

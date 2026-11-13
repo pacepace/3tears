@@ -93,7 +93,7 @@ from threetears.evals.analysis.report.model import (
     table_row,
 )
 from threetears.evals.analysis.report.verdict import interval_words, passed_clause
-from threetears.evals.analysis.report.figure_keys import joint_guarantee
+from threetears.evals.analysis.report.keys.vocabulary import joint_guarantee
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.words import PASS_RATE, judged_name, reason_words
 from threetears.evals.analysis.report.unit_once import interval_beside

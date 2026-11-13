@@ -54,14 +54,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
-from threetears.evals.analysis.report.figure_keys import (
-    Figure,
-    criterion_ruler,
-    format_figure,
-    held_kind,
-    reader_name,
-    resolve,
-)
+from threetears.evals.analysis.report.keys.figure import Figure
+from threetears.evals.analysis.report.keys.names import reader_name
+from threetears.evals.analysis.report.keys.reads import criterion_ruler
+from threetears.evals.analysis.report.keys.resolve import format_figure, held_kind, resolve
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import Criterion, ReportInput
 from threetears.evals.analysis.report_margins import (

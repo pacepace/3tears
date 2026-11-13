@@ -92,16 +92,16 @@ from threetears.evals.analysis.analyst.analyses import GateRead, breached_guardr
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.cost_unit import per_count
-from threetears.evals.analysis.report.figure_keys import (
+from threetears.evals.analysis.report.keys.prices import (
     POOL_WEIGHT_WORDS,
-    SLICE_COST_WORDS,
     PriceFrontier,
+    SLICE_COST_WORDS,
     SliceKind,
-    cost_basis,
     gain_axis,
     pooled_figures,
     price_frontier,
 )
+from threetears.evals.analysis.report.keys.reads import cost_basis
 from threetears.evals.analysis.report.call import control_arm, surviving_options
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import undecided_arms

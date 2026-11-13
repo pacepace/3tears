@@ -42,7 +42,8 @@ from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_inp
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report_input import report_input_digest, report_input_document_digest
-from threetears.evals.analysis.report.figure_keys import OVERLAP_WORDS, reader_name, resolve
+from threetears.evals.analysis.report.figure_keys import reader_name, resolve
+from threetears.evals.analysis.report.keys.counts import OVERLAP_WORDS
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report.input_build import EXAMPLE_EXCERPT_CHARS, report_input
 from threetears.evals.kernel.chart_query import ChartQuery
