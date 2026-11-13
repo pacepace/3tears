@@ -194,6 +194,34 @@ class TestAWholeReadOfAHashedLead:
 _PINNED_STATES = [f"S{n:02d}" for n in range(0, _WIDE_STATES, 5)][::-1] + ["S05", "S99"]
 _PINNED_RACES = [f"r{n:05d}" for n in range(1, _NARROW_RACES + 1, 5)][::-1] + ["r99999"]
 
+#: on Postgres, the small-values set is read from a narrow table of this many races (two rows each). Over the 6,000-row
+#: narrow table Postgres seq-scans for any ``= ANY`` of hundreds of races -- a fifth of a table of about 40 pages,
+#: which is Postgres choosing correctly, not a read past its rows; at 30,000 races (the hub's Texas, about 33k) the
+#: same statement reads the index, 1,001 rows for a page (Postgres 16, S/o70)
+_PG_NARROW_RACES = 30_000
+
+#: the larger narrow table, and the races pinned in it, as the small-values case reads them on Postgres
+_PG_NARROW = TableSchema(
+    name="narrow_pg",
+    primary_key=("race", "candidate"),
+    columns=[Column("race", STRING_TYPE), Column("candidate", BIGINT_TYPE), Column("votes", BIGINT_TYPE)],
+)
+_PG_PINNED_RACES = [f"r{n:05d}" for n in range(1, _PG_NARROW_RACES + 1, 5)][::-1] + ["r99999"]
+
+
+async def _pg_narrow(conn: asyncpg.Connection) -> None:
+    """the larger narrow table, beside the seeded ones, with fresh statistics."""
+    await conn.execute(
+        "CREATE TABLE narrow_pg (race TEXT, candidate BIGINT, votes BIGINT, PRIMARY KEY (race, candidate))"
+    )
+    await conn.execute(
+        "INSERT INTO narrow_pg SELECT 'r' || lpad(r::text, 5, '0'), c, r * c "
+        "FROM generate_series(1, $1) r, generate_series(1, $2) c",
+        _PG_NARROW_RACES,
+        _NARROW_PER_RACE,
+    )
+    await conn.execute("ANALYZE narrow_pg")
+
 
 def _sorts(node: Mapping[str, Any]) -> Iterator[int]:
     """the rows each sort in a plan sorted."""
@@ -245,7 +273,15 @@ class TestAReadOfALeadASetFilterPins:
         self, seeded: _Seeded, schema: TableSchema, values: list[str]
     ) -> None:
         """Flips if a page re-reads the set's rows past its cursor, or sorts more than a page of them: the read of
-        the set's rows, in key order, scans about the rows it answers."""
+        the set's rows, in key order, scans about the rows it answers.
+
+        YugabyteDB walks the values: every row scanned once, give or take a page. Postgres pages by the cursor, and
+        its planner switches plan once, on the tail, when few rows remain (ten values of 3,000 rows: every page
+        1,000 scanned for 1,000 but one of 2,028): there the read may scan two pages past its rows, and at most one
+        statement may scan more than a page past its own -- a plan that degrades on every page still fails."""
+        if not seeded.yugabyte and schema is _NARROW:
+            await _pg_narrow(seeded.conn)
+            schema, values = _PG_NARROW, _PG_PINNED_RACES
         checked = PlanRecorder(seeded.conn)
 
         read = await _pinned_read(checked, schema, values)
@@ -262,7 +298,11 @@ class TestAReadOfALeadASetFilterPins:
         returned = sum(plan.rows_returned for plan in reads)
         scanned = sum(plan.rows_scanned for plan in reads)
         detail = "\n".join(f"  {p.rows_scanned} / {p.rows_returned}: {' '.join(p.sql.split())[:220]}" for p in reads)
-        assert scanned <= returned + _PAGE + 1, f"scanned {scanned} rows to answer {returned}\n{detail}"
+        slack = _PAGE + 1 if seeded.yugabyte else 2 * (_PAGE + 1)
+        assert scanned <= returned + slack, f"scanned {scanned} rows to answer {returned}\n{detail}"
+        if not seeded.yugabyte:
+            past_a_page = [plan for plan in reads if plan.rows_scanned - plan.rows_returned > _PAGE]
+            assert len(past_a_page) <= 1, f"{len(past_a_page)} statements scanned a page past their rows\n{detail}"
         if schema is _NARROW:
             # small values go together: never a statement a value
             assert len(reads) < len(values) // 10, len(reads)
