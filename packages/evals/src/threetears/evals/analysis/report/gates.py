@@ -355,8 +355,7 @@ def gate_check(
         # The page's own forms record every reason handed out, so a page's check is read on them, every time.
         return _checked(report_input, arm, task, cell, criterion, forms)
     # A check read off any page is pure in the input, which is frozen, so it is read once per input and place
-    # (:func:`~threetears.evals.analysis.report.per_input.kept_for`): the call's survivors, its dominance and the
-    # analyst's readings of them check every arm again on the same input.
+    # (:func:`~threetears.evals.analysis.report.per_input.kept_for`).
     return kept_for(report_input).get(
         (gate_check, arm, task, cell, criterion), lambda: _checked(report_input, arm, task, cell, criterion, None)
     )

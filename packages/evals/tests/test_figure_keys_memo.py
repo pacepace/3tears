@@ -21,6 +21,8 @@ import gc
 import weakref
 from typing import Any
 
+import pytest
+
 from packages.evals.tests.analyst_support import fixture_inputs
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import resolve
@@ -151,4 +153,13 @@ def test_a_gate_check_on_a_pages_forms_records_its_reasons_every_time_and_one_of
     second = gate_check(held, arm, forms=page)
     assert first.status == "fail" and printed, "the control: the check fails on a figure the page prints"
     assert len(page.ledger) == 2 * printed, "a check on a page's forms skipped recording its reasons"
-    assert gate_check(held, arm) == gate_check(held, arm) == first == second
+    off_page = gate_check(held, arm)
+    assert off_page is gate_check(held, arm), "a check read off any page was read again"
+    assert off_page == first == second
+
+
+def test_a_gate_check_at_a_place_the_input_does_not_hold_is_refused_every_time() -> None:
+    held = _copy_of_r2()
+    for _ in range(2):
+        with pytest.raises(ValueError, match="no task"):
+            gate_check(held, "atlas-m.off.r0", task="no-such-task")
