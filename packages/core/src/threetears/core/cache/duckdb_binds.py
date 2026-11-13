@@ -4,7 +4,7 @@ DuckDB's Python layer converts each bound value on its own, and for every one it
 recognise its type. Where pandas is not installed a failed import is never remembered, so each try is a search of
 the whole import path: 100 keys bound as one list cost ~40 ms on a laptop against ~1 ms through Arrow, 10,000 keys
 ~2.7 s against ~5 ms, and far more on a starved host. :func:`run_bound` makes every list parameter of
-:data:`ARROW_LIST_FROM` values or more one Arrow column of one row, sets it as a DuckDB variable in one statement,
+:data:`_ARROW_LIST_FROM` values or more one Arrow column of one row, sets it as a DuckDB variable in one statement,
 and runs the statement with that parameter read from the variable (``getvariable``, folded to a constant when the
 statement is bound: the plan is the one the bound list gets). Short lists and scalars are bound as before: two
 probes cost less than the Arrow round. A list Arrow cannot type as DuckDB would (nested values, UUIDs, decimals,
@@ -40,12 +40,12 @@ try:
 except ImportError:  # NOSILENT: the snapshot extra is optional; without it every parameter is bound as before
     _PYARROW = False
 
-__all__ = ["ARROW_LIST_FROM", "run_bound"]
+__all__ = ["run_bound"]
 
 _T = TypeVar("_T")
 
 #: the fewest values a list parameter must hold to be bound through Arrow; below it, binding value by value is as fast
-ARROW_LIST_FROM: Final = 4
+_ARROW_LIST_FROM: Final = 4
 
 #: the DuckDB variable a statement's Arrow-bound lists are read from (a struct, a field ``p<n>`` a parameter)
 _VARIABLE: Final = "_threetears_bound"
@@ -114,7 +114,7 @@ def _through_arrow(query: str, params: Sequence[Any]) -> tuple[str, list[Any], A
     :return: the statement, its remaining parameters and the table; or None
     :rtype: tuple[str, list[Any], pyarrow.Table] | None
     """
-    long = [i for i, p in enumerate(params) if isinstance(p, list | tuple) and len(p) >= ARROW_LIST_FROM]
+    long = [i for i, p in enumerate(params) if isinstance(p, list | tuple) and len(p) >= _ARROW_LIST_FROM]
     if not _PYARROW or not long:
         return None
     found = _placeholders(query)
@@ -146,7 +146,7 @@ def _through_arrow(query: str, params: Sequence[Any]) -> tuple[str, list[Any], A
 
 
 def run_bound(conn: Any, query: str, params: Sequence[Any], answer: Callable[[Any], _T]) -> _T:
-    """``answer(conn.execute(query, params))``, each list parameter of :data:`ARROW_LIST_FROM` values or more bound
+    """``answer(conn.execute(query, params))``, each list parameter of :data:`_ARROW_LIST_FROM` values or more bound
     through Arrow (module docstring): the same rows, the same plan, none of DuckDB's per-value pandas probes.
 
     ``answer`` reads the result before anything else runs on the connection (a DuckDB connection holds one result).

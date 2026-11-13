@@ -17,7 +17,7 @@ import pytest
 from sqlalchemy import MetaData
 
 from threetears.core.cache.duckdb import DuckDBBackend, query_arrow
-from threetears.core.cache.duckdb_binds import ARROW_LIST_FROM, run_bound
+from threetears.core.cache.duckdb_binds import run_bound
 from threetears.core.keyed import InlineDuckDB, ThreadedDuckDB, run_inline
 from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
 
@@ -175,7 +175,8 @@ def test_a_long_list_binds_at_real_size_within_twice_the_statement_on_keys_duckd
 
 
 def test_a_short_list_is_bound_as_it_is(conn: duckdb.DuckDBPyConnection) -> None:
-    """Flips if the Arrow round is taken for a list too short to gain from it (it costs more than two probes)."""
+    """Flips if the Arrow round is taken for a list too short to gain from it (3 values: it costs more than their
+    probes), or not taken from 4 values on."""
     query = "SELECT getvariable('_threetears_bound') IS NULL FROM t WHERE k = ANY($1)"
-    assert run_bound(conn, query, [list(range(ARROW_LIST_FROM - 1))], _fetch) == [(True,)] * (ARROW_LIST_FROM - 1)
-    assert run_bound(conn, query, [list(range(ARROW_LIST_FROM))], _fetch) == [(False,)] * ARROW_LIST_FROM
+    assert run_bound(conn, query, [list(range(3))], _fetch) == [(True,)] * (3)
+    assert run_bound(conn, query, [list(range(4))], _fetch) == [(False,)] * 4
