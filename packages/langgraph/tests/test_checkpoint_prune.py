@@ -76,7 +76,7 @@ class TestRefusals:
         saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
 
         with pytest.raises(ValueError, match="no row count"):
-            await saver.aprune(["t-1"], strategy="delete")
+            await saver.aprune(["t-1"])
 
     def test_the_sync_prune_says_to_use_aprune(self) -> None:
         saver = ThreeTierCheckpointSaver(_executor(), scope=_UNSCOPED)

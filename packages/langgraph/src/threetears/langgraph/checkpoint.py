@@ -2083,7 +2083,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
           :meth:`alist` read in, so a paused run resumes from the checkpoint kept, with its
           interrupt and resume writes. What goes is history: ``alist`` / ``get_state_history``
           and a read pinned to a pruned ``checkpoint_id`` no longer find it.
-        - ``delete`` removes everything, as :meth:`adelete_thread` does for each thread.
+        - ``delete`` calls :meth:`adelete_thread` for each thread, so the purge is that method's,
+          statements and cache eviction alike. The counts it reports are read just before, by the
+          same stored ids; a write landing between the count and the purge is deleted uncounted.
 
         **DeltaChannel.** LangGraph warns that a naive ``keep_latest`` corrupts a graph using
         ``DeltaChannel``: such a channel is rebuilt by walking the kept checkpoint's ancestors and
@@ -2092,7 +2094,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         its metadata, and ``keep_latest`` leaves such a namespace whole and counts it in
         ``namespaces_held``. A graph without delta channels never writes the key.
 
-        **Set-based, two statements.** The writes go first, then the checkpoints, each one
+        **Set-based, two statements** (``keep_latest``). The writes go first, then the checkpoints, each one
         ``DELETE`` over every named thread, matching :meth:`adelete_thread`'s order. Each
         statement decides "newest" at the moment it runs, so a checkpoint written between the
         two can only make the second delete a checkpoint whose writes the first kept: those
@@ -2102,9 +2104,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         routes a statement by its leading verb.
 
         **Caches.** After the L3 rows are gone every named thread's cached bundles are evicted
-        exactly as :meth:`adelete_thread` evicts them -- L2 root key, L2 namespaced keys by prefix
-        sweep, this pod's L1 -- with failures collected and raised together once every tier was
-        tried. Under ``keep_latest`` a cached bundle is normally the kept checkpoint already, but
+        -- by :meth:`adelete_thread` itself under ``delete``, and under ``keep_latest`` by the
+        eviction it uses: the L2 root key, the L2 namespaced keys by prefix sweep, and this pod's
+        L1. Failures are collected and raised together once every thread and tier was tried. Under ``keep_latest`` a cached bundle is normally the kept checkpoint already, but
         an L1 that missed another pod's write can hold an older one; evicting means the next read
         refills from L3 rather than serving a pruned checkpoint. Another pod's L1 is not reached
         (the protocol has no broadcast).
@@ -2138,23 +2140,24 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         # caller id -> stored id, each thread once
         threads = {thread_id: self.storage_thread_id(thread_id, customer=resolved) for thread_id in thread_ids}
         storage_thread_ids = list(threads.values())
-        held = 0
-        if not storage_thread_ids:
-            writes_deleted = checkpoints_deleted = 0
-        elif strategy == "delete":
-            writes_deleted = _affected_rows(
-                await self._exec.execute(
-                    "DELETE FROM checkpoint_writes WHERE thread_id = ANY($1::text[])",
-                    storage_thread_ids,
-                )
+        held = writes_deleted = checkpoints_deleted = 0
+        failures: list[CheckpointCacheError] = []
+        if storage_thread_ids and strategy == "delete":
+            # counted before the purge, by the same stored ids, so the result says what went
+            counts = await self._exec.fetchrow(
+                "SELECT (SELECT count(*) FROM checkpoints WHERE thread_id = ANY($1::text[])) AS checkpoints, "
+                "(SELECT count(*) FROM checkpoint_writes WHERE thread_id = ANY($1::text[])) AS writes",
+                storage_thread_ids,
             )
-            checkpoints_deleted = _affected_rows(
-                await self._exec.execute(
-                    "DELETE FROM checkpoints WHERE thread_id = ANY($1::text[])",
-                    storage_thread_ids,
-                )
-            )
-        else:
+            if counts is not None:
+                checkpoints_deleted, writes_deleted = int(counts["checkpoints"]), int(counts["writes"])
+            for thread_id in threads:
+                try:
+                    await self.adelete_thread(thread_id, customer=resolved)
+                except CheckpointPurgeIncompleteError as exc:
+                    # every thread is still purged; the cache failures are raised together below
+                    failures.extend(exc.failures)
+        elif storage_thread_ids:
             marker = DELTA_COUNTERS_METADATA_KEY.encode()
             held_row = await self._exec.fetchrow(
                 "SELECT count(*) AS held FROM ("
@@ -2183,6 +2186,18 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                     marker,
                 )
             )
+            swept_all = True
+            for thread_id, storage_thread_id in threads.items():
+                swept = await self._evict_thread_caches(
+                    thread_id, storage_thread_id, customer=resolved, failures=failures
+                )
+                swept_all = swept_all and swept
+            if not swept_all:
+                log.warning(
+                    "L2 cache cannot sweep by prefix; bundles cached under a non-empty checkpoint_ns "
+                    "survive this prune. Give the cache a delete_prefix (CheckpointL2PrefixCache) to close it.",
+                    extra={"l2_bucket": self._l2_bucket},
+                )
         result = CheckpointPruneResult(
             strategy=strategy,
             threads=len(threads),
@@ -2190,18 +2205,6 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             writes_deleted=writes_deleted,
             namespaces_held=held,
         )
-
-        failures: list[CheckpointCacheError] = []
-        swept_all = True
-        for thread_id, storage_thread_id in threads.items():
-            swept = await self._evict_thread_caches(thread_id, storage_thread_id, customer=resolved, failures=failures)
-            swept_all = swept_all and swept
-        if not swept_all:
-            log.warning(
-                "L2 cache cannot sweep by prefix; bundles cached under a non-empty checkpoint_ns "
-                "survive this prune. Give the cache a delete_prefix (CheckpointL2PrefixCache) to close it.",
-                extra={"l2_bucket": self._l2_bucket},
-            )
         log.info(
             "checkpoint threads pruned",
             extra={

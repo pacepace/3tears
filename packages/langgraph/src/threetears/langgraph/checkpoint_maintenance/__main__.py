@@ -124,8 +124,8 @@ def _table_lines(usage: TableUsage) -> list[str]:
     :rtype: list[str]
     """
     return [
-        f"{usage.table}: {_mib(usage.total_bytes)} total, {_mib(usage.heap_bytes)} heap, {usage.rows} rows",
-        f"  tuples: {usage.live_tuples} live, {usage.dead_tuples} dead (statistics estimate)",
+        f"{usage.table}: {_mib(usage.total_bytes)} total, {_mib(usage.heap_bytes)} heap",
+        f"  about {usage.rows} rows and {usage.dead_tuples} dead tuples (statistics estimates, not counts)",
     ]
 
 

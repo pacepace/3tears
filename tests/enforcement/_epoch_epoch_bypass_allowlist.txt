@@ -1,5 +1,8 @@
 # epoch-discipline allowlist, rule epoch-bypass: today's violations, each with the fix that removes it.
-# <path> :: <function> :: <symbol> :: <count> :: <fix>. Counts are pinned: the list only shrinks.
+# <path> :: <function> :: <symbol> :: <count> :: <fix>. The list is debt, pinned by count.
+# A count above what the code has fails until it is lowered, or the line deleted.
+# A new line only when the code needs the violation and its fix is not feasible now; its fix names what removes it.
+# The easy way out is never a reason. A site that is not a violation goes in _epoch_waivers.txt, not here.
 # Grammar and rules: threetears.enforcement.epoch_discipline; gate: test_epoch_discipline.py.
 packages/agent/acl/src/threetears/agent/acl/builtin_roles.py :: ensure_platform_builtin_tool_user_role :: INSERT roles :: 1 :: wrap the statement in collection.bypassing_write() naming its keys, or call announce_change(table, rows)
 packages/agent/acl/src/threetears/agent/acl/collections.py :: ImpersonationGateCollection.disable :: UPDATE impersonation_gates :: 1 :: wrap the statement in collection.bypassing_write() naming its keys, or call announce_change(table, rows)
@@ -100,6 +103,8 @@ packages/langgraph/src/threetears/langgraph/checkpoint.py :: ThreeTierCheckpoint
 packages/langgraph/src/threetears/langgraph/checkpoint.py :: ThreeTierCheckpointSaver.adelete_customer_threads :: DELETE checkpoints :: 1 :: checkpoint writes go through the collection write path or announce_change(table, rows) for its L1/L2 tiers
 packages/langgraph/src/threetears/langgraph/checkpoint.py :: ThreeTierCheckpointSaver.adelete_thread :: DELETE checkpoint_writes :: 1 :: checkpoint writes go through the collection write path or announce_change(table, rows) for its L1/L2 tiers
 packages/langgraph/src/threetears/langgraph/checkpoint.py :: ThreeTierCheckpointSaver.adelete_thread :: DELETE checkpoints :: 1 :: checkpoint writes go through the collection write path or announce_change(table, rows) for its L1/L2 tiers
+packages/langgraph/src/threetears/langgraph/checkpoint.py :: ThreeTierCheckpointSaver.aprune :: DELETE checkpoint_writes :: 1 :: checkpoint writes go through the collection write path or announce_change(table, rows) for its L1/L2 tiers
+packages/langgraph/src/threetears/langgraph/checkpoint.py :: ThreeTierCheckpointSaver.aprune :: DELETE checkpoints :: 1 :: checkpoint writes go through the collection write path or announce_change(table, rows) for its L1/L2 tiers
 packages/langgraph/src/threetears/langgraph/checkpoint.py :: ThreeTierCheckpointSaver.aput :: INSERT checkpoints :: 1 :: checkpoint writes go through the collection write path or announce_change(table, rows) for its L1/L2 tiers
 packages/registry/src/threetears/registry/heartbeat_collection.py :: HeartbeatCollection.delete :: _delete_from_l2 :: 1 :: route through BaseCollection.save_entity/delete so the write publishes its epoch (epoch PR2 L2-first path)
 packages/registry/src/threetears/registry/heartbeat_collection.py :: HeartbeatCollection.save_entity :: _save_to_l2 :: 1 :: route through BaseCollection.save_entity/delete so the write publishes its epoch (epoch PR2 L2-first path)

@@ -72,22 +72,24 @@ _WRITE_BYTES = "pg_column_size({a}.blob)"
 
 @dataclass(frozen=True, slots=True)
 class TableUsage:
-    """one checkpoint table's size and rows.
+    """one checkpoint table's size and an ESTIMATE of its rows.
+
+    The row figures come from the statistics collector, not a count: counting would read the whole
+    table for a number the statistics already hold. They lag the table until autovacuum or
+    ``ANALYZE`` updates them, and are 0 for a table the statistics have not seen yet.
 
     :ivar table: the table's name
     :ivar total_bytes: ``pg_total_relation_size``: heap, indexes and TOAST
     :ivar heap_bytes: ``pg_relation_size``: the main heap alone
-    :ivar rows: rows counted now
-    :ivar live_tuples: ``pg_stat_user_tables.n_live_tup``, the statistics' estimate
-    :ivar dead_tuples: ``pg_stat_user_tables.n_dead_tup``: deleted rows whose space ``VACUUM`` has
-        not yet made reusable
+    :ivar rows: live rows, estimated (``pg_stat_user_tables.n_live_tup``)
+    :ivar dead_tuples: deleted rows whose space ``VACUUM`` has not yet made reusable, estimated
+        (``pg_stat_user_tables.n_dead_tup``)
     """
 
     table: str
     total_bytes: int
     heap_bytes: int
     rows: int
-    live_tuples: int
     dead_tuples: int
 
 
@@ -208,7 +210,7 @@ def _int(row: dict[str, Any] | None, key: str) -> int:
 
 
 async def _table_usage(executor: AsyncQueryExecutor, table: str) -> TableUsage:
-    """size, rows and tuple statistics of one checkpoint table.
+    """size of one checkpoint table, and its row estimates from the statistics collector.
 
     :param executor: the database
     :ptype executor: AsyncQueryExecutor
@@ -219,8 +221,7 @@ async def _table_usage(executor: AsyncQueryExecutor, table: str) -> TableUsage:
     """
     sizes = await executor.fetchrow(
         f"SELECT pg_total_relation_size('{table}'::regclass) AS total_bytes, "
-        f"pg_relation_size('{table}'::regclass) AS heap_bytes, "
-        f"(SELECT count(*) FROM {table}) AS row_count"
+        f"pg_relation_size('{table}'::regclass) AS heap_bytes"
     )
     stats = await executor.fetchrow(
         f"SELECT n_live_tup, n_dead_tup FROM pg_stat_user_tables WHERE relid = '{table}'::regclass"
@@ -229,8 +230,7 @@ async def _table_usage(executor: AsyncQueryExecutor, table: str) -> TableUsage:
         table=table,
         total_bytes=_int(sizes, "total_bytes"),
         heap_bytes=_int(sizes, "heap_bytes"),
-        rows=_int(sizes, "row_count"),
-        live_tuples=_int(stats, "n_live_tup"),
+        rows=_int(stats, "n_live_tup"),
         dead_tuples=_int(stats, "n_dead_tup"),
     )
 
@@ -307,9 +307,10 @@ async def _thread_rows(executor: AsyncQueryExecutor, storage_thread_ids: Sequenc
 async def checkpoint_usage(executor: AsyncQueryExecutor, *, owned_threads_sql: str | None = None) -> CheckpointUsage:
     """measure the checkpoint tables. Read-only.
 
-    Every count is exact (``count(*)``), so on a large table this reads all of it; run it when the
-    database can afford a full scan. Tuple counts come from the statistics collector and are
-    estimates.
+    Each table's row and dead-tuple figures are the statistics collector's estimates. Everything
+    else -- threads, threads with history, prunable and unowned rows and bytes -- is counted
+    exactly, so on a large table this reads all of it; run it when the database can afford a full
+    scan.
 
     :param executor: the database holding ``checkpoints`` and ``checkpoint_writes`` (on its search path)
     :ptype executor: AsyncQueryExecutor

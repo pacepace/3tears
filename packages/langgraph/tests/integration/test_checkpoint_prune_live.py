@@ -718,14 +718,34 @@ _PRUNABLE = (
 )
 
 
+async def _analyze(database: _Database) -> None:
+    """refresh both tables' statistics and publish them now, so the row estimates are current.
+
+    :param database: the schema
+    :ptype database: _Database
+    """
+    conn = await asyncpg.connect(database.dsn, server_settings={"search_path": database.schema})
+    try:
+        await conn.execute("ANALYZE checkpoints")
+        await conn.execute("ANALYZE checkpoint_writes")
+        # a backend publishes its statistics lazily; this makes it publish at the end of the next statement
+        await conn.execute("SELECT pg_stat_force_next_flush()")
+        await conn.execute("SELECT 1")
+    finally:
+        await conn.close()
+
+
 class TestCheckpointUsage:
     """the report's numbers, on a seeded table."""
 
-    async def test_counts_and_prunable_rows(self, executor: AsyncpgPoolAdapter) -> None:
+    async def test_counts_and_prunable_rows(self, database: _Database) -> None:
+        executor = database.executor
         await _seed_estate(executor)
+        await _analyze(database)
 
         usage = await checkpoint_usage(executor, owned_threads_sql=_OWNED_SQL)
 
+        # the row figures are the statistics' estimates, current after ANALYZE
         assert (usage.checkpoints.rows, usage.writes.rows) == (10, 10)
         assert usage.checkpoints.table == "checkpoints"
         assert usage.checkpoints.total_bytes >= usage.checkpoints.heap_bytes > 0
@@ -739,10 +759,12 @@ class TestCheckpointUsage:
         assert (usage.unowned.threads, usage.unowned.checkpoint_rows, usage.unowned.write_rows) == (1, 2, 2)
         assert usage.unowned.bytes == await _blob_bytes(executor, "thread_id = 'gone'", "thread_id = 'gone'")
 
-    async def test_after_a_prune_nothing_is_prunable(self, executor: AsyncpgPoolAdapter) -> None:
+    async def test_after_a_prune_nothing_is_prunable(self, database: _Database) -> None:
         """the report agrees with the prune, and without an owned query has no unowned figures."""
+        executor = database.executor
         saver = await _seed_estate(executor)
         await saver.aprune(["owned-a", "gone"])
+        await _analyze(database)
 
         usage = await checkpoint_usage(executor)
 

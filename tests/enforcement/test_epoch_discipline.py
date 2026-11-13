@@ -15,8 +15,11 @@ those. Five rules hold that, one gate each, over every package's ``src``:
 The detectors and the ledger grammar live in :mod:`threetears.enforcement.epoch_discipline`. Each
 rule's allowlist (``_epoch_<rule>_allowlist.txt`` beside this file) lists today's violations, each
 with the fix that removes it, pinned by count; ``_epoch_waivers.txt`` lists the sites a detector
-matches that are not what the rule forbids, each with its reason. A new site fails, and so does a
-line whose site shrank or went, so both lists only shrink.
+matches that are not what the rule forbids, each with its reason. An allowlist is debt. An unlisted
+site fails. A line whose count is above what the code has fails until it is lowered or deleted. A
+new line is allowed only when the code genuinely needs the violation and its fix is not feasible
+now, and its fix text names what would remove it. The easy way out is never a reason. A false
+positive goes in the waivers, not an allowlist.
 
 The sanctioned whole-table-epoch apply site, ``CollectionRegistry.apply_epoch_change``, is in
 :data:`_PRIMITIVES` under ``whole-drop``.
