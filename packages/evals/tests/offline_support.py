@@ -61,9 +61,18 @@ class Connect:
         )
 
     def __repr__(self) -> str:
-        makers = [frame for frame in reversed(self.stack) if not frame.startswith(_TRANSPORT)]
-        return f"Connect({self.host or '?'} {self.address} on {self.thread!r}, made by {makers!r}, {self.origin})"
+        inner = [frame for frame in reversed(self.stack) if not frame.startswith(_LIBRARIES)]
+        via = [
+            frame for frame in reversed(self.stack) if frame.startswith(_LIBRARIES) and not frame.startswith(_TRANSPORT)
+        ]
+        return (
+            f"Connect({self.host or '?'} {self.address} on {self.thread!r}, made by {inner[:6]!r}, via {via[-4:]!r}, "
+            f"{self.origin})"
+        )
 
+
+#: Frames of installed libraries and the standard library: what a record's maker is called through, never the maker.
+_LIBRARIES: Final = tuple({sysconfig.get_paths()["purelib"], sysconfig.get_paths()["stdlib"]})
 
 #: Frames of the socket and HTTP client libraries a connect goes through, skipped where a record names its maker.
 _TRANSPORT: Final = tuple(
