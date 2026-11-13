@@ -405,7 +405,14 @@ CORE_SCHEMA_VERSION: int = 15
 #:   names the cap, which excludes it from every reading and which a re-judge takes up. In no identity, key or
 #:   digest. An older build reads the cell as excluded by its judge errors, and the record without the count.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 14
+#: - **v15.15** — a cell whose judging the cost cap set aside is marked: ``EvalResult.judging_set_aside`` (default
+#:   False: judged, or nothing set it aside, or stored before the field existed). The exclusion it gives the cell is a
+#:   cause of its own, ``cost_cap``, which a report names with its remedy (a re-judge), where it read as a setup fault.
+#:   A re-judge clears it. In no identity, key or digest. An older build reads such a cell as excluded by its judge
+#:   errors, under ``infra``, as it did before this minor; a re-judge on an older build leaves the mark, which this
+#:   build reads only while a judge error stands.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 15
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

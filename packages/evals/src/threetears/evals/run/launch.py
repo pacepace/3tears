@@ -261,9 +261,11 @@ class PlannedJudge:
 class CallCeiling:
     """The most one call of an arm's cells can cost, priced before launch: its largest call's ceiling, or a floor.
 
-    A run's cap is read between cells and refuses no call inside one, so a call whose ceiling is above the cap on
-    its own is made, and the run stops ``budget_stopped`` before its next cell having spent more than the cap on
-    that one call. So an arm is refused before launch when its largest call's ceiling is above its cap
+    A run's cap refuses no call a candidate or a simulated user makes inside a cell, so such a call whose ceiling is
+    above the cap on its own is made, and the run stops ``budget_stopped`` before its next cell having spent more than
+    the cap on that one call; and the cap admits a cell's judging only when its price fits what is left, so a judge
+    call above the whole cap is never made, and every cell's judging is set aside after its candidate was paid for.
+    So an arm is refused before launch when its largest call's ceiling is above its cap
     (:func:`price_arms`, and :func:`quote_launch` with it): a cap smaller than one call cannot bound the run, and
     this is what that refusal reads. A call the kind cannot price at all is an :class:`UnpricedCall`, refused under
     a cap the same way.
@@ -1379,9 +1381,9 @@ class LaunchableKind:
         (:attr:`CallCeiling.lower_bound`), which refuses the same way. Asked of every planned arm — the request
         carries its plan — right after :attr:`plan_arm`, by the estimate and the launch alike, a fresh launch and a
         resume alike, and awaited on the event loop, so it may build and release clients. Under a cost cap, an arm
-        whose largest call is above the cap is refused before anything is spent (:func:`price_arms`): the cap is
-        read between cells, so the run would make that call and stop ``budget_stopped`` having spent more than the
-        cap on it; and an arm with an unpriced call is refused too, since unknown is not $0. ``None`` for a kind
+        whose largest call is above the cap is refused before anything is spent (:func:`price_arms`): the run would
+        make a candidate's or a simulated user's such call and stop ``budget_stopped`` having spent more than the cap
+        on it, or set every cell's judging aside having paid for the cells; and an arm with an unpriced call is refused too, since unknown is not $0. ``None`` for a kind
         that does not price its calls before launch: the engine then checks nothing here, and the run's cap counts
         each cell's spend once it is recorded. Ignored for a kind that plans nothing.
     """
@@ -3172,6 +3174,18 @@ def _cents_up(usd: float) -> float:
     return math.ceil(usd * 100 - 1e-9) / 100
 
 
+#: Why an arm whose one call is priced above its whole cap is refused, as the refusal states it. A run's cap refuses no
+#: call a candidate or a simulated user makes inside a cell (a refusal there would contaminate whichever cell asked),
+#: and admits a cell's judging only when its price fits what the cap has left: either way the run cannot be held to
+#: the cap and measure what it was launched to.
+_ONE_CALL_PAST_THE_CAP = (
+    "A run's cap refuses no call a candidate or a simulated user makes inside a cell, so the run would make such a "
+    "call and stop budget_stopped before its next cell, after spending more than the cap on it; and it admits a "
+    "cell's judging only when its price fits what the cap has left, so it would set every cell's judging aside, "
+    "having paid for the cells and judged none."
+)
+
+
 def _largest_call_over_cap(
     request: LaunchRequest, ceiling: CallCeiling, cap: float, price: ArmPrice, *, what: str, refused: str
 ) -> tuple[str, str]:
@@ -3201,8 +3215,7 @@ def _largest_call_over_cap(
             f"{what} cannot make {ceiling.call} under its ${round_half_even(cap, 2)} cap: even the smallest such call this arm could "
             f"make — its fixed parts alone, before any transcript or evidence is added — is reserved at "
             f"${round_half_even(ceiling.usd, 4)} before it is sent, more than the whole cap, so one such call alone would put the run "
-            "past it. A cap is read between cells and refuses no call inside one, so the run would make the call "
-            f"and stop budget_stopped before its next cell, after spending more than the cap on it. {refused}"
+            f"past it. {_ONE_CALL_PAST_THE_CAP} {refused}"
         )
         if needed <= host_ceiling:
             raise_it = (
@@ -3219,8 +3232,7 @@ def _largest_call_over_cap(
     refusal = (
         f"{what} cannot make its largest call under its ${round_half_even(cap, 2)} cap: {ceiling.call} is reserved at up to "
         f"${round_half_even(ceiling.usd, 4)} before it is sent, more than the whole cap, so one such call alone would put the run "
-        "past it. A cap is read between cells and refuses no call inside one, so the run would make the call and "
-        f"stop budget_stopped before its next cell, after spending more than the cap on it. {refused}"
+        f"past it. {_ONE_CALL_PAST_THE_CAP} {refused}"
     )
     room = (
         f" (${round_half_even(_cents_up(ceiling.usd + price.predicted_usd), 2)} also leaves room for the arm's "
@@ -3246,8 +3258,9 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
     (:attr:`ArmPlan.served_checks`): every call to it would fail. Under a cap, an arm is refused when a call it is
     bound to make cannot be priced (:attr:`ArmPlan.call_unpriced`): unknown is not $0, and that one call could pass
     the cap. It is refused when its largest call's ceiling (:attr:`ArmPlan.call_ceiling`) is above its cap on its
-    own: the cap is read between cells and refuses no call inside one, so the run would make that call and stop
-    ``budget_stopped`` having spent more than the cap on it, whatever the arm is predicted to cost in all. Then an
+    own: the run would make a candidate's or a simulated user's such call and stop ``budget_stopped`` having spent more
+    than the cap on it, or set every cell's judging aside having paid for the cells, whatever the arm is predicted to
+    cost in all. Then an
     arm is refused when its cap figure
     (:attr:`ArmPrice.predicted_usd`) is above the cap its run will be held to, or when nothing
     predicts it and that cap is one the run would merely inherit (the host's configured ceiling, which nobody
@@ -3293,7 +3306,8 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
             "refused",
             f"{what} cannot be held to its ${round_half_even(cap, 2)} cap: {unpriced.call} cannot be priced before it "
             f"is sent ({unpriced.why}). Its cost is unknown, not $0, and one such call could pass the whole cap on its "
-            f"own, since a cap is read between cells and refuses no call inside one. {refused}",
+            f"own: a run's cap refuses no call a candidate or a simulated user makes inside a cell, and sends a judge "
+            f"call it cannot price while the run is still within the cap. {refused}",
             "launch again once the host's client can price the call (a price catalogue that could not be read is "
             "read again by the next estimate or launch), or name a model it prices",
         )

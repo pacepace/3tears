@@ -133,9 +133,13 @@ waits while another holds, and is set aside once none does. A judge that cannot 
 time while the run is within its cap. So judging never takes a run past its cap, or past it by more than one call when
 the judge cannot price. A candidate's own calls are still never refused inside a cell.
 
-A cell whose judging was set aside asks the judge nothing and is never scored low: each dimension carries a judge
-error naming the cap, which leaves the cell out of every reading, and a re-judge takes it up from the evidence it
-stored. The first such cell stops the run (`budget_stopped`, no new cell starts), and the stop record counts the cells
+A cell whose judging was set aside asks the judge nothing and is never scored low. It is marked
+(`EvalResult.judging_set_aside`, core minor v15.15) and left out of every reading under its own exclusion cause,
+`cost_cap`, which a report's loss table names "cost cap" with its remedy: re-judge the trial, or give the next launch
+a higher cap. Each of its dimensions carries a judge error naming the cap, and a re-judge takes it up from the evidence
+it stored and clears the mark (`regrade`, or the `result_regrade` action, with `apply`). A resume counts it done. A
+launch's refusal of an arm whose one call is priced above its whole cap now says why truly: the cap refuses no call a
+candidate or a simulated user makes inside a cell, and admits a cell's judging only when it fits what is left. The first such cell stops the run (`budget_stopped`, no new cell starts), and the stop record counts the cells
 (`BudgetStop.cells_not_judged`, core minor v15.14). The stop line ends "N cells not judged, as the cap had too little
 left for their judging".
 

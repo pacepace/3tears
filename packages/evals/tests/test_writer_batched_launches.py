@@ -632,7 +632,7 @@ async def test_a_batch_whose_judging_costs_past_its_reservation_leaves_the_next_
         assert cell.n_candidate_failed == 0, "no case set aside counts as a failure"
     assert sorted(arm.n_usable for arm in aspect.exclusions) == [2, 2]
     for arm in aspect.exclusions:
-        assert arm.by_cause == {"infra": arm.n_trials - 2}, "the cases set aside are left out, never failed"
+        assert arm.by_cause == {"cost_cap": arm.n_trials - 2}, "the cases set aside are left out, never failed"
     assert offline == []
 
 

@@ -2464,8 +2464,8 @@ class BudgetStop(EvalBaseModel, CoreShapeModel):
     :ivar cells_in_flight: Cells running when the stop was decided.
     :ivar cells_not_started: Cells of the matrix that never started because of the stop.
     :ivar cells_not_judged: ``cost_usd`` only: cells that ran but whose judging the cap had too little left for, so
-        nothing judged them. Each is excluded through its dims' judge errors, which name the cap, and a re-judge
-        takes it up. Zero for ``metered_calls``, and on a record stored before the field existed.
+        nothing judged them. Each is marked (``EvalResult.judging_set_aside``) and excluded under its own cause
+        (``cost_cap``), never failed, and a re-judge takes it up. Zero for ``metered_calls``, and on a record stored before the field existed.
     :ivar unpriced_results: ``cost_usd`` only: recorded results whose spend could not be priced. An enforcing
         cap cannot count against what it cannot price, so any of these stops the run on their own, whatever
         ``landed_at_stop`` says. Zero for ``metered_calls``.
@@ -6256,6 +6256,16 @@ class EvalResult(CoreDocumentModel):
             "`infra_error` quotes the provider; cells that keep meeting it end the run exhausted, and a run taken up "
             "again once the model is served runs this cell again, written over this row. False on a row stored "
             "before the field existed."
+        ),
+    )
+    judging_set_aside: bool = Field(
+        default=False,
+        description=(
+            "Whether the run's cost cap had too little left for this cell's judging, so the dims it had not asked were "
+            "not asked: each names the cap in `judge_error`. The trial wrote its answer and is never scored low; it is "
+            "left out of every reading under its own exclusion cause, and a re-judge, which reads the evidence the "
+            "cell stored, takes it up and clears this. A run taken up again counts the cell done. False on a row "
+            "stored before the field existed."
         ),
     )
 

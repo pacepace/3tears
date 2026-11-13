@@ -263,6 +263,19 @@ class _ScriptedJudge:
     then_hang: bool = False
     #: The dims whose call raises, as a provider that is down does.
     raises: set[str] = field(default_factory=set)
+    #: What it prices each call at before it is made; ``None`` is a judge that cannot say, as one with no
+    #: ``price_ceiling`` at all. Under an enforcing cap a priced phase runs its calls side by side, and an unpriced one
+    #: one call at a time.
+    ceiling_usd: float | None = None
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, str] | None = None) -> float | None:
+        """The scripted ceiling, whatever the prompt.
+
+        :return: :attr:`ceiling_usd`.
+        :rtype: float | None
+        """
+        del system, user, response_format
+        return self.ceiling_usd
 
     async def generate(
         self, *, system: str, user: str, response_format: dict[str, str] | None = None
@@ -595,8 +608,9 @@ async def test_a_cell_whose_judging_the_deadline_cut_is_recovered_by_a_rejudge_o
 
 
 async def test_a_judge_completion_carrying_no_temperature_fails_the_run_naming_the_conformance_check():
-    """Not an error on the dim: every call through the host's client returns the same type, so every cell would."""
-    judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1, then_hang=True)
+    """Not an error on the dim: every call through the host's client returns the same type, so every cell would. The
+    judge prices its calls, so the phase is admitted whole under the cap and its two calls go out side by side."""
+    judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1, then_hang=True, ceiling_usd=0.001)
     cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
     drive, go = off_loop(_drive, judge=judge, template=_two_dim_template(), cell_timeout_s=30, cap=cap)
 
@@ -616,6 +630,24 @@ async def test_a_judge_completion_carrying_no_temperature_fails_the_run_naming_t
     (judge_row,) = [row for row in result.usage if row.role == "judge"]
     assert (judge_row.call_count, judge_row.cost_usd) == (1, pytest.approx(0.0004))
     assert any(row.role == "candidate" for row in result.usage)
+    assert result.cost_usd is not None and cap.accumulated_usd == pytest.approx(result.cost_usd)
+
+
+async def test_an_unpriced_judge_s_defective_completion_fails_the_run_before_its_next_call_is_sent():
+    """The same defect from a judge that cannot price its calls, under an enforcing cap: its phase is asked one call at
+    a time, so the defect fails the run before the sibling dim's call is sent. One call is paid for, and counted."""
+    judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1, then_hang=True)
+    cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
+    drive, go = off_loop(_drive, judge=judge, template=_two_dim_template(), cell_timeout_s=30, cap=cap)
+
+    with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance"):
+        await go()
+
+    assert len(judge.calls) == 1, "the sibling dim's call was never sent"
+    (result,) = drive.results
+    assert result.termination == "apparatus_failed"
+    (judge_row,) = [row for row in result.usage if row.role == "judge"]
+    assert (judge_row.call_count, judge_row.cost_usd) == (1, pytest.approx(0.0004))
     assert result.cost_usd is not None and cap.accumulated_usd == pytest.approx(result.cost_usd)
 
 

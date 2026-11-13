@@ -103,9 +103,10 @@ candidate is measured whole or never begun.
   its dimensions is set aside all the same, and the calls it made would be spent for nothing. **So judging never
   takes a run past its cost cap.** A judge that cannot price a call is asked one call at a time, with no other
   phase beside it, each call only while the run is within its cap, so it can pass the cap by that last call alone.
-- **A cell whose judging was set aside is never scored low.** It asks the judge nothing; each of its dimensions
-  carries a judge error that names the cap, which leaves it out of every reading, and a re-judge
-  (`rejudge_result`) takes it up from the evidence it stored, without buying its candidate again. A resume does not
+- **A cell whose judging was set aside is never scored low.** It asks the judge nothing; it is marked
+  (`EvalResult.judging_set_aside`) and left out of every reading under its own exclusion cause, `cost_cap` ("cost
+  cap" in a report's loss table), each of its dimensions carrying a judge error that names the cap; and a re-judge
+  (`regrade`, or the `result_regrade` action, with `apply`) takes it up from the evidence it stored, without buying its candidate again. A resume does not
   run it again: its candidate is measured, so the cell is done. The first such cell stops the run as a crossing
   does (no new cell starts), and the stop record counts the cells (`cells_not_judged`).
 - **A run may still land past the cost cap by what its running cells' candidates spend**, and past the
@@ -249,9 +250,9 @@ declaration, so it stays, and no between-cells stop is read from it.
    (`ArmPlan.served_checks`). Under a cap, it refuses an arm whose largest call cannot be priced
    (`ArmPlan.call_unpriced`, an `UnpricedCall` naming the call and why): unknown is not $0, and that one call
    could pass the cap. Then it refuses an arm whose largest call is priced above its run's cap on its own
-   (`ArmPlan.call_ceiling`): the cap is read between cells and refuses no call inside one, so the run would make
-   that call and stop `budget_stopped` having spent more than the cap on it, whatever the arm is predicted to cost
-   in all. The kind prices it right after planning (`LaunchableKind.price_largest_call`), on the clients the
+   (`ArmPlan.call_ceiling`): a candidate's or a simulated user's such call the run would make and stop
+   `budget_stopped` having spent more than the cap on it, and a judge call above the whole cap would set every
+   cell's judging aside after its candidate was paid for, whatever the arm is predicted to cost in all. The kind prices it right after planning (`LaunchableKind.price_largest_call`), on the clients the
    cells will call through, built as a cell builds it, each client's prices brought up to date first
    (`refresh_prices`): a launch or a resume in a process that has read no price catalogue yet reads it here,
    rather than finding every ceiling unknown. A call a client still cannot price after that (the catalogue could

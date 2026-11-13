@@ -313,6 +313,8 @@ class ResultView(Protocol):
     @property
     def model_unserved(self) -> bool: ...
     @property
+    def judging_set_aside(self) -> bool: ...
+    @property
     def candidate_kind(self) -> str | None: ...
     @property
     def candidate_instance_id(self) -> str | None: ...
@@ -756,6 +758,7 @@ class ResultReading:
     metered_calls: int | None
     metered_calls_refused: int | None
     model_unserved: bool
+    judging_set_aside: bool
     candidate_kind: str | None
     candidate_instance_id: str | None
     subject_id: str | None
@@ -825,6 +828,7 @@ class ResultReading:
             metered_calls=result.metered_calls,
             metered_calls_refused=result.metered_calls_refused,
             model_unserved=result.model_unserved,
+            judging_set_aside=result.judging_set_aside,
             candidate_kind=text(result.candidate_kind),
             candidate_instance_id=text(result.candidate_instance_id),
             subject_id=text(result.subject_id),

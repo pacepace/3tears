@@ -222,7 +222,11 @@ def _stored_rows(storage: EvalStorage, run: EvalRun) -> _StoredRows:
     answered: an uninterrupted run on a funded account and a served model stores none of them, so each cell runs
     again, written over its row.
     Every other row — a timeout, a rig fault, a call the provider itself declined, a failed seed included — is what
-    the uninterrupted run would also have stored, so its cell is done. A cell with no row is neither, and runs.
+    the uninterrupted run would also have stored, so its cell is done. So is a row whose judging the cost cap set
+    aside (``judging_set_aside``): its candidate's answer is measured and stored, and running the cell again would pay
+    for it twice and measure another answer, so a re-judge (``regrade`` with ``apply``, through
+    :func:`~threetears.evals.run.lifecycle.rejudge_result`) takes its judging up instead. A cell
+    with no row is neither, and runs.
 
     :param storage: The run's store.
     :ptype storage: EvalStorage

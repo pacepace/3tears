@@ -1,7 +1,8 @@
 """A completion client whose calls count in the run's cost cap, one call at a time, through one cell's sink.
 
 A cell's paid calls are what a run's cost cap counts, once the cell's result is recorded; the cap is read
-between cells and refuses no call inside one. :class:`CappedCompletion` reports a cell's spend as it goes,
+between cells and refuses no call made through this. (The engine's own judging is admitted against the cap before a
+cell's judge phase, apart from this wrapper.) :class:`CappedCompletion` reports a cell's spend as it goes,
 for a completion client, written once: when each call returns it adds what the call cost to the cell's sink
 (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.add_spend`).
 
