@@ -42,11 +42,11 @@ _DECLINED: Final = frozenset({429, 503, 529})
 
 #: OpenRouter's typed error (``error.metadata.error_type``) for a 404 that names an image the request linked, not the
 #: model: the one 404 its chat endpoint answers about something other than the model it was asked for.
-_OPENROUTER_IMAGE_NOT_FOUND: Final = "image_not_found"
+_ROUTER_IMAGE_NOT_FOUND: Final = "image_not_found"
 
 #: How OpenRouter's 400 for a model id it does not know ends. It carries no error code of its own (its ``code`` is
 #: the status), so this is the one model-not-served answer read off the message, the way Anthropic's credit notice is.
-_OPENROUTER_INVALID_MODEL: Final = "is not a valid model id"
+_ROUTER_INVALID_MODEL: Final = "is not a valid model id"
 
 #: The error code OpenAI, and the OpenAI-compatible servers that copy its envelope, answer for a model it does not
 #: serve (``error.code``), whatever the status.
@@ -94,15 +94,16 @@ def _model_unserved(provider: Provider, status: int, error: Mapping[str, object]
     :return: True when every call naming that model would meet the same answer.
     :rtype: bool
     """
-    if provider == "openrouter":
-        metadata = error.get("metadata")
-        typed = metadata.get("error_type") if isinstance(metadata, Mapping) else None
-        if status == 404:
-            return typed != _OPENROUTER_IMAGE_NOT_FOUND
-        return status == 400 and (message or "").rstrip(" .").lower().endswith(_OPENROUTER_INVALID_MODEL)
     if provider == "anthropic":
         return status == 404 and error.get("type") == _ANTHROPIC_NOT_FOUND
-    return error.get("code") == _OPENAI_MODEL_NOT_FOUND
+    if provider == "openai":
+        return error.get("code") == _OPENAI_MODEL_NOT_FOUND
+    # The router, the one provider left.
+    metadata = error.get("metadata")
+    typed = metadata.get("error_type") if isinstance(metadata, Mapping) else None
+    if status == 404:
+        return typed != _ROUTER_IMAGE_NOT_FOUND
+    return status == 400 and (message or "").rstrip(" .").lower().endswith(_ROUTER_INVALID_MODEL)
 
 
 class ProviderError(Exception):
