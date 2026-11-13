@@ -117,9 +117,15 @@ packages/nats/src/threetears/nats/_nats_py_internals.py:_socket_transport#0:_tra
 # rationale: nats-py TcpTransport._io_writer: the asyncio stream writer over the connection's socket (replaced on TLS upgrade and on reconnect); its public .transport is the asyncio transport the bound goes on; nats-py offers no public accessor
 packages/nats/src/threetears/nats/_nats_py_internals.py:_socket_transport#0:_io_writer
 # rationale: asyncio _SelectorSocketTransport._buffer: the transport's write buffer, read by the bounded _get_sendmsg_buffer exactly as asyncio's own reads it; created once per transport, only emptied
-packages/nats/src/threetears/nats/_nats_py_internals.py:bound_socket_sends#0:_buffer
+packages/nats/src/threetears/nats/_nats_py_internals.py:bound_transport#0:_buffer
 # rationale: asyncio _SelectorSocketTransport._get_sendmsg_buffer: replaced on one NATS connection's transport so each sendmsg is offered at most SEND_BOUND_BYTES and the kernel's copy holds the loop a fraction of a turn; asyncio has no public bound per send, and a socket option (SO_SNDBUF) would cap every connection's throughput
-packages/nats/src/threetears/nats/_nats_py_internals.py:bound_socket_sends#0:_get_sendmsg_buffer
+packages/nats/src/threetears/nats/_nats_py_internals.py:bound_transport#0:_get_sendmsg_buffer
+# rationale: asyncio _SelectorSocketTransport._buffer: send_bound_gaps reads how much of a write left the write buffer after one bounded send (the proof the bound holds on a real socket), then empties it so the transport closes at once; asyncio offers get_write_buffer_size, but the views are also cleared, which has no public form
+packages/nats/src/threetears/nats/_nats_py_internals.py:send_bound_gaps#0:_buffer
+# rationale: asyncio selector_events._SelectorSocketTransport: the class whose send path the bound relies on, checked by name (a missing class is reported, never raised); asyncio exports no public name for it
+packages/nats/src/threetears/nats/_asyncio_send_path.py:send_path_gaps#0:_SelectorSocketTransport
+# rationale: asyncio selector_events._HAS_SENDMSG: whether the socket transport sends with sendmsg (through the bounded _get_sendmsg_buffer) or with send (which the bound never reaches); asyncio exposes the choice nowhere else
+packages/nats/src/threetears/nats/_asyncio_send_path.py:send_path_gaps#0:_HAS_SENDMSG
 # rationale: nats-py Client._skip_subject_validation: the unjoined publish checks subjects exactly when nats-py's publish would, honouring the connect option; no public accessor
 packages/nats/src/threetears/nats/_nats_py_internals.py:publish_unjoined#0:_skip_subject_validation
 # rationale: nats-py Client._max_pending_size: the reconnect-buffer refusal and the forced flush past the limit, as nats-py's publish and _send_command apply them; no public accessor

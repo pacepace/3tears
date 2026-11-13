@@ -299,6 +299,7 @@ ignore = ["N818", "N811"]
 # registered, reach a pull subscription's inbox queue, or force a reconnect; the module docstring
 # names the caller of each. nothing else in the workspace touches these names. paired entries
 # live in tests/enforcement/_underscore_exemptions.txt.
+"packages/nats/src/threetears/nats/_asyncio_send_path.py" = ["SLF001"]
 "packages/nats/src/threetears/nats/_nats_py_internals.py" = ["SLF001"]
 
 # redshift_connector keeps a connection's socket on the private ``Connection._usock`` and offers

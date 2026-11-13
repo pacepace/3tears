@@ -65,6 +65,11 @@ The surface, and why each is used:
     each NATS connection's own transport. No socket option changes, so the kernel's buffer and the connection's
     throughput stay as they were; a large payload is sent in more calls, the loop running between them. nats-py
     reaches its socket only through its private stream writer, and asyncio has no public way to bound one send.
+    Replacing a method works only while asyncio's send path still calls it, so this module refuses to import when
+    :func:`threetears.nats._asyncio_send_path.send_path_gaps` names a change in that path, and the unit tests run
+    that check under every Python minor the packages declare and prove the bound on a real socket
+    (:func:`send_bound_gaps`). A plain TCP connection on another event loop's transport (uvloop) cannot be bounded
+    here: :func:`bound_transport` logs a warning naming the transport, once per transport class.
 ``Client._nuid``
     :func:`install_csprng_nuid`. nats-py names every inbox and request token from one NUID per
     connection: a random 12-character prefix, then a sequence that grows by a fixed step. One
@@ -112,6 +117,9 @@ from nats.js.client import JetStreamContext
 from nats.nuid import NUID
 from nats.protocol.command import PUB_OP
 
+from threetears.nats._asyncio_send_path import send_path_gaps
+from threetears.observe import get_logger
+
 if TYPE_CHECKING:
     from nats.aio.msg import Msg
 
@@ -123,6 +131,7 @@ __all__ = [
     "CsprngNuid",
     "PrivateAttribute",
     "bound_socket_sends",
+    "bound_transport",
     "bounded_send_buffers",
     "force_reconnect",
     "install_csprng_nuid",
@@ -131,6 +140,7 @@ __all__ = [
     "pull_subscription_inbox",
     "request_unjoined",
     "send_unsubscribe",
+    "send_bound_gaps",
     "sends_are_bounded",
     "take_queued_messages",
     "write_pending_then_ping",
@@ -198,6 +208,18 @@ _SOCKET_TRANSPORT: Final[type[asyncio.Transport]] = selector_events._SelectorSoc
 
 #: the socket transports :func:`bound_socket_sends` has bounded; a transport leaves when it is collected
 _BOUNDED: Final[weakref.WeakSet[object]] = weakref.WeakSet()
+
+#: the transport classes a large publish has found unbounded (logged once each)
+_UNBOUNDED_KINDS: Final[set[type]] = set()
+
+_SEND_PATH_GAPS: Final[list[str]] = send_path_gaps()
+if _SEND_PATH_GAPS:
+    raise ImportError(
+        "asyncio's socket send path changed, so threetears.nats can no longer bound a large publish's sends: "
+        f"{_SEND_PATH_GAPS}. Read threetears.nats._asyncio_send_path before running on this Python."
+    )
+
+log = get_logger(__name__)
 
 #: nats-py's publish-path subject check (``nats.aio.client._SUBJECT_INVALID_RE``): no whitespace
 #: or CRLF, which would let a subject inject protocol commands.
@@ -347,16 +369,13 @@ class _SendmsgTransport(Protocol):
     _get_sendmsg_buffer: Callable[[], Iterable[bytes | memoryview]]
 
 
-def _socket_transport(connection: Client) -> _SendmsgTransport | None:
-    """the asyncio socket transport under ``connection``, or None for any other kind.
-
-    A TLS connection writes through asyncio's SSL transport, a websocket one through aiohttp: neither sends with
-    ``sendmsg`` from a write buffer, so neither is bounded here.
+def _socket_transport(connection: Client) -> asyncio.BaseTransport | None:
+    """the asyncio transport under ``connection``'s TCP socket, or None for a websocket or unopened connection.
 
     :param connection: a nats-py client
     :ptype connection: Client
-    :return: the plain TCP socket transport, or None
-    :rtype: _SendmsgTransport | None
+    :return: the transport its stream writer writes to, or None
+    :rtype: asyncio.BaseTransport | None
     """
     nats_transport = connection._transport
     if not isinstance(nats_transport, TcpTransport):
@@ -364,17 +383,46 @@ def _socket_transport(connection: Client) -> _SendmsgTransport | None:
     writer = nats_transport._io_writer
     if writer is None:
         return None
-    transport = writer.transport
+    return writer.transport
+
+
+def bound_transport(transport: asyncio.BaseTransport) -> bool:
+    """make every ``sendmsg`` on ``transport`` offer at most :data:`SEND_BOUND_BYTES`, when it is asyncio's socket one.
+
+    A TLS connection writes through asyncio's SSL transport, a websocket one through aiohttp: neither is bounded
+    here, by design. Any other plain transport -- another event loop's, such as uvloop's -- cannot be bounded
+    either, and that is logged as a warning once per transport class, so a large publish never goes unbounded
+    unseen.
+
+    :param transport: the asyncio transport a connection writes to
+    :ptype transport: asyncio.BaseTransport
+    :return: True when its sends are bounded (now or before)
+    :rtype: bool
+    """
+    if transport in _BOUNDED:
+        return True
     if not isinstance(transport, _SOCKET_TRANSPORT):
-        return None
-    return cast("_SendmsgTransport", transport)
+        kind = type(transport)
+        if kind not in _UNBOUNDED_KINDS and transport.get_extra_info("sslcontext") is None:
+            _UNBOUNDED_KINDS.add(kind)
+            log.warning(
+                "a large NATS publish on a %s.%s transport is not bounded per send (not asyncio's socket "
+                "transport): the kernel's copy of each send holds the event loop",
+                kind.__module__,
+                kind.__qualname__,
+            )
+        return False
+    socket_transport = cast("_SendmsgTransport", transport)
+    socket_transport._get_sendmsg_buffer = _BoundedSends(socket_transport._buffer)
+    _BOUNDED.add(transport)
+    return True
 
 
 def bound_socket_sends(connection: Client) -> None:
     """make every ``sendmsg`` on ``connection``'s current socket offer at most :data:`SEND_BOUND_BYTES`.
 
     Idempotent and cheap, so the large-publish path calls it before each queue: a reconnect opens a new socket
-    transport, and the next large publish bounds it. Nothing changes for a TLS or websocket connection.
+    transport, and the next large publish bounds it. See :func:`bound_transport` for the transports left alone.
 
     :param connection: a nats-py client
     :ptype connection: Client
@@ -382,10 +430,8 @@ def bound_socket_sends(connection: Client) -> None:
     :rtype: None
     """
     transport = _socket_transport(connection)
-    if transport is None or transport in _BOUNDED:
-        return
-    transport._get_sendmsg_buffer = _BoundedSends(transport._buffer)
-    _BOUNDED.add(transport)
+    if transport is not None:
+        bound_transport(transport)
 
 
 def sends_are_bounded(connection: Client) -> bool:
@@ -627,6 +673,15 @@ class _InertLoop:
         """
         return False
 
+    def _add_writer(self, *_args: object) -> None:
+        """register nothing.
+
+        :param _args: the fd and callback asyncio passes
+        :ptype _args: object
+        :return: nothing
+        :rtype: None
+        """
+
     def _remove_writer(self, *_args: object) -> bool:
         """unregister nothing.
 
@@ -710,3 +765,45 @@ def _missing(surface: tuple[PrivateAttribute, ...], instances: dict[str, object]
         elif isinstance(attribute.kind, type) and not isinstance(value, attribute.kind):
             missing.append(f"{label}: expected {attribute.kind.__name__}, found {type(value).__name__}")
     return missing
+
+
+#: what :func:`send_bound_gaps` queues on its socket: several bounds' worth, so an unbounded send takes more than one
+_PROOF_BYTES: Final[int] = 8 * SEND_BOUND_BYTES
+
+
+def send_bound_gaps(*, bounded: bool = True) -> list[str]:
+    """whether one send of a large write on a real socket transport takes at most :data:`SEND_BOUND_BYTES`.
+
+    Builds asyncio's socket transport over a loopback TCP pair whose kernel buffers hold the whole write, bounds it
+    as :func:`bound_socket_sends` does, hands it :data:`_PROOF_BYTES` through ``writelines`` (which sends once at
+    once, as the flusher's write does) and reads how much left the transport's buffer. Nothing is scheduled; the
+    unsent rest is dropped and both sockets are closed.
+
+    :param bounded: False leaves the transport as asyncio built it, only to show the check can fail
+    :ptype bounded: bool
+    :return: one line when the send took more than the bound or nothing at all, empty when the bound held
+    :rtype: list[str]
+    """
+    with socket.create_server(("127.0.0.1", 0)) as server:
+        near = socket.create_connection(server.getsockname())
+        far, _ = server.accept()
+    try:
+        near.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * _PROOF_BYTES)
+        far.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2 * _PROOF_BYTES)
+        near.setblocking(False)
+        transport = _SOCKET_TRANSPORT(_InertLoop(), near, asyncio.Protocol())  # type: ignore[call-arg, arg-type]
+        buffer = cast("_SendmsgTransport", transport)._buffer
+        try:
+            if bounded and not bound_transport(transport):
+                return [f"{type(transport).__qualname__}: bound_transport did not bound asyncio's own socket transport"]
+            transport.writelines([memoryview(bytes(_PROOF_BYTES))])
+            sent = _PROOF_BYTES - sum(len(view) for view in buffer)
+        finally:
+            buffer.clear()
+            transport.close()
+    finally:
+        near.close()
+        far.close()
+    if not 0 < sent <= SEND_BOUND_BYTES:
+        return [f"one send of a {_PROOF_BYTES}-byte write took {sent} bytes; the bound is {SEND_BOUND_BYTES}"]
+    return []
