@@ -43,7 +43,7 @@ from threetears.evals.analysis.lenses.comparison_sets import (
 )
 from threetears.evals.analysis.lenses.cost_estimate import CostEstimateError, PredictedValue, compute_estimate_cost
 from threetears.evals.analysis.lenses.export import ExportError, export_projection, export_records_csv, serialize_export
-from threetears.evals.analysis.lenses.frontier import FrontierError, compute_frontier
+from threetears.evals.analysis.lenses.frontier import FrontierError, FrontierPoint, SubjectFrontier, compute_frontier
 from threetears.evals.analysis.lenses.history import HistoryError, compute_history
 from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
 from threetears.evals.analysis.lenses.pivot import (
@@ -1747,17 +1747,17 @@ class TestComparisonSets:
 
 def _record(
     *,
-    model="m1",
-    template="tpl-1",
-    case="tc-1",
-    value=1.0,
-    metric=METRIC_COMPOSITE,
-    subject_id="ent-maple",
-    outcome="ok",
-    k=1,
-    factors=None,
-    judge_model=None,
-):
+    model: str = "m1",
+    template: str | None = "tpl-1",
+    case: str = "tc-1",
+    value: float | None = 1.0,
+    metric: str = METRIC_COMPOSITE,
+    subject_id: str = "ent-maple",
+    outcome: str = "ok",
+    k: int = 1,
+    factors: dict[str, str] | None = None,
+    judge_model: str | None = None,
+) -> ScoreRecord:
     """Build one score record, addressing the two axes the pivot tests use.
 
     :param model: Value for the ``model`` coordinate.
@@ -4735,7 +4735,7 @@ def _fr_result(
     return make_eval_result(**overrides)
 
 
-def _point_by_model(subject_frontier, model):
+def _point_by_model(subject_frontier: SubjectFrontier, model: str) -> FrontierPoint:
     """The single point for ``model`` in a subject frontier."""
     matches = [p for p in subject_frontier.points if p.model == model]
     assert len(matches) == 1, f"expected one {model!r} point, got {len(matches)}"
