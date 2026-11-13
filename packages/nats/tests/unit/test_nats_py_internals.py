@@ -72,17 +72,27 @@ def test_the_check_reports_an_attribute_nats_py_does_not_have() -> None:
         PrivateAttribute("Client", "_renamed_in_a_future_release", list),
         PrivateAttribute("Subscription", "_id", str),
         PrivateAttribute("Client", "_pending", "method"),
+        PrivateAttribute("_SelectorSocketTransport", "_buffer", "callable"),
+        PrivateAttribute("TcpTransport", "_io_writer_renamed", "declared"),
     )
     assert missing_private_attributes(surface) == [
         "Client._renamed_in_a_future_release: absent",
         "Subscription._id: expected str, found int",
         "Client._pending: no longer a coroutine method",
+        "_SelectorSocketTransport._buffer: no longer callable",
+        "TcpTransport._io_writer_renamed: absent",
     ]
 
 
 def test_the_declared_surface_covers_every_class_the_wrapper_reaches_into() -> None:
-    """the surface names the three nats-py classes the wrapper reaches into, and is not empty."""
-    assert {attribute.owner for attribute in PRIVATE_SURFACE} == {"Client", "Subscription", "PullSubscription"}
+    """the surface names the four nats-py classes and the one asyncio class the wrapper reaches into."""
+    assert {attribute.owner for attribute in PRIVATE_SURFACE} == {
+        "Client",
+        "Subscription",
+        "PullSubscription",
+        "TcpTransport",
+        "_SelectorSocketTransport",
+    }
 
 
 def test_taking_the_queue_keeps_nats_py_pending_bytes_right() -> None:

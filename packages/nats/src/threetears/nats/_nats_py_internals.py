@@ -56,6 +56,15 @@ The surface, and why each is used:
     the flusher hands to ``writelines`` and the socket sends from memoryviews, with no copy; the
     rest is nats-py's own publish and request, step for step: the same checks, stats, pending-size
     accounting and flush, and the same response mux, tokens and futures as ``_request_new_style``.
+``TcpTransport._io_writer``, and asyncio's ``_SelectorSocketTransport._get_sendmsg_buffer`` / ``._buffer``
+    :func:`bound_socket_sends`. Queuing the payload uncopied moved the copy into the kernel: the socket transport
+    hands ``sendmsg`` its whole write buffer, and the kernel copies as much as its send buffer has room for, which
+    on an autotuned socket is many megabytes (one call copied 9 MB, 1.06 ms, and up to 8 ms on a loaded host)
+    holding the loop for that one call. Slicing the payload into smaller pending items does not change it:
+    ``sendmsg`` gets every item at once. This bounds the bytes one call offers to :data:`SEND_BOUND_BYTES` on
+    each NATS connection's own transport. No socket option changes, so the kernel's buffer and the connection's
+    throughput stay as they were; a large payload is sent in more calls, the loop running between them. nats-py
+    reaches its socket only through its private stream writer, and asyncio has no public way to bound one send.
 ``Client._nuid``
     :func:`install_csprng_nuid`. nats-py names every inbox and request token from one NUID per
     connection: a random 12-character prefix, then a sequence that grows by a fixed step. One
@@ -74,13 +83,21 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 import re
 import secrets
+import socket
+import weakref
+from asyncio import selector_events
+from collections import deque
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Protocol, cast
 
 from nats.aio.client import NO_RESPONDERS_STATUS, PING_PROTO, Client
 from nats.aio.subscription import Subscription
+from nats.aio.transport import TcpTransport
 from nats.errors import (
     BadSubjectError,
     ConnectionClosedError,
@@ -101,9 +118,12 @@ if TYPE_CHECKING:
 __all__ = [
     "NUID_LENGTH",
     "PRIVATE_SURFACE",
+    "SEND_BOUND_BYTES",
     "UNJOINED_FROM_BYTES",
     "CsprngNuid",
     "PrivateAttribute",
+    "bound_socket_sends",
+    "bounded_send_buffers",
     "force_reconnect",
     "install_csprng_nuid",
     "missing_private_attributes",
@@ -111,6 +131,7 @@ __all__ = [
     "pull_subscription_inbox",
     "request_unjoined",
     "send_unsubscribe",
+    "sends_are_bounded",
     "take_queued_messages",
     "write_pending_then_ping",
 ]
@@ -120,11 +141,11 @@ __all__ = [
 class PrivateAttribute:
     """one nats-py private attribute this module depends on.
 
-    :ivar owner: the nats-py class that carries it
+    :ivar owner: the nats-py (or asyncio) class that carries it
     :ivar name: the attribute name
     :ivar kind: what it must be on a freshly constructed instance -- a type, ``"method"`` for a
-        coroutine method, or ``"declared"`` for an instance attribute nats-py sets to ``None``
-        until the connection opens
+        coroutine method, ``"callable"`` for a plain method, or ``"declared"`` for an instance
+        attribute nats-py sets to ``None`` until the connection opens
     """
 
     owner: str
@@ -153,6 +174,10 @@ PRIVATE_SURFACE: Final[tuple[PrivateAttribute, ...]] = (
     PrivateAttribute("Client", "_resp_sub_prefix", "declared"),
     PrivateAttribute("Client", "_init_request_sub", "method"),
     PrivateAttribute("Client", "_resp_map", dict),
+    PrivateAttribute("TcpTransport", "_io_writer", "declared"),
+    PrivateAttribute("_SelectorSocketTransport", "_get_sendmsg_buffer", "callable"),
+    PrivateAttribute("_SelectorSocketTransport", "_write_sendmsg", "callable"),
+    PrivateAttribute("_SelectorSocketTransport", "_buffer", deque),
 )
 
 #: the payload size from which :class:`threetears.nats.NatsClient` publishes through
@@ -160,6 +185,19 @@ PRIVATE_SURFACE: Final[tuple[PrivateAttribute, ...]] = (
 #: ``request``. Below it nats-py's one concatenated ``bytes`` costs microseconds; from it the copy
 #: grows with the payload and holds the event loop while it runs.
 UNJOINED_FROM_BYTES: Final[int] = 64 * 1024
+
+#: the most bytes one ``sendmsg`` on a NATS connection's socket is offered. The kernel copies what it takes on the
+#: event loop: about 0.1-0.2 ms per MB, a fraction of a 5 ms turn even on a loaded host.
+SEND_BOUND_BYTES: Final[int] = 1024 * 1024
+
+#: the most buffers one ``sendmsg`` takes, as asyncio's socket transport reads it
+_IOV_MAX: Final[int] = os.sysconf("SC_IOV_MAX")
+
+#: asyncio's plain socket transport class (typeshed does not declare it)
+_SOCKET_TRANSPORT: Final[type[asyncio.Transport]] = selector_events._SelectorSocketTransport  # type: ignore[attr-defined]
+
+#: the socket transports :func:`bound_socket_sends` has bounded; a transport leaves when it is collected
+_BOUNDED: Final[weakref.WeakSet[object]] = weakref.WeakSet()
 
 #: nats-py's publish-path subject check (``nats.aio.client._SUBJECT_INVALID_RE``): no whitespace
 #: or CRLF, which would let a subject inject protocol commands.
@@ -242,6 +280,126 @@ def write_pending_then_ping(connection: Client, pong: asyncio.Future[bool]) -> N
         pass
 
 
+def bounded_send_buffers(buffers: Iterable[bytes | memoryview], bound: int, most: int) -> Iterator[memoryview]:
+    """the front of ``buffers`` one ``sendmsg`` is offered: at most ``bound`` bytes in at most ``most`` buffers.
+
+    Whole buffers while they fit; when the first one alone is larger, its first ``bound`` bytes, so the call
+    still makes progress. asyncio's transport drops what the kernel took from the front of its buffer and keeps
+    the rest of a partly sent one, so a slice here is resent from where it stopped.
+
+    :param buffers: the transport's write buffer, oldest first
+    :ptype buffers: Iterable[bytes | memoryview]
+    :param bound: the most bytes to offer
+    :ptype bound: int
+    :param most: the most buffers to offer (the platform's ``IOV_MAX``)
+    :ptype most: int
+    :return: views over the front of ``buffers``, no copy
+    :rtype: Iterator[memoryview]
+    """
+    offered = 0
+    for count, buffer in enumerate(buffers):
+        view = memoryview(buffer)
+        if count == most:
+            return
+        if offered + len(view) > bound:
+            if offered == 0:
+                yield view[:bound]
+            return
+        offered += len(view)
+        yield view
+
+
+class _BoundedSends:
+    """one socket transport's ``_get_sendmsg_buffer``: its write buffer's front, cut at :data:`SEND_BOUND_BYTES`.
+
+    :ivar buffer: the transport's write buffer (asyncio creates it once per transport and only empties it)
+    """
+
+    __slots__ = ("buffer",)
+
+    def __init__(self, buffer: deque[bytes | memoryview]) -> None:
+        """hold ``buffer``.
+
+        :param buffer: the transport's write buffer
+        :ptype buffer: deque[bytes | memoryview]
+        :return: nothing
+        :rtype: None
+        """
+        self.buffer = buffer
+
+    def __call__(self) -> Iterator[memoryview]:
+        """the buffers the next ``sendmsg`` is offered.
+
+        :return: views over the front of the write buffer
+        :rtype: Iterator[memoryview]
+        """
+        return bounded_send_buffers(self.buffer, SEND_BOUND_BYTES, _IOV_MAX)
+
+
+class _SendmsgTransport(Protocol):
+    """the two attributes of asyncio's socket transport the bound reads and replaces.
+
+    :ivar _buffer: the write buffer, oldest first
+    :ivar _get_sendmsg_buffer: what ``_write_sendmsg`` hands ``sendmsg``
+    """
+
+    _buffer: deque[bytes | memoryview]
+    _get_sendmsg_buffer: Callable[[], Iterable[bytes | memoryview]]
+
+
+def _socket_transport(connection: Client) -> _SendmsgTransport | None:
+    """the asyncio socket transport under ``connection``, or None for any other kind.
+
+    A TLS connection writes through asyncio's SSL transport, a websocket one through aiohttp: neither sends with
+    ``sendmsg`` from a write buffer, so neither is bounded here.
+
+    :param connection: a nats-py client
+    :ptype connection: Client
+    :return: the plain TCP socket transport, or None
+    :rtype: _SendmsgTransport | None
+    """
+    nats_transport = connection._transport
+    if not isinstance(nats_transport, TcpTransport):
+        return None
+    writer = nats_transport._io_writer
+    if writer is None:
+        return None
+    transport = writer.transport
+    if not isinstance(transport, _SOCKET_TRANSPORT):
+        return None
+    return cast("_SendmsgTransport", transport)
+
+
+def bound_socket_sends(connection: Client) -> None:
+    """make every ``sendmsg`` on ``connection``'s current socket offer at most :data:`SEND_BOUND_BYTES`.
+
+    Idempotent and cheap, so the large-publish path calls it before each queue: a reconnect opens a new socket
+    transport, and the next large publish bounds it. Nothing changes for a TLS or websocket connection.
+
+    :param connection: a nats-py client
+    :ptype connection: Client
+    :return: nothing
+    :rtype: None
+    """
+    transport = _socket_transport(connection)
+    if transport is None or transport in _BOUNDED:
+        return
+    transport._get_sendmsg_buffer = _BoundedSends(transport._buffer)
+    _BOUNDED.add(transport)
+
+
+def sends_are_bounded(connection: Client) -> bool:
+    """whether ``connection``'s current socket offers each ``sendmsg`` at most :data:`SEND_BOUND_BYTES`.
+
+    :param connection: a nats-py client
+    :ptype connection: Client
+    :return: True when its socket transport is bounded
+    :rtype: bool
+    """
+    transport = _socket_transport(connection)
+    return transport is not None and transport in _BOUNDED
+
+
 def _check_subject(subject: str) -> None:
     """refuse a subject nats-py's publish path refuses: empty, or holding whitespace or CRLF.
 
@@ -261,9 +419,10 @@ async def publish_unjoined(connection: Client, subject: str, payload: bytes, rep
     nats-py's ``publish`` then ``_send_publish`` (no headers), step for step: subject checks
     unless the connection skips them, closed / draining / reconnect-buffer / max-payload refusals,
     ``out_msgs`` / ``out_bytes`` stats, the pending-size flush past the limit and the flusher
-    wake. The one difference: the ``PUB`` line, the payload object and the CRLF go into the
+    wake. The differences: the ``PUB`` line, the payload object and the CRLF go into the
     pending buffer as three items, appended in one synchronous step so no other command can land
-    between them, and the payload is never copied on the event loop.
+    between them, and the payload is never copied on the event loop; and the socket is bounded
+    first (:func:`bound_socket_sends`), so the kernel's copy of it is taken a megabyte per call.
 
     :param connection: a nats-py client
     :ptype connection: Client
@@ -300,6 +459,7 @@ async def publish_unjoined(connection: Client, subject: str, payload: bytes, rep
     if subject == "":
         raise BadSubjectError
     head = f"{PUB_OP} {subject} {reply} {payload_size}\r\n".encode()
+    bound_socket_sends(connection)
     connection.stats["out_msgs"] += 1
     connection.stats["out_bytes"] += payload_size
     pending = connection._pending
@@ -419,16 +579,91 @@ async def force_reconnect(connection: Client, error: Exception) -> None:
     await connection._process_op_err(error)
 
 
-def _instances() -> dict[str, object]:
-    """one freshly constructed instance of each nats-py class in :data:`PRIVATE_SURFACE`.
+class _InertLoop:
+    """the event-loop calls asyncio's socket transport makes while it is built and closed, run at once or ignored.
+
+    The surface check builds one transport over a socket pair without an event loop, reads its attributes, and
+    closes it; nothing is scheduled and no socket is left open.
+
+    :ivar _transports: asyncio's fd-to-transport map, which the transport registers itself in
+    """
+
+    def __init__(self) -> None:
+        """an empty transport map.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._transports: dict[int, object] = {}
+
+    def call_soon(self, callback: Callable[..., object], *args: object) -> None:
+        """run ``callback`` now.
+
+        :param callback: what the transport schedules (``connection_made``, its reader, ``connection_lost``)
+        :ptype callback: Callable[..., object]
+        :param args: its arguments
+        :ptype args: object
+        :return: nothing
+        :rtype: None
+        """
+        callback(*args)
+
+    def _add_reader(self, *_args: object) -> None:
+        """register nothing.
+
+        :param _args: the fd and callback asyncio passes
+        :ptype _args: object
+        :return: nothing
+        :rtype: None
+        """
+
+    def _remove_reader(self, *_args: object) -> bool:
+        """unregister nothing.
+
+        :param _args: the fd asyncio passes
+        :ptype _args: object
+        :return: False, nothing was registered
+        :rtype: bool
+        """
+        return False
+
+    def _remove_writer(self, *_args: object) -> bool:
+        """unregister nothing.
+
+        :param _args: the fd asyncio passes
+        :ptype _args: object
+        :return: False, nothing was registered
+        :rtype: bool
+        """
+        return False
+
+
+@contextmanager
+def _instances() -> Iterator[dict[str, object]]:
+    """one freshly constructed instance of each class in :data:`PRIVATE_SURFACE`, closed afterwards.
 
     :return: instances by class name
-    :rtype: dict[str, object]
+    :rtype: Iterator[dict[str, object]]
     """
     client = Client()
     subscription = Subscription(client, id=1, subject="threetears.surface.check")
     pull = JetStreamContext.PullSubscription(JetStreamContext(client), subscription, "stream", "consumer", b"inbox")
-    return {"Client": client, "Subscription": subscription, "PullSubscription": pull}
+    near, far = socket.socketpair()
+    try:
+        transport = _SOCKET_TRANSPORT(_InertLoop(), near, asyncio.Protocol())  # type: ignore[call-arg, arg-type]
+        try:
+            yield {
+                "Client": client,
+                "Subscription": subscription,
+                "PullSubscription": pull,
+                "TcpTransport": TcpTransport(),  # type: ignore[no-untyped-call]
+                "_SelectorSocketTransport": transport,
+            }
+        finally:
+            transport.close()
+    finally:
+        near.close()
+        far.close()
 
 
 def missing_private_attributes(surface: tuple[PrivateAttribute, ...] = PRIVATE_SURFACE) -> list[str]:
@@ -442,7 +677,20 @@ def missing_private_attributes(surface: tuple[PrivateAttribute, ...] = PRIVATE_S
     :return: one line per missing or changed attribute, empty when the surface is intact
     :rtype: list[str]
     """
-    instances = _instances()
+    with _instances() as instances:
+        return _missing(surface, instances)
+
+
+def _missing(surface: tuple[PrivateAttribute, ...], instances: dict[str, object]) -> list[str]:
+    """every entry of ``surface`` the ``instances`` do not provide as declared.
+
+    :param surface: the attributes to check
+    :ptype surface: tuple[PrivateAttribute, ...]
+    :param instances: one instance per owner class
+    :ptype instances: dict[str, object]
+    :return: one line per missing or changed attribute
+    :rtype: list[str]
+    """
     missing: list[str] = []
     for attribute in surface:
         instance = instances[attribute.owner]
@@ -454,6 +702,9 @@ def missing_private_attributes(surface: tuple[PrivateAttribute, ...] = PRIVATE_S
         if attribute.kind == "method":
             if not inspect.iscoroutinefunction(value):
                 missing.append(f"{label}: no longer a coroutine method")
+        elif attribute.kind == "callable":
+            if not callable(value):
+                missing.append(f"{label}: no longer callable")
         elif attribute.kind == "declared":
             continue
         elif isinstance(attribute.kind, type) and not isinstance(value, attribute.kind):

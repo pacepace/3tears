@@ -96,6 +96,8 @@ packages/models/src/threetears/models/_mcp_sdk_internals.py:give_own_request_han
 # rationale: the write half of the same copy (see #0): the copy's own table replaces the one copy.copy shared with the original, so add_request_handler on the copy cannot rebind the original's tools/call. mcp 2.x offers no public setter.
 packages/models/src/threetears/models/_mcp_sdk_internals.py:give_own_request_handlers#1:_request_handlers
 
+# rationale: asyncio _SelectorSocketTransport: the class the send bound applies to (asyncio's plain socket transport, whose sendmsg reads its write buffer through _get_sendmsg_buffer), named once; asyncio exports no public name for it, and a TLS or websocket transport is left alone
+packages/nats/src/threetears/nats/_nats_py_internals.py:<module>#0:_SelectorSocketTransport
 # rationale: nats-py Client._nuid: nats-py names every inbox, request token and ephemeral consumer from a sequential NUID one observed name predicts, and offers no public way to supply the generator; the CSPRNG one is installed before connect
 packages/nats/src/threetears/nats/_nats_py_internals.py:install_csprng_nuid#0:_nuid
 # rationale: nats-py Client._transport: the round trip writes the pending buffer and its PING to the socket in one synchronous step; nats-py's public flush writes the PING ahead of the buffer, so its PONG proves nothing about a SUB/UNSUB sent just before
@@ -110,18 +112,14 @@ packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#
 packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#0:_pending_data_size
 # rationale: nats-py Client._pongs: the PONG future is queued in the same step as its PING so every PONG resolves its own PING; a timed-out public flush instead leaves a cancelled future that ends the read loop
 packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#0:_pongs
-# rationale: nats-py Subscription._id: the sid the UNSUB names; nats-py exposes no public sid
-packages/nats/src/threetears/nats/_nats_py_internals.py:send_unsubscribe#0:_id
-# rationale: nats-py Client._send_unsubscribe: drops a subscription's interest at the server while it stays registered here, so messages routed before the UNSUB are still delivered; public unsubscribe forgets the subscription first and drain races its PING ahead of the UNSUB
-packages/nats/src/threetears/nats/_nats_py_internals.py:send_unsubscribe#0:_send_unsubscribe
-# rationale: nats-py PullSubscription._sub: the plain subscription a pull subscription's fetches arrive on; nats-py exposes no public handle to it, and a stopping pull consumer must take what is queued there
-packages/nats/src/threetears/nats/_nats_py_internals.py:pull_subscription_inbox#0:_sub
-# rationale: nats-py Subscription._pending_queue: a pull inbox has no callback and no public queue accessor; a stopping consumer takes the messages the server delivered to a fetch still live there instead of stranding them
-packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_pending_queue
-# rationale: nats-py Subscription._pending_size: decremented per taken message, as nats-py's own readers do, so its slow-consumer byte accounting stays right; public pending_bytes is read-only
-packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_pending_size
-# rationale: nats-py Client._process_op_err: nats-py has no public force-reconnect; this is the entry its own read loop uses when a connection goes stale
-packages/nats/src/threetears/nats/_nats_py_internals.py:force_reconnect#0:_process_op_err
+# rationale: nats-py Client._transport: the connection's current transport, to reach the socket a large publish is sent on; nats-py offers no public accessor
+packages/nats/src/threetears/nats/_nats_py_internals.py:_socket_transport#0:_transport
+# rationale: nats-py TcpTransport._io_writer: the asyncio stream writer over the connection's socket (replaced on TLS upgrade and on reconnect); its public .transport is the asyncio transport the bound goes on; nats-py offers no public accessor
+packages/nats/src/threetears/nats/_nats_py_internals.py:_socket_transport#0:_io_writer
+# rationale: asyncio _SelectorSocketTransport._buffer: the transport's write buffer, read by the bounded _get_sendmsg_buffer exactly as asyncio's own reads it; created once per transport, only emptied
+packages/nats/src/threetears/nats/_nats_py_internals.py:bound_socket_sends#0:_buffer
+# rationale: asyncio _SelectorSocketTransport._get_sendmsg_buffer: replaced on one NATS connection's transport so each sendmsg is offered at most SEND_BOUND_BYTES and the kernel's copy holds the loop a fraction of a turn; asyncio has no public bound per send, and a socket option (SO_SNDBUF) would cap every connection's throughput
+packages/nats/src/threetears/nats/_nats_py_internals.py:bound_socket_sends#0:_get_sendmsg_buffer
 # rationale: nats-py Client._skip_subject_validation: the unjoined publish checks subjects exactly when nats-py's publish would, honouring the connect option; no public accessor
 packages/nats/src/threetears/nats/_nats_py_internals.py:publish_unjoined#0:_skip_subject_validation
 # rationale: nats-py Client._max_pending_size: the reconnect-buffer refusal and the forced flush past the limit, as nats-py's publish and _send_command apply them; no public accessor
@@ -140,8 +138,6 @@ packages/nats/src/threetears/nats/_nats_py_internals.py:publish_unjoined#0:_flus
 packages/nats/src/threetears/nats/_nats_py_internals.py:publish_unjoined#0:_flush_queue
 # rationale: nats-py Client._flush_pending: the flusher wake after queueing, as nats-py's _send_publish calls it; no public equivalent (flush adds a PING round trip)
 packages/nats/src/threetears/nats/_nats_py_internals.py:publish_unjoined#1:_flush_pending
-# rationale: nats-py Client._resp_map: the request future removes itself from the response mux map when done, exactly as nats-py's _request_new_style registers it (the lambda reads the current map, as nats-py's does); no public request mux
-packages/nats/src/threetears/nats/_nats_py_internals.py:request_unjoined#0:_resp_map
 # rationale: nats-py Client._skip_subject_validation: the unjoined request checks its subject exactly when nats-py's request would; no public accessor
 packages/nats/src/threetears/nats/_nats_py_internals.py:request_unjoined#0:_skip_subject_validation
 # rationale: nats-py Client._resp_sub_prefix: whether the connection's response mux subscription exists yet, as nats-py's _request_new_style checks; no public accessor
@@ -152,8 +148,22 @@ packages/nats/src/threetears/nats/_nats_py_internals.py:request_unjoined#0:_init
 packages/nats/src/threetears/nats/_nats_py_internals.py:request_unjoined#1:_resp_sub_prefix
 # rationale: nats-py Client._nuid: the request token is drawn from the connection's (CSPRNG) NUID, as nats-py's _request_new_style draws it; no public token source
 packages/nats/src/threetears/nats/_nats_py_internals.py:request_unjoined#0:_nuid
+# rationale: nats-py Client._resp_map: the request future removes itself from the response mux map when done, exactly as nats-py's _request_new_style registers it (the lambda reads the current map, as nats-py's does); no public request mux
+packages/nats/src/threetears/nats/_nats_py_internals.py:request_unjoined#0:_resp_map
 # rationale: nats-py Client._resp_map: the request future is registered under its token so nats-py's mux callback resolves it with the reply; no public request mux
 packages/nats/src/threetears/nats/_nats_py_internals.py:request_unjoined#1:_resp_map
+# rationale: nats-py Subscription._id: the sid the UNSUB names; nats-py exposes no public sid
+packages/nats/src/threetears/nats/_nats_py_internals.py:send_unsubscribe#0:_id
+# rationale: nats-py Client._send_unsubscribe: drops a subscription's interest at the server while it stays registered here, so messages routed before the UNSUB are still delivered; public unsubscribe forgets the subscription first and drain races its PING ahead of the UNSUB
+packages/nats/src/threetears/nats/_nats_py_internals.py:send_unsubscribe#0:_send_unsubscribe
+# rationale: nats-py PullSubscription._sub: the plain subscription a pull subscription's fetches arrive on; nats-py exposes no public handle to it, and a stopping pull consumer must take what is queued there
+packages/nats/src/threetears/nats/_nats_py_internals.py:pull_subscription_inbox#0:_sub
+# rationale: nats-py Subscription._pending_queue: a pull inbox has no callback and no public queue accessor; a stopping consumer takes the messages the server delivered to a fetch still live there instead of stranding them
+packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_pending_queue
+# rationale: nats-py Subscription._pending_size: decremented per taken message, as nats-py's own readers do, so its slow-consumer byte accounting stays right; public pending_bytes is read-only
+packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_pending_size
+# rationale: nats-py Client._process_op_err: nats-py has no public force-reconnect; this is the entry its own read loop uses when a connection goes stale
+packages/nats/src/threetears/nats/_nats_py_internals.py:force_reconnect#0:_process_op_err
 
 # rationale: opentelemetry-api trace._TRACER_PROVIDER_SET_ONCE: the set-once guard on set_tracer_provider (>= 1.39) has no public reset, and init_telemetry must install a provider again after shutdown_telemetry
 packages/observe/src/threetears/observe/_otel_internals.py:allow_tracer_provider_reset#0:_TRACER_PROVIDER_SET_ONCE

@@ -3,7 +3,9 @@
 nats-py's ``publish`` builds each ``PUB`` as one ``bytes``: the command line, the payload, CRLF, concatenated on the
 event loop. A 12 MB Arrow copy's request then held the loop for the whole copy (4.6-7.2 ms on a pool container).
 :class:`~threetears.nats.NatsClient` now publishes a payload from ``UNJOINED_FROM_BYTES`` as three pending items the
-socket sends from memoryviews.
+socket sends from memoryviews. The kernel then copied as much of that payload as its send buffer had room for in
+one ``sendmsg`` on the loop (9 MB in one call, held 8 ms on a loaded host), so each connection's socket now offers
+at most ``SEND_BOUND_BYTES`` per call.
 
 Every test here drives a real nats-py client through ``NatsClient``'s public methods against :mod:`.byte_server`,
 which reads on threads of its own and answers each request with the size and sha256 of what it read, so the bytes
@@ -23,6 +25,7 @@ from datetime import timedelta
 import pytest
 
 from threetears.nats import NatsClient, Subject, set_default_namespace
+from threetears.nats._nats_py_internals import SEND_BOUND_BYTES, bounded_send_buffers, sends_are_bounded
 from threetears.nats.errors import PayloadTooLargeError, PublishError
 
 from .byte_server import ByteServer, byte_server
@@ -109,6 +112,46 @@ async def test_a_large_request_copies_nothing_of_its_payload() -> None:
         finally:
             tracemalloc.stop()
     assert peak - before < _COPY_BYTES // 8, f"publishing a {_COPY_BYTES}-byte request allocated {peak - before} bytes"
+
+
+def test_a_send_is_offered_whole_buffers_up_to_the_bound_and_never_more() -> None:
+    """small buffers go together while they fit; the one that would cross the bound waits for the next call."""
+    buffers: list[bytes | memoryview] = [b"a" * 400, memoryview(b"b" * 500), b"c" * 300, b"d"]
+    offered = list(bounded_send_buffers(buffers, 1000, 1024))
+    assert [bytes(view) for view in offered] == [b"a" * 400, b"b" * 500]
+
+
+def test_a_buffer_larger_than_the_bound_is_offered_its_first_bound_bytes() -> None:
+    """a 64 MB payload at the front is cut, not copied: the view covers its first ``bound`` bytes."""
+    payload = _payload(_TIMED_BYTES)
+    offered = list(bounded_send_buffers([memoryview(payload), b"\r\n"], SEND_BOUND_BYTES, 1024))
+    assert len(offered) == 1
+    assert offered[0].obj is payload
+    assert offered[0].nbytes == SEND_BOUND_BYTES
+    assert offered[0].tobytes() == payload[:SEND_BOUND_BYTES]
+
+
+def test_a_send_is_offered_no_more_buffers_than_the_platform_takes() -> None:
+    """tiny buffers stop at ``most``, as asyncio's own slice of its buffer does."""
+    offered = list(bounded_send_buffers([b"x"] * 50, SEND_BOUND_BYTES, 16))
+    assert len(offered) == 16
+
+
+async def test_a_large_request_bounds_its_socket_and_still_arrives_whole() -> None:
+    """after a 64 MB request the connection's socket offers at most a megabyte per send, and the server read all of it.
+
+    Before the bound, ``sendmsg`` was offered the whole 64 MB and the kernel took as much as its autotuned buffer had
+    room for on the loop. The bound stays on the connection for every later send.
+    """
+    payload = _payload(_TIMED_BYTES)
+    async with _connected("large-request-bound") as (client, server):
+        assert not sends_are_bounded(client.raw)
+        reply = await client.request_raw(subject=Subject.raw("3tears.copy"), payload=payload, timeout=_REQUEST_TIMEOUT)
+        assert sends_are_bounded(client.raw)
+        again = await client.request_raw(subject=Subject.raw("3tears.copy"), payload=payload, timeout=_REQUEST_TIMEOUT)
+    whole = f"{len(payload)} {hashlib.sha256(payload).hexdigest()}".encode()
+    assert reply == again == whole
+    assert [(subject, size) for subject, size, _ in server.answered] == [("3tears.copy", _TIMED_BYTES)] * 2
 
 
 async def test_a_payload_over_the_server_limit_is_still_refused() -> None:
