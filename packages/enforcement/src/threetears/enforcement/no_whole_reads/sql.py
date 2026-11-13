@@ -131,8 +131,9 @@ _LIMIT_ONE: Final[re.Pattern[str]] = re.compile(
     r"\b(?:LIMIT\s+(?:1\b|\$\d+|%s|\?|:[A-Za-z_]\w*|\{\})|FETCH\s+(?:FIRST|NEXT)\s+1?\s*ROWS?\s+ONLY\b)", re.I
 )
 _ORDER_BY: Final[re.Pattern[str]] = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
+#: ``DISTINCT`` is the aggregate keyword, never the comparison ``IS [NOT] DISTINCT FROM`` (a null-safe pin)
 _AGGREGATE: Final[re.Pattern[str]] = re.compile(
-    r"\b(?:GROUP\s+BY|DISTINCT)\b|\b(?:count|sum|avg|min|max|string_agg|array_agg|bit_xor|bit_or|md5|sha256|"
+    r"\b(?:GROUP\s+BY|DISTINCT(?!\s+FROM\b))\b|\b(?:count|sum|avg|min|max|string_agg|array_agg|bit_xor|bit_or|md5|sha256|"
     r"hashtext|listagg|median|bool_and|bool_or|checksum|fingerprint\w*|approx_count_distinct)\s*\(",
     re.IGNORECASE,
 )

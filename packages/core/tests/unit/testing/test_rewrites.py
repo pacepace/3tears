@@ -168,6 +168,39 @@ def test_a_literal_pin_holds_its_value_on_two_rows_in_three_and_nulls_follow_the
     assert row(_seed(1, null=True))["note"] == "fixed"
 
 
+def test_a_null_safe_pin_is_bound_and_then_bound_none_over_null_rows() -> None:
+    """Flips if a null-safe pin is not seeded and bound like ``= $n``, or its nulled case does not bind None over
+    rows holding NULL there (two in three) beside rows holding a value -- the case ``= $n`` would read as none."""
+    entry = {
+        "table": "agents",
+        "pins": [
+            {"column": "id", "kind": "param", "param": 1, "literal": None},
+            {"column": "note", "kind": "nullsafe", "param": 2, "literal": None},
+        ],
+    }
+    row, params = row_factory(_shape(), entry, {})
+    assert params[1] == row(_seed(0))["note"] is not None
+    row, params = row_factory(_shape(), entry, {}, nulled=True)
+    assert params[1] is None
+    assert [row(_seed(index))["note"] is None for index in range(6)] == [True, True, False, True, True, False]
+
+
+def test_a_literal_list_pin_holds_each_listed_value_and_one_row_in_three_none() -> None:
+    """Flips if an ``IN (<literals>)`` column stops holding every listed value, or never holds an unlisted one."""
+    entry = {
+        "table": "agents",
+        "pins": [
+            {"column": "id", "kind": "param", "param": 1, "literal": None},
+            {"column": "slug", "kind": "anylit", "param": None, "literal": ["platform", "customer"]},
+        ],
+    }
+    row, params = row_factory(_shape(), entry, {})
+    held = [row(_seed(index))["slug"] for index in range(6)]
+    assert {"platform", "customer"} <= set(held)
+    assert held[2] not in {"platform", "customer"} and held[5] not in {"platform", "customer"}
+    assert len(params) == 1
+
+
 def test_a_json_column_is_seeded_as_its_text() -> None:
     """Flips if a json or jsonb column is seeded as a Python mapping: asyncpg with no json codec refuses it (the
     generated test then errors seeding every table holding one), and takes the value as text."""

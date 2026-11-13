@@ -310,9 +310,16 @@ def _other(column: CatalogColumn, literal: Any) -> Any:
 
 
 def row_factory(
-    shape: CatalogTable, entry: Mapping[str, Any], overrides: Mapping[str, Callable[[Seeded], Any]]
+    shape: CatalogTable,
+    entry: Mapping[str, Any],
+    overrides: Mapping[str, Callable[[Seeded], Any]],
+    *,
+    nulled: bool = False,
 ) -> tuple[Callable[[Seeded], dict[str, Any]], list[Any]]:
-    """the row a seed puts in the entry's table, and the old statement's parameters (the first row's)."""
+    """the row a seed puts in the entry's table, and the old statement's parameters (the first row's).
+
+    ``nulled``: each null-safe pin (``IS NOT DISTINCT FROM $n``) is bound None, and two rows of three hold NULL in
+    its column, the third a value -- the case a plain ``= $n`` would read as no row."""
     pins = {pin["column"]: pin for pin in entry["pins"]}
     for column in pins:
         if column not in shape.columns:
@@ -338,8 +345,17 @@ def row_factory(
             return overrides[column.name](seed)
         if pin is not None and pin["kind"] == "literal":
             return pin["literal"] if seed.index % 3 != 2 else _other(column, pin["literal"])
-        if pin is not None and pin["kind"] == "null":
+        if pin is not None and (pin["kind"] == "null" or (nulled and pin["kind"] == "nullsafe")):
             return None if seed.index % 3 != 2 else _value(column, seed.index)
+        if pin is not None and pin["kind"] == "anylit":
+            # two rows of three hold one of the listed values (each listed value in turn), the third none of them
+            listed = list(pin["literal"])
+            if seed.index % 3 != 2:
+                return listed[seed.index % len(listed)]
+            other = _other(column, listed[0])
+            while other in listed:
+                other = _other(column, other)
+            return other
         if pin is None and column.nullable and seed.null:
             return None
         n = seed.index if column.name in per_row else seed.tenant
@@ -362,15 +378,17 @@ def row_factory(
     second = Seeded(index=1, case="params", tenant=1, null=False, tie=0)
     params: list[Any] = [None] * len({pin["param"] for pin in pins.values() if pin["kind"] in _BOUND})
     for column, pin in pins.items():
-        if pin["kind"] == "param":
+        if pin["kind"] == "param" or (pin["kind"] == "nullsafe" and not nulled):
             params[pin["param"] - 1] = value(shape.columns[column], first)
+        elif pin["kind"] == "nullsafe":
+            params[pin["param"] - 1] = None
         elif pin["kind"] == "any":
             params[pin["param"] - 1] = [value(shape.columns[column], first), value(shape.columns[column], second)]
     return row, params
 
 
-#: the pin kinds bound as a parameter: ``= $n`` and ``= ANY($n)``
-_BOUND: Final[frozenset[str]] = frozenset({"param", "any"})
+#: the pin kinds bound as a parameter: ``= $n``, ``= ANY($n)`` and ``IS NOT DISTINCT FROM $n``
+_BOUND: Final[frozenset[str]] = frozenset({"param", "any", "nullsafe"})
 
 
 def _numbers(pin: Mapping[str, Any]) -> tuple[int, ...]:
@@ -394,8 +412,11 @@ def _seedable(column: CatalogColumn) -> bool:
 def _by(entry: Mapping[str, Any], params: Sequence[Any]) -> dict[str, Any]:
     by: dict[str, Any] = {}
     for pin in entry["pins"]:
-        if pin["kind"] == "param":
+        if pin["kind"] in {"param", "nullsafe"}:
+            # a null-safe pin bound None is sent IS NULL, as IS NOT DISTINCT FROM NULL reads
             by[pin["column"]] = params[pin["param"] - 1]
+        elif pin["kind"] == "anylit":
+            by[pin["column"]] = AnyOf(tuple(pin["literal"]), cast=None)
         elif pin["kind"] == "any":
             by[pin["column"]] = AnyOf(params[pin["param"] - 1], cast=pin.get("cast"))
         elif pin["kind"] == "literal":
@@ -424,10 +445,20 @@ async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides:
     if entry.get("shape") == "write":
         await _assert_write_same(conn, entry, overrides=overrides)
         return
+    await _assert_point_same(conn, entry, overrides=overrides, nulled=False)
+    if any(pin["kind"] == "nullsafe" for pin in entry["pins"]):
+        await _assert_point_same(conn, entry, overrides=overrides, nulled=True)
+
+
+async def _assert_point_same(
+    conn: Any, entry: Mapping[str, Any], *, overrides: _Overrides | None, nulled: bool
+) -> None:
+    """the read entry's helper call gives what its old statement gave, over every seed case; ``nulled``: each
+    null-safe pin bound None over rows holding NULL there (:func:`row_factory`)."""
     table = entry["table"]
     await _drop_checks(conn, table)
     shape = await _catalog(conn, table)
-    row, params = row_factory(shape, entry, (overrides or {}).get(table, {}))
+    row, params = row_factory(shape, entry, (overrides or {}).get(table, {}), nulled=nulled)
     by = _by(entry, params)
     columns = entry["columns"]
     old_sql = entry["old_sql"]
@@ -486,6 +517,15 @@ async def _assert_write_same(conn: Any, entry: Mapping[str, Any], *, overrides: 
     :rtype: None
     :raises AssertionError: naming each case whose table after the write differs
     """
+    await _assert_write_cases(conn, entry, overrides=overrides, nulled=False)
+    if any(pin["kind"] == "nullsafe" for pin in entry["pins"]):
+        await _assert_write_cases(conn, entry, overrides=overrides, nulled=True)
+
+
+async def _assert_write_cases(
+    conn: Any, entry: Mapping[str, Any], *, overrides: _Overrides | None, nulled: bool
+) -> None:
+    """the write entry over every seed case; ``nulled``: each null-safe pin bound None (:func:`row_factory`)."""
     table = entry["table"]
     await _drop_checks(conn, table)
     shape = await _catalog(conn, table)
@@ -493,7 +533,7 @@ async def _assert_write_same(conn: Any, entry: Mapping[str, Any], *, overrides: 
     numbered = sorted({pin["param"] for pin in entry["pins"] if pin["kind"] in _BOUND})
     compact = {number: place + 1 for place, number in enumerate(numbered)}
     pins = [{**pin, "param": compact[pin["param"]]} if pin["kind"] in _BOUND else pin for pin in entry["pins"]]
-    row, pinned = row_factory(shape, {**entry, "pins": pins}, (overrides or {}).get(table, {}))
+    row, pinned = row_factory(shape, {**entry, "pins": pins}, (overrides or {}).get(table, {}), nulled=nulled)
     total = max([number for pin in (*entry["pins"], *entry["sets"]) for number in _numbers(pin)] or [0])
     params: list[Any] = [None] * total
     for number, place in compact.items():
@@ -588,8 +628,11 @@ def _write_says(call: ast.Call, entry: Mapping[str, Any]) -> bool:
 def _pin_says(value: ast.expr, pin: Mapping[str, Any], args: Sequence[str]) -> bool:
     """whether a helper call's pinned or set value is the entry's: its argument, ``AnyOf(<argument>, cast=...)``,
     ``Fragment("now()")``, the literal, or None."""
-    if pin["kind"] == "param":
+    if pin["kind"] in {"param", "nullsafe"}:
         return _same_expression(value, args[pin["param"] - 1])
+    if pin["kind"] == "anylit":
+        listed = ", ".join(repr(literal) for literal in pin["literal"])
+        return _same_expression(value, f"AnyOf(({listed}{',' if len(pin['literal']) == 1 else ''}), cast=None)")
     if pin["kind"] == "any":
         return _same_expression(value, f"AnyOf({args[pin['param'] - 1]}, cast={pin.get('cast')!r})")
     if pin["kind"] == "now":

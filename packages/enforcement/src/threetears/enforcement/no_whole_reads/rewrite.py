@@ -101,11 +101,26 @@ _ANY_PIN: Final[re.Pattern[str]] = re.compile(
     rf"(?:\s*::\s*(?P<cast>{_IDENT})\s*\[\s*\])?\s*\)$",
     re.IGNORECASE,
 )
+#: ``col IS NOT DISTINCT FROM $n``: the column equals the argument, or holds NULL where the argument is None -- what
+#: ``by={col: arg}`` sends (``= $n``, or ``IS NULL`` for None)
+_NULLSAFE_PIN: Final[re.Pattern[str]] = re.compile(
+    rf"^(?:(?P<q>{_IDENT})\.)?(?P<column>{_IDENT})\s+is\s+not\s+distinct\s+from\s+\$(?P<n>\d+)$", re.IGNORECASE
+)
+#: one literal of an ``IN`` list: a quoted text or an integer
+_IN_LITERAL: Final[str] = r"'(?:[^']|'')*'|-?\d+"
+#: ``col IN ('a', 'b')``: the column is one of a fixed set of literals -- ``by={col: AnyOf(('a', 'b'), cast=None)}``
+_IN_LITERALS_PIN: Final[re.Pattern[str]] = re.compile(
+    rf"^(?:(?P<q>{_IDENT})\.)?(?P<column>{_IDENT})\s+in\s*\(\s*(?P<literals>(?:{_IN_LITERAL})"
+    rf"(?:\s*,\s*(?:{_IN_LITERAL}))*)\s*\)$",
+    re.IGNORECASE,
+)
 _BOOL_PIN: Final[re.Pattern[str]] = re.compile(
     rf"^(?P<not>not\s+)?(?:(?P<q>{_IDENT})\.)?(?P<column>{_IDENT})$", re.IGNORECASE
 )
 #: words a bare-column conjunct never is (a bare boolean column pins it TRUE)
 _NOT_COLUMNS: Final[frozenset[str]] = frozenset({"true", "false", "null", "not", "and", "or"})
+#: the pin kinds bound as a parameter: ``= $n``, ``= ANY($n)`` and ``IS NOT DISTINCT FROM $n``
+_BOUND_KINDS: Final[frozenset[str]] = frozenset({"param", "any", "nullsafe"})
 _AND: Final[re.Pattern[str]] = re.compile(r"\s+and\s+", re.IGNORECASE)
 _QUOTED: Final[re.Pattern[str]] = re.compile(r"'(?:[^']|'')*'")
 
@@ -116,9 +131,11 @@ class Pin:
 
     :ivar column: the column
     :ivar kind: ``param`` (``= $n``), ``any`` (``= ANY($n)``, ``= ANY($n::<type>[])``), ``literal`` (``= 'x'``,
-        ``= TRUE``, ``= 3``, a bare boolean column for TRUE and ``NOT`` one for FALSE) or ``null`` (``IS NULL``)
-    :ivar param: the parameter's number, for ``param`` and ``any``
-    :ivar literal: the literal's Python value, for ``literal``
+        ``= TRUE``, ``= 3``, a bare boolean column for TRUE and ``NOT`` one for FALSE), ``null`` (``IS NULL``),
+        ``nullsafe`` (``IS NOT DISTINCT FROM $n``: sent as ``= $n``, or ``IS NULL`` for a None argument) or ``anylit``
+        (``IN ('a', 'b')``: an ``AnyOf`` of the literals, typed by the column)
+    :ivar param: the parameter's number, for ``param``, ``any`` and ``nullsafe``
+    :ivar literal: the literal's Python value, for ``literal``; the literals, for ``anylit``
     :ivar cast: the array's element type, for ``any`` (None: the array was bound untyped)
     :ivar params: a ``fragment`` SET's parameters, in the order its expression first names them
     """
@@ -126,7 +143,7 @@ class Pin:
     column: str
     kind: str
     param: int | None = None
-    literal: str | bool | int | None = None
+    literal: str | bool | int | tuple[str | bool | int, ...] | None = None
     cast: str | None = None
     #: a ``fragment`` SET (``col = GREATEST(col, $n)``): its expression is ``literal``, renumbered from ``$1`` in the
     #: order of these, the statement's own parameter numbers; an ``increment`` (``col = col + 1``) holds its amount in
@@ -286,7 +303,7 @@ def parse_point(sql: str) -> PointSql | str:
     numbers = sorted({pin.param for pin in pins if pin.param is not None})
     if numbers != list(range(1, len(numbers) + 1)):
         return "parameters not numbered $1..$n"
-    if not any(pin.kind in {"param", "any"} for pin in pins):
+    if not any(pin.kind in _BOUND_KINDS for pin in pins):
         return "no bound parameter (literals only): a constant read, judged by hand"
     return PointSql(table=match.group("table").lower(), columns=columns, pins=tuple(pins))
 
@@ -314,6 +331,8 @@ def _pins(where: str, masked: str, qualifiers: set[str | None]) -> list[Pin] | s
             (_LITERAL_PIN, "literal"),
             (_NULL_PIN, "null"),
             (_ANY_PIN, "any"),
+            (_NULLSAFE_PIN, "nullsafe"),
+            (_IN_LITERALS_PIN, "anylit"),
             (_BOOL_PIN, "bool"),
         ):
             pinned = pattern.match(conjunct)
@@ -331,6 +350,11 @@ def _pins(where: str, masked: str, qualifiers: set[str | None]) -> list[Pin] | s
             pins.append(Pin(name, "any", param=int(pinned.group("n")), cast=cast.lower() if cast else None))
         elif kind == "literal":
             pins.append(Pin(name, "literal", literal=_literal(pinned.group("literal"))))
+        elif kind == "nullsafe":
+            pins.append(Pin(name, "nullsafe", param=int(pinned.group("n"))))
+        elif kind == "anylit":
+            listed = tuple(_literal(found.group()) for found in re.finditer(_IN_LITERAL, pinned.group("literals")))
+            pins.append(Pin(name, "anylit", literal=listed))
         elif kind == "bool":
             pins.append(Pin(name, "literal", literal=pinned.group("not") is None))
         else:
@@ -460,7 +484,7 @@ def parse_write(sql: str) -> WriteSql | str:
     if re.search(r"\breturning\b", masked_text, re.IGNORECASE):
         return "a RETURNING not at the statement's end"
     if re.search(
-        r"\b(from|using)\b",
+        r"(?<!distinct )\b(from|using)\b",
         masked_text[len("delete from ") :] if masked_text.lower().startswith("delete") else masked_text,
         re.IGNORECASE,
     ):
@@ -523,7 +547,7 @@ def parse_write(sql: str) -> WriteSql | str:
     numbers = sorted({number for pin in (*sets, *pins) for number in pin.numbers()})
     if numbers != list(range(1, len(numbers) + 1)):
         return "parameters not numbered $1..$n"
-    if not any(pin.kind in {"param", "any"} for pin in pins):
+    if not any(pin.kind in _BOUND_KINDS for pin in pins):
         return "no bound parameter in the WHERE (literals only): a constant write, judged by hand"
     return WriteSql(
         kind="update" if update is not None else "delete",
@@ -905,8 +929,11 @@ def _render(rewrite: Rewrite, receiver: str) -> str:
 def _value_text(pin: Mapping[str, Any], args: Sequence[str]) -> str:
     """a pinned or set column's value as the helper call writes it: the argument, an ``AnyOf`` of it, a literal,
     None, or ``now()``."""
-    if pin["kind"] == "param":
+    if pin["kind"] in {"param", "nullsafe"}:
         return str(args[pin["param"] - 1])
+    if pin["kind"] == "anylit":
+        listed = ", ".join(_python_literal(value) for value in pin["literal"])
+        return f"AnyOf(({listed}{',' if len(pin['literal']) == 1 else ''}), cast=None)"
     if pin["kind"] == "any":
         return f"AnyOf({args[pin['param'] - 1]}, cast={pin.get('cast')!r})"
     if pin["kind"] == "increment":
@@ -1192,7 +1219,7 @@ def _parameter_names(pins: Sequence[Pin], count: int) -> list[str]:
     is not a plain new name (a keyword, a builtin, ``conn``, a name taken twice, a fragment's parameter)."""
     names: dict[int, str] = {}
     for pin in pins:
-        if pin.kind in {"param", "any"} and pin.param is not None and pin.param not in names:
+        if pin.kind in _BOUND_KINDS and pin.param is not None and pin.param not in names:
             names[pin.param] = pin.column
     taken: Counter[str] = Counter(names.values())
     plain = {
@@ -1874,7 +1901,7 @@ def apply_rewrites(repo_root: Path, rewrites: list[Rewrite], *, ruff: str | None
             names.add("Fragment")
         if any(pin["kind"] == "increment" for rewrite in mine for pin in rewrite.sets):
             names.add("Increment")
-        if any(pin["kind"] == "any" for rewrite in mine for pin in rewrite.pins):
+        if any(pin["kind"] in {"any", "anylit"} for rewrite in mine for pin in rewrite.pins):
             names.add("AnyOf")
         source = _with_import(source, names)
         for rewrite in mine:

@@ -78,6 +78,14 @@ _READS = """
 
     async def live_one(conn, agent_id):
         return await conn.fetchrow("SELECT id FROM agents WHERE id = $1 AND live AND NOT gone", agent_id)
+
+
+    async def scoped_agent(conn, agent_id, realm):
+        return await conn.fetchrow(
+            "SELECT * FROM agents WHERE scope IN ('platform', 'customer') AND id = $1 AND realm IS NOT DISTINCT FROM $2",
+            agent_id,
+            realm,
+        )
 """
 
 
@@ -150,10 +158,39 @@ def test_literal_and_null_pins_keep_their_values() -> None:
     ]
 
 
+def test_null_safe_and_literal_list_pins_are_read() -> None:
+    """Flips if ``IS NOT DISTINCT FROM $n`` is not read as a null-safe pin of its parameter (sent ``= $n``, or
+    ``IS NULL`` for None), or ``IN (<literals>)`` not as the literals' set, in a read and in a write."""
+    parsed = parse_point(
+        "SELECT * FROM t WHERE row_scope IN ('platform', 'customer') AND a = $1 AND b IS NOT DISTINCT FROM $2"
+        " AND n IN (1, -2)"
+    )
+    assert isinstance(parsed, PointSql)
+    assert [(pin.column, pin.kind, pin.param, pin.literal) for pin in parsed.pins] == [
+        ("row_scope", "anylit", None, ("platform", "customer")),
+        ("a", "param", 1, None),
+        ("b", "nullsafe", 2, None),
+        ("n", "anylit", None, (1, -2)),
+    ]
+    written = parse_write("DELETE FROM t WHERE k = $1 AND scope IS NOT DISTINCT FROM $2 AND kind IN ('x''y')")
+    assert isinstance(written, WriteSql)
+    assert written.pins == (
+        Pin("k", "param", param=1),
+        Pin("scope", "nullsafe", param=2),
+        Pin("kind", "anylit", literal=("x'y",)),
+    )
+    # literals only: no bound parameter is still a constant read, judged by hand
+    assert isinstance(parse_point("SELECT * FROM t WHERE kind IN ('a', 'b')"), str)
+
+
 @pytest.mark.parametrize(
     "sql",
     [
         "SELECT id FROM t WHERE id = ANY($1::uuid[]) OR a = $2",
+        "SELECT id FROM t WHERE a IN ($1, 'b')",
+        "SELECT id FROM t WHERE a IN ('b', lower($1))",
+        "SELECT id FROM t WHERE a IS DISTINCT FROM $1",
+        "SELECT id FROM t WHERE a IS NOT DISTINCT FROM b",
         "SELECT id FROM t WHERE id = ANY(ARRAY[$1])",
         "SELECT id FROM t WHERE id = ANY($1::uuid[] || $2)",
         "SELECT id FROM t WHERE id <> ALL($1::uuid[])",
@@ -195,6 +232,7 @@ def test_point_reads_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path) 
         ("by_ids", "read_by"),
         ("live_one", "read_row"),
         ("one_agent", "read_row"),
+        ("scoped_agent", "read_row"),
     ]
     refused = {refusal.function: refusal.reason for refusal in refusals}
     assert refused.keys() == {"by_status", "interpolated"}, refused
@@ -205,7 +243,7 @@ def test_point_reads_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path) 
     write_manifest(manifest, rewrites)
     write_manifest(manifest, rewrites)
     entries = json.loads(manifest.read_text(encoding="utf-8"))
-    assert len(entries) == 6
+    assert len(entries) == 7
 
     source = (tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -216,6 +254,10 @@ def test_point_reads_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path) 
         in source
     )
     assert "_GEO_SQL" not in source and "a geo by its key" not in source
+    assert (
+        "read_row(conn, 'agents', by={'scope': AnyOf(('platform', 'customer'), cast=None), 'id': agent_id,"
+        " 'realm': realm}, records=True)" in " ".join(source.split()).replace("( ", "(").replace(" )", ")")
+    )
     assert "read_row(conn, 'agents', by={'id': agent_id, 'is_deleted': False}, records=True)" in source
     assert "read_value(pool, 'agents', by={'id': agent_id}, column='name')" in source
     assert (
