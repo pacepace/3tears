@@ -7464,7 +7464,7 @@ async def _slow_geos(monkeypatch: pytest.MonkeyPatch) -> tuple[_SqlL3, _Clock, l
     """TX's 50 rows of geos, read 5 to a page, on a clock the test moves; where a status taken mid-read goes, and a
     count of pages."""
     monkeypatch.setattr(scoped_snapshot_module, "DEFAULT_PAGE_SIZE", 5)
-    clock = _Clock(real=False)
+    clock = _Clock()
     monkeypatch.setattr(scoped_snapshot_module, "time", clock)
     l3 = _SqlL3(
         "geos",
@@ -7523,7 +7523,7 @@ async def test_a_read_from_l3_that_runs_minutes_says_once_a_minute_how_far_it_is
         35,
         50,
     )
-    # the clock moves only as the pages move it, so the rate is the pages' own
+    # the fake clock rides on the real one: a few ms of real time in a minute
     assert reading.rows_per_second == pytest.approx(0.25, rel=1e-3)
     assert reading.eta_seconds == pytest.approx((50 - 35) / reading.rows_per_second, rel=1e-6)
     assert reading.eta_seconds == pytest.approx(60, rel=1e-3)
@@ -7624,16 +7624,13 @@ async def test_a_scope_read_a_value_at_a_time_of_a_column_that_does_not_lead_the
 
 class _Clock:
     """the scoped snapshot's clock, which a test moves on: ``time`` as the module uses it, ``monotonic`` ahead by
-    ``ahead`` seconds. ``real=False`` holds ``monotonic`` still but for ``ahead``, for a test whose figures are rates
-    over the clock: riding on the real one, a loaded runner's few hundred ms in a minute moved a rate off its value."""
+    ``ahead`` seconds."""
 
-    def __init__(self, *, real: bool = True) -> None:
+    def __init__(self) -> None:
         self.ahead = 0.0
-        self._real = real
-        self._base = time.monotonic()
 
     def monotonic(self) -> float:
-        return (time.monotonic() if self._real else self._base) + self.ahead
+        return time.monotonic() + self.ahead
 
     def __getattr__(self, name: str) -> Any:
         return getattr(time, name)
