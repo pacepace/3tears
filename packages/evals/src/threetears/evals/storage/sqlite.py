@@ -269,11 +269,17 @@ def _listing(
             by_row=True,
             where=where,
         )
-        answered = _cursor(db, statement).fetchall()
-        yield from answered
-        if len(answered) <= _LISTING_PAGE:
+        # Each row handed on as the cursor reads it, never a fetched page of them: a page of large bodies held at once
+        # is the whole campaign when the campaign fits in one page (#954's bounded listing).
+        answered = 0
+        last_seq: Any = None
+        for row in _cursor(db, statement):
+            answered += 1
+            last_seq = row[-1]
+            yield row
+        if answered <= _LISTING_PAGE:
             return
-        past = next_past(_BY_SEQ, {"seq": answered[-1][-1]})
+        past = next_past(_BY_SEQ, {"seq": last_seq})
 
 
 def _in_insertion_order(
