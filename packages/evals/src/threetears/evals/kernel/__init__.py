@@ -77,6 +77,7 @@ from threetears.evals.kernel.capped_completion import (
     ceiling_is_estimate,
     prompt_token_bound,
     turn_prompt_token_bound,
+    unpriced_because,
 )
 from threetears.evals.kernel.cassettes import (
     ActionSeam,
@@ -788,6 +789,7 @@ __all__ = [
     "WorldSessionError",
     "call_ceiling",
     "ceiling_is_estimate",
+    "unpriced_because",
     "candidate_failure_cause",
     "classify_result",
     "counted_goal_verdicts",

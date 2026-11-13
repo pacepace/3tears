@@ -41,6 +41,7 @@ from threetears.evals.kernel import JobTimeoutFactory
 from threetears.evals.kernel.build_stamp import package_rev, package_version
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.host.kinds import freeze
+from threetears.evals.schema.completion import ModelListing
 from threetears.evals.schema.models import ArmSchedule, EvalTemplate, RunDisclosure, WorldPlacement
 
 from threetears.evals.kernel.arguments import normalize_blank
@@ -258,13 +259,14 @@ class PlannedJudge:
 
 @dataclass(frozen=True, kw_only=True)
 class CallCeiling:
-    """The largest reservation one call of an arm's cells will hold against its run's cap, priced before launch.
+    """The most one call of an arm's cells can cost, priced before launch: its largest call's ceiling, or a floor.
 
     A run's cap is read between cells and refuses no call inside one, so a call whose ceiling is above the cap on
     its own is made, and the run stops ``budget_stopped`` before its next cell having spent more than the cap on
-    that one call. An arm is still refused before launch when its largest call's ceiling is above its cap
+    that one call. So an arm is refused before launch when its largest call's ceiling is above its cap
     (:func:`price_arms`, and :func:`quote_launch` with it): a cap smaller than one call cannot bound the run, and
-    this is what that refusal reads.
+    this is what that refusal reads. A call the kind cannot price at all is an :class:`UnpricedCall`, refused under
+    a cap the same way.
 
     **Exact, or a floor.** For a kind whose calls are whole before launch (the judge kind's frozen cases, the
     reporter's frozen bundles), ``usd`` is the largest call's ceiling exactly, and ``lower_bound`` is ``False``.
@@ -273,14 +275,14 @@ class CallCeiling:
     and ``usd`` is what the named call is reserved at with every part its cell fills left empty — so the call,
     and the arm's largest call with it, is reserved at ``usd`` or more. The admission rule reads either the same
     way, and is sound for both: a floor above the cap means the real call is too. A floor at or under the cap
-    admits nothing about the real call, which is still held to the cap as the run reserves it.
+    admits nothing about the real call, whose spend the run's cap counts once its cell is recorded.
 
     :ivar usd: The ceiling in dollars: the client's ``price_ceiling`` for the call, times every attempt the engine
-        makes of it — exactly what the run will reserve, or, when ``lower_bound`` is set, the least it will.
+        makes of it — the most the call can cost, or, when ``lower_bound`` is set, the least it can be bounded at.
     :ivar call: Which call it is, in words a refusal quotes ("the judge call on case 'c-3' (2 requests: the
         first and its parse retry) on 'google/gemini-3.8-flash'").
     :ivar lowered_by: What lowers the ceiling, in words a remedy quotes — the levers besides a larger cap.
-    :ivar lower_bound: Whether ``usd`` is a floor under the call's reservation rather than its exact figure.
+    :ivar lower_bound: Whether ``usd`` is a floor under the call's ceiling rather than its exact figure.
     :ivar estimate: Whether ``usd`` is built on rates the host's pricer does not guarantee (an OpenRouter route whose
         upstream may bill otherwise): the client's own ``ceiling_is_estimate``
         (:func:`~threetears.evals.kernel.ceiling_is_estimate`). The arm is admitted on it all the same; its
@@ -308,6 +310,79 @@ class CallCeiling:
 
 
 @dataclass(frozen=True, kw_only=True)
+class UnpricedCall:
+    """A call an arm's cells are bound to make that the clients they call through cannot price before launch.
+
+    What a kind's :attr:`LaunchableKind.price_largest_call` answers in place of a :class:`CallCeiling` when a call it
+    must price has no ceiling: the host's client cannot bound it (a model its rates or the price catalogue do not
+    cover, or a catalogue that could not be read even after admission refreshed it). The arm's largest call is then
+    unknown, not $0, so under a cost cap the arm is refused, naming the call and why (:func:`price_arms`, and
+    :func:`quote_launch` with it). With no cap there is nothing to check it against, and the arm is admitted.
+
+    :ivar call: Which call, in words a refusal quotes ("the 'toy.fidelity' judge call every judged case makes on
+        'judge-flash'").
+    :ivar why: Why it has no ceiling, as the client said (the client's ``price_ceiling_refusal``), or that it said
+        nothing.
+    """
+
+    call: str
+    why: str
+
+    def __post_init__(self) -> None:
+        """Refuse blank words.
+
+        :raises ValueError: ``call`` or ``why`` is blank.
+        """
+        if not self.call.strip():
+            raise ValueError("an unpriced call names the call; call is blank")
+        if not self.why.strip():
+            raise ValueError("an unpriced call says why it has no ceiling; why is blank")
+
+
+#: The roles of an arm whose models the served-model check reads: the model under test, its judges and its
+#: simulated user.
+ServedRole = Literal["candidate", "judge", "simulator"]
+
+
+@dataclass(frozen=True, kw_only=True)
+class ServedCheck:
+    """What the provider's own model list, read as the arm was admitted, said of one model the arm names.
+
+    The engine asks the host's client factory (its optional ``model_listing``) of the arm's candidate, every judge
+    model and the simulator model, before the arm is priced. A model the list does not name is refused: every call
+    to it would fail, and an arm of it would be judged or counted as a model doing badly. A list that could not be
+    read leaves the arm admitted, and the check skipped is said on the estimate (``ArmEstimate``) and on the launch
+    (:attr:`AdmittedLaunch.notices`). A model whose provider has no list the factory reads is not checked, and has
+    no entry.
+
+    :ivar role: Whose model it is in the arm.
+    :ivar model: The model id.
+    :ivar provider: The provider whose list was read.
+    :ivar listed: Whether the list names it; ``None`` when no current list could be read.
+    :ivar detail: The list and when it was read, or why no current one could be.
+    """
+
+    role: ServedRole
+    model: str
+    provider: str
+    listed: bool | None
+    detail: str
+
+    def skipped_notice(self) -> str | None:
+        """What the caller is told when the check could not be made: the model, its role and why; ``None`` else.
+
+        :return: The notice, or ``None`` when the list was read.
+        :rtype: str | None
+        """
+        if self.listed is not None:
+            return None
+        return (
+            f"The served-model check of {self.role} model {self.model!r} was skipped: {self.detail}. Whether "
+            f"{self.provider} still serves it is unknown, so a model it no longer serves would fail every call."
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
 class ArmPlan:
     """What one arm of a launch will run, as its kind says before its launcher runs.
 
@@ -328,11 +403,15 @@ class ArmPlan:
         grade is mechanical. Required, so a judged kind cannot be priced from unjudged history by omission.
     :ivar simulator_model: The model that will drive the arm's simulated user, resolved — the launch's pin, or
         the role's default; ``None`` for a kind that runs no simulator.
-    :ivar call_ceiling: The largest reservation one call of the arm's cells will hold — or a floor under it, for a
-        subject kind (:attr:`CallCeiling.lower_bound`) — as its kind priced it
-        (:attr:`LaunchableKind.price_largest_call`), which the engine sets once the plan is made; ``None`` for
-        a kind that does not price its calls before launch, whose calls are bounded only as the run reserves
-        them.
+    :ivar call_ceiling: The most one call of the arm's cells can cost — or a floor under it, for a subject kind
+        (:attr:`CallCeiling.lower_bound`) — as its kind priced it (:attr:`LaunchableKind.price_largest_call`),
+        which the engine sets once the plan is made; ``None`` for a kind that does not price its calls before
+        launch, and when a call could not be priced (``call_unpriced``).
+    :ivar call_unpriced: The call the kind could not price and why (:class:`UnpricedCall`), which the engine sets
+        when the kind answers one; ``None`` otherwise. Under a cost cap it refuses the arm.
+    :ivar served_checks: What each provider's model list said of the arm's candidate, judge and simulator models
+        (:class:`ServedCheck`), which the engine sets once the plan is made; empty when the host's clients read no
+        model list for any of them.
     """
 
     case_count: int
@@ -340,6 +419,8 @@ class ArmPlan:
     judge: PlannedJudge | None
     simulator_model: str | None
     call_ceiling: CallCeiling | None = None
+    call_unpriced: UnpricedCall | None = None
+    served_checks: tuple[ServedCheck, ...] = ()
 
     def __post_init__(self) -> None:
         """Refuse a plan of no cases, or one naming no model.
@@ -843,6 +924,8 @@ class LaunchGroup:
     :ivar asked_schedule: The arm schedule the group was built with, or ``None`` for its default.
     :ivar arm_schedule: The schedule its members run under, resolved as its first member is added (``None``
         before): ``asked_schedule``, or its default for whether the members declare latency under test.
+    :ivar notices: What its arms' admission told the caller beside admitting them (a served-model check that could
+        not be made), each once, in the order disclosed (:meth:`disclose`).
     """
 
     def __init__(
@@ -878,6 +961,16 @@ class LaunchGroup:
         self._resolved: dict[tuple[str, ...], Any] = {}
         self._interleaver = CellInterleaver()
         self._interleaving = False
+        self.notices: list[str] = []
+
+    def disclose(self, notice: str) -> None:
+        """Keep what an arm's admission tells the caller, once, for whoever admitted the group to say.
+
+        :param notice: The sentence the caller is told.
+        :ptype notice: str
+        """
+        if notice not in self.notices:
+            self.notices.append(notice)
 
     async def resolve_once(self, key: tuple[str, ...], compute: Callable[[], Awaitable[Any]]) -> Any:
         """Resolve a launch-wide input the first time an arm asks for it, and hand every later arm the same.
@@ -1277,18 +1370,20 @@ class LaunchableKind:
         context key hashes — the rig as it was set up: a launch naming a default and one leaving it out
         are one condition, as a ``kind_spec`` stating a default and one omitting it are. Empty for a kind
         whose rig a launch cannot set.
-    :ivar price_largest_call: The largest reservation one call of a planned arm's cells will hold
-        (:class:`CallCeiling`), priced on the clients the cells will call through, or ``None`` when no call of
-        the arm can be priced. A subject kind, whose judge and simulator prompts carry transcripts that do not
-        exist yet, composes :func:`~threetears.evals.run.price_subject_call_floor` here: a floor under those
-        calls (:attr:`CallCeiling.lower_bound`), which refuses the same way. Asked of every planned arm — the request
-        carries its plan — right after
-        :attr:`plan_arm`, by the estimate and the launch alike, and awaited on the event loop, so it may build
-        and release clients. An arm whose largest call is above its cap is refused before anything is spent
-        (:func:`price_arms`): its run could never make that call. ``None`` for a kind that does not price its
-        calls before launch — the engine then checks nothing here, and a call whose ceiling is above the cap is
-        refused only when the run reaches it, which stops the run ``budget_stopped`` with that case excluded.
-        Ignored for a kind that plans nothing.
+    :ivar price_largest_call: The most one call of a planned arm's cells can cost (:class:`CallCeiling`), priced
+        on the clients the cells will call through after awaiting each one's ``refresh_prices`` (a fresh process has
+        read no price catalogue yet); an :class:`UnpricedCall` when a call the arm is bound to make cannot be priced,
+        naming it and why; or ``None`` when the arm makes no call the kind prices. A subject kind, whose judge and
+        simulator prompts carry transcripts that do not exist yet, composes
+        :func:`~threetears.evals.run.price_subject_call_floor` here: a floor under those calls
+        (:attr:`CallCeiling.lower_bound`), which refuses the same way. Asked of every planned arm — the request
+        carries its plan — right after :attr:`plan_arm`, by the estimate and the launch alike, a fresh launch and a
+        resume alike, and awaited on the event loop, so it may build and release clients. Under a cost cap, an arm
+        whose largest call is above the cap is refused before anything is spent (:func:`price_arms`): the cap is
+        read between cells, so the run would make that call and stop ``budget_stopped`` having spent more than the
+        cap on it; and an arm with an unpriced call is refused too, since unknown is not $0. ``None`` for a kind
+        that does not price its calls before launch: the engine then checks nothing here, and the run's cap counts
+        each cell's spend once it is recorded. Ignored for a kind that plans nothing.
     """
 
     launch: KindLauncher
@@ -1297,7 +1392,7 @@ class LaunchableKind:
     ignored_template_fields: frozenset[TemplateField] = frozenset()
     plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None
     apparatus_settings: Mapping[str, ApparatusSettingValue] = field(default_factory=lambda: MappingProxyType({}))
-    price_largest_call: Callable[[LaunchRequest], Awaitable[CallCeiling | None]] | None = None
+    price_largest_call: Callable[[LaunchRequest], Awaitable[CallCeiling | UnpricedCall | None]] | None = None
 
     def __post_init__(self) -> None:
         """Refuse a name that is not a launch argument, and a default no run could store.
@@ -2526,6 +2621,8 @@ async def _admit_run(
         # pays for the generation the arms share and what builds an arm's clients, so pricing an arm after
         # it would refuse a launch already billed. Priced exactly once, here.
         priced_requests = await price_arms(host, dispatched.launchable, requests)
+        for notice in _served_notices(priced_requests):
+            group.disclose(notice)
         # And the generation's own calls, admitted here, in the call, against the out-of-run cap. Admitted rather
         # than only quoted, so the launcher makes exactly the calls priced here, on the writer they were priced on, and admits nothing in the job.
         return await _with_admitted_generation(
@@ -2810,8 +2907,9 @@ async def _planned(host: LaunchHost, launchable: LaunchableKind, request: Launch
     :ptype launchable: LaunchableKind
     :param request: The arm.
     :ptype request: LaunchRequest
-    :return: The plan, or ``None`` for a kind that plans nothing (:attr:`LaunchableKind.plan_arm`). For a kind that
-        prices its calls (:attr:`LaunchableKind.price_largest_call`), it carries its largest call's ceiling.
+    :return: The plan, or ``None`` for a kind that plans nothing (:attr:`LaunchableKind.plan_arm`). It carries what
+        the providers' model lists said of its models (:attr:`ArmPlan.served_checks`) and, for a kind that prices its
+        calls (:attr:`LaunchableKind.price_largest_call`), its largest call's ceiling or the call it could not price.
     :rtype: ArmPlan | None
     :raises ValidationFailedError: The kind cannot plan the arm (its own refusal).
     :raises ValueError: The plan contradicts what the arm named — another model, another judge pin, a config
@@ -2846,10 +2944,105 @@ async def _planned(host: LaunchHost, launchable: LaunchableKind, request: Launch
             f"kind {kind!r} planned an arm the launch pinned to simulator {request.simulator_model!r} on "
             f"{plan.simulator_model!r}; a pinned simulator is the simulator"
         )
+    plan = replace(plan, served_checks=await _served_checks(host, plan))
     price_largest_call = launchable.price_largest_call
     if price_largest_call is None:
         return plan
-    return replace(plan, call_ceiling=await price_largest_call(replace(request, arm_plan=plan)))
+    priced = await price_largest_call(replace(request, arm_plan=plan))
+    if isinstance(priced, UnpricedCall):
+        return replace(plan, call_unpriced=priced)
+    return replace(plan, call_ceiling=priced)
+
+
+async def _served_checks(host: LaunchHost, plan: ArmPlan) -> tuple[ServedCheck, ...]:
+    """What each provider's model list, read now, says of the models an arm names: its candidate, judges, simulator.
+
+    Asked of the host's client factory through its optional ``model_listing(model, *, role)``
+    (:class:`~threetears.evals.schema.ModelListing`); the shipped ``Clients`` reads OpenRouter's list, the price
+    catalogue its models share, so the read serves the pricing that follows. A factory without the method, and a
+    model its factory reads no list for (it answers ``None``), is not checked. The candidate is asked with no role:
+    the host calls it through its own route, so only its id says where it goes.
+
+    :param host: The host, whose client factory reads the lists.
+    :ptype host: LaunchHost
+    :param plan: The arm's plan, naming its models.
+    :ptype plan: ArmPlan
+    :return: One check per model and role a list was read for, in the order the arm names them.
+    :rtype: tuple[ServedCheck, ...]
+    :raises ValueError: The factory's ``model_listing`` answered something other than a ``ModelListing`` or ``None``.
+    """
+    clients = host.eval_host.clients
+    listing = getattr(clients, "model_listing", None) if clients is not None else None
+    if not callable(listing):
+        return ()
+    asked: list[tuple[ServedRole, str]] = [("candidate", plan.candidate_model)]
+    if plan.judge is not None:
+        asked += [("judge", model) for model in (plan.judge.model, *plan.judge.effective_judges.values())]
+    if plan.simulator_model is not None:
+        asked.append(("simulator", plan.simulator_model))
+    checks: list[ServedCheck] = []
+    for role, model in dict.fromkeys(asked):
+        found = await listing(model, role=None if role == "candidate" else role)
+        if found is None:
+            continue
+        if not isinstance(found, ModelListing):
+            raise ValueError(
+                f"the host's client factory answered model_listing({model!r}) with a {type(found).__name__}; it "
+                "answers a ModelListing, or None for a model whose provider it reads no list of"
+            )
+        checks.append(
+            ServedCheck(role=role, model=model, provider=found.provider, listed=found.listed, detail=found.detail)
+        )
+    return tuple(checks)
+
+
+def _unserved(request: LaunchRequest) -> tuple[str, str] | None:
+    """The refusal of an arm naming a model its provider's list, read now, does not name, and its remedy; ``None``
+    when every model it names is listed or unchecked.
+
+    Made whatever the arm's cap, uncapped included: every call to such a model fails, and a run of it would count
+    those failures as the arm's.
+
+    :param request: The arm, planned.
+    :ptype request: LaunchRequest
+    :return: The refusal and the remedy, or ``None``.
+    :rtype: tuple[str, str] | None
+    """
+    plan = request.arm_plan
+    unlisted = [check for check in plan.served_checks if check.listed is False] if plan is not None else []
+    if not unlisted:
+        return None
+    named = "; ".join(
+        f"{check.role} model {check.model!r} is not on {check.provider}'s list of the models it serves ({check.detail})"
+        for check in unlisted
+    )
+    refused = (
+        "Refused before the generation was paid for" if request.n_variations > 0 else "Refused before any launcher ran"
+    )
+    return (
+        f"{_arm_described(request)} names a model its provider no longer serves: {named}. Every call to it would "
+        f"fail, and the arm's trials would be counted as the model doing badly. {refused}",
+        "name a model the provider lists (check the id's spelling against its model list), or leave this one out of "
+        "the launch",
+    )
+
+
+def _served_notices(requests: Sequence[LaunchRequest]) -> list[str]:
+    """Every arm's served-model check that was skipped, as the caller is told it, each once.
+
+    :param requests: The launch's arms, planned.
+    :ptype requests: Sequence[LaunchRequest]
+    :return: The notices, in arm order.
+    :rtype: list[str]
+    """
+    notices = [
+        notice
+        for request in requests
+        if request.arm_plan is not None
+        for check in request.arm_plan.served_checks
+        if (notice := check.skipped_notice()) is not None
+    ]
+    return list(dict.fromkeys(notices))
 
 
 def _arm_described(request: LaunchRequest) -> str:
@@ -3049,9 +3242,13 @@ def _largest_call_over_cap(
 def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
     """The one pricing rule, over one planned arm and its price.
 
-    First, an arm is refused when its largest call's ceiling (:attr:`ArmPlan.call_ceiling`) is above its cap on
-    its own: its run reserves that ceiling before making the call and refuses the call, so the run could never
-    complete it, whatever the arm is predicted to cost in all. Then an arm is refused when its cap figure
+    First, whatever its cap, an arm is refused when it names a model its provider's list, read now, does not name
+    (:attr:`ArmPlan.served_checks`): every call to it would fail. Under a cap, an arm is refused when a call it is
+    bound to make cannot be priced (:attr:`ArmPlan.call_unpriced`): unknown is not $0, and that one call could pass
+    the cap. It is refused when its largest call's ceiling (:attr:`ArmPlan.call_ceiling`) is above its cap on its
+    own: the cap is read between cells and refuses no call inside one, so the run would make that call and stop
+    ``budget_stopped`` having spent more than the cap on it, whatever the arm is predicted to cost in all. Then an
+    arm is refused when its cap figure
     (:attr:`ArmPrice.predicted_usd`) is above the cap its run will be held to, or when nothing
     predicts it and that cap is one the run would merely inherit (the host's configured ceiling, which nobody
     chose for this run): unknown is not $0. An arm with a cap the launch named and no prediction goes ahead —
@@ -3083,11 +3280,23 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
             remedy=remedy,
         )
 
+    if (unserved := _unserved(request)) is not None:
+        return verdict("refused", *unserved)
     if cap is None:
         return verdict("uncapped")
     refused = (
         "Refused before the generation was paid for" if request.n_variations > 0 else "Refused before any launcher ran"
     )
+    if plan is not None and plan.call_unpriced is not None:
+        unpriced = plan.call_unpriced
+        return verdict(
+            "refused",
+            f"{what} cannot be held to its ${round_half_even(cap, 2)} cap: {unpriced.call} cannot be priced before it "
+            f"is sent ({unpriced.why}). Its cost is unknown, not $0, and one such call could pass the whole cap on its "
+            f"own, since a cap is read between cells and refuses no call inside one. {refused}",
+            "launch again once the host's client can price the call (a price catalogue that could not be read is "
+            "read again by the next estimate or launch), or name a model it prices",
+        )
     if plan is not None and plan.call_ceiling is not None and plan.call_ceiling.usd > cap:
         return verdict(
             "refused", *_largest_call_over_cap(request, plan.call_ceiling, cap, price, what=what, refused=refused)
@@ -3163,7 +3372,9 @@ async def price_arms(
     :func:`launch_as_group` must call it too: under an enforced cap the launch tail refuses an arm that did
     not come through here (:attr:`LaunchRequest.arm_price`). Every arm is planned before any is priced, and
     every arm is priced before the first launcher runs. With the host's enforcement off no cap is in force
-    and nothing is priced; every arm is still planned, so the launch tail holds its launcher to its plan.
+    and nothing is priced; every arm is still planned, so the launch tail holds its launcher to its plan, and still
+    refused when it names a model its provider no longer lists. A served-model check that could not be made is
+    logged here; the launch says it to its caller (:attr:`AdmittedLaunch.notices`).
 
     :param host: The host: its pricer predicts.
     :ptype host: LaunchHost
@@ -3175,13 +3386,19 @@ async def price_arms(
     :return: The requests, each carrying its plan (``None`` for a kind that plans nothing) and, under an enforced
         cap, its price.
     :rtype: list[LaunchRequest]
-    :raises ValidationFailedError: The kind cannot plan an arm; an arm whose largest call's ceiling is above its cap,
-        one predicted above its cap, or one unpriceable under an inherited cap.
+    :raises ValidationFailedError: The kind cannot plan an arm; an arm naming a model its provider no longer lists
+        (whatever its cap); under a cap, an arm with a call that cannot be priced, one whose largest call's ceiling is
+        above its cap, one predicted above its cap, or one unpriceable under an inherited cap.
     :raises ValueError: The kind planned an arm contradicting what it named, or ``requests`` is empty.
     """
     if not requests:
         raise ValueError("a launch prices at least one arm; requests is empty")
     planned = await _planned_arms(host, launchable, requests)
+    for request in planned:
+        if (unserved := _unserved(request)) is not None:
+            raise ValidationFailedError(unserved[0], remedy=unserved[1])
+    for notice in _served_notices(planned):
+        log.warning("eval.launch served-model check skipped: %s", notice)
     cap, _origin = _cap_of(planned[0])
     if cap is None:
         return planned
@@ -3459,6 +3676,13 @@ class AdmittedLaunch:
     def group(self) -> LaunchGroup:
         """The launch's group: its id is every run's ``launch_group_id``."""
         return self._group
+
+    @property
+    def notices(self) -> tuple[str, ...]:
+        """What admitting the launch told its caller beside admitting it, such as a served-model check that could not
+        be made (:class:`ServedCheck`); empty when there was nothing to tell. A transport returns them with the
+        launch's job (``JobsStarted.notices``)."""
+        return tuple(self._group.notices)
 
     def _use(self) -> None:
         if self._used:
@@ -4594,8 +4818,11 @@ __all__ = [
     "LaunchHost",
     "TEMPLATE_FIELDS",
     "TemplateField",
+    "ServedCheck",
+    "ServedRole",
     "SubjectResolver",
     "UnknownSubject",
+    "UnpricedCall",
     "LaunchGroup",
     "LaunchPricer",
     "LaunchQuote",
