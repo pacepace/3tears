@@ -2723,13 +2723,24 @@ class ArmPricing(EvalDocumentModel):
     **A model's providers are its model rows' alone.** ``providers`` reads the token-metered rows (every role but
     ``external``), so it names who served the model and never a tool the model called: a web-search API metered as an
     ``external`` row is in ``tool_providers``, and its spend stays in the cost, its calls in ``calls``, as before.
+
+    **A provider is what a reply named, never a guess.** A model row names the upstream its replies named
+    (``RoleUsage.served_provider``); a row that named none is not recorded. Empty ``providers`` is every model row not
+    recorded, and ``providers_in_part`` is some of them not recorded beside rows that named one.
     """
 
     sources: list[str] = Field(default_factory=list, description="Each price source a priced row names, sorted.")
     providers: list[str] = Field(
         default_factory=list,
-        description="Each provider a model row (every role but external) names as serving its calls, sorted; empty "
-        "where none does.",
+        description="Each provider a model row (every role but external) names as serving its calls (the upstream its "
+        "replies named, else the provider its host named), sorted; empty where none does: not recorded.",
+    )
+    # Left out of the document while False, so an arm whose rows all named a provider, or none did, reads as before.
+    providers_in_part: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Some model row named no provider beside rows that named one: `providers` names who served part "
+        "of the calls, and the rest are not recorded.",
     )
     # Left out of the document while empty, so an arm whose rows named no tool provider reads as it did before.
     tool_providers: list[str] = Field(

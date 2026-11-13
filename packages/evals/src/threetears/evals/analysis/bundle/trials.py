@@ -331,12 +331,33 @@ def _pricing(results: Sequence[ResultView]) -> ArmPricing | None:
     if not rows:
         return None
     counted = all(row.call_count is not None for row in rows)
+    model_rows = [row for row in rows if row.role != _TOOL_ROLE and _answered(row)]
+    providers = sorted({name for row in model_rows if (name := _served_by(row))})
     return ArmPricing(
         sources=sorted({row.price_source for row in rows if row.cost_usd is not None and row.price_source}),
-        providers=sorted({row.provider for row in rows if row.provider and row.role != _TOOL_ROLE}),
+        providers=providers,
+        providers_in_part=bool(providers) and any(_served_by(row) is None for row in model_rows),
         tool_providers=sorted({row.provider for row in rows if row.provider and row.role == _TOOL_ROLE}),
         calls=sum(row.call_count or 0 for row in rows) if counted else None,
         priced_calls=sum(row.call_count or 0 for row in rows if row.cost_usd is not None) if counted else None,
+    )
+
+
+def _served_by(row: UsageView) -> str | None:
+    """Who served a model row's calls: the upstream its replies named (``served_provider``), else the provider a host
+    named on the row; ``None`` = not recorded, never a guess."""
+    return row.served_provider or row.provider or None
+
+
+def _answered(row: UsageView) -> bool:
+    """Whether a row counts answered calls or spend: a row holding only unanswered calls was served by nobody, so it
+    leaves the providers unread (``RoleUsage.answers_nothing``)."""
+    return not (
+        row.call_count is None
+        and row.cost_usd is None
+        and row.prompt_tokens is None
+        and row.completion_tokens is None
+        and row.reasoning_tokens is None
     )
 
 

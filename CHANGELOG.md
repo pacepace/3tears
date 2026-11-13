@@ -176,6 +176,17 @@ model going to Anthropic or OpenAI directly, and every model of a factory withou
 **Docs:** the host guide names the boot step, `await clients.load_prices()` before a host offers launches or
 resumes, and the launch docstrings no longer say a run refuses a call inside a cell.
 
+### evals: a cost names the upstream that served it (#1010; core v15.12)
+
+**Fixed:** an LLM call routed through OpenRouter recorded no upstream provider, so the "served by" beside each arm's
+cost on the report was always empty for model calls. A usage row now records the upstream the reply named
+(`RoleUsage.served_provider`, beside `served_model`), and calls served by two upstreams are two rows. Each arm's
+pricing names those providers in the options table and in the writer's cost fact. Where only some replies named one,
+both say the rest were not recorded. Where none did, the writer's cost fact says the provider was not recorded and the
+options table names none, as before, so a page built over earlier calls reads unchanged. A row stored before the field
+reads as not recorded. The field is left out of a row that names none, so stored rows and
+fingerprints do not move.
+
 ### evals: a seed reads each template revision's cases once (#1148)
 
 **Fixed:** the seed read every stored case of a template revision again for each corpus case of it, to fill names on

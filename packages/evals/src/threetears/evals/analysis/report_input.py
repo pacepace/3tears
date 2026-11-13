@@ -227,8 +227,16 @@ class Pricing(_Part):
     )
     providers: list[str] = Field(
         default_factory=list,
-        description="Each provider its model calls name as serving them (RoleUsage.provider on every role but "
-        "external), sorted; empty where none does.",
+        description="Each provider its model calls name as serving them (RoleUsage.served_provider, else "
+        "RoleUsage.provider, on every role but external), sorted; empty where none does: not recorded.",
+    )
+    # Left out of the document while False, so an input whose arms' providers were all or none recorded digests as it
+    # did.
+    providers_in_part: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Some of its model calls named no provider beside calls that named one: providers names who "
+        "served part of them, and the rest are not recorded.",
     )
     # Left out of the document while empty, so an input whose rows named no tool provider digests as it did.
     tool_providers: list[str] = Field(

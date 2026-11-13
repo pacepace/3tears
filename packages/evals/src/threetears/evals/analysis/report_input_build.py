@@ -1279,6 +1279,7 @@ def _pricing(held: ArmPricing | None) -> Pricing | None:
     return Pricing(
         sources=held.sources,
         providers=held.providers,
+        providers_in_part=held.providers_in_part,
         tool_providers=held.tool_providers,
         calls=held.calls,
         priced_calls=held.priced_calls,

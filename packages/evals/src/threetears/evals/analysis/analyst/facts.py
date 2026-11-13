@@ -302,6 +302,13 @@ class ArmRow(_Fact):
         description="The providers that served its model calls, as its pricing names them: its cost is this routing's, "
         "not the model's alone, so a cost comparison names them.",
     )
+    # Left out while False, so an arm whose providers were all or none recorded reads as it did before the field.
+    served_by_in_part: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Its pricing names who served part of its model calls only: the rest are not recorded, so its "
+        "cost's routing is known in part.",
+    )
     tool_spend: list[str] = Field(
         default_factory=list,
         exclude_if=lambda value: not value,
@@ -719,6 +726,7 @@ def campaign_overview(
             ),
             unanswered=_unanswered(report_input, arm.id),
             served_by=_pricing(report_input, arm.id).providers,
+            served_by_in_part=_pricing(report_input, arm.id).providers_in_part,
             tool_spend=_pricing(report_input, arm.id).tool_providers,
         )
         for arm in report_input.arms
