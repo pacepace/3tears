@@ -163,8 +163,8 @@ The engine's stored shapes and the ports a host implements: what is written down
 
 - **`AsyncDeliveryStatus`** · literal · Where one piece of background work stood when the cell ended.
   <br>`'delivered'` | `'failed'` | `'undelivered'`
-- **`FailureOwner`** · literal · Whose failure a raised completion call was, as the host's describer reads it (`ProviderFailure.owner`): the calling `account` (refused for every model behind the key), the `provider` (it declined to serve the call at that moment: a rate limit, 429, or the provider overloaded or unavailable, 529 or 503), or the `candidate` (anything else, charged to whoever made the call).
-  <br>`'account'` | `'provider'` | `'candidate'`
+- **`FailureOwner`** · literal · Whose failure a raised completion call was, as the host's describer reads it (`ProviderFailure.owner`): the calling `account` (refused for every model behind the key), the `provider` (it declined to serve the call at that moment: a rate limit, 429, or the provider overloaded or unavailable, 529 or 503), `unserved` (the provider does not serve the model the call named: retired, unknown, or not a valid model id, so every call naming it gets the same answer), or the `candidate` (anything else, charged to whoever made the call).
+  <br>`'account'` | `'provider'` | `'unserved'` | `'candidate'`
 - **`KnownOutOfRunPurpose`** · *host contract* · literal · A value of `OutOfRunPurpose` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
   <br>`'variation'` | `'proposer'` | `'analysis'` | `'judge'` | `'second_judge'`
 - **`KnownRefusalKind`** · *host contract* · literal · A value of `RefusalKind` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
@@ -190,7 +190,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 12`
+  <br>`= 13`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
@@ -236,6 +236,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`extract_json(content: str) -> dict[str, Any]`
 - **`extract_json_array`** · function · Extract a JSON array from provider output, handling markdown code blocks.
   <br>`extract_json_array(text: str) -> list[dict[str, Any]]`
+- **`failed_call_output`** · *host contract* · function · A cell's output for a model call that failed, routed by whose failure it was.
+  <br>`failed_call_output(owner: FailureOwner, description: str, *, refused: str, declined: str, failed: str, log: Callable[[str, int], None], unserved: str | None = None, telemetry: CandidateTelemetry | None = None, host_measures: dict[str, bool | float | str] | None = None, kind_payload: VerbatimJsonObject | None = None) -> CandidateOutput`
 - **`fold_phase_timings`** · function · Fold one delivery's carried phase timings into a result's accumulator, and say what could not be folded.
   <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]`
 - **`production_replicating_cost`** · function · Observed cost of the roles a production deployment would also pay for.
@@ -317,8 +319,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 
 **Types**
 
-- **`AuthoredVerdict`** · type alias · An expected verdict as its author states it: a score on the criterion's scale (1-5 ordinal; 1 pass, 0 fail), or `"pass"` / `"fail"` on a pass/fail criterion.
-  <br>`Annotated[int, Field(strict=True)] | Literal['pass', 'fail']`
 - **`MeritAxis`** · literal · The merit axes a measure can serve.
   <br>`'quality'` | `'cost'` | `'latency'` | `'reliability'`
 - **`ToolWrap`** · type alias · What the action seam is handed: maps the candidate's tools, by name, to the tools it should use — each declared recorded tool wrapped for the cassette run, every other one unchanged.

@@ -44,6 +44,7 @@ from threetears.evals.schema.models import (
     TERMINAL_RUN_STATUSES,
     BudgetStop,
     EvalRun,
+    KnownExhaustedBecause,
     KnownFailedBecause,
 )
 from threetears.evals.kernel.scoring import summarize_completeness
@@ -54,7 +55,7 @@ from threetears.evals.kernel.job_timeout import EvalJobTimeout, JobTimeoutFactor
 from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, LeasedJobKind
 from threetears.evals.run.run_document import update_eval_run
 from threetears.evals.schema.logs import contain, get_logger
-from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError
+from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError, ModelUnservedError
 from threetears.evals.run.runner import NothingMeasuredError
 
 log = get_logger(__name__)
@@ -1245,7 +1246,21 @@ class EvalJobManager:
             # message carries the spend the run had already incurred.
             # NOSILENT: written below as the run's ``exhausted`` status, the refusal in its error_details.
             log.warning("Job %s stopped: %s", run_id, exhausted)
-            await self._set_status(run_id, scope_id, "exhausted", error=str(exhausted))
+            await self._set_status(
+                run_id, scope_id, "exhausted", error=str(exhausted), exhausted_because="account_refused"
+            )
+        except ModelUnservedError as unserved:
+            # The provider does not serve the model the run's candidate names: every call naming it meets the same
+            # answer. Delivered results are persisted, the unserved cells among them, each lost to the test setup and
+            # never judged. The account's status, for the account's reasons: neither the harness nor the candidate
+            # failed, and the run is resumable once the model is served. ``exhausted_because`` tells the two apart,
+            # and ``error_details`` names the model and quotes the provider, since an operator has to act on it.
+            # NOSILENT: written below as the run's ``exhausted`` status, the model and the provider's words in its
+            # error_details.
+            log.warning("Job %s stopped: %s", run_id, unserved)
+            await self._set_status(
+                run_id, scope_id, "exhausted", error=str(unserved), exhausted_because="model_unserved"
+            )
         except EvalJobTimeout as timed_out:
             # A designed stop, on the cost cap's terms: the budget is sized to the run's matrix
             # (``adaptive_job_timeout_s``, clamped to a cap an operator sets), and when it binds the
@@ -1328,11 +1343,13 @@ class EvalJobManager:
         budget_stop_reason: str | None = None,
         budget_stops: list[BudgetStop] | None = None,
         failed_because: KnownFailedBecause | None = None,
+        exhausted_because: KnownExhaustedBecause | None = None,
     ) -> None:
         """Update an EvalRun's status in storage.
 
         ``failed_because`` is written beside a ``failed`` status by the branch that knows the kind of failure
-        (:attr:`~threetears.evals.schema.EvalRun.failed_because`).
+        (:attr:`~threetears.evals.schema.EvalRun.failed_because`), and ``exhausted_because`` beside an ``exhausted``
+        one by the branch that knows what gave out (:attr:`~threetears.evals.schema.EvalRun.exhausted_because`).
 
         ``error``, ``cancellation_reason`` and ``budget_stop_reason`` are separate
         channels and the caller picks one, at the boundary where it knows which
@@ -1442,6 +1459,8 @@ class EvalJobManager:
                 data["budget_stops"] = [stop.model_dump(mode="json") for stop in budget_stops]
             if failed_because is not None:
                 data["failed_because"] = failed_because
+            if exhausted_because is not None:
+                data["exhausted_because"] = exhausted_because
             if record_empty_matrix and run.completeness is None:
                 data["completeness"] = summarize_completeness(run, []).to_dict()
             if status in TERMINAL_RUN_STATUSES:

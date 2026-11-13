@@ -187,6 +187,31 @@ options table names none, as before, so a page built over earlier calls reads un
 reads as not recorded. The field is left out of a row that names none, so stored rows and
 fingerprints do not move.
 
+### evals: a candidate model the provider no longer serves is lost to the setup, never judged, and stops its arm (core v15.13)
+
+**Fixed:** a run whose candidate model the provider had retired ended `completed`, and every trial was judged on an
+empty transcript and scored as a fail. One production arm paid for 180 judge calls on a model that never answered.
+
+**Added:**
+- `FailureOwner` gains `unserved`: the provider does not serve the model the call named. The package's client reads
+  it off each provider's structured answer: OpenRouter's 404 (except one that names a missing image) and its 400 for
+  a model id it does not know, Anthropic's 404 `not_found_error`, and OpenAI's `model_not_found`. A host's own
+  describer may return it. One that never does keeps working, and a retired model's calls are then charged to the
+  candidate as before.
+- `CandidateOutput.model_unserved`, set by `failed_call_output` for that owner (its new optional `unserved=` names
+  the call). `failed_call_output` is now exported from `threetears.evals.kernel` as host contract: a host's own
+  candidate kind routes a failed model call through it, which is what makes "model not served" skip the judge and
+  trip the circuit. The cell is excluded with its own cause, `model_unserved`, and its error quotes the provider. The runner
+  never judges it, whatever the kind's output holds, so a conversing kind that recorded turns with no reply is not
+  judged either. Reports word the cause and its remedy.
+- A circuit: when `UNSERVED_CIRCUIT_CELLS` (3) cells in a row find the model not served, or every cell of a shorter
+  run does, the run stops with `ModelUnservedError`. The job manager files it `exhausted` with the new
+  `EvalRun.exhausted_because` set to `model_unserved` (`account_refused` for the account's stop). Its
+  `error_details` entry names the model and quotes the provider. The launch's other arms run on. Taken up once the
+  model is served, the run runs its unserved cells again (`EvalResult.model_unserved`).
+
+Other candidate errors (a 5xx, a context overflow, a refusal) stay charged to the arm.
+
 ### evals: a seed reads each template revision's cases once (#1148)
 
 **Fixed:** the seed read every stored case of a template revision again for each corpus case of it, to fill names on

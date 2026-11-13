@@ -611,6 +611,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.kernel.host.KindContract",
         "threetears.evals.kernel.CandidateKind",
         "threetears.evals.kernel.CandidateOutput",
+        # The one routing of a model call that raised, by the owner the host's describer read: what makes an account's
+        # refusal stop a run and a model not served skip the judge and stop its arm, for a host's own kind too.
+        "threetears.evals.kernel.failed_call_output",
         "threetears.evals.kernel.CandidateTelemetry",
         "threetears.evals.kernel.CandidatePreparationFailed",
         "threetears.evals.kernel.CandidateKindDefect",
@@ -937,7 +940,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.analysis.read_judge_temperatures",
         "threetears.evals.analysis.tier_sentence",
         "threetears.evals.kernel.AuthoredJudgeCase",
-        "threetears.evals.kernel.AuthoredVerdict",
         "threetears.evals.kernel.EvalJudgeProfile",
         "threetears.evals.kernel.JUDGE_KIND",
         "threetears.evals.kernel.JobLeases",

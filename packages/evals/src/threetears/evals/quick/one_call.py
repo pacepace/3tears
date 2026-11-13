@@ -917,15 +917,21 @@ class CallableKind:
         except Exception as raised:
             owner = _owner_of(raised)
             if owner != "candidate":
-                # A call the package's client made that the provider refused or declined says nothing about the
-                # candidate: the cell is excluded, and the account's refusal also stops the run, since every later
-                # call meets it.
-                said = "was refused for the calling account" if owner == "account" else "was declined by the provider"
+                # A call the package's client made that the provider refused, declined, or answered for a model it
+                # does not serve says nothing about the candidate: the cell is excluded, never judged. The account's
+                # refusal also stops the run, since every later call meets it, and a model not served stops it once
+                # its cells keep meeting that.
+                said = {
+                    "account": "was refused for the calling account",
+                    "provider": "was declined by the provider",
+                    "unserved": "named a model the provider does not serve",
+                }[owner]
                 excluded = f"apparatus: the candidate's provider call {said}: {raised}"
                 contain(raised, log=log, what=excluded)
                 return CandidateOutput(
                     infra_errors=[excluded],
                     account_refused=owner == "account",
+                    model_unserved=owner == "unserved",
                     telemetry=CandidateTelemetry(turns_delivered=0),
                 )
             contain(raised, log=log, what=f"the candidate raised {type(raised).__name__}: {raised}")

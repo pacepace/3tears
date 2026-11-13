@@ -77,6 +77,7 @@ JUDGE_CALL_ATTEMPTS = _JUDGE_PARSE_RETRIES + 1
 _FAILED_BECAUSE: dict[FailureOwner, str] = {
     "account": "was refused for the calling account",
     "provider": "was declined by the provider",
+    "unserved": "named a model the provider does not serve",
     "candidate": "failed",
 }
 

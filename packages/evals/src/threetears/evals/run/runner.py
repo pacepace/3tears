@@ -155,7 +155,7 @@ from threetears.evals.run.metering import CellMeter, MeteredCallLedger, MeteredC
 from threetears.evals.run.run_document import fault_entry, record_run_faults
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.schema.logs import contain, get_logger
-from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError
+from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError, ModelUnservedError
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.world import WorldRegistry
@@ -372,6 +372,13 @@ class EveryCellApparatusFailedError(RuntimeError):
         )
 
 
+#: How many cells in a row, as a run records them, must find its candidate's model not served before the run stops
+#: (:class:`~threetears.evals.run.ModelUnservedError`). A provider's "not served" is deterministic for a retired model,
+#: so a few in a row prove it, and three keep one stray routing answer from stopping an arm a served model would have
+#: measured. Waiting for them costs next to nothing: the provider refuses each call before serving it, and no cell
+#: that meets it is judged. A run of fewer cells than this whose every cell meets it stops all the same.
+UNSERVED_CIRCUIT_CELLS: Final = 3
+
 #: How many distinct exclusion errors a :class:`NothingMeasuredError` quotes, and how much of each.
 _QUOTED_ERRORS = 3
 _QUOTED_ERROR_CHARS = 400
@@ -475,6 +482,10 @@ class ErrorLedger:
     #: (``CandidateOutput.account_refused``, read by :meth:`of`). Carried out of the cell to
     #: stop the whole run: every later call is behind the same key.
     account_refused: bool = False
+    #: The candidate's call named a model its provider does not serve, as the kind reported it
+    #: (``CandidateOutput.model_unserved``, read by :meth:`of`). The cell is never judged, and the
+    #: run loop counts it toward the circuit that stops a run its model is not served for.
+    model_unserved: bool = False
 
     @classmethod
     def of(cls, candidate: CandidateOutput | None) -> ErrorLedger:
@@ -491,6 +502,7 @@ class ErrorLedger:
             candidate=list(candidate.candidate_errors),
             infra=list(candidate.infra_errors),
             account_refused=candidate.account_refused,
+            model_unserved=candidate.model_unserved,
         )
 
     def add_candidate(self, msg: str) -> None:
@@ -533,6 +545,15 @@ class ErrorLedger:
         property rather than the flag and the message separately.
         """
         return self.infra_error if self.account_refused else None
+
+    @property
+    def unserved_model(self) -> str | None:
+        """The cell's infra errors when its candidate's model is not served, else None — what the circuit counts.
+
+        Never ``None`` for such a cell, for the reason :attr:`account_refusal` gives: ``CandidateOutput`` refuses the
+        flag without an infra entry.
+        """
+        return self.infra_error if self.model_unserved else None
 
     @property
     def candidate_error(self) -> str | None:
@@ -1498,10 +1519,9 @@ async def _run_one_result(
     metered_cell = metered_cell_tally(options.metered_calls)
 
     # 3. Below the dispatch: ``output`` + ``mechanical_facts`` + telemetry, and nothing
-    # kind-shaped. ``trace`` is the judged artifact AND the stored transcript — one document,
+    # kind-shaped. ``output`` is the judged artifact AND the stored transcript — one document,
     # because for every kind so far they are the same one.
     telemetry = candidate.telemetry
-    trace = candidate.output
     # Held here so a kind that skipped a check is refused before the judge phase is paid for, and so the
     # judge reads the outcomes the cell will store; the assembly holds the output again, idempotently,
     # because it is what every completed cell — a witnessed one included — passes through.
@@ -1575,19 +1595,20 @@ async def _run_one_result(
 
     # 4. Judge — dual-score axes (transcript + outcome) are universal; per-dim
     # rubric scores only when the template declares dimensions. Judging needs a
-    # judge service and a non-empty transcript; factory / immediate-error slots
-    # (no trace) skip it and leave the scores None.
+    # judge service and a non-empty transcript under a served model; factory / immediate-error
+    # slots (no trace) and a model the provider does not serve skip it and leave the scores None.
     judged = _unjudged_record()
     # Timed off a monotonic clock, not harvested: the judge emits no spans (llm.call
     # spans come from the candidate's own call path alone), and it runs after the harvest
     # closes, so it sits outside every turn-root span the total sums. None until the
     # phase actually runs — see LatencyMetrics.judge_ms.
     judge_ms: float | None = None
-    # ``trace`` alone gates the phase whatever the kind: empty output means nothing was
-    # produced to judge. Which axes are judged is the kind's declaration; what each reads is the
-    # evidence the kind rendered, which the declaration check above guarantees is here.
+    # One gate whatever the kind (:func:`_judgeable`): empty output means nothing was produced to
+    # judge, and a model the provider does not serve means what was produced is the setup's, not the
+    # candidate's. Which axes are judged is the kind's declaration; what each reads is the evidence
+    # the kind rendered, which the declaration check above guarantees is here.
     judge_evidence = candidate.judge_evidence
-    if judge_service is not None and trace and judge_evidence is not None:
+    if judge_service is not None and judge_evidence is not None and _judgeable(candidate):
         phase = _JudgePhase(
             judged_artifact=judged_artifact,
             evidence=judge_evidence,
@@ -1738,8 +1759,9 @@ async def judge_witnessed_output(
 ) -> tuple[_JudgeRecord, float] | tuple[None, None]:
     """Judge a host-observed cell's output through the runner's own judge phase, as the runner gates it.
 
-    The gate is the runner's: an output with nothing in it, or with no evidence rendered, is not judged.
-    Used by :func:`~threetears.evals.run.witnessed.record_witnessed_cell` for a judged witnessed run.
+    The gate is the runner's (:func:`_judgeable`): an output with nothing in it, with no evidence rendered, or whose
+    candidate's model the provider does not serve, is not judged. Used by
+    :func:`~threetears.evals.run.witnessed.record_witnessed_cell` for a judged witnessed run.
 
     :param template: The template whose intent and rubric the judge reads.
     :ptype template: EvalTemplate
@@ -1766,7 +1788,7 @@ async def judge_witnessed_output(
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol — the host's defect, never a
         judge error on the cell.
     """
-    if not output.output or output.judge_evidence is None:
+    if output.judge_evidence is None or not _judgeable(output):
         return None, None
     phase = _JudgePhase(
         judged_artifact=judged_artifact,
@@ -1786,6 +1808,28 @@ async def judge_witnessed_output(
         eval_run_id=eval_run_id,
         sink=None,
     )
+
+
+#: The exclusions that are a fault the harness recorded on the cell (``infra_error``), which a run whose every cell
+#: met one measured nothing from: the rig's, and a model the provider does not serve. Neither a judge call's error
+#: alone (a re-judge recovers it) nor a cut-off judge reply nor a "can't tell".
+_RECORDED_FAULTS: frozenset[ExclusionCause | None] = frozenset({"infra", "model_unserved"})
+
+
+def _judgeable(output: CandidateOutput) -> bool:
+    """Whether a cell's output is the candidate's to judge: it produced something, under a model its provider serves.
+
+    A model the provider does not serve (``CandidateOutput.model_unserved``) gates the judge whatever ``output``
+    holds. A conversing kind goes on past a failed call, so its transcript is not empty: it holds the simulated
+    user's lines and turns with no reply, and judging those scores the setup as the candidate's failure, a paid
+    judge call per cell.
+
+    :param output: What the kind returned.
+    :ptype output: CandidateOutput
+    :return: True when the judge phase may run on it.
+    :rtype: bool
+    """
+    return bool(output.output) and not output.model_unserved
 
 
 def hold_to_declaration(kind_name: str, judged_artifact: JudgedArtifact, output: CandidateOutput) -> None:
@@ -3369,11 +3413,13 @@ class _RunStop:
     ceilings: list[_CeilingReached] = field(default_factory=list)
     #: The provider's refusal of the calling account, when that stopped it.
     refusal: str | None = None
+    #: The last cell's answer that the provider does not serve the run's model, when that stopped it.
+    unserved: str | None = None
 
     @property
     def decided(self) -> bool:
         """Whether a cell has stopped the run."""
-        return bool(self.ceilings) or self.refusal is not None
+        return bool(self.ceilings) or self.refusal is not None or self.unserved is not None
 
     def budget(self, reached: list[_CeilingReached]) -> None:
         """Stop the run on the ceilings its landed amounts had reached, unless something stopped it first."""
@@ -3384,6 +3430,11 @@ class _RunStop:
         """Stop the run on its account's refusal, unless something stopped it first."""
         if not self.decided:
             self.refusal = refusal
+
+    def model_unserved(self, unserved: str) -> None:
+        """Stop the run on its model not being served, unless something stopped it first."""
+        if not self.decided:
+            self.unserved = unserved
 
 
 @dataclass
@@ -3643,12 +3694,21 @@ async def execute_run(
     translates it into the ``exhausted`` status. Unlike the cost cap this needs no caller wiring —
     the refusal is observed, not configured.
 
+    A model not served: when the provider answers that it does not serve the model the run's candidate names (a
+    retired model, a model id it does not know: ``CandidateOutput.model_unserved``), the cell is lost to the test setup
+    and never judged. Once :data:`UNSERVED_CIRCUIT_CELLS` cells in a row have met that answer, or every cell of a
+    shorter run has, the loop stops as it does for the account, raising
+    :class:`~threetears.evals.run.budget.ModelUnservedError` once the cells still running have ended; the job manager
+    files it ``exhausted``, naming the model and the provider's words, and a take-up once the model is served runs
+    those cells again. A cell whose model was served in between starts the count again.
+
     :raises ValueError: ``judge_service`` and ``run.judge_model`` disagree about whether this run is
         judged — one is set and the other is not. Refused before any cell runs, so nothing
         has been spent.
     :raises BudgetStoppedError: A per-run ceiling (the cost cap, the metered-call ceiling, or both) had been
         reached before a cell would start.
     :raises AccountExhaustedError: A cell's call was refused for the calling account.
+    :raises ModelUnservedError: The provider does not serve the run's model, as the circuit counts it.
     :raises EveryCellApparatusFailedError: An apparatus fault excluded every cell the run produced.
     :raises NothingMeasuredError: Every cell was excluded for an ``infra`` fault the harness recorded on it, not every
         one by an apparatus fault.
@@ -3683,10 +3743,15 @@ async def execute_run(
         for cell in stored.done
         if cell.summary.termination == "apparatus_failed"
     ]
-    # Each cell excluded for an ``infra`` cause, by its error — see the check after the loop.
+    # Each cell excluded for a fault the harness recorded on it, by its error — see the check after the loop.
     infra_exclusions: list[str] = [
-        cell.infra_error for cell in stored.done if cell.exclusion == "infra" and cell.infra_error
+        cell.infra_error for cell in stored.done if cell.exclusion in _RECORDED_FAULTS and cell.infra_error
     ]
+    # The cells that found the run's model not served: in a row as the loop records them, which the circuit reads, and
+    # in all, which the check after the loop reads. A take-up runs a stored unserved cell again, so none is done.
+    unserved_in_a_row = 0
+    unserved_cells = sum(1 for cell in stored.done if cell.exclusion == "model_unserved")
+    last_unserved: str | None = None
     # The caller's list when it supplied one, so what it can read mid-flight is
     # the identical object this returns — never a copy that could disagree.
     summaries: list[CellSummary] = cell_sink if cell_sink is not None else []
@@ -3831,7 +3896,7 @@ async def execute_run(
                 in_flight.remove(sink)
 
     async def run_and_record(k: int, tc: EvalTestCase, sink: _CellSink) -> None:
-        nonlocal done
+        nonlocal done, unserved_in_a_row, unserved_cells, last_unserved
         cancelled_in_cell = False
         run_defect: CandidateKindDefect | CompletionProtocolDefect | None = None
         try:
@@ -3990,6 +4055,7 @@ async def execute_run(
                 "lease_epoch": lease_epoch,
                 "metered_calls": metered,
                 "account_refused": sink.account_refusal is not None,
+                "model_unserved": sink.errors.model_unserved,
             }
         )
         if (over := stored.replaced.get((tc.id, k))) is not None:
@@ -4068,8 +4134,14 @@ async def execute_run(
         if sink.errors.apparatus_failed:
             apparatus_failures.append(sink.errors.infra_error or "an apparatus fault")
         # The harness's own fault on the cell, not a judge call's alone: a re-judge recovers that one.
-        if trial_exclusion(result) == "infra" and result.infra_error:
+        if trial_exclusion(result) in _RECORDED_FAULTS and result.infra_error:
             infra_exclusions.append(result.infra_error)
+        if (unserved := sink.errors.unserved_model) is not None:
+            unserved_in_a_row += 1
+            unserved_cells += 1
+            last_unserved = unserved
+        else:
+            unserved_in_a_row = 0
         async with reporting:
             if callbacks.on_result is not None:
                 await callbacks.on_result(result)
@@ -4091,6 +4163,19 @@ async def execute_run(
             )
             stop.exhausted(refusal)
             return
+        # The provider does not serve the run's model, and the cells say so in a row: every later cell names the same
+        # model and would be lost the same way, so none is launched. The run's other arms are runs of their own.
+        if last_unserved is not None and unserved_in_a_row >= UNSERVED_CIRCUIT_CELLS:
+            log.warning(
+                "Eval run %s stopping: the provider does not serve model %s, %d cell(s) in a row, after %d/%d results",
+                run.id,
+                model,
+                unserved_in_a_row,
+                done,
+                total,
+            )
+            stop.model_unserved(last_unserved)
+            return
 
     try:
         await executor.execute([partial(run_cell, k, tc) for k, tc in order], width=width)
@@ -4099,12 +4184,24 @@ async def execute_run(
         if faults:
             await _record_contained_faults(host, run, faults)
 
+    priced = [summary.cost_usd for summary in summaries if summary.cost_usd is not None]
+    accumulated_usd = sum(priced)
+    unpriced_results = len(summaries) - len(priced)
     if stop.refusal is not None:
-        priced = [summary.cost_usd for summary in summaries if summary.cost_usd is not None]
-        accumulated_usd = sum(priced)
-        unpriced_results = len(summaries) - len(priced)
         raise AccountExhaustedError(
             done, total, accumulated_usd=accumulated_usd, unpriced_results=unpriced_results, detail=stop.refusal
+        )
+    # Stopped by the circuit, or every cell of a run shorter than it found the model not served: either way the run
+    # stops resumable, naming the model, rather than failing as one that measured nothing.
+    unserved_detail = stop.unserved or (last_unserved if total and unserved_cells == total else None)
+    if unserved_detail is not None:
+        raise ModelUnservedError(
+            done,
+            total,
+            model=model,
+            accumulated_usd=accumulated_usd,
+            unpriced_results=unpriced_results,
+            detail=unserved_detail,
         )
     if stop.ceilings:
         # Every cell has ended and is recorded: what landed now is what the in-flight cells added.
@@ -4163,6 +4260,7 @@ __all__ = [
     "GoalCheckUnevaluable",
     "NOTHING_MEASURED_FAULT",
     "NothingMeasuredError",
+    "UNSERVED_CIRCUIT_CELLS",
     "template_as_graded",
     "KindFactory",
     "RunCallbacks",
