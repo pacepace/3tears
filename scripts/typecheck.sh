@@ -7,13 +7,24 @@ cd "$REPO_ROOT"
 # shellcheck source=scripts/_tool.sh
 source "$REPO_ROOT/scripts/_tool.sh"
 
-# Run mypy across the typechecked packages, or over one package's import roots.
-# Usage: ./scripts/typecheck.sh [package] [extra mypy args...]
+# Run mypy across the typechecked packages' sources AND tests, or over one package's.
+# Usage: ./scripts/typecheck.sh [--src|--tests] [package] [extra mypy args...]
 # Examples:
-#   ./scripts/typecheck.sh                  # every package, then the evals example hosts
-#   ./scripts/typecheck.sh evals            # just threetears.evals, then the evals example hosts
-#   ./scripts/typecheck.sh agent/memory     # just threetears.agent.memory
+#   ./scripts/typecheck.sh                  # every package's sources, the evals example hosts, every test file
+#   ./scripts/typecheck.sh evals            # threetears.evals, the evals example hosts, packages/evals/tests
+#   ./scripts/typecheck.sh agent/memory     # threetears.agent.memory and packages/agent/memory/tests
+#   ./scripts/typecheck.sh --tests core     # only packages/core/tests
+#   ./scripts/typecheck.sh --src            # only the sources (and the evals example hosts)
 #   ./scripts/typecheck.sh core --no-incremental
+#
+# Tests are checked with the same strict config as sources (Pace, 2026-11-12: sources and tests,
+# every package, one command, CI runs it). A test file's module name is its path from the
+# repository root (``packages.core.tests.unit.conftest``), the name pytest imports it by
+# (``--import-mode=importlib``, ``pythonpath = ["."]``) and the one tests spell in their own imports
+# (``from packages.agent.tools.tests.testing_utils import ...``), so every test tree is checked in
+# one run from the root with no clash between two packages' ``tests/unit/conftest.py``. A package
+# whose directory is no valid module name (``scheduled-jobs``) is checked in a run of its own with
+# its ``tests/`` as the package base, the base its relative imports resolve from.
 # The package name is the one ``test.sh`` takes (a directory under ``packages/``). Its import roots
 # are read off its ``src/threetears/`` layout, so a new package needs no entry here.
 #
@@ -37,7 +48,13 @@ source "$REPO_ROOT/scripts/_tool.sh"
 # skipped six packages this script checks. Keep both in step. A package added to the
 # workspace without a line in each is a package nobody is checking, and the gap is
 # invisible because the gate still passes.
-MYPYPATH_ALL=packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/audit/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/datasources/src:packages/enforcement/src:packages/epoch/src:packages/evals/src:packages/langgraph/src:packages/interfaces/src:packages/models/src:packages/object-store/src:packages/registry/src:packages/scheduled-jobs/src:packages/scrape/src:packages/search/src:packages/tool-schema/src:packages/backup/src:packages/geo/src:packages/iam/src
+MYPYPATH_ALL=packages/conversations/src:packages/mcp/src:packages/agent/workspace/src:packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/audit/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/datasources/src:packages/enforcement/src:packages/epoch/src:packages/evals/src:packages/langgraph/src:packages/interfaces/src:packages/models/src:packages/object-store/src:packages/registry/src:packages/scheduled-jobs/src:packages/scrape/src:packages/search/src:packages/tool-schema/src:packages/backup/src:packages/geo/src:packages/iam/src
+
+PART=all
+case "${1:-}" in
+    --src) PART=src; shift ;;
+    --tests) PART=tests; shift ;;
+esac
 
 PACKAGE=""
 if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
@@ -109,11 +126,15 @@ else
     )
 fi
 
-MYPYPATH="$MYPYPATH_ALL" \
-    run_tool mypy \
-        --explicit-package-bases \
-        "${TARGETS[@]}" \
-        "$@"
+STATUS=0
+
+if [ "$PART" != tests ]; then
+    MYPYPATH="$MYPYPATH_ALL" \
+        run_tool mypy \
+            --explicit-package-bases \
+            "${TARGETS[@]}" \
+            "$@" || STATUS=1
+fi
 
 # The eval package's two example hosts are reference code an adopter copies, so they are held to
 # what an adopter's own code meets: strict mypy, importing the engine's public roots. That is what
@@ -121,11 +142,52 @@ MYPYPATH="$MYPYPATH_ALL" \
 # document store) from the exported names alone. A separate run, because no ``tests/`` tree is a
 # package target above; the two directories are named by file, and the repository root is on the
 # path because the hosts import their own fixture package by its repository path.
-if [ -z "$PACKAGE" ] || [ "$PACKAGE" = "evals" ]; then
+if [ "$PART" != tests ] && { [ -z "$PACKAGE" ] || [ "$PACKAGE" = "evals" ]; }; then
     MYPYPATH=.:packages/evals/src \
         run_tool mypy \
             --explicit-package-bases \
             --namespace-packages \
             packages/evals/tests/fixtures/toyhost/*.py \
-            packages/evals/tests/fixtures/courierhost/*.py
+            packages/evals/tests/fixtures/courierhost/*.py || STATUS=1
 fi
+
+# The test files: every git-tracked .py under a package's tests/ (and the repository's own tests/
+# for the whole run). packages/scrape/sidecar is a separate deployable with its own venv and CI
+# (see the pytest addopts in pyproject.toml), so its tests are not this workspace's.
+if [ "$PART" != src ]; then
+    if [ -n "$PACKAGE" ]; then
+        TEST_DIRS=("packages/$PACKAGE/tests")
+    else
+        TEST_DIRS=(tests)
+        while IFS= read -r dir; do
+            TEST_DIRS+=("$dir")
+        done < <(git ls-files 'packages/*/tests/*.py' | grep -v '^packages/scrape/sidecar/' \
+            | sed -E 's#^(.*/tests)/.*#\1#' | sort -u)
+    fi
+    ROOT_FILES=()
+    for dir in "${TEST_DIRS[@]}"; do
+        files=()
+        while IFS= read -r file; do
+            files+=("$file")
+        done < <(git ls-files "$dir/*.py" | grep -v '^packages/scrape/sidecar/')
+        [ ${#files[@]} -eq 0 ] && continue
+        if [[ "$dir" =~ ^[A-Za-z_][A-Za-z0-9_/]*$ ]]; then
+            ROOT_FILES+=("${files[@]}")
+        else
+            MYPYPATH="$MYPYPATH_ALL:$dir" \
+                run_tool mypy \
+                    --explicit-package-bases \
+                    "${files[@]}" \
+                    "$@" || STATUS=1
+        fi
+    done
+    if [ ${#ROOT_FILES[@]} -gt 0 ]; then
+        MYPYPATH="$MYPYPATH_ALL" \
+            run_tool mypy \
+                --explicit-package-bases \
+                "${ROOT_FILES[@]}" \
+                "$@" || STATUS=1
+    fi
+fi
+
+exit $STATUS
