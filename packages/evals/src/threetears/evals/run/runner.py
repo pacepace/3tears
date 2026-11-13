@@ -609,10 +609,17 @@ class _JudgeRecord(NamedTuple):
     usage: list[RoleUsage]
     #: dim -> the reply the provider cut short, for each dim ``judge_error`` names for that cause.
     judge_cut_short: dict[str, JudgeCutShort]
+    #: Whether the run's cost cap had too little left for the phase, so it asked nothing it had not asked already
+    #: (``EvalResult.judging_set_aside``).
+    set_aside: bool = False
 
 
 def _judge_record(
-    phase: _JudgePhase, outcomes: Sequence[tuple[str, JudgeOutcome]], *, unfinished: str | None = None
+    phase: _JudgePhase,
+    outcomes: Sequence[tuple[str, JudgeOutcome]],
+    *,
+    unfinished: str | None = None,
+    set_aside: bool = False,
 ) -> _JudgeRecord:
     """Fold a judge phase's returned calls into what the result stores, naming any dim that did not finish.
 
@@ -628,6 +635,8 @@ def _judge_record(
     :param unfinished: Why a dim with no returned call did not finish. ``None`` asserts every call
         returned.
     :ptype unfinished: str | None
+    :param set_aside: Whether the run's cost cap kept the dims that did not finish from being asked.
+    :ptype set_aside: bool
     :return: The record.
     :rtype: _JudgeRecord
     :raises RuntimeError: ``unfinished`` is ``None`` and a dim the phase asks returned no call — the
@@ -666,6 +675,7 @@ def _judge_record(
         judge_cannot_tell_boundary=sorted(dim for dim in folded.cannot_tell if dim in phase.boundary_dims),
         usage=folded.usage,
         judge_cut_short=folded.cut_short,
+        set_aside=set_aside,
     )
 
 
@@ -1924,7 +1934,7 @@ async def _run_judge_phase(
             hold = await gate.admit(await _judging_ceiling(template, judge_service, context))
         if gate is not None and hold is None:
             # Nothing was asked, so nothing was paid for and no dim carries a score: the cell is set aside.
-            judged = _judge_record(phase, settled, unfinished=_JUDGING_SET_ASIDE)
+            judged = _judge_record(phase, settled, unfinished=_JUDGING_SET_ASIDE, set_aside=True)
         elif hold is not None and hold.usd is None:
             judged = await _judge_one_call_at_a_time(
                 phase, hold, template=template, judge_service=judge_service, context=context, settled=settled, sink=sink
@@ -1995,7 +2005,7 @@ async def _judge_one_call_at_a_time(
     """
     for dim in phase.dims:
         if not hold.may_send():
-            return _judge_record(phase, settled, unfinished=_JUDGING_SET_ASIDE)
+            return _judge_record(phase, settled, unfinished=_JUDGING_SET_ASIDE, set_aside=True)
         await judge_dims(
             template=template,
             judge_service=judge_service,
@@ -2075,7 +2085,8 @@ async def judge_witnessed_output(
 
 #: The exclusions that are a fault the harness recorded on the cell (``infra_error``), which a run whose every cell
 #: met one measured nothing from: the rig's, and a model the provider does not serve. Neither a judge call's error
-#: alone (a re-judge recovers it) nor a cut-off judge reply nor a "can't tell".
+#: alone (a re-judge recovers it) nor judging the cost cap set aside (a re-judge recovers that too) nor a cut-off judge
+#: reply nor a "can't tell".
 _RECORDED_FAULTS: frozenset[ExclusionCause | None] = frozenset({"infra", "model_unserved"})
 
 
@@ -2525,6 +2536,7 @@ def assemble_completed_cell(
         judge_cannot_tell=judged.judge_cannot_tell,
         judge_cannot_tell_boundary=judged.judge_cannot_tell_boundary,
         judge_cut_short=judged.judge_cut_short,
+        judging_set_aside=judged.set_aside,
         variant_key=variant.variant_key,
         identity_version=variant.identity_version,
         # Reached the end of the cell. Stated on the success path too, and not only on the
@@ -3927,8 +3939,9 @@ async def execute_run(
     when the cap was crossed would otherwise judge on past it. Before any judge call of a cell is paid for, the
     phase's summed price ceiling must fit what the run has spent (landed and running) beside the ceilings the
     phases already admitted hold; it waits while one holds, and is set aside once none does and it still does not
-    fit. A set-aside cell asks the judge nothing, is excluded through its dims' judge errors, which name the cap
-    (a re-judge takes it up from the evidence it stored), and stops the run: no new cell starts, the run ends
+    fit. A set-aside cell asks the judge nothing, is marked (``EvalResult.judging_set_aside``) and excluded under its
+    own cause (``cost_cap``), its dims' judge errors naming the cap (a re-judge takes it up from the evidence it
+    stored), and stops the run: no new cell starts, the run ends
     ``budget_stopped``, and its cost-cap record counts the cell (``BudgetStop.cells_not_judged``). A phase the
     judge cannot price holds the run's judging alone and sends one call at a time while the run is within its cap.
     So judging never takes a run past its cost cap, or past it by more than one call when the judge cannot price

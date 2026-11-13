@@ -1157,14 +1157,14 @@ class WriterEval:
             reservation = costs.arm(size) if len(batches) > 1 else share
             caps = {arm: share - spent[arm] for arm in arms}
             log.info(
-                "eval.writer_batch_launch scope=%s batch=%d/%d cases=%d arms=%s reserve_usd=%.4f caps_usd=%s",
+                "eval.writer_batch_launch scope=%s batch=%d/%d cases=%d arms=%s reserve_usd=%.4f caps=%s",
                 self.scope_id,
                 index + 1,
                 len(batches),
                 size // self.k,
                 ",".join(arms),
                 reservation,
-                ",".join(f"{arm}:{cap:.4f}" for arm, cap in caps.items()),
+                ",".join(f"{arm}:{PageForms.off_page().money_total(cap).text}" for arm, cap in caps.items()),
             )
             ran = await self._launch_batch(host, template_id, ref, caps, arms)
             for arm, run_id in ran.items():

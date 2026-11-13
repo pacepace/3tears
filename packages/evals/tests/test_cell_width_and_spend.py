@@ -46,9 +46,17 @@ from threetears.evals.analysis.summary import budget_stop_line
 from threetears.evals.kernel import CappedCompletion, call_ceiling
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
+from threetears.evals.kernel.result_condition import ResultOutcome, classify_result, trial_exclusion
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
-from threetears.evals.run import KindWiring, LaunchHost, RunnerOptions, drive_conversation, execute_run, start_run
+from threetears.evals.run import (
+    KindWiring,
+    LaunchHost,
+    RunnerOptions,
+    drive_conversation,
+    execute_run,
+    rejudge_result,
+    start_run,
+)
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.launch import build_judge_service
@@ -605,6 +613,14 @@ class _PricedJudge:
 
 
 async def _judged_run(judge: _PricedJudge, *, cap_usd: float) -> tuple[list[EvalResult], BudgetStoppedError | None]:
+    _host, _run, results, stopped = await _judged_run_kept(judge, cap_usd=cap_usd)
+    return results, stopped
+
+
+async def _judged_run_kept(
+    judge: _PricedJudge, *, cap_usd: float
+) -> tuple[EvalHost, EvalRun, list[EvalResult], BudgetStoppedError | None]:
+    """One judged toy cell under ``cap_usd``: its host, its run, its stored results and the stop, if one."""
     host = toyhost_host(clients=lambda _role, _model, *, temperature=None: judge)
     world = host.profile.world
     assert world is not None
@@ -641,7 +657,7 @@ async def _judged_run(judge: _PricedJudge, *, cap_usd: float) -> tuple[list[Eval
         )
     except BudgetStoppedError as error:
         stopped = error
-    return off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id), stopped
+    return host, run, off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id), stopped
 
 
 async def test_judging_the_cap_has_no_room_for_is_set_aside_unasked_and_stops_the_run() -> None:
@@ -655,6 +671,8 @@ async def test_judging_the_cap_has_no_room_for_is_set_aside_unasked_and_stops_th
     assert result.rubric_scores == []
     assert result.judge_error is not None and "the run's cost cap had too little left" in result.judge_error
     assert classify_result(result) is ResultOutcome.INFRA_EXCLUDE, "set aside: excluded, never a fail"
+    assert result.judging_set_aside
+    assert trial_exclusion(result) == "cost_cap", "its own cause, never a setup fault"
     assert result.cost_usd is not None and result.cost_usd < 0.5, "the candidate's spend alone landed"
     assert stopped is not None
     (stop,) = stopped.stops
@@ -663,6 +681,22 @@ async def test_judging_the_cap_has_no_room_for_is_set_aside_unasked_and_stops_th
     assert budget_stop_line(stopped.stops).endswith(
         "; 0 cells not started; 1 cell not judged, as the cap had too little left for their judging"
     )
+
+
+async def test_a_re_judge_takes_up_a_cell_the_cap_set_aside_and_clears_its_mark() -> None:
+    """The cell the cap set aside stored its evidence: a re-judge asks every dim it did not ask, scores the cell, and
+    clears the mark, so it counts in every reading."""
+    judge = _PricedJudge(cost_usd=0.0004, ceiling_usd=1.0)
+    host, run, (result,), stopped = await _judged_run_kept(judge, cap_usd=0.5)
+    assert stopped is not None and result.judging_set_aside and judge.calls == []
+    off_loop(host.storage.save_eval_run, run.model_copy(update={"status": "budget_stopped"}))
+
+    rejudged = await rejudge_result(host, result.id, run.scope_id)
+
+    assert judge.calls, "the re-judge asked what the cap had set aside"
+    assert rejudged.judge_error is None and rejudged.rubric_scores
+    assert not rejudged.judging_set_aside
+    assert trial_exclusion(rejudged) is None and classify_result(rejudged) is ResultOutcome.OK
 
 
 async def _candidate_spend() -> float:

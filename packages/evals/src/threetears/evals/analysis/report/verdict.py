@@ -103,6 +103,17 @@ LOSS_CAUSE_WORDS: Final[dict[str, CauseWords]] = {
         ),
         short="model not served",
     ),
+    "cost_cap": CauseWords(
+        words=(
+            "the run's cost cap had too little left to judge it, so it wrote its answer and nothing scored it, and"
+            " it was not counted as a failure"
+        ),
+        remedy=(
+            "re-judge each lost trial (result_regrade with apply), which reads the answer it stored and pays for no candidate"
+            " call again; or give the next launch a higher cost cap (max_cost_usd), with room for the judging"
+        ),
+        short="cost cap",
+    ),
     "judge_cannot_tell": CauseWords(
         words="the judge said the transcript did not let it score a dimension the trial needs",
         remedy="give the judge the evidence it asked for, or narrow the dimension, then rerun every arm",

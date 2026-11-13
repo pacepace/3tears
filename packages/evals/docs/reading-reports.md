@@ -693,13 +693,16 @@ added. *12 cells not started* is the part of the matrix never measured. Money re
 $10.20 of $10.00 at the stop, $10.35 once 1 running cell finished (+$0.15); ...`). The cost cap also admits each
 cell's judging before paying for it, so judging never takes a run past the cap; a cell whose judging did not fit is
 set aside, and the line ends *2 cells not judged, as the cap had too little left for their judging*. Those cells are
-left out of every reading, never scored low, and a re-judge takes them up. A cap that stopped a run this way can read
+left out of every reading, never scored low, and a re-judge takes them up; a report's lost-trial table counts them
+under *cost cap*. A cap that stopped a run this way can read
 under its ceiling: the stop came before the cap was reached.
 A run both ceilings stopped at one boundary reads both. The figures are `EvalRun.budget_stops`; a run stopped by its
 wall-clock budget has none and gives its reason instead.
 
-Every cell that ran is whole: a ceiling refuses no call inside a cell, so no cell's score was taken on a world it
-could not fully reach because of the budget, and two identical runs never differ in which cell was cut. The one
+Every cell that ran is whole: a ceiling refuses no call a candidate or a simulated user makes inside a cell, so no
+cell's score was taken on a world it could not fully reach because of the budget, and two identical runs never differ
+in which cell's candidate was cut. Only a cell's judging is admitted against the cost cap, and a cell it sets aside is
+counted under *cost cap*, never scored. The one
 refusal left is a host that declared no metered tools; a non-zero `metered_calls_refused` means that declaration is
 wrong, not that the run ran out.
 
