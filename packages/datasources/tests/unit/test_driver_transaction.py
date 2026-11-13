@@ -9,7 +9,8 @@ scope:
 - clean exit commits; an exception rolls back and re-raises
 - a second-statement failure rolls the first statement back
   (atomicity, verified here against mocked backends; the live proof
-  is ``tests/integration/test_transaction_live.py``)
+  is ``tests/integration/test_transaction_live.py`` for Postgres and
+  ``test_transaction_redshift_live.py`` for Redshift)
 - driver parity: :class:`RedshiftDriver` and :class:`AsyncpgDriver`
   run the SAME contract body, so a transaction feature added to one
   and not the other fails here rather than in the local stand-in

@@ -21,16 +21,10 @@ import asyncpg
 import pytest
 from uuid_utils import uuid7
 
-from threetears.agent.skills.migrations import register as register_skills
 from threetears.agent.wake.collections import WakeScheduleCollection
-from threetears.agent.wake.migrations import register as register_wake
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.asyncpg_init import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
-
-from .conftest import AsyncpgStore
 
 
 pytestmark = pytest.mark.integration
@@ -40,18 +34,7 @@ def _new_uuid() -> UUID:
     return UUID(str(uuid7()))
 
 
-async def _apply_schema(url: str, schema: str) -> asyncpg.Pool:
-    setup_conn = await asyncpg.connect(url)
-    try:
-        await setup_conn.execute(f'SET search_path TO "{schema}", public')
-        runner = MigrationRunner()
-        register_conversations(runner)
-        register_skills(runner)
-        register_wake(runner)
-        store = AsyncpgStore(setup_conn)
-        await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
-    finally:
-        await setup_conn.close()
+async def _schema_pool(url: str, schema: str) -> asyncpg.Pool:
     pool = await asyncpg.create_pool(
         url,
         min_size=2,
@@ -105,9 +88,9 @@ async def _seed_schedule(
 class TestClaimAndReschedule:
     """Single-tick atomicity contract on ``claim_and_reschedule``."""
 
-    async def test_successful_claim_updates_row(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_successful_claim_updates_row(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules = _build_schedules(pool)
             now = datetime.now(UTC)
@@ -135,9 +118,9 @@ class TestClaimAndReschedule:
         finally:
             await pool.close()
 
-    async def test_stale_expected_returns_false(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_stale_expected_returns_false(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules = _build_schedules(pool)
             now = datetime.now(UTC)
@@ -177,11 +160,11 @@ class TestClaimAndReschedule:
         finally:
             await pool.close()
 
-    async def test_concurrent_claims_exactly_one_wins(self, pg_schema: tuple[str, str]) -> None:
+    async def test_concurrent_claims_exactly_one_wins(self, applied_schema: tuple[str, str]) -> None:
         """Two ``claim_and_reschedule`` calls racing on the same expected_next_fire:
         exactly one returns True."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules = _build_schedules(pool)
             now = datetime.now(UTC)
@@ -204,10 +187,10 @@ class TestClaimAndReschedule:
         finally:
             await pool.close()
 
-    async def test_terminal_one_shot_expires(self, pg_schema: tuple[str, str]) -> None:
+    async def test_terminal_one_shot_expires(self, applied_schema: tuple[str, str]) -> None:
         """``computed_next_fire=None`` + ``new_status='expired'`` parks the schedule."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules = _build_schedules(pool)
             now = datetime.now(UTC)

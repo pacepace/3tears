@@ -29,18 +29,12 @@ import asyncpg
 import pytest
 from uuid_utils import uuid7
 
-from threetears.agent.skills.migrations import register as register_skills
 from threetears.agent.wake.collections import WakeFireCollection, WakeScheduleCollection
-from threetears.agent.wake.migrations import register as register_wake
 from threetears.agent.wake.tick import DispatchCallback, wake_tick_job
 from threetears.agent.wake.types import WakeDispatchResult, WakeTrigger
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.asyncpg_init import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
-
-from .conftest import AsyncpgStore
 
 
 pytestmark = pytest.mark.integration
@@ -68,18 +62,7 @@ async def _tick(pool: asyncpg.Pool, dispatch: DispatchCallback) -> None:
     )
 
 
-async def _apply_schema(url: str, schema: str) -> asyncpg.Pool:
-    setup_conn = await asyncpg.connect(url)
-    try:
-        await setup_conn.execute(f'SET search_path TO "{schema}", public')
-        runner = MigrationRunner()
-        register_conversations(runner)
-        register_skills(runner)
-        register_wake(runner)
-        store = AsyncpgStore(setup_conn)
-        await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
-    finally:
-        await setup_conn.close()
+async def _schema_pool(url: str, schema: str) -> asyncpg.Pool:
     pool = await asyncpg.create_pool(
         url,
         min_size=2,
@@ -148,9 +131,9 @@ async def _read_schedule(pool: asyncpg.Pool, schedule_id: UUID) -> dict[str, obj
 class TestTickDispatchesOnlyDueSchedules:
     """Tick fires the past-due rows, leaves paused + future-due rows alone."""
 
-    async def test_three_schedules_one_due(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_three_schedules_one_due(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             now = datetime.now(UTC)
             _, due = await _seed_schedule(pool, next_fire_at=now - timedelta(seconds=10))
@@ -186,9 +169,9 @@ class TestTickDispatchesOnlyDueSchedules:
 class TestPerFireFailureIsolation:
     """One callback exception does not poison the rest of the tick."""
 
-    async def test_one_failing_one_succeeding(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_one_failing_one_succeeding(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             now = datetime.now(UTC)
             _, due_a = await _seed_schedule(pool, next_fire_at=now - timedelta(seconds=20))
@@ -225,7 +208,7 @@ class TestPerFireFailureIsolation:
         finally:
             await pool.close()
 
-    async def test_non_raising_failed_status_records_error(self, pg_schema: tuple[str, str]) -> None:
+    async def test_non_raising_failed_status_records_error(self, applied_schema: tuple[str, str]) -> None:
         """A dispatch that *returns* ``status='failed'`` (without raising)
         still routes its ``error`` string onto the ``wake_fires`` row.
 
@@ -236,8 +219,8 @@ class TestPerFireFailureIsolation:
         error='...')`` saw its ``error`` silently discarded by
         ``finalize_success``.
         """
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             now = datetime.now(UTC)
             _, sched = await _seed_schedule(pool, next_fire_at=now - timedelta(seconds=10))
@@ -267,9 +250,9 @@ class TestPerFireFailureIsolation:
 class TestMissedFirePolicy:
     """``coalesce`` vs ``catch_up`` advance ``next_fire_at`` differently."""
 
-    async def test_coalesce_jumps_forward(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_coalesce_jumps_forward(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             now = datetime.now(UTC)
             backlog_anchor = now - timedelta(minutes=5)
@@ -300,9 +283,9 @@ class TestMissedFirePolicy:
         finally:
             await pool.close()
 
-    async def test_catch_up_advances_one_step_from_the_fired_occurrence(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_catch_up_advances_one_step_from_the_fired_occurrence(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             now = datetime.now(UTC)
             backlog_anchor = now - timedelta(minutes=5)
@@ -337,9 +320,9 @@ class TestConcurrentTickClaimRace:
     """Two concurrent ``wake_tick_job`` invocations against one due schedule
     produce exactly ONE ``wake_fires`` row."""
 
-    async def test_no_double_fire_under_race(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_no_double_fire_under_race(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             now = datetime.now(UTC)
             _, due = await _seed_schedule(pool, next_fire_at=now - timedelta(seconds=10))
@@ -367,9 +350,9 @@ class TestConcurrentTickClaimRace:
 class TestOneShotTerminalTransition:
     """``one_shot_at`` schedules expire after the single fire."""
 
-    async def test_one_shot_marks_expired(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_one_shot_marks_expired(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             now = datetime.now(UTC)
             fire_iso = (now - timedelta(seconds=30)).isoformat()

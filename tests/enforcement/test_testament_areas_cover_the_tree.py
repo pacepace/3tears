@@ -1,6 +1,7 @@
-"""Enforcement: ``.testament.toml``'s ``[suites.*.areas]`` put every test file in exactly one area.
+"""Enforcement: ``.testament.toml``'s unit-suite areas put every test file in exactly one area.
 
-Areas divide the unit suite for reporting and selection (``testament run --not-area evals``,
+The areas are ``[suites.default.areas]``: the manifest is version 3, which keeps areas per suite, and
+``default`` is the unit suite. Areas divide the unit suite for reporting and selection (``testament run --not-area evals``,
 ``testament time --by area``). The table names each package rather than ending in a catch-all
 ``packages/**``, because a catch-all overlaps every area above it and ``testament areas check
 --strict`` reports each overlap. The cost of naming packages is drift: a new package's tests
@@ -9,7 +10,9 @@ pool-free form of ``areas check --strict`` over the files in this tree:
 
 - every test file is matched by some area's glob;
 - no test file is matched by two areas (the first would take it, hiding the second's glob);
-- every glob matches some test file.
+- every glob matches some test file;
+- every suite that collects the unit tree (``loop_timing`` beside ``default``) divides it by the same areas,
+  so a path's area is the same in either. The integration suite selects its own paths and keeps its own areas.
 
 Globs match as testament matches them: ``fnmatch`` against the file's repo-relative path, where
 ``*`` crosses ``/``. ``packages/scrape/sidecar`` is skipped, as the root pytest config skips it.
@@ -29,33 +32,38 @@ _MANIFEST = _REPO_ROOT / ".testament.toml"
 _IGNORED = ("packages/scrape/sidecar",)
 
 
-def _suite_areas() -> dict[str, dict[str, list[str]]]:
-    """Return each suite's areas (manifest version 3 holds them in each suite), in declared order.
+def _areas_of(declared: dict[str, object]) -> dict[str, list[str]]:
+    """Return one suite's areas, in declared order.
 
-    :return: suite -> each area's name and globs
-    :rtype: dict[str, dict[str, list[str]]]
+    :param declared: the suite's table
+    :ptype declared: dict[str, object]
+    :return: each area's name and globs
+    :rtype: dict[str, list[str]]
     """
-    suites = tomllib.loads(_MANIFEST.read_text())["suites"]
-    return {
-        str(suite): {str(name): [str(glob) for glob in globs] for name, globs in declared.get("areas", {}).items()}
-        for suite, declared in suites.items()
-    }
+    areas = declared.get("areas", {})
+    assert isinstance(areas, dict)
+    return {str(name): [str(glob) for glob in globs] for name, globs in areas.items()}
 
 
 def _areas() -> dict[str, list[str]]:
-    """Return the manifest's areas, in declared order: the default suite's, which every suite repeats.
+    """Return the unit suite's areas, in declared order.
 
     :return: each area's name and globs
     :rtype: dict[str, list[str]]
     """
-    return _suite_areas()["default"]
+    return _areas_of(tomllib.loads(_MANIFEST.read_text())["suites"]["default"])
 
 
-def test_every_suite_divides_into_the_same_areas() -> None:
-    """a suite with other areas (or none) would report and select its tests by another map."""
-    suites = _suite_areas()
-    assert suites["default"], "the default suite names no areas"
-    assert all(list(areas.items()) == list(suites["default"].items()) for areas in suites.values()), suites
+def test_every_suite_over_the_unit_tree_divides_into_the_unit_suite_s_areas() -> None:
+    """a suite collecting the unit tree with other areas (or none) would report and select its tests by another map."""
+    suites = tomllib.loads(_MANIFEST.read_text())["suites"]
+    unit_tree = suites["default"]["default_selection"]
+    over_the_unit_tree = {
+        name: _areas_of(declared) for name, declared in suites.items() if declared.get("default_selection") == unit_tree
+    }
+    assert all(list(areas.items()) == list(_areas().items()) for areas in over_the_unit_tree.values()), (
+        over_the_unit_tree
+    )
 
 
 def _test_files() -> list[str]:
@@ -106,7 +114,7 @@ def test_every_test_file_is_in_an_area() -> None:
     areas = _areas()
     unassigned = [path for path in _test_files() if not _matching(path, areas)]
     assert not unassigned, (
-        f"{len(unassigned)} test files are in no area of .testament.toml's [suites.*.areas], e.g. {unassigned[:5]}: "
+        f"{len(unassigned)} test files are in no area of .testament.toml's [suites.default.areas], e.g. {unassigned[:5]}: "
         "add a glob for their package"
     )
 
@@ -127,4 +135,4 @@ def test_every_glob_matches_a_test_file() -> None:
         for glob in globs
         if not any(fnmatch.fnmatchcase(path, glob) for path in files)
     ]
-    assert not dead, f"globs in .testament.toml's [suites.*.areas] that match no test file: {dead}"
+    assert not dead, f"globs in .testament.toml's [suites.default.areas] that match no test file: {dead}"

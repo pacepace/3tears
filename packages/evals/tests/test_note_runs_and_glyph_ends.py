@@ -69,7 +69,7 @@ _KIT_LINES = """() => [...document.querySelectorAll('div.chart[data-kind="bars"]
   .map(t => [...t.querySelectorAll('tspan')].map(s => s.textContent))"""
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 @pytest.mark.parametrize("width", [1200, 390])
 def test_the_kit_breaks_an_outcome_note_at_its_dot_never_inside_its_count(tmp_path: Path, width: int) -> None:
     """The kit wraps a note as the static page does (``kWrapNote``): at a phone's width at its dot, never between a

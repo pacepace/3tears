@@ -13,7 +13,7 @@ Two things are compared as JSON values, not as text: a number is a number (``5``
 What the references draw outside the vocabulary is listed below with its reason, and nothing else is: a reference
 chart with no ``data-kind`` is a failure here unless it is listed.
 
-The references compute their data in the browser, so this drives headless Chromium and carries the ``integration``
+The references compute their data in the browser, so this drives headless Chromium and carries the ``browser``
 marker; where Chromium cannot launch it skips and says why.
 """
 
@@ -79,7 +79,7 @@ def test_the_references_together_draw_every_kind_the_kit_draws() -> None:
     assert set().union(*KINDS_DRAWN.values()) == set(KIT_CHARTS)
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 @pytest.mark.parametrize("name", REFERENCES)
 def test_every_chart_a_reference_draws_is_a_chart_block_that_gives_back_its_data(name: str) -> None:
     reason = chromium_unavailable()
@@ -99,7 +99,7 @@ def test_every_chart_a_reference_draws_is_a_chart_block_that_gives_back_its_data
         assert headers and rows and all(len(row) == len(headers) for row in rows), f"#{chart['id']}'s table"
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_a_package_page_hands_the_kit_the_data_its_blocks_carry(tmp_path: Path) -> None:
     """Every reference chart put on a package page is drawn by the kit from the same JSON, with no error."""
     reason = chromium_unavailable()
@@ -130,7 +130,7 @@ _TABLES = """() => [...document.querySelectorAll('figure.fig')].map(f => ({
   drawn: !!(f.querySelector('div.chart') && f.querySelector('div.chart').children.length)}))"""
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_a_chart_s_table_is_what_a_reader_sees_where_no_chart_is_drawn(tmp_path: Path) -> None:
     """With the kit's script, a drawn chart's table is visually hidden (a screen reader reads it) and a chart the kit
     does not draw (interval rows) shows its table; without the script, every figure shows its table."""
@@ -169,7 +169,7 @@ _STATIC_TABLES = """() => [...document.querySelectorAll('figure.fig')].map(f => 
   drawn: !!f.querySelector('div.chart-drawn svg')}))"""
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_a_static_page_hides_a_drawn_chart_s_table_and_shows_an_undrawn_one(tmp_path: Path) -> None:
     """On a static page, a chart the server drew as SVG has its table visually hidden, as the kit's drawn chart does,
     and a chart it does not draw (interval rows) shows its table (owner ruling 2026-10-29)."""
@@ -302,7 +302,7 @@ def _with_charts(markup: str, charts: str) -> str:
     return markup[:at] + charts + markup[at:]
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_the_kit_refuses_each_bad_chart_draws_nothing_and_says_why(tmp_path: Path) -> None:
     """Every refusal kit/API.md lists draws nothing for its element and logs ``kit: chart "<kind>" #<id>: <reason>``;
     nothing the data tried to write into a style reaches one; and a package figure whose data the kit refuses shows
@@ -332,7 +332,7 @@ def test_the_kit_refuses_each_bad_chart_draws_nothing_and_says_why(tmp_path: Pat
     assert seen["styled"] == 0
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_a_null_panel_field_inherits_the_chart_s_value_in_the_kit_as_in_the_model(tmp_path: Path) -> None:
     """The models read ``null`` as unset, so a panel's ``null`` field inherits the chart's; the kit draws it so too:
     the panel whose ``reference`` is ``null`` draws the chart's floor, and a row whose ``group`` is ``null`` sits
@@ -376,7 +376,7 @@ def test_a_null_panel_field_inherits_the_chart_s_value_in_the_kit_as_in_the_mode
 _NUMBER_CASES = Path(__file__).resolve().parent / "fixtures" / "number-format-cases.json"
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_the_kit_draws_each_kit_money_case_as_the_package_spells_it(tmp_path: Path) -> None:
     """The kit's own formats (``namedFmt``), read in the browser, write each ``kit_money`` case as the package's
     money form does (test_money_forms reads the same cases): ``usd:4`` draws a total of $0.008 as ``$0.0080``."""
@@ -401,7 +401,7 @@ _COST_TICKS = """() => [...document.querySelectorAll('div.chart[data-kind="scatt
   .map(t => t.textContent).filter(t => t.startsWith('$'))"""
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_a_cost_axis_at_a_real_reply_cost_draws_distinct_ticks_none_reading_as_zero(tmp_path: Path) -> None:
     """At $0.00042 and $0.00018 a reply, the drawn cost axis (per 1,000 replies) prints a distinct figure at each
     tick, none past the origin reading as zero."""
@@ -439,7 +439,7 @@ _BAR_LABELS = """() => [...document.querySelectorAll('div.chart[data-kind="bars"
             tag: (g.querySelector('text.tag') || {}).textContent || null};})"""
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 @pytest.mark.parametrize("width", [1200, 390])
 def test_arms_whose_labels_share_a_long_prefix_are_told_apart_on_the_drawn_outcome_bar(
     tmp_path: Path, width: int
@@ -474,7 +474,7 @@ _LINE_TEXTS = """() => [...document.querySelectorAll('div.chart[data-kind="lines
     return spans.length ? spans.map(s => s.textContent).join(' ') : t.textContent;})"""
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 @pytest.mark.parametrize("width", [1200, 390])
 def test_a_line_charts_end_labels_wrap_and_are_never_cut(tmp_path: Path, width: int) -> None:
     """Two series named longer than a phone's margin holds on one line: at 1200 and at 390 px the kit draws each end
@@ -504,7 +504,7 @@ _LINE_FIT = """() => {const svg = document.querySelector('div.chart[data-kind="l
           bottoms: [...svg.querySelectorAll('text.lbl, text.lbl-strong')].map(t => {const b = t.getBBox(); return b.y + b.height;})};}"""
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 @pytest.mark.parametrize("width", [1200, 390])
 def test_a_short_line_charts_wrapped_end_labels_all_sit_inside_its_drawing(tmp_path: Path, width: int) -> None:
     """A short line chart whose three long series end close together: the kit grows the drawing until every wrapped
@@ -554,7 +554,7 @@ _BAR_TEXTS = """() => [...document.querySelectorAll('div.chart[data-kind="bars"]
   .map(t => [...t.querySelectorAll('tspan')].map(s => s.textContent).join(' '))"""
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 @pytest.mark.parametrize("width", [1200, 390])
 def test_the_kit_prints_a_bar_s_note_whole_where_it_does_not_fit(tmp_path: Path, width: int) -> None:
     """A note wider than the margin's 30% at a phone's width: the kit drew ``-8`` in its place, the chart's ``+num:0``
@@ -578,7 +578,7 @@ _ARM_TAGS = """() => armLabels(
   [{k: 'model'}]).map(a => a.tag)"""
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_the_kit_tags_no_candidate_p_however_many_there_are(tmp_path: Path) -> None:
     """GENERATOR.md §6.1, in the kit as in the package (``arm_tags``): P is the control's, so thirty candidates are
     lettered A to O, Q to Z, then AA on; the sixteenth is Q, never P."""
@@ -600,7 +600,7 @@ _MARKED = """() => [...document.querySelectorAll('div.chart[data-kind]')].map(e 
   texts: [...e.querySelectorAll('tspan, text, b, span')].filter(t => !t.children.length).map(t => t.textContent)}))"""
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_the_kit_draws_each_value_s_own_text_in_its_own_place(tmp_path: Path) -> None:
     """The kit's half of the kit contract (``test_report_kit_contract``, the static page's half): every value of a
     chart of each kind carries a marker of its own, and the kit's tooltips read each value's, then its interval's

@@ -32,6 +32,10 @@ _MARKER = ANONYMIZED_MARKER
 #: an event family only these tests publish, whose keys the non-ASCII / float case needs kept by the rule
 _KEEPING_FAMILY = "persistlive"
 
+#: the persister's idle fetch, short: every stop waits out the fetch in flight, and at the production five
+#: seconds each persister these tests start cost that much to stop on an empty stream.
+_FETCH_TIMEOUT_SECONDS = 0.2
+
 
 @pytest.fixture
 async def db(db_container: str) -> AsyncIterator[asyncpg.Pool]:
@@ -265,7 +269,9 @@ async def test_a_published_event_reaches_the_table_through_nats(db: asyncpg.Pool
     async with await NatsClient.connect(
         nats_url=nats_container, nats_subject_namespace=namespace, client_name="audit"
     ) as nats:
-        handle = await start_audit_persister(nats, db, durable="live-audit-persist")
+        handle = await start_audit_persister(
+            nats, db, durable="live-audit-persist", fetch_timeout_seconds=_FETCH_TIMEOUT_SECONDS
+        )
         try:
             event = _event()
             await publish_audit(event, nats_client=nats, namespace=namespace)
@@ -307,7 +313,13 @@ async def test_the_age_limit_reaches_the_live_stream_and_a_changed_one_updates_i
         nats_url=nats_container, nats_subject_namespace=namespace, client_name="audit"
     ) as nats:
         for max_age, expected in ((86_400.0, 86_400.0), (3_600.0, 3_600.0), (None, None)):
-            handle = await start_audit_persister(nats, db, durable="age-audit-persist", max_age_seconds=max_age)
+            handle = await start_audit_persister(
+                nats,
+                db,
+                durable="age-audit-persist",
+                max_age_seconds=max_age,
+                fetch_timeout_seconds=_FETCH_TIMEOUT_SECONDS,
+            )
             try:
                 live = await _audit_stream_max_age(nats)
                 if expected is None:
@@ -327,7 +339,9 @@ async def test_no_age_limit_leaves_the_live_stream_unlimited(db: asyncpg.Pool, n
     async with await NatsClient.connect(
         nats_url=nats_container, nats_subject_namespace=namespace, client_name="audit"
     ) as nats:
-        handle = await start_audit_persister(nats, db, durable="noage-audit-persist", storage="file")
+        handle = await start_audit_persister(
+            nats, db, durable="noage-audit-persist", storage="file", fetch_timeout_seconds=_FETCH_TIMEOUT_SECONDS
+        )
         try:
             assert not await _audit_stream_max_age(nats)
         finally:

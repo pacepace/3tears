@@ -25,7 +25,8 @@ The defence is the RECEIVER's: a subject whose receiver trusts the subject alone
 no correlation it minted) can be fed a pod's bytes. Pace, 2026-10-07: receivers are being audited;
 their fixes are their own piece of work.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -38,7 +39,6 @@ from typing import Any
 
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats import NatsClient
 from threetears.nats.subject_permissions import (
     Principal,
@@ -115,8 +115,6 @@ def _server_config(pub_allow: list[str], sub_allow: list[str]) -> str:
 
 
 async def test_a_pod_can_bounce_its_own_bytes_to_a_subject_it_may_not_publish() -> None:
-    if not check_docker_available():
-        pytest.skip("Docker not available")
     previous_ns = get_default_namespace()
     set_default_namespace(_NS)
     try:

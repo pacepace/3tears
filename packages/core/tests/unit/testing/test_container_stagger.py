@@ -92,24 +92,50 @@ def test_an_unrecognised_worker_name_does_not_wait(
     assert clock.slept == []
 
 
+#: what starts a container in the shared fixtures and the services they start through
+_CONTAINER_STARTERS = frozenset({"PostgresContainer", "DockerContainer", "nats_server"})
+
+
 def test_the_shared_fixtures_stagger_before_starting_a_container() -> None:
+    """every function of the shared fixtures, and of the services module they start containers through
+    (db, NATS and S3 since the services gained a process mode), that starts a container staggers first."""
+    import ast
     import inspect
 
-    from threetears.core.testing import fixtures
+    from threetears.core.testing import fixtures, services
 
-    for name in ("db_container", "nats_container", "s3_container", "searxng_container"):
-        source = inspect.getsource(getattr(fixtures, name).__wrapped__)
-        assert "stagger_container_start()" in source, f"{name} starts a container without staggering"
+    for name in ("db_container", "nats_container", "s3_container"):
+        tree = ast.parse(inspect.getsource(getattr(fixtures, name).__wrapped__))
+        called = {sub.func.id for sub in ast.walk(tree) if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)}
+        assert {"running_postgres", "running_nats", "running_s3"} & called, (
+            f"{name} no longer starts its service through threetears.core.testing.services"
+        )
+    starters: list[str] = []
+    for module in (fixtures, services):
+        for node in ast.walk(ast.parse(inspect.getsource(module))):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name == "nats_server":
+                continue
+            calls = [sub for sub in ast.walk(node) if isinstance(sub, ast.Call)]
+            names = {sub.func.id if isinstance(sub.func, ast.Name) else getattr(sub.func, "attr", "") for sub in calls}
+            if names & _CONTAINER_STARTERS:
+                starters.append(f"{module.__name__}.{node.name}")
+                assert "stagger_container_start" in names, (
+                    f"{module.__name__}.{node.name} starts a container without staggering"
+                )
+    # the control: Postgres, NATS and S3 in services, SearXNG in the fixtures, so an empty walk can't pass
+    assert len(starters) >= 4, starters
 
 
 def test_an_external_database_skips_the_container_and_the_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     """A CI service container (the external URL) starts no container, so it must not wait for one."""
-    from threetears.core.testing import fixtures
+    from threetears.core.testing import fixtures, services
 
     def must_not_wait() -> None:
         raise AssertionError("an external URL waited on a container start that never happens")
 
+    # the fixtures stagger SearXNG themselves; Postgres, NATS and S3 stagger in the services they start through
     monkeypatch.setattr(fixtures, "stagger_container_start", must_not_wait)
+    monkeypatch.setattr(services, "stagger_container_start", must_not_wait)
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw5")
     monkeypatch.setenv("THREETEARS_TEST_POSTGRES_URL", "postgresql://ci/db")
     gen = fixtures.db_container.__wrapped__("unused-image")

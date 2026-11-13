@@ -16,7 +16,7 @@ a cache derived from the table on that pod's registry, and follows it:
 - speed: the cold-start fill, and one walked change's apply, each held to a multiple of the bare read
   on the same database.
 
-requires docker; gated by ``pytest.mark.integration``.
+needs Postgres/NATS (the pool's child processes, or testcontainers off the pool); gated by ``pytest.mark.integration``.
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ async def pg_schema(db_container: str) -> AsyncIterator[tuple[str, str]]:
     with ``server_settings={"search_path": schema}`` so every connection
     inherits the schema bind.
     """
-    schema = f"mcp_it_{id(object())}".lower().replace("-", "_")
+    schema = f"mcp_it_{uuid4().hex}"
     conn = await asyncpg.connect(db_container)
     try:
         await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')

@@ -16,7 +16,7 @@ Contracts held here (``threetears.evals.ops.report_read``, ``threetears.evals.an
   ``report_doc_id``; a read without it, and ``list_report_docs``, read no session; a page form refuses it;
 - **``report_doc_id``** of another campaign, or of none, is refused as not found;
 - **``ReportDocument.doc``** replaces ``plan``;
-- **the render checks** (integration): the static page of Kairo and of each misfit, its accepted recording replayed and
+- **the render checks** (``browser``): the static page of Kairo and of each misfit, its accepted recording replayed and
   stored, then read back as the report read reads a stored document, passes ``scripts/check.py`` at 1200, 1104, 688
   and 390 px, light and dark.
 """
@@ -545,7 +545,7 @@ async def test_each_accepted_document_reads_back_whole_and_its_static_page_runs_
     assert what_runs(static) == [] and "<script" not in static and "<link" not in static and "://" not in static
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 @pytest.mark.parametrize("name", _ACCEPTED)
 async def test_each_accepted_document_s_static_page_as_the_report_read_reads_it_passes_the_render_checks(
     name: str, tmp_path: Path

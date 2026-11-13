@@ -48,7 +48,13 @@ async def proxy(db_container: str) -> AsyncIterator[StallingTcpProxy]:
 
 
 def _config_through(
-    proxy: StallingTcpProxy, db_container: str, monkeypatch: pytest.MonkeyPatch, *, pool_min_size: int
+    proxy: StallingTcpProxy,
+    db_container: str,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    pool_min_size: int,
+    connect_timeout_seconds: float = DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS,
+    pool_startup_timeout_seconds: float = DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS,
 ) -> PostgresConnectionConfig:
     """a driver config for the session Postgres, reached through ``proxy``.
 
@@ -60,6 +66,10 @@ def _config_through(
     :ptype monkeypatch: pytest.MonkeyPatch
     :param pool_min_size: connections the driver opens when it starts its pool
     :ptype pool_min_size: int
+    :param connect_timeout_seconds: the bound on one login
+    :ptype connect_timeout_seconds: float
+    :param pool_startup_timeout_seconds: the least the pool start may take
+    :ptype pool_startup_timeout_seconds: float
     :return: the config
     :rtype: PostgresConnectionConfig
     """
@@ -75,6 +85,8 @@ def _config_through(
         pool_min_size=pool_min_size,
         pool_max_size=pool_min_size,
         command_timeout_seconds=10,
+        connect_timeout_seconds=connect_timeout_seconds,
+        pool_startup_timeout_seconds=pool_startup_timeout_seconds,
         allowed_schemas=[],
     )
 
@@ -112,17 +124,31 @@ class TestADriverPoolStartsInABudgetSizedToItsLogins:
     async def test_four_slow_serialized_logins_start_the_pool(
         self, proxy: StallingTcpProxy, db_container: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """each login is held just under the per-login bound; four in turn need more than the platform's 30s.
+        """each login is held just under the per-login bound; four in turn need more than the startup floor.
 
-        a fixed budget of :data:`DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS` failed this start; each login
-        alone always fit its own bound.
+        with the platform's defaults, four logins of nine seconds need 36s, and a fixed budget of
+        :data:`DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS` (30s) failed this start; each login alone always
+        fit its own bound. the same shape runs here at a smaller scale through the config's two
+        bounds, which default to those platform values.
         """
-        delay = DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS - 1.0
+        defaults = PostgresConnectionConfig.model_fields
+        assert defaults["connect_timeout_seconds"].default == DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS
+        assert defaults["pool_startup_timeout_seconds"].default == DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
+        connect_timeout = 1.5
+        floor = 3.5
+        delay = connect_timeout - 0.5
         size = 4
-        assert delay * size > DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
+        assert delay * size > floor
         proxy.plan = dict.fromkeys(range(1, size + 1), delay)
         driver = AsyncpgDriver(
-            _config_through(proxy, db_container, monkeypatch, pool_min_size=size),
+            _config_through(
+                proxy,
+                db_container,
+                monkeypatch,
+                pool_min_size=size,
+                connect_timeout_seconds=connect_timeout,
+                pool_startup_timeout_seconds=floor,
+            ),
             connect_guard=_OneLoginAtATime(),
         )
         try:
@@ -139,14 +165,17 @@ class TestADriverPoolThatCannotStartLeaksNothing:
         self, proxy: StallingTcpProxy, db_container: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """connections 1, 2 and 4 reach the server; 3 never answers. the driver's error arrives, and none remain."""
+        connect_timeout = 1.5
         proxy.plan = {3: PROXY_STALL}
-        driver = AsyncpgDriver(_config_through(proxy, db_container, monkeypatch, pool_min_size=4))
+        driver = AsyncpgDriver(
+            _config_through(proxy, db_container, monkeypatch, pool_min_size=4, connect_timeout_seconds=connect_timeout)
+        )
         started = time.monotonic()
         try:
             with pytest.raises(DriverConnectError):
                 await driver.test_connection()
-            # the stalled connect is cut off at the wrapper's per-connect bound, not asyncpg's 60s.
-            assert time.monotonic() - started < DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS + 5.0
+            # the stalled connect is cut off at the configured per-connect bound, not asyncpg's 60s.
+            assert time.monotonic() - started < connect_timeout + 5.0
             assert proxy.accepted == 4
             assert await proxy.all_client_sockets_closed(within=2.0), (
                 f"{proxy.open_client_sockets} connections from the failed pool start are still open"

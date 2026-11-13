@@ -26,7 +26,7 @@ from threetears.agent.intention.tools import (
     load_intention_mark_surfaced_tool,
 )
 
-from .conftest import InMemoryNatsBus, apply_migrations, build_collection, make_pool, owner_only_authorizer
+from .conftest import InMemoryNatsBus, build_collection, make_pool, owner_only_authorizer
 
 pytestmark = pytest.mark.integration
 
@@ -83,17 +83,18 @@ async def _insert(
     return intention_id
 
 
-async def _setup(pg_schema: tuple[str, str]) -> tuple[asyncpg.Pool, Any]:
-    url, schema = pg_schema
-    await apply_migrations(url, schema)
+async def _setup(applied_schema: tuple[str, str]) -> tuple[asyncpg.Pool, Any]:
+    url, schema = applied_schema
     pool = await make_pool(url, schema)
     coll, _l1 = build_collection(pool, InMemoryNatsBus())
     return pool, coll
 
 
 class TestANearDuplicateKeepsTheWantAsStored:
-    async def test_the_answer_is_the_stored_text_and_nothing_is_rewritten(self, pg_schema: tuple[str, str]) -> None:
-        pool, coll = await _setup(pg_schema)
+    async def test_the_answer_is_the_stored_text_and_nothing_is_rewritten(
+        self, applied_schema: tuple[str, str]
+    ) -> None:
+        pool, coll = await _setup(applied_schema)
         try:
             agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
             embedder = _NearEmbedder(near={"ask about their trip": "ask about the trip to Lisbon"})
@@ -125,8 +126,8 @@ class TestANearDuplicateKeepsTheWantAsStored:
 
 
 class TestAListingSaysHowManyOfHowMany:
-    async def test_a_limit_past_twenty_is_honoured(self, pg_schema: tuple[str, str]) -> None:
-        pool, coll = await _setup(pg_schema)
+    async def test_a_limit_past_twenty_is_honoured(self, applied_schema: tuple[str, str]) -> None:
+        pool, coll = await _setup(applied_schema)
         try:
             agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
             for n in range(25):
@@ -139,8 +140,10 @@ class TestAListingSaysHowManyOfHowMany:
         finally:
             await pool.close()
 
-    async def test_the_default_shows_twenty_and_says_how_many_more_there_are(self, pg_schema: tuple[str, str]) -> None:
-        pool, coll = await _setup(pg_schema)
+    async def test_the_default_shows_twenty_and_says_how_many_more_there_are(
+        self, applied_schema: tuple[str, str]
+    ) -> None:
+        pool, coll = await _setup(applied_schema)
         try:
             agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
             for n in range(25):
@@ -155,9 +158,9 @@ class TestAListingSaysHowManyOfHowMany:
             await pool.close()
 
     async def test_each_line_has_its_status_when_it_was_written_and_the_consumers_note(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        pool, coll = await _setup(pg_schema)
+        pool, coll = await _setup(applied_schema)
         try:
             agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
             carried = await _insert(pool, agent_id, customer_id, user_id, "fix the flaky test", salience=0.9)
@@ -179,8 +182,10 @@ class TestAListingSaysHowManyOfHowMany:
         finally:
             await pool.close()
 
-    async def test_a_status_lists_only_that_status_and_all_lists_every_want(self, pg_schema: tuple[str, str]) -> None:
-        pool, coll = await _setup(pg_schema)
+    async def test_a_status_lists_only_that_status_and_all_lists_every_want(
+        self, applied_schema: tuple[str, str]
+    ) -> None:
+        pool, coll = await _setup(applied_schema)
         try:
             agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
             await _insert(pool, agent_id, customer_id, user_id, "still open", salience=0.9)
@@ -200,8 +205,8 @@ class TestAListingSaysHowManyOfHowMany:
         finally:
             await pool.close()
 
-    async def test_open_wants_held_back_are_counted(self, pg_schema: tuple[str, str]) -> None:
-        pool, coll = await _setup(pg_schema)
+    async def test_open_wants_held_back_are_counted(self, applied_schema: tuple[str, str]) -> None:
+        pool, coll = await _setup(applied_schema)
         try:
             agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
             await _insert(pool, agent_id, customer_id, user_id, "raise me", salience=0.9)
@@ -218,8 +223,8 @@ class TestAListingSaysHowManyOfHowMany:
         finally:
             await pool.close()
 
-    async def test_a_note_that_fails_leaves_the_listing(self, pg_schema: tuple[str, str]) -> None:
-        pool, coll = await _setup(pg_schema)
+    async def test_a_note_that_fails_leaves_the_listing(self, applied_schema: tuple[str, str]) -> None:
+        pool, coll = await _setup(applied_schema)
         try:
             agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
             await _insert(pool, agent_id, customer_id, user_id, "still listed")
@@ -237,8 +242,8 @@ class TestAListingSaysHowManyOfHowMany:
 
 
 class TestOneWantInFull:
-    async def test_get_reads_a_want_whole(self, pg_schema: tuple[str, str]) -> None:
-        pool, coll = await _setup(pg_schema)
+    async def test_get_reads_a_want_whole(self, applied_schema: tuple[str, str]) -> None:
+        pool, coll = await _setup(applied_schema)
         try:
             agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
             want_id = await _insert(pool, agent_id, customer_id, user_id, "learn the bass line", salience=0.62)
@@ -260,8 +265,8 @@ class TestOneWantInFull:
         finally:
             await pool.close()
 
-    async def test_another_users_want_is_not_found(self, pg_schema: tuple[str, str]) -> None:
-        pool, coll = await _setup(pg_schema)
+    async def test_another_users_want_is_not_found(self, applied_schema: tuple[str, str]) -> None:
+        pool, coll = await _setup(applied_schema)
         try:
             agent_id, customer_id = uuid.uuid4(), uuid.uuid4()
             owner, other = uuid.uuid4(), uuid.uuid4()
@@ -274,8 +279,8 @@ class TestOneWantInFull:
 
 
 class TestAMarkSaysWhatItWas:
-    async def test_a_mark_says_the_status_it_moved_from(self, pg_schema: tuple[str, str]) -> None:
-        pool, coll = await _setup(pg_schema)
+    async def test_a_mark_says_the_status_it_moved_from(self, applied_schema: tuple[str, str]) -> None:
+        pool, coll = await _setup(applied_schema)
         try:
             agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
             want_id = await _insert(pool, agent_id, customer_id, user_id, "ship the fix", status="asked")
@@ -291,8 +296,8 @@ class TestAMarkSaysWhatItWas:
         finally:
             await pool.close()
 
-    async def test_a_mark_to_the_status_it_has_changes_nothing(self, pg_schema: tuple[str, str]) -> None:
-        pool, coll = await _setup(pg_schema)
+    async def test_a_mark_to_the_status_it_has_changes_nothing(self, applied_schema: tuple[str, str]) -> None:
+        pool, coll = await _setup(applied_schema)
         try:
             agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
             want_id = await _insert(pool, agent_id, customer_id, user_id, "ship the fix", status="dropped")

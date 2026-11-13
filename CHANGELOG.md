@@ -38,6 +38,111 @@ inode, size and modified time, 65,536 files), and `column_print(path, columns)` 
 without tokens prints as its identity). A memo over a version reruns a query only when a column it reads moved, with no
 row read again. Guide: docs/shared-arrow.md, "Know which columns a write moved".
 
+### tests wait for events, not fixed sleeps; four production changes came with it
+
+**Added:**
+- `PostgresConnectionConfig` and `YugabyteConnectionConfig` take `connect_timeout_seconds` (default 10 s) and
+  `pool_startup_timeout_seconds` (default 30 s), the platform's values. `AsyncpgDriver` bounds each login and floors
+  its start budget at them, where it read the platform constants; a config that names neither behaves as before.
+- `start_audit_persister(fetch_timeout_seconds=5.0)`: how long an idle persister's fetch waits for events, and so how
+  long its stop can take.
+- `catalog_bucket(retry_first_delay=None)`: the first delay of the bucket declaration's retry, passed to
+  `PersistedCopyBucket`; `None` keeps the current schedule.
+
+**Changed:** the Claude CLI pool reads a CLI that has exited but whose parent has not collected it (a zombie in
+`/proc`) as not running. Killing such a CLI now returns at once instead of waiting out the grace period, and it is no
+longer signalled. Without `/proc` it reads signal 0 as before.
+
+The test suites lost about 315 s of fixed waiting per pass on the testament pool. Whether production timers may
+become settings for tests is pacepace/3tears#1154; the three parameters above are part of that ruling.
+
+### testing: the integration suite runs on the testament pool
+
+**Added:** `threetears.core.testing.services`, new public testing API: Postgres 16 with pgvector, NATS JetStream and a
+moto S3 endpoint started as child processes (`running_postgres`, `running_nats`, `running_s3`), so a container with
+no Docker daemon can run integration tests. The shared fixtures in `threetears.core.testing.fixtures` use an explicit
+service URL first, then these processes when `THREETEARS_TEST_SERVICES=process`, then testcontainers as before.
+`THREETEARS_REQUIRE_SERVICES=1` turns a missing service into a failure instead of a skip. In this repo's own tests
+(`tests/pg_template.py`, not the public API), a database migrated once is cloned per test from a template
+(`STRATEGY FILE_COPY`); migration-chain and schema tests still migrate a fresh database.
+
+**Changed:** `./scripts/test-integration.sh -rs` runs the integration suite (`[suites.integration]` in
+`.testament.toml`, manifest version 3) on the testament pool: 1,327 tests in a few minutes, where a laptop took 56-91
+minutes. `--here` runs only the tests marked `docker` (they drive a Docker daemon) or `secrets` (they read a
+credential) on this machine. `check-all.sh` runs the integration suite where the pool is reachable, and where it
+cannot (no testament installed, `CI` set, or `TESTAMENT=off`) it fails at the end saying the integration suite was
+not run, exit 2. CI's `integration` job is unchanged and keeps its own service containers.
+
+### core: a shared Arrow worker that dies leaves nothing behind (#1140)
+
+**Fixed:** when a `SharedArrowPool` worker died holding a hand-off, a version or a result, the pool could hear the
+death before the kernel let the worker's lock go, and its one sweep then left those files in shared memory, counted
+against the store's bound, until an unrelated hand, publish or claim swept. The pool now sweeps again once the broken
+pool's processes are reaped.
+
+### testing: the pool is the only route, and the laptop runs tests only on purpose
+
+**Changed:** `.testament.toml` sets `fallback = "pool-only"` (testament 0.45.1 or later). A pool
+that can't take a run now fails it, exit 2, instead of running the whole suite on the
+submitting machine. The pool's selection also leaves out `loop_timing`, which CI already runs
+serially on its own runner, so a developer's pool run no longer meets those wall-clock flakes.
+
+`scripts/test.sh` sends a run that passes `-m` to the pool, where testament ANDs it with the
+manifest's own expression; it used to keep every `-m` run local. `-x`, `--maxfail`, `--lf`,
+`--ff`, `--sw` and `-n` need one local pytest process, and `-s`, `--pdb` and `--trace` need the
+terminal: a run that names only test files goes local with them, and a package or directory run
+is refused (exit 2) with how to run it, where it used to run the whole package on this machine. CLAUDE.md's example was such a run
+(`test.sh core -v -x`).
+
+When testament gives no verdict (exit 2: the pool down, no key on this machine, a client older than
+0.45.1; from testament 0.46 a pool that couldn't serve the run exits 75, which `test.sh` reports as
+its own exit 2), `test.sh` says so last and points to docs/testing.md's new "When the pool is down": CI's
+GitHub shards gate the unit suite meanwhile, and the author runs everything else locally.
+`check-all.sh` runs every suite that doesn't use the pool and then fails with "Unit suite NOT run",
+instead of stopping at the unit step. `ci-unit-tests.sh` outside CI asks for a
+`TESTAMENT_OFF_REASON` before running the unit suite on the machine it is on (`--loop-timing`
+excepted). CLAUDE.md tells agents to stop and tell the person rather than run a package or the
+suite locally.
+
+**Fixed (docs):** docs/testing.md said CI runs no integration tests; its `integration` job runs
+core, nats, epoch, scheduled-jobs and agent/acl. Its testament floor is now 0.45.1, with the
+upgrade command.
+
+### tests: the evals render tests run on the testament pool
+
+**Changed:** the evals render tests (74: headless Chromium through playwright, no Docker) carry a new `browser`
+marker instead of `integration`, so they leave `./scripts/test-integration.sh`, where they were about 51 minutes of a
+local run, and run in the unit suite. On the testament pool the image (`docker/testament.Dockerfile`) installs Chromium
+with the locked playwright and the dev box's DejaVu fonts; the GitHub evals shards of `ci.yml` and `release.yml`
+install the same. Where `THREETEARS_REQUIRE_CHROMIUM=1` (the pool's manifest and those shards set it), a browser
+that cannot launch fails these tests instead of skipping them; a successful launch is remembered for the process,
+and a failed one is retried once. The tests no longer reach the network: the reference memos' Google Fonts request
+is answered from a copy of IBM Plex in `packages/evals/tests/fixtures/plex_fonts` (SIL OFL 1.1).
+`tests/enforcement/test_browser_marker.py` holds every test that drives Chromium to the marker, and
+`tests/enforcement/test_testament_image_playwright.py` holds the image's playwright to `uv.lock`'s.
+
+**Added:** `docs/eval-report-kit/scripts/check.py --fonts DIR` answers a page's Google Fonts requests from a local copy
+and fails every other http(s) request. Without it the script fetches as before.
+
+**Changed:** `check.py` waits for the page's fonts to load and two frames to draw instead of a fixed 1.2 s per render;
+a page still loading a font after 15 s fails that render, naming the fonts. It launches Chromium with
+`--disable-dev-shm-usage` (a container's `/dev/shm` is 64 MB). Its existing arguments and checks are unchanged.
+
+**Added:** `scripts/check-fallback-fonts.sh` fails unless `sans-serif`, `system-ui`, `serif` and `monospace` resolve to
+DejaVu, the faces the package's pages draw in on the dev box. The testament image runs it at build and CI's evals
+shards before their tests.
+
+### evals: a seed reads each template revision's cases once (#1148)
+
+**Fixed:** the seed read every stored case of a template revision again for each corpus case of it, to fill names on
+nameless cases, so a boot cost a template's corpus cases times its stored cases. One production seed hydrated about
+144,000 cases over 980 corpus cases, 11.7 s of a 12.6 s boot. It now reads each revision once and indexes the names
+its live cases carry and its nameless cases by content, and it updates that index after each name it fills and each
+case it creates. Each fill still reads its case again with a token and writes conditionally on it, so a write that
+lands in between is never undone. Two races are closed on the way. A case another writer named after the seed read
+the revision ends the fill, so its name is not given to a second case of that content. A case another writer archived
+is skipped and not named.
+
 ### evals: names leave the evidence (bundle shape 66, campaign bundle shape 4; every stored analysis is regenerated once)
 
 **Changed:** names are presentation, never evidence (owner ruling, 2026-11-11). The bundle an analysis is frozen over,

@@ -299,6 +299,39 @@ def die_holding_handed(context: JobContext) -> None:
     os._exit(19)
 
 
+def die_heard_before_its_lock_goes(context: JobContext, root: str) -> None:
+    """close every descriptor but the hand-off's own files, the pipe whose closing tells the pool its worker is gone
+    among them, then wait to be killed, the hand-off's lock still held: a worker whose death the pool hears before the
+    kernel lets its lock go. A dying process's descriptors close in no order the pool can rely on, so this is the
+    order the slowest exit can take, held open.
+
+    :param root: the store's directory
+    :ptype root: str
+    :return: never
+    :rtype: None
+    """
+    assert context.tables is not None
+    handoff = Path(root) / "handoffs" / context.tables.name
+    files = {(found.st_dev, found.st_ino) for found in (entry.stat() for entry in os.scandir(handoff))}
+    listed = [int(name) for name in os.listdir("/dev/fd")]
+    kept: list[int] = []
+    for descriptor in listed:
+        try:
+            found = os.fstat(descriptor)
+        except OSError:
+            # NOSILENT: the listing's own descriptor, closed once it was listed
+            continue
+        if (found.st_dev, found.st_ino) in files:
+            kept.append(descriptor)
+    start = 3
+    for descriptor in sorted(kept):
+        os.closerange(start, descriptor)
+        start = descriptor + 1
+    os.closerange(start, max(listed) + 1)
+    time.sleep(_WAIT_SECONDS)
+    os._exit(19)
+
+
 def handed_rows(context: JobContext) -> int:
     """the rows of every table the job was handed.
 

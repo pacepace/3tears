@@ -38,18 +38,14 @@ from threetears.agent.memory.collections import (
     MemoryConsolidationsCollection,
 )
 from threetears.agent.memory.extraction import ExtractionResult, MemoryExtractor
-from threetears.agent.memory.migrations import register as register_memory
 from threetears.agent.memory.read_filter import ReadFilter
 from threetears.agent.memory.retrieval_scope import RetrievalScope
 from threetears.agent.memory.revisions import LabelsDifferError, supersede, write_once
 from threetears.agent.memory.tools import load_memory_keep_tool, load_memory_recall_tool
 from threetears.agent.memory.types import MemoryConfig
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
 
-from .conftest import AsyncpgStore
 from .memory_support import PurposeChatModelFactory, StubEmbeddings, make_pool, vec, vec_sql
 
 pytestmark = pytest.mark.integration
@@ -128,17 +124,8 @@ async def expect_filtered(world: World, read: Callable[[], Awaitable[set[str]]])
 
 
 @pytest.fixture
-async def world(pg_schema: tuple[str, str]) -> AsyncIterator[World]:
-    url, schema = pg_schema
-    runner = MigrationRunner()
-    register_conversations(runner)
-    register_memory(runner)
-    conn = await asyncpg.connect(url)
-    try:
-        await conn.execute(f'SET search_path TO "{schema}", public')
-        await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
-    finally:
-        await conn.close()
+async def world(applied_schema: tuple[str, str]) -> AsyncIterator[World]:
+    url, schema = applied_schema
     pool = await make_pool(url, schema)
     registry = CollectionRegistry()
     registry.configure(l3_pool=pool)

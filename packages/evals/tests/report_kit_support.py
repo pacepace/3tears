@@ -4,18 +4,27 @@ page holding the blocks a test hands it.
 
 The kit's scripts run under the test's own interpreter in isolated mode (``-I``), so nothing in the working
 directory shadows a module they import. The render check drives headless Chromium through playwright, which not
-every runner has; a test that needs it skips with the launch error, so a skip there names a missing browser.
+every machine has; a test that needs it carries the ``browser`` marker and skips with the launch error, so a skip
+there names a missing browser. A run that must have Chromium sets ``THREETEARS_REQUIRE_CHROMIUM=1`` (the testament
+pool's manifest does, since its image holds the browser), and there a launch that fails fails the test instead.
+
+No render reaches the network. The kit's reference memos link IBM Plex from Google Fonts (the package's own pages link
+nothing); every render here answers those requests from :data:`PLEX_FONTS`, a copy of the same faces from IBM's own
+release under the SIL Open Font License, through ``check.py --fonts``, and fails any other request off the page.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from threetears.evals.analysis import report_html
 from threetears.evals.analysis.report import Report, ReportBlock
@@ -25,6 +34,7 @@ __all__ = [
     "KIT",
     "MARKED_CHARTS",
     "Marked",
+    "PLEX_FONTS",
     "chromium_unavailable",
     "render_checked",
     "rendered",
@@ -35,6 +45,14 @@ __all__ = [
 
 #: The kit's documentation copy: its stylesheet and script, the reference memos and the scripts that build and check.
 KIT = Path(__file__).resolve().parents[3] / "docs" / "eval-report-kit"
+
+#: The IBM Plex faces the reference memos link from Google Fonts, as ``check.py --fonts`` reads them: ``fonts.css``
+#: declares each face as Google does, from IBM's own woff2 beside it (``LICENSE.txt``: SIL OFL 1.1).
+PLEX_FONTS = Path(__file__).resolve().parent / "fixtures" / "plex_fonts"
+
+#: The environment variable that makes a run require headless Chromium: set to ``1``, a launch that fails fails the
+#: test that asked for the browser rather than skipping it.
+REQUIRE_CHROMIUM = "THREETEARS_REQUIRE_CHROMIUM"
 
 
 def run_script(script: str, *args: Path) -> subprocess.CompletedProcess[str]:
@@ -48,7 +66,33 @@ def run_script(script: str, *args: Path) -> subprocess.CompletedProcess[str]:
 
 
 def chromium_unavailable() -> str | None:
-    """Why headless Chromium cannot launch here, or ``None`` when it can."""
+    """Why headless Chromium cannot launch here, or ``None`` when it can.
+
+    A launch that worked is remembered for the process. One that failed is tried once more before it counts, and a
+    failure is never remembered, so the next test asks again: one slow launch on a busy machine fails no other test.
+    Where :data:`REQUIRE_CHROMIUM` is ``1`` a launch that failed twice fails the calling test with its reason instead of
+    returning it, so a machine without the browser never reads as a skip.
+    """
+    if _launched:
+        return None
+    reason = _launch_failure()
+    if reason is not None:
+        reason = _launch_failure()
+    if reason is None:
+        _launched.add(True)
+        return None
+    if os.environ.get(REQUIRE_CHROMIUM) == "1":
+        pytest.fail(
+            f"headless Chromium cannot launch, and {REQUIRE_CHROMIUM}=1 requires it here: {reason}", pytrace=False
+        )
+    return reason
+
+
+#: Holds ``True`` once headless Chromium has launched in this process.
+_launched: set[bool] = set()
+
+
+def _launch_failure() -> str | None:
     probe = subprocess.run(
         [
             sys.executable,
@@ -56,7 +100,7 @@ def chromium_unavailable() -> str | None:
             "-c",
             "from playwright.sync_api import sync_playwright\n"
             "with sync_playwright() as p:\n"
-            "    p.chromium.launch().close()\n",
+            "    p.chromium.launch(args=['--disable-dev-shm-usage']).close()\n",
         ],
         capture_output=True,
         text=True,
@@ -70,30 +114,41 @@ def chromium_unavailable() -> str | None:
 
 
 def render_checked(page: Path, shots: Path) -> tuple[subprocess.CompletedProcess[str], list[str]]:
-    """``scripts/check.py`` run on ``page``, its screenshots in ``shots``: the run, and its line for each of the eight
-    renders (1200, 1104, 688 and 390 px, light and dark)."""
-    checked = run_script("check.py", page, Path("--out"), shots)
+    """``scripts/check.py`` run on ``page``, its screenshots in ``shots`` and its fonts from :data:`PLEX_FONTS`: the run,
+    and its line for each of the eight renders (1200, 1104, 688 and 390 px, light and dark)."""
+    checked = run_script("check.py", page, Path("--out"), shots, Path("--fonts"), PLEX_FONTS)
     runs = [line for line in checked.stdout.splitlines() if "px" in line and "scrollWidth=" in line]
     return checked, runs
 
 
-#: Loads a page in headless Chromium at a width (1200 px unless given), waits for its script to draw and its fonts to load, runs a probe
-#: (a JavaScript function's source, from stdin) and prints its result with every console error and page error.
+#: Loads a page in headless Chromium at a width (1200 px unless given), its fonts answered as ``check.py --fonts``
+#: answers them, waits as ``check.py`` does for its fonts to load and its script to draw, runs a probe (a JavaScript
+#: function's source, from stdin) and prints its result with every console error and page error.
 _PROBE_RUNNER = """
-import json, pathlib, sys
-from playwright.sync_api import sync_playwright
-page_path, width, probe = pathlib.Path(sys.argv[1]), int(sys.argv[2]), sys.stdin.read()
-errors = []
-with sync_playwright() as p:
-    browser = p.chromium.launch()
-    page = browser.new_page(viewport={"width": width, "height": 900})
-    page.on("pageerror", lambda e: errors.append(str(e)))
-    page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
-    page.goto(page_path.resolve().as_uri())
-    page.wait_for_timeout(600)
-    result = page.evaluate(probe)
-    browser.close()
-print(json.dumps({"result": result, "errors": errors}))
+import asyncio, json, pathlib, re, sys
+page_path, width, fonts, scripts = pathlib.Path(sys.argv[1]), int(sys.argv[2]), pathlib.Path(sys.argv[3]), sys.argv[4]
+sys.dont_write_bytecode = True  # importing check.py leaves no __pycache__ in the kit
+sys.path.insert(0, scripts)
+from check import offline, settle
+from playwright.async_api import async_playwright
+
+async def main(probe):
+    errors = []
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(args=["--disable-dev-shm-usage"])
+        page = await browser.new_page(viewport={"width": width, "height": 900})
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+        blocked = []
+        await page.route(re.compile(r"^https?://"), offline(fonts, blocked))
+        await page.goto(page_path.resolve().as_uri())
+        errors += await settle(page)
+        result = await page.evaluate(probe)
+        errors += [f"blocked: {url}" for url in blocked]
+        await browser.close()
+    return {"result": result, "errors": errors}
+
+print(json.dumps(asyncio.run(main(sys.stdin.read()))))
 """
 
 
@@ -101,7 +156,7 @@ def rendered(page: Path, probe: str, *, width: int = 1200) -> tuple[Any, list[st
     """``page`` as headless Chromium draws it at ``width`` px: what the JavaScript function ``probe`` returns once the
     page's script has run, and every console error and page error it logged."""
     run = subprocess.run(
-        [sys.executable, "-I", "-c", _PROBE_RUNNER, str(page), str(width)],
+        [sys.executable, "-I", "-c", _PROBE_RUNNER, str(page), str(width), str(PLEX_FONTS), str(KIT / "scripts")],
         input=probe,
         capture_output=True,
         text=True,

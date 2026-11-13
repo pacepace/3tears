@@ -1,16 +1,21 @@
-"""canonical pytest fixtures for testcontainer-backed integration tests.
+"""canonical pytest fixtures for the services integration tests talk to.
 
 downstream test repos pull these via::
 
     pytest_plugins = ["threetears.core.testing.fixtures"]
 
-every fixture here gates on :func:`check_docker_available` and calls
-``pytest.skip`` when the daemon is unreachable. tests inheriting
-these fixtures behave correctly on a fresh checkout without docker
-installed: they skip cleanly instead of hard-failing on
-``ConnectionRefusedError``.
+each session service comes from the first of: an explicit URL
+(``THREETEARS_TEST_POSTGRES_URL`` / ``THREETEARS_TEST_NATS_URL``, CI's
+service containers); a child process, under
+``THREETEARS_TEST_SERVICES=process`` (the testament pool, whose
+container has no Docker daemon); or a testcontainer.
+:mod:`threetears.core.testing.services` starts the last two. a service
+that is not there -- docker unreachable on a fresh checkout, a binary
+missing -- skips the test cleanly instead of hard-failing on
+``ConnectionRefusedError``, unless ``THREETEARS_REQUIRE_SERVICES=1``
+makes it a failure (see :func:`~threetears.core.testing.services.require_services`).
 
-session-scoped containers + their connection URIs are the public
+session-scoped services + their connection URIs are the public
 surface here; per-test fixtures (HTTP clients, NATS connections,
 db pools) belong in the consuming repo's conftest because their
 shape varies (auth headers / connection-pool config / namespace
@@ -18,7 +23,7 @@ prefix / etc.).
 
 DO NOT define your own postgres / nats container fixtures in
 per-repo conftests. import these and wrap them with the
-repo-specific shape if you need it. the docker-skip discipline +
+repo-specific shape if you need it. the missing-service discipline +
 asyncpg URL normalisation + jetstream toggle have been audited
 exactly once and we want to keep it that way.
 """
@@ -27,7 +32,6 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import contextlib
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Final
 
@@ -37,6 +41,7 @@ import asyncpg
 import pytest
 
 from threetears.core.testing.containers import check_docker_available, stagger_container_start
+from threetears.core.testing.services import require_services, running_nats, running_postgres, running_s3
 
 if TYPE_CHECKING:
     from testcontainers.core.container import DockerContainer
@@ -232,13 +237,17 @@ def check_engine(url: str | None) -> None:
 
 @pytest.fixture(scope="session")
 def db_container(db_image: str) -> Iterator[str]:
-    """session-scoped postgres testcontainer.
+    """session-scoped postgres: a URL given, a child process, or a testcontainer.
 
     yields the asyncpg-compatible connection URL (``postgresql://``,
     NOT ``postgresql+psycopg2://`` -- the testcontainers default
-    suffix gets normalised here). gated on docker availability:
-    fresh checkouts without docker get a clean ``pytest.skip``
-    instead of a connection-refused stack trace.
+    suffix gets normalised). ``THREETEARS_TEST_POSTGRES_URL`` names a
+    server already running; else
+    :func:`~threetears.core.testing.services.running_postgres` starts
+    one, as a child process under ``THREETEARS_TEST_SERVICES=process``
+    (the image's major) or as a testcontainer of ``db_image``. without
+    either, a fresh checkout gets a clean skip instead of a
+    connection-refused stack trace.
 
     the image defaults to ``pgvector/pgvector:pg16`` (see
     :func:`db_image`) so the shared session container is vector-capable
@@ -260,31 +269,20 @@ def db_container(db_image: str) -> Iterator[str]:
         yield provided
         return
 
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-    stagger_container_start()
-
-    from testcontainers.community.postgres import PostgresContainer  # noqa: PLC0415
-
-    with PostgresContainer(db_image) as container:
-        raw_url = container.get_connection_url()
-        normalised = raw_url
-        if normalised.startswith("postgresql+psycopg2://"):
-            normalised = normalised.replace(
-                "postgresql+psycopg2://",
-                "postgresql://",
-                1,
-            )
-        yield normalised
+    with running_postgres(db_image) as url:
+        yield url
 
 
 @pytest.fixture(scope="session")
 def nats_container(nats_jetstream: bool, nats_system_account: bool) -> Iterator[str]:
-    """session-scoped NATS testcontainer.
+    """session-scoped NATS: a URL given, a child process, or a testcontainer.
 
-    yields the ``nats://`` connection URI from the container.
-    gated on docker availability with the same skip-on-no-docker
-    discipline as :func:`db_container`.
+    yields the ``nats://`` connection URI. ``THREETEARS_TEST_NATS_URL``
+    names a server already running; else
+    :func:`~threetears.core.testing.services.running_nats` starts
+    :data:`NATS_TEST_IMAGE`'s nats-server, as a child process or a
+    testcontainer, with the same missing-service discipline as
+    :func:`db_container`.
 
     JetStream is enabled by default; override ``nats_jetstream``
     in your conftest to disable it. Unless ``nats_system_account`` is
@@ -310,13 +308,9 @@ def nats_container(nats_jetstream: bool, nats_system_account: bool) -> Iterator[
         yield provided
         return
 
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-    stagger_container_start()
-
-    container = nats_server(config=_nats_container_config(jetstream=nats_jetstream, system_account=nats_system_account))
-    with container:
-        yield nats_server_uri(container)
+    config = _nats_container_config(jetstream=nats_jetstream, system_account=nats_system_account)
+    with running_nats(config, image=NATS_TEST_IMAGE) as server:
+        yield server.uri
 
 
 def nats_server(image: str = NATS_TEST_IMAGE, *, config: str | None = None) -> DockerContainer:
@@ -402,7 +396,10 @@ def s3_credentials() -> tuple[str, str]:
 
 @pytest.fixture(scope="session")
 def s3_container(s3_credentials: tuple[str, str]) -> Iterator[tuple[str, str]]:
-    """session-scoped S3-compatible testcontainer, yielding (endpoint, bucket).
+    """session-scoped S3-compatible server (moto), yielding (endpoint, bucket).
+
+    :func:`~threetears.core.testing.services.running_s3` starts it: a child
+    process under ``THREETEARS_TEST_SERVICES=process``, else a testcontainer.
 
     **The container is the point.** These tests previously addressed a MinIO
     assumed to be already running at ``localhost:9000`` with a bucket someone
@@ -415,104 +412,24 @@ def s3_container(s3_credentials: tuple[str, str]) -> Iterator[tuple[str, str]]:
     **Why not MinIO.** Nothing here needs an object store that is also a
     product; it needs something that answers the S3 API honestly and gets out
     of the way. ``motoserver/moto`` is Apache-2.0, is the reference AWS mock in
-    the Python ecosystem, needs no auth token, and adds no Python dependency --
-    the generic container runs the image and ``aiobotocore`` talks to it
-    exactly as it talks to S3. (LocalStack, the other obvious candidate, was
+    the Python ecosystem, needs no auth token, and the container route adds no
+    Python dependency -- the generic container runs the image and
+    ``aiobotocore`` talks to it exactly as it talks to S3 (process mode runs
+    the same server from the lockfile's ``moto[server]``). (LocalStack, the other obvious candidate, was
     archived as an OSS project in March 2026 and now requires a token to
     start, which is precisely the kind of weather a test dependency should not
     have.)
 
-    The bucket is created HERE rather than left to each test, because a bucket
+    The bucket is created with the server rather than left to each test, because a bucket
     is part of "an S3 exists", not part of what any single test is asserting.
 
-    :param s3_credentials: access/secret pair the container will accept
+    :param s3_credentials: access/secret pair the server will accept
     :ptype s3_credentials: tuple[str, str]
-    :yield: the container's endpoint URL and the created bucket name
+    :yield: the server's endpoint URL and the created bucket name
     :rtype: Iterator[tuple[str, str]]
     """
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-    stagger_container_start()
-
-    import time  # noqa: PLC0415
-    import urllib.error  # noqa: PLC0415
-    import urllib.request  # noqa: PLC0415
-
-    import boto3  # noqa: PLC0415
-    from testcontainers.core.container import DockerContainer  # noqa: PLC0415
-
-    access_key, secret_key = s3_credentials
-    bucket = "threetears-test-objects"
-
-    with (
-        DockerContainer("motoserver/moto:latest").with_exposed_ports(5000) as container,
-        _direct_to(container.get_container_host_ip()),
-    ):
-        host = container.get_container_host_ip()
-        port = container.get_exposed_port(5000)
-        endpoint = f"http://{host}:{port}"
-
-        # Readiness is "answers an S3 call", not "the port accepts a socket".
-        # The listener binds before the app is ready to route, so a bare
-        # connect check hands the first real request a 502.
-        deadline = time.monotonic() + 60
-        while True:
-            try:
-                with urllib.request.urlopen(endpoint, timeout=5) as probe:  # noqa: S310
-                    if probe.status < 500:
-                        break
-            except urllib.error.HTTPError as exc:
-                # An HTTP error IS a served response: the app is up and simply
-                # dislikes a bare GET at the root, which is all this probe
-                # needed to learn.
-                if exc.code < 500:
-                    break
-            except urllib.error.URLError, OSError:
-                # NOSILENT: a refused or reset connection IS the not-ready
-                # signal this loop polls for. Never becoming ready is the
-                # failure that matters, and it is raised at the deadline.
-                pass
-            if time.monotonic() > deadline:
-                pytest.fail(f"S3 testcontainer at {endpoint} never answered")
-            time.sleep(0.5)
-
-        boto3.client(
-            "s3",
-            endpoint_url=endpoint,
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-            region_name="us-east-1",
-        ).create_bucket(Bucket=bucket)
-
+    with running_s3(s3_credentials) as (endpoint, bucket):
         yield endpoint, bucket
-
-
-@contextlib.contextmanager
-def _direct_to(host: str) -> Iterator[None]:
-    """Reach ``host`` without the environment's HTTP proxy while the block runs.
-
-    A test talks to its own container, never through an egress proxy: behind one
-    (a dev container with ``HTTP_PROXY`` set), urllib, boto3 and aiobotocore all
-    sent the request for the S3 container's bridge address to the proxy, which
-    cannot reach it, and the fixture failed with "never answered". Adding the
-    host to ``NO_PROXY`` is what every one of those clients honours.
-
-    :param host: the container's host address
-    :ptype host: str
-    :yield: nothing
-    :rtype: Iterator[None]
-    """
-    saved = {name: os.environ.get(name) for name in ("NO_PROXY", "no_proxy")}
-    for name, value in saved.items():
-        os.environ[name] = f"{value},{host}" if value else host
-    try:
-        yield
-    finally:
-        for name, value in saved.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
 
 
 def _outbound_proxy_by_ip() -> str | None:
@@ -647,7 +564,7 @@ def searxng_container() -> Iterator[str]:
         return
 
     if not check_docker_available():
-        pytest.skip("Docker not available")
+        require_services("Docker not available")
     stagger_container_start()
 
     import time  # noqa: PLC0415

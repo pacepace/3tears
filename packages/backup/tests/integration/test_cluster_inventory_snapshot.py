@@ -30,7 +30,7 @@ from uuid import uuid4
 import asyncpg
 import pytest
 from pydantic import SecretStr
-from threetears.core.testing.containers import check_docker_available
+from threetears.core.testing.services import require_services, running_postgres
 
 from threetears.backup.cluster import ClusterBackup
 from threetears.backup.config import BackupConfig
@@ -38,10 +38,19 @@ from threetears.object_store.filesystem import FilesystemObjectStore
 
 _TOOLS_PRESENT = all(shutil.which(tool) for tool in ("pg_dump", "pg_dumpall", "pg_restore"))
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(not _TOOLS_PRESENT, reason="pg_dump/pg_dumpall/pg_restore not on PATH"),
-]
+pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _client_tools() -> None:
+    """stop the module unless the Postgres client tools it shells out to are on PATH (a failure on the pool).
+
+    :return: None
+    :rtype: None
+    """
+    if not _TOOLS_PRESENT:
+        require_services("pg_dump/pg_dumpall/pg_restore not on PATH")
+
 
 _SEEDED_ROWS = 3
 
@@ -108,12 +117,7 @@ async def cluster(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[tup
     :yield: (admin dsn, seeded database name, the cluster backup, the injecting connect)
     :rtype: AsyncIterator[tuple[str, str, ClusterBackup, Any]]
     """
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-    from testcontainers.community.postgres import PostgresContainer  # noqa: PLC0415
-
-    with PostgresContainer(_server_image()) as container:
-        admin_dsn = container.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
+    with running_postgres(_server_image()) as admin_dsn:
         parsed = urlsplit(admin_dsn)
         database = f"seeded_{uuid4().hex[:8]}"
 
