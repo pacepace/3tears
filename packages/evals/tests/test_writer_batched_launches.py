@@ -46,6 +46,7 @@ from threetears.evals.kernel.errors import StorageError, ValidationFailedError
 from threetears.evals.ops import OpsHost, job_poll
 from threetears.evals.ops.report_writer.preference import preference_rubric
 from threetears.evals.ops.report_writer.writer_contract import (
+    BOUNCES_MEASURE,
     FINISHED_MEASURE,
     MUST_FIX_OPEN_MEASURE,
     writer_scoring_rubric,
@@ -750,15 +751,16 @@ async def _verdicts(result: WriterResult) -> list[tuple[str, str, float | None]]
     return sorted((verdict.kind, verdict.name, verdict.interval_level) for verdict in read.verdicts)
 
 
-async def _finished(result: WriterResult) -> Verdict:
-    """The candidate's one Report finished reading against the control, as the campaign's verdicts read it."""
+async def _finished(result: WriterResult, name: str = FINISHED_MEASURE) -> Verdict:
+    """The candidate's one contrast against the control on ``name`` (Report finished unless named), as the campaign's
+    verdicts read it."""
     verdicts = await asyncio.to_thread(campaign_verdicts, result.host, result.campaign_id, SCOPE)
-    (finished,) = [
+    (found,) = [
         verdict
         for verdict in verdicts
-        if verdict.name == FINISHED_MEASURE and verdict.kind == "contrast" and verdict.arm == CANDIDATE
+        if verdict.name == name and verdict.kind == "contrast" and verdict.arm == CANDIDATE
     ]
-    return finished
+    return found
 
 
 async def test_a_batch_that_stored_no_page_on_either_arm_joins_its_arms_setup_and_adds_no_second_set_of_readings(
@@ -803,8 +805,18 @@ async def test_a_batch_that_stored_no_page_on_either_arm_joins_its_arms_setup_an
     with_them, without = await _verdicts(result), await _verdicts(alone)
     assert [(kind, name) for kind, name, _ in with_them] == [(kind, name) for kind, name, _ in without]
     assert len(with_them) == len({name for _, name, _ in with_them})
+    # Only the readings an unwritten report carries a value on move: whether the report was finished, and the
+    # submissions sent back on the way to writing none. Every other reading, each judged one among them, reads at the
+    # level it reads without the four cases.
+    moved = {FINISHED_MEASURE, BOUNCES_MEASURE}
+    assert [verdict for verdict in with_them if verdict[1] not in moved] == [
+        verdict for verdict in without if verdict[1] not in moved
+    ]
+    assert moved <= {name for _, name, _ in with_them}
     finished = await _finished(result)
     assert finished.delta == pytest.approx(0.0), "both arms left the same four reports unwritten"
+    bounced = await _finished(result, BOUNCES_MEASURE)
+    assert bounced.delta == pytest.approx(0.0), "both arms sent back the same submissions on the four cases"
     assert offline == []
 
 
