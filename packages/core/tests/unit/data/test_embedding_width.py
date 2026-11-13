@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
@@ -149,7 +150,7 @@ class _RecordingPool:
 
 def _collection(pool: _RecordingPool) -> _NotesCollection:
     registry = CollectionRegistry()
-    registry.configure(l3_pool=pool)
+    registry.configure(l3_pool=SqlL3Backend(pool))  # the registry's own wrap of a raw pool
     return _NotesCollection(registry, DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""))
 
 
@@ -271,7 +272,7 @@ class TestAMisfitVectorIsRefusedBeforeAnyStatement:
     async def test_a_derived_width_is_the_one_enforced(self) -> None:
         pool = _RecordingPool()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=pool)
+        registry.configure(l3_pool=SqlL3Backend(pool))  # the registry's own wrap of a raw pool
 
         class _WideNotes(_NotesCollection):
             schema = schema_with_embedding_dim(_SCHEMA, 6)
