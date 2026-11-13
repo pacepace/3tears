@@ -880,6 +880,57 @@ def test_an_index_a_dependency_declares_is_the_dependency_s_to_judge(tmp_path: P
     assert not any("on coordination_redemptions" in finding for finding in findings), findings
 
 
+def test_a_table_list_copy_of_a_dependency_s_pattern_named_index_is_the_dependency_s(tmp_path: Path) -> None:
+    """Flips if the repo's table-list copy of an index a dependency names at run time (3tears' source_tokens_schema:
+    ``f"{name}_by_signal_c"``) is asked a purpose by the repo's gate (reports #38: the pattern matched only a copy
+    declared on the same side), or if a copy whose name the pattern does not make escapes the repo's gate."""
+    dependency = tmp_path / "dep"
+    dependency.mkdir()
+    (dependency / "tokens.py").write_text(
+        textwrap.dedent(
+            """
+            from threetears.core.collections.schema_backed import Index, TableSchema
+
+            def source_tokens_schema(name: str):
+                return TableSchema(
+                    name=name,
+                    primary_key="signal",
+                    columns=[],
+                    indexes=(
+                        Index(
+                            f"{name}_by_signal_c",
+                            "signal",
+                            purpose="dep/tokens.py::clear_signals",
+                            plan_test="dep/test_tokens.py::test_plan",
+                        ),
+                    ),
+                )
+            """
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "src").mkdir()
+    listed = """
+    providers:
+    - tables:
+      - name: source_tokens
+        columns: [{name: signal}, {name: owner}]
+        primary_key: [signal]
+        indexes:
+        - name: source_tokens_by_signal_c
+          columns: [signal]
+        - name: source_tokens_by_owner
+          columns: [owner]
+    """
+    (tmp_path / "tables.yaml").write_text(textwrap.dedent(listed), encoding="utf-8")
+    catalog = collect_schema(tmp_path, (tmp_path / "src",), dependency_roots=(dependency,))
+    findings = index_findings(catalog, tmp_path, set())
+    assert not any("source_tokens_by_signal_c" in finding for finding in findings), findings
+    assert any("index source_tokens_by_owner on source_tokens: index-no-purpose" in finding for finding in findings), (
+        findings
+    )
+
+
 _RING = """
     from threetears.core.collections.schema_backed import quote_identifier
 

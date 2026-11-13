@@ -2070,6 +2070,17 @@ def collect_schema(
     return catalog
 
 
+def _from_table_list(site: _DeclaredIndex) -> bool:
+    """whether an index was declared in a YAML table list (its origin ``<path>.yaml:<line>``).
+
+    :param site: the declaration
+    :ptype site: _DeclaredIndex
+    :return: whether it was
+    :rtype: bool
+    """
+    return site.origin.rpartition(":")[0].endswith((".yaml", ".yml"))
+
+
 def _resolve_patterns(catalog: SchemaCatalog) -> None:
     """give each index declared under a name built at run time (``f"{self.name}_by_state"``) the purpose, plan test
     and reason its declaration carries, on every table index the name makes; the table list's copies of it are then
@@ -2081,13 +2092,25 @@ def _resolve_patterns(catalog: SchemaCatalog) -> None:
     :rtype: None
     """
     patterns = [site for site in catalog.sites if site.pattern]
+    # a dependency's template table (``TableSchema(name=name)`` in a function) names its indexes at run time too:
+    # the repo's table-list copies of them are the dependency's (reports #38, source_tokens_schema)
+    patterns += [
+        index
+        for template in catalog.templates.values()
+        for index in template.indexes.values()
+        if index.pattern and not index.local
+    ]
     covered: set[int] = set()
     for site in catalog.sites:
         if site.pattern or not site.table:
             continue
         for pattern in patterns:
-            if re.fullmatch(pattern.pattern, site.name) and pattern.local == site.local:
+            # the repo's table-list copy of an index its dependency names at run time is the dependency's
+            listed_copy = site.local and not pattern.local and _from_table_list(site)
+            if re.fullmatch(pattern.pattern, site.name) and (pattern.local == site.local or listed_copy):
                 covered.add(id(site))
+                if listed_copy:
+                    catalog.dependency_indexes.add((site.table, site.name))
                 table = catalog.tables.get(site.table)
                 index = table.indexes.get(site.name) if table is not None else None
                 if index is not None:
