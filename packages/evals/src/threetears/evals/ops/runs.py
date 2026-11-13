@@ -547,7 +547,8 @@ async def run_launch(host: OpsHost, arguments: LaunchArguments, scope_id: str) -
     :ptype arguments: LaunchArguments
     :param scope_id: The scope the template is read in and the runs live in.
     :ptype scope_id: str
-    :return: The launch's one job (``launch:<launch id>``); its target is the template.
+    :return: The launch's one job (``launch:<launch id>``); its target is the template. Its ``notices`` say what
+        admission found and did not refuse it for: a served-model check that could not be made.
     :rtype: JobsStarted
     :raises NotFoundError: The template is not in the scope.
     :raises AdmissionRefusedError: The runs would pass the host's admission ceiling.
@@ -585,7 +586,8 @@ async def run_launch(host: OpsHost, arguments: LaunchArguments, scope_id: str) -
         arm_schedule=resolve_arm_schedule(arguments.arm_schedule, measure_latency=arguments.measure_latency),
     )
     label = ", ".join(arguments.models) or "the kind's default model"
-    return await start_job(host, AdmittedJob(work=work, kind="launch", target_id=arguments.template_id, label=label))
+    started = await start_job(host, AdmittedJob(work=work, kind="launch", target_id=arguments.template_id, label=label))
+    return started.model_copy(update={"notices": list(admitted.notices)})
 
 
 def run_archive(host: EvalHost, run_id: str, scope_id: str, *, archived: bool) -> RunLine:

@@ -45,6 +45,7 @@ from threetears.evals.schema.completion import (
     CompletionProtocolDefect,
     CompletionResult,
     JSON_OBJECT_RESPONSE_FORMAT,
+    ModelListing,
     StopReason,
     sent_settings_of,
 )
@@ -466,6 +467,7 @@ __all__ = [
     "LabelKey",
     "LatencyMetrics",
     "MeasureDeclaration",
+    "ModelListing",
     "ModelRoleOrigin",
     "RoleModelOrigin",
     "ApparatusSettingValue",

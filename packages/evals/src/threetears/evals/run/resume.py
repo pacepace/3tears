@@ -48,8 +48,8 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any, Literal
+from dataclasses import dataclass, replace
+from typing import Any, Literal, NamedTuple
 
 from pydantic import Field
 
@@ -431,6 +431,8 @@ class RunResumption:
         one run cannot both win.
     :ivar max_cost_usd: The cost cap it is taken up under: a raised one, or the one it recorded; ``None`` inherits
         the host's.
+    :ivar notices: What checking its take-up told the caller beside admitting it (a served-model check that could
+        not be made), set by :func:`take_up_arms`; empty until checked, and when there was nothing to tell.
     """
 
     run: EvalRun
@@ -442,6 +444,7 @@ class RunResumption:
     cell_order_seed: str | None
     etag: str | None
     max_cost_usd: float | None
+    notices: tuple[str, ...] = ()
 
     def take_up(
         self, fresh: EvalRun, template: EvalTemplate, profile: HostProfile
@@ -778,15 +781,28 @@ async def _run_resumption(
     )
 
 
-async def start_take_up(host: LaunchHost, resuming: RunResumption) -> EvalRun:
+class TakenUp[R](NamedTuple):
+    """A take-up started, and what admitting it told its caller beside starting it.
+
+    :ivar record: The run, or the launch, as its take-up started it.
+    :ivar notices: Each sentence admission told the caller and did not refuse for, such as a served-model check
+        that could not be made because the provider's model list could not be read; empty when there was none.
+    """
+
+    record: R
+    notices: tuple[str, ...]
+
+
+async def start_take_up(host: LaunchHost, resuming: RunResumption) -> TakenUp[EvalRun]:
     """Take a planned run up again in a group of its own: its launch replayed and compared, the run reopened, started.
 
     :param host: The host, whose launcher wires the run and whose job manager holds it.
     :ptype host: LaunchHost
     :param resuming: The run, as :func:`_run_resumption` planned it.
     :ptype resuming: RunResumption
-    :return: The run, reopened and started.
-    :rtype: EvalRun
+    :return: The run, reopened and started, and what its admission told the caller (:attr:`AdmittedLaunch.notices
+        <threetears.evals.run.launch.AdmittedLaunch.notices>`).
+    :rtype: TakenUp[EvalRun]
     :raises ValidationFailedError: It would measure otherwise now (every difference named), or a launch of it would be
         refused now.
     :raises NotFoundError: Its template is gone.
@@ -807,7 +823,7 @@ async def start_take_up(host: LaunchHost, resuming: RunResumption) -> EvalRun:
         len(resuming.stored.done),
         len(resuming.stored.replaced),
     )
-    return started
+    return TakenUp(started, admitted.notices)
 
 
 async def resume_run(host: LaunchHost, run_id: str, scope_id: str, *, max_cost_usd: float | None = None) -> EvalRun:
@@ -845,10 +861,36 @@ async def resume_run(host: LaunchHost, run_id: str, scope_id: str, *, max_cost_u
         started.
     :raises AdmissionRefusedError: The host has no room for another run.
     """
+    return (await take_up_run(host, run_id, scope_id, max_cost_usd=max_cost_usd)).record
+
+
+async def take_up_run(
+    host: LaunchHost, run_id: str, scope_id: str, *, max_cost_usd: float | None = None
+) -> TakenUp[EvalRun]:
+    """:func:`resume_run`, answering what its admission told the caller beside the run it started.
+
+    What a transport's resume returns to its caller (``job_resume``): a served-model check skipped because the
+    provider's model list could not be read is said there, not only logged.
+
+    :param host: As :func:`resume_run` takes it.
+    :ptype host: LaunchHost
+    :param run_id: As :func:`resume_run` takes it.
+    :ptype run_id: str
+    :param scope_id: As :func:`resume_run` takes it.
+    :ptype scope_id: str
+    :param max_cost_usd: As :func:`resume_run` takes it.
+    :ptype max_cost_usd: float | None
+    :return: The run, reopened and started, and the notices.
+    :rtype: TakenUp[EvalRun]
+    :raises NotFoundError: As :func:`resume_run` raises it.
+    :raises ValidationFailedError: As :func:`resume_run` raises it.
+    :raises ConflictError: As :func:`resume_run` raises it.
+    :raises AdmissionRefusedError: As :func:`resume_run` raises it.
+    """
     return await start_take_up(host, await _run_resumption(host, run_id, scope_id, max_cost_usd=max_cost_usd))
 
 
-async def _check_take_up(host: LaunchHost, resuming: RunResumption) -> None:
+async def _check_take_up(host: LaunchHost, resuming: RunResumption) -> tuple[str, ...]:
     """Replay a planned run's launch and compare it, as its take-up will, then release what the launch built.
 
     For a take-up of several runs that must refuse before any of them is started: each run's launch is replayed
@@ -859,6 +901,9 @@ async def _check_take_up(host: LaunchHost, resuming: RunResumption) -> None:
     :ptype host: LaunchHost
     :param resuming: The run, as :func:`_run_resumption` planned it.
     :ptype resuming: RunResumption
+    :return: What its admission told the caller beside admitting it (:attr:`LaunchGroup.notices
+        <threetears.evals.run.launch.LaunchGroup.notices>`).
+    :rtype: tuple[str, ...]
     :raises ValidationFailedError: It would measure otherwise now (every difference named), or a launch of it would be
         refused now.
     :raises NotFoundError: Its template is gone.
@@ -866,6 +911,7 @@ async def _check_take_up(host: LaunchHost, resuming: RunResumption) -> None:
     group = LaunchGroup(candidate_models=[resuming.run.candidate_model])
     try:
         await (await admit_resumed_run(host, resuming, launch_group=group)).start()
+        return tuple(group.notices)
     finally:
         await group.abandon()
 
@@ -886,7 +932,8 @@ async def take_up_arms(
     :ptype scope_id: str
     :param max_cost_usd: The cost cap each run is taken up under; ``None`` keeps each run's own.
     :ptype max_cost_usd: float | None
-    :return: Each arm's planned take-up by label, and each arm's refusal, its message naming the arm.
+    :return: Each arm's planned take-up by label, carrying what checking it told the caller
+        (:attr:`RunResumption.notices`), and each arm's refusal, its message naming the arm.
     :rtype: tuple[dict[str, RunResumption], list[ValidationFailedError]]
     :raises NotFoundError: A run is gone, or its template is.
     """
@@ -895,11 +942,11 @@ async def take_up_arms(
     for label, run_id in arms:
         try:
             resuming = await _run_resumption(host, run_id, scope_id, max_cost_usd=max_cost_usd)
-            await _check_take_up(host, resuming)
+            notices = await _check_take_up(host, resuming)
         except ValidationFailedError as refused:
             refusals.append(ValidationFailedError(f"arm {label!r}: {refused.message}", remedy=refused.remedy))
             continue
-        planned[label] = resuming
+        planned[label] = replace(resuming, notices=notices)
     return planned, refusals
 
 
@@ -991,7 +1038,7 @@ def refuse_a_job_not_taken_up(
 
 async def resume_launch(
     host: LaunchHost, launch_id: str, scope_id: str, *, max_cost_usd: float | None = None
-) -> EvalLaunch:
+) -> TakenUp[EvalLaunch]:
     """Take a launch up again as the same launch: its unfinished runs taken up together, as one group under its id.
 
     A launch's job that was lost, cancelled, or ran out of its preparation's budget after its runs started is taken up
@@ -1012,8 +1059,9 @@ async def resume_launch(
     :param max_cost_usd: The cost cap every run is taken up under; ``None`` keeps each run's own (see
         :func:`resume_run`). Each run's holding records the cap it ran under.
     :ptype max_cost_usd: float | None
-    :return: The launch's record as its job started.
-    :rtype: EvalLaunch
+    :return: The launch's record as its job started, and what checking its runs' take-up told the caller beside
+        admitting them (a served-model check that could not be made), each once.
+    :rtype: TakenUp[EvalLaunch]
     :raises NotFoundError: There is no such launch, or a run's template is gone.
     :raises ValidationFailedError: The launch cannot be taken up (still running, completed, failed, or it started no
         run), every run it started has ended, or a run cannot be taken up — every run's refusal named.
@@ -1099,7 +1147,7 @@ async def resume_launch(
         epoch,
         len(taking_up),
     )
-    return started
+    return TakenUp(started, tuple(dict.fromkeys(notice for resuming in taking_up for notice in resuming.notices)))
 
 
 #: The statuses a run :func:`resume_run` takes up has ended with: ``cancelled`` (lost, or cancelled by an operator),
@@ -1380,6 +1428,8 @@ __all__ = [
     "resume_launch",
     "resume_run",
     "start_take_up",
+    "TakenUp",
     "take_up_arms",
+    "take_up_run",
     "write_taken_up",
 ]

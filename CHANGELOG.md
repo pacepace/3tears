@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a negative value on a measure declared non-negative is named
+
+**Added:** `AnalysisContextBundle.negative_values` (a list of `NegativeValues`: measure, arm, the number of results, and
+up to `NEGATIVE_VALUE_IDS_SHOWN` result ids), written only when a result recorded a value below zero on a measure
+declared `nonnegative`. A page's methods says so in one line per measure and arm ("Parcels sent, alpha: 3 results
+recorded a negative value on a measure declared non-negative (a host bug); they are drawn at 0."), the report input
+carries the same line in `caveats.unreported`, and assembly logs a WARNING naming the measure and the first ids. The
+clamp is unchanged: a negative value is still drawn at 0, and nothing is refused at store time.
+
+The bundle shape stays 66 and the campaign bundle's 4. A bundle with no such result is byte for byte what it was, so no
+stored analysis is staled; one with such a result fingerprints differently, since the count is evidence it read.
+
+### evals: one arm states one cost on a page
+
+**Changed:** an arm whose cost measure holds no figure but whose scoreboard row holds a cost per reply now states that
+cost in the full results' arms-by-measure table, in the writer's `cost_per_1k.<arm>` key and in every figure that reads
+the page's cost, as the options table already did; before, the full results table showed a dash and the key did not
+exist for that arm. One function in `figure_keys` now owns the rule, and both tables read it. The money form still
+differs on purpose: full results prints a partly priced arm's priced share beside its cost. The writer's cost tally sums
+turn costs with `math.fsum`, as the ledger does. Only an input with such an arm renders differently.
+
+**Added:** `figure_keys.cost_in_measure_unit`.
+
 ### tests wait for events, not fixed sleeps; four production changes came with it
 
 **Added:**
@@ -123,6 +146,59 @@ reservation would set aside judging the arm could afford. Each run is held to it
 another, so the arm stays within its part. The batched launch loop logs each batch it launches, what it reserved and
 the cap each run got (`eval.writer_batch_launch`), what each run spent and how it ended (`eval.writer_batch_ran`), and
 a stop at the spend cap (`eval.writer_batch_cap_stop`).
+
+### evals: no field is markup in a report's Markdown (#973)
+
+**Fixed:** a report's Markdown escaped HTML only where a line began, so a `<script>`, `<img onerror=...>` or `<link>` in a
+field (model-written prose, an arm or stratum name, an excerpt, a title) passed through to any host that renders
+Markdown with raw HTML on. Every string a field supplies is now escaped wherever it sits: the `# title` line, a
+heading, a bold lead-in or verdict, a `<summary>`, a fold's name, a table or chart cell and a goal check's name and
+aspect, in the campaign page, an aspect's report, a report document's page and its evidence record, and in
+`pairwise.md` and the writer result's tables. A `<` that opens a tag, a closing tag, a comment or an autolink, and an
+`&` that begins an entity, become `&lt;` and `&amp;`; a renderer shows the same text, and a `<` before a space or a
+digit (`p < 0.001`) is left as it was. A trial's stored-result id is a code span. The package's own `<details>`,
+`<summary>` and anchors stay. One function, `md_parts.escaped`, does it for every writer.
+
+**Changed:** a table cell or line that carries a tag or an entity in its text reads as its escaped source in the raw
+Markdown file (`&lt;b>`), which every renderer shows as `<b>`. The text an editor reads of a report document
+(`doc_page_text`) is not Markdown for a renderer and is unchanged.
+
+### evals: a batch run that wrote no report counts as a failure to finish (#1115)
+
+**Fixed:** a judged run whose results nothing scored read the judge's served model, temperature, sent settings and
+configs as unknown, since they are read off scores, so its observations sat in a test setup of their own beside its
+arm's. A writer eval therefore kept a batch run that stored no page out of the campaign, and a whole batch of unwritten
+reports escaped Report finished while scattered ones counted. Now a rig dimension read off results that none of a
+run's results exercised takes the level its arm's runs read, or, where nothing of its arm was scored, the level every
+scored run shares; where those runs read two levels the run stays apart, as before. Runs whose results were scored
+group as they did. The writer eval files every batch run into the campaign, so Report finished counts an unwritten
+report against its arm, the judged readings find no score of it and leave it out, and the pass reads a missing page as
+losing its pair. Its disclosure names each arm by the cases its pageless runs launched, so a run that stored no result
+at all is still named and counted. `writer_pairwise` takes no `outside` runs; a report stored earlier still names them
+in `outside_run_ids`, which the promotion read honours.
+
+### evals: launch admission reads prices and the provider's model list before it admits an arm (#950, #1147)
+
+**Fixed:** a launch, an estimate or a resume in a process that had not read the price catalogue yet priced each
+arm's largest call as unknown, and under a cost cap skipped the "largest call above the cap" refusal with only a
+WARNING logged. Admission now awaits each client's `refresh_prices` before it prices a call, and under a cap an arm
+whose largest call still cannot be priced is refused, naming the call and why (`UnpricedCall`, on
+`ArmPlan.call_unpriced`). With no cap there is nothing to check a ceiling against, and the arm is admitted as before.
+`price_subject_call_floor` and the judge kind's pricer refresh first, and answer an `UnpricedCall` where they
+answered `None`.
+
+**Added:** the served-model check. Admission asks the host's client factory what the provider's own model list, read
+now, says of each arm's candidate, judge and simulator models (`ModelListing`, `ServedCheck`,
+`ArmPlan.served_checks`). `Clients.model_listing` reads OpenRouter's list, which is the price catalogue, so one read
+serves both checks. A model the list does not name is refused whatever the cap, naming the model and the provider. A
+list that cannot be read lets the launch go ahead, and the caller is told the check was skipped and why:
+`ArmEstimate.served_check_skipped` (and the estimate's text), `AdmittedLaunch.notices`, and `JobsStarted.notices` on
+the answer of `run_launch`, `sweep_launch`, `sweep_resume` and `job_resume` (a run's, a launch's or a sweep's). A
+model going to Anthropic or OpenAI directly, and every model of a factory without `model_listing`, is not checked.
+`Model.price_ceiling_refusal()` says why a ceiling is unknown, and `unpriced_because` words it for a refusal.
+
+**Docs:** the host guide names the boot step, `await clients.load_prices()` before a host offers launches or
+resumes, and the launch docstrings no longer say a run refuses a call inside a cell.
 
 ### evals: a seed reads each template revision's cases once (#1148)
 

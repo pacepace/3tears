@@ -223,7 +223,8 @@ declaration, so it stays, and no between-cells stop is read from it.
 1. **Plan.** The engine asks the kind what each arm will run (`LaunchableKind.plan_arm` → `ArmPlan`: for
    an arm over stored cases, how many of the template's stored cases it plays, for a generating arm at
    most `n_variations`; the model; the judges it will be scored by, resolved with `plan_judge`; and its
-   simulator).
+   simulator). Then it asks the host's client factory whether each provider still serves the arm's candidate,
+   judge and simulator models (the served-model check, below), with or without a cap.
 2. **Price.** Under an enforced cap, it prices each arm with the host's `LaunchHost.launch_pricer`
    (`ArmQuote.case_source` says which). `threetears.evals.ops.history_launch_pricer` bounds it by the upper
    end of the band of runs launched the same way — template, model, cassette mode, the model each scored
@@ -244,10 +245,17 @@ declaration, so it stays, and no between-cells stop is read from it.
    changed, as does an earlier revision priced only under another judge, simulator, rig or model. The case
    count is not compared: the price scales per-observation cost to the arm's own cases. This is pricing only;
    analysis never pools two revisions.
-3. **Refuse.** First, it refuses an arm whose largest call is priced above its run's cap on its own
-   (`ArmPlan.call_ceiling`): the run could never make that call, whatever the arm is predicted to cost in
-   all. The kind prices it right after planning (`LaunchableKind.price_largest_call`), on the clients the
-   cells will call through, built as a cell builds it:
+3. **Refuse.** First, whatever the cap, it refuses an arm naming a model its provider's list does not name
+   (`ArmPlan.served_checks`). Under a cap, it refuses an arm whose largest call cannot be priced
+   (`ArmPlan.call_unpriced`, an `UnpricedCall` naming the call and why): unknown is not $0, and that one call
+   could pass the cap. Then it refuses an arm whose largest call is priced above its run's cap on its own
+   (`ArmPlan.call_ceiling`): the cap is read between cells and refuses no call inside one, so the run would make
+   that call and stop `budget_stopped` having spent more than the cap on it, whatever the arm is predicted to cost
+   in all. The kind prices it right after planning (`LaunchableKind.price_largest_call`), on the clients the
+   cells will call through, built as a cell builds it, each client's prices brought up to date first
+   (`refresh_prices`): a launch or a resume in a process that has read no price catalogue yet reads it here,
+   rather than finding every ceiling unknown. A call a client still cannot price after that (the catalogue could
+   not be read, or holds no row for the model) is the kind's `UnpricedCall`:
    - **The judge kind** prices each case's judge call exactly and keeps the largest. What lowers it: a cheaper judge model, shorter frozen
      evidence on the largest case, or a judge-role client priced at the output cap the judge asks for.
    - **A subject kind** (a persona, a classifier, any kind whose launcher builds its judge with
@@ -285,7 +293,23 @@ declaration, so it stays, and no between-cells stop is read from it.
    it refuses an arm predicted above its run's cap, or one
    nothing can predict — no pricer, no plan, or no history to bound — whose cap the run would merely inherit.
    An unpriceable arm under a cap the launch named runs under it. The estimate reports each arm's largest
-   call as `call_ceiling_usd`, and `call_ceiling_lower_bound` when that figure is a floor.
+   call as `call_ceiling_usd`, and `call_ceiling_lower_bound` when that figure is a floor. With no cap in force
+   there is nothing to check a ceiling against, so an arm whose largest call cannot be priced is admitted.
+
+**The served-model check.** A model a provider has retired answers every call with an error, and a run of it
+would judge each empty reply as the model doing badly. So admission asks the host's client factory, through its
+optional `model_listing(model, *, role)`, what the provider's own list of the models it serves says of each model
+an arm names: the candidate (asked with no role, since the host calls it through its own route), every judge model
+and the simulator model. The shipped `Clients` reads OpenRouter's model list, which is the price catalogue its
+models share, so one read serves this check and the pricing after it: rows younger than the catalogue's
+`refresh_after` are kept, older ones fetched again. A model that list does not name is refused, naming the model
+and the provider. A list that cannot be read, or whose refresh failed so it is not current, leaves the arm admitted,
+and the check skipped is said with the reason on the estimate (`ArmEstimate.served_check_skipped`, and its text),
+on the admitted launch (`AdmittedLaunch.notices`), and on the answer of `run_launch`, `sweep_launch`,
+`sweep_resume` and `job_resume` (`JobsStarted.notices`). A model
+whose provider the factory reads no list of (a direct Anthropic or OpenAI model, an OpenAI-compatible `base_url`)
+is not checked, and neither is any model of a factory without `model_listing`, such as a host's own adapter. A
+price from past runs never stands in for this check.
 
 Every arm is planned before any is priced, so `plan_arm` is where a kind makes its request-level refusals
 (no model and no default — `require_candidate_model`, the tail's own refusal — a judge or simulator it

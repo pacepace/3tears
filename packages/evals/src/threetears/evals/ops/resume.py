@@ -10,7 +10,7 @@ from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, launch_job_id, parse_job_id, run_job_id
 from threetears.evals.ops.sweeps import sweep_resume
-from threetears.evals.run.resume import resume_launch, resume_run
+from threetears.evals.run.resume import resume_launch, take_up_run
 
 __all__ = ["job_resume"]
 
@@ -42,7 +42,9 @@ async def job_resume(host: OpsHost, job_id: str, scope_id: str, *, max_cost_usd:
         ``None`` keeps each run's recorded cap. Not part of the measurement: each holding records the cap it ran
         under.
     :ptype max_cost_usd: float | None
-    :return: The job taken up (``run:<id>``, ``sweep:<id>`` or ``launch:<id>``).
+    :return: The job taken up (``run:<id>``, ``sweep:<id>`` or ``launch:<id>``). Its ``notices`` say what admitting
+        the take-up found and did not refuse it for: a served-model check that could not be made because the
+        provider's model list could not be read.
     :rtype: JobsStarted
     :raises ValidationFailedError: The id names no job, or a job of a kind not resumed; the job cannot be taken up, or
         would measure otherwise now (every difference named); or a launch of a run would be refused now.
@@ -55,17 +57,19 @@ async def job_resume(host: OpsHost, job_id: str, scope_id: str, *, max_cost_usd:
     if kind == "sweep":
         return await sweep_resume(host, target_id, scope_id, max_cost_usd=max_cost_usd)
     if kind == "launch":
-        launch = await resume_launch(host.launch, target_id, scope_id, max_cost_usd=max_cost_usd)
+        launch, notices = await resume_launch(host.launch, target_id, scope_id, max_cost_usd=max_cost_usd)
         label = ", ".join(launch.models) or "the kind's default model"
         return JobsStarted(
-            jobs=[JobHandle(job_id=launch_job_id(launch.id), kind="launch", target_id=launch.template_id, label=label)]
+            jobs=[JobHandle(job_id=launch_job_id(launch.id), kind="launch", target_id=launch.template_id, label=label)],
+            notices=list(notices),
         )
     if kind != "run":
         raise ValidationFailedError(
             f"{kind} job {job_id!r} is not resumed; only a run's, a sweep's or a launch's job is",
             remedy="start the work again with the action that started it",
         )
-    run = await resume_run(host.launch, target_id, scope_id, max_cost_usd=max_cost_usd)
+    run, notices = await take_up_run(host.launch, target_id, scope_id, max_cost_usd=max_cost_usd)
     return JobsStarted(
-        jobs=[JobHandle(job_id=run_job_id(run.id), kind="run", target_id=run.id, label=run.candidate_model)]
+        jobs=[JobHandle(job_id=run_job_id(run.id), kind="run", target_id=run.id, label=run.candidate_model)],
+        notices=list(notices),
     )

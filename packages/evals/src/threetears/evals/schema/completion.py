@@ -534,6 +534,37 @@ class ProviderFailure:
             )
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ModelListing:
+    """What a provider's own list of the models it serves said of one model, read as a launch was admitted.
+
+    The answer a host's client factory gives when it offers ``async model_listing(model, *, role)``: the engine asks
+    it of every model an arm names before the arm is priced, and refuses an arm naming a model its provider no longer
+    lists, since every call to it would fail. ``listed`` is ``None`` when the list could not be read now: the launch
+    goes ahead and says the check was skipped, and why. A factory answers ``None`` instead of a listing for a model
+    whose provider it reads no list of, and a factory without the method answers nothing: there is no check to make.
+    A price taken from past runs never stands in for a listing.
+
+    :ivar provider: The provider whose list was read, as the factory names it (``openrouter``).
+    :ivar listed: Whether the list names the model; ``None`` when no current list could be read.
+    :ivar detail: The list and when it was read, or why no current one could be.
+    """
+
+    provider: str
+    listed: bool | None
+    detail: str
+
+    def __post_init__(self) -> None:
+        """Refuse a listing that names no provider or says nothing.
+
+        :raises ValueError: ``provider`` or ``detail`` is blank.
+        """
+        if not self.provider.strip():
+            raise ValueError("a model listing names the provider whose list was read; provider is blank")
+        if not self.detail.strip():
+            raise ValueError("a model listing says which list it read, or why none could be; detail is blank")
+
+
 class ProviderFailureDescriber(Protocol):
     """The host's mapping from its own exceptions onto :class:`ProviderFailure`.
 
@@ -566,6 +597,7 @@ __all__ = [
     "CompletionResult",
     "FailureOwner",
     "JSON_OBJECT_RESPONSE_FORMAT",
+    "ModelListing",
     "OPTIONAL_COMPLETION_ATTRIBUTES",
     "PricedCompletion",
     "ProviderFailure",

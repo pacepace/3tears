@@ -465,7 +465,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`precondition_failure_text`** · *host contract* · function · One line naming what was presumed and what the world held instead.
   <br>`precondition_failure_text(outcomes: Sequence[PreconditionOutcome]) -> str`
 - **`price_subject_call_floor`** · *host contract* · async function · A floor under a subject arm's largest judge or simulator call, for its `LaunchableKind.price_largest_call`.
-  <br>`price_subject_call_floor(host: EvalHost, request: LaunchRequest, *, judged_artifact: JudgedArtifact) -> CallCeiling | None`
+  <br>`price_subject_call_floor(host: EvalHost, request: LaunchRequest, *, judged_artifact: JudgedArtifact) -> CallCeiling | UnpricedCall | None`
 - **`quote_launch`** · async function · What `start_run` with the same arguments would make of its arms' prices — read-only.
   <br>`quote_launch(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, case_count: int | None = None, cell_timeout_s: float | None = None, case_set: CaseSetRef | None = None) -> LaunchQuote`
 - **`rate_result`** · function · Record one rater's score for one judged dimension of one result — a person's, or an agent's.
@@ -501,7 +501,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`ArmPlan`** · dataclass · What one arm of a launch will run, as its kind says before its launcher runs.
 - **`ArmPrice`** · dataclass · What the host's pricer predicts one arm will cost, and how it knows.
 - **`ArmQuote`** · dataclass · One arm of a launch, as the engine asks the host's pricer to price it — stored-case arms and generating ones alike.
-- **`CallCeiling`** · dataclass · The largest reservation one call of an arm's cells will hold against its run's cap, priced before launch.
+- **`CallCeiling`** · dataclass · The most one call of an arm's cells can cost, priced before launch: its largest call's ceiling, or a floor.
 - **`CandidateTurn`** · dataclass · One candidate-side response captured by the kind and fed back into the simulator.
 - **`Ceilings`** · *host contract* · dataclass · The package's inner ceilings a host derives its outer budgets from, so a budget cannot drift below one.
 - **`CellContext`** · dataclass · What the runner knows about one cell when it asks a kind's factory for the cell's kind.
@@ -824,7 +824,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`CaseSetMint`** · model · What minting a case set's next version names: the set, its template and its cases in order.
 - **`EditorLimits`** · dataclass · What each review round is held to, so every review ends within a bounded number of calls.
 - **`JobHandle`** · model · A started job: the id to poll, and what it is working on.
-- **`JobsStarted`** · model · What starting long work returns: one handle per job, in the order the work was asked for.
+- **`JobsStarted`** · model · What starting long work returns: one handle per job, in the order the work was asked for, and what the call told its caller beside starting it.
 - **`JobStatus`** · model · Where one job stands, read from the record its work writes.
 - **`JudgeCaseAuthor`** · model · What authoring one judge case by hand names: the judge template, the output, its criterion and its verdict.
 - **`JudgeProfilesRecord`** · model · What recording judge profiles names: the judge campaign's runs whose trials make up the measurement.
@@ -1173,6 +1173,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `launch_declarations` | `list[str]` | `[]` | One sentence per host measure that is read here otherwise than the reading host now declares it. |
 | `run_margins_withheld` | `str \| None` | `None` | Why a margin some member runs declared on a core rate measure is read on none of its comparisons: the runs do not all declare it, or declare different ones, and a contrast between two arms read against a margin only one of them chose would be read against a margin nobody chose for the pair. |
 | `scoreboard` | `list[ArmScoreboard]` | `[]` | Each arm's census, in the order of `variant_index`: trials ran, lost to the test setup by cause, usable, passed and failed by cause, the cases run and the cases with a usable trial, and what the arm cost. |
+| `negative_values` | `list[NegativeValues]` | `[]` | Per measure declared non-negative and per arm, the results that recorded a value below zero on it: a host bug, which the measure's intervals (clamped at zero) would otherwise hide. |
 | `trials` | `list[TrialRow]` | `[]` | One row per trial — one case run once on one arm — with how it ended and why: its failed checks, the judge's scores and reasons, what the case asked, the tail of what the judge was handed and the recorded error, each capped. |
 | `trials_omitted` | `int` | `0` | Trials beyond the cap, left out of `trials`; the scoreboard counts every one. |
 | `case_sets` | `list[CaseSetRef]` | `[]` | The named, versioned case sets the member runs were launched against, distinct and sorted. |
