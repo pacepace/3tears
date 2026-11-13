@@ -357,3 +357,4 @@ packages/nats/src/threetears/nats/capabilities.py:PullSubscriber  # bluelabsio/1
 packages/nats/src/threetears/nats/__init__.py:PullSubscriber  # bluelabsio/14-eng-ai-bot-agents-hub: src/hub/audit/unified_audit_consumer.py types its client by it (hub spec 11)
 packages/nats/src/threetears/nats/capabilities.py:KvBucketOpener  # bluelabsio/14-eng-ai-bot-agents-hub: its runtime (data_version_watch) and test doubles type a KV-only client by it; KvPublisher inherits it here (hub spec 11)
 packages/nats/src/threetears/nats/__init__.py:KvBucketOpener  # bluelabsio/14-eng-ai-bot-agents-hub: its runtime (data_version_watch) and test doubles type a KV-only client by it; KvPublisher inherits it here (hub spec 11)
+packages/core/src/threetears/core/testing/kv.py:FakeSubscription  # bluelabsio/14-eng-ai-bot: the return type of FakeNatsClient.subscribe_typed, which tests/support/fake_l2.py FakeL2Client(FakeNatsClient) overrides with the same signature (hub spec 12a)

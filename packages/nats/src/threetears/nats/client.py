@@ -240,6 +240,7 @@ if TYPE_CHECKING:
     from nats.aio.client import Server as _NatsServer
     from nats.aio.msg import Msg as _NatsMsg
 
+    from threetears.nats.capabilities import SubscriptionHandle
     from threetears.nats.kv import KvRestoredHook, KvTimings
     from threetears.nats.transport import RawMessageCallback
 
@@ -5626,10 +5627,13 @@ class NatsClient:
         )
         return sub
 
-    async def unsubscribe(self, sub: Subscription) -> None:
+    async def unsubscribe(self, sub: SubscriptionHandle) -> None:
         """drop a subscription.
 
-        idempotent — second call is a no-op.
+        idempotent — second call is a no-op. typed by the handle slice
+        (:class:`~threetears.nats.capabilities.SubscriptionHandle`) so this
+        client is a :class:`~threetears.nats.capabilities.TypedSubscriber`;
+        only a :class:`Subscription` this client made can be dropped here.
 
         cancels the dispatch task and waits for it, so every in-flight
         callback has finished unwinding by the time this returns — the
@@ -5638,10 +5642,14 @@ class NatsClient:
         suppresses :class:`asyncio.CancelledError` blocks here.
 
         :param sub: subscription handle returned by :meth:`subscribe`
-        :ptype sub: Subscription
+            or :meth:`subscribe_typed`
+        :ptype sub: SubscriptionHandle
         :return: nothing
         :rtype: None
+        :raises TypeError: when ``sub`` is a handle no :class:`NatsClient` made
         """
+        if not isinstance(sub, Subscription):
+            raise TypeError(f"unsubscribe takes a Subscription this client made, not {type(sub).__name__}")
         if sub.is_closed:
             return
         sub.mark_closed()

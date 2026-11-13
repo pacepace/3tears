@@ -84,18 +84,23 @@ from datetime import UTC, datetime, timedelta
 
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 from uuid import uuid7
 
+from pydantic import BaseModel
+
 from threetears.nats.change_log import ChangeLogEntry, ChangeLogState
-from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch, KvError, KvFullError
+from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch, KvError, KvFullError, PublishError
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.observe import contain, get_logger
 
-__all__ = ["FakeChangeLog", "FakeKvBucket", "FakeNatsClient"]
+__all__ = ["FakeChangeLog", "FakeKvBucket", "FakeNatsClient", "FakeSubscription"]
 
 log = get_logger(__name__)
+
+#: the envelope a typed subscription decodes each message into
+_Envelope = TypeVar("_Envelope", bound=BaseModel)
 
 #: the bytes nats-server's memory store adds to each message's subject, headers and value when it
 #: counts a stream's size against ``max_bytes``
@@ -1200,6 +1205,59 @@ class FakeChangeLog:
 
 
 # parity-with: threetears.nats.kv.KvCapable
+class FakeSubscription:
+    """the handle :meth:`FakeNatsClient.subscribe_typed` hands back: a
+    :class:`threetears.nats.SubscriptionHandle`, as the real client's ``Subscription`` is.
+
+    :param subject: the subject subscribed, as the caller gave it
+    :ptype subject: Any
+    :param entry: the callback and envelope type this subscription registered
+    :ptype entry: tuple[Any, Any]
+    """
+
+    __slots__ = ("_subject", "entry", "_closed")
+
+    def __init__(self, *, subject: Any, entry: tuple[Any, Any]) -> None:
+        """hold the subject and the registration.
+
+        :param subject: the subject subscribed, as the caller gave it
+        :ptype subject: Any
+        :param entry: the callback and envelope type this subscription registered
+        :ptype entry: tuple[Any, Any]
+        :return: None
+        :rtype: None
+        """
+        self._subject = subject
+        self.entry = entry
+        self._closed = False
+
+    @property
+    def subject(self) -> Any:
+        """the subject subscribed, as the caller gave it.
+
+        :return: the subject
+        :rtype: Any
+        """
+        return self._subject
+
+    @property
+    def is_closed(self) -> bool:
+        """whether :meth:`FakeNatsClient.unsubscribe` has ended this subscription.
+
+        :return: True once ended
+        :rtype: bool
+        """
+        return self._closed
+
+    def mark_closed(self) -> None:
+        """end this subscription, as :meth:`FakeNatsClient.unsubscribe` does.
+
+        :return: None
+        :rtype: None
+        """
+        self._closed = True
+
+
 class FakeNatsClient:
     """fake NATS wrapper exposing :meth:`kv_bucket` returning :class:`FakeKvBucket`.
 
@@ -1416,43 +1474,85 @@ class FakeNatsClient:
             except Exception as exc:  # noqa: BLE001 -- one bad hook must not abort the others, as in the real client
                 contain(exc, log=log, what=f"reconnect callback failed: {exc}")
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self,
+        *args: Any,
+        subject: Any = None,
+        message: BaseModel | None = None,
+        reply_to: Any = None,
+    ) -> None:
         """record a message and deliver it to this client's subscribers on that subject.
 
-        :param subject: the subject published to; stringified for the subscriber lookup
+        The real client's two forms, refused as it refuses them: ``publish(subject=..., message=...)``
+        records the model in :attr:`published`; the raw shorthand ``publish(subject, payload_bytes)``
+        delivers the bytes to each typed subscriber, decoded as its envelope, and records nothing.
+
+        :param args: the raw shorthand ``(subject, payload_bytes)``
+        :ptype args: Any
+        :param subject: the subject published to (keyword form); stringified for the subscriber lookup
         :ptype subject: Any
-        :param message: the typed envelope
-        :ptype message: Any
+        :param message: the typed envelope (keyword form)
+        :ptype message: BaseModel | None
         :param reply_to: ignored; present so the surface matches the real client
         :ptype reply_to: Any
         :return: None
         :rtype: None
+        :raises PublishError: when the positional form is not exactly ``(subject, bytes)``, or the keyword
+            form lacks ``subject`` or ``message``, as the real client raises
         """
         del reply_to
+        if args:
+            if len(args) != 2:
+                raise PublishError(
+                    f"publish positional form requires exactly (subject, payload_bytes); got {len(args)} args"
+                )
+            raw_subject, payload = args
+            if not isinstance(payload, bytes | bytearray | memoryview):
+                raise PublishError(f"publish positional payload must be bytes-like; got {type(payload).__name__}")
+            for callback, message_type in list(self._subscribers.get(str(raw_subject), [])):
+                await callback(message_type.model_validate_json(bytes(payload)))
+            return
+        if subject is None or message is None:
+            raise PublishError(
+                "publish requires either positional (subject, payload_bytes) or kwargs subject= and message="
+            )
         self.published.append(message)
         for callback, message_type in list(self._subscribers.get(str(subject), [])):
             await callback(message_type.model_validate_json(message.model_dump_json()))
 
-    async def subscribe_typed(self, *, subject: Any, cb: Any, message_type: Any, **kwargs: Any) -> object:
+    async def subscribe_typed(
+        self,
+        *,
+        subject: Any,
+        cb: Callable[[_Envelope], Awaitable[None]],
+        message_type: type[_Envelope],
+        queue: str | None = None,
+        max_in_flight: int | None = None,
+        deadletter_on_failure: bool = True,
+    ) -> FakeSubscription:
         """register a typed subscriber, so a real listener can run against this fake.
 
-        :param subject: the subject to subscribe to
+        :param subject: the subject to subscribe to; stringified for the lookup
         :ptype subject: Any
         :param cb: the async callback the listener supplies
-        :ptype cb: Any
+        :ptype cb: Callable[[_Envelope], Awaitable[None]]
         :param message_type: the Pydantic envelope to validate into
-        :ptype message_type: Any
-        :param kwargs: ignored; the real client takes queue groups and durable names
-        :ptype kwargs: Any
-        :return: an opaque subscription handle
-        :rtype: object
+        :ptype message_type: type[_Envelope]
+        :param queue: ignored; the fake delivers every message to every subscriber
+        :ptype queue: str | None
+        :param max_in_flight: ignored; the fake delivers inline
+        :ptype max_in_flight: int | None
+        :param deadletter_on_failure: ignored; a callback's error reaches the publisher
+        :ptype deadletter_on_failure: bool
+        :return: the subscription's handle, given back to :meth:`unsubscribe`
+        :rtype: FakeSubscription
         """
-        del kwargs
-        entry = (cb, message_type)
+        del queue, max_in_flight, deadletter_on_failure
+        entry: tuple[Any, Any] = (cb, message_type)
         self._subscribers.setdefault(str(subject), []).append(entry)
-        return (str(subject), entry)
+        return FakeSubscription(subject=subject, entry=entry)
 
-    async def unsubscribe(self, subscription: Any) -> None:
+    async def unsubscribe(self, sub: object) -> None:
         """drop the one subscription this handle names.
 
         Only that one: two L2-live registries in one process subscribe and stop independently,
@@ -1460,18 +1560,19 @@ class FakeNatsClient:
         another kept running -- so a test written against it passed or failed for reasons
         unrelated to the code under test.
 
-        :param subscription: the handle :meth:`subscribe_typed` returned
-        :ptype subscription: Any
+        :param sub: the handle :meth:`subscribe_typed` returned; any other is ignored
+        :ptype sub: object
         :return: None
         :rtype: None
         """
-        if not isinstance(subscription, tuple) or len(subscription) != 2:
+        if not isinstance(sub, FakeSubscription) or sub.is_closed:
             return
-        subject, entry = subscription
+        sub.mark_closed()
+        subject = str(sub.subject)
         entries = self._subscribers.get(subject)
-        if entries is None or entry not in entries:
+        if entries is None or sub.entry not in entries:
             return
-        entries.remove(entry)
+        entries.remove(sub.entry)
         if not entries:
             del self._subscribers[subject]
 
@@ -1479,11 +1580,12 @@ class FakeNatsClient:
         self,
         *,
         name: str,
-        ttl: object | None = None,
+        ttl: timedelta | None = None,
         storage: str = "memory",
         create_if_missing: bool = True,
         history: int = 1,
         direct: bool | None = None,
+        replicas: int | None = None,
     ) -> FakeKvBucket:
         """return existing bucket or create one. idempotent.
 
@@ -1491,7 +1593,7 @@ class FakeNatsClient:
             prefix the real wrapper layers on top
         :ptype name: str
         :param ttl: recorded and reported by :attr:`FakeKvBucket.ttl`; not applied
-        :ptype ttl: object | None
+        :ptype ttl: timedelta | None
         :param storage: recorded and reported by :attr:`FakeKvBucket.storage`, so a test can
             witness which backing a caller asked for. Not otherwise applied -- the fake is
             always in-process
@@ -1502,12 +1604,18 @@ class FakeNatsClient:
         :ptype history: int
         :param direct: recorded and reported by :attr:`FakeKvBucket.direct`; not applied
         :ptype direct: bool | None
+        :param replicas: how many servers hold the bucket; checked as the real one checks it, and
+            otherwise ignored, as the fake broker is one server
+        :ptype replicas: int | None
         :return: fake bucket; the cached handle when this client opened the bucket before, as the real
             client's cache returns it without asking the broker
         :rtype: FakeKvBucket
         :raises KvBucketNotFoundError: when ``create_if_missing=False`` and the bucket was never created
+        :raises ValueError: when ``replicas`` is given and not positive, as the real one
         """
         del history
+        if replicas is not None and replicas <= 0:
+            raise ValueError(f"KV bucket {name!r} needs at least one replica, got {replicas!r}")
         bucket = self._buckets.get(name)
         if bucket is None:
             if not create_if_missing:
