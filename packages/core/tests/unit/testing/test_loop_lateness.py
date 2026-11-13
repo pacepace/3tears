@@ -12,7 +12,18 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from threetears.core.testing.loop_lateness import HostTicker, added_lateness, hold_the_loop, latest, ticks_while
+from threetears.core.testing.loop_lateness import (
+    MEASURE_ATTEMPTS,
+    CouldNotMeasure,
+    HostTicker,
+    Tick,
+    added_lateness,
+    hold_the_loop,
+    host_lateness,
+    latest,
+    ticks_while,
+    trusted,
+)
 
 
 def test_lateness_the_host_shared_at_the_same_moment_is_not_the_loops() -> None:
@@ -68,3 +79,81 @@ def _held_for(seconds: float) -> Callable[[], Awaitable[None]]:
         await asyncio.sleep(0.01)
 
     return work
+
+
+#: a budget the trust tests judge by
+_BUDGET = 0.020
+
+
+def _quiet_host(began: float, ended: float) -> list[Tick]:
+    """a host idle loop ticking on time over ``began``-``ended``."""
+    count = round((ended - began) / 0.001)
+    return [(began + n * 0.001, began + (n + 1) * 0.001) for n in range(count)]
+
+
+def _busy_host(began: float, ended: float, late: float) -> list[Tick]:
+    """a host idle loop on time over the span but for one tick ``late`` past its 1 ms, mid-way."""
+    middle = (began + ended) / 2
+    return [*_quiet_host(began, middle), (middle, middle + 0.001 + late), *_quiet_host(middle + 0.001 + late, ended)]
+
+
+def _window(measured: tuple[list[Tick], list[Tick]]) -> tuple[list[Tick], list[Tick]]:
+    return measured
+
+
+def test_the_host_lateness_counts_only_inside_the_measured_window() -> None:
+    """the host's idle loop late before the measured window says nothing about it; late inside it, it does."""
+    host = [(0.0, 0.051), *_quiet_host(0.051, 0.2)]
+    assert host_lateness(host, [(0.1, 0.102), (0.102, 0.104)]) == pytest.approx(0.0, abs=1e-9)
+    assert host_lateness(_busy_host(0.0, 0.2, 0.03), [(0.05, 0.15)]) == pytest.approx(0.03, abs=1e-9)
+
+
+async def test_a_quiet_host_is_measured_once_and_its_measurement_judged() -> None:
+    """a quiet run: the first measurement is trusted and returned, no retake."""
+    taken: list[int] = []
+
+    async def measure() -> tuple[list[Tick], list[Tick]]:
+        taken.append(1)
+        return [(0.05, 0.052)], _quiet_host(0.0, 0.2)
+
+    assert await trusted(measure, _window, host_may_be_late=_BUDGET) == ([(0.05, 0.052)], _quiet_host(0.0, 0.2))
+    assert len(taken) == 1
+
+
+async def test_a_busy_host_is_retaken_and_a_quiet_retake_is_judged() -> None:
+    """a passing burst of host load: the busy measurement is dropped, the next quiet one judged."""
+    hosts = iter([_busy_host(0.0, 0.2, 0.05), _quiet_host(0.0, 0.2)])
+
+    async def measure() -> tuple[list[Tick], list[Tick]]:
+        return [(0.05, 0.15)], next(hosts)
+
+    _, host = await trusted(measure, _window, host_may_be_late=_BUDGET)
+    assert host == _quiet_host(0.0, 0.2)
+
+
+async def test_a_host_busy_in_every_attempt_could_not_measure_never_a_pass_or_a_red() -> None:
+    """a host whose idle loop runs 50 ms late in every window: the test fails as unmeasurable, with its own message,
+    after a bounded number of measurements; not "the code was late", and never a pass."""
+    taken: list[int] = []
+
+    async def measure() -> tuple[list[Tick], list[Tick]]:
+        taken.append(1)
+        return [(0.05, 0.15)], _busy_host(0.0, 0.2, 0.05)
+
+    with pytest.raises(CouldNotMeasure, match=r"^could not measure: the host's idle loop ran 50\.0 ms late"):
+        await trusted(measure, _window, host_may_be_late=_BUDGET)
+    assert len(taken) == MEASURE_ATTEMPTS
+
+
+@pytest.mark.loop_timing
+async def test_a_planted_block_on_a_quiet_host_is_trusted_and_red() -> None:
+    """30 ms held on the loop: the host's own loop, in its own process, is not late for it, so the measurement is
+    trusted and the judgement is red."""
+
+    async def measure() -> tuple[list[Tick], list[Tick]]:
+        with HostTicker() as host:
+            held = await ticks_while(_held_for(0.03))
+        return held, host.ticks
+
+    held, host = await trusted(measure, _window, host_may_be_late=_BUDGET)
+    assert added_lateness(held, host) >= _BUDGET

@@ -11,13 +11,24 @@ on the host late at that moment; what makes only the test's loop late is the tes
 :func:`added_lateness` counts, of each of the test loop's ticks, only the lateness no host tick shared at the same
 moment, so a load spike credits exactly the time it overlapped and never hides a stall before or after it.
 
+A measurement is trusted only when the host's idle loop itself stayed within a declared limit over the window
+(:func:`trusted`): a host too busy to run an idle loop on time is too busy to say anything about the code's loop. An
+untrusted measurement is never a pass and never a skip: it is retaken, a bounded number of times
+(:data:`MEASURE_ATTEMPTS`), and when no window is trusted the test fails with :class:`CouldNotMeasure` ("could not
+measure: the host's idle loop ran X ms late"), which says the host, not the code, was late. A trusted measurement
+over the budget is a real red.
+
 Usage:
 
 .. code-block:: python
 
-    with HostTicker() as host:
-        ticks = await ticks_while(run_the_work)
-    assert added_lateness(ticks, host.ticks) < 0.020
+    async def measure():
+        with HostTicker() as host:
+            ticks = await ticks_while(run_the_work)
+        return ticks, host.ticks
+
+    ticks, host = await trusted(measure, lambda measured: measured, host_may_be_late=BUDGET)
+    assert added_lateness(ticks, host) < BUDGET
 """
 
 from __future__ import annotations
@@ -28,16 +39,27 @@ import subprocess
 import sys
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Final, TypeVar
 
 __all__ = [
+    "MEASURE_ATTEMPTS",
+    "CouldNotMeasure",
     "HostTicker",
     "Tick",
     "added_lateness",
     "hold_the_loop",
+    "host_lateness",
     "latest",
     "ticks_while",
+    "trusted",
 ]
+
+_Measured = TypeVar("_Measured")
+
+#: how many times a measurement the host was too busy for is taken before the test fails as unmeasurable: enough for a
+#: passing burst of load (another batch's import, a GC of a neighbour) to end, few enough that a host busy for the
+#: whole run fails in a bounded time
+MEASURE_ATTEMPTS: Final[int] = 3
 
 #: one tick of a ticker: when it asked to sleep and when it woke, on ``time.perf_counter`` (the host's monotonic clock,
 #: one clock for every process on the host)
@@ -180,3 +202,62 @@ def hold_the_loop(seconds: float) -> None:
     end = time.perf_counter() + seconds
     while time.perf_counter() < end:
         pass
+
+
+class CouldNotMeasure(AssertionError):
+    """the host's own idle loop ran later than a measurement can be trusted at, in every attempt: the host, not the code,
+    was late. Never a pass, never a skip."""
+
+
+def host_lateness(host: list[Tick], ticks: list[Tick]) -> float:
+    """the latest the host's idle loop woke past its 1 ms over the span ``ticks`` cover, in seconds (0 for none).
+
+    :param host: the host loop's ticks (:attr:`HostTicker.ticks`)
+    :ptype host: list[Tick]
+    :param ticks: the test loop's ticks; their first ask to their last wake is the measured window
+    :ptype ticks: list[Tick]
+    :return: the host's worst lateness inside the window
+    :rtype: float
+    """
+    if not ticks:
+        return 0.0
+    began, ended = ticks[0][0], ticks[-1][1]
+    return latest([(asked, woke) for asked, woke in host if woke >= began and asked <= ended])
+
+
+async def trusted(
+    measure: Callable[[], Awaitable[_Measured]],
+    window: Callable[[_Measured], tuple[list[Tick], list[Tick]]],
+    *,
+    host_may_be_late: float,
+    attempts: int = MEASURE_ATTEMPTS,
+) -> _Measured:
+    """the first of up to ``attempts`` measurements over which the host's idle loop was late by at most
+    ``host_may_be_late``.
+
+    :param measure: takes one measurement (runs the work with a :class:`HostTicker` beside it)
+    :ptype measure: Callable[[], Awaitable[_Measured]]
+    :param window: the measurement's ``(test loop ticks, host loop ticks)``
+    :ptype window: Callable[[_Measured], tuple[list[Tick], list[Tick]]]
+    :param host_may_be_late: the most the host's idle loop may be late for the measurement to say anything about the
+        code: a test passes its own budget, so a host as late as the code may be leaves nothing to judge
+    :ptype host_may_be_late: float
+    :param attempts: how many measurements to take at most
+    :ptype attempts: int
+    :return: the trusted measurement
+    :rtype: _Measured
+    :raises CouldNotMeasure: when the host was too late in every attempt
+    """
+    seen: list[float] = []
+    for _ in range(attempts):
+        measured = await measure()
+        ticks, host = window(measured)
+        late = host_lateness(host, ticks)
+        if late <= host_may_be_late:
+            return measured
+        seen.append(late)
+    raise CouldNotMeasure(
+        f"could not measure: the host's idle loop ran {max(seen) * 1000:.1f} ms late "
+        f"(each of {attempts} attempts past {host_may_be_late * 1000:.1f} ms: "
+        f"{', '.join(f'{late * 1000:.1f}' for late in seen)} ms)"
+    )

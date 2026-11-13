@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import sys
+import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -20,7 +21,15 @@ import pyarrow as pa
 import pytest
 
 from threetears.core.shared_arrow import Parts, SharedArrowStore
-from threetears.core.testing.loop_lateness import HostTicker, Tick, added_lateness, hold_the_loop, latest, ticks_while
+from threetears.core.testing.loop_lateness import (
+    HostTicker,
+    Tick,
+    added_lateness,
+    hold_the_loop,
+    latest,
+    ticks_while,
+    trusted,
+)
 
 #: the most the event loop may run late while threads query the copy, past what the host's own idle loop, ticking in a
 #: process of its own, was late at the same moments (:func:`added_lateness`: the runner's own scheduling delay is no
@@ -96,7 +105,8 @@ async def _queried_while_published(
     :param planted: called on the loop 0.5 s in (a red case plants its blocking here)
     :return: the loop's ticks, the host's ticks, each reader's reads and the versions mapped
     """
-    store = SharedArrowStore(tmp_path / "shm", max_bytes=4 << 30)
+    # a store of its own each measurement: a retaken one publishes its versions afresh
+    store = SharedArrowStore(Path(tempfile.mkdtemp(dir=tmp_path)) / "shm", max_bytes=4 << 30)
     schema = next(iter(parts.values())).schema
     keys = pa.table({"k": pa.array(range(1000), pa.int64()), "n": pa.array(range(1000), pa.int64())})
     await asyncio.to_thread(store.publish, "v1", {"long": Parts(schema=schema, parts=parts), "keys": keys})
@@ -140,12 +150,19 @@ async def _queried_while_published(
     return ticks, host.ticks, reads, reader.mapped
 
 
+def _window(measured: tuple[list[Tick], list[Tick], list[int], int]) -> tuple[list[Tick], list[Tick]]:
+    """a measurement's test loop and host loop ticks."""
+    return measured[0], measured[1]
+
+
 @pytest.mark.loop_timing
 class TestTheLoopRunsWhileThreadsQueryTheCopy:
     async def test_a_ticker_is_never_late_while_threads_query_dev_sized_versions(
         self, tmp_path: Path, parts: dict[str, pa.Table]
     ) -> None:
-        ticks, host, reads, mapped = await _queried_while_published(tmp_path, parts)
+        ticks, host, reads, mapped = await trusted(
+            lambda: _queried_while_published(tmp_path, parts), _window, host_may_be_late=LOOP_MAY_BE_LATE
+        )
         assert min(reads) > 0 and mapped > 1, (reads, mapped)
         added = added_lateness(ticks, host, every=TICK)
         late = latest(ticks, every=TICK)
@@ -160,7 +177,11 @@ class TestTheLoopRunsWhileThreadsQueryTheCopy:
     async def test_a_block_planted_on_the_loop_is_caught(self, tmp_path: Path, parts: dict[str, pa.Table]) -> None:
         """the judgement's red case: 30 ms of blocking on the loop itself while the threads query fails it; the
         host's idle loop, in its own process, is not late for it, so it credits none of it."""
-        ticks, host, _, _ = await _queried_while_published(tmp_path, parts, planted=lambda: hold_the_loop(0.03))
+        ticks, host, _, _ = await trusted(
+            lambda: _queried_while_published(tmp_path, parts, planted=lambda: hold_the_loop(0.03)),
+            _window,
+            host_may_be_late=LOOP_MAY_BE_LATE,
+        )
         added = added_lateness(ticks, host, every=TICK)
         assert added >= LOOP_MAY_BE_LATE, f"a 30 ms block on the loop was judged {added * 1000:.1f} ms"
 
