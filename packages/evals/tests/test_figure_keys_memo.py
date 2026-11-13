@@ -10,7 +10,9 @@ same values kept per input):
 - **nothing keeps an input alive**: an input that read a figure and a refused key is freed once dropped;
 - **an input is its own**: an input made where a dropped one was read reads its own figures, forms and arm names,
   never the dropped one's;
-- **a page is its own**: two pages of one input keep their own ledgers, and a caller's arm names are its own copy.
+- **a page is its own**: two pages of one input keep their own ledgers, a caller's arm names are its own copy, and a
+  gate check on a page's forms records its reasons there every time (``gate_check`` keeps only a check read off any
+  page).
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from packages.evals.tests.analyst_support import fixture_inputs
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.gates import gate_check
 from threetears.evals.analysis.report.keys.names import page_arm_names
 from threetears.evals.analysis.report_input import ReportInput
 
@@ -137,3 +140,15 @@ def test_each_page_of_one_input_keeps_its_own_ledger_and_names() -> None:
     names = page_arm_names(held)
     names[held.arms[0].id] = "renamed"
     assert page_arm_names(held)[held.arms[0].id] != "renamed", "a caller's names changed the input's"
+
+
+def test_a_gate_check_on_a_pages_forms_records_its_reasons_every_time_and_one_off_any_page_reads_alike() -> None:
+    held = _copy_of_r2()
+    arm = "atlas-m.off.r0"
+    page = PageForms.of(held)
+    first = gate_check(held, arm, forms=page)
+    printed = len(page.ledger)
+    second = gate_check(held, arm, forms=page)
+    assert first.status == "fail" and printed, "the control: the check fails on a figure the page prints"
+    assert len(page.ledger) == 2 * printed, "a check on a page's forms skipped recording its reasons"
+    assert gate_check(held, arm) == gate_check(held, arm) == first == second

@@ -59,6 +59,7 @@ from threetears.evals.analysis.report.keys.names import reader_name
 from threetears.evals.analysis.report.keys.reads import criterion_ruler
 from threetears.evals.analysis.report.keys.resolve import format_figure, held_kind, resolve
 from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.per_input import kept_for
 from threetears.evals.analysis.report_input import Criterion, ReportInput
 from threetears.evals.analysis.report_margins import (
     CriterionFigure,
@@ -350,6 +351,26 @@ def gate_check(
     :raises ValueError: Both a task and a cell were named, a task, cell or gating criterion the input does not hold,
         or forms built from another input.
     """
+    if forms is not None:
+        # The page's own forms record every reason handed out, so a page's check is read on them, every time.
+        return _checked(report_input, arm, task, cell, criterion, forms)
+    # A check read off any page is pure in the input, which is frozen, so it is read once per input and place
+    # (:func:`~threetears.evals.analysis.report.per_input.kept_for`): the call's survivors, its dominance and the
+    # analyst's readings of them check every arm again on the same input.
+    return kept_for(report_input).get(
+        (gate_check, arm, task, cell, criterion), lambda: _checked(report_input, arm, task, cell, criterion, None)
+    )
+
+
+def _checked(
+    report_input: ReportInput,
+    arm: str,
+    task: str | None,
+    cell: str | None,
+    criterion: str | None,
+    forms: PageForms | None,
+) -> GateCheck:
+    """One arm's check (:func:`gate_check`), read off its findings."""
     found = gate_findings(report_input, arm, task=task, cell=cell, criterion=criterion, forms=forms)
     fails = tuple(finding.reason for finding in found if finding.status in ("fail", "unknown"))
     borders = tuple(finding.reason for finding in found if finding.status == "borderline")
