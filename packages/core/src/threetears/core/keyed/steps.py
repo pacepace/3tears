@@ -12,6 +12,9 @@ parameters), so a load names the step rather than writing its SQL again:
   :func:`latest_per_key`; rows kept by a window's value (a tier's rank): :func:`windowed`;
 - set operations: :func:`except_rows`, :func:`union`; each row of one beside the rows of another it matches:
   :func:`joined` (a ``JOIN``, or a ``LEFT JOIN``);
+- an order: :func:`ordered`; an order by a costly key computed once per distinct value of a column (a natural order
+  of labels): :func:`value_ranks` (each distinct value and its rank), :func:`ranked_order` (a relation's rows in that
+  order, after plain sorts);
 - run: :func:`read_step` (rows), :func:`read_step_arrow` (one Arrow table), each up to a ``limit`` when asked,
   :func:`count_step`, :func:`any_step` (whether it answers any row); a table of a step's rows: :func:`materialize`; a
   delete of a table's rows a change relation's keys name: :func:`delete_matching`; the first row two relations hold
@@ -31,6 +34,7 @@ marker never makes it keyed.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
@@ -54,6 +58,7 @@ from threetears.interfaces.keyed.steps import Match, Quoted, Rel, Step, change_r
 __all__ = [
     "Match",
     "Quoted",
+    "Ranked",
     "Step",
     "anti",
     "any_step",
@@ -69,6 +74,7 @@ __all__ = [
     "latest_per_key",
     "materialize",
     "ordered",
+    "ranked_order",
     "read_step",
     "read_step_arrow",
     "row_count",
@@ -76,6 +82,7 @@ __all__ = [
     "semi",
     "smallest",
     "union",
+    "value_ranks",
     "windowed",
     "xor_hash",
 ]
@@ -414,6 +421,8 @@ def latest_per_key(
     """
     if not key or not order:
         raise ValueError("the newest row of each key names the key and the order")
+    if any(sort.nulls is not None for sort in order):
+        raise ValueError("the newest row of each key places NULLs as its order says it, never by a sort's nulls")
     if ties:
         if len(order) != 1:
             raise ValueError("rows tied first are tied on one sort column")
@@ -568,17 +577,94 @@ async def read_step_arrow(
 
 
 def _ordered(step: Step, order: Sequence[Sort], limit: int | None = None) -> tuple[str, list[Any]]:
-    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 0):
-        raise ValueError(f"a step's limit is a count of rows, not {limit!r}")
-    bounded = "" if limit is None else f" LIMIT {limit}"
+    bounded = _limited(limit)
     if not order:
         return (f"SELECT o.* FROM ({step.sql}) AS o{bounded}" if bounded else step.sql), list(step.params)
     ordered = ", ".join(
-        f"o.{quote_identifier(sort.column)} {'DESC' if sort.descending else 'ASC'}"
-        + ((" NULLS FIRST" if sort.descending else " NULLS LAST") if sort.nullable else "")
-        for sort in order
+        f"o.{quote_identifier(sort.column)} {'DESC' if sort.descending else 'ASC'}{sort.nulls_term}" for sort in order
     )
     return f"SELECT o.* FROM ({step.sql}) AS o ORDER BY {ordered}{bounded}", list(step.params)
+
+
+def _limited(limit: int | None) -> str:
+    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 0):
+        raise ValueError(f"a step's limit is a count of rows, not {limit!r}")
+    return "" if limit is None else f" LIMIT {limit}"
+
+
+@dataclass(frozen=True)
+class Ranked:
+    """one column a :func:`ranked_order` sorts by a costly key, computed once per distinct value.
+
+    :param column: the column of the relation, a TRUSTED identifier
+    :ptype column: str
+    :param key: the TRUSTED ``ORDER BY`` terms the column's values sort by, written of ``v`` (the distinct value):
+        ``"regexp_extract(v, '[0-9]+$')::int, v"``. Ending with ``v`` itself makes the order total
+    :ptype key: str
+    """
+
+    column: str
+    key: str
+
+
+def value_ranks(rel: Rel, column: str, key: str) -> Step:
+    """each distinct value of ``column`` in ``rel`` (as ``v``) and its rank in the order ``key`` gives it (as
+    ``rank``: 1 first, values ``key`` ties share one): ``key`` is computed once per distinct value, never per row.
+
+    :param rel: the relation
+    :ptype rel: str | Derived | Step
+    :param column: the column ranked, a TRUSTED identifier
+    :ptype column: str
+    :param key: the TRUSTED ``ORDER BY`` terms of ``v`` the values sort by (:class:`Ranked`)
+    :ptype key: str
+    :return: the step, answering ``v`` and ``rank``
+    :rtype: Step
+    :raises ValueError: when ``key`` is empty
+    """
+    if not key.strip():
+        raise ValueError(f"the rank of {column}'s values names the order they sort in")
+    statement = _Statement()
+    source = statement.source(rel, "t")
+    return statement.step(
+        f"SELECT d.v, dense_rank() OVER (ORDER BY {key}) AS rank "
+        f"FROM (SELECT DISTINCT t.{quote_identifier(column)} AS v FROM {source}) AS d"
+    )
+
+
+def ranked_order(rel: Rel, ranked: Sequence[Ranked], *, first: Sequence[Sort] = (), limit: int | None = None) -> Step:
+    """``rel``'s rows (its own columns only) in order: the plain sorts ``first``, then each :class:`Ranked`
+    column by its key, the key computed once per distinct value (:func:`value_ranks`) and its rank joined back to the
+    rows null-safe; the first ``limit`` of them. Rows in the order ``ORDER BY first..., key(c0), key(c1), ...``
+    written per row answers, ties at the cut of a ``limit`` broken as the engine breaks them.
+
+    :param rel: the relation, read once (a ``WITH``)
+    :ptype rel: str | Derived | Step
+    :param ranked: the columns sorted by a key, in order, at least one
+    :ptype ranked: Sequence[Ranked]
+    :param first: the sorts before them, of the relation's columns (``t.``); each may say where its NULLs fall
+    :ptype first: Sequence[Sort]
+    :param limit: the most rows (the first in the order); every row when None
+    :ptype limit: int | None
+    :return: the step
+    :rtype: Step
+    :raises ValueError: when no column is ranked, a key is empty, or the limit is no count of rows
+    """
+    if not ranked:
+        raise ValueError("a ranked order ranks at least one column (keyed.ordered sorts by plain columns)")
+    bounded = _limited(limit)
+    statement = _Statement()
+    source = statement.source(rel, "t")
+    named = [f"r AS (SELECT t.* FROM {source})"]
+    joins = []
+    terms = [f"{sort.sorted_by} {'DESC' if sort.descending else 'ASC'}{sort.nulls_term}" for sort in first]
+    for index, rank in enumerate(ranked):
+        alias = f"k{index}"
+        named.append(f"{alias} AS ({value_ranks(Quoted('r'), rank.column, rank.key).sql})")
+        joins.append(f" LEFT JOIN {alias} ON {Match(rank.column, 'v', null_safe=True).condition('t', alias)}")
+        terms.append(f"{alias}.rank ASC")
+    return statement.step(
+        f"WITH {', '.join(named)} SELECT t.* FROM r AS t{''.join(joins)} ORDER BY {', '.join(terms)}{bounded}"
+    )
 
 
 async def count_step(conn: Any, step: Rel) -> int:

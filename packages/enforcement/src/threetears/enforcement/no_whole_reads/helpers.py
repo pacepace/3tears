@@ -160,6 +160,8 @@ STEP_CALLS: Final[frozenset[str]] = frozenset(
         "any_step",
         "materialize",
         "ordered",
+        "ranked_order",
+        "value_ranks",
     }
 )
 
@@ -182,6 +184,9 @@ STEP_RELATIONS: Final[Mapping[str, tuple[tuple[int | None, str], ...]]] = {
     "any_step": ((1, "step"),),
     "materialize": ((2, "step"),),
     "ordered": ((0, "step"),),
+    # an order by a costly key per distinct value: bounded exactly as the relation it orders
+    "ranked_order": ((0, "rel"),),
+    "value_ranks": ((0, "rel"),),
     # the keyed writes from a relation: what they read is a step's or a stage's rows
     "apply_stage": ((2, "stage"),),
     "update_from": ((None, "source"),),

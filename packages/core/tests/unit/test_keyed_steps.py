@@ -22,6 +22,7 @@ from threetears.core.keyed import (
     ThreadedDuckDB,
     Match,
     Quoted,
+    Ranked,
     Selected,
     Sort,
     anti,
@@ -34,10 +35,12 @@ from threetears.core.keyed import (
     first_difference,
     grouped,
     joined,
+    keyset_page,
     largest,
     latest_per_key,
     materialize,
     ordered,
+    ranked_order,
     read_step,
     read_step_arrow,
     row_count,
@@ -46,6 +49,7 @@ from threetears.core.keyed import (
     semi,
     union,
     update_from,
+    value_ranks,
     windowed,
     xor_hash,
 )
@@ -579,3 +583,95 @@ def test_steps_refuse_what_cannot_describe_them() -> None:
         change_relation(" ")
     with pytest.raises(ValueError, match="one sort column"):
         latest_per_key("held", key=["state"], order=[Sort("a"), Sort("b")], ties=True)
+
+
+#: the office's natural order for these tests: longer labels first, then the label (ends with the value: total)
+_NATURAL = Ranked("office", "length(v) DESC, v")
+_FIRST = [Sort("instant", descending=True, nulls="last")]
+_ORDER_TERMS = "t.instant DESC NULLS LAST, length(t.office) DESC, t.office, t.state"
+
+
+def test_a_ranked_order_answers_the_order_by_its_keys_written_per_row(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if ranked_order answers other rows or another order than ``ORDER BY first..., key(c0), key(c1)``
+    written per row -- NULLs in a leading sort (DESC NULLS LAST) or a ranked column, ties broken by a later ranked
+    column, a ``LIMIT`` cut in the middle of a tie -- loses the relation's parameters, or answers a column beyond the
+    relation's own."""
+    rel = scan("held", where=[_TENANT])
+    ranked = [_NATURAL, Ranked("state", "v")]
+    _same(
+        conn,
+        f"SELECT t.* FROM held AS t WHERE t.state = $1 ORDER BY {_ORDER_TERMS}",
+        lambda c: read_step(c, ranked_order(rel, ranked, first=_FIRST)),
+        ordered=True,
+        order_by=["instant", "office", "state"],
+    )
+    _same(
+        conn,
+        f"SELECT t.instant, t.office, t.state FROM held AS t WHERE t.state = $1 ORDER BY {_ORDER_TERMS} LIMIT 3",
+        lambda c: read_step(c, ranked_order(rel, ranked, first=_FIRST, limit=3)),
+        columns=["instant", "office", "state"],
+        ordered=True,
+    )
+    conn.execute(
+        "INSERT INTO held VALUES ('S0', 'o10', 1, NULL, 1), ('S0', 'o9', 2, NULL, 2), ('S0', NULL, 3, NULL, 3)"
+    )
+    rows = run_inline(read_step(InlineDuckDB(conn), ranked_order(rel, [_NATURAL])))
+    assert [row["office"] for row in rows] == ["o10", "o9", None]
+    assert set(rows[0]) == {"state", "office", "run_id", "instant", "v"}
+
+
+def test_a_ranked_key_is_computed_once_per_distinct_value_not_per_row(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if ranked_order or value_ranks evaluates its key once per row rather than once per distinct value."""
+    seen: list[str] = []
+
+    def natural(value: str) -> int:
+        seen.append(value)
+        return len(value)
+
+    conn.create_function("natural_len", natural, ["varchar"], "bigint", side_effects=True)
+    conn.executemany(
+        "INSERT INTO held VALUES ('S0', ?, ?, NULL, 0)", [(f"o{index % 4}", index) for index in range(400)]
+    )
+    rows = run_inline(read_step(InlineDuckDB(conn), ranked_order("held", [Ranked("office", "natural_len(v), v")])))
+    assert len(rows) == 400
+    assert sorted(seen) == ["o0", "o1", "o2", "o3"], len(seen)
+    seen.clear()
+    ranks = run_inline(read_step(InlineDuckDB(conn), value_ranks("held", "office", "natural_len(v), v")))
+    assert sorted((row["v"], row["rank"]) for row in ranks) == [("o0", 1), ("o1", 2), ("o2", 3), ("o3", 4)]
+    assert len(seen) == 4
+
+
+def test_a_sort_places_its_nulls_where_it_says_in_an_order_and_a_page_refuses_another_place(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if an ordered step drops a sort's ``nulls`` (DESC NULLS LAST, ASC NULLS FIRST), a null order other than
+    first or last is taken, a keyset page takes a null order it does not step past, latest_per_key takes one, or a
+    ranked order ranks nothing."""
+    conn.execute(
+        "INSERT INTO held VALUES ('S0', 'o0', 1, NULL, 1), ('S0', 'o0', 2, NULL, NULL), ('S0', 'o0', 3, NULL, 3)"
+    )
+    db = InlineDuckDB(conn)
+    rel = scan("held", ["run_id", "v"])
+    down = run_inline(read_step(db, ordered(rel, [Sort("v", descending=True, nulls="last")])))
+    assert [row["run_id"] for row in down] == [3, 1, 2]
+    up = run_inline(read_step(db, rel, order=[Sort("v", nulls="first")]))
+    assert [row["run_id"] for row in up] == [2, 1, 3]
+    with pytest.raises(ValueError, match="first or last"):
+        Sort("v", nulls="middle")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="largest value"):
+        run_inline(
+            keyset_page(
+                db,
+                "held",
+                columns=["v", "run_id"],
+                by={"state": "S0"},
+                order=[Sort("v", descending=True, nulls="last"), Sort("run_id")],
+                limit=2,
+            )
+        )
+    with pytest.raises(ValueError, match="nulls"):
+        latest_per_key("held", key=["state"], order=[Sort("v", nulls="last")])
+    with pytest.raises(ValueError, match="ranks at least one"):
+        ranked_order("held", [])
+    with pytest.raises(ValueError, match="names the order"):
+        value_ranks("held", "office", " ")

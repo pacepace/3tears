@@ -31,7 +31,8 @@ as keyed by construction, judged by the key it names):
   :func:`update_before`; a cache's trim to its cap by its key's order (SQLite's rowid): :func:`delete_oldest`;
 - **a relational step over a change relation** (the rows a change produced, the held rows it touches), each shape once:
   :func:`semi`, :func:`anti`, :func:`distinct`, :func:`grouped`, :func:`latest_per_key`, :func:`windowed`,
-  :func:`except_rows`, :func:`union`, :func:`joined`, :func:`scan`, run by :func:`read_step` /
+  :func:`except_rows`, :func:`union`, :func:`joined`, :func:`scan`, an order :func:`ordered`, an order by a costly key
+  computed once per distinct value :func:`ranked_order` (:class:`Ranked`, :func:`value_ranks`), run by :func:`read_step` /
   :func:`read_step_arrow` / :func:`count_step` / :func:`any_step`, a table of its rows :func:`materialize`, a delete
   by its keys :func:`delete_matching`, the first row two hold otherwise :func:`first_difference`
   (:mod:`threetears.core.keyed.steps`; :func:`change_relation` declares the relation);
@@ -120,6 +121,7 @@ from threetears.core.keyed.rows import (
 from threetears.core.keyed.steps import (
     Match,
     Quoted,
+    Ranked,
     Step,
     anti,
     any_step,
@@ -135,6 +137,7 @@ from threetears.core.keyed.steps import (
     latest_per_key,
     materialize,
     ordered,
+    ranked_order,
     read_step,
     read_step_arrow,
     row_count,
@@ -142,6 +145,7 @@ from threetears.core.keyed.steps import (
     semi,
     smallest,
     union,
+    value_ranks,
     windowed,
     xor_hash,
 )
@@ -247,6 +251,7 @@ __all__ = [
     "update_keyed",
     "Match",
     "Quoted",
+    "Ranked",
     "Step",
     "anti",
     "any_step",
@@ -262,6 +267,7 @@ __all__ = [
     "latest_per_key",
     "materialize",
     "ordered",
+    "ranked_order",
     "read_step",
     "read_step_arrow",
     "row_count",
@@ -269,6 +275,7 @@ __all__ = [
     "semi",
     "smallest",
     "union",
+    "value_ranks",
     "windowed",
     "with_options",
     "xor_hash",
