@@ -656,31 +656,33 @@ def _reached(message: CacheInvalidationMessage) -> list[frozenset[str] | None]:
 
 
 _PERSON, _AGENT, _CHILD = (UUID(f"00000000-0000-4000-8000-00000000000{n}") for n in (1, 2, 3))
+#: the row ids of a change whose ids the reach does not read: fixed, so nothing is drawn at collection
+_ROW_IDS = ["00000000-0000-4000-8000-000000000004"]
 
 
 class TestWhatARowReaches:
     @pytest.mark.parametrize(
         ("message", "expected"),
         [
-            (_row("group_members", generation=None, member_type="user", member_id=f"{_PERSON}"), []),
+            (_row("group_members", generation=None, ids=_ROW_IDS, member_type="user", member_id=f"{_PERSON}"), []),
             (
-                _row("group_members", generation=None, member_type="agent", member_id=f"{_AGENT}"),
+                _row("group_members", generation=None, ids=_ROW_IDS, member_type="agent", member_id=f"{_AGENT}"),
                 [frozenset({f"a:{_AGENT.hex}"})],
             ),
             (
-                _row("group_members", generation=None, member_type="group", member_id=f"{_CHILD}"),
+                _row("group_members", generation=None, ids=_ROW_IDS, member_type="group", member_id=f"{_CHILD}"),
                 [frozenset({f"g:{_CHILD.hex}"})],
             ),
-            (_row("group_members", generation=None), [frozenset({"t:group_members"})]),
+            (_row("group_members", generation=None, ids=_ROW_IDS), [frozenset({"t:group_members"})]),
             (
-                _row("role_assignments", generation=None, group_id=f"{_CHILD}"),
+                _row("role_assignments", generation=None, ids=_ROW_IDS, group_id=f"{_CHILD}"),
                 [frozenset({f"g:{_CHILD.hex}"})],
             ),
-            (_row("role_assignments", generation=None), [frozenset({"t:role_assignments"})]),
+            (_row("role_assignments", generation=None, ids=_ROW_IDS), [frozenset({"t:role_assignments"})]),
             (_row("roles", generation=None, ids=[f"{_AGENT}"]), [frozenset({f"r:{_AGENT.hex}", "r:*"})]),
             (_row("groups", generation=None, ids=["platform", f"{_CHILD}"]), [frozenset({f"g:{_CHILD.hex}"})]),
             (_row("namespaces", generation=None, ids=["platform", f"{_PERSON}"]), [frozenset({"t:namespaces"})]),
-            (_row(_EXTRA, generation=None), [frozenset({f"t:{_EXTRA}"})]),
+            (_row(_EXTRA, generation=None, ids=_ROW_IDS), [frozenset({f"t:{_EXTRA}"})]),
         ],
     )
     def test_each_table(self, message: CacheInvalidationMessage, expected: list[frozenset[str] | None]) -> None:
