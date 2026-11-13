@@ -14,8 +14,8 @@ from threetears.evals.analysis.report.keys.vocabulary import _Family
 from threetears.evals.analysis.report_input import ReportInput
 
 if TYPE_CHECKING:
-    # A page's forms decide over the figures this module reads, so the module that decides them reads this one: every
-    # caller hands its page's forms in, and the type is named for the checker alone.
+    # A page's forms decide over the figures the keys read, so the module that decides them reads the keys' parts and
+    # none of them reads it: every caller hands its page's forms in, and the type is named for the checker alone.
     from threetears.evals.analysis.report.forms import PageForms
 
 
@@ -322,7 +322,7 @@ _EXAMPLE_NAMES: Mapping[str, str] = {"base": "Baseline", "fast.v2": "fast.v2"}
 
 
 def figure_key_grammar(*, forms_of: Callable[[ReportInput], PageForms]) -> str:
-    """Write the section that teaches figure keys, from this module's own families and filters: the whole grammar, as
+    """Write the section that teaches figure keys, from the parser's own families and filters: the whole grammar, as
     the analyst's reference pages hold it.
 
     Each family's form and statistics, each filter and every example come from the code that parses and renders
@@ -330,8 +330,8 @@ def figure_key_grammar(*, forms_of: Callable[[ReportInput], PageForms]) -> str:
     analyst with the code.
 
     :param forms_of: How a page's forms are built from a report input (:meth:`~threetears.evals.analysis.report.forms.
-        PageForms.of`), which the examples are printed in on the made-up input: this module reads no page's forms of
-        its own, since the forms read this module.
+        PageForms.of`), which the examples are printed in on the made-up input: the keys read no page's forms of
+        their own, since the forms read the keys' parts.
     :ptype forms_of: Callable[[ReportInput], PageForms]
     :return: The section, heading first.
     :rtype: str
@@ -359,8 +359,8 @@ def figure_key_index(topic: str, *, forms_of: Callable[[ReportInput], PageForms]
     :param topic: What the reference is served as: each group's page is ``<topic>.<group>``.
     :ptype topic: str
     :param forms_of: How a page's forms are built from a report input (:meth:`~threetears.evals.analysis.report.forms.
-        PageForms.of`), which the examples are printed in on the made-up input: this module reads no page's forms of
-        its own, since the forms read this module.
+        PageForms.of`), which the examples are printed in on the made-up input: the keys read no page's forms of
+        their own, since the forms read the keys' parts.
     :ptype forms_of: Callable[[ReportInput], PageForms]
     :return: The index, heading first.
     :rtype: str
@@ -385,8 +385,8 @@ def figure_key_pages(*, forms_of: Callable[[ReportInput], PageForms]) -> dict[st
     written as the grammar writes them (:func:`figure_key_grammar`).
 
     :param forms_of: How a page's forms are built from a report input (:meth:`~threetears.evals.analysis.report.forms.
-        PageForms.of`), which the examples are printed in on the made-up input: this module reads no page's forms of
-        its own, since the forms read this module.
+        PageForms.of`), which the examples are printed in on the made-up input: the keys read no page's forms of
+        their own, since the forms read the keys' parts.
     :ptype forms_of: Callable[[ReportInput], PageForms]
     :return: Each page, by its group's name, in the order the index lists them (:func:`figure_key_index`).
     :rtype: dict[str, str]

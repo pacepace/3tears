@@ -2,8 +2,8 @@
 
 A figure's form is its digits, sign, unit and interval as printed. Spelling one number is the leaf's
 (:mod:`threetears.evals.kernel.numbers`); deciding which figures form a set, and how many digits the set reads at, is
-this module's. A set is the measure across the whole page (owner ruling, 2026-11-08), so every figure of one
-measure is decided by one :class:`MeasureForm`, never by the surface that prints it.
+this module's, through its parts. A set is the measure across the whole page (owner ruling, 2026-11-08), so every
+figure of one measure is decided by one :class:`MeasureForm`, never by the surface that prints it.
 
 - :class:`PageForms` is built once per page, before any part is assembled: :meth:`PageForms.of` for a written page
   (a report input), :meth:`PageForms.of_campaign` for a campaign's code page (its readings and its aspects' pages),
@@ -25,20 +25,19 @@ measure is decided by one :class:`MeasureForm`, never by the surface that prints
   spelled here by the filter that chose it (:meth:`PageForms.key_percent`, :meth:`PageForms.key_points`,
   :meth:`PageForms.key_money`, :meth:`PageForms.key_whole`, :meth:`PageForms.key_multiple`, its ends recorded by
   :meth:`PageForms.key_ends`): every caller of the keys hands its page's forms in, since this module reads the keys'
-  module and so it can read none of this one. A chart's interval level reads :meth:`PageForms.drawn_confidence`.
+  parts and so none of them can read this one. A chart's interval level reads :meth:`PageForms.drawn_confidence`.
 - Each returns a :class:`Printed` (or a :class:`_PrintedInterval`): the value and its decided text, with the parts a
   renderer may lay out apart.
 
-**Today's decisions, relocated, not rewritten.** Until the policy flip every form here reproduces what the page
-prints now, so routing a surface through this module moves no golden. Where the page decides a measure's form, that
-decision lives here and its old module calls it: the Full results' quantities and decimals (a measure's levels, its
-changes, how far a change reaches, a change's interval's ends) and the scorecard's column of measured figures'
-decimals. A surface that calls one of these free functions still decides there, so the rule's test counts each such call
-as a site (``tests/test_one_owner_of_number_forms.py``); only :class:`PageForms`, asked by measure and role, is the
-migrated route. What a measure is (a rate, money on a ruler, shown at all) is
-:mod:`~threetears.evals.analysis.report.campaign.measure_kinds`'s, and where a decision is a public function of
-another module (a measure's unit, :func:`~threetears.evals.analysis.report.figure_keys.figure_unit`), the form calls
-it.
+**Today's decisions, relocated, not rewritten.** Until the policy flip every form here reproduces what the page prints
+now, so routing a surface through the forms moves no golden. Where the page decides a measure's form, that decision
+lives with the forms (in their parts) and its old module calls it: the Full results' quantities and decimals (a
+measure's levels, its changes, how far a change reaches, a change's interval's ends) and the scorecard's column of
+measured figures' decimals. A surface that calls one of these free functions still decides there, so the rule's test
+counts each such call as a site (``tests/test_one_owner_of_number_forms.py``); only :class:`PageForms`, asked by measure
+and role, is the migrated route. What a measure is (a rate, money on a ruler, shown at all) is
+:mod:`~threetears.evals.analysis.report.campaign.measure_kinds`'s, and where a decision is a public function of another
+module (a measure's unit, :func:`~threetears.evals.analysis.report.figure_keys.figure_unit`), the form calls it.
 
 **A written page under the number policy.** A written page's measure reads at one precision on the whole page, read
 from its uncertainty (:func:`policy_places` over its set's half-widths, :func:`_measure_sets`), and every figure of it,

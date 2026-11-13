@@ -1,5 +1,5 @@
-"""The mechanical checks over report prose that a report plan and a report document share: typed digits, a unit a
-key already prints, and internal ids a reader should not see.
+"""The mechanical checks over report prose: typed digits, a unit a key already prints, and internal ids a reader
+should not see.
 
 Each check reads prose as ``(field path, text)`` pairs, so it holds for whatever names its fields:
 :mod:`~threetears.evals.analysis.report.doc_page.checks` walks a document's prose through

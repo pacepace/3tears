@@ -18,10 +18,10 @@ an :class:`~threetears.evals.analysis.errors.UnresolvableReference`, so the anal
 
 **Derived values are descriptive.** ``cost.uplift.<arm>``, ``cost.uplift_range``, every ``loss_share``, every
 ``flip_margin``, ``weakest.*``, a slice's ``vs_control``, a floor's ``held_above`` and ``broken_at`` and a criterion
-figure's ``gap`` are computed here from the input's point figures. They carry no interval and no test, the grammar
+figure's ``gap`` are computed from the input's point figures. They carry no interval and no test, the grammar
 says so, and their :class:`Figure` is marked ``derived``. Everything else is copied from the input.
 
-**A trade is priced here too.** ``price.<from>.<to>.<gain>.<field>`` prices a move between two options on one gain
+**A trade is priced too.** ``price.<from>.<to>.<gain>.<field>`` prices a move between two options on one gain
 axis (:func:`gain_axis`): the gain, signed toward better, the cost gap per 1,000 of what the cost counts
 (:func:`cost_basis`), and the price per point
 gained, whose low and high ends are read off the gain's interval where a contrast states one (an end the interval
@@ -71,7 +71,7 @@ as none.
 reads how many of an arm's calls went unanswered, retried and lost together, summed over every usage role that counted
 them, with ``.retried``, ``.lost``, ``.calls`` (the answered ones), ``.share`` (of every call sent), ``.reasons`` and
 ``.uncounted`` (trials whose calls counted none) beside it. Copied where one role counted them; a share over several
-roles is computed here and marked derived. An arm no role counted for is no key at all: not counted is never none.
+roles is computed and marked derived. An arm no role counted for is no key at all: not counted is never none.
 
 **How a trial passes.** ``aspects.<aspect>.pass_rule`` reads the label of the aspect's pass rule, which names every
 check that fails a trial besides the goal checks (``Never topped up is false``), ``.pass_threshold`` the level a judged

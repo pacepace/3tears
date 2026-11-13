@@ -27,7 +27,7 @@ still exports every name its `__all__` lists; the public names it did not list a
 which `MIGRATIONS.toml` names.
 
 An aspect's page moves the same way: the parts `report.build` lays the page out from move into the package
-`report.aspect`, one module per part (`common`, `gates`, `contrasts`, `readings`, `scoreboard`, `head`, `method`,
+`report.aspect`, one module per part (`common`, `guardrails`, `contrasts`, `readings`, `scoreboard`, `head`, `method`,
 `trials` and `question`), each reading only the parts before it. `report.build` keeps the entry points and still exports
 every name its `__all__` lists; `FLOORS_WARN_ONLY`, which it did not list, is importable from `report.aspect.question`,
 which `MIGRATIONS.toml` names.

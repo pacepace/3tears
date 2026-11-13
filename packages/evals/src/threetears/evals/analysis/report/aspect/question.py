@@ -21,7 +21,7 @@ from threetears.evals.analysis.report.aspect.common import (
     _readings_table,
 )
 from threetears.evals.analysis.report.aspect.contrasts import _comparison_blocks
-from threetears.evals.analysis.report.aspect.gates import _guardrail_blocks
+from threetears.evals.analysis.report.aspect.guardrails import _guardrail_blocks
 from threetears.evals.analysis.report.aspect.readings import _label_blocks, _readings_blocks, _strata_blocks
 from threetears.evals.analysis.report.cost_unit import money_ruler
 from threetears.evals.analysis.report.decision import (

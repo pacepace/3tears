@@ -5,7 +5,7 @@ them; the parts, in the order each reads the ones before it:
 
 - :mod:`~threetears.evals.analysis.report.aspect.common`: what every part reads (the control, the names, a cell, an
   interval's words).
-- :mod:`~threetears.evals.analysis.report.aspect.gates`: the guardrails and the bars.
+- :mod:`~threetears.evals.analysis.report.aspect.guardrails`: the guardrails and the bars.
 - :mod:`~threetears.evals.analysis.report.aspect.contrasts`: the contrasts against the control, and the aspect's
   verdict over them.
 - :mod:`~threetears.evals.analysis.report.aspect.readings`: the readings by arm, stratum and label.

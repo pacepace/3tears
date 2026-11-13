@@ -1039,7 +1039,8 @@ _UNREPORTED_FIELDS = ("missing", "free", "at_p95")
 
 
 def _unreported(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
-    """One arm's cost read with its unreported trials counted free, or at its 95th percentile (this module's account).
+    """One arm's cost read with its unreported trials counted free, or at its 95th percentile (the account in
+    :mod:`~threetears.evals.analysis.report.figure_keys`).
 
     :raises UnstatedFigure: The page's cost is not read off one measure's overall figures, the measure or the
         scoreboard leaves the observations or the trials run unstated, or the observations outnumber the trials.

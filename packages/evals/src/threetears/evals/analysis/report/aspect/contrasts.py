@@ -33,7 +33,7 @@ from threetears.evals.analysis.report.aspect.common import (
     _note,
     _unit_on,
 )
-from threetears.evals.analysis.report.aspect.gates import guardrail_verdicts
+from threetears.evals.analysis.report.aspect.guardrails import guardrail_verdicts
 from threetears.evals.analysis.report.figures import ContrastPlaces, MeasureRuler, Rulers, report_rulers
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.keys.vocabulary import joint_guarantee

@@ -143,7 +143,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/report/build.py": {},
     "analysis/report/aspect/__init__.py": {},
     "analysis/report/aspect/common.py": {},
-    "analysis/report/aspect/gates.py": {},
+    "analysis/report/aspect/guardrails.py": {},
     "analysis/report/aspect/contrasts.py": {},
     "analysis/report/aspect/readings.py": {},
     "analysis/report/aspect/scoreboard.py": {},

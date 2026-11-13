@@ -51,7 +51,7 @@ from threetears.evals.analysis.report.aspect.contrasts import (
     contrast_verdicts,
     report_cell_labels,
 )
-from threetears.evals.analysis.report.aspect.gates import _bar_blocks, bar_verdicts, guardrail_verdicts
+from threetears.evals.analysis.report.aspect.guardrails import _bar_blocks, bar_verdicts, guardrail_verdicts
 from threetears.evals.analysis.report.aspect.head import _floor_warning_blocks, _heading_blocks
 from threetears.evals.analysis.report.aspect.method import (
     CHECK_PROOF_WORDS,

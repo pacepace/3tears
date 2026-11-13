@@ -29,9 +29,9 @@ _ABSENT_TEXT = format_number(None)
 #
 # The number policy in parts small enough to hold each to its own cases: the decimals a measure reads at, read from its
 # uncertainty; the one form an interval prints in; and the fixed forms of the figures that are no measurement. A page's
-# forms decide every figure through them. Each is public so that a call from outside this module is a site the
-# ratchet counts (``tests/test_one_owner_of_number_forms.py``): a surface reaches them only through a page's forms,
-# asked by measure and role.
+# forms decide every figure through them. Each is public so that a call from outside a page's forms (``forms`` and its
+# parts) is a site the ratchet counts (``tests/test_one_owner_of_number_forms.py``): a surface reaches them only
+# through a page's forms, asked by measure and role.
 
 #: The most decimals a figure under the policy takes: :data:`~threetears.evals.kernel.numbers.WRITTEN_FROM`'s six, past
 #: which a figure reads as the bound it is under.
