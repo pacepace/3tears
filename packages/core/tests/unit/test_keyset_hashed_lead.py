@@ -249,11 +249,54 @@ class TestALeadASetFilterPins:
         )
 
         assert [tuple(row.values()) for row in read.rows] == _pinned(races, ["r09", "r02", "r05"])
-        pages = [sql for sql, _ in recorded.statements if "version()" not in sql][1:]
+        # the pages past the first that step past a cursor (on Postgres some windows start past the cursor's value)
+        pages = [sql for sql, params in recorded.statements[1:] if " FROM t" in sql and len(params) == 3]
         assert pages, recorded.statements
         assert all('("race", "geo") > ($2, $3)' in sql for sql in pages), pages
         three_ways = [sql for sql in pages if '"race" >= $2' in sql or " OR (" in sql]
         assert (not three_ways) if row_seek else (three_ways == pages), pages
+
+    async def test_a_set_pinned_read_on_postgres_pins_each_page_past_the_first_to_a_window_of_the_values(
+        self, races: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a page past the first on Postgres names the whole set, or all the values it has not passed:
+        Postgres 16 then scans the whole table once it estimates a few pages left (6,001 values of two rows in a table
+        of 30,000: 189,008 rows scanned for 12,012). Each later page names a window of the values, put in order once
+        by a statement over the values alone; every row still comes once, in key order."""
+        values = [f"r{n:02d}" for n in range(11, -1, -1)]
+        recorded = _Recorded(races)
+
+        read = await read_keyset_pages(
+            recorded, "SELECT * FROM t", ("race", "geo"), where_any={"race": ("text[]", values)}, page_size=5
+        )
+
+        assert [tuple(row.values()) for row in read.rows] == _pinned(races, values)
+        reads = [(sql, params) for sql, params in recorded.statements if "version()" not in sql]
+        (first, _), (ordering, _), *later = reads
+        assert " FROM t" in first and "unnest($1::text[])" in ordering and " FROM t" not in ordering, reads
+        assert later, reads
+        named = [list(params[0]) for _, params in later]
+        assert all(len(window) < len(values) and window == sorted(window) for window in named), named
+
+    async def test_a_window_on_postgres_names_a_few_hundred_values_at_most(
+        self, races: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a page past the first names every value it has not passed, or more than a few hundred: an index
+        scan of a value costs Postgres a descent, so past a few hundred it scans the whole table (60,000 rows: 300
+        values read the index, 400 the table)."""
+        races.execute("CREATE TABLE many (race VARCHAR, geo BIGINT, PRIMARY KEY (race, geo))")
+        races.execute("INSERT INTO many SELECT 'r' || lpad(r::VARCHAR, 4, '0'), 0 FROM range(2000) a(r)")
+        values = [f"r{n:04d}" for n in range(0, 2000, 2)]
+        recorded = _Recorded(races)
+
+        read = await read_keyset_pages(
+            recorded, "SELECT * FROM many", ("race", "geo"), where_any={"race": ("text[]", values)}, page_size=300
+        )
+
+        assert [row["race"] for row in read.rows] == values
+        _, *later = [params for sql, params in recorded.statements if " FROM many" in sql]
+        assert later, recorded.statements
+        assert max(len(params[0]) for params in later) <= 200, [len(params[0]) for params in later]
 
 
 class TestWhichDatabaseAnL3Is:

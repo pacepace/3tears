@@ -46,7 +46,11 @@ answers ``lead = ANY(values)`` in key order and stops at the page, and a set tha
 for their order and more for their rows). On Postgres such a read names its cursor by the row comparison alone,
 the one Postgres seeks by: beside ``lead = ANY(values)`` the leading bound and the expansion only shrink its row
 estimate until, a few pages from the end, it plans a bitmap scan of every row left in the set and sorts them
-(Postgres 16, ten values of 3,000 rows: 85,019 rows scanned for 30,029; by the row comparison alone, 31,028).
+(Postgres 16, ten values of 3,000 rows: 85,019 rows scanned for 30,029; by the row comparison alone, 31,028). And
+past the first page each statement there names a window of the values not yet passed, at most a few hundred, put in
+order once by the same statement over the values alone: with the whole set, or all of the rest, Postgres scans the
+whole table once it estimates a few pages left (6,001 values of two rows in a table of 30,000: 189,008 rows scanned
+for 12,012; windowed, 12,001).
 
 **How many rows a page asks for.** A transport that answers pages (``fetch_page`` /
 ``fetch_arrow_page``, :class:`~threetears.core.backends.protocol.L3Page`) says in each reply the bytes its
@@ -82,6 +86,11 @@ _MOST_ROWS_A_PAGE: Final = 1_000_000
 
 #: the most lead values one statement of a hashed lead's walk names (``= ANY`` the values)
 _MOST_LEADS_A_STATEMENT: Final = 1_000
+
+#: the most values of a set pinning an ordered lead that one statement past the first page names on Postgres: an index
+#: scan of a value costs Postgres 16 a descent, so past a few hundred values a scan of the whole table looks cheaper
+#: (60,000 rows: 300 values planned the index, 400 the table, at 1.0 vs 4.8 ms); 200 leaves room under that
+_MOST_LEADS_A_SEEK: Final = 200
 
 #: the most lead values a hashed lead's walk takes; each page of them reads every value again from the bucket
 #: heads, so past this the walk's cost grows with the square of the values, and the read goes on by the cursor
@@ -262,8 +271,11 @@ async def keyset_pages(
         async for page in _lead_walk(reads, shape, walked, after):
             yield page
         return
-    statement = shape.statement(row_seek=pinned.row_seek)
-    async for page in _cursor_pages(reads, statement, None if after is None else tuple(after)):
+    if pinned.seek is not None:
+        async for page in _set_pages(reads, shape, pinned.seek[0], pinned.seek[1], after):
+            yield page
+        return
+    async for page in _cursor_pages(reads, shape.statement(), None if after is None else tuple(after)):
         yield page
 
 
@@ -333,8 +345,11 @@ async def keyset_arrow_pages(
         async for page in _lead_walk(reads, shape, walked, after):
             yield page
         return
-    statement = shape.statement(row_seek=pinned.row_seek)
-    async for page in _cursor_pages(reads, statement, None if after is None else tuple(after)):
+    if pinned.seek is not None:
+        async for page in _set_pages(reads, shape, pinned.seek[0], pinned.seek[1], after):
+            yield page
+        return
+    async for page in _cursor_pages(reads, shape.statement(), None if after is None else tuple(after)):
         yield page
 
 
@@ -431,6 +446,11 @@ class _DictReads:
         """the last row's ``key``."""
         return tuple(kept[-1][column] for column in key)
 
+    @staticmethod
+    def leads(kept: Any, column: str) -> int:
+        """how many distinct values of ``column`` ``kept`` holds."""
+        return len({row[column] for row in kept})
+
     async def values(self, query: str, params: Sequence[Any], column: str) -> list[Any]:
         """the one column ``query`` selects, row by row.
 
@@ -489,6 +509,11 @@ class _ArrowReads:
         last = kept.slice(kept.num_rows - 1, 1).select(list(key)).to_pylist()[0]
         return tuple(last[column] for column in key)
 
+    @staticmethod
+    def leads(kept: Any, column: str) -> int:
+        """how many distinct values of ``column`` ``kept`` holds."""
+        return len(kept.column(column).unique())
+
     async def values(self, query: str, params: Sequence[Any], column: str) -> list[Any]:
         """the one column ``query`` selects, row by row (typed as the read's own column).
 
@@ -531,10 +556,11 @@ async def _cursor_pages(
 @dataclass(frozen=True)
 class _Pinned:
     """how a read whose set filter may pin its key's lead goes: the walk's ``(array type, values)`` when it walks the
-    values one by one, and whether its cursor statement seeks by the row comparison alone (Postgres)."""
+    values one by one (YugabyteDB, a hashed lead), or the set's when its pages past the first each pin a window of
+    the values (Postgres, :func:`_set_pages`)."""
 
     walk: tuple[str, Sequence[Any]] | None = None
-    row_seek: bool = False
+    seek: tuple[str, Sequence[Any]] | None = None
 
 
 #: a read no set filter pins the lead of: it pages as it always has
@@ -550,8 +576,8 @@ async def _pinned_lead(l3: Any, shape: _ReadShape, lead_array: str | None) -> _P
     every value on every page and sorts them across values (a hashed lead's buckets come in no order): three pages of
     33,528 rows scanned 33,528 rows each and sorted two on disk. Walked, each value's rows are one bucket read past the
     cursor on the rest of the key: every row scanned once, nothing sorted but a small group's rows. An ordered lead
-    pages by the cursor; on Postgres that cursor is named by the row comparison alone, which Postgres seeks by
-    (the module's "A hashed lead a set filter pins").
+    pages by the cursor; on Postgres each page past the first pins a window of the set's values and names its cursor
+    by the row comparison alone, which Postgres seeks by (the module's "A hashed lead a set filter pins").
 
     :param l3: the L3, asked whether it is YugabyteDB only when a set filter pins the lead (once a reader:
         :func:`~threetears.core.backends.dialect.known_on_yugabyte`)
@@ -569,8 +595,86 @@ async def _pinned_lead(l3: Any, shape: _ReadShape, lead_array: str | None) -> _P
     if pinned is None:
         return _UNPINNED
     if not await known_on_yugabyte(l3):
-        return _Pinned(row_seek=True)
+        return _Pinned(seek=pinned)
     return _Pinned(walk=pinned) if lead_array is not None else _UNPINNED
+
+
+async def _set_pages(
+    reads: _DictReads | _ArrowReads,
+    shape: _ReadShape,
+    array: str,
+    values: Sequence[Any],
+    after: Sequence[Any] | None,
+) -> AsyncGenerator[Any, None]:
+    """a read whose set filter pins its key's ordered lead, on Postgres: the first page ``lead = ANY`` the whole set,
+    each after it ``lead = ANY`` a window of the values not yet passed (the module's "A hashed lead a set filter
+    pins").
+
+    A set that fits a page is that one statement. Past it, the values are put in the database's order once, by one
+    statement over the values alone (:class:`_GivenLeads`, no table read), from the cursor's lead on; each later
+    statement names the next window of them, sized by the rows a value held on the page before to about two pages,
+    and at most :data:`_MOST_LEADS_A_SEEK` values, so its index scan stays the plan. Paged with the whole set instead,
+    Postgres 16 plans a scan of the whole table once its estimate of the rows left falls to a few pages, and the
+    rest of the set narrowed to the values not passed did no better (30,000 races, 6,001 values of two rows: 189,008
+    rows scanned for 12,012 either way; 300 values a statement read the index, 400 the table). A window is paged by
+    the row comparison alone, as long as it has rows; one starting past the cursor's value needs no cursor.
+
+    :param reads: how a page is read
+    :ptype reads: _DictReads | _ArrowReads
+    :param shape: the read
+    :ptype shape: _ReadShape
+    :param array: the lead's SQL array type, as the set filter names it
+    :ptype array: str
+    :param values: the values the set filter pins the lead to
+    :ptype values: Sequence[Any]
+    :param after: the key the read starts past; the first row when None
+    :ptype after: Sequence[Any] | None
+    :return: the pages, as they are read; none empty but a read of no rows
+    :rtype: AsyncGenerator[Any, None]
+    """
+    statement = shape.statement(row_seek=True)
+    kept, more, rows = await reads.page(statement, None if after is None else tuple(after), statement.page_size)
+    yield kept
+    if not more:
+        return
+    lead = shape.key[0]
+    quoted = shape.quote(lead)
+    cursor: tuple[Any, ...] = reads.last(kept, shape.key)
+    leads = await _GivenLeads(reads, shape, array, values, cursor).take(len(values))
+    # each window's statement pins the lead itself; the set filter naming it stays on the first statement alone
+    windowed = replace(
+        shape, where_any={column: held for column, held in (shape.where_any or {}).items() if column != lead} or None
+    )
+    held, filled = reads.leads(kept, lead), reads.count(kept)
+    while leads:
+        size = _window(held, filled, shape.page_size)
+        window, leads = leads[:size], leads[size:]
+        statement = windowed.statement(
+            conditions=[Fragment(sql=f"{quoted} = ANY($1::{array})", params=(list(window),))], row_seek=True
+        )
+        async for page in _cursor_pages(reads, statement, cursor if window[0] == cursor[0] else None):
+            counted = reads.count(page)
+            if counted == 0:
+                continue
+            cursor = reads.last(page, shape.key)
+            held, filled = reads.leads(page, lead), counted
+            yield page
+
+
+def _window(values: int, rows: int, page_size: int) -> int:
+    """how many of a pinned set's values a statement past the first page names: as many as held about two pages of
+    rows on the page before, at most :data:`_MOST_LEADS_A_SEEK`.
+
+    :param values: the lead values the page before held
+    :ptype values: int
+    :param rows: its rows
+    :ptype rows: int
+    :param page_size: the rows a page keeps
+    :ptype page_size: int
+    :return: the window's values, from one to :data:`_MOST_LEADS_A_SEEK`
+    :rtype: int
+    """
+    return max(1, min(-(-2 * values * page_size // max(rows, 1)), _MOST_LEADS_A_SEEK))
 
 
 async def _hashed_lead(l3: Any, shape: _ReadShape, lead_array: str | None) -> str | None:
