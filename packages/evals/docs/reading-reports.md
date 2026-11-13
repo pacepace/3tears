@@ -691,10 +691,11 @@ decided to start no new cell. *47 once 3 running cells finished (+7)* is where i
 the stop, their candidates were refused nothing, and they finished, so the run lands past a ceiling by what they
 added. *12 cells not started* is the part of the matrix never measured. Money reads as `$` (`stopped by its cost cap:
 $10.20 of $10.00 at the stop, $10.35 once 1 running cell finished (+$0.15); ...`). The cost cap also admits each
-cell's judging before paying for it, so judging never takes a run past the cap; a cell whose judging did not fit is
+cell's judging on its price ceiling before paying for it, so judging stays within the cap wherever that ceiling
+bounds the bill; a cell whose judging did not fit is
 set aside, and the line ends *2 cells not judged, as the cap had too little left for their judging*. Those cells are
-left out of every reading, never scored low, and a re-judge takes them up; a report's lost-trial table counts them
-under *cost cap*. A cap that stopped a run this way can read
+left out of the judged readings, never scored low, and counted in every other reading as what they did; a re-judge
+takes them up, and a report's lost-trial table counts them under *cost cap*. A cap that stopped a run this way can read
 under its ceiling: the stop came before the cap was reached.
 A run both ceilings stopped at one boundary reads both. The figures are `EvalRun.budget_stops`; a run stopped by its
 wall-clock budget has none and gives its reason instead.

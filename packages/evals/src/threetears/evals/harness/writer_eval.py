@@ -93,7 +93,8 @@ Once a page is written its judging is priced in full, page and all, and the engi
 cap has left before any call is paid for: a case whose judging does not fit is set aside unjudged, never scored low,
 and stops its run there (a re-judge takes it up). So the floor decides only what a launch is refused on, and whether a
 batch launches; each batch's run runs under all its arm's part has left, so a case is set aside only when the arm
-cannot afford its judging, and an arm's judging never takes it past its part.
+cannot afford its judging, and an arm's judging stays within its part wherever the judge's price ceiling bounds what
+it is billed. Its reports are never refused, so its running cases can still take it past its part by what they write.
 
 **The job budget sets how many cases an arm may run.** A writer cell's deadline is a whole report: every turn its
 budget allows at the request ceiling, and its page's judging after. The engine gives an arm's job a budget sized as
@@ -1192,8 +1193,8 @@ class WriterEval:
             # judge dimension none of its results exercised reads at its arm's level, and it sits in its arm's test
             # setup. Its unwritten reports count as failures in Report finished, the judged readings find no score of
             # it, and the pass reads a missing page as losing its pair, or tying it when both are. A case whose judging
-            # the cost cap set aside did write its report: its judge errors leave it out of every reading, Report
-            # finished included, so it never counts as a failure, and the pass reads its page as any other.
+            # the cost cap set aside did write its report: Report finished counts it as what it did, the judged readings
+            # leave it out, and the pass reads its page as any other.
             if campaign_id is None:
                 campaign_id = await run_blocking(
                     eval_host.blocking_executor, self._file_campaign, eval_host, run_ids, template_id, declared_at

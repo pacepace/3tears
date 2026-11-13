@@ -123,33 +123,41 @@ a page still loading a font after 15 s fails that render, naming the fonts. It l
 DejaVu, the faces the package's pages draw in on the dev box. The testament image runs it at build and CI's evals
 shards before their tests.
 
-### evals: a run's judging never takes it past its cost cap (core v15.14) (#1111)
+### evals: a run's judging is admitted against what its cost cap has left (core v15.14, v15.15) (#1111)
 
 **Fixed:** a run's cost cap was read only between cells, so a cell already running when spend crossed the cap went
 on to judge, and a run under a $2.67 cap ended at $7.04. The engine now admits each cell's judge phase against the cap
 before paying for any of its calls: the phase's price ceiling, every attempt included, must fit what the run has spent
 (its recorded cells and its running ones) beside what the phases already admitted hold. A phase that does not fit
 waits while another holds, and is set aside once none does. A judge that cannot price its calls is asked one call at a
-time while the run is within its cap. So judging never takes a run past its cap, or past it by more than one call when
-the judge cannot price. A candidate's own calls are still never refused inside a cell.
+time while the run is within its cap. So judging stays within the cap wherever its price ceiling bounds what its calls
+are billed, and passes it by one call at most when the judge cannot price. A candidate's own calls are still never
+refused inside a cell. A judged run also starts no new cell once what has landed, what its running cells have spent
+and the judging they hold reach the cap, reaching it exactly included, since such a cell would pay for its candidate
+and have its judging set aside.
 
 A cell whose judging was set aside asks the judge nothing and is never scored low. It is marked
-(`EvalResult.judging_set_aside`, core minor v15.15) and left out of every reading under its own exclusion cause,
-`cost_cap`, which a report's loss table names "cost cap" with its remedy: re-judge the trial, or give the next launch
-a higher cap. Each of its dimensions carries a judge error naming the cap, and a re-judge takes it up from the evidence
-it stored and clears the mark (`regrade`, or the `result_regrade` action, with `apply`). A resume counts it done. A
-launch's refusal of an arm whose one call is priced above its whole cap now says why truly: the cap refuses no call a
-candidate or a simulated user makes inside a cell, and admits a cell's judging only when it fits what is left. The first such cell stops the run (`budget_stopped`, no new cell starts), and the stop record counts the cells
-(`BudgetStop.cells_not_judged`, core minor v15.14). The stop line ends "N cells not judged, as the cap had too little
-left for their judging".
+(`EvalResult.judging_set_aside`, core v15.15) and left out of the judged readings (its dimensions, pass^k and the
+composite) under its own exclusion cause, `cost_cap`, which a report's loss table names "cost cap" with its remedy:
+re-judge it, or give the next launch a higher cap. Its measures, checks and cost count as measured, so Report finished
+counts a set-aside writer case that wrote its report as finished. A cell whose deadline struck while its judging waited
+for the cap's room is set aside the same way, not charged to the judge. A re-judge (`regrade`, or the `result_regrade`
+action, with `apply`) takes the cell up from the evidence it stored and clears the mark; a resume counts it done. The
+first such cell stops the run (`budget_stopped`, no new cell starts), and the stop record counts the cells
+(`BudgetStop.cells_not_judged`, core v15.14). The stop line ends "N cells not judged, as the cap had too little left
+for their judging".
+
+A launch's refusal of an arm whose one call is priced above its whole cap says what the run would do: make a
+candidate's or a simulated user's call and pass the cap, or set every cell's judging aside.
 
 In a batched writer eval, the reservation (each report at `budget_usd`, its judging at the judge's floor) still decides
 whether a batch launches. A launched batch's run now runs under all its arm's part has left, not under the
 reservation: a page's judging is priced in full only once the page is written, so a run capped at a floor-priced
-reservation would set aside judging the arm could afford. Each run is held to its cap and an arm's runs run one after
-another, so the arm stays within its part. The batched launch loop logs each batch it launches, what it reserved and
-the cap each run got (`eval.writer_batch_launch`), what each run spent and how it ended (`eval.writer_batch_ran`), and
-a stop at the spend cap (`eval.writer_batch_cap_stop`).
+reservation would set aside judging the arm could afford. An arm's runs run one after another, each under what the
+ones before it left, so its judging stays within its part wherever the ceiling bounds the bill; its reports are never
+refused. The batched launch loop logs each batch it launches, what it reserved and the cap each run got
+(`eval.writer_batch_launch`), what each run spent and how it ended (`eval.writer_batch_ran`), and a stop at the spend
+cap (`eval.writer_batch_cap_stop`).
 
 ### evals: no field is markup in a report's Markdown (#973)
 

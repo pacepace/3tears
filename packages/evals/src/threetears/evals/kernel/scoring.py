@@ -55,6 +55,7 @@ from threetears.evals.schema.models import (
     RunCompleteness,
 )
 from threetears.evals.kernel.result_condition import (
+    ExclusionCause,
     ResultOutcome,
     candidate_failure_cause,
     classify_result,
@@ -577,6 +578,11 @@ def _carries_a_check(result: ResultView, catalog: Mapping[str, MetricDescriptor]
     )
 
 
+#: The exclusions that leave only a trial's judging unread — the judge could not tell, or the cost cap kept it from
+#: being asked — so a failed check or a sub-bar dim still decides the trial.
+_JUDGING_ONLY: frozenset[ExclusionCause | None] = frozenset({"judge_cannot_tell", "cost_cap"})
+
+
 def _trial_pass(
     result: ResultView, *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]
 ) -> tuple[bool | None, bool]:
@@ -590,7 +596,7 @@ def _trial_pass(
     are attempts that failed.
     """
     exclusion = trial_exclusion(result)
-    if exclusion == "judge_cannot_tell" and _already_failed(result, rubric_threshold=rubric_threshold, catalog=catalog):
+    if exclusion in _JUDGING_ONLY and _already_failed(result, rubric_threshold=rubric_threshold, catalog=catalog):
         # The unscored dim cannot rescue a trial a failed check or a sub-bar dim has already
         # decided, so it counts as the fail it is rather than vanishing from the denominator.
         exclusion = None

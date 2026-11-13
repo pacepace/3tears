@@ -20,9 +20,10 @@ ONE run:
   timeout, not by the cap, and a run may land past the cap by what its running cells' candidates go on to spend.
 - Before each cell's judging. Judging is the engine's own spend, so the engine asks the cap before paying for
   any of a cell's judge calls: the phase's price ceiling must fit what the run has spent, landed and running,
-  beside what the phases already admitted hold. A cell it cannot admit is set aside unjudged (excluded, never
-  scored low; a re-judge takes it up) and the run stops there, so judging never takes a run past its cap, or
-  past it by more than one call when the judge cannot price its calls.
+  beside what the phases already admitted hold. A cell it cannot admit is set aside unjudged (left out of the
+  judged readings, never scored low; a re-judge takes it up) and the run stops there. Judging is admitted on its
+  price ceiling, so it stays within the cap wherever the ceiling bounds what the calls are billed, and passes it by
+  one call at most when the judge cannot price its calls.
 - :class:`AccountExhaustedError` is the account-side twin: the provider account behind the
   run refused a candidate call (out of credit, or the key refused), so the run stops after
   that cell and is marked ``exhausted``. Nothing configures it; a cell observes it.
@@ -160,11 +161,9 @@ def _stop_reason(stops: Sequence[BudgetStop]) -> str:
             segments.append(f"its cost cap: {figures}")
         else:
             segments.append(f"its metered-call ceiling: {stop.landed_at_stop} of {stop.ceiling} at the stop")
-    not_judged = sum(stop.cells_not_judged for stop in stops)
-    set_aside = (
-        f"; {not_judged} cell(s) not judged, as the cap had too little left for their judging" if not_judged else ""
-    )
-    return f"stopped by {'; by '.join(segments)}{set_aside}"
+    # The cells it set aside unjudged are settled only once the running cells end; the stop line, written from the
+    # records, states them.
+    return f"stopped by {'; by '.join(segments)}"
 
 
 class AccountExhaustedError(Exception):

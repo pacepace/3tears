@@ -2452,7 +2452,8 @@ class BudgetStop(EvalBaseModel, CoreShapeModel):
     finish, so the run can end past the ceiling by what their candidates go on to spend; that overshoot is
     ``landed_final - ceiling``, derived (:attr:`overshoot`) and never stored, and every figure here is a
     counter's reading, never parsed from prose. The cost cap also admits each cell's judge phase before any of its
-    calls is paid for, so judging never takes the run past it; a cell whose judging it could not admit is set
+    calls is paid for, so judging stays within it wherever its price ceiling bounds the bill; a cell whose judging
+    it could not admit is set
     aside unjudged, and the first such cell stops the run as a crossing does. A run stopped by both ceilings at
     one boundary carries one record for each (``EvalRun.budget_stops``).
 
@@ -2464,8 +2465,8 @@ class BudgetStop(EvalBaseModel, CoreShapeModel):
     :ivar cells_in_flight: Cells running when the stop was decided.
     :ivar cells_not_started: Cells of the matrix that never started because of the stop.
     :ivar cells_not_judged: ``cost_usd`` only: cells that ran but whose judging the cap had too little left for, so
-        nothing judged them. Each is marked (``EvalResult.judging_set_aside``) and excluded under its own cause
-        (``cost_cap``), never failed, and a re-judge takes it up. Zero for ``metered_calls``, and on a record stored before the field existed.
+        nothing judged them. Each is marked (``EvalResult.judging_set_aside``) and left out of the judged readings
+        under its own cause (``cost_cap``), never failed; its other readings count it, and a re-judge takes it up. Zero for ``metered_calls``, and on a record stored before the field existed.
     :ivar unpriced_results: ``cost_usd`` only: recorded results whose spend could not be priced. An enforcing
         cap cannot count against what it cannot price, so any of these stops the run on their own, whatever
         ``landed_at_stop`` says. Zero for ``metered_calls``.
@@ -4268,7 +4269,7 @@ class EvalRun(CoreDocumentModel):
             "status and budget_stops. The cap is read between cells against the spend of the cells already "
             "recorded: once that reaches it no new cell starts, and cells already running finish, so a run may "
             "land past it by what their candidates spend. Each cell's judging is admitted against it before any "
-            "judge call is paid for, so judging never takes the run past it."
+            "judge call is paid for, so judging stays within it wherever its price ceiling bounds the bill."
         ),
     )
     max_cost_usd_origin: StoredCostCapOrigin | None = Field(
@@ -6262,9 +6263,9 @@ class EvalResult(CoreDocumentModel):
         default=False,
         description=(
             "Whether the run's cost cap had too little left for this cell's judging, so the dims it had not asked were "
-            "not asked: each names the cap in `judge_error`. The trial wrote its answer and is never scored low; it is "
-            "left out of every reading under its own exclusion cause, and a re-judge, which reads the evidence the "
-            "cell stored, takes it up and clears this. A run taken up again counts the cell done. False on a row "
+            "not asked: each names the cap in `judge_error`. The trial ran whole and is never scored low: its judged "
+            "readings leave it out under the `cost_cap` exclusion cause, while its measures, checks and cost count as "
+            "measured, and a re-judge, which reads the evidence the cell stored, takes it up and clears this. A run taken up again counts the cell done. False on a row "
             "stored before the field existed."
         ),
     )

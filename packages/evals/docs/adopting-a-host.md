@@ -1028,7 +1028,7 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.11), durable documents (v16.9), regenerable documents
+**Each version space moves on its own.** Core documents (`CORE_SCHEMA_VERSION`.`CORE_SCHEMA_MINOR`), durable documents (v16.9), regenerable documents
 (v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`), the cell model
 (`CELL_MODEL_VERSION`) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The code-only page has none: it is rendered from the bundle, which is the versioned machine
 form. Report documents and their sessions carry a version of their own, as cassettes do: a change to the report document's shape moves that version alone, the shared regenerable version stays where it is, and a report from before it reads as the code-only page with a line to regenerate it.
@@ -1371,8 +1371,8 @@ anything is spent.
 **Your kind's paid calls are counted by the run's cost cap when its cell lands, and never refused.** The cell's
 sink keeps the cell's spend by source, and the cap is read between cells, against the cells already recorded: a
 cell running when the cap is reached finishes its candidate, and a run may land past the cap by what the running
-cells' candidates spend. The engine's own judging is admitted against the cap before it is paid for, so it never takes
-the run past it ([Cost and budgets: caps](cost-and-budgets.md#caps)). Report each paid call's cost as it lands: wrap the client in
+cells' candidates spend. The engine's own judging is admitted against the cap on its price ceiling before it is paid
+for, so it stays within the cap wherever that ceiling bounds the bill ([Cost and budgets: caps](cost-and-budgets.md#caps)). Report each paid call's cost as it lands: wrap the client in
 `CappedCompletion(client, sink=sink, source="candidate")`, which does it for every call, or call
 `sink.add_spend(source, cost)` once a call returns; a call that raises counts nothing. Each call adds, and never
 replaces what another source reported. Return the cell's spend on its output; that is what the cap counts.
