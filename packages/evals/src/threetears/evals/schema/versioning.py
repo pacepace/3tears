@@ -398,7 +398,14 @@ CORE_SCHEMA_VERSION: int = 15
 #:   the infra exclusion its ``infra_error`` makes it, and an ``exhausted`` run's cause from its ``error_details``,
 #:   which name the model; an older build taking such a run up keeps its unserved cells as done, excluded.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 13
+#: - **v15.14** — a run's cost cap admits each cell's judge phase before any of its calls is paid for, and the run
+#:   records the cells it set aside: ``BudgetStop.cells_not_judged`` (default 0: none set aside, a metered-call stop,
+#:   or stored before the field existed) counts the cells that ran but whose judging the cap had too little left
+#:   for. Such a cell is stored as any cell whose judging did not finish: each of its dims carries a judge error that
+#:   names the cap, which excludes it from every reading and which a re-judge takes up. In no identity, key or
+#:   digest. An older build reads the cell as excluded by its judge errors, and the record without the count.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 14
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

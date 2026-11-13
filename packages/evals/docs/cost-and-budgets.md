@@ -88,15 +88,30 @@ it ran under.
 **Both per-run ceilings are read between cells, against what has landed.** The cost cap and the metered-call ceiling
 (`max_metered_calls`) are checked before each cell starts, against the recorded cells only: their `cost_usd` for the
 cap, their metered calls for the ceiling, a resumed run's earlier holdings' cells included. Once either is reached no
-new cell starts, the cells already running finish whole, and the run ends `budget_stopped` once they are saved.
-**Neither ever refuses a call inside a cell.** A refusal inside a cell made the cell that happened to ask after the
-ceiling was spent the contaminated one, so at width above 1 two identical runs contaminated different cells; a cell is
-the unit of measurement, and it is measured whole or never begun.
+new cell starts, the cells already running finish, and the run ends `budget_stopped` once they are saved.
+**Neither ever refuses a candidate's call inside a cell.** A refusal there made the cell that happened to ask after
+the ceiling was spent the contaminated one, so at width above 1 two identical runs contaminated different cells; a
+candidate is measured whole or never begun.
 
-- **A run may land past a ceiling by up to the width's worth of cells, and that is the design.** The cells
-  running when the stop is decided are not asked and not refused anything, so the overshoot is what they add:
-  at most `width - 1` cells, plus the one whose landing reached the ceiling. A serial run (`measure_latency=True`)
-  has none. A run whose last cell reaches a ceiling stops nothing: no cell was kept from starting.
+- **Judging is admitted against the cost cap, before any of a cell's judge calls is paid for.** Judging is the
+  engine's own spend, and a cell running when the cap was crossed would otherwise judge on past it (a run under a
+  $2.67 cap once ended at $7.04). A cell's judge phase is priced whole, every call at its client's `price_ceiling`
+  times `JUDGE_CALL_ATTEMPTS`, and admitted when that fits what the run has spent (its recorded cells and its
+  running ones, a running cell's candidate counted from the rows it returned) beside what the phases already
+  admitted hold. A phase that does not fit waits while another holds, since that one's bills may come in under its
+  ceiling, and is set aside once none does. A phase is admitted whole, never call by call: a cell judged on some of
+  its dimensions is set aside all the same, and the calls it made would be spent for nothing. **So judging never
+  takes a run past its cost cap.** A judge that cannot price a call is asked one call at a time, with no other
+  phase beside it, each call only while the run is within its cap, so it can pass the cap by that last call alone.
+- **A cell whose judging was set aside is never scored low.** It asks the judge nothing; each of its dimensions
+  carries a judge error that names the cap, which leaves it out of every reading, and a re-judge
+  (`rejudge_result`) takes it up from the evidence it stored, without buying its candidate again. A resume does not
+  run it again: its candidate is measured, so the cell is done. The first such cell stops the run as a crossing
+  does (no new cell starts), and the stop record counts the cells (`cells_not_judged`).
+- **A run may still land past the cost cap by what its running cells' candidates spend**, and past the
+  metered-call ceiling by the running cells' calls: at most `width - 1` cells, plus the one whose landing reached
+  the ceiling. A serial run (`measure_latency=True`) has none. A run whose last cell reaches a ceiling stops
+  nothing: no cell was kept from starting.
 - **A looping cell is bounded by the cell timeout, not by a ceiling.** Nothing inside a cell ends it on its
   spend; a candidate that loops until `cell_timeout_s` is excluded as `cell_timeout`, as before.
 - **A call nobody can price** (a client with no `price_ceiling`, or one answering `None`) is made like any other.
@@ -125,10 +140,12 @@ the unit of measurement, and it is measured whole or never begun.
 **What stopped the run is recorded as a typed record, from the counters.** `EvalRun.budget_stops` holds one
 `BudgetStop` per ceiling that stopped it: the `currency` (`cost_usd` or `metered_calls`), the `ceiling`,
 `landed_at_stop` (what had landed when the stop was decided), `landed_final` (once the running cells finished),
-`cells_in_flight` and `cells_not_started`. The overshoot is `landed_final - ceiling`, derived and never stored. When
-both ceilings are reached at the same boundary, both are recorded. The run's summary prints one line written from
-the records, never from prose, for example `stopped by its metered-call ceiling: 40 of 40 at the stop, 47 once 3
-running cells finished (+7); 12 cells not started`; money reads as `$`. A run the wall-clock budget stopped has no
+`cells_in_flight`, `cells_not_started` and, for the cost cap, `cells_not_judged`. The overshoot is
+`landed_final - ceiling`, derived and never stored; it is negative when the cap stopped the run by setting a cell's
+judging aside before the cap was reached. When both ceilings are reached at the same boundary, both are recorded. The
+run's summary prints one line written from the records, never from prose, for example `stopped by its metered-call
+ceiling: 40 of 40 at the stop, 47 once 3 running cells finished (+7); 12 cells not started`, which ends `; 2 cells
+not judged, as the cap had too little left for their judging` when the cost cap set any aside; money reads as `$`. A run the wall-clock budget stopped has no
 record, and its `budget_stop_reason` says so. A resume moves the records to the lifetime entry of the holding
 they stopped, so the run itself only ever describes its current holding.
 

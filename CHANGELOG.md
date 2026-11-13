@@ -123,6 +123,30 @@ a page still loading a font after 15 s fails that render, naming the fonts. It l
 DejaVu, the faces the package's pages draw in on the dev box. The testament image runs it at build and CI's evals
 shards before their tests.
 
+### evals: a run's judging never takes it past its cost cap (core v15.14) (#1111)
+
+**Fixed:** a run's cost cap was read only between cells, so a cell already running when spend crossed the cap went
+on to judge, and a run under a $2.67 cap ended at $7.04. The engine now admits each cell's judge phase against the cap
+before paying for any of its calls: the phase's price ceiling, every attempt included, must fit what the run has spent
+(its recorded cells and its running ones) beside what the phases already admitted hold. A phase that does not fit
+waits while another holds, and is set aside once none does. A judge that cannot price its calls is asked one call at a
+time while the run is within its cap. So judging never takes a run past its cap, or past it by more than one call when
+the judge cannot price. A candidate's own calls are still never refused inside a cell.
+
+A cell whose judging was set aside asks the judge nothing and is never scored low: each dimension carries a judge
+error naming the cap, which leaves the cell out of every reading, and a re-judge takes it up from the evidence it
+stored. The first such cell stops the run (`budget_stopped`, no new cell starts), and the stop record counts the cells
+(`BudgetStop.cells_not_judged`, core minor v15.14). The stop line ends "N cells not judged, as the cap had too little
+left for their judging".
+
+In a batched writer eval, the reservation (each report at `budget_usd`, its judging at the judge's floor) still decides
+whether a batch launches. A launched batch's run now runs under all its arm's part has left, not under the
+reservation: a page's judging is priced in full only once the page is written, so a run capped at a floor-priced
+reservation would set aside judging the arm could afford. Each run is held to its cap and an arm's runs run one after
+another, so the arm stays within its part. The batched launch loop logs each batch it launches, what it reserved and
+the cap each run got (`eval.writer_batch_launch`), what each run spent and how it ended (`eval.writer_batch_ran`), and
+a stop at the spend cap (`eval.writer_batch_cap_stop`).
+
 ### evals: no field is markup in a report's Markdown (#973)
 
 **Fixed:** a report's Markdown escaped HTML only where a line began, so a `<script>`, `<img onerror=...>` or `<link>` in a

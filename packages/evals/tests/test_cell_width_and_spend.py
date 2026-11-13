@@ -7,9 +7,12 @@ Driven through the real launch and the real runner over the toy host, reading wh
   the runner refuses — before anything is spent — a kind declaring less than the run executes at.
 * **Spend by source, never overwritten.** A cell's sink keeps one running total per source, each only
   ever added to.
-* **No refusal inside a cell.** A priced call, an unpriced one and a judge call are all made whatever the
-  run has spent: the cap is read between cells, against what the recorded cells landed, so a cell is measured
-  whole or never begun, and a run lands past its cap by up to the width's worth of cells.
+* **No refusal of a candidate's call inside a cell.** A priced call and an unpriced one are made whatever the
+  run has spent: the cap is read between cells, against what the recorded cells landed, so a candidate is measured
+  whole or never begun.
+* **Judging is admitted against the cap.** A cell's judge phase is paid for only when its price ceiling fits what
+  the run has spent; one that does not fit is set aside unasked, excluded and never scored, and stops the run, so
+  judging never takes a run past its cap. Spend landing exactly on the cap is within it.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.product import ExtractionRequest
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_run, toyhost_template, toyhost_test_cases
 from packages.evals.tests.scripted_table import FakeCellSink, ScriptedResponse, ScriptedTable, actor
+from threetears.evals.analysis.summary import budget_stop_line
 from threetears.evals.kernel import CappedCompletion, call_ceiling
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink
 from threetears.evals.kernel.host import EvalHost
@@ -565,7 +569,7 @@ async def test_a_conversation_the_run_has_outspent_is_not_cut_short_mid_cell() -
 
 
 # =============================================================================
-# The judge phase holds each call against the cap too
+# The judge phase is admitted against the cap before any of its calls is paid for
 # =============================================================================
 
 
@@ -640,14 +644,75 @@ async def _judged_run(judge: _PricedJudge, *, cap_usd: float) -> tuple[list[Eval
     return off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id), stopped
 
 
-async def test_a_judge_call_is_sent_whatever_the_cap_has_room_for() -> None:
+async def test_judging_the_cap_has_no_room_for_is_set_aside_unasked_and_stops_the_run() -> None:
+    """The judge prices its one call at $1 an attempt, two attempts, under a $0.50 cap: nothing is asked, the cell is
+    excluded rather than scored, and the run stops on its cost cap saying the cell was not judged."""
     judge = _PricedJudge(cost_usd=0.0004, ceiling_usd=1.0)
 
     (result,), stopped = await _judged_run(judge, cap_usd=0.5)
 
-    assert judge.calls, "every dim was judged: a judge call is not held against the cap inside the cell"
+    assert judge.calls == [], "no judge call was paid for"
+    assert result.rubric_scores == []
+    assert result.judge_error is not None and "the run's cost cap had too little left" in result.judge_error
+    assert classify_result(result) is ResultOutcome.INFRA_EXCLUDE, "set aside: excluded, never a fail"
+    assert result.cost_usd is not None and result.cost_usd < 0.5, "the candidate's spend alone landed"
+    assert stopped is not None
+    (stop,) = stopped.stops
+    assert (stop.currency, stop.cells_not_judged, stop.cells_not_started) == ("cost_usd", 1, 0)
+    assert stop.landed_final == pytest.approx(result.cost_usd)
+    assert budget_stop_line(stopped.stops).endswith(
+        "; 0 cells not started; 1 cell not judged, as the cap had too little left for their judging"
+    )
+
+
+async def _candidate_spend() -> float:
+    """What the one toy cell's candidate spends, read off an uncapped run's stored row."""
+    (result,), _ = await _judged_run(_PricedJudge(cost_usd=0.0, ceiling_usd=0.0), cap_usd=1000.0)
+    (spend,) = [row.cost_usd for row in result.usage if row.role == "candidate"]
+    assert spend is not None and spend > 0
+    return spend
+
+
+async def test_judging_whose_spend_lands_exactly_on_the_cap_is_judged_and_the_run_is_not_stopped() -> None:
+    """The judge's one call costs exactly its $0.50 ceiling (two attempts at $0.25), and the cap is the candidate's
+    spend plus that: the phase fits to the cent, is judged, and the run ends on its cap, within it."""
+    candidate = await _candidate_spend()
+    judge = _PricedJudge(cost_usd=0.5, ceiling_usd=0.25)
+
+    (result,), stopped = await _judged_run(judge, cap_usd=candidate + 0.5)
+
+    assert judge.calls, "the phase was admitted"
     assert result.judge_error is None
-    assert stopped is None, "one cell, already started: there was none left to keep from starting"
+    assert result.cost_usd == candidate + 0.5, "the run landed exactly on its cap"
+    assert stopped is None, "spend on the cap is within it"
+
+
+async def test_judging_that_would_land_the_run_a_hair_past_its_cap_is_set_aside() -> None:
+    """The same judge under a cap the smallest step below the candidate's spend plus the phase's ceiling: nothing is
+    asked, and the run stops with its spend under the cap."""
+    candidate = await _candidate_spend()
+    judge = _PricedJudge(cost_usd=0.5, ceiling_usd=0.25)
+    cap = math.nextafter(candidate + 0.5, 0.0)
+
+    (result,), stopped = await _judged_run(judge, cap_usd=cap)
+
+    assert judge.calls == []
+    assert result.cost_usd == candidate
+    assert stopped is not None and stopped.stops[0].cells_not_judged == 1
+    assert stopped.stops[0].landed_final <= cap
+
+
+async def test_a_judge_that_cannot_price_its_calls_passes_the_cap_by_one_call_at_most() -> None:
+    """A judge with no ceiling is asked one call at a time while the run is within its cap. Its one call is asked
+    while the candidate's spend alone is under the cap, and lands the run one call past it; nothing more is asked."""
+    candidate = await _candidate_spend()
+    judge = _PricedJudge(cost_usd=0.5, ceiling_usd=None)
+
+    (result,), stopped = await _judged_run(judge, cap_usd=candidate + 0.1)
+
+    assert len(judge.calls) == 1
+    assert result.cost_usd == pytest.approx(candidate + 0.5), "past the cap by the one call"
+    assert stopped is None, "the cell was judged; there was no cell left to keep from starting"
 
 
 async def test_a_judge_phase_the_cap_has_room_for_is_judged_and_its_spend_counted() -> None:

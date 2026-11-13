@@ -1365,8 +1365,9 @@ anything is spent.
 
 **Your kind's paid calls are counted by the run's cost cap when its cell lands, and never refused.** The cell's
 sink keeps the cell's spend by source, and the cap is read between cells, against the cells already recorded: a
-cell running when the cap is reached finishes whole, and a run may land past it by up to the width's worth of cells
-([Cost and budgets: caps](cost-and-budgets.md#caps)). Report each paid call's cost as it lands: wrap the client in
+cell running when the cap is reached finishes its candidate, and a run may land past the cap by what the running
+cells' candidates spend. The engine's own judging is admitted against the cap before it is paid for, so it never takes
+the run past it ([Cost and budgets: caps](cost-and-budgets.md#caps)). Report each paid call's cost as it lands: wrap the client in
 `CappedCompletion(client, sink=sink, source="candidate")`, which does it for every call, or call
 `sink.add_spend(source, cost)` once a call returns; a call that raises counts nothing. Each call adds, and never
 replaces what another source reported. Return the cell's spend on its output; that is what the cap counts.

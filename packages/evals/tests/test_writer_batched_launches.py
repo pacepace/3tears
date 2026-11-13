@@ -54,6 +54,7 @@ from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport, writer_pairwise
 from threetears.evals.ops.report_writer.writer_promotion import writer_promotion
 from threetears.evals.run.case_sets import mint_case_set
+from threetears.evals.schema import EvalRun
 from threetears.evals.schema.models import CaseSetRef, EvalResult, EvalTrace
 from threetears.evals.storage import SqliteDocumentStore
 
@@ -542,40 +543,155 @@ async def test_a_spend_cap_that_admits_two_batches_stops_the_run_there_and_says_
     assert offline == []
 
 
+async def _runs_by_arm(result: WriterResult) -> dict[str, list[EvalRun]]:
+    """Each arm's runs, by the arm's skill digest, in launch order."""
+    by_arm: dict[str, list[EvalRun]] = {}
+    for run_id in await _runs(result):
+        run = await asyncio.to_thread(result.host.storage.load_eval_run, run_id, SCOPE)
+        assert run is not None
+        by_arm.setdefault(run.overlays["skill"], []).append(run)
+    return by_arm
+
+
+def _scoring_calls(judge: FakeSplitJudge) -> int:
+    """The judge's calls on the writer's scoring rubric, the pass's preference calls left out."""
+    return len([dim for dim in judge.calls if dim != preference_rubric().name])
+
+
+async def _scored_by_run(result: WriterResult, runs: list[EvalRun]) -> list[int]:
+    """How many cases each run judged, in launch order, each judged whole; every case it set aside asked nothing and
+    names the cap."""
+    scored: list[int] = []
+    for run in runs:
+        rows = await asyncio.to_thread(result.host.storage.query_eval_results_by_run, run.id, SCOPE)
+        for row in rows:
+            if row.judge_error is not None:
+                assert row.rubric_scores == [], "a case set aside asked the judge nothing"
+                assert "the run's cost cap had too little left" in row.judge_error
+            else:
+                assert len(row.rubric_scores) == len(writer_scoring_rubric()), "a judged case was judged whole"
+        scored.append(len([row for row in rows if row.judge_error is None]))
+    return scored
+
+
+async def _held_within_the_part(result: WriterResult, part: float, per_case: float) -> dict[str, list[EvalSummary]]:
+    """Each arm's runs, after holding each one to what its arm's part had left when it launched, which its cap is, and
+    which its spend stays within; each batch launched only when its reservation fit what was left; the arm within its
+    part."""
+    by_arm = await _spent_by_arm(result)
+    for summaries in by_arm.values():
+        before = 0.0
+        for summary, batch in zip(summaries, (BATCH, BATCH, CASES - 2 * BATCH), strict=True):
+            assert before + batch * per_case <= part + 1e-9, "launched only when its reservation fit what was left"
+            assert summary.max_cost_usd == pytest.approx(part - before), "run under all its arm's part had left"
+            assert summary.total_cost_usd is not None and summary.total_cost_usd <= summary.max_cost_usd
+            before += summary.total_cost_usd
+        assert before <= part
+    return by_arm
+
+
 async def test_a_batch_whose_judging_costs_past_its_reservation_leaves_the_next_only_what_was_not_spent(
     tmp_path: Path, offline: list[Connect]
 ) -> None:
-    """The judge reserves $0.01 a call before any page is read and bills $0.50 for a call with a page, so each batch
-    spends past its reservation. Each batch's runs run under the batch's own reservation, never the whole part, and
-    the engine stops each run at it (between cells: a cell running when it is crossed finishes). The next batch
-    launches only when what the recorded spend leaves of the arm's $12 part holds its reservation, so the third,
-    which it does not, is never launched, and the run stops at the spend cap after six cases."""
+    """The judge reserves $0.01 a call before any page is read and bills $0.50 for a call with a page, so a case's
+    judging is priced at $7 (seven dimensions, two attempts each) and billed $3.50, far past the $2.67 a batch of three
+    reserves at the floor. The pass has room for every pair. The reservation decides only whether a batch launches;
+    each arm's run runs under all its $12 part has left, and the engine admits a case's judging against that before paying for any of it. The first
+    batch judges two cases whole and sets the third aside; the second and third launch into what is left, which no
+    case's judging fits, so they set theirs aside. No run spends past its cap, and the arm stays within its part."""
     arms = _arms()
     cases = _lay(tmp_path, arms)
     judge = FakeCostlyJudge(cost=0.50, floor=0.01)
+
+    # The pass's part is wide enough for every pair at the page's price, so only the arms' parts decide the batches.
+    result = await _eval(tmp_path, cases, arms, judge=judge, max_cost_usd=40.0, pairwise_share=0.4).run()
+
+    part = 40.0 * 0.6 / len(arms)
+    per_case = 0.75 + len(writer_scoring_rubric()) * JUDGE_CALL_ATTEMPTS * 0.01
+    by_arm = await _held_within_the_part(result, part, per_case)
+    runs = await _runs_by_arm(result)
+    judged = 0
+    for skill, summaries in by_arm.items():
+        assert [summary.status for summary in summaries] == ["budget_stopped"] * 3
+        for run in runs[skill]:
+            (stop,) = run.budget_stops or ()
+            assert stop.currency == "cost_usd" and stop.landed_final <= stop.ceiling and stop.cells_not_judged >= 1
+        scored = await _scored_by_run(result, runs[skill])
+        assert scored == [2, 0, 0]
+        judged += sum(scored)
+    assert _scoring_calls(judge) == judged * len(writer_scoring_rubric())
+    # Every batch run joins its arm's one test setup, and a case the cap set aside wrote its report but is read
+    # nowhere: not a failure in Report finished, and absent from every judged reading.
+    bundle = await asyncio.to_thread(assemble_campaign_bundle, result.host, result.campaign_id, SCOPE)
+    (aspect,) = bundle.aspects
+    cells = aspect.cell_measures
+    assert len(cells) == len(arms) == len({cell.variant_key for cell in cells}), "one test setup an arm"
+    for cell in cells:
+        (finished,) = [summary for summary in cell.measures.measures if summary.name == FINISHED_MEASURE]
+        assert finished.n == 2, "Report finished reads the two judged cases, and no case set aside"
+        assert cell.n_candidate_failed == 0, "no case set aside counts as a failure"
+    assert sorted(arm.n_usable for arm in aspect.exclusions) == [2, 2]
+    for arm in aspect.exclusions:
+        assert arm.by_cause == {"infra": arm.n_trials - 2}, "the cases set aside are left out, never failed"
+    assert offline == []
+
+
+async def test_judging_billed_far_above_its_floor_with_room_in_the_arm_is_judged_in_every_batch(
+    tmp_path: Path, offline: list[Connect]
+) -> None:
+    """The judge reserves $0.01 a call before any page is read and bills $0.15 for a call with a page, fifteen times its
+    floor: a case's judging is priced at $2.10 and billed $1.05, while a batch of three reserves $2.67 in all. Each
+    arm's $12 part holds every case's judging, so every batch's run, under what its arm's part has left, judges every
+    case it runs: nothing is set aside, no run is stopped, and the arm stays within its part."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+    judge = FakeCostlyJudge(cost=0.15, floor=0.01)
 
     result = await _eval(tmp_path, cases, arms, judge=judge, max_cost_usd=30.0).run()
 
     part = 30.0 * 0.8 / len(arms)
     per_case = 0.75 + len(writer_scoring_rubric()) * JUDGE_CALL_ATTEMPTS * 0.01
-    by_arm = await _spent_by_arm(result)
-    assert len(by_arm) == len(arms)
-    for summaries in by_arm.values():
-        assert [summary.n_cases for summary in summaries] == [BATCH, BATCH]
-        before = 0.0
-        for summary in summaries:
-            # Held to its batch's reservation, never the whole part, and launched only into what was left.
-            assert summary.max_cost_usd == pytest.approx(BATCH * per_case)
-            assert before + BATCH * per_case <= part + 1e-9
-            assert summary.status == "budget_stopped"
-            before += summary.total_cost_usd or 0.0
-        # What the two batches spent leaves less than the last batch's reservation, so it was not launched.
-        assert part - before < 1 * per_case
-    report = await _report(result)
-    assert report.stopping is not None and report.stopping.stopped_on == "spend_cap"
-    # Six launched; the cells each run's cap left unstarted wrote no pair, and the line says so beside the stop.
-    assert "Stopped at the spend cap after 6 of 7 cases" in report.stopping.line
-    assert "the rule planned were not found" in report.stopping.line
+    by_arm = await _held_within_the_part(result, part, per_case)
+    runs = await _runs_by_arm(result)
+    for skill, summaries in by_arm.items():
+        assert [summary.status for summary in summaries] == ["completed"] * 3
+        assert all(not run.budget_stops for run in runs[skill])
+        assert await _scored_by_run(result, runs[skill]) == [BATCH, BATCH, CASES - 2 * BATCH]
+    assert _scoring_calls(judge) == len(arms) * CASES * len(writer_scoring_rubric())
+    assert offline == []
+
+
+async def test_judging_billed_far_above_its_floor_ends_each_batch_within_one_call_of_its_cap(
+    tmp_path: Path, offline: list[Connect]
+) -> None:
+    """The same judge, fifteen times its floor, under a $15 cap: each arm's part is $6. The first batch's run, under the
+    whole $6, judges its three cases (about $3.21). The second launches into the $2.79 left, which holds its $2.67
+    reservation: its first case's $2.10 judging fits, the second's does not fit beside what the first spent, so it is
+    set aside and the run stops. The last batch launches into what is left, which no case's judging fits. Each case's
+    judging is admitted against what its run has left before any call is paid for, so every run ends within its cap
+    (and so within one call of it), and the arm within its part."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+    judge = FakeCostlyJudge(cost=0.15, floor=0.01)
+
+    result = await _eval(tmp_path, cases, arms, judge=judge, max_cost_usd=15.0).run()
+
+    part = 15.0 * 0.8 / len(arms)
+    per_case = 0.75 + len(writer_scoring_rubric()) * JUDGE_CALL_ATTEMPTS * 0.01
+    by_arm = await _held_within_the_part(result, part, per_case)
+    runs = await _runs_by_arm(result)
+    judged = 0
+    for skill, summaries in by_arm.items():
+        assert [summary.status for summary in summaries] == ["completed", "budget_stopped", "budget_stopped"]
+        for summary, run in zip(summaries[1:], runs[skill][1:], strict=True):
+            (stop,) = run.budget_stops or ()
+            assert stop.landed_final == pytest.approx(summary.total_cost_usd)
+            assert stop.landed_final <= stop.ceiling + 0.15, "within one call of the cap"
+            assert stop.cells_not_judged >= 1
+        scored = await _scored_by_run(result, runs[skill])
+        assert scored == [BATCH, 1, 0]
+        judged += sum(scored)
+    assert _scoring_calls(judge) == judged * len(writer_scoring_rubric())
     assert offline == []
 
 
