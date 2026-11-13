@@ -234,7 +234,7 @@ figure against any other.
    `low_text` and `high_text` for its interval), and a cell without it is refused when it is built: a cell that
    spelled its own number would be a second owner of its form.
 
-The scope of a set is decided in one place, `campaign_set` in `forms.py`, so a later ruling that each page decides
+The scope of a set is decided in one place, `campaign_set` in `report/number_forms/sets.py`, so a later ruling that each page decides
 its own forms changes one line there (`_SET_SCOPE`).
 
 The digits follow the Particle Data Group's rule (quote an uncertainty to one or two significant figures and round

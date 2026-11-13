@@ -510,8 +510,8 @@ def _forms_primitives(root: Path = _SOURCE_ROOT) -> frozenset[str]:
     """The public module-level functions of ``forms.py`` and its parts under ``number_forms/``: a decision relocated
     there and called as a free function is still decided where it is called, so its caller is a site. Only
     :class:`PageForms`, built once per page and asked by measure and role, is the migrated route: its classes (the
-    page's forms and the value types it hands out) and their methods are not primitives. None before ``forms.py``
-    exists.
+    page's forms and the value types it hands out) and their methods are not primitives. Empty where none of those
+    files exists.
     """
     return frozenset(
         node.name

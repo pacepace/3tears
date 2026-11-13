@@ -1146,8 +1146,8 @@ def _written_cell_measures(
 ) -> dict[tuple[str, int] | tuple[str, int, str], tuple[str, str]]:
     """Each rate and money cell's measure on a written page, read off its input in the order its tables lay their rows
     out: an arm's column by the measure it names (``measure:<key>``, ``judged:<key>``), its pass rate and its cost by
-    the measures the page reads them from (:func:`~threetears.evals.analysis.report.figure_keys.pass_rate_measure`,
-    :func:`~threetears.evals.analysis.report.figure_keys.cost_measure`); a comparison's row by its contrast, in the
+    the measures the page reads them from (:func:`~threetears.evals.analysis.report.keys.reads.pass_rate_measure`,
+    :func:`~threetears.evals.analysis.report.keys.reads.cost_measure`); a comparison's row by its contrast, in the
     pipeline's order; a stratum's, a task's or a cell's row by the measure it states (a judged dimension no measure
     shares as a judged one)."""
     cost = cost_measure(held)

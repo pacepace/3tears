@@ -206,7 +206,7 @@ Use it when §1.1 says so. The page prices the trade; it doesn't pretend to deci
 
 The report document's prose names figures by key, and the renderer formats the values.
 
-Grammar: `{path|filter|filter}`, in single braces; a double brace is refused. `{arm:<id>}` prints the arm's short name with its tag and takes no filter. `figure_keys.py` (`threetears.evals.analysis.report`) parses and renders keys, and serves the figure-key reference the analyst's tools return from the same definitions.
+Grammar: `{path|filter|filter}`, in single braces; a double brace is refused. `{arm:<id>}` prints the arm's short name with its tag and takes no filter. `figure_keys` (`threetears.evals.analysis.report`, its code in the `report.keys` package) parses and renders keys, and serves the figure-key reference the analyst's tools return from the same definitions.
 
 **Paths are matched, never split at dots.** Ids carry dots and spaces (`qwen3.8-flash`, `persona.holds_character`, `character adherence (v2)`), so a path is matched against a closed vocabulary built from the input: a family keyword, then the ids that family takes, then a statistic or field from a fixed set. Exactly one complete reading is the figure. Two readings are refused, naming both. No reading is refused, naming what could come next where the path stopped matching. An unknown path is a validation error, never a blank.
 

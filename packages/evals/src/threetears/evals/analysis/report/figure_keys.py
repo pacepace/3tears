@@ -92,8 +92,8 @@ outside a name the input holds, outside a percentile's name (``p95``) and outsid
 phrases (``per 1,000 replies``, and ``per 1,000 conversations`` where the input's costs count conversations). A
 number a reader sees is code's.
 
-**The grammar is taught by this module.** :func:`figure_key_grammar` writes the analyst's reference section from the
-module's own families, statistics and filters, with examples rendered on a synthetic input, so the section can never
+**The grammar is taught by its own code.** :func:`figure_key_grammar` writes the analyst's reference section from the
+parser's own families, statistics and filters, with examples rendered on a synthetic input, so the section can never
 teach a form this parser refuses. A reader that takes the grammar a page at a time reads the same lines:
 :func:`figure_key_index` (the rules and filters, and a line per group of families) and :func:`figure_key_pages` (each
 group's forms).
