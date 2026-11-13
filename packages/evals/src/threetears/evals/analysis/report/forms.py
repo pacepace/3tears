@@ -166,6 +166,7 @@ from threetears.evals.analysis.report.number_forms.written import (
     _written_level,
     _written_stated,
 )
+from threetears.evals.analysis.report.per_input import input_memo
 from threetears.evals.analysis.report.parts.look import Quantity, figure_text, in_change_form, quantity, quantity_of
 from threetears.evals.analysis.report.said import Said, SaidFigure
 from threetears.evals.analysis.report.unit_once import interval_alone, interval_beside, unit_after, unit_spaced
@@ -246,37 +247,21 @@ class PageForms:
         input declares no measure for, which its table prints as a measure's; and a scoreboard that counts passes
         states the pass rate, so each has its form too.
 
+        The forms are pure in the input, which is frozen, so they are worked out once per input
+        (:func:`~threetears.evals.analysis.report.per_input.input_memo`): an analyst tool that cites each figure on
+        forms of its own reads the input's forms back rather than deciding every measure again. Each call is still a
+        page of its own, with its own ledger of what it hands out.
+
         :param report_input: The page's report input.
         :ptype report_input: ReportInput
         :return: The page's forms.
         :rtype: PageForms
         """
-        kinds: dict[tuple[str, _MeasureKind], None] = {}
-        for key in report_input.measures:
-            kinds[key, "measure"] = None
-        for key in report_input.judged:
-            kinds[key, "judged"] = None
-        for contrast in report_input.contrasts:
-            kinds[contrast.measure, _measure_kind(contrast.kind)] = None
-        slices = [
-            *(stratum.per_arm for stratum in report_input.strata),
-            *(task.per_arm for task in report_input.tasks),
-            *(cell.per_arm for cell in report_input.cells.values()),
-        ]
-        for per_arm in slices:
-            for figures in per_arm.values():
-                for key in figures:
-                    judged_only = key in report_input.judged and key not in report_input.measures
-                    kinds.setdefault((key, "judged" if judged_only else "measure"), None)
-        if _counts_passes(report_input):
-            kinds.setdefault((TRIAL_PASS_NAME, "trial"), None)
-        stated, set_figures = _written_stated(report_input, kinds)
-        # The campaign's one table (:func:`_measure_sets`) over what the input mirrors of it: each interval the code
-        # page and the aspect pages state of an arm's level, a comparison's change or a guardrail check, its provenance
-        # decided as theirs is (:data:`_PROVENANCE`). test_report_forms holds the pages to one form per measure.
-        sets = _measure_sets(stated)
-        measures = {(key, kind): _written_form(report_input, key, kind, sets, set_figures) for key, kind in kinds}
-        return cls("written", measures, report_input)
+        return cls(
+            "written",
+            input_memo(report_input).get(_written_measures, lambda: _written_measures(report_input)),
+            report_input,
+        )
 
     @classmethod
     def off_page(cls) -> PageForms:
@@ -3398,3 +3383,40 @@ def _money_ends(texts: tuple[str, str], low: float, high: float, *, change: bool
     if change:
         low_text, high_text = plus_signed(low_text, low), plus_signed(high_text, high)
     return low_text, high_text, interval_beside(low_text, high_text)
+
+
+def _written_measures(report_input: ReportInput) -> dict[tuple[str, _MeasureKind], MeasureForm]:
+    """A written page's form of each measure, judged dimension and the pass rate its input holds a figure of
+    (:meth:`PageForms.of`), as its Full results decide them.
+
+    :param report_input: The page's report input.
+    :ptype report_input: ReportInput
+    :return: Each form, by its measure's key and kind.
+    :rtype: dict[tuple[str, _MeasureKind], MeasureForm]
+    """
+    kinds: dict[tuple[str, _MeasureKind], None] = {}
+    for key in report_input.measures:
+        kinds[key, "measure"] = None
+    for key in report_input.judged:
+        kinds[key, "judged"] = None
+    for contrast in report_input.contrasts:
+        kinds[contrast.measure, _measure_kind(contrast.kind)] = None
+    slices = [
+        *(stratum.per_arm for stratum in report_input.strata),
+        *(task.per_arm for task in report_input.tasks),
+        *(cell.per_arm for cell in report_input.cells.values()),
+    ]
+    for per_arm in slices:
+        for figures in per_arm.values():
+            for key in figures:
+                judged_only = key in report_input.judged and key not in report_input.measures
+                kinds.setdefault((key, "judged" if judged_only else "measure"), None)
+    if _counts_passes(report_input):
+        kinds.setdefault((TRIAL_PASS_NAME, "trial"), None)
+    stated, set_figures = _written_stated(report_input, kinds)
+    # The campaign's one table (:func:`_measure_sets`) over what the input mirrors of it: each interval the code
+    # page and the aspect pages state of an arm's level, a comparison's change or a guardrail check, its provenance
+    # decided as theirs is (:data:`_PROVENANCE`). test_report_forms holds the pages to one form per measure.
+    sets = _measure_sets(stated)
+    measures = {(key, kind): _written_form(report_input, key, kind, sets, set_figures) for key, kind in kinds}
+    return measures

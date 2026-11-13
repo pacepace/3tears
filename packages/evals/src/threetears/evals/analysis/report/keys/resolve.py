@@ -4,9 +4,7 @@ parses, resolves, spells and renders a key.
 
 from __future__ import annotations
 
-import functools
 import re
-import weakref
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
@@ -58,6 +56,7 @@ from threetears.evals.analysis.report.keys.vocabulary import (
     _refuse,
 )
 from threetears.evals.analysis.report.keys.weakest import _COMPARISONS_SLOT
+from threetears.evals.analysis.report.per_input import input_memo
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import SHARE_UNIT, ReportInput
 from threetears.evals.kernel.numbers import CENT
@@ -94,32 +93,7 @@ class _InputCache:
     amounts: dict[tuple[int, tuple[str, ...], str, bool], tuple[float, ...]]
 
 
-@dataclass(frozen=True, eq=False)
-class _ByIdentity:
-    """A report input by its identity, held weakly: equal only to a handle on the same live input, so a cache never
-    outlives its input's identity (an input made later at the same address is another input) and never keeps it alive.
-    """
-
-    ident: int
-    ref: weakref.ref[ReportInput]
-
-    def __hash__(self) -> int:
-        return hash(self.ident)
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, _ByIdentity) or other.ident != self.ident:
-            return False
-        held = self.ref()
-        return held is not None and held is other.ref()
-
-
-#: The most report inputs whose reads are kept at once, the least recently read let go first: a sweep reads a copy of
-#: its input per value, each with a cache of a few keys, while the input it sweeps is read throughout.
-_CACHED_INPUTS = 256
-
-
-@functools.lru_cache(maxsize=_CACHED_INPUTS)
-def _input_cache_of(held: _ByIdentity) -> _InputCache:
+def _empty_input_cache() -> _InputCache:
     """A fresh cache for one input (:func:`_input_cache`)."""
     return _InputCache(figures={}, offered={}, amounts={})
 
@@ -133,7 +107,7 @@ def _input_cache(report_input: ReportInput) -> _InputCache:
     walks the grammar once, and each family sharing a slot reads the slot's ids once (four lever families read a
     setting's arm pairs, an O(arms squared) scan, alike).
     """
-    return _input_cache_of(_ByIdentity(id(report_input), weakref.ref(report_input)))
+    return input_memo(report_input).get(_InputCache, _empty_input_cache)
 
 
 def _offered(slot: _Ids, report_input: ReportInput, values: tuple[str, ...]) -> list[str]:
