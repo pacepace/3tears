@@ -26,8 +26,10 @@ from threetears.enforcement.no_whole_reads.rewrite import (
     PointSql,
     WriteSql,
     apply_rewrites,
+    parse_list,
     parse_point,
     parse_write,
+    plan_list_rewrites,
     plan_point_rewrites,
     plan_write_rewrites,
     render_test_module,
@@ -270,6 +272,103 @@ def test_point_reads_are_rewritten_recorded_and_pass_both_rules(tmp_path: Path) 
     left = [finding for finding in use_the_helper_findings(config) if "use-the-helper point" in finding]
     assert {finding.split(" in ")[1].split(":")[0] for finding in left} == {"by_status", "interpolated"}
     assert _unlined(no_whole_reads_findings(config)) == _unlined(before)
+
+
+_LISTINGS = """
+    async def geos_of(conn, state):
+        return await conn.fetch(
+            "SELECT geo_id, name FROM geos WHERE state = $1 ORDER BY name DESC NULLS LAST, geo_id", state
+        )
+
+
+    async def geos_unordered(conn, state):
+        return await conn.fetch("SELECT * FROM geos WHERE state = $1 ORDER BY geo_id ASC", state)
+
+
+    async def first_geo(conn, state):
+        return await conn.fetchrow("SELECT geo_id FROM geos WHERE state = $1 ORDER BY geo_id", state)
+
+
+    async def geo_page(conn, state, n):
+        return await conn.fetch("SELECT geo_id FROM geos WHERE state = $1 ORDER BY geo_id LIMIT $2", state, n)
+
+
+    async def by_hidden(conn, state):
+        return await conn.fetch("SELECT name FROM geos WHERE state = $1 ORDER BY geo_id", state)
+
+
+    async def by_lower(conn, state):
+        return await conn.fetch("SELECT geo_id, name FROM geos WHERE state = $1 ORDER BY lower(name)", state)
+"""
+
+
+def test_a_listing_s_order_is_parsed_term_for_term() -> None:
+    """Flips if a listing's ``ORDER BY`` is not read as its plain-column terms (direction, NULLs as written), or a
+    point read starts taking one."""
+    parsed = parse_list("SELECT g.geo_id, name FROM geos g WHERE g.state = $1 ORDER BY g.name DESC NULLS LAST, geo_id")
+    assert isinstance(parsed, PointSql), parsed
+    assert parsed.order == (
+        {"column": "name", "descending": True, "nulls": "last"},
+        {"column": "geo_id", "descending": False, "nulls": None},
+    )
+    assert [(pin.column, pin.param) for pin in parsed.pins] == [("state", 1)]
+    unordered = parse_list("SELECT * FROM geos WHERE state = $1")
+    assert isinstance(unordered, PointSql) and unordered.order == ()
+    assert isinstance(parse_point("SELECT geo_id FROM geos WHERE state = $1 ORDER BY geo_id"), str)
+    for refused in (
+        "SELECT geo_id FROM geos WHERE state = $1 ORDER BY geo_id LIMIT 5",
+        "SELECT geo_id FROM geos WHERE state = $1 ORDER BY geo_id OFFSET 5",
+        "SELECT geo_id FROM geos WHERE state = $1 ORDER BY lower(geo_id)",
+        "SELECT name FROM geos WHERE state = $1 ORDER BY geo_id",
+        "SELECT geo_id FROM geos WHERE state = $1 ORDER BY u.geo_id",
+    ):
+        assert isinstance(parse_list(refused), str), refused
+
+
+def test_listings_are_rewritten_onto_read_by_in_their_order(tmp_path: Path) -> None:
+    """Flips if a plain listing is not rewritten onto ``read_by(order=[Sort(...)])`` term for term and recorded, or a
+    page, a first-of read, an expression order or an unselected order column is not left and listed."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_LISTINGS), encoding="utf-8")
+    before = no_whole_reads_findings(config)
+    rewrites, refusals = plan_list_rewrites(config)
+    assert sorted(rewrite.function for rewrite in rewrites) == ["geos_of", "geos_unordered"]
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    assert refused.keys() == {"first_geo", "geo_page", "by_hidden", "by_lower"}, refused
+    assert "first-of" in refused["first_geo"]
+
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    entries = json.loads(manifest.read_text(encoding="utf-8"))
+    assert {entry["shape"] for entry in entries} == {"list"}
+    source = " ".join((tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8").split())
+    assert "from threetears.core.keyed import Sort, read_by" in source
+    assert (
+        "read_by(conn, 'geos', by={'state': state}, columns=('geo_id', 'name'), records=True, "
+        "order=[Sort('name', descending=True, nulls='last'), Sort('geo_id')])" in source
+    )
+    assert "read_by(conn, 'geos', by={'state': state}, records=True, order=[Sort('geo_id')])" in source
+    for entry in entries:
+        assert_source_says(tmp_path, entry)
+    left = [
+        finding for finding in use_the_helper_findings(config) if " in geos_of:" in finding or "unordered" in finding
+    ]
+    assert not left, left
+    assert _unlined(no_whole_reads_findings(config)) == _unlined(before)
+
+
+def test_a_listing_s_source_check_holds_its_order(tmp_path: Path) -> None:
+    """Flips if the source check passes a listing whose ``order=`` no longer says the recorded sort."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_LISTINGS), encoding="utf-8")
+    rewrites, _ = plan_list_rewrites(config)
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    entry = next(rewrite.record() for rewrite in rewrites if rewrite.function == "geos_unordered")
+    path = tmp_path / "src/pkg/reads.py"
+    path.write_text(path.read_text(encoding="utf-8").replace("order=[Sort('geo_id')]", "order=[]"), encoding="utf-8")
+    with pytest.raises(AssertionError, match="no read_by call"):
+        assert_source_says(tmp_path, entry)
 
 
 def test_a_constant_named_elsewhere_is_left(tmp_path: Path) -> None:

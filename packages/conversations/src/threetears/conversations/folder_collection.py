@@ -34,14 +34,16 @@ from threetears.core.collections.schema_backed import (
     STRING_TYPE,
     UUID_TYPE,
     Column,
-    Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
 )
+from threetears.core.collections.schema_backed import (
+    Index as SchemaIndex,
+)
 from threetears.core.config import CoreConfig
-from threetears.observe import get_logger
+from threetears.core.keyed import Sort, TableKey, read_by, register_table_keys
 from threetears.core.tenancy import TENANT_BY_SCHEMA
-from threetears.core.keyed import TableKey, register_table_keys
+from threetears.observe import get_logger
 
 __all__ = [
     "FolderCollection",
@@ -174,10 +176,12 @@ class FolderCollection(SchemaBackedCollection[Folder]):
             ordered by name
         :rtype: list[Folder]
         """
-        rows = await self.required_l3_pool.fetch(
-            "SELECT * FROM folders WHERE agent_id = $1 AND user_id = $2 ORDER BY name ASC",
-            agent_id,
-            user_id,
+        rows = await read_by(
+            self.required_l3_pool,
+            "folders",
+            by={"agent_id": agent_id, "user_id": user_id},
+            records=True,
+            order=[Sort("name")],
         )
         entities: list[Folder] = []
         for row in rows:

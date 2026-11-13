@@ -10,7 +10,9 @@ ONE generated test module per repo walks the manifest and, for each entry:
   as that harness compares them: every row, every column, as multisets. A ``fetchrow`` or ``fetchval`` rewrite is held
   twice: every row its key names (the old statement whole against :func:`~threetears.core.keyed.read_by`), and the one
   row or value (the old statement under ``LIMIT 1`` against :func:`~threetears.core.keyed.read_row` /
-  :func:`~threetears.core.keyed.read_value`).
+  :func:`~threetears.core.keyed.read_value`). A listing (``"shape": "list"``, its ``order`` the statement's
+  ``ORDER BY`` terms) is read through ``read_by(order=...)`` and compared in order too: the same rows, in the order's
+  sequence of sort values (rows tied on the sort may come in either order, as the statement left them).
 - :func:`assert_source_says` checks the module still holds the helper call the manifest records, in the function it
   names, its table, columns and each pin bound to the same argument: the proof is of the code that runs.
 
@@ -64,6 +66,7 @@ from threetears.core.keyed import (
     AnyOf,
     Fragment,
     Increment,
+    Sort,
     delete_before,
     delete_keyed,
     read_by,
@@ -450,6 +453,11 @@ async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides:
         await _assert_point_same(conn, entry, overrides=overrides, nulled=True)
 
 
+def _sort(term: Mapping[str, Any]) -> Sort:
+    """a listing entry's ``ORDER BY`` term as the ``Sort`` its ``read_by`` call takes."""
+    return Sort(term["column"], descending=term["descending"], nulls=term["nulls"])
+
+
 async def _assert_point_same(
     conn: Any, entry: Mapping[str, Any], *, overrides: _Overrides | None, nulled: bool
 ) -> None:
@@ -462,6 +470,7 @@ async def _assert_point_same(
     by = _by(entry, params)
     columns = entry["columns"]
     old_sql = entry["old_sql"]
+    order = [_sort(term) for term in entry.get("order", ())]
     await conn.execute("SET session_replication_role = replica")
     try:
         await assert_same_results(
@@ -470,7 +479,9 @@ async def _assert_point_same(
             row=row,
             old_sql=old_sql,
             params=params,
-            helper=lambda c: read_by(c, table, by=by, columns=columns, records=True),
+            helper=lambda c: read_by(c, table, by=by, columns=columns, records=True, order=order),
+            order_by=[term["column"] for term in entry.get("order", ())] or None,
+            ordered=bool(order),
         )
         if entry["helper"] == "read_row":
 
@@ -824,11 +835,30 @@ def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
     records = keywords.get("records")
     if not (isinstance(records, ast.Constant) and records.value is True):
         return False
+    if not _order_says(keywords.get("order"), entry.get("order", ())):
+        return False
     columns = keywords.get("columns")
     if entry["columns"] is None:
         return columns is None
     written: list[Any] | None = _written_columns(columns, tree)
     return written is not None and written == list(entry["columns"])
+
+
+def _order_says(order: ast.expr | None, terms: Sequence[Mapping[str, Any]]) -> bool:
+    """whether a read's ``order=`` is the entry's sort, term for term (none written for none recorded)."""
+    if not terms:
+        return order is None
+    if not isinstance(order, ast.List | ast.Tuple) or len(order.elts) != len(terms):
+        return False
+    for written, term in zip(order.elts, terms, strict=True):
+        parts = [repr(term["column"])]
+        if term["descending"]:
+            parts.append("descending=True")
+        if term["nulls"] is not None:
+            parts.append(f"nulls={term['nulls']!r}")
+        if not _same_expression(written, f"Sort({', '.join(parts)})"):
+            return False
+    return True
 
 
 def assert_source_says(repo_root: Path, entry: Mapping[str, Any]) -> None:

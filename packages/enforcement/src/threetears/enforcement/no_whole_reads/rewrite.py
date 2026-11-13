@@ -25,6 +25,12 @@ starred or keyword arguments, a parameter used twice whose argument is not a pla
 a statement the no-whole-reads rule already finds unkeyed (that one needs a real fix first). After rewriting, the walk is
 run again: a rewritten function must hold no whole-read finding it did not hold before.
 
+**Listings** (shape ``list``): the same statement as a point read, sent by ``fetch``, with a trailing ``ORDER BY`` of
+plain columns (``col [ASC|DESC] [NULLS FIRST|LAST]``, or none), becomes :func:`~threetears.core.keyed.read_by` with
+``order=[Sort(...)]``, term for term: the same rows, in the same order, ties as the engine leaves them. Refused: a
+``LIMIT`` / ``OFFSET`` (a page, not a listing), an expression or alias in the order, a listing sent by ``fetchrow`` /
+``fetchval`` (its first row is a first-of read), and every point-read refusal.
+
 **Keyed writes** (shape ``write``): ``UPDATE <table> SET <col> = $n | <literal> | NULL | now(), ... WHERE <pins>`` and
 ``DELETE FROM <table> WHERE <pins>`` become :func:`~threetears.core.keyed.update_keyed` /
 :func:`~threetears.core.keyed.delete_keyed` with the same ``values`` and ``by``. Sent by an awaited ``execute`` whose
@@ -122,6 +128,13 @@ _NOT_COLUMNS: Final[frozenset[str]] = frozenset({"true", "false", "null", "not",
 #: the pin kinds bound as a parameter: ``= $n``, ``= ANY($n)`` and ``IS NOT DISTINCT FROM $n``
 _BOUND_KINDS: Final[frozenset[str]] = frozenset({"param", "any", "nullsafe"})
 _AND: Final[re.Pattern[str]] = re.compile(r"\s+and\s+", re.IGNORECASE)
+#: a listing's trailing ``ORDER BY`` (shape ``list``): split off the ``WHERE`` before its pins are read
+_ORDER_BY: Final[re.Pattern[str]] = re.compile(r"\s+order\s+by\s+(?P<order>.+)$", re.IGNORECASE | re.DOTALL)
+#: one ``ORDER BY`` term: a plain column, its direction and where its NULLs fall as written
+_ORDER_TERM: Final[re.Pattern[str]] = re.compile(
+    rf"^(?:(?P<q>{_IDENT})\.)?(?P<column>{_IDENT})(?:\s+(?P<direction>asc|desc))?(?:\s+nulls\s+(?P<nulls>first|last))?$",
+    re.IGNORECASE,
+)
 _QUOTED: Final[re.Pattern[str]] = re.compile(r"'(?:[^']|'')*'")
 
 
@@ -166,11 +179,14 @@ class PointSql:
     :ivar table: the table as written (``schema.table`` kept)
     :ivar columns: the selected columns, None for ``*``
     :ivar pins: each pinned column, in the statement's order
+    :ivar order: a listing's sort (shape ``list``): each ``ORDER BY`` term as ``{"column", "descending", "nulls"}``;
+        empty for a point read
     """
 
     table: str
     columns: tuple[str, ...] | None
     pins: tuple[Pin, ...]
+    order: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -232,6 +248,9 @@ class Rewrite:
     #: the columns a write's helper call returns (its ``RETURNING``; a ``fetchval``'s first column only), none when
     #: the statement returned nothing
     returning: list[str] = field(default_factory=list)
+    #: a listing's sort (shape ``list``), each ``ORDER BY`` term as ``{"column", "descending", "nulls"}``: the
+    #: ``read_by`` call's ``order``; none for a point read or a write
+    order: list[dict[str, Any]] = field(default_factory=list)
     # the edits that make it, not recorded: (start line, start col, end line, end col, text) in the module's bytes
     edits: list[tuple[int, int, int, int, str]] = field(default_factory=list, repr=False)
     # not recorded: index purpose entries naming the replaced constant, each (repo-relative file, old text, new text)
@@ -262,11 +281,13 @@ def _literal(text: str) -> str | bool | int:
     return int(text)
 
 
-def parse_point(sql: str) -> PointSql | str:
+def parse_point(sql: str, *, ordered: bool = False) -> PointSql | str:
     """a plain point read, or why it is not one.
 
     :param sql: the statement
     :ptype sql: str
+    :param ordered: a listing (shape ``list``): a trailing ``ORDER BY`` of plain columns is read as its sort
+    :ptype ordered: bool
     :return: the parsed read, or the refusal's reason
     :rtype: PointSql | str
     """
@@ -283,9 +304,26 @@ def parse_point(sql: str) -> PointSql | str:
         return "not SELECT <columns> FROM <table> WHERE ..."
     where = match.group("where")
     masked = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", where)
+    qualifiers = {None, alias, match.group("table").split(".")[-1]}
+    order: list[dict[str, Any]] = []
+    sorted_by = _ORDER_BY.search(masked) if ordered else None
+    if sorted_by is not None:
+        terms = where[sorted_by.start("order") :]
+        where, masked = where[: sorted_by.start()], masked[: sorted_by.start()]
+        for term in terms.split(","):
+            found = _ORDER_TERM.match(term.strip())
+            if found is None or found.group("q") not in qualifiers:
+                return "an ORDER BY term other than a plain column [ASC|DESC] [NULLS FIRST|LAST] (or a LIMIT)"
+            nulls = found.group("nulls")
+            order.append(
+                {
+                    "column": found.group("column"),
+                    "descending": (found.group("direction") or "asc").lower() == "desc",
+                    "nulls": None if nulls is None else nulls.lower(),
+                }
+            )
     if re.search(r"\b(order\s+by|limit|offset|group\s+by|for\s+update|for\s+share)\b", masked, re.IGNORECASE):
         return "ORDER BY / LIMIT / GROUP BY / a row lock"
-    qualifiers = {None, alias, match.group("table").split(".")[-1]}
     columns: tuple[str, ...] | None
     if match.group("columns").strip() == "*":
         columns = None
@@ -300,12 +338,26 @@ def parse_point(sql: str) -> PointSql | str:
     pins = _pins(where, masked, qualifiers)
     if isinstance(pins, str):
         return pins
+    if columns is not None and any(term["column"] not in columns for term in order):
+        return "an ORDER BY column it does not select (the equivalence proof compares the order by its values)"
     numbers = sorted({pin.param for pin in pins if pin.param is not None})
     if numbers != list(range(1, len(numbers) + 1)):
         return "parameters not numbered $1..$n"
     if not any(pin.kind in _BOUND_KINDS for pin in pins):
         return "no bound parameter (literals only): a constant read, judged by hand"
-    return PointSql(table=match.group("table").lower(), columns=columns, pins=tuple(pins))
+    return PointSql(table=match.group("table").lower(), columns=columns, pins=tuple(pins), order=tuple(order))
+
+
+def parse_list(sql: str) -> PointSql | str:
+    """a plain listing: a point read's pins, its rows in a trailing ``ORDER BY`` of plain columns (or in none), or why
+    it is not one.
+
+    :param sql: the statement
+    :ptype sql: str
+    :return: the parsed read, or the refusal's reason
+    :rtype: PointSql | str
+    """
+    return parse_point(sql, ordered=True)
 
 
 def _pins(where: str, masked: str, qualifiers: set[str | None]) -> list[Pin] | str:
@@ -923,7 +975,26 @@ def _render(rewrite: Rewrite, receiver: str) -> str:
             listed = ", ".join(repr(column) for column in rewrite.columns)
             parts.append(f"columns=({listed}{',' if len(rewrite.columns) == 1 else ''})")
         parts.append("records=True")
+        if rewrite.order:
+            parts.append(f"order=[{', '.join(_sort_text(term) for term in rewrite.order)}]")
     return f"{rewrite.helper}({', '.join(parts)})"
+
+
+def _sort_text(term: Mapping[str, Any]) -> str:
+    """one ``ORDER BY`` term as the helper call writes it: ``Sort("col")``, with ``descending=True`` and ``nulls=`` as
+    the statement wrote them (the engine's own NULL order otherwise, as before).
+
+    :param term: the term, ``{"column", "descending", "nulls"}``
+    :ptype term: Mapping[str, Any]
+    :return: the ``Sort`` expression
+    :rtype: str
+    """
+    parts = [repr(term["column"])]
+    if term["descending"]:
+        parts.append("descending=True")
+    if term["nulls"] is not None:
+        parts.append(f"nulls={term['nulls']!r}")
+    return f"Sort({', '.join(parts)})"
 
 
 def _value_text(pin: Mapping[str, Any], args: Sequence[str]) -> str:
@@ -1342,7 +1413,7 @@ def _plan_dict(
     method = methods.pop()
     if any(len(call.args) - 1 != count for call in calls):
         return f"its dict {name}: a call's arguments are not its values' {count} parameters"
-    if shape.shape == "point" and method == "fetchval" and any(one.columns is None for one in parsed):
+    if shape.shape != "write" and method == "fetchval" and any(one.columns is None for one in parsed):
         return f"its dict {name}: fetchval of SELECT *"
     elsewhere = _elsewhere(config.repo_root, module, constant, calls)
     if isinstance(elsewhere, str):
@@ -1360,14 +1431,15 @@ def _plan_dict(
             table=one.table,
             old_sql=_value_sql(value) or "",
             method=method,
-            helper=_HELPER_OF[method] if shape.shape == "point" else _WRITE_HELPER[one.kind],
+            helper=_HELPER_OF[method] if shape.shape != "write" else _WRITE_HELPER[one.kind],
             columns=None if shape.shape == "write" or one.columns is None else list(one.columns),
             pins=[asdict(pin) for pin in one.pins],
             args=args,
             shape=shape.shape,
             sets=[asdict(pin) for pin in getattr(one, "sets", ())],
+            order=list(getattr(one, "order", ())),
         )
-        call_text = _render(rewrite, "conn") if shape.shape == "point" else _render_write(rewrite, "conn")
+        call_text = _render(rewrite, "conn") if shape.shape != "write" else _render_write(rewrite, "conn")
         rewrite.new_call = f"lambda conn, {', '.join(args)}: {call_text}" if args else f"lambda conn: {call_text}"
         assert value.end_lineno is not None and value.end_col_offset is not None
         rewrite.edits.append((value.lineno, value.col_offset, value.end_lineno, value.end_col_offset, rewrite.new_call))
@@ -1378,7 +1450,7 @@ def _plan_dict(
         assert isinstance(call.func, ast.Attribute) and call.end_lineno is not None and call.end_col_offset is not None
         rest = "".join(f", {module.segment(argument)}" for argument in call.args[1:])
         text = f"{module.segment(call.args[0])}({module.segment(call.func.value)}{rest})"
-        if shape.shape == "point":
+        if shape.shape != "write":
             first.edits.append((call.lineno, call.col_offset, call.end_lineno, call.end_col_offset, text))
             continue
         edits = _status_edits(module, call, text, verbs)
@@ -1515,7 +1587,7 @@ def _plan_choice(
             count > 1 and not _plain_simple(arguments[number - 1]) for number, count in Counter(bound_numbers).items()
         ):
             return "a parameter used twice whose argument is not a plain name"
-        if shape.shape == "point" and method == "fetchval" and one.columns is None:
+        if shape.shape != "write" and method == "fetchval" and one.columns is None:
             return "fetchval of SELECT *"
         elsewhere = _elsewhere(config.repo_root, module, constant, [call])
         if isinstance(elsewhere, str):
@@ -1529,20 +1601,21 @@ def _plan_choice(
             table=one.table,
             old_sql=str(literal.value),
             method=method,
-            helper=_HELPER_OF[method] if shape.shape == "point" else _WRITE_HELPER[one.kind],
+            helper=_HELPER_OF[method] if shape.shape != "write" else _WRITE_HELPER[one.kind],
             columns=None if shape.shape == "write" or one.columns is None else list(one.columns),
             pins=[asdict(pin) for pin in one.pins],
             args=[module.segment(argument) for argument in arguments],
             shape=shape.shape,
             sets=[asdict(pin) for pin in getattr(one, "sets", ())],
+            order=list(getattr(one, "order", ())),
         )
         receiver = module.segment(call.func.value)
-        rewrite.new_call = _render(rewrite, receiver) if shape.shape == "point" else _render_write(rewrite, receiver)
+        rewrite.new_call = _render(rewrite, receiver) if shape.shape != "write" else _render_write(rewrite, receiver)
         edits.append(_constant_edit(module, constant))
         planned.append(rewrite)
     assert call.end_lineno is not None and call.end_col_offset is not None
     text = f"({planned[0].new_call} if {module.segment(choice.test)} else {planned[1].new_call})"
-    if shape.shape == "point":
+    if shape.shape != "write":
         edits.append((call.lineno, call.col_offset, call.end_lineno, call.end_col_offset, text))
     else:
         sent = _status_edits(module, call, text, frozenset(one.kind for *_, one in chosen))
@@ -1555,6 +1628,8 @@ def _plan_choice(
 
 
 _POINT: Final[_Shape] = _Shape("point", parse_point, frozenset(_HELPER_OF))
+#: a listing is sent by ``fetch`` only: its rows, every one, in its order (``read_by(order=)``)
+_LIST: Final[_Shape] = _Shape("list", parse_list, frozenset({"fetch"}))
 _WRITE: Final[_Shape] = _Shape("write", parse_write, _WRITE_METHODS)
 
 
@@ -1566,10 +1641,31 @@ def plan_point_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
     :return: the rewrites, and the refusals
     :rtype: tuple[list[Rewrite], list[Refusal]]
     """
+    return _plan_reads(config, _POINT)
+
+
+def plan_list_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
+    """every listing finding of the repo (``SELECT ... WHERE <pins> [ORDER BY <columns>]`` sent by ``fetch``), as the
+    :func:`~threetears.core.keyed.read_by` call with ``order=`` it takes, or the refusal it gets. The sort is the
+    statement's own, term for term: the same rows in the same order, ties as the engine leaves them, as before.
+
+    :param config: the repo's no-whole-reads config
+    :ptype config: NoWholeReadsConfig
+    :return: the rewrites, and the refusals
+    :rtype: tuple[list[Rewrite], list[Refusal]]
+    """
+    return _plan_reads(config, _LIST)
+
+
+def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite], list[Refusal]]:
+    """every read finding of ``shape`` (``point`` or ``list``) in the repo, as the rewrite it takes or the refusal it
+    gets."""
     whole_hits, scan = _hits(config)
     unkeyed: dict[tuple[str, int], str] = {(hit.path, hit.line): hit.symbol for hit in whole_hits}
     hits = [
-        hit for hit in _helper_hits(scan.statements, config.helper_modules, _producers(config)) if hit.shape == "point"
+        hit
+        for hit in _helper_hits(scan.statements, config.helper_modules, _producers(config))
+        if hit.shape == shape.shape
     ]
     modules: dict[str, _Module] = {}
     rewrites: list[Rewrite] = []
@@ -1590,7 +1686,7 @@ def plan_point_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
                 f"the no-whole-reads rule finds it unkeyed ({unkeyed[statement.path, statement.line]}): a real fix first"
             )
             continue
-        parsed = parse_point(statement.text)
+        parsed = shape.parse(statement.text)
         if isinstance(parsed, str):
             refuse(parsed)
             continue
@@ -1612,9 +1708,9 @@ def plan_point_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
             group = groups.get(id(held))
             if group is None:
                 group = groups[id(held)] = (
-                    _plan_dict(config, module, literal, _POINT, pending, unkeyed)
+                    _plan_dict(config, module, literal, shape, pending, unkeyed)
                     if choice is None
-                    else _plan_choice(config, module, choice, _POINT, pending, unkeyed)
+                    else _plan_choice(config, module, choice, shape, pending, unkeyed)
                 )
                 if not isinstance(group, str):
                     rewrites.extend(group)
@@ -1644,6 +1740,8 @@ def plan_point_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
                 problem = "a parameter used twice whose argument is not a plain name"
             elif method == "fetchval" and parsed.columns is None:
                 problem = "fetchval of SELECT *"
+            elif method not in shape.methods:
+                problem = f"a listing sent by {method}: its first row is a first-of read, not a listing"
             if problem:
                 refuse(problem)
                 planned = []
@@ -1659,6 +1757,8 @@ def plan_point_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
                 columns=None if parsed.columns is None else list(parsed.columns),
                 pins=[asdict(pin) for pin in parsed.pins],
                 args=[module.segment(argument) for argument in arguments],
+                shape=shape.shape,
+                order=list(parsed.order),
             )
             rewrite.new_call = _render(rewrite, module.segment(call.func.value))
             assert call.end_lineno is not None and call.end_col_offset is not None
@@ -1903,6 +2003,8 @@ def apply_rewrites(repo_root: Path, rewrites: list[Rewrite], *, ruff: str | None
             names.add("Increment")
         if any(pin["kind"] in {"any", "anylit"} for rewrite in mine for pin in rewrite.pins):
             names.add("AnyOf")
+        if any(rewrite.order for rewrite in mine):
+            names.add("Sort")
         source = _with_import(source, names)
         for rewrite in mine:
             for imported, wanted in rewrite.imports.items():
@@ -2046,7 +2148,8 @@ def _say(line: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """the command line: ``point`` (reads), ``write`` (keyed ``UPDATE`` / ``DELETE`` by equality), ``test-module``.
+    """the command line: ``point`` (reads), ``list`` (listings in their ``ORDER BY``), ``write`` (keyed ``UPDATE`` /
+    ``DELETE`` by equality), ``test-module``.
 
     :param argv: the arguments
     :ptype argv: list[str] | None
@@ -2054,7 +2157,7 @@ def main(argv: list[str] | None = None) -> int:
     :rtype: int
     """
     parser = argparse.ArgumentParser(prog="threetears.enforcement.no_whole_reads.rewrite")
-    parser.add_argument("shape", choices=["point", "write", "test-module"])
+    parser.add_argument("shape", choices=["point", "list", "write", "test-module"])
     parser.add_argument("--module", type=Path, help="test-module: where the generated test goes, repo-relative")
     parser.add_argument("--pg-fixture", default="conn")
     parser.add_argument("--yb-fixture", default="yugabyte_conn")
@@ -2081,7 +2184,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     config = _config(repo, options.config)
     before, _ = _hits(config)
-    rewrites, refusals = (plan_write_rewrites if options.shape == "write" else plan_point_rewrites)(config)
+    planner = {"write": plan_write_rewrites, "list": plan_list_rewrites}.get(options.shape, plan_point_rewrites)
+    rewrites, refusals = planner(config)
     reasons = Counter(refusal.reason.split(":")[0].split(" (")[0] for refusal in refusals)
     _say(f"{options.shape}: {len(rewrites)} rewrites, {len(refusals)} refusals")
     for reason, count in reasons.most_common():

@@ -2992,5 +2992,48 @@
   "sets": [],
   "shape": "point",
   "table": "roles"
+ },
+ {
+  "args": [
+   "agent_id",
+   "user_id"
+  ],
+  "columns": null,
+  "function": "FolderCollection.find_by_user",
+  "helper": "read_by",
+  "line": 178,
+  "method": "fetch",
+  "new_call": "read_by(self.required_l3_pool, 'folders', by={'agent_id': agent_id, 'user_id': user_id}, records=True, order=[Sort('name')])",
+  "old_sql": "SELECT * FROM folders WHERE agent_id = $1 AND user_id = $2 ORDER BY name ASC",
+  "order": [
+   {
+    "column": "name",
+    "descending": false,
+    "nulls": null
+   }
+  ],
+  "path": "packages/conversations/src/threetears/conversations/folder_collection.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "user_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "list",
+  "table": "folders"
  }
 ]

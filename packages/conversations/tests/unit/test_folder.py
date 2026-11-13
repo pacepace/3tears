@@ -481,9 +481,9 @@ class TestFolderFindByUser:
 
         pg.fetch.assert_called_once()
         sql, *params = pg.fetch.call_args.args
-        assert "agent_id = $1" in sql
-        assert "user_id = $2" in sql
-        assert "ORDER BY name ASC" in sql
+        assert 't."agent_id" = $1' in sql
+        assert 't."user_id" = $2' in sql
+        assert 'ORDER BY t."name" ASC' in sql
         assert params[0] == agent_id
         assert params[1] == user_id
 
