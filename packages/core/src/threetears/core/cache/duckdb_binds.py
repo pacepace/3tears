@@ -71,7 +71,7 @@ def _column(values: Sequence[Any]) -> Any:
     try:
         array = pa.array(list(values))
     except pa.ArrowException, OverflowError, TypeError:
-        return None
+        return None  # NOSILENT: a list Arrow cannot type is bound value by value, as before (slow but exact)
     kind = array.type
     if pa.types.is_integer(kind):
         bounds = pc.min_max(array)

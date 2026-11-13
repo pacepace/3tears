@@ -40,8 +40,6 @@ import ast
 import re
 from pathlib import Path
 
-from threetears.enforcement.common import parse_python_path
-
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -126,7 +124,8 @@ def _is_always_allowed(rel_posix: str) -> bool:
 
 
 def _collect_files() -> list[Path]:
-    """collect every ``.py`` under each ``packages/*/{src,tests}`` tree.
+    """collect every ``.py`` under each package's ``src`` and ``tests`` trees: a package is a directory under
+    ``packages/`` holding a ``pyproject.toml``, so the agent family's (``packages/agent/<name>``) are walked too.
 
     :return: sorted list of python source paths to walk
     :rtype: list[Path]
@@ -134,25 +133,28 @@ def _collect_files() -> list[Path]:
     files: list[Path] = []
     packages_root = _PROJECT_ROOT / "packages"
     if packages_root.exists():
-        for package_dir in sorted(packages_root.iterdir()):
-            if not package_dir.is_dir():
-                continue
+        for manifest in sorted(packages_root.rglob("pyproject.toml")):
+            package_dir = manifest.parent
             for subdir in _PACKAGE_SUBDIRS:
                 tree_root = package_dir / subdir
                 if tree_root.exists():
                     files.extend(p for p in tree_root.rglob("*.py") if "__pycache__" not in str(p))
-    return sorted(files)
+    return sorted(set(files))
 
 
 def _violations_in_file(src_file: Path) -> list[str]:
     """AST-walk one file and return managed-model-literal violation descriptions.
+
+    The file is parsed here and its tree dropped after, never kept in the shared parse cache
+    (``parse_python_path``): this gate reads each file once, and holding every tree of every package's src and
+    tests took 1.6 GB, enough beside a batch's other gates to have the pool's container killed (exit 137).
 
     :param src_file: python source file to scan
     :ptype src_file: Path
     :return: list of ``line N: <value>`` violation strings (empty if none)
     :rtype: list[str]
     """
-    tree = parse_python_path(src_file)
+    tree = ast.parse(src_file.read_text(encoding="utf-8"), filename=str(src_file))
     violations: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
