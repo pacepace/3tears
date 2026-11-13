@@ -110,7 +110,7 @@ async def keyset_page(
     check_page(table, columns, order, limit)
     if cursor is not None:
         # a page past a cursor skips every row sharing its last row's order values unless the order holds a key
-        refuse_non_unique_order(table, by, order)
+        refuse_non_unique_order(table, by, order, l3=_reads_l3(conn))
     past = None if cursor is None else cursor_values(order, cursor)
     by_row = past is not None and await _steps_by_row(conn, order)
     legs = past is not None and lock is None and await _seeks_by_legs(conn, order)
@@ -129,6 +129,24 @@ async def keyset_page(
         chain_legs=_chains_legs(conn),
     )
     return KeyPage.cut(order, [dict(row) for row in await sent_by(conn).fetch(sql, *params)], limit)
+
+
+def _reads_l3(conn: Any) -> bool:
+    """whether a read on ``conn`` goes to L3, where the declared tables whose keys a pager is held to are: an
+    in-process DuckDB or SQLite does not, nor does a reader naming its dialect (a datasource's, a warehouse's, even
+    one spelled as PostgreSQL); an asyncpg connection, a pool, the rail's proxy do.
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :return: whether it reads L3
+    :rtype: bool
+    """
+    if isinstance(conn, ThreadedDuckDB | ThreadedSQLite | InlineSQLite | InlineDuckDB):
+        return False
+    # looked up on the class (a reader's property, its class attribute) and the instance's own attributes: a mock
+    # answers any name it is asked, and is no datasource
+    named = getattr(type(conn), SQL_DIALECT_ATTRIBUTE, None)
+    return named is None and getattr(conn, "__dict__", {}).get(SQL_DIALECT_ATTRIBUTE) is None
 
 
 async def _steps_by_row(conn: Any, order: Sequence[Sort]) -> bool:
@@ -217,7 +235,7 @@ async def keyset_rows(
     """
     check_page(table, columns, order, page)
     # every statement after the first starts past the last row read: the order must hold a key
-    refuse_non_unique_order(table, by, order)
+    refuse_non_unique_order(table, by, order, l3=_reads_l3(conn))
     rows: list[dict[str, Any]] = []
     past: list[Any] | None = None
     by_row: bool | None = None
