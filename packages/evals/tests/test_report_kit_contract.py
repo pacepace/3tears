@@ -114,7 +114,7 @@ def _page_charts() -> list[tuple[str, ChartBlock]]:
     ):
         report_input, stored = dataset.report_input_of(name), stored_charts(plan)
         for spec in stored.charts():
-            one = StoredCharts(stored.slots, stored.order, stored.recommended, [spec], [])
+            one = StoredCharts(stored.recommended, [spec], [])
             try:
                 ((_, chart),) = drawn_charts(one, report_input)
             except UnresolvableReference:

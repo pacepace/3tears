@@ -2,7 +2,7 @@
 stores and on charts redrawn from them, each against its own input.
 
 Held over every r1–r5 anchor and current run, and the Kairo reference plan, as the retired report planner stored them
-(``fixtures/plan_charts/``), each drawn through :func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart` under the plan's look
+(``fixtures/plan_charts/``), each drawn through :func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart` under the page's look
 (``plan_charts_support.drawn_charts``). The expected side is always read from somewhere else than the resolver: the
 figure keys (:func:`~threetears.evals.analysis.report.figure_keys.resolve`), the rows a query selects
 (:func:`~threetears.evals.analysis.report.rows.query_rows`) and code's facts, never typed in.
@@ -17,7 +17,7 @@ figure keys (:func:`~threetears.evals.analysis.report.figure_keys.resolve`), the
   as that kind and source, its expected side computed from the input; and each arm less the control is refused on an
   input with no control.
 - **The Full results tables** (:func:`~threetears.evals.analysis.report.parts.full_results.every_table`), over each
-  r1–r5 input and the Kairo reference plan's look: every arm by measure, each figure in one column; every corrected
+  r1–r5 input under the page's look: every arm by measure, each figure in one column; every corrected
   comparison, its change and interval the input's on the measure's scale; every slice's figures; every gate at every
   place it is read, an arm failing (or borderline on) a row exactly where the gate check fails it (or holds it
   borderline) somewhere; every configuration. A pill says its status in words.
@@ -36,7 +36,7 @@ from typing import Any, get_args
 import pytest
 
 from packages.evals.tests.fixtures.report_inputs import dataset
-from packages.evals.tests.plan_charts_support import StoredCharts, anchor_look, drawn_charts, stored_charts
+from packages.evals.tests.plan_charts_support import StoredCharts, drawn_charts, stored_charts
 from threetears.evals.analysis import (
     BarsChart,
     ChartBlock,
@@ -47,6 +47,7 @@ from threetears.evals.analysis import (
     LinesChart,
 )
 from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.blocks import TableBlock
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.gates import gate_check
@@ -684,29 +685,26 @@ def test_lines_over_a_judged_dimension_draw_the_lead_aspect_then_each_aspect_it_
 
 # --- the Full results tables --------------------------------------------------------------------------------------
 
-#: Each input beside the plan whose look its tables are drawn under: the r1–r5 anchors and the Kairo reference.
-_TABLED = [
-    *((name, f"{name}-anchor") for name in ("r1", "r2", "r3", "r4", "r5")),
-    ("r5", REFERENCE_PLAN),
-]
-_TABLED_IDS = ["r1", "r2", "r3", "r4", "r5", "r5-reference"]
+#: Each input whose tables are drawn.
+_TABLED = ["r1", "r2", "r3", "r4", "r5"]
 
 #: A number as a cell prints it: its sign, digits and decimal point, its thousands unseparated.
 _NUMBER = re.compile(r"[-+]?\d+(?:\.\d+)?")
 
 
 @functools.cache
-def _tables(name: str, path: str) -> tuple[TableBlock, ...]:
+def _tables(name: str) -> tuple[TableBlock, ...]:
     report_input = _input(name)
-    return tuple(every_table(report_input, anchor_look(_plan(path), report_input), forms=PageForms.of(report_input)))
+    look = block_look(report_input, fact_arms(report_input))
+    return tuple(every_table(report_input, look, forms=PageForms.of(report_input)))
 
 
-def _full(name: str, path: str, table: str) -> TableBlock:
-    return next(one for one in _tables(name, path) if one.name == table)
+def _full(name: str, table: str) -> TableBlock:
+    return next(one for one in _tables(name) if one.name == table)
 
 
-def _holding(table: str) -> list[tuple[str, str]]:
-    return [(name, path) for name, path in _TABLED if any(one.name == table for one in _tables(name, path))]
+def _holding(table: str) -> list[str]:
+    return [name for name in _TABLED if any(one.name == table for one in _tables(name))]
 
 
 def _number(text: Any) -> float:
@@ -715,19 +713,19 @@ def _number(text: Any) -> float:
     return float(found.group(0))
 
 
-@pytest.mark.parametrize(("name", "path"), _TABLED, ids=_TABLED_IDS)
-def test_every_pill_in_the_full_results_tables_says_its_status_in_words(name: str, path: str) -> None:
-    pills = [cell for table in _tables(name, path) for row in table.rows for cell in row.values() if cell.status]
+@pytest.mark.parametrize("name", _TABLED)
+def test_every_pill_in_the_full_results_tables_says_its_status_in_words(name: str) -> None:
+    pills = [cell for table in _tables(name) for row in table.rows for cell in row.values() if cell.status]
     for cell in pills:
         assert cell.value is not None and re.search(r"[A-Za-z]{3}", cell.text), (
             f"a {cell.status} pill reads {cell.text!r}"
         )
 
 
-@pytest.mark.parametrize(("name", "path"), _TABLED, ids=_TABLED_IDS)
-def test_arms_by_measure_is_every_arm_and_each_figure_it_holds(name: str, path: str) -> None:
+@pytest.mark.parametrize("name", _TABLED)
+def test_arms_by_measure_is_every_arm_and_each_figure_it_holds(name: str) -> None:
     report_input = _input(name)
-    table = _full(name, path, "arms_by_measure")
+    table = _full(name, "arms_by_measure")
     names = {arm.id: (arm.short_name or arm.name or arm.id) for arm in report_input.arms}
     assert [row["arm"].value for row in table.rows] == [names[arm.id] for arm in report_input.arms]
     for arm, row in zip(report_input.arms, table.rows, strict=True):
@@ -738,23 +736,23 @@ def test_arms_by_measure_is_every_arm_and_each_figure_it_holds(name: str, path: 
                 assert math.isclose(_number(row[f"judged:{key}"].value), float(stat.mean) * scale, rel_tol=0.01)
 
 
-@pytest.mark.parametrize(("name", "path"), _TABLED, ids=_TABLED_IDS)
-def test_arms_by_measure_states_each_figure_in_one_column(name: str, path: str) -> None:
-    headers = [column.header for column in _full(name, path, "arms_by_measure").columns]
+@pytest.mark.parametrize("name", _TABLED)
+def test_arms_by_measure_states_each_figure_in_one_column(name: str) -> None:
+    headers = [column.header for column in _full(name, "arms_by_measure").columns]
     assert len(headers) == len(set(headers)), headers
 
 
 def test_r2_arms_by_measure_reads_its_pass_rate_off_its_measure_once() -> None:
     """r2's arms count no passes and its input holds a ``pass_rate`` measure: the measure's column is the one."""
-    keys = [column.key for column in _full("r2", "r2-anchor", "arms_by_measure").columns]
+    keys = [column.key for column in _full("r2", "arms_by_measure").columns]
     assert "pass_rate" not in keys and keys.count("measure:pass_rate") == 1, keys
 
 
-@pytest.mark.parametrize(("name", "path"), _holding("contrasts"))
-def test_every_corrected_comparison_is_a_row_its_change_the_input_s_on_its_scale(name: str, path: str) -> None:
+@pytest.mark.parametrize("name", _holding("contrasts"))
+def test_every_corrected_comparison_is_a_row_its_change_the_input_s_on_its_scale(name: str) -> None:
     report_input = _input(name)
     forms = PageForms.of(report_input)
-    table = _full(name, path, "contrasts")
+    table = _full(name, "contrasts")
     assert len(table.rows) == len(report_input.contrasts)
     for contrast, row in zip(report_input.contrasts, table.rows, strict=True):
         if contrast.delta is None:
@@ -771,10 +769,10 @@ def test_every_corrected_comparison_is_a_row_its_change_the_input_s_on_its_scale
         assert (row["verdict"].status == "bad") == (contrast.verdict == "regressed")
 
 
-@pytest.mark.parametrize(("name", "path"), _holding("gate_matrix_full"))
-def test_the_gate_matrix_fails_an_arm_on_a_row_exactly_where_the_gate_check_fails_it(name: str, path: str) -> None:
+@pytest.mark.parametrize("name", _holding("gate_matrix_full"))
+def test_the_gate_matrix_fails_an_arm_on_a_row_exactly_where_the_gate_check_fails_it(name: str) -> None:
     report_input = _input(name)
-    table = _full(name, path, "gate_matrix_full")
+    table = _full(name, "gate_matrix_full")
     worst = {"good": 0, "warn": 1, "bad": 2}
     for arm in report_input.arms:
         statuses = [row[f"arm:{arm.id}"].status for row in table.rows]
@@ -784,15 +782,15 @@ def test_the_gate_matrix_fails_an_arm_on_a_row_exactly_where_the_gate_check_fail
         assert all(figures), "every cell states its figure, or that there is none"
 
 
-@pytest.mark.parametrize(("name", "path"), _TABLED, ids=_TABLED_IDS)
-def test_each_slice_table_is_a_row_per_slice_and_measure_it_holds(name: str, path: str) -> None:
+@pytest.mark.parametrize("name", _TABLED)
+def test_each_slice_table_is_a_row_per_slice_and_measure_it_holds(name: str) -> None:
     report_input = _input(name)
     held = {
         "strata": report_input.strata,
         "tasks": report_input.tasks,
         "cells": list(report_input.cells.values()),
     }
-    for table in _tables(name, path):
+    for table in _tables(name):
         if table.name not in held:
             continue
         slices = held[table.name]
@@ -802,10 +800,10 @@ def test_each_slice_table_is_a_row_per_slice_and_measure_it_holds(name: str, pat
         assert [row["cases"].value for row in table.rows] == cases
 
 
-@pytest.mark.parametrize(("name", "path"), _holding("configs"))
-def test_every_configuration_is_its_arm_s_level_of_each_factor(name: str, path: str) -> None:
+@pytest.mark.parametrize("name", _holding("configs"))
+def test_every_configuration_is_its_arm_s_level_of_each_factor(name: str) -> None:
     report_input = _input(name)
-    table = _full(name, path, "configs")
+    table = _full(name, "configs")
     assert len(table.rows) == len(report_input.configs)
     for config, row in zip(report_input.configs, table.rows, strict=True):
         for factor in report_input.factors:

@@ -46,7 +46,7 @@ retired planned page) are here, once:
 - **A config's colour** (:func:`factor_token`, :func:`factor_legend`): a chart of a factorial grid's configs colours
   each by its first factor's level, the kit's series in that factor's order, and its legend names the levels.
 - **A scatter's labels** (:func:`point_labels`): every point's name where a chart draws at most eight, else only the
-  stressed and the recommended one's, so labels never bury the points; narrow, the arm's letter tag.
+  stressed one's, so labels never bury the points; narrow, the arm's letter tag.
 - **An interval's level** (:func:`~threetears.evals.analysis.report.number_forms.intervals.interval_level`): one
   form wherever it prints, a chart's head and a table's cell alike: where its family corrects its comparisons
   together, the joint guarantee they hold at (``95% (adjusted for 16 comparisons)``); any other level as the input
@@ -164,7 +164,7 @@ class ChartContext:
     """One chart being resolved: what the plan stores of it, the input it reads, and the page's look.
 
     :ivar spec: The stored chart.
-    :ivar look: The page's look: arm colours, tags, names, order, survivors and the recommended arm.
+    :ivar look: The page's look: arm colours, tags, marks, order and reader names.
     :ivar title: The chart's title as its block carries it: the plan's, else the section's headline.
     :ivar forms: The page's number forms, which every figure the chart draws is spelled by, over the input it reads.
     """
@@ -1275,12 +1275,11 @@ def point_labels(context: ChartContext, arm: str, name: str, count: int) -> tupl
     :ptype name: str
     :param count: How many points the panel it sits in draws.
     :ptype count: int
-    :return: ``(label, narrow_label)``: its name where the panel draws few points or it is stressed or recommended,
-        else None; narrow, the arm's tag where it is labelled.
+    :return: ``(label, narrow_label)``: its name where the panel draws few points or it is stressed, else None;
+        narrow, the arm's tag where it is labelled.
     :rtype: tuple[str | None, str | None]
     """
-    stressed = arm in (context.emphasis, context.look.recommended)
-    if count > _LABEL_ALL_UP_TO and not stressed:
+    if count > _LABEL_ALL_UP_TO and arm != context.emphasis:
         return None, None
     tag = context.look.arm(arm).tag if arm in context.look.arms else None
     return name, tag

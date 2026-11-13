@@ -17,7 +17,7 @@ reaches ten thousand.
 
 **diff_heatmap** shades one arm less another over the same matrix (the target matrix's cells by one measure, else
 the slices by each measure): the query's second arm less its first where it names two or more, else its one arm less
-the control, else the recommended arm (or the page's first candidate) less the control. Each cell prints the compared
+the control, else the input's first candidate less the control. Each cell prints the compared
 arm's own figure under the difference (``detail``), and a caption says which arm is less which. A rate's difference
 is in points, grayed within the kit's half a point; another unit's is shaded to its largest difference. Its
 matrix is one scale, so measures in more than one unit are refused; measures drawn alike (a share beside a percent)
@@ -414,10 +414,9 @@ def _compared(context: ChartContext) -> tuple[str, str]:
     if named:
         return control.id, named[0]
     candidates = [arm for arm in context.look.order if arm != control.id]
-    pick = context.look.recommended if context.look.recommended in candidates else None
-    if pick is None and not candidates:
+    if not candidates:
         raise context.refuse("the input holds no candidate to draw less the control")
-    return control.id, pick or candidates[0]
+    return control.id, candidates[0]
 
 
 def _difference(

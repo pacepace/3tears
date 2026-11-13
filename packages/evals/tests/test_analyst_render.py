@@ -8,7 +8,7 @@ Contracts held here (``analysis.report.block_spec``, ``analysis.analyst.blocks``
 - **each anchor plan's charts** (as the retired report planner's anchors stored them, ``fixtures/plan_charts/``),
   completed by today's code (a stored plan keeps the level code filled when it was
   stored; only that may move), read the same values table, level, unit, axis and reference line through
-  ``block_render`` as through the chart resolver under the plan's look;
+  ``block_render`` as through the chart resolver under the page's look;
 - **a values table says what the input holds**: a plain table over several measures is a row per arm with a column
   per measure; every figure's interval the input holds is printed beside it, at the block's level; a scatter names
   every point by its reader name, never by an id the input names otherwise;
@@ -35,7 +35,7 @@ from typing import Any, get_args
 
 import pytest
 
-from packages.evals.tests.plan_charts_support import anchor_look, stored_charts
+from packages.evals.tests.plan_charts_support import stored_charts
 from packages.evals.tests.analyst_support import KAIRO, aspect_tagged, budget_inputs, fixture_inputs, fixture_snapshots
 from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.off_loop import off_loop
@@ -173,7 +173,7 @@ def test_each_anchor_plans_charts_read_the_same_through_block_render_as_through_
         summary=[_completed_now(spec, held) for spec in stored.summary],
         sections=[replace(section, chart=_completed_now(section.chart, held)) for section in stored.sections],
     )
-    look = anchor_look(plan, held)
+    look = block_look(held, fact_arms(held))
     charts = [(spec, resolve_chart(spec, look, title=spec.title, forms=PageForms.of(held))) for spec in plan.summary]
     charts += [
         (section.chart, resolve_chart(section.chart, look, title=section.chart.title, forms=PageForms.of(held)))

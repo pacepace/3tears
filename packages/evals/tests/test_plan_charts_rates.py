@@ -33,7 +33,6 @@ from packages.evals.tests.hostile_page_support import HOSTILE_LINE
 from packages.evals.tests.page_contract_support import what_runs
 from packages.evals.tests.plan_charts_support import (
     StoredCharts,
-    anchor_look,
     charts_html,
     charts_markdown,
     drawn_charts,
@@ -155,11 +154,8 @@ _PIN_INPUTS = [
 
 @functools.cache
 def _look(name: str) -> PageLook:
-    """The look the page builder gives the input's anchor plan's page: its arms, order, survivors and names; a shape
-    campaign, which has no anchor plan, the look one block is drawn with."""
-    if name in SHAPE_NAMES:
-        return block_look(_variant(name), fact_arms(_variant(name)))
-    return anchor_look(_anchor(name.partition("+")[0].partition("-")[0]), _variant(name))
+    """The look every page draws with on the input: its arms' looks, in its order, and its reader names."""
+    return block_look(_variant(name), fact_arms(_variant(name)))
 
 
 def _draw(name: str, spec: ChartSpec) -> PageChart:
@@ -895,7 +891,7 @@ def test_a_config_frontier_colours_each_config_by_its_first_factors_level_and_na
     [("r2", "configs", ["pass_rate", "cost_per_1k"]), ("r4", "judged", ["persona", "facts"])],
     ids=["many-points", "few-points"],
 )
-def test_a_frontier_labels_every_point_up_to_eight_else_only_the_stressed_and_recommended(
+def test_a_frontier_labels_every_point_up_to_eight_else_only_the_stressed(
     name: str, source: str, measures: list[str]
 ) -> None:
     plan = _anchor(name)
@@ -905,7 +901,7 @@ def test_a_frontier_labels_every_point_up_to_eight_else_only_the_stressed_and_re
         )
     )
     assert isinstance(data, ScatterChart) and data.points
-    stressed = {data.emphasis, plan.recommended} - {None, ""}
+    stressed = {data.emphasis} - {None, ""}
     labelled = {point.id for point in data.points if point.label}
     if len(data.points) <= 8:
         assert labelled == {point.id for point in data.points}

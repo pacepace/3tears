@@ -32,6 +32,10 @@ An aspect's page moves the same way: the parts `report.build` lays the page out 
 every name its `__all__` lists; `FLOORS_WARN_ONLY`, which it did not list, is importable from `report.aspect.question`,
 which `MIGRATIONS.toml` names.
 
+A page's look (`report.parts.look.PageLook`) no longer carries a recommended arm or an order of its own: every page drew
+with neither, so a scatter labels only the stressed point past eight and a difference heatmap that names no arm
+compares the input's first candidate, as every page already did. `page_look` takes the arms and the reader names alone.
+
 ### evals: a negative value on a measure declared non-negative is named
 
 **Added:** `AnalysisContextBundle.negative_values` (a list of `NegativeValues`: measure, arm, the number of results, and

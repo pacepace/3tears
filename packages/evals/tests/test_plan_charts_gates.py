@@ -37,7 +37,6 @@ from packages.evals.tests.hostile_page_support import HOSTILE_LINE
 from packages.evals.tests.page_contract_support import what_runs
 from packages.evals.tests.plan_charts_support import (
     StoredCharts,
-    anchor_look,
     charts_html,
     charts_markdown,
     drawn_charts,
@@ -50,7 +49,9 @@ from threetears.evals.analysis import (
     LatticeChart,
 )
 from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_count, per_noun
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report.figure_keys import cost_basis, format_figure, resolve
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.model import PageChart
@@ -269,7 +270,7 @@ def test_a_task_matrix_whose_tasks_costs_count_different_things_is_refused_namin
     held = _input("r1")
     (per_1k,) = [key for key, measure in held.measures.items() if measure.unit == "usd_per_1k"]
     spec = _spec("gate_matrix", "tasks")
-    drawn = _resolved(held, spec, "r1")
+    drawn = _resolved(held, spec)
     assert isinstance(drawn.data, GateMatrixChart) and drawn.data.cost_unit, "the control: r1's matrix prices its tasks"
     data = held.model_dump(mode="json", by_alias=True, exclude_none=True)
     reply = "reply_cost"
@@ -291,7 +292,7 @@ def test_a_task_matrix_whose_tasks_costs_count_different_things_is_refused_namin
     nouns = {per_noun(mixed.measures[key]) for key in (reply, per_1k)}
     assert len(nouns) == 2, "the control: the two cost measures count different things"
     with pytest.raises(UnresolvableReference) as refused:
-        _resolved(mixed, spec, "r1")
+        _resolved(mixed, spec)
     said = str(refused.value)
     assert "counting different things" in said and "one cost unit" in said, said
     assert all(key in said for key in (reply, per_1k)), said
@@ -555,9 +556,10 @@ def test_a_lattice_tiles_the_first_factor_by_the_rest_with_each_configs_figures_
     assert data.emphasis == spec.emphasis
 
 
-def _resolved(report_input: ReportInput, spec: ChartSpec, anchor: str) -> ChartBlock:
-    """The chart as the resolver draws it on ``report_input``, under the look the input's anchor plan gives."""
-    drawn = resolve_chart(spec, anchor_look(_plan(anchor), report_input), title="", forms=PageForms.of(report_input))
+def _resolved(report_input: ReportInput, spec: ChartSpec) -> ChartBlock:
+    """The chart as the resolver draws it on ``report_input``, under the look every page draws with."""
+    look = block_look(report_input, fact_arms(report_input))
+    drawn = resolve_chart(spec, look, title="", forms=PageForms.of(report_input))
     assert isinstance(drawn.chart, ChartBlock)
     return drawn.chart
 
@@ -575,7 +577,7 @@ def test_at_a_zero_margin_a_reading_is_outside_it_by_the_decisions_rule() -> Non
     reading = report_input.aspects[0].readings[0]
     assert flip_margin(reading) == 0.0 and -float(reading.within_interval[0]) < 0.0  # the two rules differ here
 
-    data_block = _resolved(report_input, _spec("gate_matrix", "readings"), "r5").data
+    data_block = _resolved(report_input, _spec("gate_matrix", "readings")).data
     assert isinstance(data_block, GateMatrixChart)
     columns = [column.label for column in data_block.columns]
     cell = data_block.rows[0].cells[columns.index(_arm_name(report_input, reading.arm))]
@@ -589,7 +591,7 @@ def test_a_lattice_tile_no_gate_reads_has_no_status_never_a_pass() -> None:
     arms = [config.arm for config in report_input.configs]
     key = next(key for key, measure in report_input.measures.items() if all(arm in measure.per_arm for arm in arms))
 
-    lattice = _resolved(report_input, _spec("lattice", "configs", measures=[key]), "r3").data
+    lattice = _resolved(report_input, _spec("lattice", "configs", measures=[key])).data
 
     assert isinstance(lattice, LatticeChart)
     tiles = [cell for row in lattice.rows for cell in row.cells]

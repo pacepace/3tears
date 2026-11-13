@@ -37,7 +37,7 @@ Each axis carries its criterion's line
 (the stored line and domain are the y axis's). An x axis spanning more than ten times is logarithmic, which a
 caption says. A config takes its first factor's colour, which a legend names
 (:func:`~threetears.evals.analysis.report.parts.charting.factor_token`); a panel of more than eight points labels
-only the stressed and the recommended one
+only the stressed one
 (:func:`~threetears.evals.analysis.report.parts.charting.point_labels`).
 """
 

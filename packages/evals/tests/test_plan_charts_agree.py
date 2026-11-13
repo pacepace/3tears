@@ -5,8 +5,8 @@ The checks are the ones ``block_render`` holds a block to: code's completion
 (:func:`~threetears.evals.analysis.report.block_spec.complete_chart`), the chart checks
 (:func:`~threetears.evals.analysis.report.block_spec.chart_faults`), the panels
 (:func:`~threetears.evals.analysis.report.block_spec.small_multiple_faults`) and the page's own drawing
-(:func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart`), each probe drawn under the look the
-input's anchor plan gave its charts (``fixtures/plan_charts/``).
+(:func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart`), each probe drawn under the look every page
+draws with (:func:`~threetears.evals.analysis.report.block_spec.block_look`).
 
 - **One unit per axis.** On r1's tasks, which hold rates, a score, seconds and money per 1,000 replies, a chart over
   measures in several units draws each measure in its own panel, in its own unit, where its kind panels by measure (a
@@ -47,7 +47,7 @@ from typing import Any, get_args
 
 import pytest
 
-from packages.evals.tests.plan_charts_support import anchor_look, stored_charts
+from packages.evals.tests.plan_charts_support import stored_charts
 from packages.evals.tests.fixtures.report_inputs import dataset
 from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis import ChartBlock, TableBlock
@@ -68,8 +68,9 @@ from threetears.evals.analysis.report.parts.look import PageLook, Quantity, quan
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.call import control_arm
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task
-from threetears.evals.analysis.report.block_spec import chart_faults, complete_chart, small_multiple_faults
+from threetears.evals.analysis.report.block_spec import block_look, chart_faults, complete_chart, small_multiple_faults
 from threetears.evals.analysis.report.rows import query_rows
 from threetears.evals.kernel.chart_query import ChartQuery, ChartSpec, PlannedChart
 
@@ -222,8 +223,8 @@ _VARIANTS = _variants()
 
 @functools.cache
 def _look(key: str) -> PageLook:
-    """The look the anchor's charts draw with on the input (:func:`anchor_look`)."""
-    return anchor_look(stored_charts(f"{_base(key)}-anchor"), _input(key))
+    """The look every page draws with on the input (:func:`~threetears.evals.analysis.report.block_spec.block_look`)."""
+    return _look_on(_input(key))
 
 
 # --- probing the checks ----------------------------------------------------------------------------------------------
@@ -572,28 +573,26 @@ def test_a_chart_of_tasks_in_one_unit_shares_one_format_and_span_across_its_pane
 # --- one rule at both ends, over figures by measure -----------------------------------------------------------------
 
 
-def _anchor_look_on(name: str, report_input: ReportInput) -> PageLook:
-    return anchor_look(stored_charts(f"{name}-anchor"), report_input)
+def _look_on(report_input: ReportInput) -> PageLook:
+    return block_look(report_input, fact_arms(report_input))
 
 
-def _accepted_on(name: str, report_input: ReportInput, chart: dict[str, Any]) -> ChartSpec:
-    """The chart as code completes it on ``report_input``, under ``name``'s anchor's look; the checks accept it."""
-    spec, whys = _probe_on(report_input, _anchor_look_on(name, report_input), chart)
+def _accepted_on(report_input: ReportInput, chart: dict[str, Any]) -> ChartSpec:
+    """The chart as code completes it on ``report_input``, under the page's look; the checks accept it."""
+    spec, whys = _probe_on(report_input, _look_on(report_input), chart)
     assert not whys, whys
     return spec
 
 
-def _refused_on(name: str, report_input: ReportInput, chart: dict[str, Any]) -> list[str]:
-    """Why the checks refuse the chart on ``report_input``, under ``name``'s anchor's look."""
-    _, whys = _probe_on(report_input, _anchor_look_on(name, report_input), chart)
+def _refused_on(report_input: ReportInput, chart: dict[str, Any]) -> list[str]:
+    """Why the checks refuse the chart on ``report_input``, under the page's look."""
+    _, whys = _probe_on(report_input, _look_on(report_input), chart)
     assert whys, "the checks refuse it"
     return whys
 
 
-def _drawn_on(name: str, report_input: ReportInput, spec: ChartSpec) -> Any:
-    return resolve_chart(
-        spec, _anchor_look_on(name, report_input), title="chart", forms=PageForms.of(report_input)
-    ).chart
+def _drawn_on(report_input: ReportInput, spec: ChartSpec) -> Any:
+    return resolve_chart(spec, _look_on(report_input), title="chart", forms=PageForms.of(report_input)).chart
 
 
 def _stored(chart: dict[str, Any], **code: Any) -> ChartSpec:
@@ -636,7 +635,7 @@ def test_a_share_and_a_percent_are_one_unit_drawn_on_one_axis_in_percent() -> No
     report_input = _input("r4~restated")
     assert (figure_unit(report_input, "task"), figure_unit(report_input, "specul")) == ("percent", "share")
     chart = _chart("bars", "measures", measures=["task", "specul"])
-    block = _drawn_on("r4", report_input, _accepted_on("r4", report_input, chart))
+    block = _drawn_on(report_input, _accepted_on(report_input, chart))
     assert isinstance(block, ChartBlock) and isinstance(block.data, BarsChart)
     data_drawn = block.data
     assert data_drawn.panels is None and _named(data_drawn.fmt, quantity("percent").fmt)
@@ -818,8 +817,8 @@ def test_bars_in_several_units_that_fall_into_one_panel_are_refused_at_both_ends
     chart = _chart("bars", "measures", measures=_TWO_UNITS, small_multiples_by="aspect")
     why = "its measures are in more than one unit, and it draws them on one axis"
     with pytest.raises(UnresolvableReference, match=why):
-        _drawn_on("r4", report_input, _stored(chart))
-    assert any(why in fault for fault in _refused_on("r4", report_input, chart))
+        _drawn_on(report_input, _stored(chart))
+    assert any(why in fault for fault in _refused_on(report_input, chart))
 
 
 # --- the sweep ------------------------------------------------------------------------------------------------------
