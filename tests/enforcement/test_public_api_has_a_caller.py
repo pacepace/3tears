@@ -25,6 +25,11 @@ an exported class is reached through the class and is not held.
 any tests tree outside the enforcement package itself (owner ruling, 2026-10-25). Its own unit tests
 do not count: a runner no other package's tests adopt still has no caller.
 
+**So are the test-support modules' (``threetears.core.testing``: fakes, the plan check, the calibration
+helpers).** They exist for test suites, so a reference in any tests tree counts, except the support's own unit
+tests (``packages/core/tests/unit/testing/``): a helper only its own tests call still has no caller (owner
+ruling via the 0.95.0 load-path audit, 2026-11-09, extending the enforcement package's).
+
 **The ledger stays honest.** An entry must name a name some module exports, give a reason, and be
 one the scan still finds without a caller in this repo; an entry whose name gained one here is
 stale and must go.
@@ -51,6 +56,12 @@ _ENFORCEMENT_SRC = "packages/enforcement/src/"
 
 #: the enforcement package's own tests, which exercise a domain but do not adopt it.
 _ENFORCEMENT_TESTS = "packages/enforcement/tests/"
+
+#: the test-support package, whose public names are a test-suite API as the enforcement package's are
+_TEST_SUPPORT_SRC = "packages/core/src/threetears/core/testing/"
+
+#: the test-support package's own tests, which exercise a helper but are not its callers
+_TEST_SUPPORT_TESTS = "packages/core/tests/unit/testing/"
 
 #: every tests tree whose references count as a caller of an enforcement name.
 _TEST_ROOTS = ("tests", "packages/*/tests", "packages/agent/*/tests")
@@ -130,7 +141,13 @@ class _Scan:
         """
         if any(name in used and path != module and name not in self.defines[path] for path, used in self.uses.items()):
             return True
-        return module.startswith(_ENFORCEMENT_SRC) and any(name in used for used in self.test_uses.values())
+        if module.startswith(_ENFORCEMENT_SRC):
+            return any(name in used for used in self.test_uses.values())
+        if module.startswith(_TEST_SUPPORT_SRC):
+            return any(
+                name in used for path, used in self.test_uses.items() if not path.startswith(_TEST_SUPPORT_TESTS)
+            )
+        return False
 
 
 def _names(tree: ast.Module, *, re_exports: bool) -> tuple[frozenset[str], frozenset[str]]:
