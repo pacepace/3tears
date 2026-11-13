@@ -394,11 +394,26 @@ asks it of each arm's candidate, judge and simulator models: a model the list do
 and a list that cannot be read lets the launch, the sweep or the resume go ahead saying the check was skipped
 (`JobsStarted.notices`, `ArmEstimate.served_check_skipped`). A model going to Anthropic or OpenAI directly is not
 checked. A candidate your kind calls through your own route, not a role of the factory, is asked with `role=None`:
-`Clients` does not route it and answers nothing, so its check is reported skipped. A kind that calls its candidate
-through the factory says which role (`LaunchableKind.candidate_role`), and is checked in it. A factory of your own may
-offer the same `async model_listing(model, *, role) -> ModelListing | None` (`ModelListing` from
-`threetears.evals.schema`), answering `None` for a model whose provider keeps no list it reads, and answering for
-`role=None` when it knows where your candidates go; one without it is not checked. A long-lived process is not priced from its first
+`Clients` does not route it and answers nothing, so its check is reported skipped, and the notice names the fix.
+
+**Declaring your candidate's route takes one line.** When your kind calls its candidate through a client of your
+factory, name that role on its launch entry, and the candidate is checked against that role's provider list:
+
+```python
+LaunchableKind(
+    launch=your_persona_launcher,
+    resolve_subject=your_persona_subject,
+    plan_arm=plan_persona_arm,
+    candidate_role="analyst",  # the factory role your launcher builds the candidate's client in
+)
+```
+
+The report writer's entry takes the same as an argument (`launchable_report_writer_kind(..., candidate_role="analyst")`)
+when your `models` factory builds the writer on your factory's analyst client; the judge kind declares its own. When
+your candidate goes somewhere your factory does not build, answer for it instead: a factory of your own may offer
+`async model_listing(model, *, role) -> ModelListing | None` (`ModelListing` from `threetears.evals.schema`),
+answering for `role=None` with the list of the provider your candidates go to, and `None` for a model whose provider
+keeps no list it reads. A factory without `model_listing` is not checked. A long-lived process is not priced from its first
 fetch forever: the catalogue refreshes on the first live call after `refresh_after` (`Catalogue(refresh_after=...)`,
 six hours by default). A refresh that fails keeps the last rates rather than failing the call, logs it, and marks the
 completions they price: `Completion.pricing_stale_since` is when those rates expired (`None` while fresh, and on an
