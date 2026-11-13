@@ -43,7 +43,7 @@ from threetears.evals.analysis.report.figure_keys import format_figure, price_fr
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_input import Factor, Reading, ReportInput
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.analysis.style import check_names, humanize
 from threetears.evals.kernel.errors import RefusedInput

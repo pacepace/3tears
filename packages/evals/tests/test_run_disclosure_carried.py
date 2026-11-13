@@ -36,7 +36,7 @@ from packages.evals.tests.run_facts_support import CASES, aspect_bundle, campaig
 from threetears.evals.actions.render import render_cited
 from threetears.evals.analysis.analyst.facts import campaign_overview
 from threetears.evals.analysis.report_input import Disclosure
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.kernel import (
     JUDGE_KIND,
     JUDGE_KIND_CONTRACT,

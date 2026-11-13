@@ -53,10 +53,10 @@ from threetears.evals.analysis.report.parts.charting import figure_stat, money_w
 from threetears.evals.analysis.report.parts.look import figure_text, quantity, quantity_of
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import ASPECT_MEASURE_TEMPLATE, GROUP_LEVEL_TEMPLATE
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.analysis.report_input import Cell, Contrast, ReportInput, Stratum, Task
-from threetears.evals.analysis.report_rows import SourceRow, query_rows
+from threetears.evals.analysis.report.rows import SourceRow, query_rows
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.chart_query import ChartQuery, ChartReference, ChartSpec, PlannedChart
 

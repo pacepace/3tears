@@ -1,8 +1,8 @@
-"""``analysis/report_doc_facts.py`` exports a name once production code calls it, and not before.
+"""``analysis/report/doc_page/facts.py`` exports a name once production code calls it, and not before.
 
-The module's ``__all__`` holds :func:`~threetears.evals.analysis.report_doc_facts.editor_facts`, whose caller is the
-writing loop's editor turn (its user message carries the facts). :class:`~threetears.evals.analysis.report_doc_facts.EditorFact`
-and :data:`~threetears.evals.analysis.report_doc_facts.EditorFactKind` wait for a production caller outside the module. ``CLAUDE.md`` holds that no public API exists
+The module's ``__all__`` holds :func:`~threetears.evals.analysis.report.doc_page.facts.editor_facts`, whose caller is the
+writing loop's editor turn (its user message carries the facts). :class:`~threetears.evals.analysis.report.doc_page.facts.EditorFact`
+and :data:`~threetears.evals.analysis.report.doc_page.facts.EditorFactKind` wait for a production caller outside the module. ``CLAUDE.md`` holds that no public API exists
 only for a test, and the caller gate (``tests/enforcement/test_public_api_has_a_caller.py``) reads a module's surface
 from its ``__all__``, so it cannot see the names left out. This test keeps the promise checkable:
 :data:`_AWAITING_A_CALLER` lists every public name left out, and goes red the moment a ``src`` module imports one, so
@@ -15,11 +15,13 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import threetears.evals.analysis.report_doc_facts as report_doc_facts
+import threetears.evals.analysis.report.doc_page.facts as report_doc_facts
 
-#: The module under test, and the import path its callers name.
+#: The module under test, the import path its callers name, and that path's package and leaf (``from package import
+#: leaf``).
 _MODULE = Path(report_doc_facts.__file__)
-_IMPORTED_AS = "threetears.evals.analysis.report_doc_facts"
+_IMPORTED_AS = "threetears.evals.analysis.report.doc_page.facts"
+_PARENT, _, _LEAF = _IMPORTED_AS.rpartition(".")
 
 #: Every workspace member's ``src`` tree.
 _REPO = Path(__file__).resolve().parents[3]
@@ -54,9 +56,9 @@ def _imports_from_the_module(path: Path) -> set[str]:
     } | {
         alias.asname or alias.name
         for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module == "threetears.evals.analysis"
+        if isinstance(node, ast.ImportFrom) and node.module == _PARENT
         for alias in node.names
-        if alias.name == "report_doc_facts"
+        if alias.name == _LEAF
     }
     taken = {
         alias.name
@@ -87,7 +89,7 @@ def test_no_name_awaiting_a_caller_has_one_yet() -> None:
         for name in _imports_from_the_module(path) & _AWAITING_A_CALLER
     }
     assert not called, (
-        "these names now have a production caller: add each to analysis/report_doc_facts.py's __all__, regenerate "
+        "these names now have a production caller: add each to analysis/report/doc_page/facts.py's __all__, regenerate "
         "the API snapshot (it lands provisional), and take it off _AWAITING_A_CALLER here:\n  "
         + "\n  ".join(sorted(called))
     )

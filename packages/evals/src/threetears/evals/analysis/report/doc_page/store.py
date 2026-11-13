@@ -4,7 +4,7 @@
 analyst's submissions in the writing loop, the store gate, and the analyst's ``report_check`` (``ops/analyst.py``),
 which reads it through :func:`doc_verdicts_and_page` for the page it built too. It builds the page strict
 (:func:`~threetears.evals.analysis.report.doc_page.build.build`) and runs the invariants
-(:func:`~threetears.evals.analysis.report_doc_checks.check_report_doc`, validity first) over the document and the
+(:func:`~threetears.evals.analysis.report.doc_page.checks.check_report_doc`, validity first) over the document and the
 page's text above its appendix. A page that cannot be built strict is a verdict too, naming the field it refused,
 never a crash.
 
@@ -52,7 +52,7 @@ from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.doc_page.text import above_appendix_text
 from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS
-from threetears.evals.analysis.report_doc_checks import DocVerdict, InvariantNumber, check_report_doc
+from threetears.evals.analysis.report.doc_page.checks import DocVerdict, InvariantNumber, check_report_doc
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import NotFoundError, RefusedInput
 from threetears.evals.kernel.report_doc import (

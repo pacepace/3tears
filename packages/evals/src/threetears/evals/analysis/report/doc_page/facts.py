@@ -1,7 +1,7 @@
 """The editor's facts: what code computes about a report document on its snapshot, for the report editor to weigh.
 
 A report document (:class:`~threetears.evals.kernel.report_doc.ReportDoc`) is held to two kinds of finding (ruling 1).
-The mechanical ones are the invariants (``analysis/report_doc_checks.py``): code can prove them wrong, and a verdict
+The mechanical ones are the invariants (``analysis/report/doc_page/checks.py``): code can prove them wrong, and a verdict
 blocks storage. The interpretive ones are here. Code can compute that something holds, but not whether the document
 handles it well, so each is handed to the editor as a fact: one sentence stating a computed truth, with the figure keys
 it rests on. **A fact never refuses**, never blocks storage, and never says what the editor should conclude. The
@@ -29,9 +29,9 @@ already hold:
   evidence for switching to it is short: the snapshot asks no question of
   any aspect; or a guardrail the pipeline read on it is breached
   (:func:`~threetears.evals.analysis.analyst.analyses.breached_guardrails`); or its standing on the asked aspects is
-  not shown no worse (:func:`~threetears.evals.analysis.report_decision.asked_standing`) with a floor not held
-  (:func:`~threetears.evals.analysis.report_decision.floors_not_held`): it is shown better on no asked aspect
-  (:func:`~threetears.evals.analysis.report_decision.shown_better`, which sets aside an improvement read by a judge not
+  not shown no worse (:func:`~threetears.evals.analysis.report.call.asked_standing`) with a floor not held
+  (:func:`~threetears.evals.analysis.report.call.floors_not_held`): it is shown better on no asked aspect
+  (:func:`~threetears.evals.analysis.report.call.shown_better`, which sets aside an improvement read by a judge not
   calibrated, and the sentence names it), or a floor read broken caps it though it is shown better.
 - ``settled_loss_unasked``: a recommended candidate's reading on an aspect the campaign does not ask about is a loss
   settled past the aspect's margin: its interval lies wholly at or below minus the margin. It is the other side of
@@ -119,7 +119,7 @@ from threetears.evals.analysis.report.figure_keys import (
     reader_name,
 )
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report_decision import (
+from threetears.evals.analysis.report.call import (
     asked_standing,
     control_arm,
     floors_not_held,

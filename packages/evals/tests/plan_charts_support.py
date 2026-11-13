@@ -27,7 +27,7 @@ from threetears.evals.analysis.report.md_parts import chart_lines, escaped, iner
 from threetears.evals.analysis.report.parts.look import PageLook, page_look
 from threetears.evals.analysis.report.parts.model import PageChart
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.chart_query import ChartSpec
 

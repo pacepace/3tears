@@ -3,10 +3,10 @@ from the plan's query, the criteria and the configs.
 
 Held over every r1–r5 anchor and current run, and over charts these tests build on the same inputs for the sources no
 committed plan draws yet. The expected side is always computed from the input, never typed in: the gate check
-(:func:`~threetears.evals.analysis.report_gates.gate_check`), routing
-(:func:`~threetears.evals.analysis.report_gates.routing_picks`), the criteria's thresholds through their figure keys
+(:func:`~threetears.evals.analysis.report.gates.gate_check`), routing
+(:func:`~threetears.evals.analysis.report.gates.routing_picks`), the criteria's thresholds through their figure keys
 (:func:`~threetears.evals.analysis.report.figure_keys.resolve`), the rows a query selects
-(:func:`~threetears.evals.analysis.report_rows.query_rows`) and the factors and configs.
+(:func:`~threetears.evals.analysis.report.rows.query_rows`) and the factors and configs.
 
 - **Every chart of these kinds resolves** to its own kind, the kit's model validates it, and its values table holds
   every row; every (kind, source) pair the chart checks accept for these kinds draws on some input.
@@ -56,10 +56,10 @@ from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.model import PageChart
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import GATE_WORDS, NOT_GATED
-from threetears.evals.analysis.report_gates import gate_check, routing_picks, task_costs
+from threetears.evals.analysis.report.gates import gate_check, routing_picks, task_costs
 from threetears.evals.analysis.report_input import Criterion, FloorRead, Reading, ReportInput, Task
 from threetears.evals.analysis.report_margins import criterion_place, flip_margin
-from threetears.evals.analysis.report_rows import query_rows
+from threetears.evals.analysis.report.rows import query_rows
 from threetears.evals.kernel.chart_query import ChartSpec
 
 #: The kinds this file holds.

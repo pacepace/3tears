@@ -128,7 +128,7 @@ from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.figure_keys import arm_settings, correction_words, pairing_contrast, figure_unit
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import aspect_board
-from threetears.evals.analysis.report_rows import lever_arms, query_aspect
+from threetears.evals.analysis.report.rows import lever_arms, query_aspect
 from threetears.evals.analysis.style import lever_reader_name
 
 __all__ = ["RESOLVERS", "higher_is_better"]

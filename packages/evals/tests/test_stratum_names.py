@@ -31,7 +31,7 @@ from threetears.evals.analysis import TableBlock, build_code_only_report
 from threetears.evals.analysis.report.build import NO_STRATUM
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import reader_name, render, resolve
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.kernel import StratumFacts
 from threetears.evals.run.definition_digests import measured_template_digest, template_digest
 from threetears.evals.schema.models import TEMPLATE_PRESENTATION_FIELDS, EvalTemplate

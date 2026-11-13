@@ -14,7 +14,7 @@ parameters:
   them;
 - :func:`caveats_list`: every caveat, where it may land, whether code proved it immaterial, and what it touches: the
   ones the input states, then the ones what it holds implies
-  (:func:`~threetears.evals.analysis.report_decision.implied_caveats`).
+  (:func:`~threetears.evals.analysis.report.call.implied_caveats`).
 
 **Intervals are read wherever they are held.** A measure read with no statistics named reads every statistic the
 input holds on it read that way, its interval (``ci`` or ``half_width``) among them, and names what it holds and the
@@ -53,7 +53,7 @@ from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if, 
 from threetears.evals.analysis.cell_mean import NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import NamedKind, reader_names
-from threetears.evals.analysis.report_decision import (
+from threetears.evals.analysis.report.call import (
     Caveat,
     CaveatReach,
     ImpliedCaveat,
@@ -83,7 +83,7 @@ from threetears.evals.analysis.report_input import (
     RunRig,
     Stat,
 )
-from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS
+from threetears.evals.analysis.report.input_build import EXAMPLE_EXCERPT_CHARS
 from threetears.evals.analysis.report_margins import criterion_aspect, lead_aspect, on_aspect
 from threetears.evals.kernel.errors import RefusedInput
 
@@ -1803,7 +1803,7 @@ def caveats_list(report_input: ReportInput, *, limit: int | None = None, offset:
     """Every caveat the snapshot carries: where it may land, whether code proved it immaterial, and what it touches,
     each read from the input (a confound: the contrasts naming it; a short run: its arm; a late criterion: what it
     set; an unsettled aspect: its candidates). The caveats the input states come first, then the ones what it holds
-    implies (:func:`~threetears.evals.analysis.report_decision.implied_caveats`), each with when it matters.
+    implies (:func:`~threetears.evals.analysis.report.call.implied_caveats`), each with when it matters.
 
     :param report_input: The snapshot's frozen report input.
     :ptype report_input: ReportInput

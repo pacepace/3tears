@@ -59,9 +59,9 @@ from threetears.evals.analysis.report.words import (
     reader_arm_name,
     told_apart,
 )
-from threetears.evals.analysis.report_arms import fact_arms
-from threetears.evals.analysis.report_doc_store import read_report_doc
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.fact_arms import fact_arms
+from threetears.evals.analysis.report.doc_page.store import read_report_doc
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.ops import CampaignDefinition, CampaignLine, campaign_create, campaigns_list, report_read

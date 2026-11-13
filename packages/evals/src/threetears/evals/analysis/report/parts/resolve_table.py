@@ -105,7 +105,7 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Task,
 )
-from threetears.evals.analysis.report_rows import PriceStep, lever_arms
+from threetears.evals.analysis.report.rows import PriceStep, lever_arms
 from threetears.evals.analysis.report.parts.words import (
     PRICE_STEP_TEMPLATE,
     CELL_TEMPLATE,

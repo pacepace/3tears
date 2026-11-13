@@ -34,7 +34,7 @@ from threetears.evals.analysis.analyst.compare import arms_compare
 from threetears.evals.analysis.analyst.settle import SettleRow, settle_cases
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import resolve
-from threetears.evals.analysis.report_decision import dominant_options
+from threetears.evals.analysis.report.call import dominant_options
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.separation import level_share
 from threetears.evals.kernel.errors import RefusedInput

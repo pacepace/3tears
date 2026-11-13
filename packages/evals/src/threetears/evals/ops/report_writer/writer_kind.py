@@ -42,8 +42,8 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 from threetears.evals.analysis.analyst.skill import AnalystSkill, SkillText, load_skill
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
-from threetears.evals.analysis.report_doc_checks import DocVerdict
-from threetears.evals.analysis.report_doc_store import doc_verdicts
+from threetears.evals.analysis.report.doc_page.checks import DocVerdict
+from threetears.evals.analysis.report.doc_page.store import doc_verdicts
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.candidate_kind import (
     CandidateOutput,

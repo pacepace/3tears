@@ -1,6 +1,6 @@
 """The failures an analyst's examples are a sample of, and the cases two aspects share.
 
-Contracts held here (``threetears.evals.analysis.report_input_build.report_input`` with ``counted``, as
+Contracts held here (``threetears.evals.analysis.report.input_build.report_input`` with ``counted``, as
 ``analyst.snapshot.analyst_input`` builds a snapshot's input; ``analyst.facts.examples_list`` and
 ``campaign_overview``; the ``count.examples``, ``count.failures`` and ``overlap`` key families; the example cards):
 
@@ -44,7 +44,7 @@ from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report_input import report_input_digest, report_input_document_digest
 from threetears.evals.analysis.report.figure_keys import OVERLAP_WORDS, reader_name, resolve
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS, report_input
+from threetears.evals.analysis.report.input_build import EXAMPLE_EXCERPT_CHARS, report_input
 from threetears.evals.kernel.chart_query import ChartQuery
 
 

@@ -38,7 +38,7 @@ from threetears.evals.analysis.generation_tally import GenerationTally
 from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection
 from threetears.evals.analysis.report import CampaignReport, Verdict
 from threetears.evals.analysis.report.figure_keys import input_check_name
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.kernel.metrics import goal_check_measure
 from threetears.evals.analysis.report.model import ReportBlock, TrialDetail
 from threetears.evals.analysis.report.build import (
@@ -56,7 +56,7 @@ from threetears.evals.analysis.report.words import (
     reader_arms,
 )
 from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS, retired_generation
-from threetears.evals.analysis.report_doc_store import StoredReportPage, read_report_doc
+from threetears.evals.analysis.report.doc_page.store import StoredReportPage, read_report_doc
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalAnalysisAttempt, EvalCampaign
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
@@ -1282,7 +1282,7 @@ def campaign_report(
     - a report document's (``doc``, the report writer's): the page its stored document draws on its own snapshot
       (``basis="analysis"``, :attr:`~threetears.evals.analysis.report.CampaignReport.doc_page`), read as a stored
       document is, so it degrades rather than refuses
-      (:func:`~threetears.evals.analysis.report_doc_store.read_report_doc`), its made line at its foot; the campaign's
+      (:func:`~threetears.evals.analysis.report.doc_page.store.read_report_doc`), its made line at its foot; the campaign's
       readings and folds are read off that snapshot's bundle, as the JSON form carries them;
     - a retired writer's (``memo``, the memo writer's, or ``plan``, the report planner's): the code-only page with the
       retired writer's line on its first screen

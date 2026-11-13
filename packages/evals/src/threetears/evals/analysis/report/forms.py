@@ -1213,7 +1213,7 @@ class PageForms:
 
     def over(self, view: ReportInput) -> PageForms:
         """The same page's forms over a view of its input that adds no figure (a configs chart's grid,
-        :func:`~threetears.evals.analysis.report_rows.config_grid`): its measures and its ledger are this page's, and
+        :func:`~threetears.evals.analysis.report.rows.config_grid`): its measures and its ledger are this page's, and
         a figure key resolved on the view reads its set there.
 
         :param view: The view: the page's input with its factors and configs the grid's.

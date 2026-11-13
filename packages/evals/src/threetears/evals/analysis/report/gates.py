@@ -1,7 +1,7 @@
 """The gate check (GENERATOR §3): each arm's status against the gates, and why, one reason per figure.
 
 Every part of a page that says whether an arm passes reads it here, as the options that survive
-(:func:`~threetears.evals.analysis.report_decision.surviving_options`) do, so a page never shows an arm passing that
+(:func:`~threetears.evals.analysis.report.call.surviving_options`) do, so a page never shows an arm passing that
 the decision dropped.
 
 **What is checked.** Every criterion of kind ``gate`` or ``guardrail``, at the figures its scope reads

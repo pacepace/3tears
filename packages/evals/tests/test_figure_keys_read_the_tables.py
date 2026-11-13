@@ -20,7 +20,7 @@ from threetears.evals.analysis.report.blocks import TableBlock
 from threetears.evals.analysis.report.figure_keys import Figure, format_figure, resolve
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.full_results import every_table
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input import Measure, ReportInput
 
 from packages.evals.tests.report_doc_support import snapshot_of

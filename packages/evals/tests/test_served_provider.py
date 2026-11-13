@@ -32,9 +32,9 @@ from threetears.evals.analysis.report.parts.words import (
     SERVED_BY_IN_PART_TEMPLATE,
     SERVED_BY_TEMPLATE,
 )
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.kernel import RoleUsageLedger
 from threetears.evals.providers import Catalogue, Model
 from threetears.evals.schema.models import EvalResult, EvalRun, RoleUsage

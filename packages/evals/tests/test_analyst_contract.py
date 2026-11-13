@@ -1208,7 +1208,7 @@ def _literal(node: ast.expr) -> object:
     "source",
     [
         "from threetears.evals.analysis.report_plan_checks import classify",
-        "from threetears.evals.analysis.report_decision import report_kind as kind_of",
+        "from threetears.evals.analysis.report.call import report_kind as kind_of",
         "x = checks.spine(report_input)",
         "if report_input.meta.kind == 'change':\n    pass",
         "shape = snapshot.report_input['meta']['design_shape']",

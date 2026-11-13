@@ -30,7 +30,7 @@ from threetears.evals.analysis.report.parts import (
 from threetears.evals.analysis.report.parts.charting import ChartContext, KindResolver
 from threetears.evals.analysis.report.parts.look import PageLook
 from threetears.evals.analysis.report.parts.model import PageChart
-from threetears.evals.analysis.report_rows import config_grid
+from threetears.evals.analysis.report.rows import config_grid
 from threetears.evals.kernel.chart_query import ChartSpec
 
 __all__ = ["resolve_chart"]

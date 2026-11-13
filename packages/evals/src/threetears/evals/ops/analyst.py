@@ -17,7 +17,7 @@ text (:mod:`threetears.evals.analysis.analyst_gaps`).
 call, and makes no model call. The assembly and the report input it builds run on the host's blocking executor.
 
 **A draft check stores nothing.** It checks the draft with the one checker the writing loop and the store gate check
-by (:func:`~threetears.evals.analysis.report_doc_store.doc_verdicts_and_page`: the page built strict, as generation
+by (:func:`~threetears.evals.analysis.report.doc_page.store.doc_verdicts_and_page`: the page built strict, as generation
 builds it, the invariants over the draft and that page's text above the appendix, a strict build's refusal a verdict at
 the field it names), and returns the verdicts whole, then a page of the page's text (:func:`~threetears.evals.analysis.report.doc_page.text.doc_page_text`,
 the function the editor's message is written by). It reads the snapshot and nothing else, so the same draft on the
@@ -39,8 +39,8 @@ from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
-from threetears.evals.analysis.report_doc_checks import DocVerdict, InvariantNumber
-from threetears.evals.analysis.report_doc_store import doc_verdicts_and_page
+from threetears.evals.analysis.report.doc_page.checks import DocVerdict, InvariantNumber
+from threetears.evals.analysis.report.doc_page.store import doc_verdicts_and_page
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.service import assemble_campaign_bundle, get_analysis, require_evidence
 from threetears.evals.kernel.analyst_gap import CallGapKind, EvalAnalystGap, GapDigest, GapToolCall, call_gap_id
@@ -571,7 +571,7 @@ async def report_check(
 ) -> DraftChecked:
     """Read a draft report document on its snapshot as the store and the editor would; store nothing.
 
-    Every verdict the one checker finds (:func:`~threetears.evals.analysis.report_doc_store.doc_verdicts_and_page`), on
+    Every verdict the one checker finds (:func:`~threetears.evals.analysis.report.doc_page.store.doc_verdicts_and_page`), on
     the draft and on its page's text above the appendix, with a page that does not build as one more, at the field it
     stopped at; then a page of the page's text as the editor reads it
     (:func:`~threetears.evals.analysis.report.doc_page.text.doc_page_text`). A result always passes ``fits``: the

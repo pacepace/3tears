@@ -27,7 +27,7 @@ from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.tables import arms_table
 from threetears.evals.analysis.report.parts.charting import measure_words
 from threetears.evals.analysis.report.words import given_name, judged_name, label_case
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.chart_query import ChartQuery
 

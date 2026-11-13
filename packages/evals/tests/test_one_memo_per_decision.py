@@ -39,7 +39,7 @@ from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaign_readings import BarStatus
 from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.doc_analysis import aspect_analysis
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.analysis.service import analysis_report
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools

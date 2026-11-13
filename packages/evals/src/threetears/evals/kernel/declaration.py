@@ -1112,7 +1112,7 @@ class Floor(EvalDocumentModel, CoreShapeModel):
     A floor WARNS, and loudly: a broken floor is the first thing on the campaign's page, the writer must address it,
     and a recorded call that adopts the arm anyway names it as overridden (:attr:`CampaignCall.floors_overridden`).
     It never blocks or removes an option. Read broken on an asked aspect, it caps the candidate's standing in code's
-    dominance read (:mod:`~threetears.evals.analysis.report_decision`). A stored decision rule reads back as floors on
+    dominance read (:mod:`~threetears.evals.analysis.report.call`). A stored decision rule reads back as floors on
     its one aspect, one per clause. A floor's :attr:`key` is unique within its campaign, which the campaign holding the
     floors enforces.
     """

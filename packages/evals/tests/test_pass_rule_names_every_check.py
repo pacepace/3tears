@@ -3,7 +3,7 @@
 A boolean host measure with a better end is a check: on its other value it fails the trial, whatever the goal checks
 and the judged dimensions read. A reader who sees only "every goal check and criterion >= 3 of 5" reads a high pass
 rate into an arm that failed nearly every trial on that check. Contracts held here
-(``threetears.evals.analysis.report_input_build.report_input``, as ``analyst.snapshot.analyst_input`` builds an
+(``threetears.evals.analysis.report.input_build.report_input``, as ``analyst.snapshot.analyst_input`` builds an
 analyst's input; ``analyst.facts.campaign_overview``; the ``aspects.<aspect>.pass_rule`` and ``.description`` keys;
 the ``count.failures`` and ``scoreboard.<arm>.failed`` keys):
 

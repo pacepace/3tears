@@ -53,7 +53,7 @@ from threetears.evals.analysis.analyst.facts import (
 from threetears.evals.analysis.analyst.snapshot import frozen_input, report_snapshot
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.report.figure_keys import reader_names, resolve
-from threetears.evals.analysis.report_decision import (
+from threetears.evals.analysis.report.call import (
     caveat_materiality,
     implied_caveats,
     report_caveats,
@@ -62,7 +62,7 @@ from threetears.evals.analysis.report_decision import (
 )
 from threetears.evals.analysis.report_margins import CriterionFigure, criterion_figures
 from threetears.evals.analysis.report_input import Aspect, Criterion, ReportInput, Stat
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.kernel import EvalReportSnapshot
 from threetears.evals.kernel.errors import RefusedInput
 

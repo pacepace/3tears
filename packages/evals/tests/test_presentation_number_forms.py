@@ -39,11 +39,11 @@ from threetears.evals.analysis.report.figure_keys import Figure, format_figure, 
 from threetears.evals.analysis.report.html_parts import grid_html
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import PageLook
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figures import SHARE, UNITLESS
 from threetears.evals.kernel.numbers import ends_places, set_places, spell_at

@@ -5,7 +5,7 @@ it the way the document page draws an evidence block, by the same code:
 :func:`~threetears.evals.analysis.report.block_spec.complete_chart` completes it (its reference line's key, interval
 level, unit and axis), :func:`~threetears.evals.analysis.report.block_spec.chart_faults` and
 :func:`~threetears.evals.analysis.report.block_spec.small_multiple_faults` hold it to the document checks' own rules
-(:mod:`~threetears.evals.analysis.report_doc_checks`), and the page's resolver draws it
+(:mod:`~threetears.evals.analysis.report.doc_page.checks`), and the page's resolver draws it
 (:func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart`, under
 :func:`~threetears.evals.analysis.report.block_spec.block_look`), as the page does. So
 a block the analyst sees drawn is one a page draws, and a block refused here is refused there. What comes back is the block's values
@@ -15,7 +15,7 @@ the picture or the kit's chart data. Every fault is refused together, each named
 **What there is to draw** is :func:`block_catalog`: each kind and the sources it draws
 (:data:`~threetears.evals.analysis.report.block_spec.BLOCK_SOURCES`, the kit's chart models in
 :data:`~threetears.evals.analysis.report.charts.KIT_CHARTS`), each source's rows and the query fields that narrow
-them (:mod:`~threetears.evals.analysis.report_rows`), whether the snapshot holds any, and the figure key forms
+them (:mod:`~threetears.evals.analysis.report.rows`), whether the snapshot holds any, and the figure key forms
 (:func:`~threetears.evals.analysis.report.figure_keys.figure_key_grammar`). No kind is chosen for the analyst: every
 block is open on every eval, and what refuses one is the data.
 
@@ -62,8 +62,8 @@ from threetears.evals.analysis.report.figure_keys import figure_key_grammar, pri
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_arms import fact_arms
-from threetears.evals.analysis.report_rows import query_rows
+from threetears.evals.analysis.report.fact_arms import fact_arms
+from threetears.evals.analysis.report.rows import query_rows
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.chart_query import ChartQuery, PlannedChart
 
@@ -239,7 +239,7 @@ class BlockCatalog(BaseModel):
 
 
 #: What each source's rows are, how they are labelled and whether they carry an interval, and the query fields that
-#: narrow them (:mod:`~threetears.evals.analysis.report_rows`, whose selection the page and the checks read).
+#: narrow them (:mod:`~threetears.evals.analysis.report.rows`, whose selection the page and the checks read).
 _SOURCE_ROWS: dict[str, tuple[str, str, bool, tuple[str, ...]]] = {
     "readings": ("an arm's reading on the query's aspect: its change from the control", "the arm", True,
                  ("arms", "aspect")),

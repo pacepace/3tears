@@ -56,7 +56,7 @@ from threetears.evals.analysis.report.figure_keys import (
     render,
     resolve,
 )
-from threetears.evals.analysis.report_rows import PriceStep, query_rows
+from threetears.evals.analysis.report.rows import PriceStep, query_rows
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import figure_text, quantity
 from threetears.evals.analysis.report.parts.model import PageChart
@@ -64,9 +64,9 @@ from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.tables import arms_table
 from threetears.evals.kernel.chart_query import ChartQuery, PlanChartKind, PlannedChart
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
-from threetears.evals.analysis.report_gates import gate_check
+from threetears.evals.analysis.report.gates import gate_check
 from threetears.evals.analysis.report_input import Criterion, Pricing, ReportInput, Unanswered
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report.forms import ColumnMoney, PageForms
 from threetears.evals.kernel.numbers import CENT, MoneyForm, money_form, spell_dollars
 

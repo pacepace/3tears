@@ -7,14 +7,14 @@ input is read: a snapshot whose input moved, or no longer reads, is refused with
 read as something else.
 
 **The analyst's example pool is wider than the planner's.** A planner was sent at most
-:data:`~threetears.evals.analysis.report_input_build.EXAMPLES` failed trials, one per aspect, arm and stratum, each
+:data:`~threetears.evals.analysis.report.input_build.EXAMPLES` failed trials, one per aspect, arm and stratum, each
 excerpt the start of what the judge read; an analyst pages through them (``examples_list``), so a snapshot's input is
 built by :func:`analyst_input`: up to :data:`_ANALYST_PER_SLICE` failed trials per aspect, arm and stratum, at most
 :data:`_ANALYST_EXAMPLES` in all, each excerpt cut around the failure the judge's reason quotes. More than one per slice
 shows whether a failure is typical of it or a one-off; and the input counts each slice's failed trials, so a page of
 them says how many the run had beside how many were kept, and a reader generalising from the kept ones knows what
 share of the failures they are. It also carries each example's case input and which cases each two aspects share
-(:func:`~threetears.evals.analysis.report_input_build.report_input` with ``counted``). A report rendered against a
+(:func:`~threetears.evals.analysis.report.input_build.report_input` with ``counted``). A report rendered against a
 snapshot is rendered against the snapshot's own input, never against a fresh ``report_input(bundle)``, whose example
 pool differs.
 """
@@ -27,7 +27,7 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report_input import ReportInput, report_input_document_digest
-from threetears.evals.analysis.report_input_build import report_input as built_input
+from threetears.evals.analysis.report.input_build import report_input as built_input
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.report_snapshot import (
     FREEZE_AGAIN_REMEDY,

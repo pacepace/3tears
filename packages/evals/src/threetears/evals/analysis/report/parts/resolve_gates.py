@@ -1,6 +1,6 @@
 """The gate family's charts: the gate matrix, the gate scatter and the config lattice.
 
-Every status a chart here shows is the gate check's (:func:`~threetears.evals.analysis.report_gates.gate_check`), the
+Every status a chart here shows is the gate check's (:func:`~threetears.evals.analysis.report.gates.gate_check`), the
 one GENERATOR §3 function the decision's survivors read too, so a chart never shows an arm passing that the decision
 dropped; each pill states its status in words (:data:`~threetears.evals.analysis.report.parts.words.GATE_WORDS`),
 so a reader without the colour (Markdown, a screen reader) reads it too. Every line a chart draws at a gate is the
@@ -16,7 +16,7 @@ tasks       each task, a cross-cutting one  the arms                   the check
             flagged as applying to all                                 (the failures, else what is borderline); the
             traffic                                                    task's cost per 1,000 (of what it counts); the
                                                                        routing pick
-                                                                       (:func:`~threetears.evals.analysis.report_gates.routing_picks`)
+                                                                       (:func:`~threetears.evals.analysis.report.gates.routing_picks`)
                                                                        on a routable task. A task no gate is read in
                                                                        has no status: its cell is neutral, with the
                                                                        query's figures there
@@ -128,7 +128,7 @@ from threetears.evals.analysis.report.parts.words import (
     TASK_SHARE_TEMPLATE,
     reading_words,
 )
-from threetears.evals.analysis.report_gates import GateCheck, gate_check, routing_picks, task_costs
+from threetears.evals.analysis.report.gates import GateCheck, gate_check, routing_picks, task_costs
 from threetears.evals.analysis.report_input import (
     Aspect,
     Criterion,
@@ -139,7 +139,7 @@ from threetears.evals.analysis.report_input import (
     Task,
 )
 from threetears.evals.analysis.report_margins import criterion_place, flip_margin
-from threetears.evals.analysis.report_rows import query_aspect, query_rows
+from threetears.evals.analysis.report.rows import query_aspect, query_rows
 
 __all__ = ["RESOLVERS"]
 

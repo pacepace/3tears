@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the modules that print a report page live under `analysis/report/`
+
+**Changed:** nine flat report modules move under `threetears.evals.analysis.report`, unchanged in behaviour:
+`report_rows`, `report_gates` and `report_input_build` become `report.rows`, `report.gates` and `report.input_build`;
+`report_arms` becomes `report.fact_arms`; `report_decision` becomes `report.call`; and `report_doc_prose`,
+`report_doc_checks`, `report_doc_facts` and `report_doc_store` become `report.doc_page.prose`, `.checks`, `.facts` and
+`.store`. No public root changes. The flat `report_input`, `report_margins` and `reporting` never import the page, and a
+test holds that direction. `MIGRATIONS.toml` lists each move.
+
 ### evals: a negative value on a measure declared non-negative is named
 
 **Added:** `AnalysisContextBundle.negative_values` (a list of `NegativeValues`: measure, arm, the number of results, and

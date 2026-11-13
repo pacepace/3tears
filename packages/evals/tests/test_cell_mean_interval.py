@@ -37,8 +37,8 @@ from threetears.evals.analysis.analyst.cited import cite, cite_if
 from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import resolve
-from threetears.evals.analysis.report_decision import implied_caveats
-from threetears.evals.analysis.report_gates import gate_check
+from threetears.evals.analysis.report.call import implied_caveats
+from threetears.evals.analysis.report.gates import gate_check
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import criterion_figures
 

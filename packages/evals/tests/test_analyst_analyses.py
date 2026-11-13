@@ -1,7 +1,7 @@
 """The analyst's analyses: dominance, decision sensitivity and the measure breakdown, held to the decision code makes.
 
 Contracts held here (``threetears.evals.analysis.analyst.analyses``, ``ops.analyst_analyses``,
-``actions.analyst_analyses``, and the helpers they read in ``analysis.report_decision``):
+``actions.analyst_analyses``, and the helpers they read in ``analysis.report.call``):
 
 - **dominance** names exactly the decision's survivors (``surviving_options``), the undecided options apart from the
   removed (``undecided_arms``), and dominant options
@@ -23,7 +23,7 @@ Contracts held here (``threetears.evals.analysis.analyst.analyses``, ``ops.analy
   it is refused, pointing to ``measure_read`` by stratum; tasks and cells slice where the input holds them;
 - **every fixture snapshot** (r1 to r5, the misfit inputs, Kairo round 2): each analysis, on every parameter the input
   holds, answers or refuses, never raises, and every figure it returns resolves to its value;
-- **report_decision's helpers**: ``decision_at`` with no overrides is the declared decision, and refuses an override
+- **report.call's helpers**: ``decision_at`` with no overrides is the declared decision, and refuses an override
   naming nothing the input holds.
 """
 
@@ -45,7 +45,7 @@ from threetears.evals.analysis.analyst.analyses import GateRead, breakdown, domi
 from threetears.evals.analysis.analyst.snapshot import frozen_input, report_snapshot
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import resolve
-from threetears.evals.analysis.report_decision import (
+from threetears.evals.analysis.report.call import (
     DecisionAt,
     asked_standing,
     caveat_materiality,
@@ -56,7 +56,7 @@ from threetears.evals.analysis.report_decision import (
     surviving_options,
     weighed_axes,
 )
-from threetears.evals.analysis.report_gates import gate_check, gate_findings, routing_picks
+from threetears.evals.analysis.report.gates import gate_check, gate_findings, routing_picks
 from threetears.evals.analysis.report_input import Criterion, ReportInput
 from threetears.evals.analysis.report_margins import criterion_figures, flip_margin, undecided_arms
 from threetears.evals.kernel import EvalReportSnapshot
@@ -118,7 +118,7 @@ def _each_figure_resolves(structured: dict[str, Any], held: ReportInput) -> None
 
 
 # =============================================================================
-# report_decision's helpers
+# report.call's helpers
 # =============================================================================
 
 

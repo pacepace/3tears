@@ -153,7 +153,7 @@ def test_a_negative_value_reaches_the_writers_input_as_a_caveat() -> None:
     from packages.evals.tests.report_shapes_support import SHAPES
     from threetears.evals.analysis.bundle.schema import NegativeValues
     from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
-    from threetears.evals.analysis.report_input_build import report_input
+    from threetears.evals.analysis.report.input_build import report_input
 
     shape = SHAPES["s1"]()
     bundle = build_campaign_bundle(

@@ -5,7 +5,7 @@ A floor (:class:`~threetears.evals.kernel.declaration.Floor`) is a typed clause 
 (the candidate must cost less per reply). **A floor warns.** It never decides the page or removes an option: code
 reports, the writer recommends and a person decides, so a broken floor is the first line of the page and the call that
 adopts the candidate anyway records it as overridden. Read broken on an asked aspect, it caps the candidate's standing
-in code's dominance read (:mod:`~threetears.evals.analysis.report_decision`).
+in code's dominance read (:mod:`~threetears.evals.analysis.report.call`).
 :func:`evaluate_floor` reads one floor on one candidate (:func:`read_floor` with the per-rate detail the page prints),
 and :func:`aspect_pass_rate` reads the aspect's overall pass rate on a candidate, which the campaign's readings compare.
 

@@ -102,7 +102,7 @@ from threetears.evals.analysis.report.figure_keys import (
     pooled_figures,
     price_frontier,
 )
-from threetears.evals.analysis.report_decision import control_arm, surviving_options
+from threetears.evals.analysis.report.call import control_arm, surviving_options
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import undecided_arms
 from threetears.evals.kernel.errors import RefusedInput

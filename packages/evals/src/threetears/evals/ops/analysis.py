@@ -39,7 +39,7 @@ from threetears.evals.analysis.report import ReportBasis, TrialDetail
 from threetears.evals.analysis.report.build import AnalysisLead, analysis_campaign_bundle, analysis_lead
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.words import input_arm_tags, reader_arms
-from threetears.evals.analysis.report_doc_store import stored_headline
+from threetears.evals.analysis.report.doc_page.store import stored_headline
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
@@ -956,7 +956,7 @@ def _headline(host: EvalHost, reading: _AnalysisReading) -> tuple[str, str | Non
     """What a listed report says in one line, and why its document no longer reads where it was found not to.
 
     Its stored document's headline, every figure key written out
-    (:func:`~threetears.evals.analysis.report_doc_store.stored_headline`), a draft's marked (:data:`DRAFT_HEADLINE`),
+    (:func:`~threetears.evals.analysis.report.doc_page.store.stored_headline`), a draft's marked (:data:`DRAFT_HEADLINE`),
     where the document and the frozen bundle read; else code's verdict alone, or the regenerate line where the bundle
     does not read. A headline whose snapshot no longer reads is listed by code's verdict, never by its braces, and why
     is returned, so the line says to regenerate as the report read does. Blocking."""

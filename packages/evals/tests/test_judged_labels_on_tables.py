@@ -23,7 +23,7 @@ from threetears.evals.analysis.report.md_parts import table_lines
 from threetears.evals.analysis.report.model import Report, TableBlock
 from threetears.evals.analysis.report.parts.charting import measure_words
 from threetears.evals.analysis.report.words import judged_heading, table_label
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 
 from packages.evals.tests.analyst_support import shape_bundle
 from packages.evals.tests.campaign_support import ASSEMBLED_AT

@@ -37,11 +37,12 @@ import pytest
 #: `SoundnessRefusal`'s docstring carries, not a line here.
 _TERMINAL_RAISERS: frozenset[str] = frozenset()
 
-#: Every module of the analysis package, DERIVED rather than listed. A hand-maintained list is
+#: Every module of the analysis package and its subpackages, DERIVED rather than listed. A hand-maintained list is
 #: the same drift this file exists to catch, one level up: a new module raising the bare class
-#: would simply not be looked at, and nothing would say so. The glob is what keeps a module from escaping silently.
+#: would simply not be looked at, and nothing would say so. The glob is what keeps a module from escaping silently,
+#: and it is recursive so a module that lives in a subpackage (``report/``, ``analyst/``) is read too.
 _ANALYSIS = Path(__file__).resolve().parents[1] / "src" / "threetears" / "evals" / "analysis"
-_MODULES = sorted(p for p in _ANALYSIS.glob("*.py") if p.name != "__init__.py")
+_MODULES = sorted(p for p in _ANALYSIS.rglob("*.py") if p.name != "__init__.py")
 
 
 def _raises_by_function(path: Path) -> dict[str, set[str]]:
@@ -69,7 +70,7 @@ def _raises_by_function(path: Path) -> dict[str, set[str]]:
     return found
 
 
-@pytest.mark.parametrize("path", _MODULES, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _MODULES, ids=lambda p: p.relative_to(_ANALYSIS).as_posix())
 def test_only_the_listed_no_output_cases_raise_the_terminal_class(path: Path):
     """A finished call's failure must be repairable; only a missing call is terminal."""
     offenders = sorted(
@@ -91,4 +92,5 @@ def test_the_walk_reads_the_analysis_package():
 
     Every parametrised case above vanishes when the glob matches nothing, which reads as a pass.
     """
-    assert any(path.name == "service.py" for path in _MODULES), _MODULES
+    read = {path.relative_to(_ANALYSIS).as_posix() for path in _MODULES}
+    assert {"service.py", "report/call.py", "report/doc_page/checks.py"} <= read, sorted(read)

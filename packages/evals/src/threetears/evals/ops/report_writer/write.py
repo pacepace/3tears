@@ -5,9 +5,9 @@ frozen, so neither tool it is handed writes: the ``evals_analyst`` tool on the a
 bound to its host and caller by the action that calls this (``actions/report_writing.py``'s ``write_report``). It
 reads the snapshot's report input, loads the skill and runs the writing loop
 (:func:`~threetears.evals.ops.report_writer.loop.write_rounds`), whose submissions are checked by the one checker
-(:func:`~threetears.evals.analysis.report_doc_store.doc_verdicts`). It stores what the loop's ending stores through the
-store gate (:func:`~threetears.evals.analysis.report_doc_store.store_report_doc`), which checks it again, and builds
-the stored page with its made line (:func:`~threetears.evals.analysis.report_doc_store.made_line`).
+(:func:`~threetears.evals.analysis.report.doc_page.store.doc_verdicts`). It stores what the loop's ending stores through the
+store gate (:func:`~threetears.evals.analysis.report.doc_page.store.store_report_doc`), which checks it again, and builds
+the stored page with its made line (:func:`~threetears.evals.analysis.report.doc_page.store.made_line`).
 
 **A paid run never loses its record.** The run's generation record in memory (the tally, the reviews, and every
 session held inline) is on the result whatever the ending, and on :class:`ReportNotStored` when the store gate or the
@@ -49,8 +49,8 @@ from typing import Any, Literal
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.model import DocPage
-from threetears.evals.analysis.report_doc_checks import DocVerdict
-from threetears.evals.analysis.report_doc_store import doc_verdicts, generation_record, made_line, store_report_doc
+from threetears.evals.analysis.report.doc_page.checks import DocVerdict
+from threetears.evals.analysis.report.doc_page.store import doc_verdicts, generation_record, made_line, store_report_doc
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.analyst_gap import EvalAnalystGap
 from threetears.evals.kernel.offload import run_blocking
@@ -83,7 +83,7 @@ class ReportWritten:
         its name's ``session``, with no ``ref``), kept whatever the ending. A stored document's own ``generation``
         names each session by ref instead (``stored.generation``), and its sessions are stored beside it.
     :ivar page: The stored document's page as a reader reads it, built strict with its open findings in Method and
-        its made line (:func:`~threetears.evals.analysis.report_doc_store.made_line`), a draft's saying so first
+        its made line (:func:`~threetears.evals.analysis.report.doc_page.store.made_line`), a draft's saying so first
         (``stored.draft``); ``None`` when nothing is stored.
     :ivar gaps: Every gap and notice the write noted (the module docstring), whatever the ending, each naming the
         stored report or none.

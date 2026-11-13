@@ -1,7 +1,7 @@
 """What caps a candidate's standing on the asked aspects, read on kairo's input (r5: control September, candidates
 qwen3.8-flash and 1017, one asked aspect with a rate-drop floor, every judge undetermined and insufficient).
 
-Contracts held here (``threetears.evals.analysis.report_decision``, Dominance):
+Contracts held here (``threetears.evals.analysis.report.call``, Dominance):
 
 - a floor read ``broken`` on an asked aspect caps a candidate shown better at ``not_shown_no_worse``, and its ``why``
   names the floor and its reading; a floor read ``unclear`` caps nothing;
@@ -20,8 +20,8 @@ from typing import Any
 
 from packages.evals.tests.report_doc_support import converted_doc, snapshot_of
 from threetears.evals.analysis.analyst.analyses import dominance
-from threetears.evals.analysis.report_decision import asked_standing, decision_at, shown_better
-from threetears.evals.analysis.report_doc_facts import editor_facts
+from threetears.evals.analysis.report.call import asked_standing, decision_at, shown_better
+from threetears.evals.analysis.report.doc_page.facts import editor_facts
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.report_doc import ReportDoc
 

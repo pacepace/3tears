@@ -30,7 +30,7 @@ from packages.evals.tests.report_doc_support import snapshot_of
 from packages.evals.tests.report_writer_support import DOC
 from packages.evals.tests.stored_models import stored_sample
 from threetears.evals.analysis.analyst.skill import SkillText
-from threetears.evals.analysis.report_doc_store import generation_record, made_line
+from threetears.evals.analysis.report.doc_page.store import generation_record, made_line
 from threetears.evals.analysis.summary import EvalSummary, RoleSpend, dollars_text
 from threetears.evals.kernel import OutOfRunBudget, PlannedCall, RoleUsageLedger, ValidationFailedError
 from threetears.evals.kernel.capped_completion import (

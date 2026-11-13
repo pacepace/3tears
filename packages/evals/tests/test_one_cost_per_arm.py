@@ -13,7 +13,7 @@ from threetears.evals.analysis.report.figure_keys import aspect_costs_per_thousa
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.tables import arms_table
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input import Aspect, ReportInput, ScoreboardRow, Stat
 
 from packages.evals.tests.analyst_support import fixture_inputs

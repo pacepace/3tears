@@ -67,10 +67,10 @@ from threetears.evals.analysis.report.parts.charting import contrast_unit
 from threetears.evals.analysis.report.parts.look import PageLook, Quantity, quantity
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
-from threetears.evals.analysis.report_decision import control_arm
+from threetears.evals.analysis.report.call import control_arm
 from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task
 from threetears.evals.analysis.report.block_spec import chart_faults, complete_chart, small_multiple_faults
-from threetears.evals.analysis.report_rows import query_rows
+from threetears.evals.analysis.report.rows import query_rows
 from threetears.evals.kernel.chart_query import ChartQuery, ChartSpec, PlannedChart
 
 INPUTS = ("r1", "r2", "r3", "r4", "r5")

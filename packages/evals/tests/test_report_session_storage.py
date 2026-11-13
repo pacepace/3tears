@@ -51,7 +51,7 @@ from threetears.evals.actions import MountedTool, analyst_actions, analyst_tools
 from threetears.evals.actions.catalogue import ActionCatalogue, Caller, catalogue_primer
 from threetears.evals.actions.report_writing import ReportNotStored
 from threetears.evals.analysis.analyst.skill import load_skill
-from threetears.evals.analysis.report_doc_store import doc_verdicts, generation_record, store_report_doc
+from threetears.evals.analysis.report.doc_page.store import doc_verdicts, generation_record, store_report_doc
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import StorageError
 from threetears.evals.kernel.report_doc import (

@@ -4,7 +4,7 @@ The owner's ruling (2026-10-28): "people might think Fanout 1 is different from 
 is capitalised where the name is made, never in prose rendering, and prose, the arms key, the options table and a
 chart's labels print the one name. Two pipelines make names, both downstream of ``arm_names``: the code-only page's
 (``_arm_names`` and ``_short_names`` in ``analysis/report/build.py``) and the report input's ``Arm.name``
-(``report_input_build``), which the document's page prints through ``printed_arm_name``. Both call
+(``report.input_build``), which the document's page prints through ``printed_arm_name``. Both call
 :func:`~threetears.evals.analysis.style.arm_display_name`.
 
 "Computed" is read from data, never from the text's case: a report input arm is computed where no arm the campaign's
@@ -54,15 +54,15 @@ from threetears.evals.analysis.report.figure_keys import printed_arm_name, rende
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.words import printed_arm_labels
 from threetears.evals.analysis.report.model import Report
-from threetears.evals.analysis.report_decision import every_caveat
-from threetears.evals.analysis.report_doc_checks import check_report_doc
+from threetears.evals.analysis.report.call import every_caveat
+from threetears.evals.analysis.report.doc_page.checks import check_report_doc
 from threetears.evals.analysis.report_input import Factor, Level, ReportInput
 from threetears.evals.analysis.service import assemble_campaign_bundle, campaign_report, record_campaign_call
 from threetears.evals.analysis.style import arm_display_name, arm_name, lever_reader_name
 from threetears.evals.analysis.report.blocks import DisclosureBlock
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.parts.tables import arms_key
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.kernel.declaration import OverriddenBar
 from packages.evals.tests.analyst_support import fixture_inputs
 from threetears.evals.kernel.campaign import EvalCampaign

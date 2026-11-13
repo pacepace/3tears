@@ -44,7 +44,7 @@ then says. A figure the input does not hold is a dash.
 reader, which lose the colour, lose nothing.
 
 **The gate matrix reads the gate check.** Each cell is
-:func:`~threetears.evals.analysis.report_gates.gate_check` narrowed to the row's place, over the input with that row's
+:func:`~threetears.evals.analysis.report.gates.gate_check` narrowed to the row's place, over the input with that row's
 one criterion, so a cell's status is the one the options table, the survivors and every gate chart read: the matrix
 is the gate check spelled out, never a second reading of it.
 """
@@ -90,7 +90,7 @@ from threetears.evals.analysis.report.parts.words import (
     NOT_RECORDED,
     OVERALL,
 )
-from threetears.evals.analysis.report_gates import GateCheck, gate_check
+from threetears.evals.analysis.report.gates import GateCheck, gate_check
 from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, Judged, Measure, ReportInput, Stat
 from threetears.evals.analysis.report_margins import aspect_board, criterion_figures, criterion_places, on_aspect
 from threetears.evals.analysis.style import humanize, lever_reader_name

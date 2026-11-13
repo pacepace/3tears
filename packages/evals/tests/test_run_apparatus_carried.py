@@ -22,7 +22,7 @@ from packages.evals.tests.run_facts_support import ASPECT, CASES, aspect_bundle,
 from threetears.evals.analysis.analyst.facts import campaign_overview
 from threetears.evals.analysis.bundle.schema import RunApparatus
 from threetears.evals.analysis.report_input import RequestSettings
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID, EvalResult, EvalRun
 
 BASE = "base"

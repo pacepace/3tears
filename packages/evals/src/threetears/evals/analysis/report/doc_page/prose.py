@@ -2,7 +2,7 @@
 key already prints, and internal ids a reader should not see.
 
 Each check reads prose as ``(field path, text)`` pairs, so it holds for whatever names its fields:
-:mod:`~threetears.evals.analysis.report_doc_checks` walks a document's prose through
+:mod:`~threetears.evals.analysis.report.doc_page.checks` walks a document's prose through
 :func:`~threetears.evals.kernel.report_doc.report_doc_prose`. A fault is ``(field path, why)``.
 
 - :func:`literal_faults`: prose typing a number itself rather than through a figure key (GENERATOR §6.2's D3 rule,

@@ -30,13 +30,13 @@ facts) reads it through :func:`report_doc_prose`, which walks this tuple, never 
 - **Validity** (:func:`report_doc_validity`) refuses a well-shaped document that names what its snapshot does not
   hold: a recommended arm that is no arm, a caveat id that is neither one code assigns on the snapshot nor
   ``analyst:<slug>``. It is a precondition of the invariants, not one of them.
-- **The invariants** (``analysis/report_doc_checks.py``) refuse what code can prove wrong about a valid document on its
+- **The invariants** (``analysis/report/doc_page/checks.py``) refuse what code can prove wrong about a valid document on its
   snapshot: a number not given by a key, a block that does not render, a caveat landing short, a confidence form its
   caveats contradict, an internal id above the appendix.
 
 **Caveats** are named by the id code assigns
-(:func:`~threetears.evals.analysis.report_decision.report_caveats` and
-:func:`~threetears.evals.analysis.report_decision.implied_caveats`: ``late:margin``, ``judge_uncalibrated``,
+(:func:`~threetears.evals.analysis.report.call.report_caveats` and
+:func:`~threetears.evals.analysis.report.call.implied_caveats`: ``late:margin``, ``judge_uncalibrated``,
 ``point_estimate:<criterion>``, ...), or by ``analyst:<slug>`` for one the analyst found that code does not assign.
 Code has a label for each kind it assigns, so a code caveat's ``label`` is optional; an analyst caveat has no code
 label, so it carries its own and is declared once in ``confidence.caveats``, where a claim or method item may name it
@@ -413,7 +413,7 @@ def report_doc_validity(doc: ReportDoc, *, arms: Collection[str], caveats: Colle
 
     The kernel does not read the report input, so its caller passes the snapshot's arm ids and the caveat ids code
     assigns on it, stated and implied: the ids of
-    :func:`~threetears.evals.analysis.report_decision.every_caveat`, the one set ``caveats_list`` pages too. Emphasis and every query are the invariants' to check, since a block names
+    :func:`~threetears.evals.analysis.report.call.every_caveat`, the one set ``caveats_list`` pages too. Emphasis and every query are the invariants' to check, since a block names
     strata and tasks too and its query's names are read where it is drawn.
 
     :param doc: The document.

@@ -79,7 +79,7 @@ OWNERS: tuple[tuple[str, str], ...] = (
     ("analysis/contention.py", "bundle folds"),
     ("analysis/campaign_bundle.py", "campaign page"),
     ("analysis/report/", "campaign page"),
-    ("analysis/report_input_build.py", "campaign page"),
+    ("analysis/report/input_build.py", "campaign page"),
     ("kernel/storage.py", "store"),
     ("schema/models.py", "store"),
     ("ops/lenses.py", "planning read"),

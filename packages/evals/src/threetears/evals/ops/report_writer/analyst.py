@@ -9,7 +9,7 @@ the tool as it needs, and a reply that calls no tool is its submission: one fenc
 **A submission is read in three steps, and the first that finds a fault sends it back** (a bounce, which costs no
 editor call): the fenced JSON (exactly one fenced block, holding one JSON object); its shape
 (:class:`~threetears.evals.kernel.report_doc.ReportDoc`); then the checker the caller hands in, the store gate's
-(``analysis/report_doc_checks.py``'s, on the snapshot's report input), which reads the document's validity on the
+(``analysis/report/doc_page/checks.py``'s, on the snapshot's report input), which reads the document's validity on the
 snapshot as its invariant 0 (:func:`~threetears.evals.kernel.report_doc.report_doc_validity`) and every invariant after
 it in the same pass. So one bounce carries every verdict, validity's included, each with its remedy; a validity
 verdict is a fault of kind ``validity``, every other an ``invariant`` one. A reply stopped at its output cap is a

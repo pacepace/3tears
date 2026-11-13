@@ -4119,7 +4119,7 @@ def _separated_keys(report_input: ReportInput, arms: Sequence[str]) -> list[str]
 
 
 #: The measures graded by class label whose figure is a share of counted trials: the ones the report input's build grades
-#: ``class_label`` (``report_input_build``'s grade rule). A figure graded so by another name may be a derived mean of
+#: ``class_label`` (``report.input_build``'s grade rule). A figure graded so by another name may be a derived mean of
 #: shares (a balanced accuracy: the mean of each class's recall), which no binomial spread describes.
 _TRIAL_SHARE_LABELS = frozenset({MATCH_MEASURE, ACCURACY_MEASURE})
 

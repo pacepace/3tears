@@ -93,7 +93,7 @@ from threetears.evals.analysis.report.parts.words import (
     STATISTIC_NOTE,
 )
 from threetears.evals.analysis.analyst.settle import SettleRow
-from threetears.evals.analysis.report_rows import PriceStep
+from threetears.evals.analysis.report.rows import PriceStep
 from threetears.evals.analysis.style import humanize
 from threetears.evals.analysis.report_input import (
     Measure,

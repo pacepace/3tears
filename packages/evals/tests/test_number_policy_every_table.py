@@ -34,7 +34,7 @@ from threetears.evals.analysis.report.figures import SHARE, UNITLESS, reply_cost
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.html_parts import grid_html
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.quick import measure

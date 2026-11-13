@@ -4,7 +4,7 @@ survive, which one dominates, and so the modes a report may take (:func:`decisio
 A report states its confidence against the caveats :func:`report_caveats` lists, and never mentions a caveat
 :func:`caveat_materiality` proved immaterial; code renders that one's checked line. The report document's invariants
 and the editor's facts
-(:mod:`~threetears.evals.analysis.report_doc_facts`) read the same decisions.
+(:mod:`~threetears.evals.analysis.report.doc_page.facts`) read the same decisions.
 
 **Caveat ids.** Every entry of the report input's ``caveats`` gets one stable id, the same vocabulary the plan's flag,
 confidence clauses and landing lists use:
@@ -95,7 +95,7 @@ every margin would show only that code's rule does not weigh the reading (it nev
 what the caveat says. Whether a loss past the margin would change the call is the plan's ``material_if`` to state.
 
 **Survivors** (:func:`surviving_options`, GENERATOR §3). An option survives when the gate check
-(:func:`~threetears.evals.analysis.report_gates.gate_check`) does not fail it, and no guardrail the pipeline read on it
+(:func:`~threetears.evals.analysis.report.gates.gate_check`) does not fail it, and no guardrail the pipeline read on it
 is ``breached``. The check reads each criterion of kind ``gate`` or ``guardrail`` on its point estimate (at least the
 threshold where higher is better, at most where lower is), overall, in its one task, in every task or in every cell as
 its scope says. A gate with no figure for the arm is not shown passed, so the arm does not survive it. Borderline
@@ -153,7 +153,7 @@ from typing import Literal
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS
-from threetears.evals.analysis.report_gates import GateCheck, GateStatus, gate_check, gate_findings
+from threetears.evals.analysis.report.gates import GateCheck, GateStatus, gate_check, gate_findings
 from threetears.evals.analysis.report_input import (
     Aspect,
     Contrast,
@@ -482,7 +482,7 @@ def _point_estimates(report_input: ReportInput) -> Iterator[ImpliedCaveat]:
 def _borderlines(report_input: ReportInput) -> Iterator[ImpliedCaveat]:
     """A ``borderline:<criterion>`` caveat for each gate or guardrail a surviving option clears at some place on its
     point estimate while the figure's interval there reaches the wrong side of the line: the gate check's borderline
-    (:func:`~threetears.evals.analysis.report_gates.gate_findings`), which the decision counts as passing."""
+    (:func:`~threetears.evals.analysis.report.gates.gate_findings`), which the decision counts as passing."""
     survivors = surviving_options(report_input)
     for criterion in report_input.criteria:
         if criterion.kind not in ("gate", "guardrail"):

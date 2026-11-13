@@ -44,7 +44,7 @@ from threetears.evals.analysis.report.charts import BarsChart, ForestChart
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.parts.full_results import every_table
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.harness import WriterResult

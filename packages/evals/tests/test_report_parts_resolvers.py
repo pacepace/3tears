@@ -5,7 +5,7 @@ Held over every r1–r5 anchor and current run, and the Kairo reference plan, as
 (``fixtures/plan_charts/``), each drawn through :func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart` under the plan's look
 (``plan_charts_support.drawn_charts``). The expected side is always read from somewhere else than the resolver: the
 figure keys (:func:`~threetears.evals.analysis.report.figure_keys.resolve`), the rows a query selects
-(:func:`~threetears.evals.analysis.report_rows.query_rows`) and code's facts, never typed in.
+(:func:`~threetears.evals.analysis.report.rows.query_rows`) and code's facts, never typed in.
 
 - **Every chart resolves** to its kind, drawing what its query selects: a reading's change, interval and margin; a
   contrast's delta on its scale and a caption naming each asked comparison the input holds none of; a figure from
@@ -49,7 +49,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import TableBlock
 from threetears.evals.analysis.report.parts.full_results import every_table
-from threetears.evals.analysis.report_gates import gate_check
+from threetears.evals.analysis.report.gates import gate_check
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import (
@@ -62,8 +62,8 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Task,
 )
-from threetears.evals.analysis.report_arms import fact_arms
-from threetears.evals.analysis.report_rows import query_rows
+from threetears.evals.analysis.report.fact_arms import fact_arms
+from threetears.evals.analysis.report.rows import query_rows
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.chart_query import ChartSpec
 

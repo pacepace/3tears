@@ -2,7 +2,7 @@
 
 A resolver (one per kind, in a ``resolve_*`` module's ``RESOLVERS``) turns a stored chart's
 :class:`~threetears.evals.kernel.chart_query.ChartSpec` into the kit's chart data, reading the rows its query
-selects (:func:`~threetears.evals.analysis.report_rows.query_rows`, the one owner of that selection). It is handed a
+selects (:func:`~threetears.evals.analysis.report.rows.query_rows`, the one owner of that selection). It is handed a
 :class:`ChartContext` and returns a :class:`Drawn`. The rules every kind fills by (the page design's §3, first written for the
 retired planned page) are here, once:
 
@@ -109,7 +109,7 @@ from threetears.evals.analysis.report_input import (
     Task,
 )
 from threetears.evals.analysis.report_margins import criterion_aspect, criterion_place, lead_aspect
-from threetears.evals.analysis.report_rows import SourceRow, query_rows
+from threetears.evals.analysis.report.rows import SourceRow, query_rows
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.chart_query import ChartQuery, ChartSpec
 

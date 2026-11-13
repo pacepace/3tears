@@ -31,7 +31,7 @@ one axis, on which measures drawn alike (a share beside a percent) are each draw
 
 **scatter_frontier** plots two measures that trade off, an arm (or config) per point, with the Pareto line: the
 query's two measures, else the two its rows hold; up is the one where higher is better, across the other. Over tasks,
-a panel per task. A point that fails a gate (:func:`~threetears.evals.analysis.report_gates.gate_check`, in the task
+a panel per task. A point that fails a gate (:func:`~threetears.evals.analysis.report.gates.gate_check`, in the task
 a panel draws) is hollow, and its key says so; every point carries its arm's tag, its label where it has no other.
 Each axis carries its criterion's line
 (the stored line and domain are the y axis's). An x axis spanning more than ten times is logarithmic, which a
@@ -113,7 +113,7 @@ from threetears.evals.analysis.report.parts.words import (
     RANGE_TEMPLATE,
     REFERENCE_TEMPLATE,
 )
-from threetears.evals.analysis.report_gates import gate_check
+from threetears.evals.analysis.report.gates import gate_check
 from threetears.evals.analysis.report_input import BarRead, FloorRead, ScoreboardRow, Stat, Stratum, Task
 from threetears.evals.analysis.style import humanize
 

@@ -1,7 +1,7 @@
 """``report_read`` serves the campaign's stored report document, and never refuses one it no longer reads.
 
 Contracts held here (``threetears.evals.ops.report_read``, ``threetears.evals.analysis.campaign_report``,
-``threetears.evals.analysis.service.report_doc_report``, ``threetears.evals.analysis.report_doc_store.read_report_doc``):
+``threetears.evals.analysis.service.report_doc_report``, ``threetears.evals.analysis.report.doc_page.store.read_report_doc``):
 
 - **each form** of a ``doc`` analysis is its stored document's page on its own snapshot, read as a stored document is,
   its made line at its foot: Markdown and HTML are that page as its writers write it, the static page runs, links and
@@ -51,7 +51,7 @@ from threetears.evals.actions.engine import ReportReadParams
 from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS, retired_generation
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
-from threetears.evals.analysis.report_doc_store import read_report_doc
+from threetears.evals.analysis.report.doc_page.store import read_report_doc
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.report_doc import EvalReportSession

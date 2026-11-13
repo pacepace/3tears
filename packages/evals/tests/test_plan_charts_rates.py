@@ -3,7 +3,7 @@ difference heatmaps, confusion matrices and the plain table.
 
 Held over every r1–r5 anchor and current run, and the Kairo reference plan, each against its own input; kinds no
 stored plan draws are held on charts of the same inputs. The expected side is always read from the input (the
-rows a query selects, :func:`~threetears.evals.analysis.report_rows.query_rows`, the criteria, the target matrix,
+rows a query selects, :func:`~threetears.evals.analysis.report.rows.query_rows`, the criteria, the target matrix,
 the gate check), never typed in.
 
 - **The pin.** Every (kind, source) pair the chart checks accept (read through ``chart_faults``, which refuses a kind
@@ -59,14 +59,14 @@ from threetears.evals.analysis.report.parts.model import PageChart
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import COMPUTED_NOTE
-from threetears.evals.analysis.report_decision import control_arm
-from threetears.evals.analysis.report_gates import gate_check
+from threetears.evals.analysis.report.call import control_arm
+from threetears.evals.analysis.report.gates import gate_check
 from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task
 from threetears.evals.analysis.report.block_spec import block_look, chart_faults, small_multiple_faults
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from packages.evals.tests.analyst_support import SHAPE_NAMES, shape_snapshots
-from threetears.evals.analysis.report_rows import query_rows
+from threetears.evals.analysis.report.rows import query_rows
 from threetears.evals.kernel.chart_query import ChartQuery, ChartSpec
 
 INPUTS = ("r1", "r2", "r3", "r4", "r5")

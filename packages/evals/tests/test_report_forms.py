@@ -36,7 +36,7 @@ import pytest
 from threetears.evals.analysis import campaign_report, service
 from threetears.evals.analysis.report.campaign.page import build_campaign_report_in_aspect_forms
 from threetears.evals.analysis.analyst.snapshot import frozen_input
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import AggregateFigure, CampaignReadings
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
@@ -64,7 +64,7 @@ from threetears.evals.analysis.report.serialize_md import campaign_report_markdo
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.tables import arms_key, arms_table, pass_rate_cell
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, TRIAL_PASS_NAME
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.report.figures import report_rulers

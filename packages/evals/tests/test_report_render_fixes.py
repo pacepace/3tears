@@ -26,10 +26,10 @@ from threetears.evals.analysis.report.parts.charting import measure_words
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.tables import arms_table
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.analysis.report_margins import weakest_margin
 from threetears.evals.analysis.style import check_names
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.numbers import UNPRICED
 

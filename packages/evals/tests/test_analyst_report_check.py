@@ -45,8 +45,8 @@ from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_doc_checks import check_report_doc
-from threetears.evals.analysis.report_doc_store import doc_verdicts
+from threetears.evals.analysis.report.doc_page.checks import check_report_doc
+from threetears.evals.analysis.report.doc_page.store import doc_verdicts
 from threetears.evals.kernel.report_doc import ReportDoc, report_doc_prose
 from threetears.evals.storage import InMemoryDocumentStore
 

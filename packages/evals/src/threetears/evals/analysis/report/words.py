@@ -527,7 +527,7 @@ def campaign_arm_tags(
     """Each arm's letter tag across a campaign's pages (:func:`arm_tags`), in the one order every page tags arms in:
     the campaign's own arms as it declares them (``arms``), then the other variants its aspects index, aspect by
     aspect, then any its scoreboards list besides, then ``also``'s. It is the order a campaign's report input lists
-    its arms in (``report_input_build``), so the code page, every aspect's page and the report document's page tag
+    its arms in (``report.input_build``), so the code page, every aspect's page and the report document's page tag
     and colour one arm alike (the review's P40); an arm one aspect lacks shifts no other arm's tag.
 
     :param bundles: Each aspect's bundle, in the campaign's order.
@@ -859,7 +859,7 @@ def reader_arm_labels(bundle: CampaignBundle, tags: Mapping[str, str]) -> dict[s
 def input_arm_tags(bundle: CampaignBundle) -> dict[str, str]:
     """Each arm's tag as the campaign's report document page tags it, by every variant key that names it: over the
     arms in its report input's order (the campaign's arms, then the other variants its aspects index, one per label;
-    :func:`~threetears.evals.analysis.report_input_build.report_input`), the control ``P``. It is
+    :func:`~threetears.evals.analysis.report.input_build.report_input`), the control ``P``. It is
     :func:`campaign_arm_tags` over the campaign's declared arms, the call the code page tags by, so every page of a
     campaign tags an arm alike. Read off the bundle, so a surface that prints the document's words beside code's (the
     campaign listing) tags an arm as the document does.

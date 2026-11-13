@@ -207,7 +207,7 @@ def cite_written(
 def contrast_key(report_input: ReportInput, contrast: Contrast) -> str:
     """The key a contrast's figures are read under: unqualified, or by its aspect where the input holds its arm and
     measure more than once. ``contrasts_list`` cites a contrast's figures under it, ``arms_compare`` its cases, and the
-    editor's ``caveat_not_carried`` fact (``analysis/report_doc_facts.py``) names them alike.
+    editor's ``caveat_not_carried`` fact (``analysis/report/doc_page/facts.py``) names them alike.
 
     :param report_input: The snapshot's frozen report input.
     :ptype report_input: ReportInput

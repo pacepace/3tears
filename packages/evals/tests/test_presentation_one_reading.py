@@ -34,8 +34,8 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NOT_SHOWN_TO_MEASURE, analysis_lead
 from threetears.evals.analysis.report.campaign.names import measure_name_of
-from threetears.evals.analysis.report_arms import fact_arms
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.fact_arms import fact_arms
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.analysis.report.words import (
     PASS_RATE,
     campaign_arm_tags,
