@@ -4288,7 +4288,7 @@
     },
     "threetears.evals.run.LaunchableKind": {
       "kind": "dataclass",
-      "signature": "LaunchableKind(launch: KindLauncher, resolve_subject: SubjectResolver, unhonoured_launch_arguments: frozenset[LaunchArgument] = frozenset(), ignored_template_fields: frozenset[TemplateField] = frozenset(), plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None, apparatus_settings: Mapping[str, ApparatusSettingValue] = <lambda>(), price_largest_call: Callable[[LaunchRequest], Awaitable[CallCeiling | UnpricedCall | None]] | None = None)",
+      "signature": "LaunchableKind(launch: KindLauncher, resolve_subject: SubjectResolver, unhonoured_launch_arguments: frozenset[LaunchArgument] = frozenset(), ignored_template_fields: frozenset[TemplateField] = frozenset(), plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None, apparatus_settings: Mapping[str, ApparatusSettingValue] = <lambda>(), price_largest_call: Callable[[LaunchRequest], Awaitable[CallCeiling | UnpricedCall | None]] | None = None, candidate_role: CompletionRole | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.run.LaunchArgument": {

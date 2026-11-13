@@ -335,6 +335,48 @@ async def test_a_model_the_provider_no_longer_lists_is_refused_by_the_estimate_a
     assert process.stored_runs() == []
 
 
+def _host_routed(process: _Process) -> None:
+    """``process``'s judge kind as a kind whose candidate the host calls through its own route, not the factory."""
+    (name, kind) = next(iter(process.host.kinds.items()))
+    process.host = dataclasses.replace(
+        process.host,
+        eval_host=with_registry(process.host.eval_host, {name: dataclasses.replace(kind, candidate_role=None)}),
+    )
+
+
+async def test_a_host_routed_candidate_off_the_list_is_admitted_and_its_check_reported_skipped() -> None:
+    # The host names its own route's model with a vendor/model id OpenRouter does not list: the package does not
+    # route that candidate, so OpenRouter's list is no evidence it is unserved.
+    process = off_loop(_Process, _FakeOpenRouter([_OTHER_ROW]), enforced=False)
+    _host_routed(process)
+
+    arm = await process.estimate(None)
+
+    assert (arm.outcome, arm.refusal) == ("uncapped", None), "a launch the host would serve is not refused on a guess"
+    [check] = arm.plan.served_checks
+    assert (check.role, check.listed) == ("candidate", None)
+    notice = check.skipped_notice()
+    assert notice is not None
+    assert f"served-model check of candidate model {_FLASH!r} was skipped" in notice
+    assert "calls this candidate through its own route" in notice
+    reported = await process.ops_estimate(None)
+    assert reported.served_check_skipped == [notice]
+    admitted = await admit_launch(process.host, **process.arguments(None), scope_id=TOYHOST_SCOPE)
+    assert admitted.notices == (notice,)
+    await admitted.discard()
+
+
+async def test_a_package_routed_candidate_off_the_list_is_refused() -> None:
+    # The judge kind calls its candidate as a judge-role client of the host's factory: the package knows the route.
+    process = off_loop(_Process, _FakeOpenRouter([_OTHER_ROW]), enforced=False)
+    assert next(iter(process.host.kinds.values())).candidate_role == "judge"
+
+    arm = await process.estimate(None)
+
+    assert arm.outcome == "refused"
+    assert f"candidate model {_FLASH!r} is not on openrouter's list" in arm.refusal
+
+
 # =============================================================================
 # A resume taken up by a process that has read nothing yet
 # =============================================================================
@@ -475,15 +517,16 @@ async def test_clients_read_openrouters_list_only_for_a_model_that_goes_to_openr
     )
 
     assert await clients.model_listing(_DIRECT_MODEL, role="judge") is None, "Anthropic's list is not read"
-    assert await clients.model_listing("gpt-5-nano") is None, "a bare id names no OpenRouter model"
+    assert await clients.model_listing("gpt-5-nano", role="simulator") is None, "a bare id names no OpenRouter model"
+    assert await clients.model_listing(_FLASH) is None, "a candidate the host routes itself is not this factory's"
     assert provider.list_reads == 0
 
-    listed = await clients.model_listing(_FLASH)
+    listed = await clients.model_listing(_FLASH, role="simulator")
     assert listed is not None and (listed.provider, listed.listed) == ("openrouter", True)
     assert listed.detail.startswith("the provider's model list, read at ")
     routed = await clients.model_listing(f"{_FLASH}:nitro", role="simulator")
     assert routed is not None and routed.listed is True, "a routing suffix is no row of its own"
-    gone = await clients.model_listing("inception/mercury-3")
+    gone = await clients.model_listing("inception/mercury-3", role="simulator")
     assert gone is not None and gone.listed is False
     assert provider.list_reads == 1, "rows younger than refresh_after are kept, not fetched again"
 
@@ -492,10 +535,10 @@ async def test_a_list_whose_refresh_failed_is_not_current_and_the_check_is_skipp
     provider = _FakeOpenRouter([_FLASH_ROW])
     http = httpx.AsyncClient(transport=httpx.MockTransport(provider))
     clients = Clients(_FLASH, catalogue=Catalogue(http=http, refresh_after=timedelta(0)), http=http)
-    assert (await clients.model_listing(_FLASH)).listed is True  # type: ignore[union-attr]
+    assert (await clients.model_listing(_FLASH, role="judge")).listed is True  # type: ignore[union-attr]
 
     provider.list_fails = True
-    stale = await clients.model_listing("inception/mercury-3")
+    stale = await clients.model_listing("inception/mercury-3", role="judge")
 
     assert stale is not None and stale.listed is None, "a stale list neither refuses nor vouches for a model"
     assert "reading it again failed" in stale.detail and "not current" in stale.detail
