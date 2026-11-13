@@ -12,6 +12,8 @@ import io
 import json
 import logging
 import re
+from collections.abc import Sequence
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -75,6 +77,7 @@ from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     AsyncDelivery,
+    EvalResult,
     EvalRun,
     GoalStateOutcome,
     LatencyMetrics,
@@ -132,7 +135,9 @@ def _catalog_name_of(row_name):
     return names[0]
 
 
-def _run_with_results(*, subject_id="ent-maple", subject_label="Maple", **run_overrides):
+def _run_with_results(
+    *, subject_id: str = "ent-maple", subject_label: str = "Maple", **run_overrides: Any
+) -> tuple[EvalRun, EvalResult]:
     """Build one run plus a matching result, wired by run id.
 
     :param subject_id: Subject id for the run's subject snapshot.
@@ -4634,7 +4639,7 @@ class TestComparisonSetsScope:
 # =============================================================================
 
 
-def _fr_run(*, subject_id="ent-maple", subject_label="Maple", **overrides):
+def _fr_run(*, subject_id: str = "ent-maple", subject_label: str = "Maple", **overrides: Any) -> EvalRun:
     """Build a run for a named subject, for frontier tests.
 
     :param subject_id: Subject id for the run's subject snapshot.
@@ -4647,20 +4652,20 @@ def _fr_run(*, subject_id="ent-maple", subject_label="Maple", **overrides):
 
 
 def _fr_result(
-    run,
+    run: EvalRun,
     *,
-    model,
-    variant_key,
-    test_case_id,
-    passes=True,
-    roles=None,
-    total_ms=None,
-    candidate_error=None,
-    infra_error=None,
-    k_iteration=1,
-    substituted_delivery=False,
-    identity_version=None,
-):
+    model: str,
+    variant_key: str | None,
+    test_case_id: str,
+    passes: bool = True,
+    roles: dict[str, float] | None = None,
+    total_ms: float | None = None,
+    candidate_error: str | None = None,
+    infra_error: str | None = None,
+    k_iteration: int = 1,
+    substituted_delivery: bool = False,
+    identity_version: int | None = None,
+) -> EvalResult:
     """One result wired to ``run`` with pass, cost, and latency controlled.
 
     :param run: The run this result belongs to.
@@ -6493,19 +6498,19 @@ class TestFrontierExclusions:
 
 def _hist_run(
     *,
-    cases,
-    score=None,
-    cost=0.01,
-    latency_ms=None,
-    created_at,
-    subject_id="ent-maple",
-    subject_label="Maple",
-    model="sonnet",
-    template_id="tpl-1",
-    variant_key=None,
-    transcript=None,
-    outcome=None,
-):
+    cases: Sequence[str],
+    score: int | None = None,
+    cost: float = 0.01,
+    latency_ms: float | None = None,
+    created_at: str,
+    subject_id: str = "ent-maple",
+    subject_label: str = "Maple",
+    model: str = "sonnet",
+    template_id: str = "tpl-1",
+    variant_key: str | None = None,
+    transcript: int | None = None,
+    outcome: int | None = None,
+) -> tuple[EvalRun, list[EvalResult]]:
     """Build one run and a result per case, for the history series tests.
 
     :param cases: The run's frozen ``test_case_ids`` — a change between two runs is a
