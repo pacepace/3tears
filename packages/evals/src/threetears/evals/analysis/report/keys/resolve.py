@@ -84,7 +84,7 @@ class _Stop:
 
 
 #: The ids each id slot offered on one input, after the slots matched before it (:attr:`_InputCache.offered`).
-_Offered = dict[tuple[Callable[[ReportInput, tuple[str, ...]], Iterable[str]], tuple[str, ...]], list[str]]
+type _Offered = dict[tuple[Callable[[ReportInput, tuple[str, ...]], Iterable[str]], tuple[str, ...]], list[str]]
 
 
 @dataclass
@@ -116,7 +116,7 @@ def _input_cache(report_input: ReportInput) -> _InputCache:
 
 def _offered(slot: _Ids, report_input: ReportInput, values: tuple[str, ...], offered: _Offered) -> list[str]:
     """The ids an id slot offers on an input after the slots matched before it, read once per input into ``offered``,
-    the input's own (:func:`_input_cache`), which a walk looks up once rather than at every slot."""
+    the input's own (:func:`_input_cache`)."""
     key = (slot.options, values)
     found = offered.get(key)
     if found is None:

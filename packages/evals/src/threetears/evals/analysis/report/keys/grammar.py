@@ -365,7 +365,6 @@ def figure_key_index(topic: str, *, forms_of: Callable[[ReportInput], PageForms]
     :return: The index, heading first.
     :rtype: str
     :raises UnresolvableReference: An example no longer resolves, as :func:`figure_key_grammar` raises it.
-    :raises ValueError: A family is in no group.
     """
     lines = [f"## {GRAMMAR_HEADING}", *_grammar_rules()]
     lines.append(
@@ -391,7 +390,6 @@ def figure_key_pages(*, forms_of: Callable[[ReportInput], PageForms]) -> dict[st
     :return: Each page, by its group's name, in the order the index lists them (:func:`figure_key_index`).
     :rtype: dict[str, str]
     :raises UnresolvableReference: An example no longer resolves, as :func:`figure_key_grammar` raises it.
-    :raises ValueError: A family is in no group.
     """
     example = _example_input()
     forms = forms_of(example)
