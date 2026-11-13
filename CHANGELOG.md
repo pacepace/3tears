@@ -242,9 +242,10 @@ empty transcript and scored as a fail. One production arm paid for 180 judge cal
 - `CandidateOutput.model_unserved`, set by `failed_call_output` for that owner (its new optional `unserved=` names
   the call). `failed_call_output` is now exported from `threetears.evals.kernel` as host contract: a host's own
   candidate kind routes a failed model call through it, which is what makes "model not served" skip the judge and
-  trip the circuit. The cell is excluded with its own cause, `model_unserved`, and its error quotes the provider. The runner
-  never judges it, whatever the kind's output holds, so a conversing kind that recorded turns with no reply is not
-  judged either. Reports word the cause and its remedy.
+  trip the circuit. The declared surface's limit rises from 497 to 498 for it (owner ruling, 2026-11-13); no other
+  name changes tier, so `AuthoredVerdict` and `WorldOutcome` stay `stable`. The cell is excluded with its own cause,
+  `model_unserved`, and its error quotes the provider. The runner never judges it, whatever the kind's output
+  holds, so a conversing kind that recorded turns with no reply is not judged either. Reports word the cause and its remedy.
 - A circuit: when three cells in a row find the model not served, the run stops with `ModelUnservedError`. A run
   whose matrix runs out holding any such cell raises it after its last cell, so a run never ends `completed` holding
   one. The job manager files it `exhausted` with the new
