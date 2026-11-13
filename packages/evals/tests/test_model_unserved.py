@@ -2,14 +2,16 @@
 
 Pinned:
 
-- **Classification**: the package's client reads "model not served" off each provider's structured answer (OpenRouter's
-  404 and its 400 for a model id it does not know, Anthropic's 404 ``not_found_error``, OpenAI's ``model_not_found``)
-  as the ``unserved`` owner; a 500 stays the candidate's, a 503 the provider's.
+- **Classification**: the package's client reads "model not served" off each provider's answer (Anthropic's 404
+  ``not_found_error``, OpenAI's ``model_not_found``, OpenRouter's 404 for a retired model and its 400 for a model id it
+  does not know) as the ``unserved`` owner; OpenRouter's other 404s (no endpoint takes the request) and a 500 stay the
+  candidate's, a 503 the provider's.
 - **One trial**: a cell whose model is not served is excluded with its own cause, quoting the provider, and never
   judged, even when the kind went on to record a transcript of turns with no reply, as a conversing kind does.
 - **The circuit**: cells that keep finding the model not served stop the arm ``exhausted``, naming the model and the
   provider's words, while the launch's other arm runs to its end; a served cell in between starts the count again,
-  and a run shorter than the circuit whose every cell is unserved stops all the same.
+  and a run whose cells run out holding any unserved cell, short of the circuit, still ends stopped, never
+  ``completed``.
 - **Resume**: the stopped arm, taken up once the model is served, runs its unserved cells again and completes.
 - **Other candidate errors stay the arm's**: a 500 is charged to the candidate, and the run completes.
 """
@@ -100,6 +102,35 @@ def _server_error() -> ProviderError:
             "candidate",
         ),
         ("openrouter", 400, {"error": {"code": 400, "message": "max_tokens is too large"}}, "candidate"),
+        (
+            "openrouter",
+            404,
+            {"error": {"code": 404, "message": "No endpoints found that support tool use."}},
+            "candidate",
+        ),
+        (
+            "openrouter",
+            404,
+            {
+                "error": {
+                    "code": 404,
+                    "message": "No endpoints found matching your data policy (Free model publication).",
+                }
+            },
+            "candidate",
+        ),
+        (
+            "openrouter",
+            404,
+            {"error": {"code": 404, "message": "No endpoints found that can handle the requested parameters."}},
+            "candidate",
+        ),
+        (
+            "openrouter",
+            404,
+            {"error": {"code": 404, "message": "No allowed providers are available for the selected model."}},
+            "candidate",
+        ),
         ("anthropic", 404, {"type": "error", "error": {"type": "not_found_error", "message": "model: x"}}, "unserved"),
         ("openai", 404, {"error": {"message": "The model `x` does not exist", "code": "model_not_found"}}, "unserved"),
         ("openrouter", 500, {"error": {"code": 500, "message": "Internal Server Error"}}, "candidate"),
@@ -173,20 +204,21 @@ class FakeJudgeClient:
         """Nothing to release."""
 
 
-def _conversing_invoke(raises: Callable[[], ProviderError], *, served_every: int = 0) -> Any:
+def _conversing_invoke(raises: Callable[[], ProviderError], *, served_every: int = 0, served_until: int = 0) -> Any:
     """An ``invoke`` that stands in for a host's conversing kind: its candidate's call raises, the kind routes the
     failure through the package's describer, and goes on to record the round's transcript with a turn that has no
     reply, rendered for the judge, as a conversation that carries on past a failed call does.
 
     :param raises: The error the candidate's call raises.
     :param served_every: When set, every ``served_every``-th call is served instead (the toy extraction runs).
+    :param served_until: The first ``served_until`` calls are served, and only the calls after them raise.
     """
     original = ToyExtractorKind.invoke
     calls = [0]
 
     async def invoke(self: ToyExtractorKind, instance: Any, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         calls[0] += 1
-        if served_every and calls[0] % served_every == 0:
+        if (served_every and calls[0] % served_every == 0) or calls[0] <= served_until:
             return await original(self, instance, test_case, sink)
         try:
             raise raises()
@@ -302,10 +334,11 @@ async def test_a_served_cell_between_unserved_ones_starts_the_circuits_count_aga
         _judged_run, monkeypatch, _conversing_invoke(_retired, served_every=CIRCUIT), n_cases=3, k=2
     )
 
-    await _execute(host, run, template, cases, wired)
+    with pytest.raises(ModelUnservedError):
+        await _execute(host, run, template, cases, wired)
 
     results = _results(host.storage, run)
-    assert len(results) == 6
+    assert len(results) == 6, "the circuit never tripped: every cell ran, and the run stopped holding its unserved ones"
     assert sorted(result.model_unserved for result in results) == [False, False, True, True, True, True]
     assert len(judge.calls) > 0 and all(result.judge_scores() for result in results if not result.model_unserved), (
         "the served cells are judged"
@@ -324,6 +357,21 @@ async def test_a_run_shorter_than_the_circuit_whose_every_cell_is_unserved_stops
 
     assert stopped.value.model == RETIRED and NO_LONGER_AVAILABLE in stopped.value.detail
     assert len(_results(host.storage, run)) == 2 and judge.calls == []
+
+
+async def test_a_run_whose_last_cell_alone_meets_a_retired_model_ends_stopped_not_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host, run, template, cases, wired, judge = off_loop(
+        _judged_run, monkeypatch, _conversing_invoke(_retired, served_until=5), n_cases=3, k=2
+    )
+
+    with pytest.raises(ModelUnservedError) as stopped:
+        await _execute(host, run, template, cases, wired)
+
+    results = _results(host.storage, run)
+    assert len(results) == 6 and sum(result.model_unserved for result in results) == 1
+    assert NO_LONGER_AVAILABLE in stopped.value.detail
 
 
 async def test_a_quick_eval_whose_model_is_not_served_stops_naming_it_and_never_judges_or_fails_a_case() -> None:

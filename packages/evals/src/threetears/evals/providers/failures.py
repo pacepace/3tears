@@ -40,12 +40,15 @@ _CREDIT_NOTICE: Final = "credit balance"
 #: A 500 or a 502 is an error rather than a refusal, so it stays the candidate's.
 _DECLINED: Final = frozenset({429, 503, 529})
 
-#: OpenRouter's typed error (``error.metadata.error_type``) for a 404 that names an image the request linked, not the
-#: model: the one 404 its chat endpoint answers about something other than the model it was asked for.
-_ROUTER_IMAGE_NOT_FOUND: Final = "image_not_found"
+#: What OpenRouter's 404 for a model it has retired says ("inception/mercury-3 is no longer available on OpenRouter").
+#: Its other 404s say no endpoint takes the request: none supports tool use, none matches the account's data policy,
+#: none takes the parameters under ``require_parameters``, no allowed provider is left. Those are the request's or the
+#: account's setup, which a resume would meet again with the model still served. The body carries no code that tells
+#: the two apart (its ``code`` is the status), so this one model-not-served answer is read off the message, narrowly,
+#: the way Anthropic's credit notice is.
+_ROUTER_RETIRED_MODEL: Final = "is no longer available"
 
-#: How OpenRouter's 400 for a model id it does not know ends. It carries no error code of its own (its ``code`` is
-#: the status), so this is the one model-not-served answer read off the message, the way Anthropic's credit notice is.
+#: How OpenRouter's 400 for a model id it does not know ends, read off the message for the same reason.
 _ROUTER_INVALID_MODEL: Final = "is not a valid model id"
 
 #: The error code OpenAI, and the OpenAI-compatible servers that copy its envelope, answer for a model it does not
@@ -78,10 +81,10 @@ def _error_object(body: object) -> Mapping[str, object]:
 def _model_unserved(provider: Provider, status: int, error: Mapping[str, object], message: str | None) -> bool:
     """Whether the provider's answer says it does not serve the model the request named.
 
-    Read off each provider's structured signal: OpenRouter's 404 (it found no endpoint serving the model: retired,
-    unknown, or none that takes the request), unless its typed error names a missing image; Anthropic's 404
-    ``not_found_error``; OpenAI's ``model_not_found`` code. OpenRouter's 400 for a model id it does not know carries
-    no code, so that one is read off its message.
+    Read off each provider's structured signal: Anthropic's 404 ``not_found_error`` and OpenAI's ``model_not_found``
+    code. OpenRouter's answers carry no code of their own, so its two are read off the message: the 404 for a model it
+    has retired, and the 400 for a model id it does not know. Its other 404s (no endpoint takes the request: tool use,
+    data policy, parameters, allowed providers) are not this: the model is still served, so they stay the candidate's.
 
     :param provider: The provider that answered.
     :ptype provider: Provider
@@ -99,11 +102,10 @@ def _model_unserved(provider: Provider, status: int, error: Mapping[str, object]
     if provider == "openai":
         return error.get("code") == _OPENAI_MODEL_NOT_FOUND
     # The router, the one provider left.
-    metadata = error.get("metadata")
-    typed = metadata.get("error_type") if isinstance(metadata, Mapping) else None
+    said = (message or "").lower()
     if status == 404:
-        return typed != _ROUTER_IMAGE_NOT_FOUND
-    return status == 400 and (message or "").rstrip(" .").lower().endswith(_ROUTER_INVALID_MODEL)
+        return _ROUTER_RETIRED_MODEL in said
+    return status == 400 and said.rstrip(" .").endswith(_ROUTER_INVALID_MODEL)
 
 
 class ProviderError(Exception):
@@ -126,8 +128,8 @@ class ProviderError(Exception):
         declined it and the client sent it again (:class:`~threetears.evals.providers.DeclinedRetry`).
     :ivar owner: Whose failure it was. ``account``: a 401 or 403 (OpenRouter's 403 is moderation, so not there), a
         402, Anthropic's 400 credit-balance notice, or OpenAI's 429 ``insufficient_quota``. ``provider``: any other
-        429, a 529 or a 503. ``unserved``: OpenRouter's 404 (no endpoint serves the model; one naming a missing image
-        apart) and its 400 for a model id it does not know, Anthropic's 404 ``not_found_error``, or OpenAI's
+        429, a 529 or a 503. ``unserved``: OpenRouter's 404 for a model it has retired ("is no longer available"; its
+        other 404s, no endpoint taking the request, stay the candidate's) and its 400 for a model id it does not know, Anthropic's 404 ``not_found_error``, or OpenAI's
         ``model_not_found``. ``candidate``: everything else, a 500 and a 502 among it.
     :ivar credit_spent: Whether the answer says the key's prepaid credit is spent: Anthropic's 400 credit-balance
         notice, or a 402 (OpenRouter's insufficient credits). An ``account`` failure that another key may not meet,

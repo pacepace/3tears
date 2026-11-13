@@ -1473,8 +1473,8 @@
     },
     "threetears.evals.kernel.AuthoredVerdict": {
       "kind": "type alias",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "Annotated[int, Field(strict=True)] | Literal['pass', 'fail']",
+      "tier": "stable"
     },
     "threetears.evals.kernel.BarAdjudication": {
       "kind": "model",
@@ -7228,8 +7228,8 @@
     },
     "threetears.evals.quick.WorldOutcome": {
       "kind": "model",
-      "signature": "WorldOutcome(answer: Any, state: Any = None, calls: list[RecordedCall] = [])",
-      "tier": "stable"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.quick.WorldRunner": {
       "kind": "dataclass",
