@@ -35,7 +35,7 @@ from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
 
 from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumn, KeyColumns
 from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
-from threetears.core.cache.duckdb_binds import run_bound
+from threetears.core.cache.duckdb_binds import KEYS, run_bound, run_joined
 from threetears.core.cache.base import (
     build_select_clause,
     bulk_columns,
@@ -365,6 +365,35 @@ def _decimal_code_scale(code: str) -> int | None:
     """
     is_decimal = code.startswith("DECIMAL(") and code.endswith(")")
     return int(code[len("DECIMAL(") : -1].split(",")[1]) if is_decimal else None
+
+
+#: the stored types :meth:`DuckDBBackend.deserialize_field` converts a value of; a value of any other (but a
+#: ``DECIMAL`` code, :func:`_decimal_code_scale`) is answered as DuckDB read it
+_CONVERTED_TYPES = frozenset(
+    {
+        "VARCHAR_UUID",
+        "VARCHAR_JSON",
+        "VARCHAR_ARRAY",
+        "VARCHAR_VECTOR",
+        "BOOLEAN",
+        "VARCHAR_DATETIME",
+        "VARCHAR_DATE",
+        "VARCHAR_TIME",
+        "VARCHAR_TIMETZ",
+        "VARCHAR_BYTEA",
+    }
+)
+
+
+def _converts(code: str) -> bool:
+    """whether :meth:`DuckDBBackend.deserialize_field` converts a value stored as ``code``.
+
+    :param code: the type code (:meth:`DuckDBBackend.column_types`)
+    :ptype code: str
+    :return: True for :data:`_CONVERTED_TYPES` and every ``DECIMAL`` code
+    :rtype: bool
+    """
+    return code in _CONVERTED_TYPES or _decimal_code_scale(code) is not None
 
 
 def stored_value(value: Any, col_type: str) -> Any:
@@ -1818,19 +1847,19 @@ class DuckDBBackend:
         pk_cols = self._pk_columns(primary_key)
         # one list a key column, bound through Arrow by run_bound: a placeholder a value cost DuckDB's per-value
         # pandas probes (100 ids ~27 ms, 1,000 ~320 ms on 200k rows, against ~2 and ~4.5 ms), and an OR a
-        # composite key ~100x that of the semi-join
+        # composite key ~100x that of the semi-join. A composite key's columns are one Arrow table the statement
+        # semi-joins (run_joined), as a table DuckDB holds: no variable set and reset around it
         stored = [self._stored_pk_values(table, eid, pk_cols) for eid in entity_ids]
         lists: list[Any] = [[values[n] for values in stored] for n in range(len(pk_cols))]
-        if len(pk_cols) == 1:
-            matched = f"{quote_identifier(pk_cols[0])} = ANY(?)"
-        else:
-            pk_names = ", ".join(quote_identifier(c) for c in pk_cols)
-            unnested = ", ".join("unnest(?)" for _ in pk_cols)
-            matched = f"({pk_names}) IN (SELECT {unnested})"
-        sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {matched}"  # noqa: S608
         with self._db_lock:
-            result_columns, rows = run_bound(self._db, sql, lists, _described_rows)
-        return [self._deserialize_row(table, dict(zip(result_columns, row))) for row in rows]
+            if len(pk_cols) == 1:
+                sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {quote_identifier(pk_cols[0])} = ANY(?)"  # noqa: S608
+                result_columns, rows = run_bound(self._db, sql, lists, _described_rows)
+            else:
+                pk_names = ", ".join(quote_identifier(c) for c in pk_cols)
+                sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE ({pk_names}) IN ({KEYS})"  # noqa: S608
+                result_columns, rows = run_joined(self._db, sql, lists, _described_rows)
+        return self._deserialized_rows(table, result_columns, rows)
 
     def delete_by_id(
         self,
@@ -1919,8 +1948,8 @@ class DuckDBBackend:
 
     def deserialize_field(self, value: Any, col_type: str) -> Any:
         """Deserialize a single DuckDB value back to the correct Python type."""
-        if value is None:
-            return None
+        if value is None or not _converts(col_type):
+            return value
 
         result: Any = value
         scale = _decimal_code_scale(col_type)
@@ -1952,6 +1981,37 @@ class DuckDBBackend:
         elif col_type == "VARCHAR_BYTEA":
             result = bytes.fromhex(value) if value else None
         return result
+
+    def _deserialized_rows(
+        self, table: str, columns: Sequence[str], rows: Sequence[Sequence[Any]]
+    ) -> list[dict[str, Any]]:
+        """``rows`` (of ``columns``) as :meth:`_deserialize_row` makes each, with only the columns whose stored type
+        :meth:`deserialize_field` converts passed through it (every column, where a subclass converts its own way).
+
+        :param table: the table the rows are of
+        :ptype table: str
+        :param columns: the rows' columns, in order
+        :ptype columns: Sequence[str]
+        :param rows: the rows
+        :ptype rows: Sequence[Sequence[Any]]
+        :return: a dict a row
+        :rtype: list[dict[str, Any]]
+        """
+        if type(self).deserialize_field is not DuckDBBackend.deserialize_field:
+            return [self._deserialize_row(table, dict(zip(columns, row, strict=True))) for row in rows]
+        schema = self._schema_info.get(table, {})
+        converted = [
+            (n, name, schema.get(name, "VARCHAR"))
+            for n, name in enumerate(columns)
+            if _converts(schema.get(name, "VARCHAR"))
+        ]
+        made: list[dict[str, Any]] = []
+        for row in rows:
+            answer = dict(zip(columns, row, strict=True))
+            for n, name, col_type in converted:
+                answer[name] = self.deserialize_field(row[n], col_type)
+            made.append(answer)
+        return made
 
     def _deserialize_row(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
         """Deserialize a DuckDB row back to Python types using schema registry."""
