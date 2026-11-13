@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
     # annotation-only. `Subjects` above is a genuine runtime use, but it lives
     # in a nats-py-free submodule, so importing it eagerly costs nothing.
-    from threetears.nats import NatsClient, Subscription
+    from threetears.nats import Publisher, Subscription, TypedSubscriber
 
 __all__ = [
     "CacheInvalidationMessage",
@@ -506,7 +506,7 @@ class CollectionRegistry:
         # handle it describes. The client is retained solely so ``stop`` can
         # route the unsubscribe back through it, keeping the client's own
         # subscription bookkeeping correct.
-        self._nats_client: NatsClient | None = None
+        self._nats_client: TypedSubscriber | None = None
         self._invalidation_subscription: Subscription | None = None
 
     def configure(
@@ -1683,7 +1683,7 @@ class CollectionRegistry:
     # Cache coherence -- cross-pod L1 invalidation via typed NATS pub/sub
     # ------------------------------------------------------------------
 
-    async def start_invalidation_listener(self, nats_client: NatsClient) -> None:
+    async def start_invalidation_listener(self, nats_client: TypedSubscriber) -> None:
         """subscribe to cache invalidation signals from other pods.
 
         wire envelope is :class:`CacheInvalidationMessage` -- typed
@@ -1706,8 +1706,8 @@ class CollectionRegistry:
         running. call :meth:`stop_invalidation_listener` first to
         rebind to a different client.
 
-        :param nats_client: connected typed NATS wrapper client
-        :ptype nats_client: NatsClient
+        :param nats_client: connected typed NATS wrapper client (a NatsClient, or anything that subscribes a model and unsubscribes)
+        :ptype nats_client: TypedSubscriber
         :return: nothing
         :rtype: None
         :raises SubscribeError: if the underlying subscribe fails to
@@ -1953,7 +1953,7 @@ class CollectionRegistry:
 
     async def publish_invalidation(
         self,
-        nats_client: NatsClient | None,
+        nats_client: Publisher | None,
         table_name: str,
         entity_id: Any,
         *,
@@ -1984,7 +1984,7 @@ class CollectionRegistry:
 
         :param nats_client: connected typed NATS wrapper client;
             ``None`` short-circuits (no-op)
-        :ptype nats_client: NatsClient | None
+        :ptype nats_client: Publisher | None
         :param table_name: target table name
         :ptype table_name: str
         :param entity_id: pk value (single-pk) or tuple of pk values
@@ -2081,7 +2081,7 @@ class CollectionRegistry:
             )
 
     async def publish_invalidations(
-        self, nats_client: NatsClient | None, table_name: str, messages: Sequence[CacheInvalidationMessage]
+        self, nats_client: Publisher | None, table_name: str, messages: Sequence[CacheInvalidationMessage]
     ) -> None:
         """publish the row messages of one write of many rows: one message for them all when
         :attr:`batch_invalidations` is on (up to :data:`_ROWS_A_MESSAGE` rows each), else one a row.
@@ -2090,7 +2090,7 @@ class CollectionRegistry:
         dropped, and each row reaches its derived caches. A failed publish is logged as one is there.
 
         :param nats_client: connected typed NATS wrapper client; ``None`` publishes nothing
-        :ptype nats_client: NatsClient | None
+        :ptype nats_client: Publisher | None
         :param table_name: the table every message names
         :ptype table_name: str
         :param messages: the row messages, each built by :meth:`row_message`

@@ -40,7 +40,7 @@ try:
 except ImportError:  # NOSILENT: the snapshot extra is optional; without it every parameter is bound as before
     _PYARROW = False
 
-__all__ = ["run_bound"]
+__all__ = ["KEYS", "run_bound", "run_joined"]
 
 _T = TypeVar("_T")
 
@@ -58,15 +58,21 @@ _TOKENS: Final = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|--[^\n]*|/\*.*?
 
 _INT32: Final = (-(2**31), 2**31 - 1)
 
+#: where a :func:`run_joined` statement names its keys' relation (``... IN ({keys})``)
+KEYS: Final = "{keys}"
 
-def _column(values: Sequence[Any]) -> Any:
-    """a list parameter's values as one Arrow list (of one row) typed as DuckDB types the bound list, or None when
-    Arrow cannot type it so.
+#: the relation :func:`run_joined` registers a statement's keys as, only while the statement runs
+_KEYS_RELATION: Final = "_threetears_keys"
 
-    :param values: the list
+
+def _typed(values: Sequence[Any]) -> Any:
+    """``values`` as one Arrow array typed as DuckDB types the same values bound as a list, or None when Arrow cannot
+    type them so.
+
+    :param values: the values
     :ptype values: Sequence[Any]
-    :return: the list array, or None
-    :rtype: pyarrow.ListArray | None
+    :return: the array, or None
+    :rtype: pyarrow.Array | None
     """
     try:
         array = pa.array(list(values))
@@ -86,6 +92,21 @@ def _column(values: Sequence[Any]) -> Any:
         or pa.types.is_timestamp(kind)
         or pa.types.is_date32(kind)
     ):
+        return None
+    return array
+
+
+def _column(values: Sequence[Any]) -> Any:
+    """a list parameter's values as one Arrow list (of one row) typed as DuckDB types the bound list, or None when
+    Arrow cannot type it so.
+
+    :param values: the list
+    :ptype values: Sequence[Any]
+    :return: the list array, or None
+    :rtype: pyarrow.ListArray | None
+    """
+    array = _typed(values)
+    if array is None:
         return None
     return pa.ListArray.from_arrays(pa.array([0, len(array)], type=pa.int32()), array)
 
@@ -181,3 +202,40 @@ def run_bound(conn: Any, query: str, params: Sequence[Any], answer: Callable[[An
         raise
     conn.execute(f"RESET VARIABLE {_VARIABLE}")
     return answered
+
+
+def run_joined(conn: Any, query: str, columns: Sequence[Sequence[Any]], answer: Callable[[Any], _T]) -> _T:
+    """``answer`` of ``query`` with :data:`KEYS` read as a relation of ``columns``: a row a key, its nth column the
+    nth of ``columns`` (a composite key's parts, value for value), registered as one Arrow table while the statement
+    runs. The statement joins it as a table DuckDB holds (``(a, b) IN ({keys})`` is a semi-join on it), with no list
+    bound, no variable set and none reset. Columns Arrow cannot type as DuckDB would are bound as lists through
+    :func:`run_bound` and unnested instead: the same rows, slower.
+
+    ``answer`` reads the result before the relation goes (a DuckDB connection holds one result).
+
+    :param conn: the DuckDB connection or cursor, held by the caller alone
+    :ptype conn: duckdb.DuckDBPyConnection
+    :param query: the statement, naming the keys' relation as :data:`KEYS` and taking no parameters
+    :ptype query: str
+    :param columns: each key column's values, all as long
+    :ptype columns: Sequence[Sequence[Any]]
+    :param answer: what to make of the result: its rows, its status, its Arrow
+    :ptype answer: Callable[[duckdb.DuckDBPyConnection], _T]
+    :return: the answer
+    :rtype: _T
+    :raises ValueError: when the columns differ in length, or the statement names no :data:`KEYS`
+    """
+    if KEYS not in query:
+        raise ValueError(f"the statement names no {KEYS}: {query}")
+    if len({len(column) for column in columns}) > 1:
+        raise ValueError(f"the key columns differ in length: {[len(column) for column in columns]}")
+    arrays = [_typed(column) for column in columns] if _PYARROW else [None]
+    if all(array is not None for array in arrays):
+        names = [f"k{n + 1}" for n in range(len(columns))]
+        conn.register(_KEYS_RELATION, pa.table(dict(zip(names, arrays, strict=True))))
+        try:
+            return answer(conn.execute(query.replace(KEYS, f"SELECT {', '.join(names)} FROM {_KEYS_RELATION}")))
+        finally:
+            conn.unregister(_KEYS_RELATION)
+    unnested = ", ".join("unnest(?)" for _ in columns)
+    return run_bound(conn, query.replace(KEYS, f"SELECT {unnested}"), [list(column) for column in columns], answer)

@@ -1,16 +1,22 @@
-"""``DuckDBBackend.select_batch``: a page of keys bound as one list a key column (through Arrow, by ``run_bound``), never a
-placeholder a value -- the same rows as the placeholder-a-value statement it replaced, without DuckDB's per-value
-pandas probe (where pandas is not installed, each bound value searches the whole import path)."""
+"""``DuckDBBackend.select_batch``: a page of keys bound as one list a key column (through Arrow, by ``run_bound``), a
+composite key's columns as one registered Arrow relation (``run_joined``), never a placeholder a value -- the same
+rows as the placeholder-a-value statement it replaced, without DuckDB's per-value pandas probe (where pandas is not
+installed, each bound value searches the whole import path); and each row deserialized as ``deserialize_field`` makes
+every column of it."""
 
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
-from sqlalchemy import Column, Integer, MetaData, String, Table
+from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, Numeric, String, Table
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from threetears.core.cache.duckdb import DuckDBBackend
 from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
@@ -32,6 +38,16 @@ def _metadata() -> MetaData:
         Column("a", String, primary_key=True),
         Column("b", Integer, primary_key=True),
         Column("v", Integer),
+    )
+    Table(
+        "typed",
+        metadata,
+        Column("owner", UUID(as_uuid=True), primary_key=True),
+        Column("at", DateTime(timezone=True), primary_key=True),
+        Column("payload", JSONB),
+        Column("ok", Boolean),
+        Column("amount", Numeric(10, 2)),
+        Column("note", String),
     )
     return metadata
 
@@ -89,6 +105,66 @@ def test_a_batch_answers_the_rows_the_placeholder_a_value_statement_answered(
     assert _sorted(backend.select_batch(table, ids, primary_key)) == _sorted(
         _placeholder_a_value(backend, table, ids, pk)
     )
+
+
+_AT = datetime(2026, 11, 3, 20, 0, tzinfo=UTC)
+
+
+def _typed_rows(backend: DuckDBBackend) -> list[tuple[uuid.UUID, datetime]]:
+    keys = [(uuid.UUID(int=n), _AT + timedelta(minutes=n)) for n in range(12)]
+    for n, (owner, at) in enumerate(keys):
+        payload = None if n % 4 == 0 else {"n": n, "tags": ["a", "b"]}
+        ok = None if n % 5 == 0 else n % 2 == 0
+        backend.upsert(
+            "typed",
+            {"owner": owner, "at": at, "payload": payload, "ok": ok, "amount": Decimal(n) / 4, "note": f"n{n}"},
+            ("owner", "at"),
+        )
+    return keys
+
+
+class _CountingBackend(DuckDBBackend):
+    """a backend converting values its own way: every column of every row must reach it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.converted: list[str] = []
+
+    def deserialize_field(self, value: Any, col_type: str) -> Any:
+        self.converted.append(col_type)
+        return super().deserialize_field(value, col_type)
+
+
+def test_a_composite_key_s_rows_are_each_column_as_deserialize_field_makes_it(backend: DuckDBBackend) -> None:
+    """Flips if a row skips the conversion a column's type needs (a UUID, an instant, JSON, a boolean, a decimal) or
+    converts a column whose type needs none: each row is exactly every column through ``deserialize_field``."""
+    keys = _typed_rows(backend)
+    asked = [keys[1], keys[4], keys[5], keys[10], (uuid.UUID(int=99), _AT)]
+    types = backend.column_types("typed")
+    assert {name for name, code in types.items() if code != "VARCHAR"} == {"owner", "at", "payload", "ok", "amount"}
+    every = backend.execute_query("SELECT * FROM typed")
+    expected = [
+        {c: backend.deserialize_field(v, types[c]) for c, v in row.items()}
+        for row in every
+        if row["note"] in {"n1", "n4", "n5", "n10"}
+    ]
+    rows = backend.select_batch("typed", asked, ("owner", "at"))
+    assert len(rows) == 4 and sorted(map(repr, rows)) == sorted(map(repr, expected))
+    assert {type(r["owner"]) for r in rows} == {uuid.UUID} and {type(r["at"]) for r in rows} == {datetime}
+    assert {type(r["payload"]) for r in rows} == {dict, type(None)} and {type(r["amount"]) for r in rows} == {Decimal}
+
+
+def test_a_backend_converting_its_own_way_gets_every_column() -> None:
+    """Flips if the skip of columns needing no conversion reaches a subclass that converts values itself."""
+    made = _CountingBackend()
+    made.initialize(_metadata())
+    try:
+        keys = _typed_rows(made)
+        made.converted.clear()
+        rows = made.select_batch("typed", keys[:3], ("owner", "at"))
+        assert len(rows) == 3 and len(made.converted) == 3 * 6
+    finally:
+        made.reset()
 
 
 def test_named_columns_are_the_only_ones_answered(backend: DuckDBBackend) -> None:

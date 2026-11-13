@@ -17,7 +17,7 @@ import pytest
 from sqlalchemy import MetaData
 
 from threetears.core.cache.duckdb import DuckDBBackend, query_arrow
-from threetears.core.cache.duckdb_binds import run_bound
+from threetears.core.cache.duckdb_binds import KEYS, run_bound, run_joined
 from threetears.core.keyed import InlineDuckDB, ThreadedDuckDB, run_inline
 from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
 
@@ -85,6 +85,48 @@ def test_a_statement_answers_what_binding_its_values_answers(
     """Flips if a list read through Arrow answers other rows, or is typed otherwise (INTEGER[] against BIGINT[]),
     than the same list bound value by value; or if a list Arrow cannot type as DuckDB does is not bound as before."""
     assert run_bound(conn, query, params, _fetch) == conn.execute(query, params).fetchall()
+
+
+#: (key columns, the values of each): every kind of key run_joined registers through Arrow, and every kind it binds
+#: as lists to unnest instead; read against ``t`` by (k, s), the composite key a pair of columns makes
+_JOINED: list[Any] = [
+    pytest.param([1, 5, 9, 700, 2000], ["s1", "s5", "nope", "s700", "s2000"], id="int-and-text"),
+    pytest.param([1, 2**40, 3], ["s1", "s2", "s3"], id="past-32-bits"),
+    pytest.param([None, 3, 4], ["s2", None, "s4"], id="nulls-match-nothing"),
+    pytest.param([7, 7, 8], ["s7", "s7", "s8"], id="a-key-twice-answers-its-row-once"),
+    pytest.param([1], ["s1"], id="one-key"),
+    pytest.param([Decimal("1"), Decimal("2")], ["s1", "s2"], id="decimal-bound-as-lists"),
+]
+
+
+@pytest.mark.parametrize(("ks", "ss"), _JOINED)
+def test_a_composite_key_s_relation_answers_what_unnesting_its_bound_lists_answers(
+    conn: duckdb.DuckDBPyConnection, ks: list[Any], ss: list[Any]
+) -> None:
+    """Flips if a composite key read as a registered Arrow relation answers other rows than the same keys bound as
+    lists and unnested (value by value), or a key Arrow cannot type as DuckDB does is not bound as before."""
+    joined = f"SELECT k, s FROM t WHERE (k, s) IN ({KEYS}) ORDER BY k"
+    unnested = "SELECT k, s FROM t WHERE (k, s) IN (SELECT unnest($1), unnest($2)) ORDER BY k"
+    assert run_joined(conn, joined, [ks, ss], _fetch) == conn.execute(unnested, [ks, ss]).fetchall()
+
+
+def test_a_composite_key_s_relation_is_gone_once_the_answer_is_read(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a statement's keys stay registered on the connection after its answer, or a failing statement
+    leaves them."""
+    run_joined(conn, f"SELECT k FROM t WHERE (k, s) IN ({KEYS})", [[1, 2, 3, 4], ["s1", "s2", "s3", "s4"]], _fetch)
+    with pytest.raises(duckdb.Error):
+        run_joined(conn, f"SELECT nope FROM t WHERE (k, s) IN ({KEYS})", [[1], ["s1"]], _fetch)
+    views = conn.execute("SELECT count(*) FROM duckdb_views() WHERE view_name = '_threetears_keys'").fetchall()
+    assert views == [(0,)]
+
+
+def test_a_composite_key_s_statement_must_name_its_keys_and_its_columns_agree_in_length(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    with pytest.raises(ValueError, match="names no"):
+        run_joined(conn, "SELECT k FROM t", [[1], ["s1"]], _fetch)
+    with pytest.raises(ValueError, match="differ in length"):
+        run_joined(conn, f"SELECT k FROM t WHERE (k, s) IN ({KEYS})", [[1, 2], ["s1"]], _fetch)
 
 
 def test_the_variable_is_gone_once_the_answer_is_read(conn: duckdb.DuckDBPyConnection) -> None:
