@@ -53,7 +53,7 @@ from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
     pass_criterion,
     refuse_unlike_editors,
 )
-from packages.evals.tests.offline_support import Connect, refuse_connects
+from packages.evals.tests.offline_support import Connect, assert_no_connects, refuse_connects
 from packages.evals.tests.writer_case_support import SEED
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.harness import WriterCaseFile
@@ -155,7 +155,7 @@ def test_each_variant_runs_dry_offline_and_its_readout_names_it(variant: str) ->
     with pytest.MonkeyPatch.context() as monkeypatch:
         attempts = _offline(monkeypatch)
         found = asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=DRY_CAP_USD, out=None, variant=variant))
-    assert attempts == []
+    assert_no_connects(attempts)
     assert list(found.result.arms) == [SHIPPED, variant]
     assert all(summary.status == "completed" for summary in found.result.arms.values())
     assert found.report.candidate == variant
@@ -184,7 +184,7 @@ def test_main_takes_a_variant_by_name_and_refuses_an_unknown_one(
     attempts = _offline(monkeypatch)
     assert writer_acceptance.main(["--dry", "--variant", ONE_PARAGRAPH]) == 0
     printed = capsys.readouterr().out
-    assert attempts == []
+    assert_no_connects(attempts)
     assert VARIANTS[ONE_PARAGRAPH].question in printed
     assert f"| {ONE_PARAGRAPH} | candidate | " in printed
     with pytest.raises(SystemExit):
@@ -195,7 +195,7 @@ def test_the_dry_run_makes_no_network_call_over_two_arms_and_every_held_out_case
     dry: tuple[Acceptance, list[Connect]],
 ) -> None:
     found, attempts = dry
-    assert attempts == []
+    assert_no_connects(attempts)
     result = found.result
     assert list(result.arms) == [SHIPPED, HOLLOW]
     assert result.control == SHIPPED
@@ -520,7 +520,7 @@ def test_main_reads_a_case_directory_and_prints_the_readout(
         case.write(tmp_path / f"{case.name}.json.gz")
     assert writer_acceptance.main(["--dry", "--cases", str(tmp_path)]) == 0
     printed = capsys.readouterr().out
-    assert attempts == []
+    assert_no_connects(attempts)
     assert f"| {HOLLOW} | candidate | " in printed
     assert f"| {len(names)} | completed |" in printed
     # r1 and r2 have no prototype 5 document, so their dry pages are missing on both sides and their pairs tie.
@@ -553,7 +553,8 @@ def test_a_report_budget_that_cannot_admit_one_turn_is_refused_and_one_under_two
     assert said is not None, str(refused.value)
     ceiling, admits = float(said[1]), float(said[2])
     assert 0.25 < ceiling <= admits < ceiling + 0.011
-    assert attempts == [] and capsys.readouterr().out == ""
+    assert_no_connects(attempts)
+    assert capsys.readouterr().out == ""
     # $0.50 fits the first turn and not two of it at the analyst's 8,192-token cap, so the run goes through, warned
     # once with the records.
     assert (
@@ -571,7 +572,7 @@ def test_a_report_budget_that_cannot_admit_one_turn_is_refused_and_one_under_two
         == 0
     )
     assert "recorded Sonnet 5.5" not in capsys.readouterr().out
-    assert attempts == []
+    assert_no_connects(attempts)
 
 
 def test_a_live_run_names_its_cap_and_its_directory() -> None:
@@ -616,7 +617,7 @@ def test_a_dry_run_rehearses_the_live_readout_its_floor_line_and_its_stop_rule_l
         "every case."
     ]
     assert re.search(r"^(Read|Stopped) .* under the rule declared before the first result: ", printed.out, re.M)
-    assert attempts == []
+    assert_no_connects(attempts)
 
 
 def test_a_live_run_under_ten_cases_prints_its_floor_line_before_anything_is_bought(
@@ -722,7 +723,7 @@ def test_a_batched_dry_run_launches_its_batches_and_its_readout_says_where_it_st
     attempts = _offline(monkeypatch)
     assert writer_acceptance.main(["--dry", "--stop-when", "separated", "--batch-size", "3"]) == 0
     printed = capsys.readouterr().out
-    assert attempts == []
+    assert_no_connects(attempts)
     # The dry judge's preference never separates, so the arms ran every case: the launch line says so once, the stop
     # line counts the cases read, and no line restates either.
     launch = (
