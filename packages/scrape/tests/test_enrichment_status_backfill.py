@@ -48,8 +48,9 @@ async def test_v013_writes_each_outcome_by_the_rows_keys() -> None:
     assert writes == [
         ('UPDATE "scrape_extractions" SET "enrichment_status" = $1 WHERE "id" = ANY($2::text[])', ("enriched", ["b"])),
         (
-            'UPDATE "scrape_extractions" SET "enrichment_status" = $1, "enrichment_notes" = $2, '
-            '"enrichment_failure" = $3 WHERE "id" = ANY($4::text[])',
-            ("failed", None, LEGACY_EMPTY_ENRICHMENT_FAILURE, ["c", "d"]),
+            # notes cleared: update_keyed writes a None value as NULL, not as a bound None
+            'UPDATE "scrape_extractions" SET "enrichment_status" = $1, "enrichment_notes" = NULL, '
+            '"enrichment_failure" = $2 WHERE "id" = ANY($3::text[])',
+            ("failed", LEGACY_EMPTY_ENRICHMENT_FAILURE, ["c", "d"]),
         ),
     ]
