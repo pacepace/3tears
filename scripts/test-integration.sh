@@ -44,6 +44,7 @@ cd "$REPO_ROOT"
 # machine with room: one package at a time on a laptop.
 HERE_FILES=(
     packages/datasources/tests/integration/test_redshift_driver_live.py
+    packages/datasources/tests/integration/test_redshift_fetch_within_live.py
     packages/datasources/tests/integration/test_transaction_redshift_live.py
     packages/models/tests/live/test_claude_cli_structured_output_live.py
     packages/nats/tests/integration/test_lame_duck_handover_live.py

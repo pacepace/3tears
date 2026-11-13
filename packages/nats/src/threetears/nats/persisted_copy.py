@@ -206,6 +206,10 @@ class CopyWriteHealth:
         self._consecutive_failures = 0
 
 
+#: the pause after a bucket's first failed declaration, when its owner names none; it doubles each failure
+_RETRY_FIRST_DELAY: Final = timedelta(seconds=0.5)
+
+
 class PersistedCopyBucket:
     """owns one KV bucket that is the persisted copy of an in-memory structure.
 
@@ -238,8 +242,9 @@ class PersistedCopyBucket:
     :ptype history: int
     :param direct: the ``allow_direct`` value the bucket must carry
     :ptype direct: bool
-    :param retry_first_delay: the pause after the first failed declaration; it doubles each failure
-    :ptype retry_first_delay: timedelta
+    :param retry_first_delay: the pause after the first failed declaration; it doubles each failure; ``None`` for
+        half a second
+    :ptype retry_first_delay: timedelta | None
     :param retry_max_delay: the longest pause between two declarations
     :ptype retry_max_delay: timedelta
     """
@@ -255,7 +260,7 @@ class PersistedCopyBucket:
         ttl: timedelta | None = None,
         history: int = 1,
         direct: bool = True,
-        retry_first_delay: timedelta = timedelta(seconds=0.5),
+        retry_first_delay: timedelta | None = None,
         retry_max_delay: timedelta = timedelta(seconds=30),
     ) -> None:
         """bind the client, the bucket's name and shape, and the two callbacks; no I/O.
@@ -276,14 +281,17 @@ class PersistedCopyBucket:
         :ptype history: int
         :param direct: the ``allow_direct`` value the bucket must carry
         :ptype direct: bool
-        :param retry_first_delay: the pause after the first failed declaration; it doubles each failure
-        :ptype retry_first_delay: timedelta
+        :param retry_first_delay: the pause after the first failed declaration; it doubles each failure; ``None``
+            for half a second
+        :ptype retry_first_delay: timedelta | None
         :param retry_max_delay: the longest pause between two declarations
         :ptype retry_max_delay: timedelta
         :return: nothing
         :rtype: None
         :raises ValueError: when the retry schedule is not ``0 < retry_first_delay <= retry_max_delay``
         """
+        if retry_first_delay is None:
+            retry_first_delay = _RETRY_FIRST_DELAY
         if retry_first_delay <= timedelta(0) or retry_max_delay < retry_first_delay:
             raise ValueError(
                 f"PersistedCopyBucket {bucket!r} needs 0 < retry_first_delay <= retry_max_delay, got "

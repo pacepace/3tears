@@ -156,6 +156,7 @@ default_selection = [
     "packages/agent/audit/tests/integration",
     "packages/agent/identity/tests/integration",
     "packages/agent/intention/tests/integration",
+    "packages/agent/knowledge/tests/integration",
     "packages/agent/memory/tests/integration",
     "packages/agent/skills/tests/integration",
     "packages/agent/tools/tests/integration",
@@ -175,10 +176,12 @@ default_selection = [
     "packages/datasources/tests/integration/test_transaction_live.py",
     "packages/epoch/tests/integration",
     "packages/geo/tests/integration",
+    "packages/iam/tests/integration",
     "packages/langgraph/tests/integration",
     "packages/mcp/tests/integration",
     # nats' modules; the Docker lame-duck module drives containers itself and stays local (its scenarios run
     # here as test_lame_duck_handover_process_live.py)
+    "packages/nats/tests/integration/test_a_large_request_round_trips_live.py",
     "packages/nats/tests/integration/test_a_lost_file_stream_comes_back_live.py",
     "packages/nats/tests/integration/test_a_persisted_copy_is_refilled_live.py",
     "packages/nats/tests/integration/test_a_pod_can_bounce_its_bytes_to_any_subject_residual_live.py",

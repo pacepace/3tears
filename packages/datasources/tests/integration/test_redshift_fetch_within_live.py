@@ -32,7 +32,7 @@ import pytest
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 
-pytestmark = [pytest.mark.integration, pytest.mark.live]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.secrets]
 
 #: the rows a page reads in these tests
 _PAGE_ROWS = 100

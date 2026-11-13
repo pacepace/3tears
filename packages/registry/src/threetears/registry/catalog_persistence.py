@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import functools
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from threetears.nats import PersistedCopyBucket
 
@@ -85,7 +85,6 @@ def catalog_bucket(
     :return: the owner; :meth:`PersistedCopyBucket.start` begins declaring
     :rtype: PersistedCopyBucket
     """
-    schedule: dict[str, Any] = {} if retry_first_delay is None else {"retry_first_delay": retry_first_delay}
     return PersistedCopyBucket(
         client=client,
         bucket=bucket,
@@ -94,5 +93,5 @@ def catalog_bucket(
         storage="file",
         history=1,
         direct=True,
-        **schedule,
+        retry_first_delay=retry_first_delay,
     )
