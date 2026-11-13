@@ -9,8 +9,9 @@ as ``served_provider``. Contracts held here:
   model's cost differs by who served it;
 - **stored rows**: a row naming none is stored without the key, byte for byte as before the field, and a stored row
   without it reads as not recorded;
-- **the census to the page**: each arm's pricing names the upstreams its model rows recorded, and the options table
-  and the writer's cost fact say "not recorded" where none was, and that the rest were not where only some were.
+- **the census to the page**: each arm's pricing names the upstreams its model rows recorded; where only some were,
+  the options table and the writer's cost fact say the rest were not recorded; where none was, the writer's cost fact
+  says so and the options table names none, as it did before any was recorded, so no page built then moves.
 """
 
 from __future__ import annotations
@@ -30,7 +31,6 @@ from threetears.evals.analysis.report.parts.tables import arms_table
 from threetears.evals.analysis.report.parts.words import (
     SERVED_BY_IN_PART_TEMPLATE,
     SERVED_BY_TEMPLATE,
-    SERVED_BY_UNRECORDED,
 )
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
@@ -164,12 +164,15 @@ def test_the_census_names_the_recorded_upstream_and_the_options_table_says_serve
     assert [arm.served_by for arm in campaign_overview(built, "snap").arms if arm.served_by] == [[UPSTREAM]]
 
 
-def test_an_arm_whose_rows_recorded_no_upstream_reads_not_recorded_never_a_guess() -> None:
+def test_an_arm_whose_rows_recorded_no_upstream_names_none_and_its_page_reads_as_before() -> None:
+    """No provider is guessed, and the cell says nothing it did not say before any was recorded, so a page built over
+    calls recorded then is unchanged (and a judge comparing such pages is asked what its recordings were keyed on)."""
     built = report_input(campaign_over(_trials([[_candidate(upstream=None)] for _ in range(CASES)])))
     pricing, row = _fast(built)
     assert pricing is not None and pricing.providers == [] and not pricing.providers_in_part
-    assert row["priced_by"].flag == SERVED_BY_UNRECORDED
+    assert (row["priced_by"].value, row["priced_by"].flag) == ("openrouter:reported", None)
     assert '"providers_in_part"' not in built.model_dump_json(), "left out while False"
+    assert not [arm for arm in campaign_overview(built, "snap").arms if arm.served_by]
 
 
 def test_an_arm_whose_rows_recorded_an_upstream_for_some_calls_says_the_rest_were_not() -> None:

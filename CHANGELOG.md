@@ -105,9 +105,10 @@ shards before their tests.
 **Fixed:** an LLM call routed through OpenRouter recorded no upstream provider, so the "served by" beside each arm's
 cost on the report was always empty for model calls. A usage row now records the upstream the reply named
 (`RoleUsage.served_provider`, beside `served_model`), and calls served by two upstreams are two rows. Each arm's
-pricing names those providers in the options table and in the writer's cost fact. Where no reply named one, the page
-says `provider not recorded`; where only some did, it names them and says the rest were not recorded. A row stored
-before the field reads as not recorded. The field is left out of a row that names none, so stored rows and
+pricing names those providers in the options table and in the writer's cost fact. Where only some replies named one,
+both say the rest were not recorded. Where none did, the writer's cost fact says the provider was not recorded and the
+options table names none, as before, so a page built over earlier calls reads unchanged. A row stored before the field
+reads as not recorded. The field is left out of a row that names none, so stored rows and
 fingerprints do not move.
 
 ### evals: a seed reads each template revision's cases once (#1148)
