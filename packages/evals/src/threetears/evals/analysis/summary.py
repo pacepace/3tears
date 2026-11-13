@@ -389,6 +389,14 @@ class DimensionSummary(BaseModel):
 #: measures and checks count and its judged readings leave it out (``EvalResult.judging_set_aside``).
 CaseOutcome = Literal["scored", "not_judged", "failed", "excluded"]
 
+#: Each case outcome as a case line prints it.
+_OUTCOME_WORDS: dict[CaseOutcome, str] = {
+    "scored": "scored",
+    "not_judged": "not judged",
+    "failed": "failed",
+    "excluded": "excluded",
+}
+
 #: What a case the cost cap set aside unjudged says about itself, where a case that failed or was excluded gives its
 #: error: why nothing scored it, and what judges it.
 NOT_JUDGED_LINE = (
@@ -606,7 +614,10 @@ class CaseResult(BaseModel):
         # The stratum by the name every surface prints for it, among its summary's strata where a summary handed it
         # out; :attr:`stratum` keeps its id.
         kind = "" if self.stratum is None else f"{self._stratum_printed or stratum_name(self.stratum)}, "
-        head = f"case {self.case} ({kind}repeat {self.repeat}, {self.outcome}): answered {_shown_value(self.answer)}"
+        head = (
+            f"case {self.case} ({kind}repeat {self.repeat}, {_OUTCOME_WORDS[self.outcome]}): "
+            f"answered {_shown_value(self.answer)}"
+        )
         if self.expected is not None:
             head += f", expected {_shown_value(self.expected)}"
         lines = [head]
@@ -982,8 +993,9 @@ class EvalSummary(BaseModel):
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
-            "How the results came out: scored, then failed by the candidate and excluded as a fault of the rig where "
-            "there are some (excluded always once a judge is in play)."
+            "How the results came out: scored, then not judged (the cost cap had too little left for their judging), "
+            "failed by the candidate and excluded as a fault of the rig where there are some (excluded always once a "
+            "judge is in play)."
         )
     )
     @property
