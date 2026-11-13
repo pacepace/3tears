@@ -94,18 +94,25 @@ the ceiling was spent the contaminated one, so at width above 1 two identical ru
 candidate is measured whole or never begun.
 
 - **Judging is admitted against the cost cap, before any of a cell's judge calls is paid for.** Judging is the
-  engine's own spend, and a cell running when the cap was crossed would otherwise judge on past it (a run under a
-  $2.67 cap once ended at $7.04). A cell's judge phase is priced whole, every call at its client's `price_ceiling`
+  engine's own spend, and a cell running when the cap was crossed would otherwise judge on past it. A cell's judge
+  phase is priced whole, every call at its client's `price_ceiling`
   times `JUDGE_CALL_ATTEMPTS`, and admitted when that fits what the run has spent (its recorded cells and its
   running ones, a running cell's candidate counted from the rows it returned) beside what the phases already
   admitted hold. A phase that does not fit waits while another holds, since that one's bills may come in under its
   ceiling, and is set aside once none does. A phase is admitted whole, never call by call: a cell judged on some of
-  its dimensions is set aside all the same, and the calls it made would be spent for nothing. **So judging never
-  takes a run past its cost cap.** A judge that cannot price a call is asked one call at a time, with no other
+  its dimensions is set aside all the same, and the calls it made would be spent for nothing. **So judging stays
+  within the cost cap wherever its price ceiling bounds what its calls are billed.** A ceiling can fall short of the
+  bill: a model whose rates are an estimate (`Model.ceiling_is_estimate`) may be billed otherwise, and the shipped
+  adapter prices a resent request as unbilled (below). A judge that cannot price a call is asked one call at a time, with no other
   phase beside it, each call only while the run is within its cap, so it can pass the cap by that last call alone.
+  A judged run also starts no new cell once what has landed, what its running cells have spent and the judging they
+  hold reach the cap, reaching it exactly included: such a cell would pay for its candidate and have its judging set
+  aside. A cell whose deadline strikes while its judging waits for the cap's room is set aside the same way.
 - **A cell whose judging was set aside is never scored low.** It asks the judge nothing; it is marked
-  (`EvalResult.judging_set_aside`) and left out of every reading under its own exclusion cause, `cost_cap` ("cost
-  cap" in a report's loss table), each of its dimensions carrying a judge error that names the cap; and a re-judge
+  (`EvalResult.judging_set_aside`) and left out of the judged readings (its dimensions, pass^k and the composite)
+  under its own exclusion cause, `cost_cap` ("cost cap" in a report's loss table), while its measures, checks and cost
+  count as measured, a report it finished among them. Each of its dimensions carries a judge error that names the
+  cap, and a re-judge
   (`regrade`, or the `result_regrade` action, with `apply`) takes it up from the evidence it stored, without buying its candidate again. A resume does not
   run it again: its candidate is measured, so the cell is done. The first such cell stops the run as a crossing
   does (no new cell starts), and the stop record counts the cells (`cells_not_judged`).
@@ -115,8 +122,9 @@ candidate is measured whole or never begun.
   nothing: no cell was kept from starting.
 - **A looping cell is bounded by the cell timeout, not by a ceiling.** Nothing inside a cell ends it on its
   spend; a candidate that loops until `cell_timeout_s` is excluded as `cell_timeout`, as before.
-- **A call nobody can price** (a client with no `price_ceiling`, or one answering `None`) is made like any other.
-  An unpriced spend still counts: a capped run stops before its next cell once a recorded result's spend could not
+- **A candidate's or a simulated user's call nobody can price** (a client with no `price_ceiling`, or one answering
+  `None`) is made like any other; the engine's judge call is asked one at a time while the run is within its cap
+  (above). An unpriced spend still counts: a capped run stops before its next cell once a recorded result's spend could not
   be priced, because the cap cannot be read against what it cannot count.
 - **A kind reports its spend as it lands** (`CellSink.add_spend`, or by wrapping its client in `CappedCompletion`),
   and returns it on its output, which is what the cap counts once the cell's result is recorded.
@@ -130,8 +138,9 @@ candidate is measured whole or never begun.
   (a host's own, or a cell timeout sized for a number of calls) allows `MAX_RESENDS` × the request timeout past the
   served request's own: up to `MAX_RESENDS + 1` timeouts per call. A host's own client built on `negotiate` is
   bounded the same way.
-- **A call whose ceiling is above the whole cap** is made, and the run stops `budget_stopped` before its next
-  cell having spent more than the cap on it. A launch still refuses such an arm before anything is spent (step 3
+- **A candidate's or a simulated user's call whose ceiling is above the whole cap** is made, and the run stops
+  `budget_stopped` before its next cell having spent more than the cap on it; a judge call above it is never sent,
+  and every cell's judging is set aside. A launch still refuses such an arm before anything is spent (step 3
   below), when its kind prices its calls before launch: a cap smaller than one call cannot bound the run. The
   judge kind's call is priced at the client's `price_ceiling` for the case's prompt times 2 (the judge's parse
   retry, `JUDGE_CALL_ATTEMPTS`), and the judge asks up to `JUDGE_MAX_TOKENS` (10,240) output tokens, so a

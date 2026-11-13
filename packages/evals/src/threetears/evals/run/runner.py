@@ -753,7 +753,7 @@ class _JudgeHold:
 
 
 class _JudgingGate:
-    """Admits each cell's judge phase against what the run's cost cap has left, so judging never takes a run past it.
+    """Admits each cell's judge phase against what the run's cost cap has left, on the phase's price ceiling.
 
     The cap is otherwise read between cells, against what the recorded cells landed, and a cell's candidate is never
     refused a call. The judge phase is the one thing a cell asks the cap about, and it asks before any call is paid
@@ -788,6 +788,9 @@ class _JudgingGate:
         self.running = running
         self._on_set_aside = on_set_aside
         self._holds: list[_JudgeHold] = []
+        # The cap itself, read off the breach any amount past it gives: a gate is built only where one does.
+        reading = budget_gate(math.inf)
+        self.ceiling = reading.max_cost_usd if reading is not None else math.inf
         # Replaced, never cleared, on each release: a waiter holds the event it waits on, so a release wakes every
         # waiter at once and none can miss it.
         self._released = asyncio.Event()
@@ -821,6 +824,31 @@ class _JudgingGate:
                     self.set_aside(breach, pending)
                     return None
             await released.wait()
+
+    def no_room(self) -> tuple[CapBreach, float | None] | None:
+        """Whether the cap has nothing left for another cell's judging: what has landed, what the running cells have
+        spent and the judging the admitted phases hold reach it, reaching it exactly included.
+
+        Asked before a cell of a judged run starts. A cell started then would pay for its candidate and have its
+        judging set aside, so it is not started.
+
+        :return: The cap's reading of that sum and the amount it counted beside what had landed (``None`` when the
+            running cells' spend could not be priced), or ``None`` while room is left.
+        :rtype: tuple[CapBreach, float | None] | None
+        """
+        running = self.running()
+        pending = None if running is None else running + math.fsum(h.usd for h in self._holds if h.usd is not None)
+        if (breach := self.budget_gate(pending)) is not None:
+            return breach, pending
+        assert pending is not None
+        # Within the cap: read what has landed off an amount surely past it, to tell "exactly at it" from "under it".
+        probe = pending + self.ceiling + 1.0
+        if (past := self.budget_gate(probe)) is None:
+            return None
+        spent = past.accumulated_usd - probe + pending
+        if spent < self.ceiling:
+            return None
+        return replace(past, accumulated_usd=spent), pending
 
     def _hold(self, usd: float | None) -> _JudgeHold:
         hold = _JudgeHold(self, usd)
@@ -941,6 +969,10 @@ class _CellSink:
     spent: dict[CellPending, float | None] = field(default_factory=dict)
     #: What admits the cell's judge phase against the run's cost cap; ``None`` for a cell no enforcing cap bounds.
     judging_gate: _JudgingGate | None = None
+    #: Whether the cell's judge phase is waiting for the cap to have room for it. A deadline that strikes then cut off
+    #: no judge call: the cap kept the judging from starting, so the cell is set aside under the cap, as one the cap
+    #: refused is. Left set by a cancel that strikes during the wait, which is what the deadline's arm reads.
+    awaiting_room: bool = False
     #: The one reading taken, once :meth:`side` has taken it.
     _read: CandidateOutput | None = None
 
@@ -994,6 +1026,14 @@ class _CellSink:
         _refuse_an_unusable_amount(cost_usd, what=f"{source} spend")
         total = self.spent.get(source, 0.0)
         self.spent[source] = None if total is None or cost_usd is None else total + cost_usd
+
+    def wait_for_room(self, waiting: bool) -> None:
+        """Say whether the judge phase is waiting for the cost cap to have room for it (:attr:`awaiting_room`).
+
+        :param waiting: True as the wait begins, False once it ends.
+        :ptype waiting: bool
+        """
+        self.awaiting_room = waiting
 
     def spent_so_far(self, rate_table: ExternalRateTable | None) -> float | None:
         """What the cell has spent so far, as the run's cost cap counts a running cell.
@@ -1835,6 +1875,7 @@ async def _run_one_result(
             eval_run_id=eval_run_id,
             sink=sink,
             gate=sink.judging_gate,
+            awaiting_room=sink.wait_for_room,
         )
 
     # Second (and final) conditions sample — see sample_concurrent_eval_jobs. Taken after
@@ -1885,6 +1926,7 @@ async def _run_judge_phase(
     eval_run_id: str,
     sink: CellSink | None,
     gate: _JudgingGate | None = None,
+    awaiting_room: Callable[[bool], None] | None = None,
 ) -> tuple[_JudgeRecord, float]:
     """Run one cell's judge phase and fold what it left, however it ended: the one judge phase a completed cell takes.
 
@@ -1915,6 +1957,9 @@ async def _run_judge_phase(
         (:class:`_JudgingGate`); a phase it sets aside asks nothing, and each of its dims names the cap. ``None``
         when no enforcing cap bounds the cell.
     :ptype gate: _JudgingGate | None
+    :param awaiting_room: Told ``True`` as the phase starts waiting for the gate and ``False`` once admitted or set
+        aside, so a deadline striking during the wait is read as the cap's, not the judge's.
+    :ptype awaiting_room: Callable[[bool], None] | None
     :return: What the phase leaves on the result, and its wall clock in milliseconds.
     :rtype: tuple[_JudgeRecord, float]
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol. Every other failure of the phase
@@ -1931,7 +1976,13 @@ async def _run_judge_phase(
     hold: _JudgeHold | None = None
     try:
         if gate is not None:
-            hold = await gate.admit(await _judging_ceiling(template, judge_service, context))
+            ceiling = await _judging_ceiling(template, judge_service, context)
+            if awaiting_room is not None:
+                awaiting_room(True)
+            hold = await gate.admit(ceiling)
+            # Not in a ``finally``: a cancel during the wait leaves it set, for the deadline's arm to read.
+            if awaiting_room is not None:
+                awaiting_room(False)
         if gate is not None and hold is None:
             # Nothing was asked, so nothing was paid for and no dim carries a score: the cell is set aside.
             judged = _judge_record(phase, settled, unfinished=_JUDGING_SET_ASIDE, set_aside=True)
@@ -2607,6 +2658,7 @@ def _cut_short_cell(
     unfinished_judging: str | None,
     ungraded_goal_checks: Sequence[GoalStateOutcome] = (),
     metered_calls_refused: int | None = None,
+    judging_set_aside: bool = False,
 ) -> CellOutcome:
     """The two documents of a cell cut off before :func:`run_one_result` returned them.
 
@@ -2647,6 +2699,8 @@ def _cut_short_cell(
         message — or ``None`` for a cut that cannot strike the judge phase.
     :ptype unfinished_judging: str | None
     :param ungraded_goal_checks: See :func:`_degraded_capture_fields`.
+    :param judging_set_aside: Whether the cut struck while the judge phase waited for the cost cap's room, so the
+        cap, not the judge, left the dims unasked (``EvalResult.judging_set_aside``).
     :ptype ungraded_goal_checks: Sequence[GoalStateOutcome]
     :param metered_calls_refused: The cell's refused metered calls, where the caller still holds the
         dispatch's baseline; ``None`` where it does not.
@@ -2655,7 +2709,9 @@ def _cut_short_cell(
     :rtype: CellOutcome
     """
     judged = (
-        _judge_record(sink.judging, sink.judged, unfinished=unfinished_judging) if sink.judging is not None else None
+        _judge_record(sink.judging, sink.judged, unfinished=unfinished_judging, set_aside=judging_set_aside)
+        if sink.judging is not None
+        else None
     )
     errors = sink.errors
     side = sink.side()
@@ -2669,6 +2725,7 @@ def _cut_short_cell(
             "judge_error": judged.judge_error,
             "judge_cannot_tell": judged.judge_cannot_tell,
             "judge_cut_short": judged.judge_cut_short,
+            "judging_set_aside": judged.set_aside,
         }
         if judged is not None
         else {}
@@ -3939,13 +3996,13 @@ async def execute_run(
     when the cap was crossed would otherwise judge on past it. Before any judge call of a cell is paid for, the
     phase's summed price ceiling must fit what the run has spent (landed and running) beside the ceilings the
     phases already admitted hold; it waits while one holds, and is set aside once none does and it still does not
-    fit. A set-aside cell asks the judge nothing, is marked (``EvalResult.judging_set_aside``) and excluded under its
-    own cause (``cost_cap``), its dims' judge errors naming the cap (a re-judge takes it up from the evidence it
-    stored), and stops the run: no new cell starts, the run ends
+    fit. A set-aside cell asks the judge nothing, is marked (``EvalResult.judging_set_aside``) and left out of the
+    judged readings under its own cause (``cost_cap``), its other readings counting it, its dims' judge errors naming
+    the cap (a re-judge takes it up from the evidence it stored), and stops the run: no new cell starts, the run ends
     ``budget_stopped``, and its cost-cap record counts the cell (``BudgetStop.cells_not_judged``). A phase the
     judge cannot price holds the run's judging alone and sends one call at a time while the run is within its cap.
-    So judging never takes a run past its cost cap, or past it by more than one call when the judge cannot price
-    its calls. No gate (``budget_gate`` ``None``, or one that admits any amount) asks nothing.
+    So judging stays within the cost cap wherever its price ceiling bounds what its calls are billed, and passes it
+    by one call at most when the judge cannot price its calls. No gate (``budget_gate`` ``None``, or one that admits any amount) asks nothing.
 
     Every already-run cell is saved before its successor's check, so nothing
     produced is lost; the job manager translates the raise into the
@@ -4149,6 +4206,21 @@ async def execute_run(
         )
         stop.budget([judging_stop])
 
+    def judging_set_aside_at_deadline() -> None:
+        """Count a cell whose deadline struck while its judging waited for the cap's room, and stop the run there, as
+        a cell the cap refused does; the stop states what had landed then."""
+        nonlocal cells_not_judged, judging_stop
+        cells_not_judged += 1
+        if judging_stop is not None or judging_gate is None:
+            return
+        reading = landed_reading(judging_gate.ceiling)
+        if reading is None:
+            return
+        judging_stop = _CeilingReached(
+            "cost_usd", reading.max_cost_usd, reading.accumulated_usd, reading.unpriced_results, len(in_flight)
+        )
+        stop.budget([judging_stop])
+
     # A gate that admits any amount bounds nothing (cost enforcement is off), so its judging is left unasked.
     judging_gate = (
         _JudgingGate(budget_gate, running_spend, judging_set_aside)
@@ -4205,7 +4277,21 @@ async def execute_run(
         # landed has reached either. The cells already running are refused no candidate call; they finish, their
         # judging admitted only as the cost cap has room for it (``judging_gate``). Results already saved are
         # preserved; the stop becomes a ``budget_stopped`` run.
-        if reached := ceilings_reached():
+        if not (reached := ceilings_reached()) and judge_service is not None and judging_gate is not None:
+            # A judged run also stops once the running cells' spend and the judging already admitted leave the cap
+            # nothing: a cell started then would pay for its candidate and have its judging set aside.
+            if (full := judging_gate.no_room()) is not None:
+                breach, pending = full
+                reached = [
+                    _CeilingReached(
+                        "cost_usd",
+                        breach.max_cost_usd,
+                        max(breach.accumulated_usd - (pending or 0.0), 0.0),
+                        breach.unpriced_results - (1 if pending is None else 0),
+                        len(in_flight),
+                    )
+                ]
+        if reached:
             for ceiling in reached:
                 log.warning(
                     "Eval run %s stopping: %s landed %s against its ceiling of %s after %d/%d results, with %d "
@@ -4320,11 +4406,16 @@ async def execute_run(
                 termination="cell_timeout",
                 judge_model=run.judge_model,
                 rate_table=options.external_rates,
-                unfinished_judging=f"did not finish: {msg}",
+                # A deadline that struck while the judging waited for the cap's room cut off no judge call: the cap
+                # kept the judging from starting, so the cell is set aside under it, as a refused phase is.
+                unfinished_judging=_JUDGING_SET_ASIDE if sink.awaiting_room else f"did not finish: {msg}",
+                judging_set_aside=sink.awaiting_room,
                 ungraded_goal_checks=(
                     _unevaluated_goal_checks(template, waiting_on=waiting_on) if charged_to == "candidate" else []
                 ),
             )
+            if sink.awaiting_room:
+                judging_set_aside_at_deadline()
         except asyncio.CancelledError:
             # NOSILENT: the cell is recorded excluded with what it spent, and the cancel is re-raised once it is saved.
             # The run was cancelled while this cell ran. The cancel still ends the run — it is

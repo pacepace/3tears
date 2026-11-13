@@ -134,9 +134,10 @@ def read_trial(result: ResultView, *, rubric_threshold: int, catalog: Mapping[st
     below = [score for score in capability_scores(result) if not score.clears(rubric_threshold)]
     decided: FailCause | None = "check" if checks else "judged" if below else None
     exclusion = trial_exclusion(result)
-    if exclusion is not None and not (exclusion == "judge_cannot_tell" and decided is not None):
-        # A judge that could not tell on one dimension cannot rescue a trial a failed check or a sub-bar
-        # dimension has already decided; every other cause loses the trial, whatever its scores say.
+    if exclusion is not None and not (exclusion in ("judge_cannot_tell", "cost_cap") and decided is not None):
+        # A judge that could not tell on one dimension, or was kept from being asked by the cost cap, cannot rescue a
+        # trial a failed check or a sub-bar dimension has already decided; every other cause loses the trial,
+        # whatever its scores say.
         return TrialReading(state="lost", cause=exclusion)
     if (cause := candidate_failure_cause(result)) is not None:
         return TrialReading(state="failed", cause=cause, failed_checks=tuple(checks))

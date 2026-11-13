@@ -179,12 +179,14 @@ def classify_result(result: ResultView) -> ResultOutcome:
 
     Candidate failures take precedence over infra: a broken candidate FAILS even
     if an infra hiccup also occurred, so it can't launder a failure into an
-    exclusion. ``judge_error`` is infra (always). Reads only structured
-    fields — never re-parses ``runner_error`` (fragile-parse rule).
+    exclusion. ``judge_error`` is infra, except on a result whose judging the run's cost cap set aside
+    (``judging_set_aside``): its candidate ran whole and its answer, measures and checks were measured, so it counts
+    wherever they are read, and only the judged readings leave it out (:func:`trial_exclusion`'s ``cost_cap``). Reads
+    only structured fields — never re-parses ``runner_error`` (fragile-parse rule).
     """
     if candidate_failure_cause(result) is not None:
         return ResultOutcome.CANDIDATE_FAIL
-    if result.infra_error or result.judge_error:
+    if result.infra_error or (result.judge_error and not result.judging_set_aside):
         return ResultOutcome.INFRA_EXCLUDE
     return ResultOutcome.OK
 
@@ -346,6 +348,10 @@ def _classify_judging(result: EvalResult) -> JudgingState:
         or result.rubric_scores
         or result.judge_cannot_tell
     )
+    if result.judge_error and result.judging_set_aside:
+        # The cost cap kept the judge from being asked: nothing errored, so a judge that was never asked is not one
+        # that failed.
+        return "partial" if scored else "not_attempted"
     if result.judge_error:
         return "partial" if scored else "failed"
     return "scored" if scored else "not_attempted"
@@ -467,10 +473,12 @@ _JUDGING_DISCLOSURE: dict[JudgingState, str | None] = {
 #: and out of the measures needing every dim (pass^k, the composite), and nowhere else. ``model_unserved``: excluded as
 #: ``infra`` is, and for one cause apart: the provider does not serve the model the candidate's call named
 #: (``EvalResult.model_unserved``), so the trial measured the setup's choice of model, never the candidate, and its
-#: remedy is a model the provider serves rather than a repair of the rig. ``cost_cap``: excluded as ``infra`` is, and
-#: for one cause apart: the run's cost cap had too little left to judge the trial (``EvalResult.judging_set_aside``),
-#: so it wrote its answer and nothing scored it; its remedy is a re-judge, never a repair. Counted per cause wherever
-#: exclusions are counted, so a shrunken ``n`` always says why.
+#: remedy is a model the provider serves rather than a repair of the rig. ``cost_cap``: the run's cost cap had too
+#: little left to judge the trial (``EvalResult.judging_set_aside``), so its candidate ran whole and nothing scored
+#: it. Narrowed as ``judge_cannot_tell`` is: it leaves the trial out of the judged readings (its dims, pass^k and the
+#: composite, unless a failed check already decided it) and nowhere else, so its host measures, goal checks and cost
+#: count as measured, whether its report was finished among them. Its remedy is a re-judge, never a repair. Counted
+#: per cause wherever exclusions are counted, so a shrunken ``n`` always says why.
 ExclusionCause = Literal["infra", "model_unserved", "cost_cap", "truncated", "judge_cannot_tell"]
 
 #: The share of one arm's trials a single exclusion cause may take before the arm is flagged as excluded
@@ -493,8 +501,8 @@ def trial_exclusion(result: ResultView) -> ExclusionCause | None:
     never excluded: it fails, whatever the judge could or could not tell, and whatever cut its judge off. An
     excluded result is ``truncated`` when a judge reply ran out of room on it (:func:`judge_truncated_dims`) and the
     harness recorded no fault of its own, ``model_unserved`` when the provider does not serve the candidate's model,
-    ``cost_cap`` when the run's cost cap set its judging aside and the harness recorded no fault of its own, else
-    ``infra``. pass^k narrows the
+    else ``infra``. A result the harness did not fault is ``cost_cap`` when the run's cost cap set its judging aside,
+    which leaves it out of the judged readings alone. pass^k narrows the
     ``judge_cannot_tell`` arm further — a trial a failed check or a sub-bar dim has already decided
     counts as failed there (``scoring._already_failed``) — which needs the bar and so cannot live
     here; the composite keeps the exclusion, since a mean over fewer dims is not the composite.
@@ -510,14 +518,13 @@ def trial_exclusion(result: ResultView) -> ExclusionCause | None:
         # record of why the setup lost the trial, and the remedy the report gives follows it.
         if result.model_unserved:
             return "model_unserved"
-        set_aside = result.judging_set_aside
-        # A harness fault outranks a judge the cap set aside or cut off: the cell's own evidence is in doubt, whatever
-        # the judge did, and a re-judge would not recover it.
-        if result.infra_error:
+        # A harness fault outranks a cut-off judge reply: the cell's own evidence is in doubt, whatever the judge did.
+        if result.infra_error or not judge_truncated_dims(result):
             return "infra"
-        if set_aside:
-            return "cost_cap"
-        return "truncated" if judge_truncated_dims(result) else "infra"
+        return "truncated"
+    # A judge error on a result the harness did not fault is the cost cap's set-aside (:func:`classify_result`).
+    if outcome is ResultOutcome.OK and result.judge_error is not None and result.judging_set_aside:
+        return "cost_cap"
     if outcome is ResultOutcome.OK and not judged_on_every_dim(result):
         return "judge_cannot_tell"
     return None

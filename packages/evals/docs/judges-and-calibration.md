@@ -915,7 +915,9 @@ reports at `budget_usd`, their judging and its pairs at the judge's floor) fits 
 so far, as its runs and passes recorded it. Once launched, each arm's run runs under all its part has left. The
 engine admits each case's judging, priced in full once its page is written, against what its run has left before
 paying for any of it: a case whose judging does not fit is set aside unjudged (a re-judge takes it up) and stops its
-run. So a case is set aside only when its arm cannot afford its judging, and no arm spends past its part. What a batch
+run. So a case is set aside only when its arm cannot afford its judging, and an arm's judging stays within its part
+wherever the judge's price ceiling bounds what it is billed; its reports are never refused, so the arm's running
+cases can still take it past its part by what they write. What a batch
 did not spend is left to the next. The first batch that does not fit is not launched: the
 run stops at the spend cap, reads what it has, and its pass's record and line say so once, with the spend and the
 reservation (`stopped_on`: `separated`, `all_cases` or `spend_cap`). Only a spend cap that cannot admit the first batch

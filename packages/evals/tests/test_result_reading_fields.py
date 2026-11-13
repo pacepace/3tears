@@ -1628,7 +1628,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "latency.total_ms",
                 "model_copy()",
                 "model_unserved",
-                "judging_set_aside",
                 "rubric_scores[].clears()",
                 "scope_id",
                 "scored_at",

@@ -11,8 +11,9 @@ Driven through the real launch and the real runner over the toy host, reading wh
   run has spent: the cap is read between cells, against what the recorded cells landed, so a candidate is measured
   whole or never begun.
 * **Judging is admitted against the cap.** A cell's judge phase is paid for only when its price ceiling fits what
-  the run has spent; one that does not fit is set aside unasked, excluded and never scored, and stops the run, so
-  judging never takes a run past its cap. Spend landing exactly on the cap is within it.
+  the run has spent; one that does not fit is set aside unasked, left out of the judged readings and never scored,
+  and stops the run, so judging stays within the cap wherever its ceiling bounds the bill. Spend landing exactly on
+  the cap is within it, and leaves no room for another cell to start.
 """
 
 from __future__ import annotations
@@ -588,6 +589,8 @@ class _PricedJudge:
     cost_usd: float
     ceiling_usd: float | None
     calls: list[str] = field(default_factory=list)
+    #: Whether the first call never answers, so the phase asking it holds its room until the cell's deadline.
+    first_hangs: bool = False
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         del system, user, response_format
@@ -599,6 +602,8 @@ class _PricedJudge:
         assert match is not None
         dim = match.group(1)
         self.calls.append(dim)
+        if self.first_hangs and len(self.calls) == 1:
+            await asyncio.Event().wait()
         return ToyJudgeCompletion(
             content=json.dumps({"reasoning": "fine", "criteria_scores": {dim: 4}}),
             input_tokens=100,
@@ -617,18 +622,44 @@ async def _judged_run(judge: _PricedJudge, *, cap_usd: float) -> tuple[list[Eval
     return results, stopped
 
 
+class _QuarterDollarClient(ScriptedExtractionClient):
+    """The toy extractor's client, every extraction billed $0.25 exactly, so sums against a cap are exact; the first
+    extraction takes ``first_delay_s`` longer, so the cell started first reaches its judging last."""
+
+    def __init__(self, *, first_delay_s: float = 0.0) -> None:
+        super().__init__()
+        self.first_delay_s = first_delay_s
+        self.extracted = 0
+
+    async def extract(self, request: ExtractionRequest) -> ExtractionResult:
+        self.extracted += 1
+        if self.extracted == 1:
+            await asyncio.sleep(self.first_delay_s)
+        return replace(await super().extract(request), cost_usd=0.25)
+
+
 async def _judged_run_kept(
-    judge: _PricedJudge, *, cap_usd: float
+    judge: _PricedJudge,
+    *,
+    cap_usd: float,
+    k: int = 1,
+    width: int = 1,
+    client: ScriptedExtractionClient | None = None,
+    cell_timeout_s: float | None = None,
 ) -> tuple[EvalHost, EvalRun, list[EvalResult], BudgetStoppedError | None]:
-    """One judged toy cell under ``cap_usd``: its host, its run, its stored results and the stop, if one."""
+    """``k`` judged toy cells of one case under ``cap_usd``, ``width`` at once: the host, the run, its stored results
+    and the stop, if one."""
     host = toyhost_host(clients=lambda _role, _model, *, temperature=None: judge)
     world = host.profile.world
     assert world is not None
     template = toyhost_judged_template()
     kind = ToyExtractorKind(
-        client=ScriptedExtractionClient(), world=world, judged=True, goal_checks=tuple(template.goal_state_checks)
+        client=client or ScriptedExtractionClient(),
+        world=world,
+        judged=True,
+        goal_checks=tuple(template.goal_state_checks),
     )
-    run, cases = off_loop(_toy_run, host, kind, template=template)
+    run, cases = off_loop(_toy_run, host, kind, template=template, k=k)
     cases = cases[:1]
     run_judge = off_loop(build_judge_service, host, template, TOY_JUDGE_MODEL, judged_artifact=JudgedArtifact.DOCUMENT)
     run = run.model_copy(
@@ -651,7 +682,11 @@ async def _judged_run_kept(
             template=template,
             test_cases=cases,
             judge_service=run_judge.service,
-            options=RunnerOptions(candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind}),
+            options=RunnerOptions(
+                candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind},
+                max_concurrent_cells=width,
+                **({"cell_timeout_s": cell_timeout_s} if cell_timeout_s is not None else {}),
+            ),
             budget_gate=cap.check,
             on_cost=cap.record,
         )
@@ -670,7 +705,8 @@ async def test_judging_the_cap_has_no_room_for_is_set_aside_unasked_and_stops_th
     assert judge.calls == [], "no judge call was paid for"
     assert result.rubric_scores == []
     assert result.judge_error is not None and "the run's cost cap had too little left" in result.judge_error
-    assert classify_result(result) is ResultOutcome.INFRA_EXCLUDE, "set aside: excluded, never a fail"
+    # Set aside: its candidate's measures count, and only its judged readings leave it out, under the cap's own cause.
+    assert classify_result(result) is ResultOutcome.OK, "never a fail, and no fault of the rig"
     assert result.judging_set_aside
     assert trial_exclusion(result) == "cost_cap", "its own cause, never a setup fault"
     assert result.cost_usd is not None and result.cost_usd < 0.5, "the candidate's spend alone landed"
@@ -697,6 +733,57 @@ async def test_a_re_judge_takes_up_a_cell_the_cap_set_aside_and_clears_its_mark(
     assert rejudged.judge_error is None and rejudged.rubric_scores
     assert not rejudged.judging_set_aside
     assert trial_exclusion(rejudged) is None and classify_result(rejudged) is ResultOutcome.OK
+
+
+async def test_a_cell_starts_only_while_the_cap_has_room_left_and_spend_exactly_on_it_leaves_none() -> None:
+    """One cell at a time: the first lands the run exactly on its $0.75 cap ($0.25 of candidate, $0.50 of judging at
+    its ceiling), so the second never starts. Started, it would pay for its candidate and have its judging set aside."""
+    judge = _PricedJudge(cost_usd=0.5, ceiling_usd=0.25)
+
+    _host, _run, results, stopped = await _judged_run_kept(judge, cap_usd=0.75, k=2, client=_QuarterDollarClient())
+
+    assert len(results) == 1 and results[0].judge_error is None
+    assert stopped is not None
+    (stop,) = stopped.stops
+    assert (stop.cells_not_started, stop.cells_not_judged) == (1, 0)
+    assert stop.landed_at_stop == stop.landed_final == 0.75
+
+
+async def test_two_cells_side_by_side_leave_the_third_unstarted_once_their_judging_fills_the_cap() -> None:
+    """Two cells at once under a $1.50 cap, each $0.25 of candidate and $0.50 of judging at its ceiling. The second's
+    judging waits while the first's holds its room, and both fit to the cent. When a slot frees, what has landed is
+    under the cap, but with the running cell's spend and the judging it holds there is nothing left, so the third cell
+    never starts, and the run ends on its cap with every cell it ran judged."""
+    judge = _PricedJudge(cost_usd=0.5, ceiling_usd=0.25)
+
+    _host, _run, results, stopped = await _judged_run_kept(
+        judge, cap_usd=1.5, k=3, width=2, client=_QuarterDollarClient()
+    )
+
+    assert len(results) == 2 and all(result.judge_error is None for result in results)
+    assert stopped is not None
+    (stop,) = stopped.stops
+    assert (stop.cells_not_started, stop.cells_not_judged) == (1, 0)
+    assert stop.landed_final == 1.5
+
+
+async def test_a_deadline_while_judging_waits_for_the_cap_s_room_sets_the_cell_aside_under_the_cap() -> None:
+    """Two cells at once under a $1.25 cap. The cell started second writes first: its judging is admitted and never
+    answers, so it holds its room. The cell started first writes slowly, and its judging does not fit beside that hold,
+    so it waits, and its deadline, the earlier, strikes while it waits. It never asked the judge, because the cap had
+    no room, so it is set aside under the cap, counted on the stop, and its measures count; the other is cut off in its
+    judge call, a fault of the rig."""
+    judge = _PricedJudge(cost_usd=0.5, ceiling_usd=0.25, first_hangs=True)
+
+    _host, _run, results, stopped = await _judged_run_kept(
+        judge, cap_usd=1.25, k=2, width=2, client=_QuarterDollarClient(first_delay_s=0.15), cell_timeout_s=0.5
+    )
+
+    assert len(judge.calls) == 1, "the waiting cell asked nothing"
+    assert sorted(str(trial_exclusion(result)) for result in results) == ["cost_cap", "infra"]
+    (waited,) = [result for result in results if result.judging_set_aside]
+    assert classify_result(waited) is ResultOutcome.OK, "its measures count; only its judged readings leave it out"
+    assert stopped is not None and stopped.stops[0].cells_not_judged == 1
 
 
 async def _candidate_spend() -> float:

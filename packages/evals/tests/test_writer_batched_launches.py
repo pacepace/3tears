@@ -620,19 +620,67 @@ async def test_a_batch_whose_judging_costs_past_its_reservation_leaves_the_next_
         assert scored == [2, 0, 0]
         judged += sum(scored)
     assert _scoring_calls(judge) == judged * len(writer_scoring_rubric())
-    # Every batch run joins its arm's one test setup, and a case the cap set aside wrote its report but is read
-    # nowhere: not a failure in Report finished, and absent from every judged reading.
+    # Every batch run joins its arm's one test setup. A case the cap set aside wrote its report: Report finished counts
+    # it as finished, and only the judged readings leave it out, under the cap's own cause.
+    await _finished_reads_every_case(result, judged_per_arm=2)
+    assert offline == []
+
+
+async def _rows_by_arm(result: WriterResult) -> dict[str, list[EvalResult]]:
+    """Every case each arm ran, as its stored rows, by the arm's variant key."""
+    rows: dict[str, list[EvalResult]] = {}
+    for run_id in await _runs(result):
+        for row in await asyncio.to_thread(result.host.storage.query_eval_results_by_run, run_id, SCOPE):
+            rows.setdefault(row.variant_key, []).append(row)
+    return rows
+
+
+async def _finished_reads_every_case(result: WriterResult, *, judged_per_arm: int | None = None) -> None:
+    """Each arm is one test setup whose Report finished reads every case it ran, as the case went (a report written and
+    cleared, or not), the cases the cap set aside among them; and whose judged readings leave out only the set-aside
+    cases, under ``cost_cap``. ``judged_per_arm``, when given, is how many cases each arm had judged."""
     bundle = await asyncio.to_thread(assemble_campaign_bundle, result.host, result.campaign_id, SCOPE)
     (aspect,) = bundle.aspects
     cells = aspect.cell_measures
-    assert len(cells) == len(arms) == len({cell.variant_key for cell in cells}), "one test setup an arm"
+    assert len(cells) == len(result.arms) == len({cell.variant_key for cell in cells}), "one test setup an arm"
+    trials = {arm.variant_key: arm for arm in aspect.exclusions}
+    rows = await _rows_by_arm(result)
     for cell in cells:
         (finished,) = [summary for summary in cell.measures.measures if summary.name == FINISHED_MEASURE]
-        assert finished.n == 2, "Report finished reads the two judged cases, and no case set aside"
-        assert cell.n_candidate_failed == 0, "no case set aside counts as a failure"
-    assert sorted(arm.n_usable for arm in aspect.exclusions) == [2, 2]
-    for arm in aspect.exclusions:
-        assert arm.by_cause == {"cost_cap": arm.n_trials - 2}, "the cases set aside are left out, never failed"
+        ran = rows[cell.variant_key]
+        assert finished.n == len(ran) == trials[cell.variant_key].n_trials, "every case it ran, set aside or not"
+        did = [row.host_measures.get(FINISHED_MEASURE) is True for row in ran]
+        assert finished.n_true == sum(did), "what the cases did"
+        assert finished.rate == pytest.approx(sum(did) / len(did))
+        set_aside = [row for row in ran if row.judging_set_aside]
+        assert all(row.host_measures.get(FINISHED_MEASURE) is True for row in set_aside), "each wrote its report"
+        assert trials[cell.variant_key].by_cause == ({"cost_cap": len(set_aside)} if set_aside else {})
+        if judged_per_arm is not None:
+            assert trials[cell.variant_key].n_usable == judged_per_arm
+
+
+async def test_an_unwritten_report_and_cases_the_cap_set_aside_share_a_run_and_report_finished_reads_both(
+    tmp_path: Path, offline: list[Connect]
+) -> None:
+    """The judge bills $0.50 a call, so each arm has two cases judged and the cap sets the rest aside, and the candidate
+    writes no report on three of the seven cases. Every batch run joins its arm's setup, and Report finished reads every
+    case each arm ran as it went: an unwritten report as a failure, a set-aside case as finished, since it wrote and
+    cleared its report. Only the judged readings leave the set-aside cases out."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+    named = {case.snapshot.id: case.name for case in read_writer_cases(cases)}
+    routed = writer_turns(tmp_path / "turns", arm=CANDIDATE, skill=arms[CANDIDATE].analyst_skill, cases=named)
+    for silent in sorted(named)[:3]:
+        lay_recording(routed.path(WRITER, None, silent), dry_sessions(None, model=WRITER))
+    judge = FakeCostlyJudge(cost=0.50, floor=0.01)
+
+    result = await _eval(tmp_path, cases, arms, judge=judge, max_cost_usd=40.0, pairwise_share=0.4).run()
+
+    rows = [row for ran in (await _rows_by_arm(result)).values() for row in ran]
+    # Seven cases, at most two not started an arm: at least one of the three unwritten reports ran.
+    assert any(row.host_measures.get(FINISHED_MEASURE) is False for row in rows), "an unwritten report ran"
+    assert any(row.judging_set_aside for row in rows), "and the cap set cases aside"
+    await _finished_reads_every_case(result)
     assert offline == []
 
 
