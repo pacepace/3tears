@@ -10,9 +10,17 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
+from threetears.core.testing.kv import FakeChangeLog, FakeKvBucket, FakeNatsClient
 from threetears.nats.errors import PublishError
-from threetears.nats import KvBucketOpener, KvPublisher, Publisher, SubscriptionHandle, TypedSubscriber
+from threetears.nats import (
+    ChangeLogBinder,
+    KvBucketOpener,
+    KvPublisher,
+    Publisher,
+    SubscriptionHandle,
+    TypedSubscriber,
+)
+from threetears.nats.change_log import ChangeLogLike
 from threetears.nats.kv import KvBucketLike, KvDeclaringClient
 from threetears.nats.subjects import Subject
 
@@ -40,6 +48,14 @@ def _kv_declaring_client(client: FakeNatsClient) -> KvDeclaringClient:
 
 def _bucket(bucket: FakeKvBucket) -> KvBucketLike:
     return bucket
+
+
+def _change_log_binder(client: FakeNatsClient) -> ChangeLogBinder:
+    return client
+
+
+def _change_log(log: FakeChangeLog) -> ChangeLogLike:
+    return log
 
 
 class _Message(BaseModel):
@@ -95,3 +111,9 @@ async def test_a_bucket_opened_through_the_protocol_is_a_bucket_and_takes_replic
     bucket = await opener.kv_bucket(name="b", replicas=3)
     assert await bucket.put(key="k", value=b"v") == 1
     assert await bucket.get(key="k") == b"v"
+
+
+def test_the_double_binds_a_change_log_an_epoch_source_and_reader_take() -> None:
+    client = FakeNatsClient()
+    assert isinstance(client, ChangeLogBinder)
+    assert isinstance(client.change_log("epoch-changes"), ChangeLogLike)

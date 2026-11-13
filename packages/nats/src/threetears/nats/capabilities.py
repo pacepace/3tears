@@ -18,6 +18,8 @@ its own that inherits several -- and a double implementing those methods is a va
 - :class:`KvBucketOpener` -- a KV bucket by name (``kv_bucket``), answered as the bucket slice
   :class:`~threetears.nats.kv.KvBucketLike`
 - :class:`KvPublisher` -- both of :class:`KvBucketOpener` and :class:`Publisher`: a collection's client
+- :class:`ChangeLogBinder` -- a change log by name (``change_log``), answered as the log slice
+  :class:`~threetears.nats.change_log.ChangeLogLike`: what an epoch source or reader holds its client for
 
 Importing this module loads no NATS client: the types it names are read only by a type checker.
 """
@@ -31,12 +33,14 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
+    from threetears.nats.change_log import ChangeLogLike
     from threetears.nats.client import JetStreamPullConsumer, JetStreamPushConsumer, Subscription
     from threetears.nats.kv import KvBucketLike
     from threetears.nats.subjects import Subject
     from threetears.nats.transport import RawMessageCallback
 
 __all__ = [
+    "ChangeLogBinder",
     "DurableSubscriber",
     "JetStreamPublisher",
     "KvBucketOpener",
@@ -203,3 +207,12 @@ class KvBucketOpener(Protocol):
 class KvPublisher(KvBucketOpener, Publisher, Protocol):
     """opens KV buckets and publishes models: what a collection uses of its client (its L2 bucket, its invalidation
     messages)."""
+
+
+@runtime_checkable
+class ChangeLogBinder(Protocol):
+    """binds a change log by name (:meth:`NatsClient.change_log`): what an epoch source or reader
+    (:class:`threetears.epoch.EpochGenerationSource`, :class:`threetears.epoch.EpochGenerationReader`) holds its
+    client for."""
+
+    def change_log(self, name: str) -> ChangeLogLike: ...

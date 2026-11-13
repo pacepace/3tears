@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from threetears.nats import (
+    ChangeLogBinder,
     DurableSubscriber,
     JetStreamPublisher,
     KvBucketOpener,
@@ -24,9 +25,11 @@ from threetears.nats import (
     SubscriptionHandle,
     TypedSubscriber,
 )
-from threetears.nats.kv import KvStreamClient
+from threetears.nats.change_log import ChangeLogLike
+from threetears.nats.kv import KvStreamClient, NatsChangeLog
 
 _CAPABILITIES: list[type[Any]] = [
+    ChangeLogBinder,
     DurableSubscriber,
     JetStreamPublisher,
     KvBucketOpener,
@@ -81,6 +84,14 @@ def _kv_publisher(client: NatsClient) -> KvPublisher:
     return client
 
 
+def _change_log_binder(client: NatsClient) -> ChangeLogBinder:
+    return client
+
+
+def _change_log(log: NatsChangeLog) -> ChangeLogLike:
+    return log
+
+
 # what a bucket holds its client for (NatsKvBucket.open(client=...)), and the handle a typed subscription answers
 def _kv_stream_client(client: NatsClient) -> KvStreamClient:
     return client
@@ -117,3 +128,8 @@ def test_importing_the_capabilities_loads_no_nats_client() -> None:
     code = "import sys, threetears.nats.capabilities; print('nats' in sys.modules, 'threetears.nats.client' in sys.modules)"
     answer = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert answer.stdout.split() == ["False", "False"]
+
+
+def test_the_change_log_the_client_binds_is_the_log_slice() -> None:
+    assert isinstance(NatsChangeLog.__new__(NatsChangeLog), ChangeLogLike)
+    assert not isinstance(_OnlyRequests(), ChangeLogLike)

@@ -39,7 +39,7 @@ from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Mappin
 from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final
 
 from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, NotedChange
 from threetears.core.tenancy import (
@@ -62,7 +62,8 @@ from threetears.core.collections.epoch_change import (
 )
 from threetears.core.collections.generation import split_generation_token, tenancy_of_table
 from threetears.core.exceptions import GenerationUnavailableError, L2LostError, RestoreTooLargeError
-from threetears.nats.change_log import ChangeLogEntry, ChangeLogState
+from threetears.nats.capabilities import ChangeLogBinder
+from threetears.nats.change_log import ChangeLogEntry, ChangeLogLike, ChangeLogState
 from threetears.nats.errors import KvBucketNotFoundError, KvError, KvFullError
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter, gauge
@@ -191,46 +192,6 @@ def generation_kv_key(table_name: str, tenant: str | None = None) -> str:
     return epoch_change_key(table_name, tenant)
 
 
-@runtime_checkable
-class _ChangeLogLike(Protocol):
-    """the change log a source and a reader use: :class:`threetears.nats.NatsChangeLog`, or its test double."""
-
-    async def declare(
-        self,
-        *,
-        max_age: timedelta,
-        max_bytes: int,
-        replicas: int | None,
-        incarnation: str | None = None,
-        first_seq: int | None = None,
-        continues: tuple[str, int | None] | None = None,
-        restoring: str | None = None,
-    ) -> ChangeLogState: ...
-
-    async def state(self) -> ChangeLogState | None: ...
-
-    async def label_restored(self, *, continues: tuple[str, int | None]) -> ChangeLogState: ...
-
-    async def append(self, key: str, value: bytes, *, msg_id: str) -> int: ...
-
-    async def last(self, key: str) -> ChangeLogEntry | None: ...
-
-    async def at(self, seq: int) -> ChangeLogEntry | None: ...
-
-    async def next_after(self, key: str, seq: int) -> ChangeLogEntry | None: ...
-
-    async def records_after(self, key: str, seq: int, upto: int) -> list[ChangeLogEntry]: ...
-
-    def watch(self, key: str) -> AsyncGenerator[KvKeyUpdate]: ...
-
-
-@runtime_checkable
-class _ChangeLogging(Protocol):
-    """a client that binds change logs."""
-
-    def change_log(self, name: str) -> _ChangeLogLike: ...
-
-
 def _token(incarnation: str, seq: int) -> str:
     """the generation token of the epoch at ``seq`` under ``incarnation``.
 
@@ -254,11 +215,11 @@ class _ChangeLogReading:
     newest of them.
     """
 
-    def __init__(self, nats_client: Any, *, tenants: PodTenants | None = None) -> None:
+    def __init__(self, nats_client: ChangeLogBinder, *, tenants: PodTenants | None = None) -> None:
         """capture the client and the tenants it reads; no I/O.
 
         :param nats_client: a connected client that binds change logs
-        :ptype nats_client: Any
+        :ptype nats_client: ChangeLogBinder
         :param tenants: the pod's tenants; ``None`` reads every tenant
         :ptype tenants: PodTenants | None
         :return: nothing
@@ -350,14 +311,14 @@ class _ChangeLogReading:
         held = [entry for entry in entries if entry is not None]
         return min(held, key=lambda entry: entry.seq) if held else None
 
-    def _log(self) -> _ChangeLogLike:
+    def _log(self) -> ChangeLogLike:
         """the change log, bound through the client.
 
         :return: the log
-        :rtype: _ChangeLogLike
+        :rtype: ChangeLogLike
         :raises GenerationUnavailableError: when the client binds no change log
         """
-        if not isinstance(self._nats, _ChangeLogging):
+        if not isinstance(self._nats, ChangeLogBinder):
             raise GenerationUnavailableError(
                 f"{type(self._nats).__name__} binds no change log, so no epoch can be read"
             )
@@ -722,7 +683,7 @@ class EpochGenerationSource(_ChangeLogReading):
 
     def __init__(
         self,
-        nats_client: Any,
+        nats_client: ChangeLogBinder,
         *,
         change_retention: EpochChangeRetention = _DEFAULT_EPOCH_CHANGE_RETENTION,
         restored_from_l3: bool = False,
@@ -731,7 +692,7 @@ class EpochGenerationSource(_ChangeLogReading):
         """capture the client; no I/O.
 
         :param nats_client: connected client able to declare and write the change log
-        :ptype nats_client: Any
+        :ptype nats_client: ChangeLogBinder
         :param change_retention: how the log is kept, declared on its first use
         :ptype change_retention: EpochChangeRetention
         :param restored_from_l3: a lost log is put back by the change-note keeper, so this source never
@@ -1155,11 +1116,13 @@ class EpochGenerationReader(_ChangeLogReading):
     with, and "no generation yet" is itself something its mark records.
     """
 
-    def __init__(self, nats_client: Any, *, create_if_missing: bool = False, tenants: PodTenants | None = None) -> None:
+    def __init__(
+        self, nats_client: ChangeLogBinder, *, create_if_missing: bool = False, tenants: PodTenants | None = None
+    ) -> None:
         """capture the client and the tenants it reads; no I/O.
 
         :param nats_client: connected client able to bind the change log
-        :ptype nats_client: Any
+        :ptype nats_client: ChangeLogBinder
         :param create_if_missing: kept for the callers that pass it; a reader never creates the log
         :ptype create_if_missing: bool
         :param tenants: an agent or tool pod's tenants, each table read under the keys its declared tenancy

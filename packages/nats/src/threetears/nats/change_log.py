@@ -3,14 +3,20 @@
 A change log (:class:`threetears.nats.kv.NatsChangeLog`) is an append-only log of keyed records over
 one JetStream stream, whose sequence numbers each record. These are the values it answers with, here
 so that a test double and a reader that never opens a connection can name them without importing
-nats-py.
+nats-py, and :class:`ChangeLogLike`, what a caller uses of the log (a client binds one by name through
+:class:`~threetears.nats.capabilities.ChangeLogBinder`).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Final
+from typing import TYPE_CHECKING, Final, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+    from threetears.nats.kv_watch import KvKeyUpdate
 
 __all__ = [
     "CHANGE_LOG_CONTINUES_METADATA",
@@ -18,6 +24,7 @@ __all__ = [
     "CHANGE_LOG_INCARNATION_METADATA",
     "CHANGE_LOG_RESTORING_METADATA",
     "ChangeLogEntry",
+    "ChangeLogLike",
     "ChangeLogState",
 ]
 
@@ -78,3 +85,37 @@ class ChangeLogEntry:
     seq: int
     key: str
     value: bytes
+
+
+@runtime_checkable
+class ChangeLogLike(Protocol):
+    """what a caller uses of a change log: :class:`threetears.nats.kv.NatsChangeLog`, or its test double
+    (:class:`threetears.core.testing.kv.FakeChangeLog`), each satisfying it structurally."""
+
+    async def declare(
+        self,
+        *,
+        max_age: timedelta,
+        max_bytes: int,
+        replicas: int | None,
+        incarnation: str | None = None,
+        first_seq: int | None = None,
+        continues: tuple[str, int | None] | None = None,
+        restoring: str | None = None,
+    ) -> ChangeLogState: ...
+
+    async def state(self) -> ChangeLogState | None: ...
+
+    async def label_restored(self, *, continues: tuple[str, int | None]) -> ChangeLogState: ...
+
+    async def append(self, key: str, value: bytes, *, msg_id: str) -> int: ...
+
+    async def last(self, key: str) -> ChangeLogEntry | None: ...
+
+    async def at(self, seq: int) -> ChangeLogEntry | None: ...
+
+    async def next_after(self, key: str, seq: int) -> ChangeLogEntry | None: ...
+
+    async def records_after(self, key: str, seq: int, upto: int) -> list[ChangeLogEntry]: ...
+
+    def watch(self, key: str) -> AsyncGenerator[KvKeyUpdate]: ...
