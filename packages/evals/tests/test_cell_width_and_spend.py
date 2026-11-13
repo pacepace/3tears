@@ -75,6 +75,7 @@ from threetears.evals.schema.models import (
     EvalTemplate,
     EvalTestCase,
     JudgedArtifact,
+    RubricDim,
 )
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.storage import InMemoryDocumentStore
@@ -596,6 +597,8 @@ class _PricedJudge:
     calls: list[str] = field(default_factory=list)
     #: Whether the first call never answers, so the phase asking it holds its room until the cell's deadline.
     first_hangs: bool = False
+    #: A dim whose first call never answers, so the phase asking it holds its room, its other calls billed.
+    hangs_once_on: str | None = None
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         del system, user, response_format
@@ -607,7 +610,7 @@ class _PricedJudge:
         assert match is not None
         dim = match.group(1)
         self.calls.append(dim)
-        if self.first_hangs and len(self.calls) == 1:
+        if (self.first_hangs and len(self.calls) == 1) or (dim == self.hangs_once_on and self.calls.count(dim) == 1):
             await asyncio.Event().wait()
         return ToyJudgeCompletion(
             content=json.dumps({"reasoning": "fine", "criteria_scores": {dim: 4}}),
@@ -651,13 +654,14 @@ async def _judged_run_kept(
     width: int = 1,
     client: ScriptedExtractionClient | None = None,
     cell_timeout_s: float | None = None,
+    template: EvalTemplate | None = None,
 ) -> tuple[EvalHost, EvalRun, list[EvalResult], BudgetStoppedError | None]:
     """``k`` judged toy cells of one case under ``cap_usd``, ``width`` at once: the host, the run, its stored results
     and the stop, if one."""
     host = toyhost_host(clients=lambda _role, _model, *, temperature=None: judge)
     world = host.profile.world
     assert world is not None
-    template = toyhost_judged_template()
+    template = template or toyhost_judged_template()
     kind = ToyExtractorKind(
         client=client or ScriptedExtractionClient(),
         world=world,
@@ -738,6 +742,7 @@ async def test_the_run_summary_names_a_case_the_cap_set_aside_as_not_judged_with
     assert "1 not judged, as the cost cap had too little left for their judging" in summary.results_text
     assert any(error.endswith(NOT_JUDGED_LINE) for error in summary.errors)
     assert case.outcome == "not_judged" and case.errors == [NOT_JUDGED_LINE]
+    assert case.render().splitlines()[0].startswith("case the case (repeat 1, not judged): "), "in words"
     assert "re-judge it" in NOT_JUDGED_LINE
     assert resolve_result_condition(result).judging == "set_aside"
 
@@ -788,6 +793,55 @@ async def test_two_cells_side_by_side_leave_the_third_unstarted_once_their_judgi
     (stop,) = stopped.stops
     assert (stop.cells_not_started, stop.cells_not_judged) == (1, 0)
     assert stop.landed_final == 1.5
+
+
+#: The second dim of the two-dim template, which the phase's hanging call asks.
+_VENDOR_DIM = "extraction.vendor_named"
+
+
+def _two_dim_template() -> EvalTemplate:
+    """The toy judged template with a second dim, so a judge phase makes two calls and can hold its room part billed."""
+    template = toyhost_judged_template()
+    return template.model_copy(
+        update={
+            "rubric": [
+                *template.rubric,
+                RubricDim(
+                    name=_VENDOR_DIM,
+                    description="the vendor is named as the invoice names it",
+                    scale="ordinal",
+                    judge="builtin",
+                ),
+            ]
+        }
+    )
+
+
+async def test_a_hold_counts_only_what_its_calls_have_not_billed_so_a_cell_starts_into_the_room_left() -> None:
+    """Two cells at once under a $2.625 cap, a phase of two calls each priced at $0.50 (two attempts at $0.25) and
+    billed $0.50, so a phase holds $1. The cell started second writes first: its judging is admitted, its first call
+    bills and its second never answers, so it holds $0.50 of its $1 while it waits. The first cell's judging fits beside
+    that ($0.75 + $0.25 + $0.50 + $1 = $2.50) and is judged whole. When its slot frees, $1.25 has landed and the running
+    cell has spent $0.75 and holds $0.50 more: $2.50, under the cap, so the third cell starts. Counting the hold's whole
+    $1 beside the call it already billed would read $3, past the cap: the first cell would never be admitted, and the
+    third never start. The run still ends within its cap."""
+    judge = _PricedJudge(cost_usd=0.5, ceiling_usd=0.25, hangs_once_on=_VENDOR_DIM)
+
+    _host, _run, results, stopped = await _judged_run_kept(
+        judge,
+        cap_usd=2.625,
+        k=3,
+        width=2,
+        client=_QuarterDollarClient(first_delay_s=0.15),
+        cell_timeout_s=0.6,
+        template=_two_dim_template(),
+    )
+
+    assert len(results) == 3, "the third cell started into the room the part-billed hold left"
+    assert sum(1 for result in results if result.judge_error is None and len(result.rubric_scores) == 2) == 1, (
+        "the cell admitted beside the part-billed hold was judged whole"
+    )
+    assert stopped is not None and stopped.stops[0].landed_final <= 2.625, "the run ended within its cap"
 
 
 async def test_a_deadline_while_judging_waits_for_the_cap_s_room_sets_the_cell_aside_under_the_cap() -> None:
