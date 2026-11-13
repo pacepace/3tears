@@ -56,7 +56,7 @@ from threetears.evals.analysis.report.keys.vocabulary import (
     _refuse,
 )
 from threetears.evals.analysis.report.keys.weakest import _COMPARISONS_SLOT
-from threetears.evals.analysis.report.per_input import input_memo
+from threetears.evals.analysis.report.per_input import kept_for
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import SHARE_UNIT, ReportInput
 from threetears.evals.kernel.numbers import CENT
@@ -107,7 +107,7 @@ def _input_cache(report_input: ReportInput) -> _InputCache:
     walks the grammar once, and each family sharing a slot reads the slot's ids once (four lever families read a
     setting's arm pairs, an O(arms squared) scan, alike).
     """
-    return input_memo(report_input).get(_InputCache, _empty_input_cache)
+    return kept_for(report_input).get(_InputCache, _empty_input_cache)
 
 
 def _offered(slot: _Ids, report_input: ReportInput, values: tuple[str, ...]) -> list[str]:

@@ -1,7 +1,8 @@
 """What reading a figure key twice on one report input holds to: the same answer, and nothing kept past the input.
 
 Contracts held here (``threetears.evals.analysis.report.figure_keys.resolve``, which keeps each input's figures and
-refusals once read):
+refusals once read, and ``PageForms.of`` and ``page_arm_names``, which keep each input's forms and arm names on the
+same values kept per input):
 
 - **a refusal reads alike every time**: a key refused twice on one input raises the same type (an unstated figure
   apart from a key that names nothing, which a listing reads as absent) with the same message, the same cause and the
@@ -19,6 +20,8 @@ from typing import Any
 from packages.evals.tests.analyst_support import fixture_inputs
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import resolve
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.keys.names import page_arm_names
 from threetears.evals.analysis.report_input import ReportInput
 
 #: A key r2 leaves unstated, refused with a cause: the arm states no spread on the measure.
@@ -95,3 +98,40 @@ def test_an_input_made_where_a_dropped_one_was_reads_its_own_figures() -> None:
         assert resolve(path, held).value == 10.0 + step / 8, step
         del held
     assert reused, "the control: some input was made where a dropped one had been"
+
+
+def test_an_input_whose_forms_and_arm_names_were_read_is_freed_once_dropped() -> None:
+    held = _copy_of_r2()
+    PageForms.of(held)
+    page_arm_names(held)
+    gone = weakref.ref(held)
+    del held
+    gc.collect()
+    assert gone() is None, "a page's forms or arm names keep their report input alive"
+
+
+def test_an_input_made_where_a_dropped_one_was_reads_its_own_forms_and_arm_names() -> None:
+    document = fixture_inputs()["r2"].model_dump(mode="json", by_alias=True)
+    seen: set[int] = set()
+    reused = 0
+    for step in range(100):
+        document["measures"]["calls_per_task"]["unit"] = f"calls-{step}"
+        document["arms"][0]["short_name"] = f"first-{step}"
+        held = ReportInput.model_validate(document)
+        reused += id(held) in seen
+        seen.add(id(held))
+        assert PageForms.of(held).measure("calls_per_task").unit == f"calls-{step}", step
+        assert page_arm_names(held)[held.arms[0].id] == f"first-{step}", step
+        del held
+    assert reused, "the control: some input was made where a dropped one had been"
+
+
+def test_each_page_of_one_input_keeps_its_own_ledger_and_names() -> None:
+    held = _copy_of_r2()
+    first, second = PageForms.of(held), PageForms.of(held)
+    key, arm = _first_mean(held)
+    first.level(key, held.measures[key].per_arm[arm].mean)
+    assert first.ledger and not second.ledger, "two pages of one input share a ledger"
+    names = page_arm_names(held)
+    names[held.arms[0].id] = "renamed"
+    assert page_arm_names(held)[held.arms[0].id] != "renamed", "a caller's names changed the input's"

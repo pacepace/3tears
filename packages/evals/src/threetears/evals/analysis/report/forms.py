@@ -167,7 +167,7 @@ from threetears.evals.analysis.report.number_forms.written import (
     _written_stated,
 )
 from threetears.evals.analysis.report.parts.look import Quantity, figure_text, in_change_form, quantity, quantity_of
-from threetears.evals.analysis.report.per_input import input_memo
+from threetears.evals.analysis.report.per_input import kept_for
 from threetears.evals.analysis.report.said import Said, SaidFigure
 from threetears.evals.analysis.report.unit_once import interval_alone, interval_beside, unit_after, unit_spaced
 from threetears.evals.analysis.report.verdict import MIN_CASES, interval_words
@@ -248,7 +248,7 @@ class PageForms:
         states the pass rate, so each has its form too.
 
         The forms are pure in the input, which is frozen, so they are worked out once per input
-        (:func:`~threetears.evals.analysis.report.per_input.input_memo`): an analyst tool that cites each figure on
+        (:func:`~threetears.evals.analysis.report.per_input.kept_for`): an analyst tool that cites each figure on
         forms of its own reads the input's forms back rather than deciding every measure again. Each call is still a
         page of its own, with its own ledger of what it hands out.
 
@@ -259,7 +259,7 @@ class PageForms:
         """
         return cls(
             "written",
-            input_memo(report_input).get(_written_measures, lambda: _written_measures(report_input)),
+            kept_for(report_input).get(_written_measures, lambda: _written_measures(report_input)),
             report_input,
         )
 

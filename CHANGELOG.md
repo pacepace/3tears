@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a page's forms and arm names are worked out once per report input
+
+**Changed:** `PageForms.of` and `page_arm_names` read their results from what is kept per report input
+(`threetears.evals.analysis.report.per_input`), where the figure-key resolver's cache now lives too. An analyst
+tool that cites each figure without forms of its own rebuilt every measure's form for every figure: 123,267 times in
+one writer calibration. Output is unchanged; each `PageForms.of` call still returns forms with a ledger of their own.
+On the test pool, the 16 slowest evals test files took 5,726 s of test time against 10,551 s before.
+
 ### evals: the modules that print a report page live under `analysis/report/`
 
 **Changed:** nine flat report modules move under `threetears.evals.analysis.report`, unchanged in behaviour:
