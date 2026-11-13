@@ -319,6 +319,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 
 **Types**
 
+- **`AuthoredVerdict`** · type alias · An expected verdict as its author states it: a score on the criterion's scale (1-5 ordinal; 1 pass, 0 fail), or `"pass"` / `"fail"` on a pass/fail criterion.
+  <br>`Annotated[int, Field(strict=True)] | Literal['pass', 'fail']`
 - **`MeritAxis`** · literal · The merit axes a measure can serve.
   <br>`'quality'` | `'cost'` | `'latency'` | `'reliability'`
 - **`ToolWrap`** · type alias · What the action seam is handed: maps the candidate's tools, by name, to the tools it should use — each declared recorded tool wrapped for the cassette run, every other one unchanged.
@@ -727,7 +729,6 @@ The host bridge: an eval's host, the command line, and a measure declared on the
 - **`HostCommand`** · dataclass · A subcommand a host adds beside the engine's own, mounted by `run_cli` under the same program.
 - **`JudgeCalibration`** · dataclass · How a judge's scores on one dimension agree with a person's labels, and the evidence tier that bears.
 - **`Measure`** · class · A function that computes a measure, carrying the measure's declaration.
-- **`WorldOutcome`** · model · What a world runner's graders see: the agent's answer, the state it left, and the calls it made.
 - **`WorldRunner`** · dataclass · A runner that hosts an agent on a world: `World(...)(agent)`.
 
 **Types**

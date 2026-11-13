@@ -376,7 +376,8 @@ class EveryCellApparatusFailedError(RuntimeError):
 #: (:class:`~threetears.evals.run.ModelUnservedError`). A provider's "not served" is deterministic for a retired model,
 #: so a few in a row prove it, and three keep one stray routing answer from stopping an arm a served model would have
 #: measured. Waiting for them costs next to nothing: the provider refuses each call before serving it, and no cell
-#: that meets it is judged. A run of fewer cells than this whose every cell meets it stops all the same.
+#: that meets it is judged. A run that ends holding any cell that met it, short of a run of three, still ends stopped,
+#: so those cells are taken up again once the model is served.
 _UNSERVED_CIRCUIT_CELLS: Final = 3
 
 #: How many distinct exclusion errors a :class:`NothingMeasuredError` quotes, and how much of each.
@@ -3984,11 +3985,12 @@ async def execute_run(
 
     A model not served: when the provider answers that it does not serve the model the run's candidate names (a
     retired model, a model id it does not know: ``CandidateOutput.model_unserved``), the cell is lost to the test setup
-    and never judged. Once three cells in a row (``_UNSERVED_CIRCUIT_CELLS``) have met that answer, or every cell of a
-    shorter run has, the loop stops as it does for the account, raising
-    :class:`~threetears.evals.run.budget.ModelUnservedError` once the cells still running have ended; the job manager
-    files it ``exhausted``, naming the model and the provider's words, and a take-up once the model is served runs
-    those cells again. A cell whose model was served in between starts the count again.
+    and never judged. Once three cells in a row (``_UNSERVED_CIRCUIT_CELLS``) have met that answer the loop stops as it
+    does for the account, raising :class:`~threetears.evals.run.budget.ModelUnservedError` once the cells still running
+    have ended; a cell whose model was served in between starts the count again. A run whose matrix ran out first,
+    holding any such cell, raises it too, after its last cell: a run ends ``completed`` holding no cell its model was
+    not served for. The job manager files it ``exhausted``, naming the model and the provider's words, and a take-up
+    once the model is served runs those cells again.
 
     :raises ValueError: ``judge_service`` and ``run.judge_model`` disagree about whether this run is
         judged — one is set and the other is not. Refused before any cell runs, so nothing
@@ -4035,10 +4037,10 @@ async def execute_run(
     infra_exclusions: list[str] = [
         cell.infra_error for cell in stored.done if cell.exclusion in _RECORDED_FAULTS and cell.infra_error
     ]
-    # The cells that found the run's model not served: in a row as the loop records them, which the circuit reads, and
-    # in all, which the check after the loop reads. A take-up runs a stored unserved cell again, so none is done.
+    # The cells that found the run's model not served, in a row as the loop records them, which the circuit reads, and
+    # the last one's message, which the check after the loop reads. A take-up runs a stored unserved cell again, so no
+    # done cell is one.
     unserved_in_a_row = 0
-    unserved_cells = sum(1 for cell in stored.done if cell.exclusion == "model_unserved")
     last_unserved: str | None = None
     # The caller's list when it supplied one, so what it can read mid-flight is
     # the identical object this returns — never a copy that could disagree.
@@ -4250,7 +4252,7 @@ async def execute_run(
                 in_flight.remove(sink)
 
     async def run_and_record(k: int, tc: EvalTestCase, sink: _CellSink) -> None:
-        nonlocal done, unserved_in_a_row, unserved_cells, last_unserved
+        nonlocal done, unserved_in_a_row, last_unserved
         cancelled_in_cell = False
         run_defect: CandidateKindDefect | CompletionProtocolDefect | None = None
         try:
@@ -4492,7 +4494,6 @@ async def execute_run(
             infra_exclusions.append(result.infra_error)
         if (unserved := sink.errors.unserved_model) is not None:
             unserved_in_a_row += 1
-            unserved_cells += 1
             last_unserved = unserved
         else:
             unserved_in_a_row = 0
@@ -4545,9 +4546,10 @@ async def execute_run(
         raise AccountExhaustedError(
             done, total, accumulated_usd=accumulated_usd, unpriced_results=unpriced_results, detail=stop.refusal
         )
-    # Stopped by the circuit, or every cell of a run shorter than it found the model not served: either way the run
-    # stops resumable, naming the model, rather than failing as one that measured nothing.
-    unserved_detail = stop.unserved or (last_unserved if total and unserved_cells == total else None)
+    # Stopped by the circuit, or the matrix ran out holding a cell its model was not served for: either way the run
+    # stops resumable, naming the model, so a take-up once the model is served runs those cells, rather than ending
+    # completed with them, or failing as a run that measured nothing.
+    unserved_detail = stop.unserved or last_unserved
     if unserved_detail is not None:
         raise ModelUnservedError(
             done,

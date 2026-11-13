@@ -225,8 +225,10 @@ empty transcript and scored as a fail. One production arm paid for 180 judge cal
 
 **Added:**
 - `FailureOwner` gains `unserved`: the provider does not serve the model the call named. The package's client reads
-  it off each provider's structured answer: OpenRouter's 404 (except one that names a missing image) and its 400 for
-  a model id it does not know, Anthropic's 404 `not_found_error`, and OpenAI's `model_not_found`. A host's own
+  it off each provider's answer: Anthropic's 404 `not_found_error` and OpenAI's `model_not_found`, and OpenRouter's
+  404 for a model it has retired ("is no longer available") and its 400 for a model id it does not know. OpenRouter's
+  body carries no code for these, so its two are read narrowly off the message; its other 404s (no endpoint takes the
+  request: tool use, data policy, parameters, allowed providers) stay charged to the candidate. A host's own
   describer may return it. One that never does keeps working, and a retired model's calls are then charged to the
   candidate as before.
 - `CandidateOutput.model_unserved`, set by `failed_call_output` for that owner (its new optional `unserved=` names
@@ -235,8 +237,9 @@ empty transcript and scored as a fail. One production arm paid for 180 judge cal
   trip the circuit. The cell is excluded with its own cause, `model_unserved`, and its error quotes the provider. The runner
   never judges it, whatever the kind's output holds, so a conversing kind that recorded turns with no reply is not
   judged either. Reports word the cause and its remedy.
-- A circuit: when three cells in a row find the model not served, or every cell of a shorter
-  run does, the run stops with `ModelUnservedError`. The job manager files it `exhausted` with the new
+- A circuit: when three cells in a row find the model not served, the run stops with `ModelUnservedError`. A run
+  whose matrix runs out holding any such cell raises it after its last cell, so a run never ends `completed` holding
+  one. The job manager files it `exhausted` with the new
   `EvalRun.exhausted_because` set to `model_unserved` (`account_refused` for the account's stop). Its
   `error_details` entry names the model and quotes the provider. The launch's other arms run on. Taken up once the
   model is served, the run runs its unserved cells again (`EvalResult.model_unserved`).

@@ -921,7 +921,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.quick.HostFactory",
         "threetears.evals.quick.JudgeCalibration",
         "threetears.evals.quick.Measure",
-        "threetears.evals.quick.WorldOutcome",
         "threetears.evals.quick.WorldRunner",
         "threetears.evals.quick.run_cli",
         # What a `Result` hands back when it is read case by case, verdict by verdict, or label by label.
@@ -940,6 +939,7 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.analysis.read_judge_temperatures",
         "threetears.evals.analysis.tier_sentence",
         "threetears.evals.kernel.AuthoredJudgeCase",
+        "threetears.evals.kernel.AuthoredVerdict",
         "threetears.evals.kernel.EvalJudgeProfile",
         "threetears.evals.kernel.JUDGE_KIND",
         "threetears.evals.kernel.JobLeases",

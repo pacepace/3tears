@@ -151,7 +151,8 @@ pass it to every entrypoint. It holds:
   `threetears.evals.kernel`), passing the owner your describer read, as the package's own kinds do. That is what
   acts on the owner: an `account` refusal stops the run, a `provider` decline excludes the cell, and `unserved` sets
   `CandidateOutput.model_unserved`, so the cell is never judged, even when your kind went on to record a transcript
-  of turns with no reply, and three such cells in a row stop the run `exhausted`, resumable once the model is served.
+  of turns with no reply, and three such cells in a row, or any left when the run's cells run out, stop the run
+  `exhausted`, resumable once the model is served.
   A kind that builds its own `CandidateOutput` for a failed call skips all three;
 - your tracing, executor and cell-timeout choices. None of these last three has a default: each is named
   where the host is built;
@@ -340,8 +341,9 @@ billed; a resend cut at the time bound may already have been, and its spend is n
 back to carry it.
 `describe_failure` reads the client's one error type, `ProviderError` (the provider, the status and its own message,
 never the body, `after 3 attempts` when it was sent again, and its `owner`: `account` for a refused key or spent
-credit, which stops a run, and `unserved` for a model the provider does not serve: OpenRouter's 404 and its 400 for
-a model id it does not know, Anthropic's 404 `not_found_error`, OpenAI's `model_not_found`), and an `httpx`
+credit, which stops a run, and `unserved` for a model the provider does not serve: OpenRouter's 404 for a model it
+has retired and its 400 for a model id it does not know, Anthropic's 404 `not_found_error`, OpenAI's
+`model_not_found`; OpenRouter's other 404s, no endpoint taking the request, stay the candidate's), and an `httpx`
 transport error by the host it was sending to.
 
 **A model that lacks a setting still answers, sent the closest one it takes.** The choosing, the refusal reading and
