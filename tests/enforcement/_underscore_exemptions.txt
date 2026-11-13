@@ -122,6 +122,38 @@ packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_
 packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_pending_size
 # rationale: nats-py Client._process_op_err: nats-py has no public force-reconnect; this is the entry its own read loop uses when a connection goes stale
 packages/nats/src/threetears/nats/_nats_py_internals.py:force_reconnect#0:_process_op_err
+# rationale: nats-py Client._skip_subject_validation: the unjoined publish checks subjects exactly when nats-py's publish would, honouring the connect option; no public accessor
+packages/nats/src/threetears/nats/_nats_py_internals.py:publish_unjoined#0:_skip_subject_validation
+# rationale: nats-py Client._max_pending_size: the reconnect-buffer refusal and the forced flush past the limit, as nats-py's publish and _send_command apply them; no public accessor
+packages/nats/src/threetears/nats/_nats_py_internals.py:publish_unjoined#0:_max_pending_size
+# rationale: nats-py Client._pending_data_size: read for the reconnect-buffer refusal nats-py's publish applies; no public accessor
+packages/nats/src/threetears/nats/_nats_py_internals.py:publish_unjoined#0:_pending_data_size
+# rationale: nats-py Client._pending: the PUB line, the payload object and CRLF are appended as three items in one synchronous step, so the payload is never concatenated on the event loop (nats-py's pub_cmd copies it whole); there is no public way to queue a command
+packages/nats/src/threetears/nats/_nats_py_internals.py:publish_unjoined#0:_pending
+# rationale: nats-py Client._pending_data_size: counted up by the bytes queued, as nats-py's _send_command counts them, keeping its pending-size accounting right; no public setter
+packages/nats/src/threetears/nats/_nats_py_internals.py:publish_unjoined#1:_pending_data_size
+# rationale: nats-py Client._pending_data_size: compared with the pending limit after queueing, as nats-py's _send_command does, to force the flush; no public accessor
+packages/nats/src/threetears/nats/_nats_py_internals.py:publish_unjoined#2:_pending_data_size
+# rationale: nats-py Client._flush_pending: the forced flush past the pending limit, as nats-py's _send_command calls it; no public equivalent (flush adds a PING round trip)
+packages/nats/src/threetears/nats/_nats_py_internals.py:publish_unjoined#0:_flush_pending
+# rationale: nats-py Client._flush_queue: wakes the flusher only when it holds no wake-up, as nats-py's _send_publish does; no public accessor
+packages/nats/src/threetears/nats/_nats_py_internals.py:publish_unjoined#0:_flush_queue
+# rationale: nats-py Client._flush_pending: the flusher wake after queueing, as nats-py's _send_publish calls it; no public equivalent (flush adds a PING round trip)
+packages/nats/src/threetears/nats/_nats_py_internals.py:publish_unjoined#1:_flush_pending
+# rationale: nats-py Client._resp_map: the request future removes itself from the response mux map when done, exactly as nats-py's _request_new_style registers it (the lambda reads the current map, as nats-py's does); no public request mux
+packages/nats/src/threetears/nats/_nats_py_internals.py:request_unjoined#0:_resp_map
+# rationale: nats-py Client._skip_subject_validation: the unjoined request checks its subject exactly when nats-py's request would; no public accessor
+packages/nats/src/threetears/nats/_nats_py_internals.py:request_unjoined#0:_skip_subject_validation
+# rationale: nats-py Client._resp_sub_prefix: whether the connection's response mux subscription exists yet, as nats-py's _request_new_style checks; no public accessor
+packages/nats/src/threetears/nats/_nats_py_internals.py:request_unjoined#0:_resp_sub_prefix
+# rationale: nats-py Client._init_request_sub: makes the one wildcard response mux subscription on first use, as nats-py's request does; the reply must arrive on that mux so nats-py's own reply routing resolves the future
+packages/nats/src/threetears/nats/_nats_py_internals.py:request_unjoined#0:_init_request_sub
+# rationale: nats-py Client._resp_sub_prefix: the response mux prefix the request's reply inbox extends, as nats-py's _request_new_style builds it; no public accessor
+packages/nats/src/threetears/nats/_nats_py_internals.py:request_unjoined#1:_resp_sub_prefix
+# rationale: nats-py Client._nuid: the request token is drawn from the connection's (CSPRNG) NUID, as nats-py's _request_new_style draws it; no public token source
+packages/nats/src/threetears/nats/_nats_py_internals.py:request_unjoined#0:_nuid
+# rationale: nats-py Client._resp_map: the request future is registered under its token so nats-py's mux callback resolves it with the reply; no public request mux
+packages/nats/src/threetears/nats/_nats_py_internals.py:request_unjoined#1:_resp_map
 
 # rationale: opentelemetry-api trace._TRACER_PROVIDER_SET_ONCE: the set-once guard on set_tracer_provider (>= 1.39) has no public reset, and init_telemetry must install a provider again after shutdown_telemetry
 packages/observe/src/threetears/observe/_otel_internals.py:allow_tracer_provider_reset#0:_TRACER_PROVIDER_SET_ONCE

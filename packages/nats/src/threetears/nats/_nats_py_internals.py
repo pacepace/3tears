@@ -45,6 +45,17 @@ The surface, and why each is used:
 ``Client._process_op_err``
     :func:`force_reconnect`. nats-py has no public force-reconnect; this is the entry its own
     read loop uses when a connection goes stale.
+``Client._skip_subject_validation``, ``Client._max_pending_size``, ``Client._flush_pending``,
+``Client._resp_sub_prefix``, ``Client._init_request_sub``, ``Client._resp_map`` (and ``_pending``,
+``_pending_data_size``, ``_flush_queue``, ``_nuid`` above)
+    :func:`publish_unjoined` and :func:`request_unjoined`. nats-py's ``_send_publish`` builds a
+    ``PUB`` as one ``bytes``: the command line, then the payload, then CRLF, concatenated on the
+    event loop (``nats/protocol/command.py``). For a payload of many megabytes that is one copy
+    of all of it holding the loop (4.6-7.2 ms per 12 MB measured on a pool container). These two
+    queue the command line, the payload object itself and the CRLF as three pending items, which
+    the flusher hands to ``writelines`` and the socket sends from memoryviews, with no copy; the
+    rest is nats-py's own publish and request, step for step: the same checks, stats, pending-size
+    accounting and flush, and the same response mux, tokens and futures as ``_request_new_style``.
 ``Client._nuid``
     :func:`install_csprng_nuid`. nats-py names every inbox and request token from one NUID per
     connection: a random 12-character prefix, then a sequence that grows by a fixed step. One
@@ -63,14 +74,26 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import secrets
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
-from nats.aio.client import PING_PROTO, Client
+from nats.aio.client import NO_RESPONDERS_STATUS, PING_PROTO, Client
 from nats.aio.subscription import Subscription
+from nats.errors import (
+    BadSubjectError,
+    ConnectionClosedError,
+    ConnectionDrainingError,
+    MaxPayloadError,
+    NoRespondersError,
+    OutboundBufferLimitError,
+)
+from nats.errors import TimeoutError as NatsTimeoutError
+from nats.js.api import Header
 from nats.js.client import JetStreamContext
 from nats.nuid import NUID
+from nats.protocol.command import PUB_OP
 
 if TYPE_CHECKING:
     from nats.aio.msg import Msg
@@ -78,12 +101,15 @@ if TYPE_CHECKING:
 __all__ = [
     "NUID_LENGTH",
     "PRIVATE_SURFACE",
+    "UNJOINED_FROM_BYTES",
     "CsprngNuid",
     "PrivateAttribute",
     "force_reconnect",
     "install_csprng_nuid",
     "missing_private_attributes",
+    "publish_unjoined",
     "pull_subscription_inbox",
+    "request_unjoined",
     "send_unsubscribe",
     "take_queued_messages",
     "write_pending_then_ping",
@@ -121,7 +147,26 @@ PRIVATE_SURFACE: Final[tuple[PrivateAttribute, ...]] = (
     PrivateAttribute("Subscription", "_pending_size", int),
     PrivateAttribute("PullSubscription", "_sub", Subscription),
     PrivateAttribute("Client", "_nuid", NUID),
+    PrivateAttribute("Client", "_skip_subject_validation", bool),
+    PrivateAttribute("Client", "_max_pending_size", int),
+    PrivateAttribute("Client", "_flush_pending", "method"),
+    PrivateAttribute("Client", "_resp_sub_prefix", "declared"),
+    PrivateAttribute("Client", "_init_request_sub", "method"),
+    PrivateAttribute("Client", "_resp_map", dict),
 )
+
+#: the payload size from which :class:`threetears.nats.NatsClient` publishes through
+#: :func:`publish_unjoined` / :func:`request_unjoined` instead of nats-py's own ``publish`` and
+#: ``request``. Below it nats-py's one concatenated ``bytes`` costs microseconds; from it the copy
+#: grows with the payload and holds the event loop while it runs.
+UNJOINED_FROM_BYTES: Final[int] = 64 * 1024
+
+#: nats-py's publish-path subject check (``nats.aio.client._SUBJECT_INVALID_RE``): no whitespace
+#: or CRLF, which would let a subject inject protocol commands.
+_SUBJECT_INVALID: Final[re.Pattern[str]] = re.compile(r"[ \t\r\n]")
+
+#: the CRLF that ends a ``PUB``'s payload.
+_CRLF: Final[bytes] = b"\r\n"
 
 #: the length nats-py slices every inbox token at (``msg.subject[len(prefix) + 22 + 2:]``).
 NUID_LENGTH: Final[int] = 22
@@ -195,6 +240,126 @@ def write_pending_then_ping(connection: Client, pong: asyncio.Future[bool]) -> N
     except asyncio.QueueFull:
         # NOSILENT: the flusher already holds wake-ups it has not taken, and each one drains the transport
         pass
+
+
+def _check_subject(subject: str) -> None:
+    """refuse a subject nats-py's publish path refuses: empty, or holding whitespace or CRLF.
+
+    :param subject: the subject to send on
+    :ptype subject: str
+    :return: nothing
+    :rtype: None
+    :raises BadSubjectError: when the subject is malformed
+    """
+    if not subject or _SUBJECT_INVALID.search(subject):
+        raise BadSubjectError
+
+
+async def publish_unjoined(connection: Client, subject: str, payload: bytes, reply: str = "") -> None:
+    """publish ``payload`` as nats-py's ``publish`` does, without copying it into one command.
+
+    nats-py's ``publish`` then ``_send_publish`` (no headers), step for step: subject checks
+    unless the connection skips them, closed / draining / reconnect-buffer / max-payload refusals,
+    ``out_msgs`` / ``out_bytes`` stats, the pending-size flush past the limit and the flusher
+    wake. The one difference: the ``PUB`` line, the payload object and the CRLF go into the
+    pending buffer as three items, appended in one synchronous step so no other command can land
+    between them, and the payload is never copied on the event loop.
+
+    :param connection: a nats-py client
+    :ptype connection: Client
+    :param subject: the subject to publish on
+    :ptype subject: str
+    :param payload: the message data; a mutable buffer is copied first, as nats-py's
+        concatenation copied it, so a later change to it cannot reach the wire
+    :ptype payload: bytes
+    :param reply: the reply subject, empty for none
+    :ptype reply: str
+    :return: nothing
+    :rtype: None
+    :raises BadSubjectError: for an empty subject or one holding whitespace
+    :raises ConnectionClosedError: when the connection is closed
+    :raises ConnectionDrainingError: when the connection is draining its publishes
+    :raises OutboundBufferLimitError: while reconnecting with buffering off or the buffer full
+    :raises MaxPayloadError: when the payload is over the server's limit
+    """
+    if not connection._skip_subject_validation:
+        _check_subject(subject)
+        if reply:
+            _check_subject(reply)
+    if connection.is_closed:
+        raise ConnectionClosedError
+    if connection.is_draining_pubs:
+        raise ConnectionDrainingError
+    data = payload if type(payload) is bytes else bytes(payload)
+    payload_size = len(data)
+    max_pending = connection._max_pending_size
+    if not connection.is_connected and (max_pending <= 0 or payload_size + connection._pending_data_size > max_pending):
+        raise OutboundBufferLimitError
+    if payload_size > connection.max_payload:
+        raise MaxPayloadError
+    if subject == "":
+        raise BadSubjectError
+    head = f"{PUB_OP} {subject} {reply} {payload_size}\r\n".encode()
+    connection.stats["out_msgs"] += 1
+    connection.stats["out_bytes"] += payload_size
+    pending = connection._pending
+    pending.append(head)
+    pending.append(data)
+    pending.append(_CRLF)
+    connection._pending_data_size += len(head) + payload_size + len(_CRLF)
+    if max_pending > 0 and connection._pending_data_size > max_pending:
+        await connection._flush_pending(force_flush=True)
+    flush_queue = connection._flush_queue
+    if flush_queue is not None and flush_queue.empty():
+        await connection._flush_pending()
+
+
+async def request_unjoined(connection: Client, subject: str, payload: bytes, timeout: float) -> Msg:
+    """nats-py's ``request`` (new style, no headers), publishing through :func:`publish_unjoined`.
+
+    The same response mux as nats-py's ``_request_new_style``: one wildcard inbox subscription per
+    connection (made on first use), a fresh token per request, a future in the mux's map that
+    removes itself when done. A ``503`` status reply is a :class:`NoRespondersError`, as there.
+
+    :param connection: a connected nats-py client
+    :ptype connection: Client
+    :param subject: the subject to request on
+    :ptype subject: str
+    :param payload: the request data
+    :ptype payload: bytes
+    :param timeout: seconds to wait for the reply once the request is published
+    :ptype timeout: float
+    :return: the reply
+    :rtype: Msg
+    :raises ConnectionDrainingError: when the connection is draining its publishes
+    :raises NatsTimeoutError: when no reply arrives within ``timeout``
+    :raises NoRespondersError: when the server reports no subscriber for ``subject``
+    """
+    if not connection._skip_subject_validation:
+        _check_subject(subject)
+    if connection.is_draining_pubs:
+        raise ConnectionDrainingError
+    if not connection._resp_sub_prefix:
+        await connection._init_request_sub()
+    prefix = connection._resp_sub_prefix
+    if prefix is None:
+        raise ConnectionClosedError
+    token = connection._nuid.next()
+    token.extend(secrets.token_hex(2).encode())
+    inbox = prefix[:]
+    inbox.extend(token)
+    key = token.decode()
+    future: asyncio.Future[Msg] = asyncio.get_running_loop().create_future()
+    future.add_done_callback(lambda _done: connection._resp_map.pop(key, None))
+    connection._resp_map[key] = future
+    await publish_unjoined(connection, subject, payload, reply=inbox.decode())
+    try:
+        msg = await asyncio.wait_for(future, timeout)
+    except TimeoutError as exc:
+        raise NatsTimeoutError from exc
+    if msg.headers and msg.headers.get(Header.STATUS) == NO_RESPONDERS_STATUS:
+        raise NoRespondersError
+    return msg
 
 
 async def send_unsubscribe(connection: Client, subscription: Subscription) -> None:

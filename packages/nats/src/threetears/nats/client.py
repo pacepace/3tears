@@ -111,9 +111,12 @@ from threetears.observe.resilience import retry_until_done
 
 from threetears.nats.diagnostics import permissions_violation_remedy
 from threetears.nats._nats_py_internals import (
+    UNJOINED_FROM_BYTES,
     force_reconnect,
     install_csprng_nuid,
+    publish_unjoined,
     pull_subscription_inbox,
+    request_unjoined,
     send_unsubscribe,
     take_queued_messages,
     write_pending_then_ping,
@@ -2112,6 +2115,51 @@ async def round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_SE
     :raises nats.errors.FlushTimeoutError: when no ``PONG`` arrives within ``timeout``
     """
     await _round_trip(connection, timeout=timeout)
+
+
+async def _publish_on(connection: Any, subject: str, payload: bytes, *, reply: str | None = None) -> None:
+    """publish on ``connection``; from :data:`UNJOINED_FROM_BYTES` without copying the payload on the loop.
+
+    nats-py's own ``publish`` concatenates the command line, the payload and CRLF into one
+    ``bytes`` on the event loop; a payload of megabytes then holds the loop for the copy. From the
+    threshold :func:`publish_unjoined` queues the payload itself; below it nats-py publishes.
+
+    :param connection: the nats-py client to publish on
+    :ptype connection: Any
+    :param subject: the subject
+    :ptype subject: str
+    :param payload: the message data
+    :ptype payload: bytes
+    :param reply: the reply subject, ``None`` for none
+    :ptype reply: str | None
+    :return: nothing
+    :rtype: None
+    """
+    if len(payload) >= UNJOINED_FROM_BYTES:
+        await publish_unjoined(connection, subject, payload, reply=reply or "")
+    elif reply is None:
+        await connection.publish(subject, payload)
+    else:
+        await connection.publish(subject, payload, reply=reply)
+
+
+async def _request_on(connection: Any, subject: str, payload: bytes, *, timeout: float) -> Any:
+    """a request on ``connection``; from :data:`UNJOINED_FROM_BYTES` without copying the payload on the loop.
+
+    :param connection: the nats-py client to request on
+    :ptype connection: Any
+    :param subject: the subject
+    :ptype subject: str
+    :param payload: the request data
+    :ptype payload: bytes
+    :param timeout: seconds nats-py waits for the reply
+    :ptype timeout: float
+    :return: the nats-py reply message
+    :rtype: Any
+    """
+    if len(payload) >= UNJOINED_FROM_BYTES:
+        return await request_unjoined(connection, subject, payload, timeout)
+    return await connection.request(subject, payload, timeout=timeout)
 
 
 async def _stop_routing(raw_subscription: Any, connection: Any) -> None:
@@ -5154,7 +5202,7 @@ class NatsClient:
             raise PublishError("reply_subject must be non-empty")
         payload = message.model_dump_json().encode("utf-8")
         try:
-            await (await self._reply_connection(reply_subject)).publish(reply_subject, payload)
+            await _publish_on(await self._reply_connection(reply_subject), reply_subject, payload)
         except Exception as exc:
             self._note_if_outbound_overflow(exc)  # resilience-task-03
             raise self._publish_failure(
@@ -5190,7 +5238,7 @@ class NatsClient:
         if not reply_subject:
             raise PublishError("reply_subject must be non-empty")
         try:
-            await (await self._reply_connection(reply_subject)).publish(reply_subject, payload)
+            await _publish_on(await self._reply_connection(reply_subject), reply_subject, payload)
         except Exception as exc:
             self._note_if_outbound_overflow(exc)  # resilience-task-03
             raise self._publish_failure(
@@ -5233,10 +5281,7 @@ class NatsClient:
             connection = (
                 await self._pinned_connection(pin) if pin is not None else await self._reply_connection(subject.path)
             )
-            if reply_to is None:
-                await connection.publish(subject.path, payload)
-            else:
-                await connection.publish(subject.path, payload, reply=reply_to.path)
+            await _publish_on(connection, subject.path, payload, reply=None if reply_to is None else reply_to.path)
         except Exception as exc:
             # resilience-task-03: an outbound-buffer overflow is counted into is_healthy here (the
             # publish boundary) -- it never reaches error_cb. re-raised as a typed PublishError so the
@@ -5737,8 +5782,8 @@ class NatsClient:
             sub = pos_subject if isinstance(pos_subject, Subject) else Subject.raw(str(pos_subject))
             secs = timeout.total_seconds() if isinstance(timeout, timedelta) else float(timeout)
             try:
-                msg = await (await self._lifecycle.publishing_connection()).request(
-                    sub.path, bytes(pos_payload), timeout=secs
+                msg = await _request_on(
+                    await self._lifecycle.publishing_connection(), sub.path, bytes(pos_payload), timeout=secs
                 )
             except (_NatsTimeoutError, asyncio.TimeoutError, TimeoutError) as exc:
                 raise RequestTimeoutError(
@@ -5796,7 +5841,7 @@ class NatsClient:
         try:
             async with asyncio.timeout(seconds):
                 connection = await self._lifecycle.publishing_connection()
-                msg = await connection.request(subject.path, payload, timeout=seconds)
+                msg = await _request_on(connection, subject.path, payload, timeout=seconds)
         except (_NatsTimeoutError, asyncio.TimeoutError, TimeoutError) as exc:
             raise RequestTimeoutError(
                 f"request timed out: subject={subject.path} timeout={timeout.total_seconds():.1f}s"
