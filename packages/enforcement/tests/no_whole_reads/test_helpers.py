@@ -373,6 +373,11 @@ def test_a_reap_is_judged_as_the_paged_update_it_sends(schema: SchemaCatalog) ->
         ("read_keyed_arrow(l3, table.name, keys=KeyBatch(table.key, chunk, casts), types=types)", []),
         # the same over a column that does not say it is the key: a predicate the walk cannot see
         ("read_keyed_arrow(l3, table.name, keys=KeyBatch(table.columns, chunk), types=types)", ["unknown-predicate"]),
+        # the key's columns copied into the batch's tuple (``KeyBatch(tuple(key), ...)``, reports' rows stage): the
+        # same columns, judged as the name it copies; a copy of a list that says nothing of the key stays unseen
+        ("delete_keyed(c, rows_stage, keys=KeyBatch(tuple(key), named, as_list=True))", []),
+        ("read_keyed(c, table, keys=KeyBatch(list(self.key_columns), ks))", []),
+        ("read_keyed(c, table, keys=KeyBatch(tuple(columns), ks))", ["unknown-predicate"]),
     ],
 )
 def test_a_generic_keyed_batch_is_judged_as_its_interpolated_sql(

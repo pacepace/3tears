@@ -955,6 +955,10 @@ _KEY_NAME: Final[re.Pattern[str]] = re.compile(
 )
 
 
+#: methods of a list, tuple or mapping that read it and never change it: a local they are called on keeps its binding
+_READING_METHODS: Final[frozenset[str]] = frozenset({"index", "count", "copy", "get", "keys", "values", "items"})
+
+
 #: a local copy's relation accessors: ``snapshot.relation(NAME)`` names the copy's own table, never the L3 one
 _COPY_CALLS: Final[frozenset[str]] = COPY_CALLS
 
@@ -2895,6 +2899,12 @@ class _ModuleWalk(ast.NodeVisitor):
                 and (text := _string_text(value.args[0], self._envs[-1], self._produced_by)) is not None
             ):
                 return ast.Call(func=value.func, args=[ast.Constant(text), *value.args[1:]], keywords=value.keywords)
+            # a batch's columns held in a local the function binds once from the table's key
+            # (``columns = self._pk_columns(primary_key)``; ``KeyBatch(tuple(columns), ...)``): the key it was read from
+            if isinstance(value, ast.Call) and _final(value) == "KeyBatch" and value.args:
+                keyed_from = self._bound_key_source(value.args[0])
+                if keyed_from is not None:
+                    return ast.Call(func=value.func, args=[keyed_from, *value.args[1:]], keywords=value.keywords)
             # a module constant holding the argument's shape (``_NEWEST_FIRST = (Sort("date_started"), ...)``)
             if isinstance(value, ast.Name) and isinstance(
                 self._module_values.get(value.id), (ast.Tuple, ast.List, ast.Dict)
@@ -3522,16 +3532,15 @@ class _ModuleWalk(ast.NodeVisitor):
                 return bound[0]
         return None
 
-    def _bound_shape(self, name: str) -> ast.Dict | ast.Tuple | ast.List | ast.Call | ast.IfExp | None:
-        """the literal mapping or sequence the enclosing function binds ``name`` to, if it binds it exactly once and
-        never changes it after (no item stored or deleted, no method called on it, no other binding): a ``by`` or
-        ``order`` held in a local reads as the literal it holds, and one the function may change reads as unknown.
+    def _bound_once(self, name: str) -> list[ast.expr] | None:
+        """every value the enclosing function binds ``name`` to by plain assignment, or None when it binds it any
+        other way (a parameter, a loop, an augmented or unpacking assignment) or changes it after (an item stored or
+        deleted, a method called on it).
 
         :param name: the local name
         :ptype name: str
-        :return: the literal (a mapping, a sequence, a ``Fragment``, or one of two such literals by a condition), or
-            None
-        :rtype: ast.Dict | ast.Tuple | ast.List | ast.Call | ast.IfExp | None
+        :return: the values bound, or None
+        :rtype: list[ast.expr] | None
         """
         if not self._function_nodes:
             return None
@@ -3551,10 +3560,61 @@ class _ModuleWalk(ast.NodeVisitor):
                 if isinstance(node.value, ast.Name) and node.value.id == name:
                     return None
             elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                if isinstance(node.func.value, ast.Name) and node.func.value.id == name:
+                if (
+                    isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == name
+                    and node.func.attr not in _READING_METHODS
+                ):
                     return None
             elif isinstance(node, ast.arg) and node.arg == name:
                 return None
+        return bound
+
+    def _bound_key_source(self, columns: ast.expr) -> ast.expr | None:
+        """the table's key a batch's columns were read from: a local (or a copy of one, ``tuple(columns)``) the
+        function binds exactly once, never changing it after, to a name, attribute or call whose own name says it is
+        the key (``self._pk_columns(primary_key)``, ``table_key(t)``, ``schema.key``). A local bound from anything
+        else, or more than once, is None: its name is judged as written.
+
+        :param columns: the batch's columns argument
+        :ptype columns: ast.expr
+        :return: the key-named expression it was bound from, or None
+        :rtype: ast.expr | None
+        """
+        if (
+            isinstance(columns, ast.Call)
+            and isinstance(columns.func, ast.Name)
+            and columns.func.id in {"tuple", "list"}
+            and len(columns.args) == 1
+            and not columns.keywords
+        ):
+            columns = columns.args[0]
+        if not isinstance(columns, ast.Name) or _KEY_NAME.search(columns.id):
+            return None
+        bound = self._bound_once(columns.id)
+        if bound is None or len(bound) != 1:
+            return None
+        source = bound[0]
+        named = source.func if isinstance(source, ast.Call) else source
+        spelled = named.attr if isinstance(named, ast.Attribute) else named.id if isinstance(named, ast.Name) else None
+        if spelled is None or not _KEY_NAME.search(spelled):
+            return None
+        return ast.Name(id=spelled.lstrip("_"), ctx=ast.Load())
+
+    def _bound_shape(self, name: str) -> ast.Dict | ast.Tuple | ast.List | ast.Call | ast.IfExp | None:
+        """the literal mapping or sequence the enclosing function binds ``name`` to, if it binds it exactly once and
+        never changes it after (no item stored or deleted, no method called on it, no other binding): a ``by`` or
+        ``order`` held in a local reads as the literal it holds, and one the function may change reads as unknown.
+
+        :param name: the local name
+        :ptype name: str
+        :return: the literal (a mapping, a sequence, a ``Fragment``, or one of two such literals by a condition), or
+            None
+        :rtype: ast.Dict | ast.Tuple | ast.List | ast.Call | ast.IfExp | None
+        """
+        bound = self._bound_once(name)
+        if bound is None:
+            return None
         if len(bound) == 1 and isinstance(bound[0], ast.Dict | ast.Tuple | ast.List):
             return bound[0]
         if len(bound) == 1 and isinstance(bound[0], ast.Call) and _final(bound[0]) == "Fragment":

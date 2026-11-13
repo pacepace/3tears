@@ -3591,6 +3591,48 @@ def test_a_helper_s_by_or_order_held_in_a_local_is_read_as_its_value(tmp_path: P
     assert ("rebound", "unknown-predicate read_row(by)") in found, found
 
 
+_KEY_HELD_IN_A_LOCAL = """
+    from threetears.core.keyed import KeyBatch, read_keyed
+
+
+    class Store:
+        def _pk_columns(self, primary_key):
+            return (primary_key,) if isinstance(primary_key, str) else tuple(primary_key)
+
+        async def by_key(self, conn, table, primary_key, values):
+            columns = self._pk_columns(primary_key)
+            first = values[columns.index(primary_key[0])]
+            return await read_keyed(conn, table, keys=KeyBatch(tuple(columns), [first]))
+
+        async def by_other(self, conn, table, wanted, values):
+            columns = list(wanted)
+            return await read_keyed(conn, table, keys=KeyBatch(tuple(columns), values))
+
+        async def rebound(self, conn, table, primary_key, wanted, values):
+            columns = self._pk_columns(primary_key)
+            if wanted:
+                columns = list(wanted)
+            return await read_keyed(conn, table, keys=KeyBatch(tuple(columns), values))
+
+        async def changed(self, conn, table, primary_key, extra, values):
+            columns = list(self._pk_columns(primary_key))
+            columns.append(extra)
+            return await read_keyed(conn, table, keys=KeyBatch(tuple(columns), values))
+"""
+
+
+def test_a_batch_s_columns_held_in_a_local_bound_from_the_key_are_the_key(tmp_path: Path) -> None:
+    """Flips if a keyed batch whose columns a local holds, bound once from the table's key
+    (``columns = self._pk_columns(primary_key)``; ``KeyBatch(tuple(columns), ...)``), stays unknown rather than keyed,
+    or if a local bound from anything else, bound twice, or changed after binding (``columns.append``) is read as the
+    key. Reading it (``columns.index``) changes nothing."""
+    found = _symbols(_config(tmp_path, {"store.py": _KEY_HELD_IN_A_LOCAL}))
+    functions = {function for function, _ in found}
+    assert "Store.by_key" not in functions, found
+    for unkeyed in ("Store.by_other", "Store.rebound", "Store.changed"):
+        assert unkeyed in functions, (unkeyed, found)
+
+
 _ANY_KIND_LEAD = """
     from threetears.core.collections.schema_backed import Index, TableSchema
     from threetears.core.keyed import AnyOf, Sort, keyset_page

@@ -381,6 +381,15 @@ def _key_batch_columns(node: ast.expr | None) -> list[str]:
         columns = _argument(node, "columns", 0)
         if isinstance(columns, ast.Tuple | ast.List):
             return [_quoted(column) for column in _texts(columns, "keys")]
+        if (
+            isinstance(columns, ast.Call)
+            and isinstance(columns.func, ast.Name)
+            and columns.func.id in {"tuple", "list"}
+            and len(columns.args) == 1
+            and not columns.keywords
+        ):
+            # the columns copied (``KeyBatch(tuple(key), ...)``): the same columns, judged as the name it copies
+            columns = columns.args[0]
         if isinstance(columns, ast.Attribute | ast.Name):
             return [_named(columns, "keys")]
     raise _Unseen("keys")
