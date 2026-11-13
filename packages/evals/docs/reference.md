@@ -236,6 +236,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`extract_json(content: str) -> dict[str, Any]`
 - **`extract_json_array`** · function · Extract a JSON array from provider output, handling markdown code blocks.
   <br>`extract_json_array(text: str) -> list[dict[str, Any]]`
+- **`failed_call_output`** · *host contract* · function · A cell's output for a model call that failed, routed by whose failure it was.
+  <br>`failed_call_output(owner: FailureOwner, description: str, *, refused: str, declined: str, failed: str, log: Callable[[str, int], None], unserved: str | None = None, telemetry: CandidateTelemetry | None = None, host_measures: dict[str, bool | float | str] | None = None, kind_payload: VerbatimJsonObject | None = None) -> CandidateOutput`
 - **`fold_phase_timings`** · function · Fold one delivery's carried phase timings into a result's accumulator, and say what could not be folded.
   <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]`
 - **`production_replicating_cost`** · function · Observed cost of the roles a production deployment would also pay for.
@@ -317,8 +319,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 
 **Types**
 
-- **`AuthoredVerdict`** · type alias · An expected verdict as its author states it: a score on the criterion's scale (1-5 ordinal; 1 pass, 0 fail), or `"pass"` / `"fail"` on a pass/fail criterion.
-  <br>`Annotated[int, Field(strict=True)] | Literal['pass', 'fail']`
 - **`MeritAxis`** · literal · The merit axes a measure can serve.
   <br>`'quality'` | `'cost'` | `'latency'` | `'reliability'`
 - **`ToolWrap`** · type alias · What the action seam is handed: maps the candidate's tools, by name, to the tools it should use — each declared recorded tool wrapped for the cassette run, every other one unchanged.

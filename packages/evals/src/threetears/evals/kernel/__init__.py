@@ -163,6 +163,7 @@ from threetears.evals.kernel.job_leases import (
     settle_job_record,
     write_held_record,
 )
+from threetears.evals.kernel.failed_call import failed_call_output
 from threetears.evals.kernel.evidence_tiers import (
     CALIBRATION_MIN_AGREEMENT,
     CALIBRATION_MIN_RESULTS,
@@ -824,6 +825,7 @@ __all__ = [
     "save_document",
     "summarize_completeness",
     "withhold_failure_detail",
+    "failed_call_output",
     "CALIBRATION_MIN_AGREEMENT",
     "CALIBRATION_MIN_RESULTS",
     "JUDGED_TIER_RULE",

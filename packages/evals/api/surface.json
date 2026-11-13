@@ -1468,8 +1468,8 @@
     },
     "threetears.evals.kernel.AuthoredVerdict": {
       "kind": "type alias",
-      "signature": "Annotated[int, Field(strict=True)] | Literal['pass', 'fail']",
-      "tier": "stable"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.kernel.BarAdjudication": {
       "kind": "model",
@@ -2045,6 +2045,11 @@
       "kind": "function",
       "signature": "extract_json_array(text: str) -> list[dict[str, Any]]",
       "tier": "stable"
+    },
+    "threetears.evals.kernel.failed_call_output": {
+      "kind": "function",
+      "signature": "failed_call_output(owner: FailureOwner, description: str, *, refused: str, declined: str, failed: str, log: Callable[[str, int], None], unserved: str | None = None, telemetry: CandidateTelemetry | None = None, host_measures: dict[str, bool | float | str] | None = None, kind_payload: VerbatimJsonObject | None = None) -> CandidateOutput",
+      "tier": "host-contract"
     },
     "threetears.evals.kernel.FIND_ANALYSIS": {
       "kind": "constant (str)",

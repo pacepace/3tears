@@ -112,7 +112,9 @@ empty transcript and scored as a fail. One production arm paid for 180 judge cal
   describer may return it. One that never does keeps working, and a retired model's calls are then charged to the
   candidate as before.
 - `CandidateOutput.model_unserved`, set by `failed_call_output` for that owner (its new optional `unserved=` names
-  the call). The cell is excluded with its own cause, `model_unserved`, and its error quotes the provider. The runner
+  the call). `failed_call_output` is now exported from `threetears.evals.kernel` as host contract: a host's own
+  candidate kind routes a failed model call through it, which is what makes "model not served" skip the judge and
+  trip the circuit. The cell is excluded with its own cause, `model_unserved`, and its error quotes the provider. The runner
   never judges it, whatever the kind's output holds, so a conversing kind that recorded turns with no reply is not
   judged either. Reports word the cause and its remedy.
 - A circuit: when `UNSERVED_CIRCUIT_CELLS` (3) cells in a row find the model not served, or every cell of a shorter

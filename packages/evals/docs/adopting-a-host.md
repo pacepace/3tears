@@ -142,9 +142,17 @@ pass it to every entrypoint. It holds:
 - your `failure_describer` — how a raised provider call reads. It is the only thing that can say whose failure a
   call was (`ProviderFailure.owner`): the calling `account`'s (a refused key, spent credit), which stops a run
   rather than excluding its cells; the `provider`'s (it declined the call: a 429 rate limit, or a 529 overloaded or
-  503 unavailable), which excludes the cell and lets the run go on; or the `candidate`'s, charged as any failure.
-  `withhold_failure_detail` is the honest one for an app with no error types of its own, and says `candidate` for
-  every failure;
+  503 unavailable), which excludes the cell and lets the run go on; `unserved` (the provider does not serve the model
+  the call named: a retired model, or a model id it does not know), which loses the cell to the test setup; or the
+  `candidate`'s, charged as any failure. Returning `unserved` is optional: a describer that never does keeps working,
+  and a retired model's calls are then charged to the candidate. `withhold_failure_detail` is the honest one for an
+  app with no error types of its own, and says `candidate` for every failure.
+  Your own candidate kind routes a model call that raised through `failed_call_output` (from
+  `threetears.evals.kernel`), passing the owner your describer read, as the package's own kinds do. That is what
+  acts on the owner: an `account` refusal stops the run, a `provider` decline excludes the cell, and `unserved` sets
+  `CandidateOutput.model_unserved`, so the cell is never judged, even when your kind went on to record a transcript
+  of turns with no reply, and three such cells in a row stop the run `exhausted`, resumable once the model is served.
+  A kind that builds its own `CandidateOutput` for a failed call skips all three;
 - your tracing, executor and cell-timeout choices. None of these last three has a default: each is named
   where the host is built;
 - your template checks, `template_checks=TemplateChecks(...)` (from `threetears.evals.kernel.host`): the questions
@@ -332,7 +340,9 @@ billed; a resend cut at the time bound may already have been, and its spend is n
 back to carry it.
 `describe_failure` reads the client's one error type, `ProviderError` (the provider, the status and its own message,
 never the body, `after 3 attempts` when it was sent again, and its `owner`: `account` for a refused key or spent
-credit, which stops a run), and an `httpx` transport error by the host it was sending to.
+credit, which stops a run, and `unserved` for a model the provider does not serve: OpenRouter's 404 and its 400 for
+a model id it does not know, Anthropic's 404 `not_found_error`, OpenAI's `model_not_found`), and an `httpx`
+transport error by the host it was sending to.
 
 **A model that lacks a setting still answers, sent the closest one it takes.** The choosing, the refusal reading and
 the resending are `threetears.evals.negotiation`'s, the same a client of your own uses (below), and each completion's
