@@ -13,9 +13,9 @@ the rbac rows are the parity-declared in-memory loaders the authorizer's unit
 tests use, over the REAL evaluator; the bus, the proxy, the door and the client
 are all real.
 
-requires docker; marked integration. run with::
+needs a NATS server (the pool's child process, or a testcontainer); marked integration. run with::
 
-    uv run pytest -m integration packages/registry/tests/integration/
+    ./scripts/test-integration.sh registry
 """
 
 from __future__ import annotations

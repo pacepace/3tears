@@ -402,7 +402,7 @@ class TestTheRunsOutcome:
         assert len(run.testament) == runs, run.testament
 
     def test_the_run_is_fresh_uncached_and_never_falls_back(self, stage: _Stage) -> None:
-        """the required check gets a cold container, every test run, and no local fallback.
+        """the required check gets the unit suite, a cold container, every test run, and no local fallback.
 
         :param stage: the staged script
         :ptype stage: _Stage
@@ -414,6 +414,8 @@ class TestTheRunsOutcome:
         args = run.testament[0].split()
         assert args[0] == "run"
         assert {"--fresh", "--no-cache", "--no-fallback", "--json=summary"} <= set(args)
+        options = args[: args.index("--")]
+        assert options[options.index("--suite") + 1] == "default", args
 
     def test_the_run_leaves_the_loop_timing_tests_to_github(self, stage: _Stage) -> None:
         """the pool run narrows the manifest's marker expression by ``not loop_timing`` and names no path.

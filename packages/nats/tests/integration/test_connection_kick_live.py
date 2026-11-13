@@ -16,7 +16,8 @@ the one the clusters run (2.14.2):
 - a CONNZ probe closes nothing, and its three answers -- held, not held, server gone -- are the ones
   :func:`~threetears.nats.probe_connection` reads.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -31,7 +32,6 @@ from datetime import timedelta
 
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats import (
     AuthCalloutRequest,
     AuthCalloutResponder,
@@ -67,6 +67,9 @@ _ADMIN_PW = "admin-pw"  # noqa: S105 - ephemeral testcontainer credential
 _SYSTEM_PW = "system-pw"  # noqa: S105 - ephemeral testcontainer credential
 _INBOX = "_INBOX_kick_live"
 _QUERY_SUBJECT = "svc.query"
+#: the pod's reconnect backoff base, in place of the shipped second: the kicked pod's refused
+#: reconnects are what the fence test counts, and they come as fast as the backoff lets them
+_RECONNECT_BACKOFF_BASE_SECONDS = 0.1
 #: the server's wait for a callout answer: short, so a refused reconnect is refused promptly.
 _CALLOUT_TIMEOUT_SECONDS = 2
 #: a server id no server holds (a well-formed server nkey).
@@ -241,6 +244,7 @@ async def _stack(image: str) -> AsyncIterator[_Stack]:
             inbox_prefix=_INBOX,
             verify_jetstream=False,
             startup_timeout=timedelta(seconds=15),
+            reconnect_backoff_base=_RECONNECT_BACKOFF_BASE_SECONDS,
         )
         try:
             yield _Stack(admin=admin, system=system, resolver=resolver, recorder=recorder, pod=pod)
@@ -254,9 +258,6 @@ async def _stack(image: str) -> AsyncIterator[_Stack]:
 @pytest.mark.parametrize("image", _IMAGES)
 async def test_a_system_user_loads_beside_the_callout_and_only_it_reaches_the_system(image: str) -> None:
     """the SYS login is served; the ordinary account's is not, which is what a kick must not use."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     async with _stack(image) as stack:
         server = await require_system_account(stack.system)
         assert server.id.startswith("N")
@@ -270,9 +271,6 @@ async def test_a_system_user_loads_beside_the_callout_and_only_it_reaches_the_sy
 @pytest.mark.parametrize("image", _IMAGES)
 async def test_a_kick_closes_the_connection_at_once_and_the_fence_keeps_it_out(image: str) -> None:
     """milliseconds, not the credential's day; and a refused reconnect means it stays out."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     async with _stack(image) as stack:
         pod = stack.pod
         assert await pod.request_raw(subject=Subject.raw(_QUERY_SUBJECT), payload=b"q") == b"answer"
@@ -306,9 +304,6 @@ async def test_a_kick_closes_the_connection_at_once_and_the_fence_keeps_it_out(i
 @pytest.mark.parametrize("image", _IMAGES)
 async def test_a_kick_of_a_connection_that_is_gone_says_so(image: str) -> None:
     """a closed connection, and a server that no longer exists, are both answers -- not errors."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     async with _stack(image) as stack:
         [connection] = stack.recorder.admitted
         stack.resolver.fenced = True
@@ -326,9 +321,6 @@ async def test_a_kick_of_a_connection_that_is_gone_says_so(image: str) -> None:
 @pytest.mark.parametrize("image", _IMAGES)
 async def test_the_kick_reply_shapes_are_the_ones_the_helper_reads(image: str) -> None:
     """pins the raw replies, so a server release that changes them fails here, naming the change."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     async with _stack(image) as stack:
         [connection] = stack.recorder.admitted
         subject = Subject.raw(f"$SYS.REQ.SERVER.{connection.server_id}.KICK")
@@ -344,9 +336,6 @@ async def test_the_kick_reply_shapes_are_the_ones_the_helper_reads(image: str) -
 @pytest.mark.parametrize("image", _IMAGES)
 async def test_a_probe_closes_nothing_and_says_whether_the_connection_is_held(image: str) -> None:
     """held while open, not held once closed, server gone for an id no server holds."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     async with _stack(image) as stack:
         [connection] = stack.recorder.admitted
 
@@ -374,9 +363,6 @@ async def test_a_probe_closes_nothing_and_says_whether_the_connection_is_held(im
 @pytest.mark.parametrize("image", _IMAGES)
 async def test_the_connz_reply_shape_is_the_one_the_probe_reads(image: str) -> None:
     """pins the raw CONNZ reply filtered by client id, so a server release that changes it fails here."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     async with _stack(image) as stack:
         [connection] = stack.recorder.admitted
         subject = Subject.raw(f"$SYS.REQ.SERVER.{connection.server_id}.CONNZ")

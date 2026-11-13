@@ -8,7 +8,7 @@
 - **The render checks.** Each of the four shape campaigns' pages (``report_shapes_support.SHAPES``) passes
   ``scripts/check.py`` at 1200, 1104 and 688 (a host's frames) and 390 px, light and dark: no console errors, no sideways scroll, nothing past the
   right edge outside a scrolling frame, no overlapping chart labels (GENERATOR.md §8, items 1-3). That check drives
-  headless Chromium, so it carries the ``integration`` marker; where Chromium cannot launch it skips and says why.
+  headless Chromium, so it carries the ``browser`` marker; where Chromium cannot launch it skips and says why.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ def test_a_page_opens_its_stylesheet_with_the_kit_and_links_no_font() -> None:
     assert "<link" not in head and FONT_LINK_MARKUP not in page
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 @pytest.mark.parametrize("name", sorted(SHAPES))
 def test_a_shape_campaign_s_page_passes_the_render_checks(name: str, tmp_path: Path) -> None:
     reason = chromium_unavailable()

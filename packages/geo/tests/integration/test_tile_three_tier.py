@@ -10,7 +10,7 @@ the KV value has a size ceiling.
 so this runs the real thing. one NATS container, two collections standing
 in for two pods, and assertions on what actually crosses between them.
 
-requires docker; gated by ``pytest.mark.integration``.
+needs Postgres/NATS (the pool's child processes, or testcontainers off the pool); gated by ``pytest.mark.integration``.
 """
 
 from __future__ import annotations

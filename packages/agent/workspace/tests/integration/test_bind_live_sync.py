@@ -50,7 +50,7 @@ from threetears.agent.workspace.tools.fs_read import FsReadTool
 from packages.agent.workspace.tests.helpers.scripted_watch import ScriptedWatch
 
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+pytestmark = pytest.mark.asyncio
 
 
 async def test_bind_live_watcher_imports_external_write(

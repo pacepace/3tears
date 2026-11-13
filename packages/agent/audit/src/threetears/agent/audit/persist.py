@@ -75,6 +75,9 @@ log = get_logger(__name__)
 AUDIT_STREAM_NAME = "audit"
 #: delivery attempts before an event that cannot be persisted is dead-lettered.
 AUDIT_MAX_DELIVER = 5
+#: how long one idle fetch waits for an event before the next; :meth:`AuditPersisterHandle.stop` waits out the
+#: fetch in flight, so this is also how long a stop of an idle persister takes.
+_FETCH_TIMEOUT_SECONDS = 5.0
 
 #: the table and its indexes; idempotent (``IF NOT EXISTS``). Defined by the package's migrations,
 #: which never change once applied: a new column is a new migration, and joins this list there.
@@ -262,6 +265,7 @@ async def start_audit_persister(
     storage: str = "memory",
     max_age_seconds: float | None = None,
     max_deliver: int = AUDIT_MAX_DELIVER,
+    fetch_timeout_seconds: float = _FETCH_TIMEOUT_SECONDS,
 ) -> AuditPersisterHandle:
     """ensure the audit stream and run a shared durable pull consumer persisting every event.
 
@@ -287,6 +291,9 @@ async def start_audit_persister(
     :ptype max_age_seconds: float | None
     :param max_deliver: attempts before an event is dead-lettered
     :ptype max_deliver: int
+    :param fetch_timeout_seconds: how long one idle fetch waits for an event before the next. a stop lets the
+        fetch in flight finish, so this also bounds how long stopping an idle persister takes
+    :ptype fetch_timeout_seconds: float
     :return: the running persister
     :rtype: AuditPersisterHandle
     """
@@ -308,6 +315,7 @@ async def start_audit_persister(
         durable=durable,
         cb=_on_message,
         max_deliver=max_deliver,
+        fetch_timeout_seconds=fetch_timeout_seconds,
         dead_letter_subject=Subjects.audit_deadletter(),
         # named, so binding needs no stream-names lookup (not granted to least-privilege accounts)
         stream=stream,

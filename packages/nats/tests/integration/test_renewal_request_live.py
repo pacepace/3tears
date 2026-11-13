@@ -9,7 +9,8 @@ grant as it stands now -- make-before-break, so a request in flight across the m
 Against a real nats-server (2.14.2) with config-mode ``auth_callout`` and the real
 :class:`~threetears.nats.AuthCalloutResponder`.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -19,7 +20,6 @@ from datetime import timedelta
 
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats import (
     AuthCalloutRequest,
     AuthCalloutResponder,
@@ -91,9 +91,6 @@ class _ChangingGrant(GrantPolicy):
 
 
 async def test_a_changed_grant_reaches_the_live_connection_without_losing_a_request() -> None:
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     account_seed = generate_account_seed()
     config = (
         "port: 4222\n"

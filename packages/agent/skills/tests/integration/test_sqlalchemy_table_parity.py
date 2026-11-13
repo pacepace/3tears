@@ -30,6 +30,8 @@ run locally / in the integration lane with a docker daemon available.
 
 from __future__ import annotations
 
+import uuid
+
 import asyncpg
 import pytest
 import sqlalchemy as sa
@@ -345,7 +347,7 @@ async def two_schemas(pg_url: str):  # noqa: ANN201 -- async-gen fixture
     :return: tuple ``(url, migration_schema, factory_schema)``
     :rtype: tuple[str, str, str]
     """
-    base = f"sk_par_{id(object())}".lower()
+    base = f"sk_par_{uuid.uuid4().hex}".lower()
     migration_schema = f"{base}_mig"
     factory_schema = f"{base}_fac"
     conn = await asyncpg.connect(pg_url)

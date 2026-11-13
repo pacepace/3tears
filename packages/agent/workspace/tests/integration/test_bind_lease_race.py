@@ -46,7 +46,7 @@ from packages.agent.workspace.tests.helpers.workspace_shims import (
 )
 
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+pytestmark = pytest.mark.asyncio
 
 
 # ---------------------------------------------------------------------------

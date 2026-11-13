@@ -11,7 +11,7 @@ racing against the identical bucket key, rather than sharing one
 connection across all concurrent callers. Uses the canonical
 session-scoped ``nats_container`` fixture from
 :mod:`threetears.core.testing.fixtures` -- a fresh checkout without
-docker skips cleanly via the fixture's ``check_docker_available`` gate.
+docker skips via the fixture's ``require_services`` gate, which fails the pool's integration suite instead.
 """
 
 from __future__ import annotations

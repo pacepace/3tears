@@ -16,6 +16,8 @@ Verifies that running v001-v005 against a fresh schema:
 
 from __future__ import annotations
 
+import uuid
+
 import asyncpg
 import pytest
 
@@ -411,7 +413,7 @@ class TestV004ToolCallColumns:
         Every catalog probe is ``current_schema()``-scoped. Unscoped, the
         second schema would see the first one's constraints and add none.
         """
-        schemas = [f"sk_v004_{_i}_{id(object())}" for _i in range(2)]
+        schemas = [f"sk_v004_{_i}_{uuid.uuid4().hex}" for _i in range(2)]
         conn = await asyncpg.connect(pg_url)
         try:
             for schema in schemas:

@@ -1,8 +1,8 @@
 """A report page fits the host that frames it.
 
 The host shows the page verbatim in a sandboxed ``srcdoc`` frame, 1104 px wide at a 1440 window and 688 px at 1024.
-Held here, on the page as served (no browser runs on the pool, so the page's structure and its stylesheet are read),
-and, where headless Chromium launches (the ``integration`` marker), on the page as drawn at both frames:
+Held here, on the page as served (its structure and its stylesheet, read without a browser),
+and, where headless Chromium launches (the ``browser`` marker), on the page as drawn at both frames:
 
 - **Tables fit a 688 px frame, or say they scroll.** Every table sits in its own ``.tbl`` frame, which scrolls
   sideways with a shadow at an edge while more lies past it and its first column in view; the To settle table leads
@@ -985,7 +985,7 @@ def _kairo_campaign_html() -> str:
     return campaign_report_html(kairo_page())
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 @pytest.mark.parametrize("width", FRAMES)
 def test_a_pinned_column_holds_its_floor_and_wraps_only_at_its_words_on_kairo_s_contrasts_and_scorecard(
     width: int, tmp_path: Path
@@ -1018,7 +1018,7 @@ def test_a_pinned_column_holds_its_floor_and_wraps_only_at_its_words_on_kairo_s_
         assert any(cell["unbroken"] for cell in cells) or name == "campaign", "the control: an expression is pinned"
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 @pytest.mark.parametrize("width", FRAMES)
 def test_the_section_nav_paints_over_a_pinned_cell_scrolled_beneath_it(width: int, tmp_path: Path) -> None:
     """Production, 0.93: the code-only page's sticky nav drew under the scorecard's pinned Aspect column ("…ecard").
@@ -1047,7 +1047,7 @@ def test_the_section_nav_paints_over_a_pinned_cell_scrolled_beneath_it(width: in
     assert all(hit["onNav"] for hit in hits), [hit["cell"] for hit in hits if not hit["onNav"]]
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_one_arm_s_turned_scorecard_fits_the_688_px_frame_with_no_scroll(tmp_path: Path) -> None:
     """Discodon's SearXNG page drew a glyph column per measure for its one arm, wider than the frame. Turned, a row per
     measure with its value, interval and cases, the scorecard fits the host's 688 px frame without scrolling: its
@@ -1108,7 +1108,7 @@ _HEAD_PROBE = """() => {
 }"""
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_the_arms_table_s_header_row_sets_every_label_from_the_top_in_two_lines_at_most_at_688_px(
     tmp_path: Path,
 ) -> None:
@@ -1127,7 +1127,7 @@ def test_the_arms_table_s_header_row_sets_every_label_from_the_top_in_two_lines_
     assert len({head["first"] for head in drawn["heads"]}) == 1, drawn["heads"]
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_the_written_headline_takes_a_third_fewer_lines_at_688_px(tmp_path: Path) -> None:
     """Kairo's 148-character headline, drawn in a host's 688 px frame: at most four lines at the scale's 20 px step,
     where 0.93's 36 px hero size took six."""
@@ -1143,7 +1143,7 @@ def test_the_written_headline_takes_a_third_fewer_lines_at_688_px(tmp_path: Path
     assert drawn["size"] == "20px" and drawn["drawn"] <= 4 and drawn["drawn"] <= drawn["hero"] * 2 / 3, drawn
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_the_render_check_fails_a_table_that_fits_by_crushing_its_key_column(tmp_path: Path) -> None:
     """``scripts/check.py`` passes Kairo's pages, and fails the same campaign page with its pinned column let shrink
     to nothing (the 0.93 stylesheet's ``min-width:0; overflow-wrap:anywhere``): a table "fits" only where no pinned
@@ -1164,7 +1164,7 @@ def test_the_render_check_fails_a_table_that_fits_by_crushing_its_key_column(tmp
     assert checked.returncode == 1 and "crushed:" in checked.stdout, checked.stdout
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_the_render_check_fails_a_frame_with_no_cue_and_a_first_screen_at_two_measures(tmp_path: Path) -> None:
     """``scripts/check.py`` passes Kairo's written report, and fails it with its frames' fade taken away (a table
     overflows its frame at 688 px with no cue) and with its masthead let run the page's width (the first screen at two
@@ -1329,7 +1329,7 @@ def _drawn_ids(page: str, width: int, tmp_path: Path, name: str) -> dict[str, An
     return drawn
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_by_stratum_with_a_short_key_fits_a_688_px_frame_its_second_key_pinned_where_the_first_ends(
     tmp_path: Path,
 ) -> None:
@@ -1351,7 +1351,7 @@ def test_by_stratum_with_a_short_key_fits_a_688_px_frame_its_second_key_pinned_w
     assert control["keys"][0] == pytest.approx(224, abs=0.5) and control["scrolls"], control
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 @pytest.mark.parametrize("width", FRAMES)
 def test_no_pinned_id_breaks_after_its_hyphen_in_a_host_s_frame_and_one_too_long_still_wraps_inside_it(
     width: int, tmp_path: Path
@@ -1492,7 +1492,7 @@ _FRAMES_PROBE = """async (names) => {
 }"""
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_the_scorecard_and_every_written_report_table_fit_a_1104_px_frame(tmp_path: Path) -> None:
     """Discodon's 0.94.0 pass: a code-only scorecard was cut at its frame's edge at 1104 px as well as 688. Fit first:
     at 1104 px the many-column scorecard and every table of a written report fit their frames, their words wrapped."""
@@ -1509,7 +1509,7 @@ def test_the_scorecard_and_every_written_report_table_fit_a_1104_px_frame(tmp_pa
         assert not [frame for frame in frames if frame["start"] or frame["end"]], "a frame that fits shows no cue"
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_a_frame_that_still_overflows_fades_its_edge_until_it_is_scrolled_to_its_end(tmp_path: Path) -> None:
     """At 688 px a written report's arms key and its every corrected comparison still overflow: each fades its right
     edge, over its header and every row, until it is scrolled to its end; a frame that fits shows none."""
@@ -1524,7 +1524,7 @@ def test_a_frame_that_still_overflows_fades_its_edge_until_it_is_scrolled_to_its
     assert not [frame for frame in frames if frame not in over and (frame["start"] or frame["end"])]
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_a_long_aspect_label_sets_in_at_most_three_lines_in_the_scorecard_at_688_px(tmp_path: Path) -> None:
     _browser()
     path = tmp_path / "scorecard.html"

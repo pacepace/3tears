@@ -1311,6 +1311,125 @@ def test_a_name_fill_lost_to_another_writer_is_recorded_as_contended_and_the_nex
     assert _boot(storage, corpus).named == {"template_case": [key]}, "the next boot fills it"
 
 
+class _CountingStorage(EvalStorage):
+    """A store that counts its test-case queries by template revision, as a store paying for each hydration would."""
+
+    def __init__(self, store: InMemoryDocumentStore) -> None:
+        super().__init__(store)
+        self.queries: dict[str | None, int] = {}
+
+    def query_test_cases(self, scope_id: str, *, template_id: str | None = None) -> list[EvalTestCase]:
+        self.queries[template_id] = self.queries.get(template_id, 0) + 1
+        return super().query_test_cases(scope_id, template_id=template_id)
+
+
+def test_a_seed_reads_each_template_revision_s_cases_once_however_many_corpus_cases_it_has() -> None:
+    storage, store = memory_storage()
+    _boot(storage, _own_corpus(_own("a"), _own("b"), _own("c")))
+    for case in _cases_on(storage, _subject(storage)):
+        storage.save_test_case(case.model_copy(update={"name": None}))
+    corpus = _own_corpus(_own("a"), _own("b"), _own("c"), _own("d"))
+    counting = _CountingStorage(store)
+
+    boot = _boot(counting, corpus)
+
+    assert counting.queries.get(_subject(storage).id) == 1, "one read of the revision, not one per corpus case"
+    assert boot.named == {"template_case": [f"{SUBJECT}/a", f"{SUBJECT}/b", f"{SUBJECT}/c"]}
+    assert boot.needs_reset == {"template_case": [f"{SUBJECT}/d"]}, "the revision held cases when the boot began"
+    assert [c.name for c in _cases_on(storage, _subject(storage))] == ["a", "b", "c"]
+
+
+def test_two_corpus_cases_of_one_content_name_the_stored_nameless_case_once() -> None:
+    storage, _ = memory_storage()
+    _store_nameless(storage, "a", stratum="plain")
+    twin = _own("twin", variation_params={"invoice": "INV-a"}, host_payload={"persona": "buyer a"}, stratum="boundary")
+    corpus = _own_corpus(_own("a", stratum="plain"), twin)
+
+    boot = _boot(storage, corpus)
+
+    assert boot.named == {"template_case": [f"{SUBJECT}/a"]}, "the second corpus case finds no nameless case left"
+    assert boot.needs_reset == {"template_case": [f"{SUBJECT}/twin"]}
+    assert [c.name for c in _cases_on(storage, _subject(storage))] == ["a"]
+
+
+def test_a_name_a_live_case_of_the_revision_carries_is_not_given_to_a_nameless_case() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus(_own("a"), _own("b")))
+    case_a, case_b = _cases_on(storage, _subject(storage))
+    storage.save_test_case(case_b.model_copy(update={"name": "a"}))
+    storage.save_test_case(case_a.model_copy(update={"name": None}))
+
+    boot = _boot(storage, _own_corpus(_own("a"), _own("b")))
+
+    assert not boot.named, "b's case carries the name a, and b's case is not nameless"
+    assert [(c.id, c.name) for c in _cases_on(storage, _subject(storage))] == [(case_a.id, None), (case_b.id, "a")]
+
+
+def test_a_name_only_an_archived_case_of_the_revision_carries_is_given_to_the_nameless_case() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus(_own("a"), _own("b")))
+    case_a, case_b = _cases_on(storage, _subject(storage))
+    storage.save_test_case(case_b.model_copy(update={"name": "a", "archived": True}))
+    storage.save_test_case(case_a.model_copy(update={"name": None}))
+
+    boot = _boot(storage, _own_corpus(_own("a"), _own("b")))
+
+    assert boot.named == {"template_case": [f"{SUBJECT}/a"]}, "an archived case's name is carried by no live case"
+    assert {c.id: c.name for c in _cases_on(storage, _subject(storage))} == {case_a.id: "a", case_b.id: "a"}
+
+
+def _two_nameless_of_one_content(storage: EvalStorage) -> tuple[EvalTestCase, EvalTestCase]:
+    """Two stored live nameless cases of a's content under two ids, as two writers of one case's content can store."""
+    first = _store_nameless(storage, "a")
+    second = first.model_copy(update={"id": f"{first.id}-twin"})
+    storage.save_test_case(second)
+    return first, second
+
+
+class _OtherWriterStorage(EvalStorage):
+    """A store where another writer changes the first test case the seed reads with its token, just before it reads it."""
+
+    def __init__(self, store: InMemoryDocumentStore, change: dict[str, Any]) -> None:
+        super().__init__(store)
+        self.change = change
+        self.changed: str | None = None
+
+    def load_test_case_with_etag(self, test_case_id: str, scope_id: str) -> tuple[EvalTestCase | None, str | None]:
+        if self.changed is None:
+            current, _ = super().load_test_case_with_etag(test_case_id, scope_id)
+            assert current is not None
+            super().save_test_case(current.model_copy(update=self.change))
+            self.changed = test_case_id
+        return super().load_test_case_with_etag(test_case_id, scope_id)
+
+
+def test_a_name_another_writer_gave_a_case_after_the_seed_read_the_revision_is_not_given_twice() -> None:
+    storage, store = memory_storage()
+    _two_nameless_of_one_content(storage)
+    writer = _OtherWriterStorage(store, {"name": "a"})
+
+    boot = _boot(writer, _own_corpus(_own("a")))
+
+    assert not boot.named and not boot.name_fill_contended and not boot.name_fill_failed
+    names = {c.id: c.name for c in _cases_on(storage, _subject(storage))}
+    assert names.pop(writer.changed) == "a"
+    assert list(names.values()) == [None], "the other case of that content is not named a as well"
+
+
+def test_a_case_another_writer_archived_after_the_seed_read_the_revision_is_not_named() -> None:
+    storage, store = memory_storage()
+    _two_nameless_of_one_content(storage)
+    writer = _OtherWriterStorage(store, {"archived": True})
+
+    boot = _boot(writer, _own_corpus(_own("a")))
+
+    assert boot.named == {"template_case": [f"{SUBJECT}/a"]}, "the live case of that content is named instead"
+    cases = {c.id: c for c in _cases_on(storage, _subject(storage))}
+    archived = cases.pop(writer.changed or "")
+    assert archived.archived and archived.name is None
+    assert [c.name for c in cases.values()] == ["a"]
+
+
 def _refusing_cases(*, refuse: str) -> Any:
     """A toy host whose check over a template case refuses the case named ``refuse``, with its own reason."""
 

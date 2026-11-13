@@ -9,7 +9,7 @@ Uses the session-scoped ``nats_container`` fixture; a checkout without docker sk
 
 from __future__ import annotations
 
-import asyncio
+import logging
 import uuid
 
 import pytest
@@ -17,7 +17,31 @@ from nats.js.errors import NotFoundError
 
 from threetears.nats import KvError, NatsClient, ObjectStoreError, set_default_namespace
 
+from .nats_support import until
+
 pytestmark = pytest.mark.integration
+
+#: the line a client logs once its restoration after a reconnect has put back everything it still declares
+_RESTORED = "NATS JetStream state this client declared is in place after the reconnect"
+#: a failure-only bound on the restoration finishing
+_RESTORED_WITHIN_SECONDS = 15.0
+
+
+async def _restored(caplog: pytest.LogCaptureFixture, *, since: int) -> None:
+    """return once a restoration after a reconnect has finished: every declaration still wanted is back.
+
+    :param caplog: the capture the client logs into, at INFO
+    :ptype caplog: pytest.LogCaptureFixture
+    :param since: how many records the capture held before the reconnect
+    :ptype since: int
+    :return: nothing
+    :rtype: None
+    """
+    await until(
+        lambda: any(r.getMessage() == _RESTORED for r in caplog.records[since:]),
+        within=_RESTORED_WITHIN_SECONDS,
+        what="the restoration after the reconnect",
+    )
 
 
 def _namespace() -> str:
@@ -52,22 +76,29 @@ async def test_a_bounded_kv_bucket_refuses_writes_past_its_bound_and_nothing_els
         assert (await nc.jetstream_context().stream_info(f"KV_{bounded.name}")).config.max_bytes == 65536
 
 
-async def test_a_withdrawn_declaration_is_deleted_and_not_put_back(nats_container: str) -> None:
+async def test_a_withdrawn_declaration_is_deleted_and_not_put_back(
+    nats_container: str, caplog: pytest.LogCaptureFixture
+) -> None:
     namespace = _namespace()
+    caplog.set_level(logging.INFO, logger="threetears.nats")
     async with (
         await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=namespace, client_name="owner") as nc,
         await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=namespace, client_name="look") as look,
     ):
         store = await nc.ensure_object_store(name="objects", max_bytes=1024 * 1024)
         pointers = await nc.ensure_kv_bucket(name="pointers", owns_bucket=True)
+        # still declared, so the reconnect below runs a restoration, and its end says the withdrawn
+        # declarations had their chance to come back
+        await nc.ensure_kv_bucket(name="control", owns_bucket=True)
         await nc.delete_object_store(name="objects")
         await nc.delete_kv_bucket(name="pointers")
         js = look.jetstream_context()
         for stream in (store.stream, f"KV_{pointers.name}"):
             with pytest.raises(NotFoundError):
                 await js.stream_info(stream)
+        since = len(caplog.records)
         await nc.reconnect()
-        await asyncio.sleep(2.0)
+        await _restored(caplog, since=since)
         for stream in (store.stream, f"KV_{pointers.name}"):
             with pytest.raises(NotFoundError):
                 await js.stream_info(stream)
@@ -92,9 +123,12 @@ async def test_an_object_store_refuses_a_rollup(nats_container: str) -> None:
         assert ObjectStoreError is not None
 
 
-async def test_a_declaration_no_longer_wanted_is_not_put_back(nats_container: str) -> None:
+async def test_a_declaration_no_longer_wanted_is_not_put_back(
+    nats_container: str, caplog: pytest.LogCaptureFixture
+) -> None:
     """a declarer whose owner went away (its pod was deleted on another replica) stops restoring it."""
     namespace = _namespace()
+    caplog.set_level(logging.INFO, logger="threetears.nats")
     wanted = {"objects": True, "pointers": True}
 
     async def want(name: str) -> bool:
@@ -114,16 +148,10 @@ async def test_a_declaration_no_longer_wanted_is_not_put_back(nats_container: st
         js = wipe.jetstream_context()
         for stream in (store.stream, kept.stream, f"KV_{pointers.name}"):
             await js.delete_stream(stream)
+        since = len(caplog.records)
         await nc.reconnect()
-        deadline = asyncio.get_running_loop().time() + 15
-        while True:
-            try:
-                await js.stream_info(kept.stream)
-                break
-            except NotFoundError:
-                assert asyncio.get_running_loop().time() < deadline, "the wanted bucket did not come back"
-                await asyncio.sleep(0.1)
-        await asyncio.sleep(1.0)
+        await _restored(caplog, since=since)
+        await js.stream_info(kept.stream)  # the wanted bucket came back
         for stream in (store.stream, f"KV_{pointers.name}"):
             with pytest.raises(NotFoundError):
                 await js.stream_info(stream)

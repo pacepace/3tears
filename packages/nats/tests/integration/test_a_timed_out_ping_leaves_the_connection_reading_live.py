@@ -11,7 +11,8 @@ request reply and subscription delivery is lost, and nothing reconnects it.
 enough to do this to a live pod. Here the timeout is shorter than any real round trip, so the PONG
 always arrives after it, deterministically.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations

@@ -1536,8 +1536,8 @@ class TestBoundedRegexIsThreadAndForkSafe:
         slow_done = threading.Event()
 
         def _slow() -> None:
-            try:
-                bounded_matches(_BACKTRACKING_PATTERN, re.MULTILINE, _BACKTRACKING_PAGE, mode="finditer", timeout=3.0)
+            try:  # held for 2s: the fork comes at 0.3s and the child's own match well before the hold ends
+                bounded_matches(_BACKTRACKING_PATTERN, re.MULTILINE, _BACKTRACKING_PAGE, mode="finditer", timeout=2.0)
             except TimeoutError:
                 pass
             slow_done.set()
@@ -1566,8 +1566,14 @@ def _child_matches(results):  # a forked child's body; module level so the fork 
     results.put(bounded_matches(r"(?P<b>y)", 0, "y", mode="search", timeout=10.0))
 
 
-#: The orphan test's runaway gets this long; its worker's CPU cap is this plus the 10s margin.
-_ORPHAN_RUNAWAY_TIMEOUT_SECONDS = 3.0
+#: The orphan test's runaway gets this long; its worker's CPU cap is its whole seconds plus the 10s margin, 11s. The
+#: cap is what the test waits out, so the timeout is kept under two seconds; it still leaves the child a second past
+#: :data:`_ORPHAN_REQUEST_LANDS_SECONDS` before its own deadline would kill the worker the test needs orphaned.
+_ORPHAN_RUNAWAY_TIMEOUT_SECONDS = 1.5
+
+#: How long the orphan test's child outlives the moment its worker started, so its request has landed: the worker
+#: exits cleanly on stdin EOF while idle.
+_ORPHAN_REQUEST_LANDS_SECONDS = 0.5
 
 
 def _child_runs_a_runaway():  # a forked child's body; the test kills it mid-match
@@ -1578,7 +1584,7 @@ def _child_runs_a_runaway():  # a forked child's body; the test kills it mid-mat
     )
 
 
-def _first_child_pid(parent_pid, within=_ORPHAN_RUNAWAY_TIMEOUT_SECONDS / 3):
+def _first_child_pid(parent_pid, within=1.0):
     """The pid of *parent_pid*'s first child process, polled for up to *within* seconds."""
     import subprocess
     import time
@@ -1715,7 +1721,7 @@ class TestBoundedRegexSurvivesInterruptionAndFailure:
             worker_pid = _first_child_pid(child.pid)
             # The worker exits cleanly on stdin EOF while idle, so the child must outlive the
             # moment its request lands; a fraction of the runaway's deadline is ample for that.
-            time.sleep(_ORPHAN_RUNAWAY_TIMEOUT_SECONDS / 6)
+            time.sleep(_ORPHAN_REQUEST_LANDS_SECONDS)
         finally:
             child.kill()
             child.join()

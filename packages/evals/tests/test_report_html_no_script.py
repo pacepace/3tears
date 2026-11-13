@@ -17,7 +17,7 @@ markup, since it lays out each aspect's page again and rewrites the ids and link
 
 A chart's labels, titles, tooltips and every other string in its data reach the page only as JSON in its
 ``data-chart`` attribute, escaped there, so markup in them is never markup on the page; and once the kit has drawn the
-charts in headless Chromium (``integration``), no element of the injected markup exists in the document and every
+charts in headless Chromium (``browser``), no element of the injected markup exists in the document and every
 tooltip holds nothing but text.
 
 The static page, for a host that runs nothing, draws the charts on the server instead, as inline SVG: there every
@@ -215,7 +215,7 @@ def test_a_static_page_draws_its_charts_as_svg_and_runs_nothing() -> None:
     assert "xmlns" not in page and "url(#" not in page, "a drawing references nothing, not even its own namespace"
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_a_static_page_s_drawings_render_with_no_script_and_no_injected_element(tmp_path: Path) -> None:
     """In headless Chromium with JavaScript off, at a desktop width and a phone's: the hostile static page's every
     drawing shows one picture at its chart's width, none wider than its frame, and no element the markup in the
@@ -239,7 +239,7 @@ def test_a_static_page_s_drawings_render_with_no_script_and_no_injected_element(
         assert seen["shown"] and all(shown and all(shown) for shown in seen["shown"]), seen["shown"]
 
 
-@pytest.mark.integration
+@pytest.mark.browser
 def test_once_the_kit_has_drawn_the_charts_no_injected_markup_is_an_element(tmp_path: Path) -> None:
     """In headless Chromium, after the kit has drawn every chart of the hostile report: the page holds its one
     script, no element the markup in the labels tried to add, every chart drawn with no error, the injected markup

@@ -23,7 +23,7 @@ What a campaign report is, how it is written, and the parts it is drawn with: th
 | `kit/kit.css`, `kit/kit.js`, `kit/API.md` | Visual system and chart helpers |
 | `references/rN-*.src.html` + `.json` | Page source and its data; `.html` is the built page |
 | `scripts/build.py` | Inline the kit and data into a page |
-| `scripts/check.py` | Render at 1200, 1104, 688 and 390 px, light and dark; report overflow, label overlaps, a table that overflows with no cue, a first screen at more than one measure, text under 4.5:1 or an axis under 3:1 against what it is drawn on, a font size off the five-step scale, a boxed or header-filled table, and errors |
+| `scripts/check.py` | Render at 1200, 1104, 688 and 390 px, light and dark; report overflow, label overlaps, a table that overflows with no cue, a first screen at more than one measure, text under 4.5:1 or an axis under 3:1 against what it is drawn on, a font size off the five-step scale, a boxed or header-filled table, and errors. `--fonts DIR` answers a page's Google Fonts requests from a local copy and fails every other request, naming it, so a check needs no network |
 
 ## The references
 

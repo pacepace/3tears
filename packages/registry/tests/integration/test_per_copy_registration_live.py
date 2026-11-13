@@ -16,7 +16,7 @@ What each test pins:
 * an agent's signed in-process copy is shown to that agent and to nobody else;
 * an agent registering under another agent's pod id is refused ``POD_ID_MISMATCH``.
 
-requires docker; marked integration. run with::
+needs a NATS server (the pool's child process, or a testcontainer); marked integration. run with::
 
     ./scripts/test-integration.sh registry -rs
 """
@@ -205,7 +205,7 @@ async def _registry(nats_url: str) -> AsyncIterator[_Registry]:
         registry = _Registry(nc)
         await registry.registration.start(nc)
         await registry.discovery.start(nc)
-        await asyncio.sleep(0.2)
+        await nc.flush()  # the server has both subscriptions before any pod announces
         try:
             yield registry
         finally:
@@ -247,6 +247,9 @@ async def _pod(nats_url: str, pod_id: str, token: str | None, description: str) 
                 await asyncio.sleep(0.05)
             yield server
         finally:
+            # no call is ever routed to these pods, so their leave needs no production-length late-delivery grace
+            # (the drain's grace is at most half this bound); shutdown's own leave then finds nothing left to leave
+            await server.leave_calls(timeout=0.4)
             await server.shutdown()
             serving.cancel()
             with contextlib.suppress(asyncio.CancelledError):

@@ -47,6 +47,7 @@ _MODEL = os.environ.get("THREETEARS_LIVE_CLAUDE_CLI_MODEL", DEFAULT_CHAT_MODEL)
 
 pytestmark = [
     pytest.mark.live,
+    pytest.mark.secrets,
     pytest.mark.skipif(
         not _ENABLED,
         reason="live Claude CLI calls on a subscription -- set THREETEARS_LIVE_CLAUDE_CLI=1 and "

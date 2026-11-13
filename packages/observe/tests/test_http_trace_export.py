@@ -25,6 +25,11 @@ from threetears.observe.setup import TelemetryConfig, init_telemetry, reset_tele
 _RECEIVED: list[tuple[str, ExportTraceServiceRequest | None]] = []
 
 
+#: How often a test collector's ``serve_forever`` looks for a shutdown request. The stdlib's default is half a
+#: second, and ``shutdown()`` blocks until the loop next looks, so every fixture's teardown waited up to that long.
+_SHUTDOWN_POLL_S = 0.01
+
+
 class _TraceCollector(BaseHTTPRequestHandler):
     """an OTLP/HTTP trace collector that accepts every export."""
 
@@ -62,7 +67,7 @@ def collector_url() -> Iterator[str]:
     """
     _RECEIVED.clear()
     collector = ThreadingHTTPServer(("127.0.0.1", 0), _TraceCollector)
-    thread = threading.Thread(target=collector.serve_forever, daemon=True)
+    thread = threading.Thread(target=collector.serve_forever, kwargs={"poll_interval": _SHUTDOWN_POLL_S}, daemon=True)
     thread.start()
     try:
         yield f"http://127.0.0.1:{collector.server_address[1]}"

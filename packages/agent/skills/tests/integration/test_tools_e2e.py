@@ -2,8 +2,10 @@
 
 Each test:
 
-1. Spins up a fresh schema via the canonical ``pg_schema`` fixture.
-2. Applies the conversations + skills migrations.
+1. Takes a database of its own with the conversations + skills migrations
+   applied (the conftest's ``applied_schema``: migrated once per session,
+   copied per test).
+2. Binds a pool to its schema.
 3. Constructs real :class:`AgentSkillCollection` /
    :class:`AgentSkillInvocationCollection` against the live pool.
 4. Loads the tool factory and exercises its public surface via
@@ -33,7 +35,6 @@ from threetears.agent.skills.collections import (
     AgentSkillInvocationCollection,
     SkillShapeError,
 )
-from threetears.agent.skills.migrations import register as register_skills
 from threetears.agent.skills.tools import (
     SkillEligibleTool,
     SkillRegistryClient,
@@ -47,16 +48,50 @@ from threetears.agent.skills.tools import (
     load_skill_report_outcome_tool,
     load_skill_update_tool,
 )
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
-
-from .conftest import AsyncpgStore
 
 
 pytestmark = pytest.mark.integration
+
+#: the backends waiting, directly or behind another waiter, on a lock the given backend holds.
+_WAITING_ON = """
+WITH RECURSIVE waiting(pid) AS (
+    SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))
+    UNION
+    SELECT a.pid FROM pg_stat_activity a JOIN waiting w ON w.pid = ANY(pg_blocking_pids(a.pid))
+)
+SELECT count(*) FROM waiting
+"""
+
+#: how long the lock-wait check gives the waiting statements to reach the lock before it fails.
+_LOCK_WAIT_DEADLINE_SECONDS = 30.0
+
+
+async def _until_waiting_on(url: str, holder_pid: int, waiters: int) -> None:
+    """return once ``waiters`` backends wait on a lock ``holder_pid`` holds; fail past the deadline.
+
+    Asked on a connection of its own: the statements waiting hold the test pool's connections, and the
+    holder's open transaction would read one cached snapshot of ``pg_stat_activity`` for its whole life.
+
+    :param url: the database to ask
+    :ptype url: str
+    :param holder_pid: the backend holding the lock
+    :ptype holder_pid: int
+    :param waiters: how many waiting backends to wait for
+    :ptype waiters: int
+    :return: nothing
+    :rtype: None
+    """
+    deadline = asyncio.get_running_loop().time() + _LOCK_WAIT_DEADLINE_SECONDS
+    watcher = await asyncpg.connect(url)
+    try:
+        while (seen := await watcher.fetchval(_WAITING_ON, holder_pid)) < waiters:
+            assert asyncio.get_running_loop().time() < deadline, f"{seen} of {waiters} statements reached the lock"
+            await asyncio.sleep(0.01)
+    finally:
+        await watcher.close()
 
 
 def _new_uuid() -> UUID:
@@ -103,16 +138,6 @@ class _FakeRegistry(SkillRegistryClient):
         mcp_name: str,
     ) -> SkillToolIntrospect | None:
         return self._introspect.get(mcp_name)
-
-
-async def _apply(conn: asyncpg.Connection, schema: str) -> None:
-    """Apply conversations + skills migrations to ``schema``."""
-    await conn.execute(f'SET search_path TO "{schema}", public')
-    runner = MigrationRunner()
-    register_conversations(runner)
-    register_skills(runner)
-    store = AsyncpgStore(conn)
-    await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
 
 
 def _build_collections(
@@ -185,17 +210,10 @@ def _build_collections_with_l1(
 
 @pytest.fixture
 async def pool_with_schema(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> AsyncIterator[asyncpg.Pool]:
-    """Yield an ``asyncpg.Pool`` pointed at a freshly-migrated schema."""
-    url, schema = pg_schema
-    # Apply migrations on a one-off connection first; the pool then
-    # binds to the same schema via ``search_path``.
-    conn = await asyncpg.connect(url)
-    try:
-        await _apply(conn, schema)
-    finally:
-        await conn.close()
+    """Yield an ``asyncpg.Pool`` pointed at a migrated schema of the test's own (the conftest's ``applied_schema``)."""
+    url, schema = applied_schema
 
     # ``init_connection`` is the pool hook every production consumer uses: it registers the
     # jsonb codec the ``arguments`` column binds through.
@@ -846,12 +864,12 @@ class TestAUseIsCountedOnce:
         assert kept == "first look"
 
     async def test_two_reports_at_once_count_once(
-        self, pool_with_schema: asyncpg.Pool, pg_schema: tuple[str, str]
+        self, pool_with_schema: asyncpg.Pool, applied_schema: tuple[str, str]
     ) -> None:
         """Both reports wait on a lock another transaction holds, then run: the second reads the first's outcome."""
         _, _, agent_id, skill_id, _, invocations = await _invoked(pool_with_schema)
         [use] = await invocations.list_for_skill(agent_id, skill_id)
-        url, schema = pg_schema
+        url, schema = applied_schema
         blocker = await asyncpg.connect(url, server_settings={"search_path": f"{schema}, public"})
         held = blocker.transaction()
         await held.start()
@@ -866,7 +884,7 @@ class TestAUseIsCountedOnce:
             )
             for _ in range(2)
         ]
-        await asyncio.sleep(0.5)  # both statements have started and wait on the row
+        await _until_waiting_on(url, blocker.get_server_pid(), 2)  # both wait on the row
         assert not any(task.done() for task in reports)
         await held.commit()
         await blocker.close()

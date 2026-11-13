@@ -31,34 +31,13 @@ from threetears.agent.memory.collections import (
     MemoriesCollection,
     MemoryChunkCollection,
 )
-from threetears.agent.memory.migrations import register as register_memory
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
 
-from .conftest import AsyncpgStore
 
-# docker-backed (testcontainer ``pg_schema`` fixture); excluded from the
-# no-docker ``-m "not integration"`` CI job like every sibling here.
+# a real Postgres (the conftest's ``applied_schema``, migrated once per session and copied per test);
+# excluded from the ``-m "not integration"`` unit suite like every sibling here.
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture
-async def applied_schema(pg_schema: tuple[str, str]) -> tuple[str, str]:
-    """Apply conversations + memory migrations into the per-test schema."""
-    url, schema = pg_schema
-    runner = MigrationRunner()
-    register_conversations(runner)
-    register_memory(runner)
-    conn = await asyncpg.connect(url)
-    try:
-        await conn.execute(f'SET search_path TO "{schema}", public')
-        store = AsyncpgStore(conn)
-        await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
-    finally:
-        await conn.close()
-    return url, schema
 
 
 async def _make_pool(url: str, schema: str) -> asyncpg.Pool:

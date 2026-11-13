@@ -199,6 +199,67 @@ def agent_internal_config() -> BorrowedPoolConnectionConfig:
 
 
 # ---------------------------------------------------------------------------
+# Pool start bounds
+# ---------------------------------------------------------------------------
+
+
+class TestPoolStartBounds:
+    """the config's ``connect_timeout_seconds`` and ``pool_startup_timeout_seconds`` bound the owned pool's start."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("min_size", "connect", "floor", "budget"),
+        [
+            pytest.param(2, 1.0, 3.5, 3.5, id="the-config-s-floor-sets-the-budget"),
+            pytest.param(4, 1.0, 3.5, 5.0, id="the-logins-outgrow-the-floor"),
+            pytest.param(4, 9.0, 30.0, 45.0, id="four-nine-second-logins-outgrow-thirty"),
+        ],
+    )
+    async def test_the_start_is_bounded_by_the_config(
+        self,
+        postgres_config: PostgresConnectionConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        min_size: int,
+        connect: float,
+        floor: float,
+        budget: float,
+    ) -> None:
+        """each login gets the config's bound; the start gets the larger of its floor and one bound per login plus one.
+
+        :param postgres_config: an owned-pool config
+        :ptype postgres_config: PostgresConnectionConfig
+        :param monkeypatch: pytest monkeypatch fixture
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :param min_size: the pool's ``pool_min_size``
+        :ptype min_size: int
+        :param connect: the config's ``connect_timeout_seconds``
+        :ptype connect: float
+        :param floor: the config's ``pool_startup_timeout_seconds``
+        :ptype floor: float
+        :param budget: the start budget the driver must hand the platform wrapper
+        :ptype budget: float
+        :return: nothing
+        :rtype: None
+        """
+        config = postgres_config.model_copy(
+            update={
+                "pool_min_size": min_size,
+                "pool_max_size": max(min_size, postgres_config.pool_max_size),
+                "connect_timeout_seconds": connect,
+                "pool_startup_timeout_seconds": floor,
+            }
+        )
+        start = AsyncMock(return_value=_build_mock_pool())
+        monkeypatch.setattr("threetears.datasources.drivers.asyncpg_driver.create_pool_with_startup_timeout", start)
+        driver = AsyncpgDriver(config)
+        await driver.fetch("SELECT 1")
+        start.assert_awaited_once()
+        assert start.await_args.kwargs["connect_timeout"] == connect
+        assert start.await_args.kwargs["startup_timeout"] == budget
+        await driver.close()
+
+
+# ---------------------------------------------------------------------------
 # Construction + lifecycle
 # ---------------------------------------------------------------------------
 

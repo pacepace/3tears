@@ -233,6 +233,7 @@ LIVE_TAVILY_API_KEY_VAR = "TAVILY_API_KEY"
 
 
 @pytest.mark.live
+@pytest.mark.secrets
 @pytest.mark.skipif(
     not os.environ.get(LIVE_TAVILY_API_KEY_VAR),
     reason=f"live Tavily tier needs {LIVE_TAVILY_API_KEY_VAR} set to a valid API key",

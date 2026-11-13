@@ -19,7 +19,8 @@ bind, the ``tool_pods.id`` key scope and the invalidation listener are the real 
 than a test's approximation of them. Both replicas carry the SAME pod id, because that is
 what two replicas of one deployment are.
 
-Requires docker; gated by ``pytest.mark.integration``, which the default gate excludes.
+Needs Postgres/NATS (the pool's child processes, or testcontainers off the pool); gated by
+``pytest.mark.integration``, which the default gate excludes.
 """
 
 from __future__ import annotations
