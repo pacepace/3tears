@@ -28,7 +28,9 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Annotated, Any, Final
+
+from threetears.interfaces.keyed.rows import DeclaredKey
 
 __all__ = [
     "KeyFingerprint",
@@ -93,7 +95,7 @@ def relation_key_expression(key: Sequence[str], *, boolean_columns: Collection[s
 
 def fingerprint_sql(
     relation: str,
-    key: Sequence[str],
+    key: Annotated[Sequence[str], DeclaredKey],
     filters: str = "",
     *,
     row_number: str,

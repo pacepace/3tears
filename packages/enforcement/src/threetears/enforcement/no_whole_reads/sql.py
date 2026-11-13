@@ -91,11 +91,6 @@ ROWID: Final[str] = "rowid"
 #: the column an interpolation the code names as the key stands for (``{pk}``, ``{key_column}``)
 PK_TOKEN: Final[str] = "{pk}"
 
-#: an interpolation's name that says it is the key column(s)
-_KEYISH: Final[re.Pattern[str]] = re.compile(
-    r"(?i)(?:^|_)(?:pk\w*|primary_keys?|keys?|key_?col\w*|key_?columns?|key_?names?|id_?col\w*)$"
-)
-
 #: a count or a fingerprint: the shapes of re-verifying data by scanning it
 _VERIFY: Final[re.Pattern[str]] = re.compile(
     r"\b(?:count|md5|sha256|hashtext|bit_xor|string_agg|checksum|fingerprint\w*)\s*\(", re.IGNORECASE
@@ -245,7 +240,9 @@ class Reader:
 
 
 def _interpolation(match: re.Match[str]) -> str:
-    return PK_TOKEN if _KEYISH.search(match.group(1).strip()) else "{}"
+    """an interpolation as the rule reads it: the walk's own key token (written only for a column that flows from a
+    declared key source, :mod:`.keys`) stays the key; any other, whatever it is named, is ``{}``."""
+    return PK_TOKEN if match.group(0) == PK_TOKEN else "{}"
 
 
 def _clean(sql: str) -> str:

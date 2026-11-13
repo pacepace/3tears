@@ -30,6 +30,7 @@ from uuid import uuid7
 
 from sqlalchemy import Column, Float, MetaData, String, Table, Text
 
+from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.backends.broker_generation import naming_changed_rows
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, L3Backend
@@ -641,7 +642,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         rather than assuming presence.
     """
 
-    primary_key_column: str | tuple[str, ...] = "id"
+    primary_key_column: KeyColumn | KeyColumns = "id"
 
     #: Columns holding timestamps, declared rather than hand-rehydrated.
     #:
@@ -1090,7 +1091,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         ...
 
     @property
-    def primary_key_columns(self) -> tuple[str, ...]:
+    def primary_key_columns(self) -> KeyColumns:
         """normalize :attr:`primary_key_column` to tuple form.
 
         single-pk subclasses declare ``primary_key_column = "foo"`` and

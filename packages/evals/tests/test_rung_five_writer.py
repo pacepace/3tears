@@ -28,7 +28,7 @@ import pytest
 from packages.evals.tests.example_loader import EXAMPLES
 from packages.evals.tests.report_writer_support import reply
 from packages.evals.tests.ladder_support import offline_copy
-from packages.evals.tests.offline_support import refuse_connects
+from packages.evals.tests.offline_support import assert_no_connects, refuse_connects
 from packages.evals.tests.rung_support import program_lines
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 from packages.evals.tests.writer_eval_support import ScoredReply
@@ -81,7 +81,7 @@ def writer_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path
     copy = offline_copy("5-writer", tmp_path, monkeypatch)
     attempts = refuse_connects(monkeypatch)
     yield copy
-    assert attempts == []
+    assert_no_connects(attempts)
 
 
 @pytest.fixture

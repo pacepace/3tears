@@ -36,10 +36,11 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Annotated, Any, TYPE_CHECKING
 from urllib.parse import urlparse, urlsplit
 from urllib.request import url2pathname
 
+from threetears.interfaces.keyed.rows import DeclaredKey, KeyValues
 from threetears.observe import get_logger
 
 import threetears.core.backends.schema_sql as schema_sql
@@ -796,7 +797,7 @@ class SqlL3Backend:
         return _PoolTransactionCM(self._pool)
 
     # ── DurableStore: structured ops (generate SQL) ─────────────────────────────────
-    async def fetch_one(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any] | None:
+    async def fetch_one(self, table: str, pk: KeyValues, *, conn: Any = None) -> dict[str, Any] | None:
         """Fetch the row whose primary key equals ``pk`` via a generated SELECT, or ``None``.
 
         When a schema is registered for ``table`` the SELECT projects the schema's
@@ -821,7 +822,7 @@ class SqlL3Backend:
         table: str,
         row: Mapping[str, Any],
         *,
-        pk: Sequence[str] | None = None,
+        pk: Annotated[Sequence[str], DeclaredKey] | None = None,
         on_conflict: str = "update",
         cas: datetime | None = None,
         conn: Any = None,
@@ -1530,7 +1531,7 @@ class SqlL3Backend:
         table: str,
         row: Mapping[str, Any],
         *,
-        pk: Sequence[str],
+        pk: Annotated[Sequence[str], DeclaredKey],
         mutable: Sequence[str],
         cas: datetime,
         conn: Any,
@@ -1640,7 +1641,7 @@ class SqlL3Backend:
         params = schema_sql.build_insert_params(schema, data)
         return parse_rowcount(await self._execute(sql, *params, conn=conn))
 
-    async def delete(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> None:
+    async def delete(self, table: str, pk: KeyValues, *, conn: Any = None) -> None:
         """Delete the row whose primary key equals ``pk`` via a generated DELETE (missing is not an error).
 
         When a schema is registered for ``table`` the pk values are write-coerced and the

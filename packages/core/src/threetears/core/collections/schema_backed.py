@@ -51,6 +51,7 @@ from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
+from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core.backends.protocol import (
     ANALYZE_AFTER_ROWS,
     AnalyzingStore,
@@ -987,7 +988,7 @@ class TableSchema:
     """
 
     name: str
-    primary_key: str | tuple[str, ...]
+    primary_key: KeyColumn | KeyColumns
     columns: list[Column]
     cas_column: str | None = None
     on_conflict: OnConflict = "update"
@@ -1020,7 +1021,7 @@ class TableSchema:
     # collection class reads it from here, as it reads write_generation
     tenancy: Tenancy = TENANCY_UNDECLARED
 
-    _pk_columns: tuple[str, ...] = field(init=False, repr=False)
+    _pk_columns: KeyColumns = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)
     _partition_column: str | None = field(init=False, repr=False)
 
@@ -1270,7 +1271,7 @@ class TableSchema:
             )
 
     @property
-    def pk_columns(self) -> tuple[str, ...]:
+    def pk_columns(self) -> KeyColumns:
         """return primary-key column names as a tuple (always tuple-shape).
 
         :return: pk column names in declared order

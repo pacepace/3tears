@@ -44,8 +44,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mappin
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Final, Protocol
+from typing import Annotated, Any, Final, Protocol, TYPE_CHECKING
 
+from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumns
 from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter
 
@@ -221,7 +222,7 @@ def _typed(kind: str, text: str) -> Any:
 
 
 def _prefix_batches(
-    key: Sequence[str], parts: Sequence[Mapping[str, str]]
+    key: Annotated[Sequence[str], DeclaredKey], parts: Sequence[Mapping[str, str]]
 ) -> list[tuple[tuple[str, ...], tuple[str, ...], list[str]]]:
     """partitions grouped into reads: those of one shape (their columns, in key order, and the values of all but the
     last) are one read, every value of the last column bound at once, at most :data:`_PREFIX_BATCH` a read.
@@ -258,7 +259,7 @@ class FollowedTable:
     """
 
     name: str
-    key: tuple[str, ...]
+    key: KeyColumns
     columns: tuple[Column, ...]
     order: tuple[str, ...] = ()
     partition_order: tuple[str, ...] = ()
@@ -1318,7 +1319,9 @@ class CopyFollower:
         )
         return ", ".join(f"t.{quote_identifier(c)}" for c in columns)
 
-    def _copy_rows_of_keys(self, table: FollowedTable, columns: Sequence[str], values: Sequence[Sequence[str]]) -> Any:
+    def _copy_rows_of_keys(
+        self, table: FollowedTable, columns: Annotated[Sequence[str], DeclaredKey], values: Sequence[Sequence[str]]
+    ) -> Any:
         """the copy's own key and scope columns of the rows some keys, or key prefixes, name: a local read joined on
         a leading part of the key (the whole key, or a load's prefix), never L3.
 

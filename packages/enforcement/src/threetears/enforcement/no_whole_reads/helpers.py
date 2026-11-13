@@ -12,9 +12,9 @@ declared keys.
 A call whose table, key, ``by``, sort or column is not a literal the walk can read (a name bound at run time, a
 comprehension) answers :data:`UNSEEN`: the walk reports it ``unknown-predicate``, never a pass. One exception, as
 for SQL a caller writes: a keyed batch over a table a generic reader is handed (``read_keyed(l3, table.name,
-keys=KeyBatch(table.key, ...))``, its table and its key both names) is written with the names as interpolations
-(``{name}``, ``{key}``), and the rule reads a key named as one (``{key}``, ``{pk}``) as the key, and any other as a
-predicate it cannot see. ``empty_tables`` and
+keys=KeyBatch(table.key, ...))``, its table and its key both names) is written with the names as interpolations. The
+walk hands the helper ``pk`` for columns that flow from a declared key source (:mod:`.keys`), written ``{pk}``, the
+key; any other run-time column, whatever it is named, is a predicate the rule cannot see. ``empty_tables`` and
 ``estimated_rows`` read one row of each table, or the catalog, whatever they are passed: nothing of theirs is judged.
 
 Visibility: a listing's ``visible=`` clauses are judged each on its own, as the correlated probe it is
@@ -281,15 +281,15 @@ def _texts(node: ast.expr | None, argument: str) -> list[str]:
 
 def _by(node: ast.expr | None, argument: str = "by") -> list[tuple[str, str]]:
     """each pinned column and how it is bound: ``=``, ``= ANY`` (an ``AnyOf``) or ``IS NULL``. A ``by`` column named
-    at run time (``by={pk_column: i}``) is the interpolation it would be in SQL the caller wrote (``{pk_column}``):
-    the rule reads one that says it is the key as the key, and any other as a predicate it cannot see."""
+    at run time (``by={pk_column: i}``) is the interpolation it would be in SQL the caller wrote: the key when the walk
+    hands it as ``pk`` (a declared key source), any other a predicate the rule cannot see."""
     if node is None or (isinstance(node, ast.Constant) and node.value is None):
         return []
     zipped = _zipped_columns(node)
     if argument == "by" and zipped is not None:
         # ``by=dict(zip(pk_columns, key))`` / ``by=dict(pk)``: every column a run-time list or mapping names, each
-        # bound, as ``{pk_columns}`` in SQL the caller wrote: the key when its name says so, else a predicate the
-        # rule cannot see
+        # bound, as the interpolation in SQL the caller wrote: the key when the walk hands it as ``pk`` (a declared
+        # key source), else a predicate the rule cannot see
         return [("{" + _named(zipped, argument)[1:-1] + "}", "eq")]
     if not isinstance(node, ast.Dict) or any(key is None for key in node.keys):
         raise _Unseen(argument)
@@ -364,8 +364,8 @@ def _conditions(pinned: Sequence[tuple[str, str]], *, first: int = 1, alias: str
 
 def _named(node: ast.expr | None, argument: str) -> str:
     """a relation or key the caller names: a literal, quoted; a name or attribute, as the interpolation it would be in
-    SQL the caller wrote (``{table}``, ``{key}``), so the rule reads it as it reads that SQL (a name that says it is
-    the key binds the key; any other is a predicate it cannot see)."""
+    SQL the caller wrote (``{table}``), so the rule reads it as it reads that SQL: ``pk`` (the walk's name for columns
+    from a declared key source) binds the key; any other is a predicate it cannot see."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return _quoted(node.value)
     if isinstance(node, ast.Attribute):

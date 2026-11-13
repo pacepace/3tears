@@ -8,9 +8,10 @@ lives here once, so a table or column name means the same thing on every path th
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Any
+from typing import Annotated, Any
 
 from threetears.interfaces.keyed.filters import quote_identifier
+from threetears.interfaces.keyed.rows import DeclaredKey
 
 __all__ = [
     "FilterValue",
@@ -27,8 +28,12 @@ type FilterValue = str | int
 
 
 def unnest_key_join(
-    columns: Sequence[str], casts: Sequence[str], *, alias: str = "t", null_safe: bool = False
-) -> tuple[str, str]:
+    columns: Annotated[Sequence[str], DeclaredKey],
+    casts: Sequence[str],
+    *,
+    alias: str = "t",
+    null_safe: bool = False,
+) -> tuple[Annotated[str, DeclaredKey], Annotated[str, DeclaredKey]]:
     """the two halves of a read of the rows some keys name, each key column's values bound as one text array: the
     select list unnesting them and the join of ``alias`` to them, each column cast from text.
 

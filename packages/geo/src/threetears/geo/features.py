@@ -41,6 +41,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any, ClassVar
 
+from threetears.core.keyed import KeyColumn
 from threetears.core.collections.base import BaseCollection
 from threetears.core.entities.base import BaseEntity
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
@@ -530,7 +531,9 @@ class FeatureCache(BaseCollection[FeatureEntity]):
             return
         keys = [(self._feature_key(layer, source_version, feature_id),) for feature_id, _bounds in features]
         # the map's unique key, and the id the R-Tree and the map share as their key
-        key_column, pk = "feature_key", "id"
+        # the map table's key and the R*Tree's rowid key
+        key_column: KeyColumn = "feature_key"
+        pk: KeyColumn = "id"
         conn = backend.get_connection()
         conn.executemany(f"INSERT OR IGNORE INTO {self._map_table} ({key_column}) VALUES (?)", keys)
         conn.executemany(
@@ -552,7 +555,9 @@ class FeatureCache(BaseCollection[FeatureEntity]):
             return
         params = [(key,) for key in keys]
         # the map's unique key, and the id the R-Tree and the map share as their key
-        key_column, pk = "feature_key", "id"
+        # the map table's key and the R*Tree's rowid key
+        key_column: KeyColumn = "feature_key"
+        pk: KeyColumn = "id"
         conn = backend.get_connection()
         conn.executemany(
             f"DELETE FROM {self._rtree_table} WHERE {pk} IN (SELECT {pk} FROM {self._map_table} WHERE {key_column} = ?)",

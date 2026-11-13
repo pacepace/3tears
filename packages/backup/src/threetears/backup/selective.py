@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
+from threetears.core.keyed import KeyColumns
 from threetears.core.keyed import read_row
 from threetears.observe import get_logger
 
@@ -284,7 +285,7 @@ class SelectiveRestore:
 
     # ------------------------------------------------------------------ internals
 
-    async def _pk_columns(self, conn: _Connection, schema: str, table: str) -> tuple[str, ...]:
+    async def _pk_columns(self, conn: _Connection, schema: str, table: str) -> KeyColumns:
         rows = await conn.fetch(_PK_SQL, _quote(schema), _quote(table))
         pk = tuple(row["attname"] for row in rows)
         if not pk:

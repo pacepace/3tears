@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
 
+from threetears.interfaces.keyed.rows import KeyColumn
 from threetears.observe import get_logger
 
 from threetears.core.tenancy import TENANT_BY_SCHEMA
@@ -211,7 +212,7 @@ class SourceTokenFence:
         self._table = f'"{table}"'
         self._table_name = table
         #: the table's key (:func:`source_tokens_schema`): a fence's row is read by it
-        self._key_column = _SIGNAL
+        self._key_column: KeyColumn = _SIGNAL
         self._signal = signal
 
     @asynccontextmanager

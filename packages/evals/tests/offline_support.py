@@ -8,7 +8,9 @@ counts against the test, and each is recorded with what is needed to find its ma
 the thread's name, where that thread came from, and the whole stack that asked for it. The record is also written to
 stderr as the connect is refused, in full. A pool run keeps neither the stderr nor more than the head and tail of a
 failed assertion's values, so a record's ``repr`` leads with the host and the frames that made the connect, innermost
-first and past the socket and HTTP client's own: what survives the shortening names the maker.
+first and past the socket and HTTP client's own: what survives the shortening names the maker. A test asserts none
+was made with :func:`assert_no_connects`, which fails with every record whole, frames and all: pytest shortens an
+``== []`` comparison's values, never a failure's own message.
 """
 
 from __future__ import annotations
@@ -19,11 +21,12 @@ import sysconfig
 import threading
 import traceback
 from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import Final, NoReturn
 
 import pytest
 
-__all__ = ["Connect", "refuse_connects"]
+__all__ = ["Connect", "assert_no_connects", "refuse_connects"]
 
 #: :attr:`Connect.origin` of a connect made on the thread that put the guard in.
 GUARD_THREAD: Final = "the thread that put the guard in"
@@ -131,3 +134,19 @@ def refuse_connects(monkeypatch: pytest.MonkeyPatch, *, run: str = "a replay-onl
     monkeypatch.setattr(socket.socket, "connect", connect)
     monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
     return attempts
+
+
+def assert_no_connects(attempts: Sequence[Connect]) -> None:
+    """Fail the test when any connect was tried, with every record whole as the failure's message.
+
+    pytest shortens the values of a failed ``attempts == []`` to their head and tail, which cuts a record's frames;
+    a failure's own message is kept as written, so the frames that made each connect reach the log.
+
+    :param attempts: The connects :func:`refuse_connects` kept.
+    :ptype attempts: Sequence[Connect]
+    :return: nothing
+    :rtype: None
+    """
+    if attempts:
+        records = "\n\n".join(str(made) for made in attempts)
+        pytest.fail(f"{len(attempts)} connect(s) tried while every connect was refused:\n\n{records}")

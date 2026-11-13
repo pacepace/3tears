@@ -93,6 +93,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 import asyncpg
+from threetears.interfaces.keyed.rows import KeyColumn
 from threetears.observe import contain, get_logger
 
 from threetears.core.keyed import KeyBatch, Lock, WholeReads, read_keyed, read_row, read_value
@@ -294,7 +295,7 @@ class ScopeEpochs:
         self._writer = writer
         self._table = quote_identifier(collection.table_name)
         #: the table's key (:func:`scope_epochs_schema`): a scope's row, and the record's, are read by it
-        self._key_column = quote_identifier("scope")
+        self._key_column: KeyColumn = quote_identifier("scope")
         self._idle_ms = None if idle_timeout is None else max(1, int(idle_timeout.total_seconds() * 1000))
         # the snapshot last read, the rows it was built from (by scope), and the version a read of the changes reads past
         self._held: EpochSnapshot | None = None

@@ -11,6 +11,7 @@ from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, Numeric, St
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB
 from sqlalchemy.sql.sqltypes import UUID as SAUuid
 
+from threetears.interfaces.keyed.rows import KeyColumn
 from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.backends.schema_sql import decode_vector as _decode_vector, encode_vector as _encode_vector
 from threetears.core.collections.base import NATS_CLIENT_FROM_REGISTRY, BaseCollection
@@ -198,7 +199,7 @@ def _build_sa_metadata(table_def: TableDef) -> Any:
     return metadata
 
 
-def _find_pk_column(table_def: TableDef) -> str:
+def _find_pk_column(table_def: TableDef) -> KeyColumn:
     """find primary key column name from table definition.
 
     :param table_def: table definition with column metadata
