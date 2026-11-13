@@ -118,6 +118,13 @@ class _Recorded:
         return await self._inner.fetch(sql, *params)
 
 
+class _RecordedOnYugabyte(_Recorded):
+    """the same L3, as a hub whose broker names ``dialect:yugabyte`` (its rows still come from DuckDB)."""
+
+    async def hub_capabilities(self) -> frozenset[str]:
+        return frozenset({"dialect:yugabyte"})
+
+
 @pytest.fixture
 def races() -> Iterator[duckdb.DuckDBPyConnection]:
     """a table keyed (race, geo): 12 races of 7 rows each."""
@@ -136,8 +143,9 @@ def _pinned(conn: duckdb.DuckDBPyConnection, values: list[str]) -> list[tuple[An
 
 
 class TestALeadASetFilterPins:
-    """hub #53: ``where_any`` naming the key's lead walks the filter's values, never paging the whole set by the
-    cursor (which re-reads and sorts every row of the set on every page)."""
+    """hub #53: on YugabyteDB, ``where_any`` naming a hashed key lead walks the filter's values, never paging the whole
+    set by the cursor (which re-reads and sorts every row of the set on every page). An ordered lead pages by the
+    cursor: its index answers the set in key order."""
 
     _VALUES = ["r09", "r02", None, "r02", "r05", "r77"]
 
@@ -146,10 +154,15 @@ class TestALeadASetFilterPins:
     ) -> None:
         """Flips if a page past a cursor reads with the whole set (``= ANY`` of every value), or the walk loses,
         repeats or reorders a row, or reads a NULL or absent value's rows."""
-        l3 = _Recorded(races)
+        l3 = _RecordedOnYugabyte(races)
 
         read = await read_keyset_pages(
-            l3, "SELECT * FROM t", ("race", "geo"), where_any={"race": ("text[]", self._VALUES)}, page_size=5
+            l3,
+            "SELECT * FROM t",
+            ("race", "geo"),
+            where_any={"race": ("text[]", self._VALUES)},
+            page_size=5,
+            lead_array="text[]",
         )
 
         assert [tuple(row.values()) for row in read.rows] == _pinned(races, ["r09", "r02", "r05"])
@@ -167,12 +180,13 @@ class TestALeadASetFilterPins:
         ordered = _pinned(races, ["r09", "r02", "r05"])
 
         read = await read_keyset_pages(
-            _Recorded(races),
+            _RecordedOnYugabyte(races),
             "SELECT * FROM t",
             ("race", "geo"),
             where_any={"race": ("text[]", self._VALUES)},
             page_size=5,
             after=ordered[10][:2],
+            lead_array="text[]",
         )
 
         assert [tuple(row.values()) for row in read.rows] == ordered[11:]
@@ -180,10 +194,39 @@ class TestALeadASetFilterPins:
     async def test_a_set_of_no_values_is_one_empty_page(self, races: duckdb.DuckDBPyConnection) -> None:
         """Flips if a filter pinning the lead to nothing reads a row, or hands over no page."""
         read = await read_keyset_pages(
-            _Recorded(races), "SELECT * FROM t", ("race", "geo"), where_any={"race": ("text[]", [])}, page_size=5
+            _RecordedOnYugabyte(races),
+            "SELECT * FROM t",
+            ("race", "geo"),
+            where_any={"race": ("text[]", [])},
+            page_size=5,
+            lead_array="text[]",
         )
 
         assert read.rows == []
+
+    @pytest.mark.parametrize(
+        ("l3", "lead_array"), [(_Recorded, "text[]"), (_RecordedOnYugabyte, None)], ids=["postgres", "ordered-lead"]
+    )
+    async def test_an_ordered_lead_reads_a_set_that_fits_a_page_in_one_statement(
+        self, races: duckdb.DuckDBPyConnection, l3: type[_Recorded], lead_array: str | None
+    ) -> None:
+        """Flips if a set pinning an ordered lead (Postgres, or a lead not declared hashed) is walked: its index
+        answers ``lead = ANY`` in key order, and a set that fits a page is one statement (the copy follower's batched
+        prefix read), never one for the values' order and more for their rows."""
+        recorded = l3(races)
+
+        read = await read_keyset_pages(
+            recorded,
+            "SELECT * FROM t",
+            ("race", "geo"),
+            where_any={"race": ("text[]", ["r05", "r02"])},
+            page_size=20,
+            lead_array=lead_array,
+        )
+
+        assert [tuple(row.values()) for row in read.rows] == _pinned(races, ["r02", "r05"])
+        reads = [sql for sql, _ in recorded.statements if "version()" not in sql]
+        assert len(reads) == 1 and "unnest" not in reads[0], recorded.statements
 
 
 class TestWhichDatabaseAnL3Is:

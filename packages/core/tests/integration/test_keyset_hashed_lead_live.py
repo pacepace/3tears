@@ -216,6 +216,7 @@ async def _pinned_read(
         where_any={lead: ("text[]", values)},
         page_size=_PAGE,
         after=after,
+        lead_array="text[]",
     ):
         read.extend(_keys(page, schema))
     return read
@@ -232,9 +233,10 @@ async def _pinned_ordered(conn: asyncpg.Connection, schema: TableSchema, values:
 
 
 class TestAReadOfALeadASetFilterPins:
-    """hub #53: a read whose ``where_any`` pins the key's lead to a set walks the set's values, on YugabyteDB and
-    Postgres alike. Paged by the cursor it read every row of the set on every page and sorted them across values
-    (33,528 rows in three pages: 33,528 scanned a page, two sorts on disk)."""
+    """hub #53: a read whose ``where_any`` pins the key's hashed lead to a set walks the set's values on YugabyteDB.
+    Paged by the cursor it read every row of the set on every page and sorted them across values (33,528 rows in three
+    pages: 33,528 scanned a page, two sorts on disk). On Postgres the lead is ordered and the read pages by the
+    cursor; the same plan checks hold there."""
 
     @pytest.mark.parametrize(
         ("schema", "values"), [(_WIDE, _PINNED_STATES), (_NARROW, _PINNED_RACES)], ids=["large-values", "small-values"]
@@ -259,7 +261,8 @@ class TestAReadOfALeadASetFilterPins:
         assert not sorted_past_a_page, sorted_past_a_page
         returned = sum(plan.rows_returned for plan in reads)
         scanned = sum(plan.rows_scanned for plan in reads)
-        assert scanned <= returned + _PAGE + 1, f"scanned {scanned} rows to answer {returned}"
+        detail = "\n".join(f"  {p.rows_scanned} / {p.rows_returned}: {' '.join(p.sql.split())[:220]}" for p in reads)
+        assert scanned <= returned + _PAGE + 1, f"scanned {scanned} rows to answer {returned}\n{detail}"
         if schema is _NARROW:
             # small values go together: never a statement a value
             assert len(reads) < len(values) // 10, len(reads)

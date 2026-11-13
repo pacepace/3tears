@@ -36,10 +36,14 @@ rows are fewer than a page go together, ``lead = ANY($1)``, as many as about fil
 lead of many small values costs a statement a page, not one a value. The rows come in the key's order, as the
 cursor's form reads them. Postgres pages by the cursor as above: there ``DISTINCT`` reads the whole table.
 
-**A lead a set filter pins** (``where_any`` naming the key's first column), on either database: the filter's values
-are walked the same way, put in the database's order by one statement over the values alone (``unnest``, no table
-read). Paged by the cursor instead, ``lead = ANY(values)`` read every row of every value on every page and sorted
-them across values (YugabyteDB, 33,528 rows in three pages: 33,528 scanned a page, two sorts on disk).
+**A hashed lead a set filter pins** (``where_any`` naming the key's first column, ``lead_array`` named, on
+YugabyteDB): the filter's values are walked the same way, put in the database's order by one statement over the
+values alone (``unnest``, no table read). Paged by the cursor instead, ``lead = ANY(values)`` read every row of
+every value on every page and sorted them across values (YugabyteDB, 33,528 rows in three pages: 33,528 scanned a
+page, two sorts on disk). An ordered lead -- Postgres, or a lead declared ``ASC`` -- pages by the cursor: its index
+answers ``lead = ANY(values)`` in key order and stops at the page, and a set that fits one page is one statement
+(the walk measured about twice the rows it answered on Postgres 16, and costs a set of small values a statement
+for their order and more for their rows).
 
 **How many rows a page asks for.** A transport that answers pages (``fetch_page`` /
 ``fetch_arrow_page``, :class:`~threetears.core.backends.protocol.L3Page`) says in each reply the bytes its
@@ -245,7 +249,7 @@ async def keyset_pages(
     """
     shape = _ReadShape(select_from, key, where, where_any, page_size, quote, mark, conditions)
     reads = _DictReads(l3, page_size)
-    pinned = _pinned_lead(shape)
+    pinned = await _pinned_lead(l3, shape, lead_array)
     if pinned is not None:
         async for page in _lead_walk(reads, shape, pinned[0], after, given=pinned[1]):
             yield page
@@ -315,7 +319,7 @@ async def keyset_arrow_pages(
     """
     shape = _ReadShape(select_from, key, where, where_any, page_size, quote, mark, conditions)
     reads = _ArrowReads(l3, page_size, types)
-    pinned = _pinned_lead(shape)
+    pinned = await _pinned_lead(l3, shape, lead_array)
     if pinned is not None:
         async for page in _lead_walk(reads, shape, pinned[0], after, given=pinned[1]):
             yield page
@@ -514,24 +518,32 @@ async def _cursor_pages(
         yield kept
 
 
-def _pinned_lead(shape: _ReadShape) -> tuple[str, Sequence[Any]] | None:
-    """the array type and values a set filter pins the key's lead to, when the read walks those values one by one; None
-    when no set filter names the lead of a key of more than one column.
+async def _pinned_lead(l3: Any, shape: _ReadShape, lead_array: str | None) -> tuple[str, Sequence[Any]] | None:
+    """the array type and values a set filter pins a hashed lead to, when the read walks those values one by one; None
+    when the read pages by the cursor.
 
-    Paged by the cursor, ``lead = ANY(values)`` reads every row of every value on every page and sorts them across
-    values (a hashed lead's buckets come in no order; Postgres merges index ranges): three pages of 33,528 rows
-    scanned 33,528 rows each and sorted two on disk. Walked, each value's rows are one index range read past the
-    cursor on the rest of the key, on YugabyteDB and Postgres alike: every row scanned once, nothing sorted but a
-    small group's rows.
+    It walks when ``where_any`` names the lead of a key of more than one column, the lead is declared hashed
+    (``lead_array``) and the L3 is YugabyteDB. Paged by the cursor there, ``lead = ANY(values)`` reads every row of
+    every value on every page and sorts them across values (a hashed lead's buckets come in no order): three pages of
+    33,528 rows scanned 33,528 rows each and sorted two on disk. Walked, each value's rows are one bucket read past the
+    cursor on the rest of the key: every row scanned once, nothing sorted but a small group's rows. An ordered lead
+    pages by the cursor (the module's "A hashed lead a set filter pins").
 
+    :param l3: the L3, asked whether it is YugabyteDB only when the rest holds
+    :ptype l3: Any
     :param shape: the read
     :ptype shape: _ReadShape
+    :param lead_array: the lead's array type when its declaration leaves it hashed
+    :ptype lead_array: str | None
     :return: ``(array type, values)``, or None
     :rtype: tuple[str, Sequence[Any]] | None
     """
-    if len(shape.key) < 2 or not shape.where_any:
+    if lead_array is None or len(shape.key) < 2 or not shape.where_any:
         return None
-    return shape.where_any.get(shape.key[0])
+    pinned = shape.where_any.get(shape.key[0])
+    if pinned is None:
+        return None
+    return pinned if await l3_on_yugabyte(l3) else None
 
 
 async def _hashed_lead(l3: Any, shape: _ReadShape, lead_array: str | None) -> str | None:
