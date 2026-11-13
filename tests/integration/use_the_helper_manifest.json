@@ -2610,5 +2610,387 @@
   "sets": [],
   "shape": "point",
   "table": "namespaces"
+ },
+ {
+  "args": [
+   "name"
+  ],
+  "columns": null,
+  "function": "GroupCollection.get_by_name",
+  "helper": "read_row",
+  "line": 113,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'groups', by={'name': name, 'customer_id': None}, records=True)",
+  "old_sql": "SELECT * FROM groups WHERE name = $1 AND customer_id IS NULL",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "name",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "customer_id",
+    "kind": "null",
+    "literal": null,
+    "param": null,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "groups"
+ },
+ {
+  "args": [
+   "customer_id",
+   "name"
+  ],
+  "columns": null,
+  "function": "GroupCollection.get_by_name",
+  "helper": "read_row",
+  "line": 116,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'groups', by={'customer_id': customer_id, 'name': name}, records=True)",
+  "old_sql": "SELECT * FROM groups WHERE customer_id = $1 AND name = $2",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "customer_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "name",
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "groups"
+ },
+ {
+  "args": [
+   "list(group_ids)"
+  ],
+  "columns": [
+   "row_scope",
+   "assignment_id",
+   "role_id",
+   "group_id",
+   "scope_type",
+   "scope_namespace_id",
+   "scope_namespace_type",
+   "scope_customer_id",
+   "scope_namespace_name"
+  ],
+  "function": "RoleAssignmentCollection.load_for_groups",
+  "helper": "read_by",
+  "line": 121,
+  "method": "fetch",
+  "new_call": "read_by(self.l3_pool, 'role_assignments', by={'group_id': AnyOf(list(group_ids), cast='uuid')}, columns=('row_scope', 'assignment_id', 'role_id', 'group_id', 'scope_type', 'scope_namespace_id', 'scope_namespace_type', 'scope_customer_id', 'scope_namespace_name'), records=True)",
+  "old_sql": "SELECT row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id, scope_namespace_type, scope_customer_id, scope_namespace_name FROM role_assignments WHERE group_id = ANY($1::uuid[])",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": "uuid",
+    "column": "group_id",
+    "kind": "any",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "role_assignments"
+ },
+ {
+  "args": [
+   "[group_id]"
+  ],
+  "columns": [
+   "row_scope",
+   "assignment_id",
+   "role_id",
+   "group_id",
+   "scope_type",
+   "scope_namespace_id",
+   "scope_namespace_type",
+   "scope_customer_id",
+   "scope_namespace_name"
+  ],
+  "function": "GroupCollection.read_cascade",
+  "helper": "read_by",
+  "line": 121,
+  "method": "fetch",
+  "new_call": "read_by(self.l3_pool, 'role_assignments', by={'group_id': AnyOf([group_id], cast='uuid')}, columns=('row_scope', 'assignment_id', 'role_id', 'group_id', 'scope_type', 'scope_namespace_id', 'scope_namespace_type', 'scope_customer_id', 'scope_namespace_name'), records=True)",
+  "old_sql": "SELECT row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id, scope_namespace_type, scope_customer_id, scope_namespace_name FROM role_assignments WHERE group_id = ANY($1::uuid[])",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": "uuid",
+    "column": "group_id",
+    "kind": "any",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "role_assignments"
+ },
+ {
+  "args": [
+   "member_type",
+   "list(member_ids)"
+  ],
+  "columns": [
+   "group_id",
+   "member_type",
+   "member_id",
+   "customer_id"
+  ],
+  "function": "GroupMemberCollection._load_naming",
+  "helper": "read_by",
+  "line": 157,
+  "method": "fetch",
+  "new_call": "read_by(self.l3_pool, 'group_members', by={'member_type': member_type, 'member_id': AnyOf(list(member_ids), cast='uuid')}, columns=('group_id', 'member_type', 'member_id', 'customer_id'), records=True)",
+  "old_sql": "SELECT group_id, member_type, member_id, customer_id FROM group_members WHERE member_type = $1 AND member_id = ANY($2::uuid[])",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "member_type",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": "uuid",
+    "column": "member_id",
+    "kind": "any",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "group_members"
+ },
+ {
+  "args": [
+   "name"
+  ],
+  "columns": null,
+  "function": "NamespaceCollection.get_by_name",
+  "helper": "read_row",
+  "line": 168,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'namespaces', by={'name': name}, records=True)",
+  "old_sql": "SELECT * FROM namespaces WHERE name = $1",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "name",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "namespaces"
+ },
+ {
+  "args": [
+   "agent_id",
+   "namespace_type"
+  ],
+  "columns": null,
+  "function": "NamespaceCollection.get_by_agent_id",
+  "helper": "read_row",
+  "line": 196,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'namespaces', by={'row_scope': 'customer', 'owner_agent_id': agent_id, 'namespace_type': namespace_type}, records=True)",
+  "old_sql": "SELECT * FROM namespaces WHERE row_scope = 'customer' AND owner_agent_id = $1 AND namespace_type = $2",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "row_scope",
+    "kind": "literal",
+    "literal": "customer",
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "owner_agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "namespace_type",
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "namespaces"
+ },
+ {
+  "args": [
+   "customer_id",
+   "namespace_type"
+  ],
+  "columns": null,
+  "function": "NamespaceCollection.find_by_type_and_customer",
+  "helper": "read_by",
+  "line": 219,
+  "method": "fetch",
+  "new_call": "read_by(self.l3_pool, 'namespaces', by={'row_scope': 'customer', 'customer_id': customer_id, 'namespace_type': namespace_type}, records=True)",
+  "old_sql": "SELECT * FROM namespaces WHERE row_scope = 'customer' AND customer_id = $1 AND namespace_type = $2",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "row_scope",
+    "kind": "literal",
+    "literal": "customer",
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "customer_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "namespace_type",
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "namespaces"
+ },
+ {
+  "args": [
+   "customer_id",
+   "namespace_type"
+  ],
+  "columns": [
+   "namespace_id"
+  ],
+  "function": "NamespaceCollection.list_ids_by_customer_and_type",
+  "helper": "read_by",
+  "line": 224,
+  "method": "fetch",
+  "new_call": "read_by(self.l3_pool, 'namespaces', by={'row_scope': 'customer', 'customer_id': customer_id, 'namespace_type': namespace_type}, columns=('namespace_id',), records=True)",
+  "old_sql": "SELECT namespace_id FROM namespaces WHERE row_scope = 'customer' AND customer_id = $1 AND namespace_type = $2",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "row_scope",
+    "kind": "literal",
+    "literal": "customer",
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "customer_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "namespace_type",
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "namespaces"
+ },
+ {
+  "args": [
+   "name"
+  ],
+  "columns": null,
+  "function": "RoleCollection.find_platform_by_name",
+  "helper": "read_row",
+  "line": 239,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'roles', by={'name': name, 'customer_id': None}, records=True)",
+  "old_sql": "SELECT * FROM roles WHERE name = $1 AND customer_id IS NULL",
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "name",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "customer_id",
+    "kind": "null",
+    "literal": null,
+    "param": null,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "roles"
  }
 ]

@@ -89,10 +89,10 @@ ACL_TABLES_DDL: tuple[str, ...] = (
         CONSTRAINT groups_row_scope_customer_check CHECK ((row_scope = 'platform') = (customer_id IS NULL))
     )
     """,
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::GROUP_BY_PLATFORM_NAME_SQL\n"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::GroupCollection.get_by_name\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_groups_by_name\n"
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_groups_platform_name ON groups (name) WHERE customer_id IS NULL",
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::GROUP_BY_CUSTOMER_NAME_SQL;"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::GroupCollection.get_by_name;"
     " packages/agent/acl/src/threetears/agent/acl/collections.py::GroupCollection.page_by_customer\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_groups_by_name\n"
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_groups_customer_name ON groups (customer_id, name) "
@@ -123,7 +123,7 @@ ACL_TABLES_DDL: tuple[str, ...] = (
         CONSTRAINT roles_pkey PRIMARY KEY (role_id)
     )
     """,
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::ROLE_BY_PLATFORM_NAME_SQL\n"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::RoleCollection.find_platform_by_name\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_roles_platform_name\n"
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_roles_platform_name ON roles (name) WHERE customer_id IS NULL",
     "-- purpose: constraint\n"

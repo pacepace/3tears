@@ -109,18 +109,6 @@ _ACCESS_MACHINERY_TENANCY: Final = no_tenant(
     "read cross-customer by id by every pod's access evaluator, so every follower reads every customer's changes"
 )
 
-#: a platform group by name: ``uq_groups_platform_name`` (name) WHERE customer_id IS NULL
-GROUP_BY_PLATFORM_NAME_SQL: Final[str] = "SELECT * FROM groups WHERE name = $1 AND customer_id IS NULL"
-
-#: a customer's group by name: ``uq_groups_customer_name`` (customer_id, name) WHERE customer_id IS NOT NULL
-GROUP_BY_CUSTOMER_NAME_SQL: Final[str] = "SELECT * FROM groups WHERE customer_id = $1 AND name = $2"
-
-#: every assignment held by any of a set of groups, both row scopes: ``idx_role_assignments_group_scope``
-#: (group_id, scope_type). The evaluator's grant load and a group delete's cascade both read through it.
-ASSIGNMENTS_OF_GROUPS_SQL: Final[str] = (
-    "SELECT row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id, scope_namespace_type,"
-    " scope_customer_id, scope_namespace_name FROM role_assignments WHERE group_id = ANY($1::uuid[])"
-)
 
 #: a group's grant by its natural key (row scope, group, role, scope), the oldest first:
 #: ``idx_role_assignments_group_scope`` (group_id, scope_type)
@@ -152,11 +140,6 @@ DELETE_GRANTS_OF_GROUP_SCOPE_SQL: Final[str] = (
     " RETURNING assignment_id"
 )
 
-#: every membership naming one of a set of members of one type: ``idx_group_members_reverse`` (member_type, member_id)
-MEMBERS_NAMING_SQL: Final[str] = (
-    "SELECT group_id, member_type, member_id, customer_id FROM group_members"
-    " WHERE member_type = $1 AND member_id = ANY($2::uuid[])"
-)
 
 #: rows a listing's page keeps unless its caller asks for fewer
 LISTING_PAGE: Final[int] = 200
@@ -164,8 +147,6 @@ LISTING_PAGE: Final[int] = 200
 #: rows a group delete's cascade read takes a statement, its members a page at a time
 _CASCADE_PAGE: Final[int] = 1000
 
-#: the namespace named so: ``idx_namespaces_name`` (name)
-NAMESPACE_BY_NAME_SQL: Final[str] = "SELECT * FROM namespaces WHERE name = $1"
 
 #: every namespace at or beneath a node: the node itself by ``idx_namespaces_name``, and the names under it as the
 #: byte range ``[node + ".", node + "/")`` by ``idx_namespaces_name_c`` (name COLLATE "C"). The range is byte-ordered
@@ -191,10 +172,6 @@ SKILL_ELIGIBLE_NAMESPACES_SQL: Final[str] = (
     " AND skill_eligible = TRUE"
 )
 
-#: an agent's own namespace of a type: ``idx_namespaces_owner_agent_id`` (owner_agent_id)
-NAMESPACE_OF_AGENT_SQL: Final[str] = (
-    "SELECT * FROM namespaces WHERE row_scope = 'customer' AND owner_agent_id = $1 AND namespace_type = $2"
-)
 
 #: the first namespace of a type an agent owns, in one row scope and customer: ``idx_namespaces_owner_agent_id``
 NAMESPACE_OF_OWNER_SQL: Final[str] = (
@@ -214,15 +191,6 @@ OWNERLESS_PLATFORM_NAMESPACE_SQL: Final[str] = (
     " AND owner_agent_id IS NULL ORDER BY namespace_id ASC LIMIT 1"
 )
 
-#: a customer's namespaces of a type: ``idx_namespaces_customer_type`` (customer_id, namespace_type)
-NAMESPACES_OF_CUSTOMER_TYPE_SQL: Final[str] = (
-    "SELECT * FROM namespaces WHERE row_scope = 'customer' AND customer_id = $1 AND namespace_type = $2"
-)
-
-#: the ids of the same: ``idx_namespaces_customer_type`` (customer_id, namespace_type)
-NAMESPACE_IDS_OF_CUSTOMER_TYPE_SQL: Final[str] = (
-    "SELECT namespace_id FROM namespaces WHERE row_scope = 'customer' AND customer_id = $1 AND namespace_type = $2"
-)
 
 #: the namespaces an owner owns, but itself, both row scopes: ``idx_namespaces_owner_namespace`` (owner_namespace)
 NAMESPACES_OWNED_BY_SQL: Final[str] = (
@@ -235,8 +203,6 @@ SCHEMA_IN_USE_SQL: Final[str] = (
     "SELECT EXISTS (SELECT 1 FROM namespaces WHERE row_scope IN ('platform', 'customer') AND schema_name = $1)"
 )
 
-#: a platform role by name: ``uq_roles_platform_name`` (name) WHERE customer_id IS NULL
-ROLE_BY_PLATFORM_NAME_SQL: Final[str] = "SELECT * FROM roles WHERE name = $1 AND customer_id IS NULL"
 
 __all__ = [
     "LISTING_PAGE",
@@ -565,7 +531,23 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             # cache-bypass: the same cascade's assignments, by group across both partitions
             assignments = [
                 {"row_scope": row["row_scope"], "assignment_id": row["assignment_id"]}
-                for row in await self.l3_pool.fetch(ASSIGNMENTS_OF_GROUPS_SQL, [group_id])
+                for row in await read_by(
+                    self.l3_pool,
+                    "role_assignments",
+                    by={"group_id": AnyOf([group_id], cast="uuid")},
+                    columns=(
+                        "row_scope",
+                        "assignment_id",
+                        "role_id",
+                        "group_id",
+                        "scope_type",
+                        "scope_namespace_id",
+                        "scope_namespace_type",
+                        "scope_customer_id",
+                        "scope_namespace_name",
+                    ),
+                    records=True,
+                )
             ]
         return GroupCascade(
             group_id=group_id,
@@ -677,9 +659,9 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         if self.l3_pool is not None:
             # each scope's own unique index: a platform name, or a customer's name
             row = (
-                await self.l3_pool.fetchrow(GROUP_BY_PLATFORM_NAME_SQL, name)
+                await read_row(self.l3_pool, "groups", by={"name": name, "customer_id": None}, records=True)
                 if customer_id is None
-                else await self.l3_pool.fetchrow(GROUP_BY_CUSTOMER_NAME_SQL, customer_id, name)
+                else await read_row(self.l3_pool, "groups", by={"customer_id": customer_id, "name": name}, records=True)
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
@@ -915,7 +897,13 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         """
         result: list[GroupMembership] = []
         if self.l3_pool is not None and len(member_ids) > 0:
-            rows = await self.l3_pool.fetch(MEMBERS_NAMING_SQL, member_type, list(member_ids))
+            rows = await read_by(
+                self.l3_pool,
+                "group_members",
+                by={"member_type": member_type, "member_id": AnyOf(list(member_ids), cast="uuid")},
+                columns=("group_id", "member_type", "member_id", "customer_id"),
+                records=True,
+            )
             result = [
                 GroupMembership(
                     group_id=_coerce_uuid(row["group_id"]),  # type: ignore[arg-type]
@@ -1262,7 +1250,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
         read_ticket = self.scan_ticket()  # before the first await
         result: RoleEntity | None = None
         if self.l3_pool is not None:
-            row = await self.l3_pool.fetchrow(ROLE_BY_PLATFORM_NAME_SQL, name)
+            row = await read_row(self.l3_pool, "roles", by={"name": name, "customer_id": None}, records=True)
             if row is not None:
                 data = self._coerce_row(dict(row))
                 self.write_to_cache_sync(data, read_since=read_ticket)
@@ -1669,7 +1657,23 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             # scope_customer_id) and 'customer' grants; the unified
             # evaluator's hot path needs every assignment regardless
             # of scope.
-            rows = await self.l3_pool.fetch(ASSIGNMENTS_OF_GROUPS_SQL, list(group_ids))
+            rows = await read_by(
+                self.l3_pool,
+                "role_assignments",
+                by={"group_id": AnyOf(list(group_ids), cast="uuid")},
+                columns=(
+                    "row_scope",
+                    "assignment_id",
+                    "role_id",
+                    "group_id",
+                    "scope_type",
+                    "scope_namespace_id",
+                    "scope_namespace_type",
+                    "scope_customer_id",
+                    "scope_namespace_name",
+                ),
+                records=True,
+            )
             result = [
                 RoleAssignment(
                     id=_coerce_uuid(row["assignment_id"]),  # type: ignore[arg-type]
@@ -2786,7 +2790,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         if result is None and self.l3_pool is not None:
             read_ticket = self.scan_ticket()  # before the first await
             token = None if cache is None else cache.begin_read(("namespaces",))
-            row = await self.l3_pool.fetchrow(NAMESPACE_BY_NAME_SQL, name)
+            row = await read_row(self.l3_pool, "namespaces", by={"name": name}, records=True)
             if row is not None:
                 data = self._coerce_row(dict(row))
                 self.write_to_cache_sync(data, read_since=read_ticket)
@@ -2826,10 +2830,11 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             # private agent namespaces always live in the customer
             # partition: every agent belongs to one customer and the
             # namespace inherits that customer's row_scope.
-            row = await self.l3_pool.fetchrow(
-                NAMESPACE_OF_AGENT_SQL,
-                agent_id,
-                namespace_type,
+            row = await read_row(
+                self.l3_pool,
+                "namespaces",
+                by={"row_scope": "customer", "owner_agent_id": agent_id, "namespace_type": namespace_type},
+                records=True,
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
@@ -2920,7 +2925,12 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         """
         result: list[NamespaceEntity] = []
         if self.l3_pool is not None:
-            rows = await self.l3_pool.fetch(NAMESPACES_OF_CUSTOMER_TYPE_SQL, customer_id, namespace_type)
+            rows = await read_by(
+                self.l3_pool,
+                "namespaces",
+                by={"row_scope": "customer", "customer_id": customer_id, "namespace_type": namespace_type},
+                records=True,
+            )
             result = [
                 self.entity_class(
                     self._coerce_row(dict(row)),
@@ -2951,7 +2961,13 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         """
         result: list[UUID] = []
         if self.l3_pool is not None:
-            rows = await self.l3_pool.fetch(NAMESPACE_IDS_OF_CUSTOMER_TYPE_SQL, customer_id, namespace_type)
+            rows = await read_by(
+                self.l3_pool,
+                "namespaces",
+                by={"row_scope": "customer", "customer_id": customer_id, "namespace_type": namespace_type},
+                columns=("namespace_id",),
+                records=True,
+            )
             result = [row["namespace_id"] for row in rows if row["namespace_id"] is not None]
         return result
 

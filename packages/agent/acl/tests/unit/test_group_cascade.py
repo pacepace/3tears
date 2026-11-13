@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from threetears.agent.acl import GroupCollection, GroupMemberCollection, RoleAssignmentCollection
-from threetears.agent.acl.collections import ASSIGNMENTS_OF_GROUPS_SQL
 from threetears.core.collections import CacheInvalidationMessage, CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
@@ -35,7 +34,8 @@ class _Pool:
             assert 'ORDER BY "id" LIMIT' in sql, sql
             return list(self.members)
         # the group's assignments by group, through the read the grant load shares
-        assert sql == ASSIGNMENTS_OF_GROUPS_SQL, sql
+        assert sql.startswith('SELECT t."row_scope", t."assignment_id"') and 'FROM "role_assignments"' in sql, sql
+        assert sql.endswith('WHERE t."group_id" = ANY($1::uuid[])'), sql
         (group_ids,) = params
         assert len(group_ids) == 1, params
         return list(self.assignments)

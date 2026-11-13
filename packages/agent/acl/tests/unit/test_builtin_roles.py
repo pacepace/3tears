@@ -38,7 +38,7 @@ class _StubRoleCollection:
     everything else.
 
     :param pool: stand-in for the L3 asyncpg pool exposing
-        ``fetchrow`` and ``execute``
+        ``fetch`` and ``execute``
     :ptype pool: Any
     """
 
@@ -80,7 +80,7 @@ class TestEnsurePlatformBuiltinToolUserRole:
         """existing row wins; no INSERT issued."""
         existing_id = uuid7()
         pool = AsyncMock()
-        pool.fetchrow.return_value = {"role_id": existing_id}
+        pool.fetch.return_value = [{"role_id": existing_id}]
         coll = _StubRoleCollection(pool=pool)
         result = await ensure_platform_builtin_tool_user_role(coll)
         assert result == existing_id
@@ -91,7 +91,7 @@ class TestEnsurePlatformBuiltinToolUserRole:
     async def test_inserts_when_absent_and_returns_new_id(self) -> None:
         """missing row triggers INSERT with the canonical payload."""
         pool = AsyncMock()
-        pool.fetchrow.return_value = None
+        pool.fetch.return_value = []
         pool.execute.return_value = "INSERT 0 1"
         coll = _StubRoleCollection(pool=pool)
         result = await ensure_platform_builtin_tool_user_role(coll)
@@ -125,7 +125,7 @@ class TestEnsurePlatformBuiltinToolUserRole:
         canonical_id = uuid7()
         pool = AsyncMock()
         # mimic the NATS-proxy L3 backend which returns UUIDs as strings.
-        pool.fetchrow.return_value = {"role_id": str(canonical_id)}
+        pool.fetch.return_value = [{"role_id": str(canonical_id)}]
         coll = _StubRoleCollection(pool=pool)
         result = await ensure_platform_builtin_tool_user_role(coll)
         assert result == canonical_id

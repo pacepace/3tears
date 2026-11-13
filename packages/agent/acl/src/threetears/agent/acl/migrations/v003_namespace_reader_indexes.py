@@ -36,14 +36,14 @@ log = get_logger(__name__)
 
 #: Every statement, in order. Each is safe to run twice.
 _ACL_NAMESPACE_INDEXES_DDL: tuple[str, ...] = (
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACE_OF_AGENT_SQL;"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.get_by_agent_id;"
     " packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACE_OF_OWNER_SQL;"
     " src/aibots/hub/broker/namespaces.py::HubNamespaceCollection.list_granted_candidates\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespaces_owner_agent_id\n"
     "-- reason: an agent's own namespaces by its id, on every agent's provisioning and access check\n"
     "CREATE INDEX IF NOT EXISTS idx_namespaces_owner_agent_id ON namespaces (owner_agent_id)",
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACES_OF_CUSTOMER_TYPE_SQL;"
-    " packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACE_IDS_OF_CUSTOMER_TYPE_SQL;"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.find_by_type_and_customer;"
+    " packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.list_ids_by_customer_and_type;"
     " packages/agent/acl/src/threetears/agent/acl/collections.py::OWNERLESS_NAMESPACE_OF_CUSTOMER_SQL;"
     " packages/agent/acl/src/threetears/agent/acl/collections.py::OWNERLESS_PLATFORM_NAMESPACE_SQL\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespaces_customer_type\n"

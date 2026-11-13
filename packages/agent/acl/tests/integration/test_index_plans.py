@@ -12,7 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -27,7 +27,13 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.collections.scan_cache import ScanCache
-from threetears.core.testing.plans import PlanRecorder, explain_statement, explain_write, plan_uses_index
+from threetears.core.testing.plans import (
+    PlanRecorder,
+    StatementPlan,
+    explain_statement,
+    explain_write,
+    plan_uses_index,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -134,7 +140,7 @@ async def test_members_reverse(conn: asyncpg.Connection) -> None:
         groups,
     )
     await conn.execute("ANALYZE group_members")
-    plan = await explain_statement(conn, acl.MEMBERS_NAMING_SQL, "user", [uuid.uuid4()])
+    plan = await _planned(conn, acl.GroupMemberCollection, lambda members: members.load_for_user(uuid.uuid4()))
     assert plan_uses_index(plan, "idx_group_members_reverse"), plan.plan
 
 
@@ -159,7 +165,7 @@ async def test_assignments_group_scope(conn: asyncpg.Connection) -> None:
         granted,
     )
     await conn.execute("ANALYZE role_assignments")
-    plan = await explain_statement(conn, acl.ASSIGNMENTS_OF_GROUPS_SQL, [uuid.uuid4()])
+    plan = await _planned(conn, acl.RoleAssignmentCollection, lambda held: held.load_for_groups([uuid.uuid4()]))
     assert plan_uses_index(plan, "idx_role_assignments_group_scope"), plan.plan
     # a group's grant by its natural key, the grant a concurrent ensure won, a group's grants on one scope and
     # their delete: each reads the group's rows through the same index, bound in the seeded row scope and scope type
@@ -202,7 +208,7 @@ async def test_namespaces_name(conn: asyncpg.Connection) -> None:
     await _seed(
         conn, "namespaces", row_scope="'platform'", customer_id="NULL", namespace_type="'tool'", name="'n' || g"
     )
-    plan = await explain_statement(conn, acl.NAMESPACE_BY_NAME_SQL, "n17")
+    plan = await _planned(conn, acl.NamespaceCollection, lambda namespaces: namespaces.get_by_name("n17"))
     assert plan_uses_index(plan, "idx_namespaces_name"), plan.plan
 
 
@@ -233,7 +239,7 @@ async def test_namespaces_owner_agent_id(conn: asyncpg.Connection) -> None:
     """Flips if an agent's own namespace, or an owned one by its triple, stops reading idx_namespaces_owner_agent_id."""
     await _seed_namespaces(conn)
     agent = await conn.fetchval("SELECT owner_agent_id FROM namespaces WHERE owner_agent_id IS NOT NULL LIMIT 1")
-    plan = await explain_statement(conn, acl.NAMESPACE_OF_AGENT_SQL, agent, "agent")
+    plan = await _planned(conn, acl.NamespaceCollection, lambda namespaces: namespaces.get_by_agent_id(agent, "agent"))
     assert plan_uses_index(plan, "idx_namespaces_owner_agent_id"), plan.plan
     plan = await explain_statement(conn, acl.NAMESPACE_OF_OWNER_SQL, "customer", "agent", agent, uuid.uuid4())
     assert plan_uses_index(plan, "idx_namespaces_owner_agent_id"), plan.plan
@@ -267,9 +273,14 @@ async def test_namespaces_customer_type(conn: asyncpg.Connection) -> None:
     reading idx_namespaces_customer_type."""
     await _seed_namespaces(conn)
     customer = uuid.UUID("00000000-0000-0000-0000-000000000017")
+    # a customer's namespaces of a type, and their ids: each read as its collection method sends it
+    for read in (
+        lambda namespaces: namespaces.find_by_type_and_customer(namespace_type="tool", customer_id=customer),
+        lambda namespaces: namespaces.list_ids_by_customer_and_type(customer, "tool"),
+    ):
+        plan = await _planned(conn, acl.NamespaceCollection, read)
+        assert plan_uses_index(plan, "idx_namespaces_customer_type"), plan.plan
     for statement, params in (
-        (acl.NAMESPACES_OF_CUSTOMER_TYPE_SQL, (customer, "tool")),
-        (acl.NAMESPACE_IDS_OF_CUSTOMER_TYPE_SQL, (customer, "tool")),
         (acl.OWNERLESS_NAMESPACE_OF_CUSTOMER_SQL, ("customer", customer, "workspace")),
         (acl.OWNERLESS_PLATFORM_NAMESPACE_SQL, ("platform", "shared")),
     ):
@@ -320,6 +331,24 @@ async def test_the_names_beneath_a_node_are_its_subtree_whatever_the_collation(c
     assert {row["name"] for row in rows} == {"a.b", "a.b.c", "a.b.c.d"}, "the range alone holds the subtree"
 
 
+async def _planned(conn: asyncpg.Connection, cls: type, read: Callable[[Any], Awaitable[Any]]) -> StatementPlan:
+    """the plan of the one statement a collection method sends: the method run over a recording connection.
+
+    :param conn: the connection
+    :ptype conn: asyncpg.Connection
+    :param cls: the collection class
+    :ptype cls: type
+    :param read: the method's call, given the collection
+    :ptype read: Callable[[Any], Awaitable[Any]]
+    :return: the statement's plan
+    :rtype: StatementPlan
+    """
+    recorder = PlanRecorder(conn)
+    await read(_collection(cls, recorder))
+    assert len(recorder.plans) == 1, [plan.sql for plan in recorder.plans]
+    return recorder.plans[0]
+
+
 def _collection(cls: type, conn: Any) -> Any:
     """a collection over a stub registry whose L3 pool is ``conn``: no L1, nothing promoted anywhere else.
 
@@ -345,9 +374,9 @@ async def test_groups_by_name(conn: asyncpg.Connection) -> None:
     """Flips if a group by name, platform or a customer's, stops reading its scope's unique name index."""
     await _seed(conn, "groups", row_scope="'platform'", customer_id="NULL", name="'p' || g")
     await _seed(conn, "groups", row_scope="'customer'", customer_id="gen_random_uuid()", name="'c' || g")
-    platform = await explain_statement(conn, acl.GROUP_BY_PLATFORM_NAME_SQL, "p17")
+    platform = await _planned(conn, acl.GroupCollection, lambda groups: groups.get_by_name("p17", None))
     assert plan_uses_index(platform, "uq_groups_platform_name"), platform.plan
-    customer = await explain_statement(conn, acl.GROUP_BY_CUSTOMER_NAME_SQL, uuid.uuid4(), "c17")
+    customer = await _planned(conn, acl.GroupCollection, lambda groups: groups.get_by_name("c17", uuid.uuid4()))
     assert plan_uses_index(customer, "uq_groups_customer_name"), customer.plan
     # a customer's pages of groups by name: GroupCollection.page_by_customer's own statements, first page and after
     owner = await conn.fetchval("SELECT customer_id FROM groups WHERE customer_id IS NOT NULL LIMIT 1")
@@ -369,7 +398,7 @@ async def test_groups_by_name(conn: asyncpg.Connection) -> None:
 async def test_roles_platform_name(conn: asyncpg.Connection) -> None:
     """Flips if a platform role by name (every built-in's lookup) stops reading uq_roles_platform_name."""
     await _seed(conn, "roles", name="'r' || g", description="'r'", permissions="'[]'::jsonb", customer_id="NULL")
-    plan = await explain_statement(conn, acl.ROLE_BY_PLATFORM_NAME_SQL, "r17")
+    plan = await _planned(conn, acl.RoleCollection, lambda roles: roles.find_platform_by_name("r17"))
     assert plan_uses_index(plan, "uq_roles_platform_name"), plan.plan
 
 

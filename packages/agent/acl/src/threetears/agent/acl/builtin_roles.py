@@ -49,7 +49,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid7
 
-from threetears.agent.acl.collections import ROLE_BY_PLATFORM_NAME_SQL
+from threetears.core.keyed import read_row
 from threetears.observe import get_logger
 
 __all__ = [
@@ -142,7 +142,9 @@ async def ensure_platform_builtin_tool_user_role(
     # cache-bypass: a lookup by name, which no cache tier is keyed on, made once
     # at platform bootstrap through the Collection's own pool: the platform role by
     # its name, through the collection's own keyed read (uq_roles_platform_name)
-    existing = await pool.fetchrow(ROLE_BY_PLATFORM_NAME_SQL, PLATFORM_BUILTIN_TOOL_USER_ROLE_NAME)
+    existing = await read_row(
+        pool, "roles", by={"name": PLATFORM_BUILTIN_TOOL_USER_ROLE_NAME, "customer_id": None}, records=True
+    )
     if existing is not None:
         result: UUID = existing["role_id"] if isinstance(existing["role_id"], UUID) else UUID(str(existing["role_id"]))
         log.debug(

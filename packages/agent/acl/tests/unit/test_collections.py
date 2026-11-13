@@ -28,7 +28,6 @@ from threetears.agent.acl import (
     ScopeType,
 )
 
-from threetears.agent.acl.collections import MEMBERS_NAMING_SQL
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.scan_cache import ScanCache
 from threetears.core.keyed import ThreadedDuckDB
@@ -242,18 +241,18 @@ class TestGroupGetByName:
         cid = uuid7()
         row = _group_row(customer_id=cid, name="Tenant administrators")
         pool = AsyncMock()
-        pool.fetchrow.return_value = row
+        pool.fetch.return_value = [row]
         coll = make_collection(GroupCollection, l3_pool=pool)
         result = await coll.get_by_name("Tenant administrators", cid)
         assert result is not None
         assert result.name == "Tenant administrators"
         assert result.customer_id == cid
-        pool.fetchrow.assert_awaited_once()
+        pool.fetch.assert_awaited_once()
         # a customer's group by the customer's own unique name index (customer_id, name)
-        sql = pool.fetchrow.await_args.args[0]
-        assert "customer_id = $1 AND name = $2" in sql
-        assert pool.fetchrow.await_args.args[1] == cid
-        assert pool.fetchrow.await_args.args[2] == "Tenant administrators"
+        sql = pool.fetch.await_args.args[0]
+        assert 't."customer_id" = $1 AND t."name" = $2' in sql
+        assert pool.fetch.await_args.args[1] == cid
+        assert pool.fetch.await_args.args[2] == "Tenant administrators"
 
     @pytest.mark.asyncio
     async def test_resolves_platform_scoped_group_with_none_customer(self) -> None:
@@ -267,20 +266,20 @@ class TestGroupGetByName:
         row["customer_id"] = None
         row["row_scope"] = "platform"
         pool = AsyncMock()
-        pool.fetchrow.return_value = row
+        pool.fetch.return_value = [row]
         coll = make_collection(GroupCollection, l3_pool=pool)
         result = await coll.get_by_name("Platform administrators", None)
         assert result is not None
         assert result.name == "Platform administrators"
-        sql = pool.fetchrow.await_args.args[0]
-        assert "name = $1 AND customer_id IS NULL" in sql
-        assert pool.fetchrow.await_args.args[1:] == ("Platform administrators",)
+        sql = pool.fetch.await_args.args[0]
+        assert 't."name" = $1 AND t."customer_id" IS NULL' in sql
+        assert pool.fetch.await_args.args[1:] == ("Platform administrators",)
 
     @pytest.mark.asyncio
     async def test_returns_none_when_absent(self) -> None:
         """no matching group yields ``None`` rather than raising."""
         pool = AsyncMock()
-        pool.fetchrow.return_value = None
+        pool.fetch.return_value = []
         coll = make_collection(GroupCollection, l3_pool=pool)
         result = await coll.get_by_name("does-not-exist", uuid7())
         assert result is None
@@ -322,7 +321,7 @@ class TestGroupMemberLoadForUser:
         user = uuid7()
         await coll.load_for_user(user)
         sql, member_type, members = pool.fetch.await_args.args
-        assert "member_type = $1" in sql
+        assert 't."member_type" = $1' in sql
         assert (member_type, members) == ("user", [user])
 
 
@@ -843,7 +842,7 @@ class TestNamespaceGetByName:
         cid = uuid7()
         row = _namespace_row(customer_id=cid, name="ws.acme")
         pool = AsyncMock()
-        pool.fetchrow.return_value = row
+        pool.fetch.return_value = [row]
         coll = make_collection(NamespaceCollection, l3_pool=pool)
         result = await coll.get_by_name("ws.acme")
         assert result is not None
@@ -852,7 +851,7 @@ class TestNamespaceGetByName:
     @pytest.mark.asyncio
     async def test_returns_none_when_absent(self) -> None:
         pool = AsyncMock()
-        pool.fetchrow.return_value = None
+        pool.fetch.return_value = []
         coll = make_collection(NamespaceCollection, l3_pool=pool)
         result = await coll.get_by_name("missing")
         assert result is None
@@ -867,6 +866,8 @@ class TestNamespaceGetByNameIsCached:
         # an L1 of its own: the backend's default database is shared by every backend in the process
         cache = ScanCache(SQLiteBackend(f"ns_by_name_{uuid7().hex}"), trusted=lambda _tables: True)
         pool = AsyncMock()
+        # the name read (a keyed read_row: fetch) and the row's read by its key (fetchrow) both answer the row
+        pool.fetch.return_value = [] if row is None else [row]
         pool.fetchrow.return_value = row
         registry = MagicMock()
         registry.get_l1_backend.return_value = None
@@ -882,7 +883,7 @@ class TestNamespaceGetByNameIsCached:
 
     @staticmethod
     def _by_name(pool: AsyncMock) -> int:
-        return sum(1 for call in pool.fetchrow.await_args_list if "WHERE name = $1" in call.args[0])
+        return sum(1 for call in pool.fetch.await_args_list if 'WHERE t."name" = $1' in call.args[0])
 
     @pytest.mark.asyncio
     async def test_a_name_resolved_once_is_not_read_by_name_again(self) -> None:
@@ -916,10 +917,11 @@ class TestNamespaceGetByNameIsCached:
         await coll.get_by_name("ws.acme")
         renamed = {**row, "name": "ws.renamed"}
 
-        async def answer(sql: str, *args: Any) -> dict[str, Any] | None:
-            return None if "WHERE name = $1" in sql else renamed
+        async def answer(sql: str, *args: Any) -> list[dict[str, Any]]:
+            return [] if 'WHERE t."name" = $1' in sql else [renamed]
 
-        pool.fetchrow.side_effect = answer
+        pool.fetch.side_effect = answer
+        pool.fetchrow.return_value = renamed
         assert await coll.get_by_name("ws.acme") is None
         assert self._by_name(pool) == 2
 
@@ -1060,8 +1062,8 @@ class TestGroupMemberLoadForGroups:
         ]
         pool.fetch.assert_awaited_once()
         sql, member_type, ids = pool.fetch.await_args.args
-        assert "member_type = $1" in sql
-        assert "member_id = ANY($2::uuid[])" in sql
+        assert 't."member_type" = $1' in sql
+        assert 't."member_id" = ANY($2::uuid[])' in sql
         assert (member_type, ids) == ("group", children)
 
 
@@ -1120,7 +1122,10 @@ class _GroupEdges:
         self.asked: list[list[Any]] = []
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
-        assert sql == MEMBERS_NAMING_SQL, sql
+        assert sql == (
+            'SELECT t."group_id", t."member_type", t."member_id", t."customer_id" FROM "group_members" AS t'
+            ' WHERE t."member_type" = $1 AND t."member_id" = ANY($2::uuid[])'
+        ), sql
         member_type, member_ids = params
         assert member_type == "group", params
         self.asked.append(list(member_ids))
