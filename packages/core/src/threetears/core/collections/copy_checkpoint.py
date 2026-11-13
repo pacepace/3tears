@@ -110,11 +110,6 @@ SCHEMA_CHANGE: Final = "schema_change"
 #: change or an older writer's whole record, ``copy_follower_whole_reads_total``)
 _WHOLE_TOUCH: Final = "whole_touch"
 
-#: why a write read a derived table whole from the copy: a followed table with no scope changed, which may reach every
-#: scope of what is derived from it. Not a cold start: a steady-state whole read, a finding until the derived table can
-#: be narrowed (its scopes recomputed from the keys the change named)
-_UNSCOPED_DERIVED: Final = "unscoped_derived"
-
 #: the situation each why the follower reads a table whole for is (``copy_follower._stage``): what a checkpoint
 #: writing that table whole again declares its read as
 _FOLLOWER_KINDS: Final[Mapping[str, str]] = {
@@ -134,7 +129,6 @@ _WHOLE_WRITES: Final = WholeReads(
         SCHEMA_CHANGE: "every checkpoint holding the table wrote it with another schema digest",
         _WHOLE_TOUCH: "the follower read the table whole from L3 (a cold start, reset, schema change or an older "
         "writer's whole record)",
-        _UNSCOPED_DERIVED: "a followed table with no scope changed: a table derived from it is read whole",
     },
     expected={COLD_START},
 )
@@ -418,7 +412,7 @@ class _Plan:
     :ivar keys: a table with no scope: the keys to patch its part by (empty: its part named again)
     :ivar why: a :data:`_WHOLE_WRITES` why when the table is read whole from the copy; None otherwise
     :ivar kind: the situation a whole read is (``cold_start``, ``schema_change``, ``rolling_upgrade``), each read by its
-        own declared function; :data:`_UNSCOPED_DERIVED` for the one that is no such situation
+        own declared function
     """
 
     table: FollowedTable
@@ -546,22 +540,32 @@ class CopyCheckpoints:
         hold at its stamp.
 
         A derived table's rows of a scope are derived from the followed tables' rows of that scope alone: a write
-        rewrites a derived table's scopes the followed tables' changes touched since, reads it whole only when a
-        followed table was read whole, and patches a derived table with no scope by nothing finer than a whole read,
-        so every derived table declares a scope.
+        rewrites a derived table's scopes the followed tables' changes touched since, and reads it whole only when a
+        followed table was read whole. So every derived table declares a scope, and so does every followed table
+        beside a derived one: a change of a followed table with no scope may reach every scope derived from it, and
+        nothing finer than a whole read of the derived tables (a steady-state whole read) would answer it.
 
         :param names: the followed tables
         :ptype names: Iterable[str]
         :return: nothing
         :rtype: None
-        :raises ValueError: when a derived table declares no scope
+        :raises ValueError: when a derived table declares no scope, or a followed table declares none while a table
+            is derived
         """
         followed = frozenset(names)
+        derived = sorted(t.name for t in self._tables if t.name not in followed)
         unscoped = sorted(t.name for t in self._tables if t.name not in followed and t.scope is None)
         if unscoped:
             raise ValueError(
                 f"derived tables {unscoped} declare no scope: a checkpoint could rewrite them only whole; give each "
                 "the scope its rows are derived by (FollowedTable.scope)"
+            )
+        unscoped_followed = sorted(t.name for t in self._tables if t.name in followed and t.scope is None)
+        if derived and unscoped_followed:
+            raise ValueError(
+                f"followed tables {unscoped_followed} declare no scope beside derived tables {derived}: a change of "
+                "one may reach every scope derived from it, which a checkpoint could rewrite only by reading the "
+                "derived tables whole; give each followed table the scope its rows belong to (FollowedTable.scope)"
             )
         self._followed = followed
 
@@ -866,10 +870,6 @@ class CopyCheckpoints:
             kinds = {taken.kinds[name] for name in whole}
             kind = next(k for k in ("cold_start", "schema_change", "rolling_upgrade") if k in kinds)
             return _Plan(table, None, why=_WHOLE_TOUCH, kind=kind)
-        by_name = {t.name: t for t in self._tables}
-        if any(name in by_name and by_name[name].scope is None for name in followed):
-            # a change of a followed table with no scope may reach every scope of what is derived from it
-            return _Plan(table, None, why=_UNSCOPED_DERIVED, kind=_UNSCOPED_DERIVED)
         return _Plan(table, prior, scopes=frozenset(s for scopes in followed.values() for s in scopes or ()))
 
     async def _write_locked(self, read: Callable[[], Any], lock: str) -> Checkpoint | None:
@@ -1005,7 +1005,7 @@ class CopyCheckpoints:
         """
         table, prior = plan.table, plan.prior
         if prior is None:
-            read = WHOLE_WRITE_READS.get(plan.kind, _batches_unscoped_derived)
+            read = WHOLE_WRITE_READS[plan.kind]
             reader = await asyncio.to_thread(read, cursor, table.name, self._part_rows)
             parts = await self._put_parts(_split_by_scope(reader, table), table.name, seq, written, keys)
             self._refuse_unscoped(table, parts)
@@ -1195,17 +1195,6 @@ def _batches_rolling_upgrade(cursor: Any, table: str, rows: int) -> Any:
         proof="packages/core/tests/unit/collections/test_copy_checkpoint.py::test_a_whole_write_is_reached_only_at_a_cold_start_a_schema_change_or_a_whole_read",
         speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_checkpoint_whole_write_speed_at_real_size",
     )
-
-
-def _batches_unscoped_derived(cursor: Any, table: str, rows: int) -> Any:
-    """a derived table's rows on a read's cursor, because a followed table with no scope changed and may reach every
-    scope of it: a steady-state whole read, no cold start (coordinator 2026-11-12: left a finding until the derived
-    table can be narrowed to the scopes the change reaches).
-
-    :return: the reader
-    :rtype: pyarrow.RecordBatchReader
-    """
-    return cursor.execute(f"SELECT * FROM {quote_identifier(table)}").fetch_record_batch(rows)  # noqa: S608
 
 
 #: each situation a checkpoint write reads a table whole in, onto its own declared read

@@ -636,7 +636,7 @@ async def test_a_replica_whose_parts_the_previous_still_names_writes_on_them() -
 def _derived_checkpoints(copy: _Copy, store: _Store, pointers: _Pointers, owner: str, *derived: FollowedTable) -> Any:
     checkpoints = CopyCheckpoints(
         name="copy",
-        tables=[*_tables(), *derived],
+        tables=[_tables()[0], *derived],
         backend=copy.backend,
         store=store,
         pointers=pointers,
@@ -644,7 +644,7 @@ def _derived_checkpoints(copy: _Copy, store: _Store, pointers: _Pointers, owner:
         owner=owner,
         part_rows=40,
     )
-    checkpoints.follow([_VOTES, _RACES])
+    checkpoints.follow([_VOTES])
     return checkpoints
 
 
@@ -695,14 +695,25 @@ async def test_a_derived_table_is_read_whole_when_a_followed_table_was() -> None
     assert _whole_writes(_NEEDLES, _WHOLE_TOUCH) == before + 1
 
 
-async def test_a_derived_table_is_read_whole_when_a_followed_table_with_no_scope_changed() -> None:
-    copy, checkpoints, _, _ = await _derived_world(_needles())
-    copy.put(_RACES, _races([(1, "gov"), (2, "senate")]), "r2", 2)
-    checkpoints.applied(1, {_RACES: frozenset()}, {_RACES: [("2",)]})
-    # counted apart from a whole read the follower made: this one is no cold start (a finding until narrowed)
-    before = _whole_writes(_NEEDLES, "unscoped_derived")
-    assert await checkpoints.write(copy.read) is not None
-    assert _whole_writes(_NEEDLES, "unscoped_derived") == before + 1
+async def test_a_followed_table_with_no_scope_beside_a_derived_table_is_refused_by_name() -> None:
+    """Flips if a followed table with no scope is taken beside a derived one: a change of it may reach every scope
+    derived from it, which a write could answer only by reading the derived tables whole (a steady-state whole read,
+    no cold start). Followed tables with no scope and nothing derived are kept (each patched by key)."""
+    checkpoints = CopyCheckpoints(
+        name="copy",
+        tables=[*_tables(), _needles()],
+        backend=_Copy().backend,
+        store=_Store(),
+        pointers=_Pointers(),
+        retire=_Store().retire,
+        owner="a",
+    )
+    with pytest.raises(
+        ValueError, match=r"followed tables \['races'\] declare no scope beside derived tables \['needles'\]"
+    ):
+        checkpoints.follow([_VOTES, _RACES])
+    plain = _checkpoints(_Copy(), _Store(), _Pointers(), "b")
+    plain.follow([_VOTES, _RACES])
 
 
 async def test_a_derived_table_with_no_scope_is_refused_by_name() -> None:
@@ -723,8 +734,8 @@ async def test_a_table_with_no_scope_over_one_part_is_refused_by_name() -> None:
 
 
 async def test_a_whole_write_is_reached_only_at_a_cold_start_a_schema_change_or_a_whole_read() -> None:
-    """the proof of _batches_cold_start's, _batches_schema_change's and _batches_rolling_upgrade's declarations (and
-    where _batches_unscoped_derived, a finding, is reached): a write reads a table whole from the copy only when no checkpoint
+    """the proof of _batches_cold_start's, _batches_schema_change's and _batches_rolling_upgrade's declarations: a
+    write reads a table whole from the copy only when no checkpoint
     holds it (the first write), its schema changed, or the follower read it whole from L3; every steady-state write
     (scopes, a patch by key, a replica writing on the previous checkpoint's parts, a stale replica, a derived table's
     scopes) reads none. A whole read is a statement on the read's cursor reading a table with no filter, the one
@@ -732,33 +743,30 @@ async def test_a_whole_write_is_reached_only_at_a_cold_start_a_schema_change_or_
     store, pointers = _Store(), _Pointers()
     copy = _Copy()
     copy.put(_VOTES, _votes(_state("VA", 50) + _state("IL", 10)), "v1", 1)
-    copy.put(_RACES, _races([(1, "gov"), (2, "sen")]), "r1", 1)
     copy.put(_NEEDLES, _votes(_state("VA", 50) + _state("IL", 10)), "n", 1)
     checkpoints = _derived_checkpoints(copy, store, pointers, "a", _needles())
     assert await checkpoints.write(copy.read) is not None
 
-    def reached() -> list[str]:
-        return sorted(table for table in (_VOTES, _RACES, _NEEDLES) if _whole_reads(copy, table))
+    def reached(read: _Copy = copy) -> list[str]:
+        return sorted(table for table in (_VOTES, _RACES, _NEEDLES) if _whole_reads(read, table))
 
-    assert reached() == sorted([_NEEDLES, _RACES, _VOTES])  # the first checkpoint: every table's cold start
+    assert reached() == sorted([_NEEDLES, _VOTES])  # the first checkpoint: every table's cold start
     copy.statements.clear()
     other = _Copy()
     late = _derived_checkpoints(other, store, pointers, "b", _needles())
     other.load(await late.stage())
-    # scopes, and a patch by key, on the writer
+    # scopes on the writer
     copy.put(_VOTES, _votes(_state("VA", 50) + _state("IL", 10, votes=3)), "v2", 2)
     _derive(copy, _state("VA", 50) + _state("IL", 10, votes=3))
-    copy.put(_RACES, _races([(1, "gov"), (2, "senate")]), "r2", 2)
     checkpoints.applied(11, {_VOTES: frozenset({"state:IL"})})
     assert await checkpoints.write(copy.read) is not None
     assert reached() == []
-    checkpoints.applied(1, {_RACES: frozenset()}, {_RACES: [("2",)]})
-    # a change of a table with no scope reaches every derived scope: the derived table alone is read whole, by the
-    # one whole read that is no declared situation (a finding until the derived table can be narrowed)
-    unscoped = _whole_writes(_NEEDLES, "unscoped_derived")
+    # and again: the newest checkpoint no longer names the first one's parts
+    copy.put(_VOTES, _votes(_state("VA", 50) + _state("IL", 10, votes=4)), "v2b", 2)
+    _derive(copy, _state("VA", 50) + _state("IL", 10, votes=4))
+    checkpoints.applied(10, {_VOTES: frozenset({"state:IL"})})
     assert await checkpoints.write(copy.read) is not None
-    assert reached() == [_NEEDLES]
-    assert _whole_writes(_NEEDLES, "unscoped_derived") == unscoped + 1
+    assert reached() == []
     copy.statements.clear()
     # the second replica writes on the previous checkpoint's parts, then goes stale
     other.put(_VOTES, _votes(_state("VA", 50) + _state("IL", 10) + _state("OH", 1)), "v9", 9)
@@ -771,6 +779,17 @@ async def test_a_whole_write_is_reached_only_at_a_cold_start_a_schema_change_or_
     checkpoints.applied(4, {_VOTES: None}, whys={_VOTES: "reset"})
     assert await checkpoints.write(copy.read) is not None
     assert reached() == [_NEEDLES, _VOTES]
+    # a table with no scope (nothing derived beside it) patched by key reads none
+    plain = _Copy()
+    plain.put(_VOTES, _votes(_state("VA", 5)), "v1", 1)
+    plain.put(_RACES, _races([(1, "gov"), (2, "sen")]), "r1", 1)
+    patched = _checkpoints(plain, _Store(), _Pointers(), "c")
+    assert await patched.write(plain.read) is not None
+    plain.statements.clear()
+    plain.put(_RACES, _races([(1, "gov"), (2, "senate")]), "r2", 2)
+    patched.applied(1, {_RACES: frozenset()}, {_RACES: [("2",)]})
+    assert await patched.write(plain.read) is not None
+    assert reached(plain) == []
 
 
 async def test_a_table_read_whole_names_why_and_is_written_by_that_situations_read(
