@@ -20,8 +20,12 @@ does); L3 is a DuckDB answering the follower's own statements. The contract this
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import importlib.util
 import json
+import sys
 import time
+from collections.abc import Iterator
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -84,6 +88,30 @@ def _metadata() -> MetaData:
     return metadata
 
 
+#: whether pandas is absent from this environment (the test extras install none)
+_PANDAS_ABSENT = importlib.util.find_spec("pandas") is None
+
+
+@contextlib.contextmanager
+def _pandas_known_absent() -> Iterator[None]:
+    """DuckDB answering a statement with pandas known absent, where it is.
+
+    DuckDB's Python layer tries ``import pandas`` for every value bound as a parameter, to recognise its types, and
+    a failed import is never remembered: where pandas is not installed each one is a search of the whole import
+    path. The large-commit test binds 70,000 keys a page at a time, and the stand-in L3 spent all but a second of its
+    5-9 minutes on the pool in those searches. Absent in ``sys.modules`` (``None``), the import fails at once; it is
+    put back as it was after the statement. Only the stand-in for L3 is helped: the code under test runs unchanged.
+    """
+    if not _PANDAS_ABSENT or "pandas" in sys.modules:
+        yield
+        return
+    sys.modules["pandas"] = None  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        sys.modules.pop("pandas", None)
+
+
 class _L3:
     """L3 as a DuckDB, answering ``fetch`` with ``$n`` placeholders; counts the rows each statement returned."""
 
@@ -123,9 +151,10 @@ class _L3:
             self.fail_next = False
             raise ConnectionError("the L3 rail dropped the reply")
         cursor = self.db.cursor()
-        result = cursor.execute(sql, list(params))
-        names = [d[0] for d in result.description]
-        rows = [dict(zip(names, row, strict=True)) for row in result.fetchall()]
+        with _pandas_known_absent():
+            result = cursor.execute(sql, list(params))
+            names = [d[0] for d in result.description]
+            rows = [dict(zip(names, row, strict=True)) for row in result.fetchall()]
         if sql.startswith("SELECT version()"):
             # which database it is (threetears.core.backends.dialect), asked beside a whole read: no read of the table
             return rows
