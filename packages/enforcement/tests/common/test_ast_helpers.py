@@ -27,6 +27,17 @@ from threetears.enforcement.common.ast_helpers import (
 )
 
 
+#: source no parse cache may keep: the whole workspace is 63 MB, and its trees (1.8 GB) got test processes killed
+_PAST_ANY_BOUND = 64 * 2**20
+
+
+@pytest.fixture(autouse=True)
+def _room_in_the_parse_cache() -> None:
+    """start each test with an empty parse cache: the cache is bounded, and tests that ran before in this process
+    (every gate's walk) may have filled it, so a file here would be parsed and handed out unkept."""
+    clear_parse_cache()
+
+
 def _touch(path: Path, content: str = "") -> Path:
     """create a parent-tree and write ``content`` to ``path``."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,6 +165,30 @@ class TestParsePythonFileCache:
     def test_a_missing_file_still_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             parse_python_file(tmp_path / "absent.py")
+
+    def test_trees_past_the_bound_are_parsed_on_every_call_and_kept_ones_stay(self, tmp_path: Path) -> None:
+        # a whole workspace's trees (63 MB of source, 1.8 GB of trees) ran enforcement batches out of memory on the
+        # pool's runners: the cache keeps what fits its bound, and no bound a runner survives holds this much
+        clear_parse_cache()
+        kept = _touch(tmp_path / "kept.py", "x = 1\n")
+        first_kept = parse_python_file(kept)
+        big = tmp_path / "big.py"
+        big.write_text("#" * _PAST_ANY_BOUND + "\ny = 2\n")
+        first_big = parse_python_file(big)
+        second_big = parse_python_file(big)
+        assert first_big is not None and second_big is not None
+        assert first_big is not second_big
+        assert ast.dump(first_big) == ast.dump(second_big)
+        assert parse_python_file(kept) is first_kept
+
+    def test_a_tree_past_the_bound_keeps_no_index_either(self, tmp_path: Path) -> None:
+        clear_parse_cache()
+        big = tmp_path / "big.py"
+        big.write_text("#" * _PAST_ANY_BOUND + "\nclass A: ...\n")
+        first = nodes_by_type(big, ast.ClassDef)
+        second = nodes_by_type(big, ast.ClassDef)
+        assert [n.name for n in first] == [n.name for n in second] == ["A"]
+        assert first[0] is not second[0]
 
 
 class TestParsePythonPath:
