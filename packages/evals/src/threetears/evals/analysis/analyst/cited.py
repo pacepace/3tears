@@ -19,15 +19,9 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.errors import UnstatedFigure
-from threetears.evals.analysis.report.figure_keys import (
-    Figure,
-    FigureKind,
-    Scale,
-    format_figure,
-    page_arm_names,
-    resolve,
-    written_arm,
-)
+from threetears.evals.analysis.report.keys.figure import Figure, FigureKind, Scale, written_arm
+from threetears.evals.analysis.report.keys.names import page_arm_names
+from threetears.evals.analysis.report.keys.resolve import format_figure, resolve
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import Contrast, ReportInput

@@ -37,7 +37,7 @@ from threetears.evals.analysis.campaigns import campaign_arms_spelled
 from threetears.evals.analysis.generation_tally import GenerationTally
 from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection
 from threetears.evals.analysis.report import CampaignReport, Verdict
-from threetears.evals.analysis.report.figure_keys import input_check_name
+from threetears.evals.analysis.report.keys.names import input_check_name
 from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.kernel.metrics import goal_check_measure
 from threetears.evals.analysis.report.model import ReportBlock, TrialDetail

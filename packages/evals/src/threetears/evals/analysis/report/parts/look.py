@@ -61,7 +61,14 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
-from threetears.evals.kernel.numbers import POINT_PLACES, MoneyForm, format_number, group_thousands, spell_at, spell_dollars
+from threetears.evals.kernel.numbers import (
+    POINT_PLACES,
+    MoneyForm,
+    format_number,
+    group_thousands,
+    spell_at,
+    spell_dollars,
+)
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, signed_with_unit, with_unit
 from threetears.evals.analysis.report.charts import ChartShape, ChartStatus
@@ -70,7 +77,7 @@ from threetears.evals.analysis.report.words import aspect_stratum_key
 
 if TYPE_CHECKING:
     # The page builder's facts sit above the report's blocks, which read this module: named for the checker alone.
-    from threetears.evals.analysis.report.figure_keys import NamedKind
+    from threetears.evals.analysis.report.keys.names import NamedKind
     from threetears.evals.analysis.report.fact_arms import FactArm
 
 __all__ = [
@@ -431,9 +438,7 @@ def _money_text(value: float, drawn: Quantity) -> str:
 _PLACED_FORMATS = frozenset({"num", "pct", "pts", "ms", "s"})
 
 
-def quantity(
-    unit: str, values: Sequence[float] = (), *, change: bool = False, places: int | None = None
-) -> Quantity:
+def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False, places: int | None = None) -> Quantity:
     """How a quantity in ``unit`` is drawn (this module's table).
 
     :param unit: The figure's unit, as the page reads it: ``share``, ``percent`` (or ``pct``), ``points``, ``usd``,

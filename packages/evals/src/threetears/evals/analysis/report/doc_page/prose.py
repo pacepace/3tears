@@ -23,19 +23,10 @@ from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.quantities import MONEY, UNIT_NAMES
 from threetears.evals.analysis.report.cost_unit import per_count
-from threetears.evals.analysis.report.figure_keys import (
-    PERCENTILE_NAMES,
-    Figure,
-    FigureKey,
-    cost_basis,
-    format_figure,
-    keys_in,
-    literal_numbers,
-    page_arm_names,
-    printed_arm_name,
-    reader_names,
-    resolve,
-)
+from threetears.evals.analysis.report.keys.figure import Figure, FigureKey, PERCENTILE_NAMES
+from threetears.evals.analysis.report.keys.names import page_arm_names, printed_arm_name, reader_names
+from threetears.evals.analysis.report.keys.reads import cost_basis
+from threetears.evals.analysis.report.keys.resolve import format_figure, keys_in, literal_numbers, resolve
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.unit_once import interval_beside
 from threetears.evals.analysis.report_input import ReportInput

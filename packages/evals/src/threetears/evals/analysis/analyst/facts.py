@@ -52,7 +52,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if, contrast_key
 from threetears.evals.analysis.cell_mean import NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnstatedFigure
-from threetears.evals.analysis.report.figure_keys import NamedKind, reader_names
+from threetears.evals.analysis.report.keys.names import NamedKind, reader_names
 from threetears.evals.analysis.report.call import (
     Caveat,
     CaveatReach,

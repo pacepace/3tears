@@ -58,7 +58,9 @@ from threetears.evals.analysis.report.block_spec import (
 )
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS
-from threetears.evals.analysis.report.figure_keys import figure_key_grammar, price_frontier, render
+from threetears.evals.analysis.report.keys.grammar import figure_key_grammar
+from threetears.evals.analysis.report.keys.prices import price_frontier
+from threetears.evals.analysis.report.keys.resolve import render
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_input import ReportInput

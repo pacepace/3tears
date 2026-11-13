@@ -111,13 +111,10 @@ from threetears.evals.analysis.analyst.analyses import (
 from threetears.evals.analysis.analyst.cited import cite
 from threetears.evals.analysis.analyst.facts import confound_caveat_id, contrast_key
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.figure_keys import (
-    WEAKEST_PREFIX,
-    Figure,
-    cost_arms,
-    format_figure,
-    reader_name,
-)
+from threetears.evals.analysis.report.keys.figure import Figure
+from threetears.evals.analysis.report.keys.names import reader_name
+from threetears.evals.analysis.report.keys.resolve import cost_arms, format_figure
+from threetears.evals.analysis.report.keys.weakest import WEAKEST_PREFIX
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.call import (
     asked_standing,

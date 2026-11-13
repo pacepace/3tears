@@ -60,15 +60,13 @@ from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, bare_columns
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.cost_unit import money_ruler, priced_in_part
-from threetears.evals.analysis.report.figure_keys import (
+from threetears.evals.analysis.report.keys.reads import (
     aspect_costs_per_thousand,
     cost_basis,
     cost_in_measure_unit,
     cost_ruler,
-    format_figure,
-    held_figure,
-    resolve,
 )
+from threetears.evals.analysis.report.keys.resolve import format_figure, held_figure, resolve
 from threetears.evals.analysis.report.forms import ColumnMoney, MeasureForm, PageForms
 from threetears.evals.analysis.report.parts.charting import money_words, stat_value
 from threetears.evals.analysis.report.parts.look import GATE_STATUS, PageLook, Quantity
@@ -360,7 +358,9 @@ def _arms_by_aspect_and_measure(
     passing = {(aspect.id, arm): pass_rate_cell(report_input, arm, aspect.id, forms=forms) for aspect, arm in places}
 
     def held(table: Measure | Judged, key: str) -> bool:
-        return any(_holds(report_input, key, on_aspect(report_input, table, aspect.id).get(arm)) for aspect, arm in places)
+        return any(
+            _holds(report_input, key, on_aspect(report_input, table, aspect.id).get(arm)) for aspect, arm in places
+        )
 
     judged = [key for key, table in report_input.judged.items() if held(table, key)]
     measures = [key for key, table in report_input.measures.items() if held(table, key)]
@@ -388,6 +388,7 @@ def _arms_by_aspect_and_measure(
         ),
     ]
     keys = {column.key for column in columns}
+
     def read_there(table: Measure | Judged, key: str, aspect: Aspect) -> bool:
         """Whether some arm holds the figure on ``aspect``: a dash there is an arm's not recorded, not the aspect's
         not read."""
@@ -432,9 +433,7 @@ def _arms_by_aspect_and_measure(
             )
         rows.append(cells)
     return [
-        _table(
-            "arms_by_measure", columns, rows, ASPECTS_TABLE_ORDER, forms, reconciles=_beside_a_month(report_input)
-        )
+        _table("arms_by_measure", columns, rows, ASPECTS_TABLE_ORDER, forms, reconciles=_beside_a_month(report_input))
     ]
 
 

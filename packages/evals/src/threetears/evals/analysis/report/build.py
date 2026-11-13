@@ -66,7 +66,7 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
 from threetears.evals.kernel.numbers import ABSENT, MoneyForm
 from threetears.evals.analysis.references import resolve_reading
-from threetears.evals.analysis.report.figure_keys import joint_guarantee
+from threetears.evals.analysis.report.keys.vocabulary import joint_guarantee
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.cost_unit import PRICED_TRIALS_TEMPLATE, money_ruler
 from threetears.evals.analysis.report.blocks import bare_columns

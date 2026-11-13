@@ -59,7 +59,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, contrast_key
 from threetears.evals.analysis.errors import UnstatedFigure
-from threetears.evals.analysis.report.figure_keys import ASSUMED_SHARE, assumable, pairing_contrast, separation_wheres
+from threetears.evals.analysis.report.keys.separation import pairing_contrast
+from threetears.evals.analysis.report.keys.settle import ASSUMED_SHARE, assumable, separation_wheres
 from threetears.evals.analysis.report_input import Contrast, ReportInput
 from threetears.evals.kernel.errors import RefusedInput
 

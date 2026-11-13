@@ -93,7 +93,7 @@ from threetears.evals.analysis.report.parts.charting import (
     unit_quantities,
     unit_refusal,
 )
-from threetears.evals.analysis.report.figure_keys import figure_unit
+from threetears.evals.analysis.report.keys.resolve import figure_unit
 from threetears.evals.analysis.report.parts.look import (
     Quantity,
     band_domain,
@@ -276,9 +276,7 @@ def _figure_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str,
     reads = {
         place: read for place, stat in figures.items() if (read := stat_value(report_input, place[0], stat)) is not None
     }
-    quantities = unit_quantities(
-        context, {key: [r[0] for (on, _), r in reads.items() if on == key] for key in keys}
-    )
+    quantities = unit_quantities(context, {key: [r[0] for (on, _), r in reads.items() if on == key] for key in keys})
     strips = []
     for key in keys:
         drawn = quantities[key]

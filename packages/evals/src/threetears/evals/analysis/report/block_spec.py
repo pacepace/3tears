@@ -83,16 +83,11 @@ from typing import TYPE_CHECKING, get_args
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.charts import KIT_CHARTS
-from threetears.evals.analysis.report.figure_keys import (
-    DIRECTION_WORDS,
-    format_figure,
-    on_lead_aspect,
-    parse_key,
-    price_frontier,
-    reader_names,
-    resolve,
-    figure_unit,
-)
+from threetears.evals.analysis.report.keys.figure import DIRECTION_WORDS
+from threetears.evals.analysis.report.keys.names import reader_names
+from threetears.evals.analysis.report.keys.prices import price_frontier
+from threetears.evals.analysis.report.keys.resolve import figure_unit, format_figure, parse_key, resolve
+from threetears.evals.analysis.report.keys.vocabulary import on_lead_aspect
 from threetears.evals.analysis.analyst.compare import ComparisonRow, arms_compare
 from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow, lever_effects
 from threetears.evals.analysis.analyst.settle import settle_cases

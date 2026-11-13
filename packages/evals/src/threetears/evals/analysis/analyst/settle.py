@@ -102,12 +102,7 @@ from threetears.evals.analysis.analyst.compare import (
     unkeyed_strata,
 )
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
-from threetears.evals.analysis.report.figure_keys import (
-    assumable,
-    criterion_wheres,
-    passed_aspects,
-    separation_wheres,
-)
+from threetears.evals.analysis.report.keys.settle import assumable, criterion_wheres, passed_aspects, separation_wheres
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import criterion_aspect, lead_aspect
 from threetears.evals.kernel.errors import RefusedInput
