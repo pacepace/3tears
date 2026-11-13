@@ -8,7 +8,9 @@ same values kept per input):
   apart from a key that names nothing, which a listing reads as absent) with the same message, the same cause and the
   same choice of showing its context;
 - **nothing keeps an input alive**: an input that read a figure and a refused key is freed once dropped;
-- **an input is its own**: an input made where a dropped one was read reads its own figures, never the dropped one's.
+- **an input is its own**: an input made where a dropped one was read reads its own figures, forms and arm names,
+  never the dropped one's;
+- **a page is its own**: two pages of one input keep their own ledgers, and a caller's arm names are its own copy.
 """
 
 from __future__ import annotations

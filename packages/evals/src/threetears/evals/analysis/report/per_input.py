@@ -34,7 +34,7 @@ class _Kept:
     def get[V](self, key: Hashable, build: Callable[[], V]) -> V:
         """The value kept under ``key``, built by ``build`` the first time.
 
-        :param key: What the value is, unique among everything kept of one input: the function that builds it.
+        :param key: What the value is, unique among everything kept of one input: the function or class that builds it.
         :ptype key: Hashable
         :param build: Works the value out of the input; it must be pure in the input.
         :ptype build: Callable[[], V]
