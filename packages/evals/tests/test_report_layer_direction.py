@@ -7,8 +7,8 @@ The analysis package holds two report layers:
 - **The page**: ``analysis/report/`` and everything below it. It reads the facts and decides what a reader is shown:
   the figure-key grammar, the number forms, the words, the options and the call, the blocks and the serializers.
 
-The page may import the facts; a fact module never imports the page. So the input can be built, checked and stored
-without the page's grammar loaded, and a change to how a page prints never reaches what a campaign measured.
+The page may import the facts; a fact module never imports the page. So a change to how a page prints never reaches
+the code that states what a campaign measured.
 
 The facts side is matched by path, so a new flat ``report_*.py`` is held to the rule the day it lands.
 
@@ -232,11 +232,30 @@ def test_a_type_checking_and_a_function_level_import_are_both_reported(tmp_path:
             "import importlib\nFORMS = importlib.import_module('threetears.evals.analysis.report.forms')\n",
             "threetears.evals.analysis.report.forms",
         ),
+        (
+            "TARGET = 'threetears.evals.analysis.report.forms.PageForms'\n",
+            "threetears.evals.analysis.report.forms",
+        ),
     ],
 )
 def test_each_way_of_naming_the_page_is_reported(tmp_path: Path, source: str, target: str) -> None:
     root = _synthetic_tree(tmp_path, {**_SYNTHETIC_BASE, _PLANTED: source})
     assert [violation.rpartition(" -> ")[2] for violation in direct_violations(root)] == [target]
+
+
+def test_a_dotted_string_naming_no_module_off_the_page_is_no_reach(tmp_path: Path) -> None:
+    """an event or logger name shaped like a path into the engine names no module, so it reaches nothing.
+
+    Its longest module prefix is ``analysis`` itself, whose init imports the page, as the real one does: read as a
+    reach, the name would launder the whole page into the facts side.
+    """
+    files = {
+        **_SYNTHETIC_BASE,
+        "threetears/evals/analysis/__init__.py": "from threetears.evals.analysis import report\n",
+        _PLANTED: "EVENT = 'threetears.evals.analysis.stats_ready'\n",
+    }
+    root = _synthetic_tree(tmp_path, files)
+    assert (direct_violations(root), laundered_reaches(root)) == ([], [])
 
 
 def test_a_new_flat_report_module_joins_the_facts_side_by_its_path(tmp_path: Path) -> None:
