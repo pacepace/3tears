@@ -228,6 +228,33 @@ class TestALeadASetFilterPins:
         reads = [sql for sql, _ in recorded.statements if "version()" not in sql]
         assert len(reads) == 1 and "unnest" not in reads[0], recorded.statements
 
+    @pytest.mark.parametrize(
+        ("l3", "row_seek"), [(_Recorded, True), (_RecordedOnYugabyte, False)], ids=["postgres", "yugabyte-ordered-lead"]
+    )
+    async def test_a_set_pinned_read_on_postgres_names_its_cursor_by_the_row_comparison_alone(
+        self, races: duckdb.DuckDBPyConnection, l3: type[_Recorded], row_seek: bool
+    ) -> None:
+        """Flips if a set-pinned read on Postgres names its cursor three ways (beside ``lead = ANY`` the leading
+        bound and the expansion shrink Postgres's estimate until it bitmap-scans and sorts every row left in the
+        set: 85,019 rows scanned for 30,029 on Postgres 16), or if YugabyteDB's ordered-lead read loses the leading
+        bound it seeks by. Either way every row comes once, in key order."""
+        recorded = l3(races)
+
+        read = await read_keyset_pages(
+            recorded,
+            "SELECT * FROM t",
+            ("race", "geo"),
+            where_any={"race": ("text[]", self._VALUES)},
+            page_size=5,
+        )
+
+        assert [tuple(row.values()) for row in read.rows] == _pinned(races, ["r09", "r02", "r05"])
+        pages = [sql for sql, _ in recorded.statements if "version()" not in sql][1:]
+        assert pages, recorded.statements
+        assert all('("race", "geo") > ($2, $3)' in sql for sql in pages), pages
+        three_ways = [sql for sql in pages if '"race" >= $2' in sql or " OR (" in sql]
+        assert (not three_ways) if row_seek else (three_ways == pages), pages
+
 
 class TestWhichDatabaseAnL3Is:
     async def test_the_rail_is_asked_its_broker_s_dialect_and_a_pool_its_version(self) -> None:

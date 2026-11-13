@@ -43,7 +43,10 @@ every value on every page and sorted them across values (YugabyteDB, 33,528 rows
 page, two sorts on disk). An ordered lead -- Postgres, or a lead declared ``ASC`` -- pages by the cursor: its index
 answers ``lead = ANY(values)`` in key order and stops at the page, and a set that fits one page is one statement
 (the walk measured about twice the rows it answered on Postgres 16, and costs a set of small values a statement
-for their order and more for their rows).
+for their order and more for their rows). On Postgres such a read names its cursor by the row comparison alone,
+the one Postgres seeks by: beside ``lead = ANY(values)`` the leading bound and the expansion only shrink its row
+estimate until, a few pages from the end, it plans a bitmap scan of every row left in the set and sorts them
+(Postgres 16, ten values of 3,000 rows: 85,019 rows scanned for 30,029; by the row comparison alone, 31,028).
 
 **How many rows a page asks for.** A transport that answers pages (``fetch_page`` /
 ``fetch_arrow_page``, :class:`~threetears.core.backends.protocol.L3Page`) says in each reply the bytes its
@@ -62,7 +65,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Final
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
-from threetears.core.backends.dialect import l3_on_yugabyte
+from threetears.core.backends.dialect import known_on_yugabyte, l3_on_yugabyte
 from threetears.core.backends.protocol import L3Page
 from threetears.core.keyed._filters import Fragment, narrowing
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
@@ -250,8 +253,8 @@ async def keyset_pages(
     shape = _ReadShape(select_from, key, where, where_any, page_size, quote, mark, conditions)
     reads = _DictReads(l3, page_size)
     pinned = await _pinned_lead(l3, shape, lead_array)
-    if pinned is not None:
-        async for page in _lead_walk(reads, shape, pinned[0], after, given=pinned[1]):
+    if pinned.walk is not None:
+        async for page in _lead_walk(reads, shape, pinned.walk[0], after, given=pinned.walk[1]):
             yield page
         return
     walked = await _hashed_lead(l3, shape, lead_array)
@@ -259,7 +262,8 @@ async def keyset_pages(
         async for page in _lead_walk(reads, shape, walked, after):
             yield page
         return
-    async for page in _cursor_pages(reads, shape.statement(), None if after is None else tuple(after)):
+    statement = shape.statement(row_seek=pinned.row_seek)
+    async for page in _cursor_pages(reads, statement, None if after is None else tuple(after)):
         yield page
 
 
@@ -320,8 +324,8 @@ async def keyset_arrow_pages(
     shape = _ReadShape(select_from, key, where, where_any, page_size, quote, mark, conditions)
     reads = _ArrowReads(l3, page_size, types)
     pinned = await _pinned_lead(l3, shape, lead_array)
-    if pinned is not None:
-        async for page in _lead_walk(reads, shape, pinned[0], after, given=pinned[1]):
+    if pinned.walk is not None:
+        async for page in _lead_walk(reads, shape, pinned.walk[0], after, given=pinned.walk[1]):
             yield page
         return
     walked = await _hashed_lead(l3, shape, lead_array)
@@ -329,7 +333,8 @@ async def keyset_arrow_pages(
         async for page in _lead_walk(reads, shape, walked, after):
             yield page
         return
-    async for page in _cursor_pages(reads, shape.statement(), None if after is None else tuple(after)):
+    statement = shape.statement(row_seek=pinned.row_seek)
+    async for page in _cursor_pages(reads, statement, None if after is None else tuple(after)):
         yield page
 
 
@@ -346,13 +351,17 @@ class _ReadShape:
     mark: Callable[[str, int], str] | None
     conditions: Sequence[Fragment]
 
-    def statement(self, *, key: Sequence[str] | None = None, conditions: Sequence[Fragment] = ()) -> _KeysetStatement:
+    def statement(
+        self, *, key: Sequence[str] | None = None, conditions: Sequence[Fragment] = (), row_seek: bool = False
+    ) -> _KeysetStatement:
         """the statement paging ``key`` (the read's own when None), ``conditions`` beside the read's own.
 
         :param key: the columns this statement pages on
         :ptype key: Sequence[str] | None
         :param conditions: filters beside the read's
         :ptype conditions: Sequence[Fragment]
+        :param row_seek: name the cursor by the row comparison alone (:meth:`_KeysetStatement._past`)
+        :ptype row_seek: bool
         :return: the statement
         :rtype: _KeysetStatement
         """
@@ -365,6 +374,7 @@ class _ReadShape:
             quote=self.quote,
             mark=self.mark,
             conditions=[*self.conditions, *conditions],
+            row_seek=row_seek,
         )
 
     def placeholder(self, column: str, number: int) -> str:
@@ -518,32 +528,49 @@ async def _cursor_pages(
         yield kept
 
 
-async def _pinned_lead(l3: Any, shape: _ReadShape, lead_array: str | None) -> tuple[str, Sequence[Any]] | None:
-    """the array type and values a set filter pins a hashed lead to, when the read walks those values one by one; None
-    when the read pages by the cursor.
+@dataclass(frozen=True)
+class _Pinned:
+    """how a read whose set filter may pin its key's lead goes: the walk's ``(array type, values)`` when it walks the
+    values one by one, and whether its cursor statement seeks by the row comparison alone (Postgres)."""
+
+    walk: tuple[str, Sequence[Any]] | None = None
+    row_seek: bool = False
+
+
+#: a read no set filter pins the lead of: it pages as it always has
+_UNPINNED: Final = _Pinned()
+
+
+async def _pinned_lead(l3: Any, shape: _ReadShape, lead_array: str | None) -> _Pinned:
+    """how a read goes whose ``where_any`` names the lead of a key of more than one column (any other read:
+    :data:`_UNPINNED`).
 
     It walks when ``where_any`` names the lead of a key of more than one column, the lead is declared hashed
     (``lead_array``) and the L3 is YugabyteDB. Paged by the cursor there, ``lead = ANY(values)`` reads every row of
     every value on every page and sorts them across values (a hashed lead's buckets come in no order): three pages of
     33,528 rows scanned 33,528 rows each and sorted two on disk. Walked, each value's rows are one bucket read past the
     cursor on the rest of the key: every row scanned once, nothing sorted but a small group's rows. An ordered lead
-    pages by the cursor (the module's "A hashed lead a set filter pins").
+    pages by the cursor; on Postgres that cursor is named by the row comparison alone, which Postgres seeks by
+    (the module's "A hashed lead a set filter pins").
 
-    :param l3: the L3, asked whether it is YugabyteDB only when the rest holds
+    :param l3: the L3, asked whether it is YugabyteDB only when a set filter pins the lead (once a reader:
+        :func:`~threetears.core.backends.dialect.known_on_yugabyte`)
     :ptype l3: Any
     :param shape: the read
     :ptype shape: _ReadShape
     :param lead_array: the lead's array type when its declaration leaves it hashed
     :ptype lead_array: str | None
-    :return: ``(array type, values)``, or None
-    :rtype: tuple[str, Sequence[Any]] | None
+    :return: the walk, or the cursor's form
+    :rtype: _Pinned
     """
-    if lead_array is None or len(shape.key) < 2 or not shape.where_any:
-        return None
+    if len(shape.key) < 2 or not shape.where_any:
+        return _UNPINNED
     pinned = shape.where_any.get(shape.key[0])
     if pinned is None:
-        return None
-    return pinned if await l3_on_yugabyte(l3) else None
+        return _UNPINNED
+    if not await known_on_yugabyte(l3):
+        return _Pinned(row_seek=True)
+    return _Pinned(walk=pinned) if lead_array is not None else _UNPINNED
 
 
 async def _hashed_lead(l3: Any, shape: _ReadShape, lead_array: str | None) -> str | None:
@@ -793,6 +820,7 @@ class _KeysetStatement:
         quote: Callable[[str], str],
         mark: Callable[[str, int], str] | None,
         conditions: Sequence[Fragment] = (),
+        row_seek: bool = False,
     ) -> None:
         if page_size < 1:
             raise ValueError(f"a keyset page keeps at least one row, got {page_size}")
@@ -811,12 +839,14 @@ class _KeysetStatement:
             self._values += list(fragment.params)
         self._mark = mark
         self._quoted = [quote(column) for column in key]
+        self._row_seek = row_seek
 
     def _past(self, before: int) -> str:
         """the condition naming the rows past the cursor, its values the parameters after the first ``before``.
 
         The leading bound, the row comparison and its expansion (the module's "How a page steps past its
-        cursor"): the same rows, said so that Postgres and YugabyteDB each seek by one of them.
+        cursor"): the same rows, said so that Postgres and YugabyteDB each seek by one of them. A statement built
+        ``row_seek`` (a set-pinned lead read on Postgres) names only the row comparison.
 
         :param before: how many parameters the filters bind
         :ptype before: int
@@ -828,7 +858,7 @@ class _KeysetStatement:
             for index, column in enumerate(self._key, start=1)
         ]
         row = f"({self._order}) > ({', '.join(marks)})"
-        if len(self._key) == 1:
+        if len(self._key) == 1 or self._row_seek:
             return row
         expanded = f"{self._quoted[-1]} > {marks[-1]}"
         for column, mark in zip(reversed(self._quoted[:-1]), reversed(marks[:-1]), strict=True):
