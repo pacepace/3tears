@@ -21,6 +21,9 @@ ONE run:
 - :class:`AccountExhaustedError` is the account-side twin: the provider account behind the
   run refused a candidate call (out of credit, or the key refused), so the run stops after
   that cell and is marked ``exhausted``. Nothing configures it; a cell observes it.
+- :class:`ModelUnservedError` is its sibling for the candidate's model: the provider does not serve
+  the model the run's candidate names (retired, unknown, not a valid id), so the run stops once its
+  cells keep meeting that, and is marked ``exhausted`` with the model as the cause.
 
 The cap is pure per-run arithmetic: no shared budget pool, no periods, no
 BudgetService, no database I/O. One run can never exhaust another, raising the
@@ -204,6 +207,62 @@ class AccountExhaustedError(Exception):
         super().__init__(
             f"eval run stopped: the provider account refused a candidate call after {completed}/{total} results "
             f"(${round_half_even(accumulated_usd, 4)} spent{unpriced}) — {detail}"
+        )
+
+
+class ModelUnservedError(Exception):
+    """Raised by :func:`~threetears.evals.run.runner.execute_run` when the provider does not serve the run's model.
+
+    The model-side sibling of :class:`AccountExhaustedError`. A provider answering that it does not serve the model a
+    call named (a retired model's 404, a model id it does not know) gives every call naming that model the same answer,
+    so each such cell is lost to the test setup and never judged, and once the circuit's run of them
+    (:data:`~threetears.evals.run.runner.UNSERVED_CIRCUIT_CELLS`) is reached, the run stops after the cells running
+    then have ended instead of launching the rest of its matrix to be lost one by one. The run's other arms are
+    their own runs, and go on.
+
+    Already-delivered results are persisted before this is raised. The job manager marks the run ``exhausted`` with
+    ``exhausted_because`` ``model_unserved``, and files this message, which names the model and quotes the provider,
+    under ``error_details``: an operator has to act (pick a model the provider serves, or wait for it to be served
+    again) before the run can measure anything more. The run is resumable: taken up once the model is served, it runs
+    the cells the model was not served for again.
+
+    :ivar completed: Results delivered (and persisted) before the stop, the unserved cells included.
+    :ivar total: Results the run's matrix would have produced.
+    :ivar model: The candidate model the provider does not serve.
+    :ivar accumulated_usd: What the delivered priced results cost, summed from what the loop recorded.
+    :ivar unpriced_results: Delivered results whose spend could not be priced, and so is not in ``accumulated_usd``.
+    :ivar detail: The last unserved cell's own apparatus message: which call, and the provider's words.
+    """
+
+    def __init__(
+        self, completed: int, total: int, *, model: str, accumulated_usd: float, unpriced_results: int, detail: str
+    ):
+        """Record how far the run got, what it had spent, the model and the provider's answer that stopped it.
+
+        :param completed: Results delivered (and persisted) before the stop.
+        :ptype completed: int
+        :param total: Results the run's matrix would have produced.
+        :ptype total: int
+        :param model: The candidate model the provider does not serve.
+        :ptype model: str
+        :param accumulated_usd: The delivered priced results' summed cost.
+        :ptype accumulated_usd: float
+        :param unpriced_results: Delivered results whose spend could not be priced.
+        :ptype unpriced_results: int
+        :param detail: The last unserved cell's apparatus message.
+        :ptype detail: str
+        """
+        self.completed = completed
+        self.total = total
+        self.model = model
+        self.accumulated_usd = accumulated_usd
+        self.unpriced_results = unpriced_results
+        self.detail = detail
+        unpriced = f", and {unpriced_results} result(s) whose spend could not be priced" if unpriced_results else ""
+        super().__init__(
+            f"eval run stopped: the provider does not serve the candidate model {model} "
+            f"({completed}/{total} results, ${round_half_even(accumulated_usd, 4)} spent{unpriced}); resume the run "
+            f"once the model is served — {detail}"
         )
 
 
@@ -416,4 +475,5 @@ __all__ = [
     "BudgetStoppedError",
     "CapBreach",
     "EvalRunCostCap",
+    "ModelUnservedError",
 ]

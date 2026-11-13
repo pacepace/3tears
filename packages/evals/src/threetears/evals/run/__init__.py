@@ -199,7 +199,13 @@ from threetears.evals.run.simulator import (
     TurnDriver,
 )
 from threetears.evals.run.witnessed import WitnessedJudging, record_witnessed_cell, stamp_witnessed_judge
-from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError, CapBreach, EvalRunCostCap
+from threetears.evals.run.budget import (
+    AccountExhaustedError,
+    BudgetStoppedError,
+    CapBreach,
+    EvalRunCostCap,
+    ModelUnservedError,
+)
 from threetears.evals.run.case_sets import mint_case_set, resolve_case_set
 from threetears.evals.run.ceilings import (
     CeilingRaisedError,
@@ -305,6 +311,7 @@ __all__ = [
     "LaunchableKind",
     "MeteredCallLedger",
     "MeteredCallTally",
+    "ModelUnservedError",
     "RatingStore",
     "Regrade",
     "RegradedDim",

@@ -7,8 +7,10 @@ it measures every repeat of each case it covers, so a case the first reached par
 the first stays short on its own record. :func:`resume_run` continues the run itself:
 
 - **Only what is missing runs.** A cell with no stored row runs, and so does a cell whose row was cut short by a
-  cancel (termination ``cancelled``: the attempt a shutdown or a cancel abandoned) or refused by the provider
-  account paying for the run (``EvalResult.account_refused``: the call a funded account would have served). Every
+  cancel (termination ``cancelled``: the attempt a shutdown or a cancel abandoned), refused by the provider
+  account paying for the run (``EvalResult.account_refused``: the call a funded account would have served), or
+  answered that its model is not served (``EvalResult.model_unserved``: the call a served model would have
+  answered). Every
   other row is what the run would have stored uninterrupted, so its cell is done (:func:`_planned_cells`). The cells
   run in the run's own order, its done ones left out, and a re-run cell is written over its row.
 - **The same measurement, or none.** The run is launched again from what it recorded, through its kind's launcher,
@@ -174,6 +176,7 @@ _UNPINNED_FIELDS: frozenset[str] = frozenset(
         "budget_stop_reason",
         "budget_stops",
         "failed_because",
+        "exhausted_because",
         "error_details",
         "completed_at",
         "archived",
@@ -194,8 +197,9 @@ _PINNED_FIELDS: tuple[str, ...] = tuple(name for name in EvalRun.model_fields if
 
 
 def _run_again(row: EvalResult) -> bool:
-    """Whether a stored row's cell runs again when its run is taken up: an attempt the run abandoned."""
-    return row.termination == "cancelled" or row.account_refused
+    """Whether a stored row's cell runs again when its run is taken up: an attempt the run abandoned, or one whose call
+    the account or the model's provider turned away, which a funded account or a served model would have answered."""
+    return row.termination == "cancelled" or row.account_refused or row.model_unserved
 
 
 @dataclass(frozen=True)
@@ -212,9 +216,11 @@ def _stored_rows(storage: EvalStorage, run: EvalRun) -> _StoredRows:
     """Read a run's stored rows a page at a time (:data:`~threetears.evals.kernel.run_pages.RUN_RESULTS_PAGE`), keeping
     each as a :class:`StoredCell`, so a take-up of a large run never holds its rows' reasoning, payloads or events.
 
-    A row whose cell was cut short by a cancel (``cancelled``) is an attempt a shutdown or a cancel abandoned, and one
+    A row whose cell was cut short by a cancel (``cancelled``) is an attempt a shutdown or a cancel abandoned, one
     the provider account paying for the run refused (``account_refused``) is a call a funded account would have
-    served: an uninterrupted run on a funded account stores neither, so each cell runs again, written over its row.
+    served, and one whose model the provider did not serve (``model_unserved``) is a call a served model would have
+    answered: an uninterrupted run on a funded account and a served model stores none of them, so each cell runs
+    again, written over its row.
     Every other row — a timeout, a rig fault, a call the provider itself declined, a failed seed included — is what
     the uninterrupted run would also have stored, so its cell is done. A cell with no row is neither, and runs.
 
@@ -523,6 +529,7 @@ class RunResumption:
                 "budget_stop_reason": None,
                 "budget_stops": None,
                 "failed_because": None,
+                "exhausted_because": None,
                 "completeness": None,
                 # The cap it was stopped under is replayed as named, so a cap it inherited keeps saying so unless the
                 # take-up raised it.
@@ -815,7 +822,8 @@ async def resume_run(host: LaunchHost, run_id: str, scope_id: str, *, max_cost_u
 
     Resumable: a run that was lost (its holder gone, or shut down), one an operator cancelled, one its budget stopped
     — under a cap above what its stored rows spent, so a cost-capped stop needs a raised ``max_cost_usd`` — and one
-    its provider account stopped (``exhausted``), which, like a budget, is resumable once the account is topped up.
+    its provider account or its model's provider stopped (``exhausted``), which, like a budget, is resumable once the
+    account is topped up or the model is served.
     A run that completed or failed is not, nor one still live.
 
     In order: the run is settled as every reader settles it (written lost when its lease lapsed); refused when it
@@ -1107,7 +1115,7 @@ async def resume_launch(
 _RESUMABLE_RUN_STATUSES: frozenset[EvalRunStatus] = frozenset({"cancelled", "budget_stopped", "exhausted"})
 
 #: How a resumable run's last holding ended: lost (its process went away), cancelled by an operator, stopped by its
-#: budget, or stopped by its provider account.
+#: budget, or stopped by its provider account or by its model not being served (``EvalRun.exhausted_because``).
 ResumableEnding = Literal["lost", "cancelled", "budget_stopped", "exhausted"]
 
 
@@ -1124,7 +1132,7 @@ class ResumableJob(EvalBaseModel):
     )
     ended: ResumableEnding = Field(
         description="How its last holding ended: lost (its process went away), cancelled by an operator, stopped by "
-        "its budget, or stopped by its provider account (exhausted)."
+        "its budget, or stopped by its provider account or its model not being served (exhausted)."
     )
     reason: str | None = Field(
         default=None,
@@ -1301,7 +1309,7 @@ def resumable_jobs(storage: EvalStorage, scopes: Iterable[str]) -> ResumableJobs
     resumed here.
 
     A run lost (its holder gone, or shut down), one an operator cancelled, one its budget stopped and one its provider
-    account stopped (``exhausted``); never one that completed or failed, one still live, an ad hoc run, which has no
+    account or its model's provider stopped (``exhausted``); never one that completed or failed, one still live, an ad hoc run, which has no
     template to launch it from again, nor an archived run, which an operator declined by archiving it. A sweep or a
     launch whose every run is archived is left out with them. A sweep or a launch lost, cancelled or timed out, with an
     arm left to take up or to launch, is listed once, as a whole (``groups``), with each arm's state and each run it

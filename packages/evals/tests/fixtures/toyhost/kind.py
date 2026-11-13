@@ -544,13 +544,21 @@ class ToyExtractorKind:
                         try:
                             extraction = await self._client.extract(request)
                         except ProviderError as declined:
-                            if declined.owner != "provider":
+                            if declined.owner not in ("provider", "unserved"):
                                 raise
-                            # The provider declined the call, as it would any request: the cell measured the
-                            # provider, not the extractor, so it is excluded and never charged, as the package's
-                            # own kinds do.
+                            # The provider declined the call, as it would any request, or does not serve the model
+                            # the call named: the cell measured the provider or the setup, not the extractor, so it
+                            # is excluded and never charged, as the package's own kinds do. A model not served is
+                            # flagged as such, so the cell is never judged and the run's circuit counts it.
+                            unserved = declined.owner == "unserved"
+                            said = (
+                                "named a model the provider does not serve"
+                                if unserved
+                                else "was declined by the provider"
+                            )
                             return CandidateOutput(
-                                infra_errors=[f"apparatus: the extractor call was declined by the provider: {declined}"]
+                                infra_errors=[f"apparatus: the extractor call {said}: {declined}"],
+                                model_unserved=unserved,
                             )
 
             # What the candidate did, recorded through the engine's helper from what the call

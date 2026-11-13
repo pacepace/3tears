@@ -1085,6 +1085,7 @@ class JudgeKind:
                 refused="judge: the call was refused for the calling account",
                 declined="judge: the provider declined the call",
                 failed="judge",
+                unserved="judge: the call named a model the provider does not serve",
                 log=lambda what, level: log.log(level, "%s, case %s: %s", what, test_case.id, error),
                 telemetry=telemetry,
                 kind_payload=payload,

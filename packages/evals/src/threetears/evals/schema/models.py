@@ -2892,10 +2892,12 @@ class ContextComponents(EvalDocumentModel, CoreShapeModel):
 #: budget, ``EvalRun.budget_stop_reason`` says which: a designed stop that keeps what the run delivered,
 #: never ``failed``.
 #:
-#: ``exhausted`` is the account-side twin of ``budget_stopped``: the provider account paying for the
-#: run refused a candidate call (out of credit, or the key refused), so every later cell would be
-#: refused the same way. The run stops, keeps what it delivered, and names the account — not the
-#: harness and not the candidate — as the reason it is short.
+#: ``exhausted`` is the account-side twin of ``budget_stopped``: something every later cell would meet
+#: gave out, outside both the harness and the candidate — the provider account paying for the run
+#: refused a call (out of credit, or the key refused), or the provider does not serve the model the
+#: run's candidate names (retired, or a model id it does not know). ``EvalRun.exhausted_because``
+#: says which. The run stops, keeps what it delivered, names the cause as the reason it is short, and
+#: is resumable once the account is funded or the model served.
 EvalRunStatus = Literal["pending", "running", "completed", "failed", "cancelled", "budget_stopped", "exhausted"]
 
 #: How the arms of one comparison shared time and provider capacity, recorded on each arm's run.
@@ -3110,6 +3112,28 @@ FAILED_BECAUSE: Final[tuple[str, ...]] = get_args(KnownFailedBecause)
 #: The type of the stored field: one of :data:`FAILED_BECAUSE`, or, on the stored read of a newer minor's document, a
 #: value that minor added.
 StoredFailedBecause = Annotated[FailedBecause, known_unless_newer_minor("failed-because reason", FAILED_BECAUSE)]
+
+#: Why a run the job manager filed ``exhausted`` stopped (:attr:`EvalRun.exhausted_because`): ``account_refused`` —
+#: the provider refused the account paying for the run (:class:`~threetears.evals.run.AccountExhaustedError`);
+#: ``model_unserved`` — the provider does not serve the model the run's candidate names
+#: (:class:`~threetears.evals.run.ModelUnservedError`). Either is resumable once its cause is cleared.
+#:
+#: An open vocabulary, its values this build knows registered in :data:`EXHAUSTED_BECAUSE`, read as
+#: :data:`FailedBecause` is: a reader that branches on it names a value a newer minor added rather than folding it
+#: into one it knows.
+ExhaustedBecause = str
+
+#: A value of :data:`ExhaustedBecause` this build knows, as a type: what this build writes.
+KnownExhaustedBecause = Literal["account_refused", "model_unserved"]
+
+#: The values of :data:`ExhaustedBecause` this build knows.
+EXHAUSTED_BECAUSE: Final[tuple[str, ...]] = get_args(KnownExhaustedBecause)
+
+#: The type of the stored field: one of :data:`EXHAUSTED_BECAUSE`, or, on the stored read of a newer minor's document,
+#: a value that minor added.
+StoredExhaustedBecause = Annotated[
+    ExhaustedBecause, known_unless_newer_minor("exhausted-because reason", EXHAUSTED_BECAUSE)
+]
 
 
 def scored_dim_ids(rubric_dim_names: list[str], judged_artifact: JudgedArtifact) -> list[str]:
@@ -4495,6 +4519,16 @@ class EvalRun(CoreDocumentModel):
             "sweep goes on past such an arm). Written once, by the job manager, with the ``failed`` status. None on "
             "every other run: one that did not fail, one that failed for any other reason, and one stored before "
             "the field existed."
+        ),
+    )
+    exhausted_because: StoredExhaustedBecause | None = Field(
+        default=None,
+        description=(
+            "Why the run stopped `exhausted`, beside its `error_details` entry: `account_refused` when the provider "
+            "refused the account paying for it, `model_unserved` when the provider does not serve the model its "
+            "candidate names (the entry names the model and quotes the provider). Written once, by the job manager, "
+            "with the `exhausted` status; cleared when the run is taken up again. None on every other run, and on an "
+            "exhausted run stored before the field existed, which only the account could stop."
         ),
     )
     error_details: list[str] = Field(
@@ -6187,6 +6221,16 @@ class EvalResult(CoreDocumentModel):
             "the field existed."
         ),
     )
+    model_unserved: bool = Field(
+        default=False,
+        description=(
+            "Whether the provider answered this cell's candidate call that it does not serve the model the call named "
+            "(retired, or a model id it does not know). The trial is lost to the test setup, never judged, and its "
+            "`infra_error` quotes the provider; cells that keep meeting it end the run exhausted, and a run taken up "
+            "again once the model is served runs this cell again, written over this row. False on a row stored "
+            "before the field existed."
+        ),
+    )
 
     candidate_kind: str | None = Field(
         default=None,
@@ -6805,6 +6849,10 @@ __all__ = [
     "FailedBecause",
     "FAILED_BECAUSE",
     "StoredFailedBecause",
+    "KnownExhaustedBecause",
+    "ExhaustedBecause",
+    "EXHAUSTED_BECAUSE",
+    "StoredExhaustedBecause",
     "KnownReasoningEffort",
     "KnownUsageRole",
     "KnownSimulatorPurpose",

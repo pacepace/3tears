@@ -477,9 +477,13 @@ class VariationLLM(SimulatorLLM, Protocol):
 #: Whose failure a raised completion call was, as the host's describer reads it
 #: (:attr:`ProviderFailure.owner`): the calling ``account`` (refused for every model behind
 #: the key), the ``provider`` (it declined to serve the call at that moment: a rate limit, 429, or
-#: the provider overloaded or unavailable, 529 or 503), or the ``candidate`` (anything else,
-#: charged to whoever made the call).
-FailureOwner = Literal["account", "provider", "candidate"]
+#: the provider overloaded or unavailable, 529 or 503), ``unserved`` (the provider does not serve the
+#: model the call named: retired, unknown, or not a valid model id, so every call naming it gets the
+#: same answer), or the ``candidate`` (anything else, charged to whoever made the call).
+#:
+#: ``unserved`` is an option a host's own describer may return, never one it must: a describer that
+#: never returns it keeps working, and a retired model's calls are then charged as the candidate's.
+FailureOwner = Literal["account", "provider", "unserved", "candidate"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -514,7 +518,10 @@ class ProviderFailure:
     answer, and a caller excludes the cell and stops the run (``CandidateOutput.account_refused``).
     ``"provider"``: the provider declined to serve the call at that moment — a rate limit (429), or
     the provider overloaded or unavailable (529, 503) — which says nothing about the model and would
-    meet any request, so a caller excludes the cell and the run goes on. ``"candidate"``:
+    meet any request, so a caller excludes the cell and the run goes on. ``"unserved"``: the provider
+    does not serve the model the call named (retired, unknown, not a valid model id), so every call
+    naming that model meets the same answer: the cell is lost to the test setup, never judged, and a
+    run whose cells keep meeting it stops (``CandidateOutput.model_unserved``). ``"candidate"``:
     anything else, charged to whoever made the call. It is a field of the port rather than a
     type eval matches on because only the host knows its client's error types; a describer that
     cannot tell says ``"candidate"``, and the failure is then charged as any other. An owner

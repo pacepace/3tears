@@ -309,6 +309,8 @@ class ResultView(Protocol):
     @property
     def metered_calls_refused(self) -> int | None: ...
     @property
+    def model_unserved(self) -> bool: ...
+    @property
     def candidate_kind(self) -> str | None: ...
     @property
     def candidate_instance_id(self) -> str | None: ...
@@ -749,6 +751,7 @@ class ResultReading:
     superseded_spend_usd: float | None
     metered_calls: int | None
     metered_calls_refused: int | None
+    model_unserved: bool
     candidate_kind: str | None
     candidate_instance_id: str | None
     subject_id: str | None
@@ -817,6 +820,7 @@ class ResultReading:
             superseded_spend_usd=result.superseded_spend_usd,
             metered_calls=result.metered_calls,
             metered_calls_refused=result.metered_calls_refused,
+            model_unserved=result.model_unserved,
             candidate_kind=text(result.candidate_kind),
             candidate_instance_id=text(result.candidate_instance_id),
             subject_id=text(result.subject_id),

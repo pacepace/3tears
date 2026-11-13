@@ -464,9 +464,12 @@ _JUDGING_DISCLOSURE: dict[JudgingState, str | None] = {
 #: it did not name), which was not re-bought (:func:`judge_truncated_dims`). Not the rig faulting but the judge's
 #: request running out of room, so a report names the cap it was sent rather than calling the trial faulted.
 #: ``judge_cannot_tell``: the judge answered it could not score a dim, which leaves it out of that dim's measure
-#: and out of the measures needing every dim (pass^k, the composite), and nowhere else. Counted per cause wherever
-#: exclusions are counted, so a shrunken ``n`` always says why.
-ExclusionCause = Literal["infra", "truncated", "judge_cannot_tell"]
+#: and out of the measures needing every dim (pass^k, the composite), and nowhere else. ``model_unserved``: excluded as
+#: ``infra`` is, and for one cause apart: the provider does not serve the model the candidate's call named
+#: (``EvalResult.model_unserved``), so the trial measured the setup's choice of model, never the candidate, and its
+#: remedy is a model the provider serves rather than a repair of the rig. Counted per cause wherever exclusions are
+#: counted, so a shrunken ``n`` always says why.
+ExclusionCause = Literal["infra", "model_unserved", "truncated", "judge_cannot_tell"]
 
 #: The share of one arm's trials a single exclusion cause may take before the arm is flagged as excluded
 #: differentially (the bundle's ``differential_exclusions``): above it, the arms of a comparison are no longer read
@@ -487,7 +490,8 @@ def trial_exclusion(result: ResultView) -> ExclusionCause | None:
     The one classification pass^k, the composite and their counts read. A candidate failure is
     never excluded: it fails, whatever the judge could or could not tell, and whatever cut its judge off. An
     excluded result is ``truncated`` when a judge reply ran out of room on it (:func:`judge_truncated_dims`) and the
-    harness recorded no fault of its own, else ``infra``. pass^k narrows the
+    harness recorded no fault of its own, ``model_unserved`` when the provider does not serve the candidate's model,
+    else ``infra``. pass^k narrows the
     ``judge_cannot_tell`` arm further — a trial a failed check or a sub-bar dim has already decided
     counts as failed there (``scoring._already_failed``) — which needs the bar and so cannot live
     here; the composite keeps the exclusion, since a mean over fewer dims is not the composite.
@@ -499,6 +503,10 @@ def trial_exclusion(result: ResultView) -> ExclusionCause | None:
     """
     outcome = classify_result(result)
     if outcome is ResultOutcome.INFRA_EXCLUDE:
+        # A cause the result records as a flag of its own outranks the generic ``infra``: the flag is the structured
+        # record of why the setup lost the trial, and the remedy the report gives follows it.
+        if result.model_unserved:
+            return "model_unserved"
         # A harness fault outranks a cut-off judge reply: the cell's own evidence is in doubt, whatever the judge did.
         if result.infra_error or not judge_truncated_dims(result):
             return "infra"
