@@ -92,7 +92,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Literal, Protocol, cast, overload
+from typing import TYPE_CHECKING, Literal, Protocol, cast, overload, runtime_checkable
 
 from threetears.observe import contain, get_logger
 
@@ -108,7 +108,7 @@ if TYPE_CHECKING:
 
     from threetears.core.coordination.replay_anchor import ReplayAnchor
 
-__all__ = ["CLOCK_DRIFT_ALLOWANCE", "ReplayGuard"]
+__all__ = ["CLOCK_DRIFT_ALLOWANCE", "ReplayGuard", "ReplayLedger"]
 
 log = get_logger(__name__)
 
@@ -135,6 +135,38 @@ class _ReconnectHooking(Protocol):
         :return: None
         :rtype: None
         """
+        ...
+
+
+@runtime_checkable
+class ReplayLedger(Protocol):
+    """what a caller uses of a :class:`ReplayGuard`: a parameter typed by it takes the guard or a double of it
+    (:class:`~threetears.core.testing.replay_guard.FakeReplayGuard`)."""
+
+    @property
+    def bucket_name(self) -> str:
+        """the KV bucket the ledger keeps its ids in."""
+        ...
+
+    @property
+    def verifier_future_tolerance(self) -> timedelta:
+        """how far in the future an id's issue time may be and still be recorded."""
+        ...
+
+    def require_covers(self, future_tolerance: timedelta) -> None:
+        """refuse a verifier whose future tolerance the ledger was not sized for."""
+        ...
+
+    async def refusing_until(self) -> datetime | None:
+        """until when every id is refused (a ledger that lost its memory), or None."""
+        ...
+
+    async def bind(self) -> None:
+        """bind the ledger's bucket before the first record."""
+        ...
+
+    async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
+        """record ``nonce`` once: True the first time, False for a replay."""
         ...
 
 

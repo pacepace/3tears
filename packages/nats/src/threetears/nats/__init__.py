@@ -225,6 +225,7 @@ from threetears.nats.capabilities import (
     RawReplier,
     RawRequester,
     Subscriber,
+    SubscriptionHandle,
     TypedSubscriber,
 )
 from threetears.nats.subjects import (
@@ -445,6 +446,7 @@ __all__ = [
     "RawReplier",
     "RawRequester",
     "Subscriber",
+    "SubscriptionHandle",
     "TypedSubscriber",
     "TokenCallback",
     "round_trip",

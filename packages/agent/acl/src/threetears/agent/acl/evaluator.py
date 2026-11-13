@@ -98,7 +98,7 @@ be calling, but never to same side via wrong member type.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Iterable, Literal
@@ -1081,8 +1081,8 @@ def _walk_assignments(
     return frozenset(actions), tuple(trails)
 
 
-def _coerce_groups(raw: dict[UUID, object]) -> dict[UUID, Group]:
-    """coerce a loader-provided ``dict[UUID, object]`` to ``dict[UUID, Group]``.
+def _coerce_groups(raw: Mapping[UUID, object]) -> dict[UUID, Group]:
+    """coerce a loader-provided ``Mapping[UUID, object]`` to ``dict[UUID, Group]``.
 
     accepts either real :class:`Group` instances or duck-typed objects
     with same three attributes. loader Protocol returns
@@ -1095,7 +1095,7 @@ def _coerce_groups(raw: dict[UUID, object]) -> dict[UUID, Group]:
     treats their absence as "skip this assignment."
 
     :param raw: loader-provided mapping
-    :ptype raw: dict[UUID, object]
+    :ptype raw: Mapping[UUID, object]
     :return: normalized mapping keyed by same group ids
     :rtype: dict[UUID, Group]
     """

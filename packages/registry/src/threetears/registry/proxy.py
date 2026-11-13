@@ -80,7 +80,7 @@ _RESULT_DELIVERY_ATTEMPTS = 3
 _RESULT_DELIVERY_RETRY_SECONDS = 2.0
 
 if TYPE_CHECKING:
-    from threetears.core.coordination.replay_guard import ReplayGuard
+    from threetears.core.coordination.replay_guard import ReplayLedger
     from threetears.core.security import DelegatedTokenSigner, ProxyAssertionSigner
     from threetears.nats import NatsClient, Subscription
 
@@ -302,7 +302,7 @@ class CallProxy:
         self,
         catalog: ToolCatalog,
         authorizer: AgentToolAuthorizer,
-        pop_replay_guard: "ReplayGuard",
+        pop_replay_guard: "ReplayLedger",
         limit_guard: LimitGuard,
         namespace: str = "3tears",
         timeout: float | None = None,
@@ -336,7 +336,7 @@ class CallProxy:
             sized for a verifier future tolerance of at least
             :data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE`, which is how far ahead
             of its clock the proxy accepts a pop ``iat``
-        :ptype pop_replay_guard: ReplayGuard
+        :ptype pop_replay_guard: ReplayLedger
         :param limit_guard: pre-call spend gate; REQUIRED. every tool dispatch is
             gated through the limit guard after the pop check and before catalog
             routing -- no silent-bypass path, same discipline as ``authorizer``. the

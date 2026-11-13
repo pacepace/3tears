@@ -25,7 +25,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
-from typing import Any
+from typing import Any, Literal
 
 from threetears.interfaces.keyed.filters import (
     AnyOf,
@@ -81,6 +81,12 @@ class Sort:
         value; an index on the same expression answers the page (``CREATE INDEX ... (lower(name), id)``). None sorts
         by the column itself
     :ptype expression: str | None
+    :param nulls: where its NULLs fall, ``"first"`` or ``"last"``, in either direction; None leaves it to
+        ``nullable`` (a NULL sorts as the largest value: last ascending, first descending) or, without it, to the
+        engine. Only an ordering takes another place (:func:`threetears.core.keyed.ordered`, ``read_step``'s
+        ``order``): a keyset page steps past NULLs as the largest value, so :func:`page_statement` refuses a sort
+        whose ``nulls`` says otherwise
+    :ptype nulls: Literal["first", "last"] | None
     """
 
     column: str
@@ -88,6 +94,31 @@ class Sort:
     descending: bool = False
     nullable: bool = False
     expression: str | None = None
+    nulls: Literal["first", "last"] | None = None
+
+    def __post_init__(self) -> None:
+        """refuse a null order that is neither ``"first"`` nor ``"last"``.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: for such a null order
+        """
+        if self.nulls not in (None, "first", "last"):
+            raise ValueError(f"a sort's NULLs fall first or last, not {self.nulls!r}")
+
+    @property
+    def nulls_term(self) -> str:
+        """where its NULLs fall as an ``ORDER BY`` term ends: ``nulls`` when set; with ``nullable``, as the largest
+        value; nothing otherwise (the engine's own order).
+
+        :return: `` NULLS FIRST``, `` NULLS LAST`` or the empty string
+        :rtype: str
+        """
+        if self.nulls is not None:
+            return f" NULLS {self.nulls.upper()}"
+        if self.nullable:
+            return " NULLS FIRST" if self.descending else " NULLS LAST"
+        return ""
 
     @property
     def sorted_by(self) -> str:
@@ -324,8 +355,7 @@ def order_by_terms(order: Sequence[Sort]) -> str:
     parts = []
     for sort in order:
         direction = "DESC" if sort.descending else "ASC"
-        nulls = (" NULLS FIRST" if sort.descending else " NULLS LAST") if sort.nullable else ""
-        parts.append(f"{sort.sorted_by} {direction}{nulls}")
+        parts.append(f"{sort.sorted_by} {direction}{sort.nulls_term}")
     return ", ".join(parts)
 
 
@@ -439,7 +469,15 @@ def page_statement(
     :ptype chain_legs: bool
     :return: the statement, and its parameters
     :rtype: tuple[str, list[Any]]
+    :raises ValueError: for a sort whose ``nulls`` puts its NULLs anywhere but where a page steps past them (as the
+        largest value: last ascending, first descending)
     """
+    misplaced = [sort.column for sort in order if sort.nulls not in (None, "first" if sort.descending else "last")]
+    if misplaced:
+        raise ValueError(
+            f"a keyset page of {table} steps past NULLs as the largest value; {misplaced} place them otherwise "
+            "(an ordering of a step takes that: keyed.ordered)"
+        )
     conditions, params = by_conditions(by, alias="t")
     lead = _pinned(by, order)
     for fragment in where:

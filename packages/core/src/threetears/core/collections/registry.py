@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
     # annotation-only. `Subjects` above is a genuine runtime use, but it lives
     # in a nats-py-free submodule, so importing it eagerly costs nothing.
-    from threetears.nats import Publisher, Subscription, TypedSubscriber
+    from threetears.nats import Publisher, SubscriptionHandle, TypedSubscriber
 
 __all__ = [
     "CacheInvalidationMessage",
@@ -507,7 +507,7 @@ class CollectionRegistry:
         # route the unsubscribe back through it, keeping the client's own
         # subscription bookkeeping correct.
         self._nats_client: TypedSubscriber | None = None
-        self._invalidation_subscription: Subscription | None = None
+        self._invalidation_subscription: SubscriptionHandle | None = None
 
     def configure(
         self,

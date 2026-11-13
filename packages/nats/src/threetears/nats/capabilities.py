@@ -9,12 +9,14 @@ its own that inherits several -- and a double implementing those methods is a va
 - :class:`RawRequester` -- a request whose reply comes back as bytes (``request_raw``)
 - :class:`Subscriber` -- a core subscription and its end (``subscribe``, ``unsubscribe``)
 - :class:`TypedSubscriber` -- a subscription delivering a model, and its end (``subscribe_typed``, ``unsubscribe``)
+- :class:`SubscriptionHandle` -- what ``subscribe_typed`` hands back, given back to ``unsubscribe``
 - :class:`Publisher` -- a core publish of a model (``publish``)
 - :class:`RawReplier` -- a reply of raw bytes to a request's reply subject (``publish_raw_reply``)
 - :class:`JetStreamPublisher` -- a JetStream publish, acknowledged (``jetstream_publish``)
 - :class:`DurableSubscriber` -- a durable JetStream push consumer (``jetstream_subscribe_durable``)
 - :class:`PullSubscriber` -- a durable JetStream pull consumer (``jetstream_pull_subscribe``)
-- :class:`KvBucketOpener` -- a KV bucket by name (``kv_bucket``)
+- :class:`KvBucketOpener` -- a KV bucket by name (``kv_bucket``), answered as the bucket slice
+  :class:`~threetears.nats.kv.KvBucketLike`
 - :class:`KvPublisher` -- both of :class:`KvBucketOpener` and :class:`Publisher`: a collection's client
 
 Importing this module loads no NATS client: the types it names are read only by a type checker.
@@ -30,7 +32,7 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from threetears.nats.client import JetStreamPullConsumer, JetStreamPushConsumer, Subscription
-    from threetears.nats.kv import NatsKvBucket
+    from threetears.nats.kv import KvBucketLike
     from threetears.nats.subjects import Subject
     from threetears.nats.transport import RawMessageCallback
 
@@ -44,6 +46,7 @@ __all__ = [
     "RawReplier",
     "RawRequester",
     "Subscriber",
+    "SubscriptionHandle",
     "TypedSubscriber",
 ]
 
@@ -76,9 +79,23 @@ class Subscriber(Protocol):
 
 
 @runtime_checkable
+class SubscriptionHandle(Protocol):
+    """what a typed subscription hands back: the subject it holds and whether it has ended. A caller keeps it only to
+    give it back to ``unsubscribe``; :class:`~threetears.nats.client.Subscription` is one, and so is a test double's
+    handle."""
+
+    @property
+    def subject(self) -> Subject: ...
+
+    @property
+    def is_closed(self) -> bool: ...
+
+
+@runtime_checkable
 class TypedSubscriber(Protocol):
     """subscribes a callback taking a model to a subject, and ends a subscription
-    (:meth:`NatsClient.subscribe_typed`, :meth:`NatsClient.unsubscribe`)."""
+    (:meth:`NatsClient.subscribe_typed`, :meth:`NatsClient.unsubscribe`). The handle is the slice
+    :class:`SubscriptionHandle`, so a double's own handle type-checks."""
 
     async def subscribe_typed(
         self,
@@ -89,9 +106,9 @@ class TypedSubscriber(Protocol):
         queue: str | None = None,
         max_in_flight: int | None = None,
         deadletter_on_failure: bool = True,
-    ) -> Subscription: ...
+    ) -> SubscriptionHandle: ...
 
-    async def unsubscribe(self, sub: Subscription) -> None: ...
+    async def unsubscribe(self, sub: SubscriptionHandle) -> None: ...
 
 
 @runtime_checkable
@@ -179,7 +196,7 @@ class KvBucketOpener(Protocol):
         history: int = 1,
         direct: bool | None = None,
         replicas: int | None = None,
-    ) -> NatsKvBucket: ...
+    ) -> KvBucketLike: ...
 
 
 @runtime_checkable

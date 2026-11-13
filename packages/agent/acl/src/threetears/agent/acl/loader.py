@@ -24,6 +24,7 @@ distinct phases for the same reason.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
@@ -153,7 +154,7 @@ class GrantLoader(Protocol):
         :rtype: dict[UUID, Role]
         """
 
-    async def load_groups(self, group_ids: tuple[UUID, ...]) -> dict[UUID, object]:
+    async def load_groups(self, group_ids: tuple[UUID, ...]) -> Mapping[UUID, object]:
         """resolve a tuple of group ids to their :class:`Group` rows.
 
         same shape as :meth:`load_roles`. used by trail-mode
@@ -169,7 +170,7 @@ class GrantLoader(Protocol):
         :ptype group_ids: tuple[UUID, ...]
         :return: mapping group_id -> object exposing the
             :class:`Group` shape
-        :rtype: dict[UUID, object]
+        :rtype: Mapping[UUID, object]
         """
 
 

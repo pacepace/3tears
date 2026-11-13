@@ -4270,6 +4270,43 @@ def test_a_join_an_any_a_limited_read_a_table_made_and_a_bounded_difference_are_
     assert any(f == "overwrites_the_table" and s.startswith("whole-delete") for f, s in found), found
 
 
+_RANKED_STEPS = """
+    from threetears.core import keyed
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import InlineDuckDB, run_inline
+
+    RESULTS = TableSchema(name="results", primary_key=("state", "run_id"), columns=[])
+    _ROWS = keyed.change_relation("_rows")
+    _NATURAL = keyed.Ranked("county", "length(v), v")
+
+
+    def ranks_the_change(conn):
+        db = InlineDuckDB(conn)
+        first = [keyed.Sort("votes", descending=True, nulls="last")]
+        rows = run_inline(keyed.read_step(db, keyed.ranked_order(_ROWS, [_NATURAL], first=first, limit=5)))
+        return rows, run_inline(keyed.read_step(db, keyed.value_ranks(_ROWS, "county", "v")))
+
+
+    def ranks_the_table(conn):
+        return run_inline(keyed.read_step(InlineDuckDB(conn), keyed.ranked_order("results", [_NATURAL])))
+
+
+    def ranks_the_table_s_values(conn):
+        return run_inline(keyed.read_step(InlineDuckDB(conn), keyed.value_ranks("results", "county", "v")))
+"""
+
+
+def test_a_ranked_order_and_its_value_ranks_are_judged_by_the_relation_they_order(tmp_path: Path) -> None:
+    """Flips if ``ranked_order`` or ``value_ranks`` over a change relation is flagged, or one over a data table (read
+    whole to order it) passes."""
+    config = _config(tmp_path, {"ranked.py": _RANKED_STEPS})
+    functions = {function for function, _ in _symbols(config)}
+    assert "ranks_the_change" not in functions, functions
+    assert {"ranks_the_table", "ranks_the_table_s_values"} <= functions, functions
+    helped = use_the_helper_findings(config)
+    assert not [line for line in helped if "ranks_the_change" in line], helped
+
+
 #: one statement assembled across a class's methods, as ``aibots_reports.tableau.evaluate._PanelQuery`` and
 #: ``aibots_reports.comparison._StateQuery`` write it: ``run`` defines ``stage0`` and embeds ``_fixed``'s ``fixed``
 #: CTE, which reads ``stage0``; ``sql`` embeds ``_race`` (defining ``o_<race>``) and ``model_cte`` (reading it)

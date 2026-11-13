@@ -108,7 +108,8 @@ if TYPE_CHECKING:
     # annotation-only: importing these eagerly would load the NATS client into
     # every L1-only consumer of this module. the `isinstance` below tests the
     # local `_NatsClientFromRegistry` sentinel, not `NatsClient`.
-    from threetears.nats import KvPublisher, NatsKvBucket
+    from threetears.nats import KvPublisher
+    from threetears.nats.kv import KvBucketLike
 
 __all__ = [
     "NATS_CLIENT_FROM_REGISTRY",
@@ -956,12 +957,12 @@ class BaseCollection(ABC, Generic[EntityT]):
             self._announce_no_l2_once()
         else:
             self._nats_client = nats_client
-        self._kv: NatsKvBucket | None = None
+        self._kv: KvBucketLike | None = None
         # the bucket's creation time as last read from the server, with the handle it was read on:
         # read before every ordered swap, where a stale value can only be too LOW (a recreated
         # stream is younger) -- which the won swap's fresh re-read corrects and refreshes, and the
         # regressed-epoch refusal re-reads before raising. Saves one STREAM.INFO per swap.
-        self._l2_epoch_read: tuple[NatsKvBucket, datetime] | None = None
+        self._l2_epoch_read: tuple[KvBucketLike, datetime] | None = None
         self._write_buffer = write_buffer
         self._flush_strategy = FlushStrategy(config.collection_flush)
         self._flush_tables = frozenset(t.strip() for t in config.collection_flush_tables.split(",") if t.strip())
@@ -2905,7 +2906,7 @@ class BaseCollection(ABC, Generic[EntityT]):
 
     L2_BUCKET_SUFFIX = "collections"
 
-    async def _ensure_kv(self) -> NatsKvBucket | None:
+    async def _ensure_kv(self) -> KvBucketLike | None:
         """lazily resolve and cache the JetStream KV bucket for L2.
 
         the new wrapper KV API lives on :class:`NatsKvBucket`, not on
@@ -2923,7 +2924,7 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         :return: ready bucket handle, or ``None`` when no NATS client
             was supplied
-        :rtype: NatsKvBucket | None
+        :rtype: KvBucketLike | None
         :raises KvError: when bucket binding fails (does NOT swallow
             -- API drift / config errors must surface, not warn)
         """
@@ -4323,11 +4324,11 @@ class BaseCollection(ABC, Generic[EntityT]):
             )
         return source
 
-    async def _l2_first_bucket(self) -> NatsKvBucket:
+    async def _l2_first_bucket(self) -> KvBucketLike:
         """the L2 bucket an L2-first write commits in.
 
         :return: the bucket
-        :rtype: NatsKvBucket
+        :rtype: KvBucketLike
         :raises KvError: when it cannot be opened
         """
         kv = await self._ensure_kv()
@@ -4335,12 +4336,12 @@ class BaseCollection(ABC, Generic[EntityT]):
         return kv
 
     async def _l2_first_read(
-        self, kv: NatsKvBucket, entity_id: Any, original_timestamp: datetime | None
+        self, kv: KvBucketLike, entity_id: Any, original_timestamp: datetime | None
     ) -> tuple[bytes | None, int]:
         """read the key a write is about to commit, checking the optimistic-lock fence against it.
 
         :param kv: the bucket
-        :ptype kv: NatsKvBucket
+        :ptype kv: KvBucketLike
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
         :param original_timestamp: the ``date_updated`` the writer read, or ``None`` for no fence
@@ -4357,11 +4358,11 @@ class BaseCollection(ABC, Generic[EntityT]):
                 raise ConcurrentModificationError(self.table_name, entity_id, original_timestamp)
         return prior, revision
 
-    async def _l2_first_apply(self, kv: NatsKvBucket, entity_id: Any, value: bytes | None, revision: int) -> int | None:
+    async def _l2_first_apply(self, kv: KvBucketLike, entity_id: Any, value: bytes | None, revision: int) -> int | None:
         """apply a committed value (or, with none, a delete) to the key, only while it is at ``revision``.
 
         :param kv: the bucket
-        :ptype kv: NatsKvBucket
+        :ptype kv: KvBucketLike
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
         :param value: the row to put, or ``None`` to delete the key
@@ -4423,7 +4424,7 @@ class BaseCollection(ABC, Generic[EntityT]):
     async def _withdraw_committed_l2_first(
         self,
         epochs: L2FirstEpochs,
-        kv: NatsKvBucket,
+        kv: KvBucketLike,
         entity_id: Any,
         revision: int,
         prior: bytes | None,
@@ -4439,7 +4440,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         :param epochs: the epoch log
         :ptype epochs: L2FirstEpochs
         :param kv: the bucket
-        :ptype kv: NatsKvBucket
+        :ptype kv: KvBucketLike
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
         :param revision: the revision the write left the key at
@@ -5659,11 +5660,11 @@ class BaseCollection(ABC, Generic[EntityT]):
                 f"(threetears.core.collections.l2_order.l2_order_migration_statements(), then backfill_l2_order())"
             )
 
-    async def _l2_epoch(self, kv: NatsKvBucket) -> datetime:
+    async def _l2_epoch(self, kv: KvBucketLike) -> datetime:
         """the bucket's creation time as this collection last read it on ``kv``, read fresh when it has none.
 
         :param kv: the bucket the swap runs on
-        :ptype kv: NatsKvBucket
+        :ptype kv: KvBucketLike
         :return: the creation time; never later than the stream's, since a recreated stream is younger
         :rtype: datetime
         :raises KvError: when the bucket cannot be read
@@ -5672,11 +5673,11 @@ class BaseCollection(ABC, Generic[EntityT]):
         epoch = held[1] if held is not None and held[0] is kv else await self._read_l2_epoch(kv)
         return epoch
 
-    async def _read_l2_epoch(self, kv: NatsKvBucket) -> datetime:
+    async def _read_l2_epoch(self, kv: KvBucketLike) -> datetime:
         """the bucket's creation time, read from the server and remembered for the next swap.
 
         :param kv: the bucket
-        :ptype kv: NatsKvBucket
+        :ptype kv: KvBucketLike
         :return: the creation time
         :rtype: datetime
         :raises KvError: when the bucket cannot be read
@@ -5686,7 +5687,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         return epoch
 
     async def _refuse_regressed_epoch(
-        self, kv: NatsKvBucket, entity_id: Any, stored: dict[str, Any], epoch: datetime
+        self, kv: KvBucketLike, entity_id: Any, stored: dict[str, Any], epoch: datetime
     ) -> datetime:
         """refuse a swap whose every possible order is older than the one L3 already holds.
 
@@ -5695,7 +5696,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         order is refused.
 
         :param kv: the bucket the swap runs on
-        :ptype kv: NatsKvBucket
+        :ptype kv: KvBucketLike
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
         :param stored: the row L3 holds
