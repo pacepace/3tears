@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
+from threetears.core.declared import whole_read
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
@@ -156,9 +157,16 @@ async def _duplicate_keys(conn: Any, index: UnusableIndex) -> list[tuple[tuple[A
     # NULLs never collide in a unique index, so a key holding one is no duplicate
     not_null = " AND ".join(f"({term}) IS NOT NULL" for term in index.key_terms)
     where = f"{where} AND {not_null}" if where else f" WHERE {not_null}"
-    rows = await conn.fetch(
-        f"SELECT {named}, count(*) AS n FROM {quote_identifier(index.schema)}.{quote_identifier(index.table)}"  # noqa: S608
-        f"{where} GROUP BY {terms} HAVING count(*) > 1 LIMIT {_DUPLICATES_NAMED}"
+    rows = await whole_read(
+        conn.fetch(
+            f"SELECT {named}, count(*) AS n FROM {quote_identifier(index.schema)}.{quote_identifier(index.table)}"  # noqa: S608
+            f"{where} GROUP BY {terms} HAVING count(*) > 1 LIMIT {_DUPLICATES_NAMED}"
+        ),
+        kind="schema_change",
+        reason="a unique index a failed build left unusable is built again only once its table holds no duplicate key",
+        ruling="Pace 2026-11-12: a schema change may read whole; coordinator 2026-11-12: schema_change admits unknown-schema",
+        proof="packages/core/tests/integration/test_index_health_live.py::test_the_duplicate_key_read_is_reached_only_for_an_unusable_unique_index",
+        speed="packages/core/tests/integration/test_index_health_live.py::test_rebuild_speed_at_real_size",
     )
     return [(tuple(row[f"k{i}"] for i in range(len(index.key_terms))), int(row["n"])) for row in rows]
 
@@ -215,7 +223,14 @@ async def rebuild_unusable_indexes(
                 else index.unique
             )
             if unique:
-                duplicates = await _duplicate_keys(conn, index)
+                duplicates = await whole_read(
+                    _duplicate_keys(conn, index),
+                    kind="schema_change",
+                    reason="an unusable unique index is checked for duplicate keys before any index is dropped and built",
+                    ruling="Pace 2026-11-12: a schema change may read whole; coordinator 2026-11-12: schema_change admits unknown-schema",
+                    proof="packages/core/tests/integration/test_index_health_live.py::test_the_duplicate_key_read_is_reached_only_for_an_unusable_unique_index",
+                    speed="packages/core/tests/integration/test_index_health_live.py::test_rebuild_speed_at_real_size",
+                )
                 if duplicates:
                     raise IndexDuplicateKeysError(index, duplicates)
         log.warning(

@@ -139,6 +139,7 @@ from threetears.core.ddl.change_notes import (
 )
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
 from threetears.core.ddl.index_health import rebuild_unusable_indexes
+from threetears.core.declared import whole_read
 from threetears.core.ddl.errors import DdlLockTimeoutError
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.exceptions import GenerationUnavailableError
@@ -227,7 +228,14 @@ async def _install_change_notes(
         for statement in statements:
             await conn.execute(statement)
         # built again from the ring's own statement: a failed build may have left another definition under its name
-        await rebuild_unusable_indexes(conn, [schema], names=list(declared), policy=policy, definitions=declared)
+        await whole_read(
+            rebuild_unusable_indexes(conn, [schema], names=list(declared), policy=policy, definitions=declared),
+            kind="schema_change",
+            reason="the ring's own indexes a failed build left unusable are built again; none is unique, so no row is read",
+            ruling="Pace 2026-11-12: a schema change may read whole; coordinator 2026-11-12: schema_change admits unknown-schema",
+            proof="packages/core/tests/unit/ddl/test_change_notes_ddl.py::test_install_change_notes_rebuilds_no_unique_index",
+            speed="packages/core/tests/integration/test_index_health_live.py::test_rebuild_speed_at_real_size",
+        )
 
 
 def _status_count(status: str) -> int:

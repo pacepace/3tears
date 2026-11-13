@@ -46,6 +46,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from threetears.core.collections.schema_backed import VECTOR_TYPE, IndexDef, TableSchema
 from threetears.core.data.store import DataStore
+from threetears.core.declared import whole_read
 from threetears.observe import get_logger
 
 __all__ = [
@@ -437,7 +438,14 @@ async def _resize_on_one_session(
     schema = str(rows[0]["schema_name"])
     cleared = 0
     for col in columns:
-        cleared += await _resize_column(store, schema, col, embedding_dim)
+        cleared += await whole_read(
+            _resize_column(store, schema, col, embedding_dim),
+            kind="schema_change",
+            reason="a configured embedding width other than the stored one: the column is rebuilt and its held rows counted",
+            ruling="Pace 2026-11-12: a schema change may read whole; coordinator 2026-11-12: schema_change admits unknown-schema",
+            proof="packages/core/tests/unit/data/test_embedding_width.py::test_resize_column_counts_the_held_embeddings_only_when_the_stored_width_differs",
+            speed="packages/core/tests/integration/test_embedding_width_resize_live.py::test_resize_column_speed_at_real_size",
+        )
     return cleared
 
 
@@ -460,7 +468,14 @@ async def _resize_column(store: EmbeddingWidthStore, schema: str, col: Embedding
     stored = await stored_embedding_dim(store, col.table, col.column)
     if stored != embedding_dim:
         indexes = await store.query(_COLUMN_INDEXES_SQL, col.table, col.column)
-        counted = await store.query(f"SELECT count(*) AS held FROM {table} WHERE {_quote(col.column)} IS NOT NULL")
+        counted = await whole_read(
+            store.query(f"SELECT count(*) AS held FROM {table} WHERE {_quote(col.column)} IS NOT NULL"),
+            kind="schema_change",
+            reason="the column changes width, which clears every embedding it holds: the count is what the warning says",
+            ruling="Pace 2026-11-12: a schema change may read whole; coordinator 2026-11-12: schema_change admits unknown-schema",
+            proof="packages/core/tests/unit/data/test_embedding_width.py::test_resize_column_counts_the_held_embeddings_only_when_the_stored_width_differs",
+            speed="packages/core/tests/integration/test_embedding_width_resize_live.py::test_resize_column_speed_at_real_size",
+        )
         held = int(counted[0]["held"])
         log.warning(
             "resizing an embedding column clears every embedding it holds",

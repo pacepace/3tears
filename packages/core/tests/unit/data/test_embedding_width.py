@@ -369,6 +369,7 @@ class _FakeCatalogueStore:
         :ptype reloptions: list[str] | None
         """
         self.executed: list[str] = []
+        self.queried: list[str] = []
         self._definition = index_definition
         self._reloptions = reloptions
         self._width = 4
@@ -398,6 +399,7 @@ class _FakeCatalogueStore:
         :return: the rows
         :rtype: list[dict[str, Any]]
         """
+        self.queried.append(sql)
         rows: list[dict[str, Any]]
         if "current_schema() AS schema_name" in sql:
             rows = [{"schema_name": "zz"}]
@@ -456,3 +458,19 @@ async def test_a_declared_desc_column_is_recreated_descending() -> None:
     assert store.executed[-1] == (
         'CREATE INDEX IF NOT EXISTS "ix_notes_recent" ON "zz"."notes" ("embedding", "date_created" DESC)'
     )
+
+
+async def test_resize_column_counts_the_held_embeddings_only_when_the_stored_width_differs() -> None:
+    """the proof of ``_resize_column``'s declared ``schema_change`` read (and its call in ``_resize_on_one_session``):
+    the whole-column count runs only when the configured width differs from the stored one, once per resized column;
+    a resize to the width already stored reads no row of the table."""
+    same = _FakeCatalogueStore(_PG_INDEXDEF, None)
+    assert await resize_embedding_columns(same, embedding_columns(_SCHEMA), 4) == 0
+    assert not [sql for sql in same.queried if "count(*)" in sql]
+    assert not [sql for sql in same.executed if sql.startswith("ALTER TABLE")]
+
+    other = _FakeCatalogueStore(_PG_INDEXDEF, None)
+    await resize_embedding_columns(other, embedding_columns(_SCHEMA), 6)
+    counts = [sql for sql in other.queried if "count(*)" in sql]
+    assert counts == ['SELECT count(*) AS held FROM "zz"."notes" WHERE "embedding" IS NOT NULL']
+    assert [sql for sql in other.executed if sql.startswith("ALTER TABLE")]
