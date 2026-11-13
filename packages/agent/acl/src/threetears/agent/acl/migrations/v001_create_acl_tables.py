@@ -123,7 +123,8 @@ ACL_TABLES_DDL: tuple[str, ...] = (
         CONSTRAINT roles_pkey PRIMARY KEY (role_id)
     )
     """,
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::RoleCollection.find_platform_by_name\n"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::RoleCollection.find_platform_by_name;"
+    " packages/agent/acl/src/threetears/agent/acl/builtin_roles.py::ensure_platform_builtin_tool_user_role\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_roles_platform_name\n"
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_roles_platform_name ON roles (name) WHERE customer_id IS NULL",
     "-- purpose: constraint\n"
