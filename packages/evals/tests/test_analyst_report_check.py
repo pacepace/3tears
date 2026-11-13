@@ -468,8 +468,9 @@ def _served(tool: MountedTool) -> list[str]:
 #: The evals tool moved again when campaign_create's and campaign_update's aspects description gained an axis's
 #: reader_name (what every page calls the lever; omitted, the name the host declares for it).
 #: The evals tool's help names JobsStarted's notices on every action that starts a job: what admitting the work found
-#: and did not refuse it for, such as a served-model check that could not be made.
-_EVALS_BYTES = "92a2fc53df5aab7a356215f229c098a2b50fd1cac21efa2aa50a312cc1256e59"
+#: and did not refuse it for, such as a served-model check that could not be made. EvalSummary's fields include
+#: n_not_judged: the cases a run's cost cap left unjudged.
+_EVALS_BYTES = "52d33c382d5c250d8c75639a94e246194378fb3d1c305c384024f09e1f8bb681"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).
