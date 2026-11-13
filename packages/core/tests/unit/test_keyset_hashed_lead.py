@@ -7,9 +7,14 @@ what the rail's proxy is asked to tell (``hub_capabilities``: an older hub names
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
+import duckdb
+import pytest
+
 from threetears.core.backends.dialect import l3_on_yugabyte
+from threetears.core.keyed import ThreadedDuckDB
 from threetears.core.keyset import read_keyset_pages
 
 
@@ -99,6 +104,86 @@ class TestWhichReadsWalkTheLead:
         )
 
         assert read.rows == rows[rows.index({"state": "TX", "geo": 3}) + 1 :]
+
+
+class _Recorded:
+    """an in-process DuckDB L3 keeping each statement it was sent."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+        self._inner = ThreadedDuckDB(conn)
+        self.statements: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        self.statements.append((sql, params))
+        return await self._inner.fetch(sql, *params)
+
+
+@pytest.fixture
+def races() -> Iterator[duckdb.DuckDBPyConnection]:
+    """a table keyed (race, geo): 12 races of 7 rows each."""
+    conn = duckdb.connect()
+    conn.execute("CREATE TABLE t (race VARCHAR, geo BIGINT, votes BIGINT, PRIMARY KEY (race, geo))")
+    conn.execute("INSERT INTO t SELECT 'r' || lpad(r::VARCHAR, 2, '0'), g, r * g FROM range(12) a(r), range(7) b(g)")
+    yield conn
+    conn.close()
+
+
+def _pinned(conn: duckdb.DuckDBPyConnection, values: list[str]) -> list[tuple[Any, ...]]:
+    return [
+        tuple(row)
+        for row in conn.execute("SELECT * FROM t WHERE list_contains(?, race) ORDER BY race, geo", [values]).fetchall()
+    ]
+
+
+class TestALeadASetFilterPins:
+    """hub #53: ``where_any`` naming the key's lead walks the filter's values, never paging the whole set by the
+    cursor (which re-reads and sorts every row of the set on every page)."""
+
+    _VALUES = ["r09", "r02", None, "r02", "r05", "r77"]
+
+    async def test_the_rows_come_in_key_order_each_page_pinning_its_own_values(
+        self, races: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a page past a cursor reads with the whole set (``= ANY`` of every value), or the walk loses,
+        repeats or reorders a row, or reads a NULL or absent value's rows."""
+        l3 = _Recorded(races)
+
+        read = await read_keyset_pages(
+            l3, "SELECT * FROM t", ("race", "geo"), where_any={"race": ("text[]", self._VALUES)}, page_size=5
+        )
+
+        assert [tuple(row.values()) for row in read.rows] == _pinned(races, ["r09", "r02", "r05"])
+        first, *pages = l3.statements
+        assert "unnest($1::text[])" in first[0] and " FROM t" not in first[0], first
+        assert pages, l3.statements
+        whole = [str(params[0]) for _, params in pages if params and params[0] == self._VALUES]
+        assert not whole, f"a page read the whole set: {whole}"
+        assert all('"race" = $1' in sql or '"race" = ANY($1::text[])' in sql for sql, _ in pages), pages
+
+    async def test_a_pinned_read_past_a_saved_key_reads_exactly_the_rows_after_it(
+        self, races: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a set-pinned read resumed past a key inside a value skips or repeats a row."""
+        ordered = _pinned(races, ["r09", "r02", "r05"])
+
+        read = await read_keyset_pages(
+            _Recorded(races),
+            "SELECT * FROM t",
+            ("race", "geo"),
+            where_any={"race": ("text[]", self._VALUES)},
+            page_size=5,
+            after=ordered[10][:2],
+        )
+
+        assert [tuple(row.values()) for row in read.rows] == ordered[11:]
+
+    async def test_a_set_of_no_values_is_one_empty_page(self, races: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a filter pinning the lead to nothing reads a row, or hands over no page."""
+        read = await read_keyset_pages(
+            _Recorded(races), "SELECT * FROM t", ("race", "geo"), where_any={"race": ("text[]", [])}, page_size=5
+        )
+
+        assert read.rows == []
 
 
 class TestWhichDatabaseAnL3Is:

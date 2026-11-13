@@ -34,8 +34,12 @@ bucket heads (one read, a row a value), in the database's order; then each value
 of the key past the cursor, which seeks inside the bucket (1,000 rows scanned for a page of 1,000). Values whose
 rows are fewer than a page go together, ``lead = ANY($1)``, as many as about fill one (:func:`_next_group`), so a
 lead of many small values costs a statement a page, not one a value. The rows come in the key's order, as the
-cursor's form reads them. Postgres, and a lead a filter pins, page by the cursor as above: there ``DISTINCT``
-reads the whole table.
+cursor's form reads them. Postgres pages by the cursor as above: there ``DISTINCT`` reads the whole table.
+
+**A lead a set filter pins** (``where_any`` naming the key's first column), on either database: the filter's values
+are walked the same way, put in the database's order by one statement over the values alone (``unnest``, no table
+read). Paged by the cursor instead, ``lead = ANY(values)`` read every row of every value on every page and sorted
+them across values (YugabyteDB, 33,528 rows in three pages: 33,528 scanned a page, two sorts on disk).
 
 **How many rows a page asks for.** A transport that answers pages (``fetch_page`` /
 ``fetch_arrow_page``, :class:`~threetears.core.backends.protocol.L3Page`) says in each reply the bytes its
@@ -50,7 +54,7 @@ taken as a short page, and the read steps past its last row.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Final
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
@@ -241,6 +245,11 @@ async def keyset_pages(
     """
     shape = _ReadShape(select_from, key, where, where_any, page_size, quote, mark, conditions)
     reads = _DictReads(l3, page_size)
+    pinned = _pinned_lead(shape)
+    if pinned is not None:
+        async for page in _lead_walk(reads, shape, pinned[0], after, given=pinned[1]):
+            yield page
+        return
     walked = await _hashed_lead(l3, shape, lead_array)
     if walked is not None:
         async for page in _lead_walk(reads, shape, walked, after):
@@ -306,6 +315,11 @@ async def keyset_arrow_pages(
     """
     shape = _ReadShape(select_from, key, where, where_any, page_size, quote, mark, conditions)
     reads = _ArrowReads(l3, page_size, types)
+    pinned = _pinned_lead(shape)
+    if pinned is not None:
+        async for page in _lead_walk(reads, shape, pinned[0], after, given=pinned[1]):
+            yield page
+        return
     walked = await _hashed_lead(l3, shape, lead_array)
     if walked is not None:
         async for page in _lead_walk(reads, shape, walked, after):
@@ -500,6 +514,26 @@ async def _cursor_pages(
         yield kept
 
 
+def _pinned_lead(shape: _ReadShape) -> tuple[str, Sequence[Any]] | None:
+    """the array type and values a set filter pins the key's lead to, when the read walks those values one by one; None
+    when no set filter names the lead of a key of more than one column.
+
+    Paged by the cursor, ``lead = ANY(values)`` reads every row of every value on every page and sorts them across
+    values (a hashed lead's buckets come in no order; Postgres merges index ranges): three pages of 33,528 rows
+    scanned 33,528 rows each and sorted two on disk. Walked, each value's rows are one index range read past the
+    cursor on the rest of the key, on YugabyteDB and Postgres alike: every row scanned once, nothing sorted but a
+    small group's rows.
+
+    :param shape: the read
+    :ptype shape: _ReadShape
+    :return: ``(array type, values)``, or None
+    :rtype: tuple[str, Sequence[Any]] | None
+    """
+    if len(shape.key) < 2 or not shape.where_any:
+        return None
+    return shape.where_any.get(shape.key[0])
+
+
 async def _hashed_lead(l3: Any, shape: _ReadShape, lead_array: str | None) -> str | None:
     """the lead's array type when a read walks its lead value by value: a lead named hashed, of a key of more than one
     column, that no filter pins, read from YugabyteDB; None when it pages by the cursor alone.
@@ -522,14 +556,21 @@ async def _hashed_lead(l3: Any, shape: _ReadShape, lead_array: str | None) -> st
 
 
 async def _lead_walk(
-    reads: _DictReads | _ArrowReads, shape: _ReadShape, lead_array: str, after: Sequence[Any] | None
+    reads: _DictReads | _ArrowReads,
+    shape: _ReadShape,
+    lead_array: str,
+    after: Sequence[Any] | None,
+    *,
+    given: Sequence[Any] | None = None,
 ) -> AsyncGenerator[Any, None]:
     """the read's rows in key order, a lead value's rows at a time (the module's "A hashed lead").
 
-    The lead values come from ``SELECT DISTINCT`` in pages of the read's own size, in the database's order; a value
-    whose rows fill a page is read on its own, seeking the rest of the key inside its bucket; values whose rows are
-    fewer go together, as many a statement as about fill one (``= ANY`` the values, ordered by the whole key). Past
-    :data:`_MOST_LEADS` values the read goes on by the cursor alone, from the last key it took.
+    The lead values come from ``SELECT DISTINCT`` in pages of the read's own size, in the database's order -- or,
+    when a set filter pins the lead (``given``), are that filter's values put in the database's order by one
+    statement over the values alone, never the table (:class:`_GivenLeads`); a value whose rows fill a page is read
+    on its own, seeking the rest of the key inside its bucket; values whose rows are fewer go together, as many a
+    statement as about fill one (``= ANY`` the values, ordered by the whole key). Past :data:`_MOST_LEADS` values the
+    read goes on by the cursor alone, from the last key it took.
 
     :param reads: how a page is read
     :ptype reads: _DictReads | _ArrowReads
@@ -539,12 +580,25 @@ async def _lead_walk(
     :ptype lead_array: str
     :param after: the key the read starts past; the first row when None
     :ptype after: Sequence[Any] | None
+    :param given: the values a set filter pins the lead to; None to read them from the table
+    :ptype given: Sequence[Any] | None
     :return: the pages, none empty but a read of no rows
     :rtype: AsyncGenerator[Any, None]
     """
     lead, rest = shape.key[0], list(shape.key[1:])
     quoted = shape.quote(lead)
-    leads = _LeadValues(reads, shape, after)
+    leads: _LeadValues | _GivenLeads = (
+        _LeadValues(reads, shape, after) if given is None else _GivenLeads(reads, shape, lead_array, given, after)
+    )
+    # each value's statement pins the lead itself; the set filter naming it stays on the read's own statements
+    walk = (
+        shape
+        if given is None
+        else replace(
+            shape,
+            where_any={column: held for column, held in (shape.where_any or {}).items() if column != lead} or None,
+        )
+    )
     group = 1
     walked = 0
     last_key: tuple[Any, ...] | None = None if after is None else tuple(after)
@@ -562,12 +616,12 @@ async def _lead_walk(
             return
         starts_past = after is not None and walked == 0 and values[0] == after[0]
         if len(values) == 1:
-            statement = shape.statement(
+            statement = walk.statement(
                 key=rest, conditions=[Fragment(sql=f"{quoted} = {shape.placeholder(lead, 1)}", params=(values[0],))]
             )
             cursor: Sequence[Any] | None = tuple(after[1:]) if after is not None and starts_past else None
         else:
-            statement = shape.statement(
+            statement = walk.statement(
                 conditions=[Fragment(sql=f"{quoted} = ANY($1::{lead_array})", params=(list(values),))]
             )
             cursor = tuple(after) if after is not None and starts_past else None
@@ -652,6 +706,61 @@ class _LeadValues:
         if values:
             self._past = values[-1]
             self._first = False
+
+
+class _GivenLeads:
+    """the values a set filter pins a read's lead to, in the database's order, put so by one statement over the values
+    alone (``unnest``, no table read); from the cursor's lead value on when the read resumes."""
+
+    def __init__(
+        self,
+        reads: _DictReads | _ArrowReads,
+        shape: _ReadShape,
+        array: str,
+        values: Sequence[Any],
+        after: Sequence[Any] | None,
+    ) -> None:
+        self._reads = reads
+        self._shape = shape
+        self._array = array
+        self._values = list(values)
+        self._after = after
+        self._held: list[Any] | None = None
+
+    async def take(self, count: int) -> list[Any]:
+        """the next ``count`` values (fewer at the end; none once every value is taken).
+
+        :param count: how many
+        :ptype count: int
+        :return: the values
+        :rtype: list[Any]
+        """
+        if self._held is None:
+            self._held = await self._ordered()
+        taken, self._held = self._held[:count], self._held[count:]
+        return taken
+
+    async def _ordered(self) -> list[Any]:
+        """the distinct non-NULL values (``= ANY`` never matches a NULL), in the database's order of the lead's type.
+
+        :return: the values
+        :rtype: list[Any]
+        """
+        if not self._values:
+            return []
+        shape = self._shape
+        lead = shape.key[0]
+        quoted = shape.quote(lead)
+        params: list[Any] = [self._values]
+        clause = ""
+        if self._after is not None:
+            params.append(self._after[0])
+            clause = f" AND {quoted} >= {shape.placeholder(lead, 2)}"
+        query = (
+            f"SELECT DISTINCT {quoted} FROM unnest($1::{self._array}) AS {shape.quote('_leads')}({quoted}) "
+            f"WHERE {quoted} IS NOT NULL{clause} ORDER BY {quoted}"
+        )
+        return await self._reads.values(query, params, lead)
 
 
 class _KeysetStatement:

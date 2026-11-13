@@ -14,7 +14,7 @@ there, where the problem was measured.
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -187,3 +187,91 @@ class TestAWholeReadOfAHashedLead:
         ]
 
         assert pages == [[]]
+
+
+#: the lead values a set filter pins in the set-pinned reads: a fifth of the wide table's states, a fifth of the
+#: narrow table's races, given out of order and with one repeated and one holding no rows
+_PINNED_STATES = [f"S{n:02d}" for n in range(0, _WIDE_STATES, 5)][::-1] + ["S05", "S99"]
+_PINNED_RACES = [f"r{n:05d}" for n in range(1, _NARROW_RACES + 1, 5)][::-1] + ["r99999"]
+
+
+def _sorts(node: Mapping[str, Any]) -> Iterator[int]:
+    """the rows each sort in a plan sorted."""
+    if "Sort" in str(node.get("Node Type", "")):
+        yield int(node.get("Actual Rows", 0)) * int(node.get("Actual Loops", 1))
+    for child in node.get("Plans", ()):
+        yield from _sorts(child)
+
+
+async def _pinned_read(
+    conn: Any, schema: TableSchema, values: list[str], *, after: tuple[Any, ...] | None = None
+) -> list[tuple[Any, ...]]:
+    """the keys a read of ``schema`` with its lead pinned to ``values`` answers, page after page."""
+    lead, rest = schema.pk_columns
+    read: list[tuple[Any, ...]] = []
+    async for page in keyset_pages(
+        conn,
+        f"SELECT {lead}, {rest}, votes FROM {schema.name}",  # noqa: S608 - trusted identifiers
+        schema.pk_columns,
+        where_any={lead: ("text[]", values)},
+        page_size=_PAGE,
+        after=after,
+    ):
+        read.extend(_keys(page, schema))
+    return read
+
+
+async def _pinned_ordered(conn: asyncpg.Connection, schema: TableSchema, values: list[str]) -> list[tuple[Any, ...]]:
+    """the keys the set filter names, in the database's key order, read in one statement."""
+    lead, rest = schema.pk_columns
+    rows = await conn.fetch(
+        f"SELECT {lead}, {rest} FROM {schema.name} WHERE {lead} = ANY($1::text[]) ORDER BY {lead}, {rest}",  # noqa: S608
+        values,
+    )
+    return [tuple(row) for row in rows]
+
+
+class TestAReadOfALeadASetFilterPins:
+    """hub #53: a read whose ``where_any`` pins the key's lead to a set walks the set's values, on YugabyteDB and
+    Postgres alike. Paged by the cursor it read every row of the set on every page and sorted them across values
+    (33,528 rows in three pages: 33,528 scanned a page, two sorts on disk)."""
+
+    @pytest.mark.parametrize(
+        ("schema", "values"), [(_WIDE, _PINNED_STATES), (_NARROW, _PINNED_RACES)], ids=["large-values", "small-values"]
+    )
+    async def test_each_page_reads_its_own_rows_and_sorts_no_more_than_a_page(
+        self, seeded: _Seeded, schema: TableSchema, values: list[str]
+    ) -> None:
+        """Flips if a page re-reads the set's rows past its cursor, or sorts more than a page of them: the read of
+        the set's rows, in key order, scans about the rows it answers."""
+        checked = PlanRecorder(seeded.conn)
+
+        read = await _pinned_read(checked, schema, values)
+
+        assert read == await _pinned_ordered(seeded.conn, schema, values)
+        reads = _reads(checked.plans)
+        sorted_past_a_page = [
+            f"sorted {rows} rows: {' '.join(plan.sql.split())[:160]}"
+            for plan in reads
+            for rows in _sorts(plan.plan)
+            if rows > _PAGE + 1
+        ]
+        assert not sorted_past_a_page, sorted_past_a_page
+        returned = sum(plan.rows_returned for plan in reads)
+        scanned = sum(plan.rows_scanned for plan in reads)
+        assert scanned <= returned + _PAGE + 1, f"scanned {scanned} rows to answer {returned}"
+        if schema is _NARROW:
+            # small values go together: never a statement a value
+            assert len(reads) < len(values) // 10, len(reads)
+
+    @pytest.mark.parametrize(
+        ("schema", "values"), [(_WIDE, _PINNED_STATES), (_NARROW, _PINNED_RACES)], ids=["large-values", "small-values"]
+    )
+    async def test_a_pinned_read_past_a_saved_key_reads_exactly_the_rows_after_it(
+        self, seeded: _Seeded, schema: TableSchema, values: list[str]
+    ) -> None:
+        """Flips if a set-pinned read resumed past a key inside a value skips or repeats a row."""
+        ordered = await _pinned_ordered(seeded.conn, schema, values)
+        middle = len(ordered) // 2 + 7
+
+        assert await _pinned_read(seeded.conn, schema, values, after=ordered[middle]) == ordered[middle + 1 :]
