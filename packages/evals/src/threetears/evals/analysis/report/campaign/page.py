@@ -76,7 +76,7 @@ from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.analysis.report.blocks import TableBlock, bare_columns
-from threetears.evals.analysis.report.build import contrast_evidence
+from threetears.evals.analysis.report.aspect.contrasts import contrast_evidence
 from threetears.evals.analysis.report.verdict import led_sentences
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 

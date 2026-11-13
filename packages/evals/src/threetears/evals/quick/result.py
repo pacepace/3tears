@@ -94,12 +94,8 @@ from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report.figures import report_rulers
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.blocks import DisclosureBlock
-from threetears.evals.analysis.report.build import (
-    aspect_verdict,
-    build_code_only_report_in_forms,
-    contrast_rows,
-    report_cell_labels,
-)
+from threetears.evals.analysis.report.aspect.contrasts import aspect_verdict, contrast_rows, report_cell_labels
+from threetears.evals.analysis.report.build import build_code_only_report_in_forms
 from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.verdict import VerdictLine
 from threetears.evals.analysis.style import arm_display_name, arm_name
@@ -652,7 +648,7 @@ class Result:
 
     def _verdict_line(self) -> str:
         """The first line: the eval's name, then its aspect's verdict line as its page prints it
-        (:func:`~threetears.evals.analysis.report.build.aspect_verdict`): one arm's pass rate as its count, or what the
+        (:func:`~threetears.evals.analysis.report.aspect.contrasts.aspect_verdict`): one arm's pass rate as its count, or what the
         comparison came to on the measure the eval's first grader reads, what else the evidence tells apart, and each
         guardrail an arm is not shown safe on. The page, its lead, this line and the exit line say one sentence.
         """

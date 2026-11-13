@@ -118,7 +118,9 @@ from threetears.evals.kernel.scoring import FailedCheck, capability_scores, fail
 from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.report.words import judged_heading, stratum_name, stratum_names
-from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NO_STRATUM, NOT_SHOWN_TO_MEASURE, TOO_FEW_CASES
+from threetears.evals.analysis.report.aspect.common import NO_STRATUM
+from threetears.evals.analysis.report.aspect.method import CHECK_PROOF_WORDS, NOT_SHOWN_TO_MEASURE
+from threetears.evals.analysis.report.aspect.readings import TOO_FEW_CASES
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.remedies import FIND_RUN
 from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results

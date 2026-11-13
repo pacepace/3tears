@@ -98,6 +98,16 @@ def test_no_action_and_no_document_type_names_a_retired_generation() -> None:
 #: The modules that lay a page out (its models, its blocks, its words, its two serializers and their HTML parts) and
 #: build one: what a reader is shown, and what a host reads a page's fields by.
 _PAGE_MODULES: Final = (
+    "analysis/report/aspect/__init__.py",
+    "analysis/report/aspect/common.py",
+    "analysis/report/aspect/contrasts.py",
+    "analysis/report/aspect/gates.py",
+    "analysis/report/aspect/head.py",
+    "analysis/report/aspect/method.py",
+    "analysis/report/aspect/question.py",
+    "analysis/report/aspect/readings.py",
+    "analysis/report/aspect/scoreboard.py",
+    "analysis/report/aspect/trials.py",
     "analysis/report/blocks.py",
     "analysis/report/build.py",
     "analysis/report/campaign/page.py",

@@ -22,7 +22,7 @@ than v1 on the No invented total score guardrail.``
 **One result, one sentence.** The aspect page's verdict and the quick print's first line print
 :attr:`VerdictLine.text`; the exit line opens with :attr:`~VerdictLine.lead`. A campaign page leading on a measure a
 contrast tested says the same decision and figures (:func:`led_sentences`, over the figures
-:func:`~threetears.evals.analysis.report.build.contrast_evidence` reads); one leading on an aspect's pass-rate row (its
+:func:`~threetears.evals.analysis.report.aspect.contrasts.contrast_evidence` reads); one leading on an aspect's pass-rate row (its
 margin's reading) says the row's own, in the same form (``scorecard.row_sentence`` and ``scorecard.row_figures``).
 After the decision, each arm
 is the subject of its figures and the interval says what it allows (:func:`interval_words`), never its level, which

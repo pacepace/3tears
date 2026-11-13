@@ -41,8 +41,8 @@ from threetears.evals.analysis.report.keys.names import input_check_name
 from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.kernel.metrics import goal_check_measure
 from threetears.evals.analysis.report.model import ReportBlock, TrialDetail
+from threetears.evals.analysis.report.aspect.method import IN_THE_WRITTEN_REPORT
 from threetears.evals.analysis.report.build import (
-    IN_THE_WRITTEN_REPORT,
     analysis_campaign_bundle,
     analysis_writer,
     build_code_only_report_in_forms,

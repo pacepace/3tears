@@ -3,8 +3,9 @@
 The owner's ruling (2026-10-28): "people might think Fanout 1 is different from fanout 1", so a computed lever arm name
 is capitalised where the name is made, never in prose rendering, and prose, the arms key, the options table and a
 chart's labels print the one name. Two pipelines make names, both downstream of ``arm_names``: the code-only page's
-(``_arm_names`` and ``_short_names`` in ``analysis/report/build.py``) and the report input's ``Arm.name``
-(``report.input_build``), which the document's page prints through ``printed_arm_name``. Both call
+(``_arm_names`` in ``analysis/report/aspect/common.py`` and ``_short_names`` in
+``analysis/report/aspect/scoreboard.py``) and the report input's ``Arm.name`` (``report.input_build``), which the
+document's page prints through ``printed_arm_name``. Both call
 :func:`~threetears.evals.analysis.style.arm_display_name`.
 
 "Computed" is read from data, never from the text's case: a report input arm is computed where no arm the campaign's

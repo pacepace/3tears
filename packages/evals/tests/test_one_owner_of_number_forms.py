@@ -122,15 +122,6 @@ _SET_HELPERS = frozenset(
 #: Families named by prefix (``percent_*``, ``respell_*``, ``quantity*``), so a new member is a site too.
 _SET_HELPER_PREFIXES = ("percent_", "respell_", "quantity")
 
-#: Private helpers that decide a figure's places, keyed by the one module allowed to call them (a leading underscore
-#: binds nothing outside its module). Matched by name alone they would also catch ``levers._places``, which lists
-#: where an effect is read, and ``build._at``, which links a cell to a finding.
-_PRIVATE_SET_HELPERS = frozenset(
-    {
-        ("threetears/evals/harness/writer_eval.py", "_places"),
-    }
-)
-
 #: The trees whose every number is shown to a reader, held to the stricter rule: the analysis package, what the
 #: generator writes from, and the ops surfaces it renders through. A host's own renders (an operator console, a tool
 #: surface) are the host's to walk on the same terms. A module sits here by itself, rather than its whole directory,
@@ -798,7 +789,7 @@ class _Lookup:
         engine = self.engine_route and _in_engine(module)
         if isinstance(node, ast.Name):
             name = node.id
-            if (module, name) in _PRIVATE_SET_HELPERS or (module, name) in self.functions:
+            if (module, name) in self.functions:
                 return name
             if self.index.resolve(module, name) in self.functions:
                 return name
@@ -1740,10 +1731,12 @@ class TestTheWalkSeesEveryPythonForm:
         source = "class Look:\n    def text(self, v):\n        def inner():\n            return round(v)\n        return inner\n"
         assert _forms(_python_sites(source)) == [("Look.text.inner", "round()", "round(v)")]
 
-    def test_a_private_helper_is_a_site_only_in_the_module_that_decides_with_it(self):
-        deciding = "threetears/evals/harness/writer_eval.py"
-        assert _forms(_python_sites("_places(vs)", deciding)) == [("<module>", "_places()", "_places(vs)")]
-        assert _python_sites("_places(vs)", "threetears/evals/analysis/report/build.py") == []
+    def test_a_private_helper_is_never_a_site_by_its_name_alone(self):
+        """A private name is matched only where the walk derived it as a wrapper in that module: by name alone it would
+        also catch ``levers._places``, which lists where an effect is read, and ``_at``, which links a cell to a
+        finding."""
+        for module in ("threetears/evals/harness/writer_eval.py", "threetears/evals/analysis/report/build.py"):
+            assert _python_sites("_places(vs)", module) == []
 
     @pytest.mark.parametrize(
         "source",
