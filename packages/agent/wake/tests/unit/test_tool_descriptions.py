@@ -7,7 +7,7 @@ strings can't quietly grow them past the human-readability budget.
 
 from __future__ import annotations
 
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 
@@ -65,9 +65,9 @@ def _description_lines(tool_obj) -> list[str]:  # type: ignore[no-untyped-def]
     return [line for line in raw.rstrip().splitlines()]
 
 
-_conv = uuid4()
-_user = uuid4()
-_agent = uuid4()
+_conv = UUID("00000000-0000-4000-8000-000000000501")
+_user = UUID("00000000-0000-4000-8000-000000000502")
+_agent = UUID("00000000-0000-4000-8000-000000000503")
 
 
 # parity-with: threetears.agent.wake.types.WakeConversations (never called at load time)

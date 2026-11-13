@@ -31,10 +31,10 @@ from threetears.core.exceptions import (
 )
 from threetears.nats.errors import KvError
 
-_USER = uuid4()
-_AGENT = uuid4()
-_CUSTOMER = uuid4()
-_TARGET = uuid4()
+_USER = UUID("00000000-0000-4000-8000-000000000101")
+_AGENT = UUID("00000000-0000-4000-8000-000000000102")
+_CUSTOMER = UUID("00000000-0000-4000-8000-000000000103")
+_TARGET = UUID("00000000-0000-4000-8000-000000000104")
 
 #: what a bug in our own code looks like from the handler's side
 _BUGS = (AttributeError("'NoneType' object has no attribute 'fetch'"), TypeError("fetch() takes 2 arguments"))
@@ -149,8 +149,8 @@ class _FakeNamespaces:
 
 
 class _Context:
-    conversation_id = uuid4()
-    correlation_id = uuid4()
+    conversation_id = UUID("00000000-0000-4000-8000-000000000105")
+    correlation_id = UUID("00000000-0000-4000-8000-000000000106")
 
 
 def _raising(error: BaseException) -> Callable[..., Awaitable[Any]]:
@@ -233,7 +233,12 @@ async def _chunk_search(authorizer: MemoryAuthorizerDependencies, store: _FakeSt
     return str(await tool.ainvoke({"query": "the lease terms"}))
 
 
-_CHUNK_HIT = {"chunk_id": uuid4(), "memory_id": _TARGET, "content": "The tenant pays monthly.", "score": 0.9}
+_CHUNK_HIT = {
+    "chunk_id": UUID("00000000-0000-4000-8000-000000000107"),
+    "memory_id": _TARGET,
+    "content": "The tenant pays monthly.",
+    "score": 0.9,
+}
 
 #: (name, how the tool is called, the collection call that fails, what the failure reads as)
 _READ_SITES: list[tuple[str, Callable[[MemoryAuthorizerDependencies, _FakeStore], Awaitable[str]], str, str]] = [

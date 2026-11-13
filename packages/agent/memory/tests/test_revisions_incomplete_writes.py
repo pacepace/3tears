@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 
@@ -24,9 +24,13 @@ from threetears.nats.errors import KvError
 
 pytestmark = pytest.mark.asyncio
 
-_AGENT = uuid4()
-_SOURCE = uuid4()
-_FIELDS: dict[str, Any] = {"user_id": uuid4(), "content": "lives in York", "embedding": [0.1] * 8}
+_AGENT = UUID("00000000-0000-4000-8000-000000000301")
+_SOURCE = UUID("00000000-0000-4000-8000-000000000302")
+_FIELDS: dict[str, Any] = {
+    "user_id": UUID("00000000-0000-4000-8000-000000000303"),
+    "content": "lives in York",
+    "embedding": [0.1] * 8,
+}
 
 
 # parity-exempt: records the save and the mark the revision writers make on the memories collection; its SQL is covered by the collection tests

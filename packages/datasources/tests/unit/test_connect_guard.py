@@ -296,7 +296,7 @@ class TestGuardedConnect:
         [
             pytest.param(DriverMissingCredentialError("no password"), id="missing-credential-no-login-happened"),
             pytest.param(
-                DriverCredentialPausedError("paused", refused_at=datetime.now(UTC)),
+                DriverCredentialPausedError("paused", refused_at=datetime(2026, 1, 1, tzinfo=UTC)),
                 id="already-paused-no-login-happened",
             ),
             pytest.param(DriverConnectError("host unreachable"), id="not-a-refusal"),

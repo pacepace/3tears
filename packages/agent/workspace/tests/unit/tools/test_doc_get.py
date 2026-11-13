@@ -67,7 +67,7 @@ class _FakeFileEntity(FakeWorkspaceFile):
     content: bytes
     sha256: str
     version: int
-    date_updated: datetime = datetime.now(UTC)
+    date_updated: datetime = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 class _FakeFileCollection(FakeWorkspaceFileCollection):
