@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from operator import itemgetter
-from typing import Any, Final
+from typing import Annotated, Any, Final, TypeAlias
 
 from threetears.interfaces.keyed.filters import (
     IN_SUBQUERY,
@@ -80,6 +80,24 @@ def _remember(shape: tuple[Any, ...], sql: str) -> None:
     if len(_RENDERED) >= _RENDERED_SHAPES:
         _RENDERED.pop(next(iter(_RENDERED)), None)
     _RENDERED[shape] = sql
+
+
+class DeclaredKey:
+    """the mark of a declared key source, in an annotation: ``Annotated[Sequence[str], DeclaredKey]`` for a key's
+    columns held in another shape than :data:`KeyColumns`. A parameter, attribute or function annotated with it (or
+    with :data:`KeyColumn` / :data:`KeyColumns` / :data:`KeyValues`) holds a table's key as its declaration names it:
+    the no_whole_reads rule reads a column interpolated from one (or from a local written from one) as the key, and any
+    other column as a predicate it cannot see, whatever the column's name says."""
+
+
+#: a table's key column, as its declaration names it: a declared key source (:class:`DeclaredKey`)
+KeyColumn: TypeAlias = Annotated[str, DeclaredKey]
+
+#: a table's key columns, in key order, as its declaration names them: a declared key source (:class:`DeclaredKey`)
+KeyColumns: TypeAlias = Annotated[tuple[str, ...], DeclaredKey]
+
+#: one key's values by its columns (column -> value): a declared key source (:class:`DeclaredKey`)
+KeyValues: TypeAlias = Annotated[Mapping[str, Any], DeclaredKey]
 
 
 class KeyTooWide(ValueError):

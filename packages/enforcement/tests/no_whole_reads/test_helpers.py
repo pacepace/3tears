@@ -284,24 +284,30 @@ def test_a_helper_whose_arguments_the_walk_cannot_read_is_unseen(code: str, argu
 @pytest.mark.parametrize(
     ("code", "expected"),
     [
-        # a generic collection's own row by the key column it names: keyed, as its SQL over {pk_column} would be
-        # (``"{}"``: a table its caller names, as the walk writes it where the module declares no template)
-        ('delete_keyed(c, "{}", by={pk_column: i})', []),
-        ('read_row(c, "{}", by={self._pk_column: i})', []),
+        # a generic collection's own row by its key column: keyed when the walk hands the helper ``pk`` (the column
+        # flows from a declared key source, :mod:`~threetears.enforcement.no_whole_reads.keys`), as its SQL over
+        # {pk} would be (``"{}"``: a table its caller names, as the walk writes it where the module declares no
+        # template); a column whose NAME alone says key is no declared source, a predicate the walk cannot see
+        ('delete_keyed(c, "{}", by={pk: i})', []),
+        ('delete_keyed(c, "{}", by={pk_column: i})', ["unknown-schema"]),
+        ('read_row(c, "{}", by={self._pk_column: i})', ["unknown-schema"]),
         # a write pinning a column named at run time that says nothing of the key (merge.repoint_user_rows' owner
         # column): a predicate the walk cannot see on a table it does not know
         ('update_keyed(c, "{}", values=v, by={user_column: u}, returning=pk)', ["unknown-schema"]),
         ('read_row(c, "results", by={column: v})', ["non-key-where"]),
         # every key column of a table the caller reads at run time, each bound to the row's value (SelectiveRestore's
-        # live twin): keyed, as SQL over {pk_columns} would be; a list whose name says nothing of the key is not
-        ('read_row(c, "{}", by=dict(zip(pk_columns, key, strict=True)))', []),
+        # live twin): keyed when the walk hands ``pk`` (a declared source), as SQL over {pk} would be; a list named
+        # ``pk_columns`` the walk has not traced to one is not
+        ('read_row(c, "{}", by=dict(zip(pk, key, strict=True)))', []),
+        ('read_row(c, "{}", by=dict(zip(pk_columns, key, strict=True)))', ["unknown-schema"]),
         ('read_row(c, "results", by=dict(zip(columns, values)))', ["non-key-where"]),
         # a generic store's row by the primary key mapping its caller hands (SqlL3Backend.fetch_one / delete with no
         # schema registered; a generated collection's fetch_from_store): keyed, as its SQL over {table} / {pk} would
         # be; a mapping whose name says nothing of the key is a predicate the walk cannot see
         ("read_row(c, table, by=dict(pk))", []),
         ("delete_keyed(c, table, by=dict(pk))", []),
-        ("read_row(c, tbl_name, by={pk_column: entity_id})", []),
+        ("read_row(c, tbl_name, by={pk: entity_id})", []),
+        ("read_row(c, tbl_name, by={pk_column: entity_id})", ["unknown-schema"]),
         ("read_row(c, table, by=dict(filters))", ["unknown-schema"]),
         ('read_row(c, "results", by=dict(values))', ["non-key-where"]),
     ],
@@ -309,8 +315,8 @@ def test_a_helper_whose_arguments_the_walk_cannot_read_is_unseen(code: str, argu
 def test_a_by_column_named_at_run_time_is_judged_as_its_interpolation(
     code: str, expected: list[str], schema: SchemaCatalog
 ) -> None:
-    """Flips if a ``by`` column named at run time stays unknown where SQL interpolating it would be judged (a generic
-    reader's ``{pk_column}`` is its key), or passes where its name says nothing of the key."""
+    """Flips if a ``by`` column the walk hands as the declared key (``pk``) stays unknown where SQL interpolating it
+    would be judged, or a column named at run time passes on its name alone (``pk_column``, ``self._pk_column``)."""
     assert [[kind for kind, _ in findings] for findings in _judged(code, schema)] == [expected]
 
 
@@ -369,14 +375,18 @@ def test_a_reap_is_judged_as_the_paged_update_it_sends(schema: SchemaCatalog) ->
 @pytest.mark.parametrize(
     ("code", "expected"),
     [
-        # a generic reader's keyed batch over the table it is handed, by that table's key: keyed, as its SQL would be
-        ("read_keyed_arrow(l3, table.name, keys=KeyBatch(table.key, chunk, casts), types=types)", []),
-        # the same over a column that does not say it is the key: a predicate the walk cannot see
+        # a generic reader's keyed batch over the table it is handed, by that table's key: keyed when the walk hands
+        # the helper ``pk`` (the columns flow from a declared key source), as its SQL would be
+        ("read_keyed_arrow(l3, table.name, keys=KeyBatch(pk, chunk, casts), types=types)", []),
+        ("delete_keyed(c, rows_stage, keys=KeyBatch(tuple(pk), named, as_list=True))", []),
+        # columns the walk has not traced to a declared source, whatever they are named: a predicate it cannot see
         ("read_keyed_arrow(l3, table.name, keys=KeyBatch(table.columns, chunk), types=types)", ["unknown-predicate"]),
-        # the key's columns copied into the batch's tuple (``KeyBatch(tuple(key), ...)``, reports' rows stage): the
-        # same columns, judged as the name it copies; a copy of a list that says nothing of the key stays unseen
-        ("delete_keyed(c, rows_stage, keys=KeyBatch(tuple(key), named, as_list=True))", []),
-        ("read_keyed(c, table, keys=KeyBatch(list(self.key_columns), ks))", []),
+        (
+            "read_keyed_arrow(l3, table.name, keys=KeyBatch(table.key, chunk, casts), types=types)",
+            ["unknown-predicate"],
+        ),
+        ("delete_keyed(c, rows_stage, keys=KeyBatch(tuple(key), named, as_list=True))", ["unknown-schema"]),
+        ("read_keyed(c, table, keys=KeyBatch(list(self.key_columns), ks))", ["unknown-predicate"]),
         ("read_keyed(c, table, keys=KeyBatch(tuple(columns), ks))", ["unknown-predicate"]),
     ],
 )

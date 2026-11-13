@@ -50,6 +50,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final
 
+from threetears.interfaces.keyed.rows import KeyColumn
 from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter
 
@@ -1274,7 +1275,7 @@ def _run_starts(codes: Any) -> list[int]:
     return [0, *(int(index) + 1 for index in pc.indices_nonzero(changed).to_pylist())]
 
 
-def _scope_batches(cursor: Any, table: str, column: str, cast: str, value: str, rows: int) -> Any:
+def _scope_batches(cursor: Any, table: str, column: KeyColumn, cast: str, value: str, rows: int) -> Any:
     """the rows of one scope on a read's cursor, as a reader of Arrow batches of at most ``rows``: those whose scope
     column holds ``value``, and for ``prefix + "None"`` those holding none too (FollowedTable.scope_of names both
     so). Read by the keyed batch join on the scope column, which keys the checkpoint's parts of the copy; its NULL

@@ -31,6 +31,7 @@ from typing import Any, ClassVar
 
 from sqlalchemy import MetaData
 
+from threetears.interfaces.keyed.rows import KeyColumns
 from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.backends.schema_sql import normalize_write_value, render_param
 from threetears.core.cache.base import UnsupportedL1ColumnError
@@ -152,7 +153,7 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
     #: the upsert's conflict target; the schema's primary key unless a subclass names a natural key.
     #: When it is not the primary key, :meth:`write_row` settles the caches after a write that
     #: landed on a row stored under another key (:meth:`settle_stored_key`).
-    conflict_columns: ClassVar[tuple[str, ...]] = ()
+    conflict_columns: ClassVar[KeyColumns] = ()
     #: columns this collection's writes insert but never update, though the columns are not
     #: ``immutable``: another writer owns their later values. A write naming one reads the row back
     #: (:meth:`columns_decided_by_store`), since an update keeps what that writer stored.

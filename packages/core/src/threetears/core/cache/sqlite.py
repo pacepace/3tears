@@ -40,6 +40,7 @@ from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR, UUID
 from sqlalchemy.sql.sqltypes import ARRAY
 from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
 
+from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
 from threetears.core.cache.base import (
     build_select_clause,
@@ -248,7 +249,7 @@ class SQLiteBackend:
         return _PooledConnection(conn)
 
     @staticmethod
-    def _pk_columns(primary_key: str | tuple[str, ...]) -> tuple[str, ...]:
+    def _pk_columns(primary_key: KeyColumn | KeyColumns) -> KeyColumns:
         """normalize ``primary_key`` argument to a tuple of column names.
 
         :param primary_key: pk column name or tuple of pk column names
@@ -316,7 +317,7 @@ class SQLiteBackend:
             self.serialize_value(value, schema.get(col, "TEXT")) for col, value in zip(pk_cols, pk_vals, strict=True)
         )
 
-    def upsert(self, table: str, data: dict[str, Any], primary_key: str | tuple[str, ...] = "id") -> None:
+    def upsert(self, table: str, data: dict[str, Any], primary_key: KeyColumn | KeyColumns = "id") -> None:
         """insert or update row atomically.
 
         :param table: destination table name
@@ -335,7 +336,7 @@ class SQLiteBackend:
         self.upsert_many(table, [data], primary_key)
 
     def upsert_many(
-        self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...] = "id"
+        self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: KeyColumn | KeyColumns = "id"
     ) -> int:
         """insert or update many rows in one transaction, as ``upsert`` would one by one.
 
@@ -391,7 +392,7 @@ class SQLiteBackend:
         self,
         table: str,
         entity_id: Any,
-        primary_key: str | tuple[str, ...] = "id",
+        primary_key: KeyColumn | KeyColumns = "id",
         columns: Sequence[str] | None = None,
     ) -> dict[str, Any] | None:
         """select single row by primary key with type deserialization.
@@ -430,7 +431,7 @@ class SQLiteBackend:
         self,
         table: str,
         entity_ids: list[Any],
-        primary_key: str | tuple[str, ...] = "id",
+        primary_key: KeyColumn | KeyColumns = "id",
         columns: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """select multiple rows by primary key with type deserialization.
@@ -481,7 +482,7 @@ class SQLiteBackend:
         self,
         table: str,
         entity_id: Any,
-        primary_key: str | tuple[str, ...] = "id",
+        primary_key: KeyColumn | KeyColumns = "id",
     ) -> None:
         """delete single row by primary key.
 
@@ -506,7 +507,7 @@ class SQLiteBackend:
         self,
         table: str,
         entity_ids: Sequence[Any],
-        primary_key: str | tuple[str, ...] = "id",
+        primary_key: KeyColumn | KeyColumns = "id",
     ) -> None:
         """delete many rows by primary key in one write transaction.
 

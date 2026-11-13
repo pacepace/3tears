@@ -5788,3 +5788,89 @@ def test_a_sentinel_templates_declaration_is_checked_where_it_runs(change: dict[
     sentinel_templates(**given)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match=message):
         sentinel_templates(**{**given, **change})  # type: ignore[arg-type]
+
+
+_KEY_BY_PROVENANCE = """
+    from typing import Annotated
+    from collections.abc import Sequence
+
+    from threetears.core.keyed import DeclaredKey, KeyBatch, KeyColumn, KeyColumns, read_keyed
+
+
+    class Store:
+        primary_key_column: KeyColumn = "id"
+
+        def _key(self, table) -> KeyColumns:
+            return self._declared[table]
+
+        async def by_misnamed_columns(self, conn, table, values):
+            pk_cols = ("name", "kind")
+            where = " AND ".join(f"{c} = ${i + 1}" for i, c in enumerate(pk_cols))
+            return await conn.fetch(f"SELECT * FROM {table} AS t WHERE {where}", *values)
+
+        async def by_a_key_named_otherwise(self, conn, table, values):
+            names = self._key(table)
+            where = " AND ".join(f"{c} = ${i + 1}" for i, c in enumerate(names))
+            return await conn.fetch(f"SELECT * FROM {table} AS t WHERE {where}", *values)
+
+        async def by_a_declared_parameter(self, conn, table, columns: Annotated[Sequence[str], DeclaredKey], value):
+            return await conn.fetch(f"SELECT * FROM {table} AS t WHERE t.{columns[0]} = $1", value)
+
+        async def by_a_parameter_named_key(self, conn, table, key, value):
+            return await conn.fetch(f"SELECT * FROM {table} AS t WHERE t.{key} = $1", value)
+
+        async def by_the_declared_attribute(self, conn, table, value):
+            return await conn.fetch(f"SELECT * FROM {table} AS t WHERE t.{self.primary_key_column} = $1", value)
+
+        async def batch_by_misnamed(self, conn, table, wanted, values):
+            pk_cols = list(wanted)
+            return await read_keyed(conn, table, keys=KeyBatch(tuple(pk_cols), values))
+
+        async def batch_by_declared(self, conn, table, values):
+            columns = self._key(table)
+            return await read_keyed(conn, table, keys=KeyBatch(tuple(columns), values))
+
+        async def template_spelling_pk(self, conn, table, other, value):
+            return await conn.fetch("SELECT * FROM {table} AS t WHERE t.{pk} = $1".format(table=table, pk=other), value)
+
+"""
+
+
+def test_a_column_is_the_key_by_where_it_comes_from_never_by_its_name(tmp_path: Path) -> None:
+    """Flips if a column list's NAME decides whether it is the key: ``pk_cols`` holding the table's other columns, a
+    parameter named ``key``, a ``KeyBatch`` of a list named ``pk_cols``, or a template field spelled ``{pk}`` filled
+    by a non-key value must each be flagged; a list named ``names`` written from a function declared to return the
+    key (``-> KeyColumns``), a parameter annotated as a declared key, a declared attribute, and a batch of a list
+    bound from the declared function, must each pass."""
+    found = _symbols(_config(tmp_path, {"store.py": _KEY_BY_PROVENANCE}))
+    functions = {function for function, _ in found}
+    for flagged in (
+        "Store.by_misnamed_columns",
+        "Store.by_a_parameter_named_key",
+        "Store.batch_by_misnamed",
+        "Store.template_spelling_pk",
+    ):
+        assert flagged in functions, (flagged, found)
+    for keyed in (
+        "Store.by_a_key_named_otherwise",
+        "Store.by_a_declared_parameter",
+        "Store.by_the_declared_attribute",
+        "Store.batch_by_declared",
+    ):
+        assert keyed not in functions, (keyed, found)
+
+
+def test_renaming_a_column_list_never_changes_a_verdict(tmp_path: Path) -> None:
+    """Flips if renaming the locals and parameters that hold column lists (``pk_cols`` <-> ``names``, ``key`` ->
+    ``other``) changes any function's findings: provenance, not spelling, decides."""
+    renamed = (
+        _KEY_BY_PROVENANCE.replace("pk_cols", "__a__")
+        .replace("names", "pk_cols")
+        .replace("__a__", "names")
+        .replace(", key, value", ", other_col, value")
+        .replace("t.{key}", "t.{other_col}")
+    )
+    assert renamed != _KEY_BY_PROVENANCE
+    before = _symbols(_config(tmp_path / "before", {"store.py": _KEY_BY_PROVENANCE}))
+    after = _symbols(_config(tmp_path / "after", {"store.py": renamed}))
+    assert {function for function, _ in before} == {function for function, _ in after}, (before, after)

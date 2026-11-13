@@ -75,6 +75,7 @@ from threetears.enforcement.no_whole_reads.helpers import (
     narrows,
     templated,
 )
+from threetears.enforcement.no_whole_reads.keys import KeySources, annotated_key, declared_key_sources
 from threetears.enforcement.no_whole_reads.sentinels import SentinelTemplates, declared_templates
 from threetears.enforcement.no_whole_reads.schema import (
     COPY_PREFIX,
@@ -219,6 +220,9 @@ _KEYED_HELPER_MODULES: Final = (*_KEYED_PACKAGES, "threetears/agent/acl/visible_
 #: transient producer's return, :data:`TRANSIENT_PRODUCED`; a keyed helper's relation parameter,
 #: :data:`HELPER_RELATION`), None for any other; None when the module has neither
 Produced = Callable[[ast.expr], str | None] | None
+
+#: whether an expression is a column list (or holds one) that flows from a declared key source (:mod:`.keys`)
+Keyed = Callable[[ast.expr], bool] | None
 
 #: the relation a 3tears keyed helper is handed (a parameter of a helper in :data:`KEYED_HELPER_CALLS` or
 #: :data:`STEP_CALLS`, or of a private renderer every in-module caller hands one): a statement over it is judged at
@@ -949,12 +953,6 @@ class WholeReadScan:
 _QUOTERS: Final[frozenset[str]] = frozenset({"quote_identifier", "_quote_ident", "quote_ident", "_quoted", "quoted"})
 
 
-#: a name in a placeholder that says it is the key column(s): the statement reads by the table's key, whatever table
-_KEY_NAME: Final[re.Pattern[str]] = re.compile(
-    r"(?i)(?:^|_)(?:pk\w*|primary_keys?|keys?|key_?col\w*|key_?columns?|key_?names?|id_?col\w*)$"
-)
-
-
 #: methods of a list, tuple or mapping that read it and never change it: a local they are called on keeps its binding
 _READING_METHODS: Final[frozenset[str]] = frozenset({"index", "count", "copy", "get", "keys", "values", "items"})
 
@@ -1003,11 +1001,11 @@ def _constant_text(value: ast.expr, constants: dict[str, str], depth: int = 0) -
     return text
 
 
-def _placeholder(value: ast.expr, constants: dict[str, str], produced: Produced = None) -> str:
+def _placeholder(value: ast.expr, constants: dict[str, str], produced: Produced = None, keyed: Keyed = None) -> str:
     """what an f-string placeholder reads as: a constant's text (``{_MARK_TABLE}``, an imported one, or one handed
     to a call: ``{quote(TABLE)}``), ``copy.<name>`` for a local copy's relation (``{snapshot.relation(GEOS)}``),
-    ``{pk}`` when a name in it says it is the key (``{pk}``, ``{self._key_column}``, ``{", ".join(pk_cols)}``), else
-    ``{}``.
+    ``{pk}`` when a column list in it flows from a declared key source (:mod:`.keys`: ``{self._key_column}`` annotated
+    ``KeyColumn``, ``{", ".join(columns)}`` with ``columns = self._pk_columns(...)``), whatever it is named, else ``{}``.
 
     :param value: the placeholder's expression
     :ptype value: ast.expr
@@ -1016,12 +1014,17 @@ def _placeholder(value: ast.expr, constants: dict[str, str], produced: Produced 
     :param produced: what an expression reads as when it is a declared transient producer's return
         (:data:`TRANSIENT_PRODUCED`) or a keyed helper's relation parameter (:data:`HELPER_RELATION`)
     :ptype produced: Produced
+    :param keyed: whether an expression flows from a declared key source, where the walk is
+    :ptype keyed: Keyed
     :return: the text
     :rtype: str
     """
     named = produced(value) if produced is not None else None
     if named is not None:
         return named
+    if keyed is not None and keyed(value):
+        # a declared key source, even one bound to a constant column: the key, as declared
+        return PK_TOKEN
     known = _constant_text(value, constants)
     if known is not None:
         return known
@@ -1036,12 +1039,7 @@ def _placeholder(value: ast.expr, constants: dict[str, str], produced: Produced 
         if _final(value) in _COPY_CALLS:
             # a copy relation named at run time: judged against the default key every copy declares
             return f"{COPY_PREFIX}{{}}"
-    names = [
-        node.id if isinstance(node, ast.Name) else node.attr
-        for node in ast.walk(value)
-        if isinstance(node, (ast.Name, ast.Attribute))
-    ]
-    return PK_TOKEN if any(_KEY_NAME.search(found) for found in names) else "{}"
+    return "{}"
 
 
 #: 3tears' keyed-helper connections over a local database (DuckDB in process): a helper handed one reads its tables
@@ -1140,7 +1138,7 @@ def _joined_statements(node: ast.AST | None) -> bool:
     return part is not None and is_sql(part)
 
 
-def _string_text(node: ast.expr, env: dict[str, str], produced: Produced = None) -> str | None:
+def _string_text(node: ast.expr, env: dict[str, str], produced: Produced = None, keyed: Keyed = None) -> str | None:
     """the statically known text of a string expression.
 
     :param node: the expression
@@ -1151,6 +1149,8 @@ def _string_text(node: ast.expr, env: dict[str, str], produced: Produced = None)
         (:data:`TRANSIENT_PRODUCED`, so a name bound to one is too) or a keyed helper's relation parameter
         (:data:`HELPER_RELATION`)
     :ptype produced: Produced
+    :param keyed: whether an expression flows from a declared key source, where the walk is
+    :ptype keyed: Keyed
     :return: the text, each unknown interpolation as ``{}``; None when it is not a string expression
     :rtype: str | None
     """
@@ -1159,28 +1159,91 @@ def _string_text(node: ast.expr, env: dict[str, str], produced: Produced = None)
     if named is not None:
         text = named
     elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-        text = node.value
+        text = _unspelled_key(node.value)
     elif isinstance(node, ast.JoinedStr):
         text = "".join(
-            str(part.value)
+            _unspelled_key(str(part.value))
             if isinstance(part, ast.Constant)
-            else _placeholder(part.value, env, produced)
+            else _placeholder(part.value, env, produced, keyed)
             if isinstance(part, ast.FormattedValue)
             else "{}"
             for part in node.values
         )
     elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left = _string_text(node.left, env, produced)
-        right = _string_text(node.right, env, produced)
+        left = _string_text(node.left, env, produced, keyed)
+        right = _string_text(node.right, env, produced, keyed)
         if left is not None or right is not None:
             text = (left if left is not None else "{}") + (right if right is not None else "{}")
     elif isinstance(node, ast.Name):
         text = env.get(node.id)
-    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"format", "strip"}:
-        text = _string_text(node.func.value, env, produced)
+        text = None if text is None else _unspelled_key(text)
+    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
+        template = _string_text(node.func.value, env, produced, keyed)
+        text = None if template is None else _formatted(template, node, env, produced, keyed)
+    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "strip":
+        text = _string_text(node.func.value, env, produced, keyed)
     elif isinstance(node, ast.Call) and node.args and _final(node) in {"dedent", "SQL", "text"}:
-        text = _string_text(node.args[0], env, produced)
+        text = _string_text(node.args[0], env, produced, keyed)
     return text
+
+
+#: a template's literal ``{pk}`` (the token the walk writes for a declared key's interpolation) as the code spells it:
+#: marked, so a template is never keyed by spelling its field ``pk`` (the walk's own token is only written by
+#: :func:`_placeholder`)
+_SPELLED_KEY: Final[str] = "{spelled_pk}"
+
+_FIELD: Final[re.Pattern[str]] = re.compile(r"\{([^{}]*)\}")
+
+
+def _unspelled_key(text: str) -> str:
+    """``text`` with each literal ``{pk}`` the code spells marked as a field like any other.
+
+    :param text: the text as written
+    :ptype text: str
+    :return: the text
+    :rtype: str
+    """
+    return text.replace(PK_TOKEN, _SPELLED_KEY)
+
+
+def _formatted(template: str, call: ast.Call, env: dict[str, str], produced: Produced, keyed: Keyed) -> str:
+    """a ``str.format`` template's text with each field the call fills (``{}`` / ``{0}`` by position, ``{name}`` by
+    keyword) read as an f-string's interpolation of the value it is handed would be; a field the call leaves to a
+    ``**mapping`` or does not fill stays as written.
+
+    :param template: the template's text
+    :ptype template: str
+    :param call: the ``.format(...)`` call
+    :ptype call: ast.Call
+    :param env: names bound to strings in scope
+    :ptype env: dict[str, str]
+    :param produced: what a relation expression reads as, where the walk is
+    :ptype produced: Produced
+    :param keyed: whether an expression flows from a declared key source, where the walk is
+    :ptype keyed: Keyed
+    :return: the text
+    :rtype: str
+    """
+    named = {keyword.arg: keyword.value for keyword in call.keywords if keyword.arg is not None}
+    position = 0
+
+    def fill(match: re.Match[str]) -> str:
+        nonlocal position
+        field = match.group(1).split("!")[0].split(":")[0].strip()
+        field = "pk" if field == _SPELLED_KEY[1:-1] else field
+        value: ast.expr | None
+        if field == "":
+            value = call.args[position] if position < len(call.args) else None
+            position += 1
+        elif field.isdigit():
+            value = call.args[int(field)] if int(field) < len(call.args) else None
+        else:
+            value = named.get(field)
+        if value is None or any(isinstance(argument, ast.Starred) for argument in call.args):
+            return match.group(0)
+        return _placeholder(value, env, produced, keyed)
+
+    return _FIELD.sub(fill, template)
 
 
 def _final(call: ast.Call) -> str | None:
@@ -1588,6 +1651,114 @@ def _helper_relations(tree: ast.Module) -> tuple[dict[int, frozenset[str]], dict
     return parameters, fields
 
 
+def _scope_nodes(function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.AST]:
+    """the nodes of a function's own scope: never inside a comprehension (its names are its own), a nested function
+    or a class.
+
+    :param function: the function
+    :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+    :return: the nodes
+    :rtype: list[ast.AST]
+    """
+    found: list[ast.AST] = []
+    pending: list[ast.AST] = list(ast.iter_child_nodes(function))
+    while pending:
+        node = pending.pop()
+        found.append(node)
+        if isinstance(
+            node,
+            ast.FunctionDef
+            | ast.AsyncFunctionDef
+            | ast.ClassDef
+            | ast.Lambda
+            | ast.ListComp
+            | ast.SetComp
+            | ast.DictComp
+            | ast.GeneratorExp,
+        ):
+            continue
+        pending.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def _binds_local(function: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:
+    """whether a function's own scope binds ``name`` (assigns it, loops over it, or takes it as a parameter).
+
+    :param function: the function
+    :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+    :param name: the name
+    :ptype name: str
+    :return: whether it does
+    :rtype: bool
+    """
+    arguments = function.args
+    if any(
+        argument is not None and argument.arg == name
+        for argument in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+            arguments.vararg,
+            arguments.kwarg,
+        )
+    ):
+        return True
+    return any(
+        isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store)
+        for node in _scope_nodes(function)
+    )
+
+
+#: how many steps a column list is followed back to its declared key source (local to local to call ...)
+_KEY_DEPTH: Final[int] = 16
+
+
+#: calls that only spell the columns they are handed as SQL text (a join of quoted names, a copy, a loop's pairing):
+#: what they answer comes from what they are handed, so a column list in their arguments is followed through them
+_SPELLING_CALLS: Final[frozenset[str | None]] = frozenset(
+    {
+        "join",
+        "format",
+        "str",
+        "tuple",
+        "list",
+        "sorted",
+        "enumerate",
+        "zip",
+        "lower",
+        "upper",
+        "strip",
+        "replace",
+        "as_written",
+        "render_param",
+        *_QUOTERS,
+        "quote_identifier",
+    }
+)
+
+
+def _closed(value: ast.expr) -> bool:
+    """whether a value holds nothing read at run time beyond constants: a literal, an empty list or string, a
+    constant column quoted (``_quote_ident("date_updated")``), a placeholder's number (``len(params)``).
+
+    :param value: the value
+    :ptype value: ast.expr
+    :return: whether it does
+    :rtype: bool
+    """
+    called = {id(node.func) for node in ast.walk(value) if isinstance(node, ast.Call)}
+    counted = {
+        id(inner)
+        for node in ast.walk(value)
+        if isinstance(node, ast.Call) and _final(node) == "len"
+        for inner in ast.walk(node)
+    }
+    return not any(
+        isinstance(node, ast.Name | ast.Attribute) and id(node) not in called and id(node) not in counted
+        for node in ast.walk(value)
+    )
+
+
 class _ModuleWalk(ast.NodeVisitor):
     """walks one module, recording hits and the calls that may reach a whole-read function."""
 
@@ -1619,6 +1790,7 @@ class _ModuleWalk(ast.NodeVisitor):
         declared: Mapping[str, tuple[str, ...]] | None = None,
         bounded: Bounded | None = None,
         sentinels: SentinelTemplates | None = None,
+        key_sources: KeySources | None = None,
     ) -> None:
         """prepare a walk of one module.
 
@@ -1739,6 +1911,10 @@ class _ModuleWalk(ast.NodeVisitor):
         self._tree = tree
         #: the module's templates over a declared closed map, judged once per entry (:mod:`.sentinels`)
         self._sentinels = sentinels
+        #: the repo's declared key sources (:mod:`.keys`): a column interpolated from one is the table's key
+        self._key_sources = key_sources if key_sources is not None else KeySources()
+        #: (function, local) -> whether the local flows from a declared key source, each found once
+        self._key_locals: dict[tuple[int, str], bool] = {}
         self._verify = verify
         self._exec_calls = _EXEC_CALLS | exec_calls
         self._cte_arguments = cte_arguments or {}
@@ -1933,7 +2109,7 @@ class _ModuleWalk(ast.NodeVisitor):
             if isinstance(target, ast.Name) and target.id in fixed:
                 continue
             if isinstance(target, ast.Name) and value is not None:
-                text = _string_text(self._view_part(value), env, self._produced_by)
+                text = _string_text(self._view_part(value), env, self._produced_by, self._key_expression)
                 if text is not None and stores.get(target.id, 0) == 1:
                     env[target.id] = text
                 else:
@@ -1983,7 +2159,10 @@ class _ModuleWalk(ast.NodeVisitor):
         names = sorted(choices)
         for picked in itertools.product(*(choices[name] for name in names)):
             scope = dict(env)
-            texts = {name: _string_text(value, scope, self._produced_by) for name, value in zip(names, picked)}
+            texts = {
+                name: _string_text(value, scope, self._produced_by, self._key_expression)
+                for name, value in zip(names, picked)
+            }
             if any(text is None for text in texts.values()):
                 continue
             self._bind(body, scope, fixed={name: text for name, text in texts.items() if text is not None})
@@ -2256,7 +2435,9 @@ class _ModuleWalk(ast.NodeVisitor):
         # counts once
         for scope in self._branch_scopes[-1] or [self._envs[-1]]:
             env = {**scope, **{name: f"__cte_{name}" for name in cte_params}} if cte_params else scope
-            text = _string_text(node, env, self._produced_by) if self._maximal_string(node) else None
+            text = (
+                _string_text(node, env, self._produced_by, self._key_expression) if self._maximal_string(node) else None
+            )
             for each in self._instances(node, text):
                 self._judge_text(node, each, judged)
 
@@ -2297,7 +2478,7 @@ class _ModuleWalk(ast.NodeVisitor):
         if not self._maximal_string(node):
             return
         scope = (self._branch_scopes[-1] or [self._envs[-1]])[0]
-        text = _string_text(node, scope, self._produced_by)
+        text = _string_text(node, scope, self._produced_by, self._key_expression)
         if text is not None and is_sql(text):
             self.statements.append(
                 WrittenStatement(self.path, getattr(node, "lineno", 0), self._function, text, self._reader(node))
@@ -2353,7 +2534,7 @@ class _ModuleWalk(ast.NodeVisitor):
             None,
         )
         top = self._stack[0] if self._stack else ""
-        text = _string_text(node, self._envs[-1], self._produced_by) or ""
+        text = _string_text(node, self._envs[-1], self._produced_by, self._key_expression) or ""
         table_match = re.search(r"\bFROM\s+([\w.\"]+)", text, re.IGNORECASE)
         if order is None or table_match is None:
             return False
@@ -2886,7 +3067,7 @@ class _ModuleWalk(ast.NodeVisitor):
             # constant resolved, each other interpolation ``{}``; the spelling of a declared transient producer's
             # return (``_scratch``: ``f"{_SCRATCH}.{quote(table)}"``) is that producer's change set (R6)
             if isinstance(value, ast.JoinedStr):
-                text = _string_text(value, self._envs[-1], self._produced_by)
+                text = _string_text(value, self._envs[-1], self._produced_by, self._key_expression)
                 if text is not None and not is_sql(text):
                     return ast.Constant(TRANSIENT_PRODUCED if text in self._producer_spellings() else text)
             # a fragment written as an f-string (``Fragment(f"t.{STATE_COLUMN} IN ({marks})")``): its text, as raw
@@ -2896,15 +3077,16 @@ class _ModuleWalk(ast.NodeVisitor):
                 and _final(value) == "Fragment"
                 and value.args
                 and isinstance(value.args[0], ast.JoinedStr)
-                and (text := _string_text(value.args[0], self._envs[-1], self._produced_by)) is not None
+                and (text := _string_text(value.args[0], self._envs[-1], self._produced_by, self._key_expression))
+                is not None
             ):
                 return ast.Call(func=value.func, args=[ast.Constant(text), *value.args[1:]], keywords=value.keywords)
-            # a batch's columns held in a local the function binds once from the table's key
-            # (``columns = self._pk_columns(primary_key)``; ``KeyBatch(tuple(columns), ...)``): the key it was read from
+            # a batch's columns named at run time: the key when they flow from a declared key source (:mod:`.keys`),
+            # whatever they are named; any other, a predicate the walk cannot see
             if isinstance(value, ast.Call) and _final(value) == "KeyBatch" and value.args:
-                keyed_from = self._bound_key_source(value.args[0])
-                if keyed_from is not None:
-                    return ast.Call(func=value.func, args=[keyed_from, *value.args[1:]], keywords=value.keywords)
+                return ast.Call(
+                    func=value.func, args=[self._key_column(value.args[0]), *value.args[1:]], keywords=value.keywords
+                )
             # a module constant holding the argument's shape (``_NEWEST_FIRST = (Sort("date_started"), ...)``)
             if isinstance(value, ast.Name) and isinstance(
                 self._module_values.get(value.id), (ast.Tuple, ast.List, ast.Dict)
@@ -2913,7 +3095,7 @@ class _ModuleWalk(ast.NodeVisitor):
             # a name already quoted (``Quoted(snapshot.relation(NAME))``): the relation it names, as a statement
             # interpolating it reads (``copy.<name>``, a constant's text, a producer's change set), never trusted
             if isinstance(value, ast.Call) and _final(value) == "Quoted" and len(value.args) == 1:
-                text = _placeholder(value.args[0], self._envs[-1], self._produced_by)
+                text = _placeholder(value.args[0], self._envs[-1], self._produced_by, self._key_expression)
                 return ast.Call(func=value.func, args=[ast.Constant(text)], keywords=[])
             # a derived select the code does not write, but is handed (``Derived(snapshot.relation(NAME))``, a limited
             # copy's ``(SELECT ... WHERE state IN ...)``): the relation it names, as a quoted name is read (R10);
@@ -2926,7 +3108,7 @@ class _ModuleWalk(ast.NodeVisitor):
                 and isinstance(value.args[0], ast.Call)
                 and _final(value.args[0]) in COPY_CALLS
             ):
-                text = _placeholder(value.args[0], self._envs[-1], self._produced_by)
+                text = _placeholder(value.args[0], self._envs[-1], self._produced_by, self._key_expression)
                 if text.startswith(COPY_PREFIX) or not re.fullmatch(r"\{[^}]*\}", text):
                     return ast.Call(func=ast.Name("Quoted", ast.Load()), args=[ast.Constant(text)], keywords=[])
             # a module function handing a step its one parameter as its relation (``_step_relation(snapshot.relation(t))``
@@ -2951,7 +3133,10 @@ class _ModuleWalk(ast.NodeVisitor):
         return ast.Call(
             func=node.func,
             args=[literal(argument) for argument in node.args],
-            keywords=[ast.keyword(arg=k.arg, value=literal(k.value)) for k in node.keywords],
+            keywords=[
+                ast.keyword(arg=k.arg, value=self._key_pins(literal(k.value)) if k.arg == "by" else literal(k.value))
+                for k in node.keywords
+            ],
         )
 
     def _judge_helper(self, node: ast.Call) -> None:
@@ -3570,36 +3755,237 @@ class _ModuleWalk(ast.NodeVisitor):
                 return None
         return bound
 
-    def _bound_key_source(self, columns: ast.expr) -> ast.expr | None:
-        """the table's key a batch's columns were read from: a local (or a copy of one, ``tuple(columns)``) the
-        function binds exactly once, never changing it after, to a name, attribute or call whose own name says it is
-        the key (``self._pk_columns(primary_key)``, ``table_key(t)``, ``schema.key``). A local bound from anything
-        else, or more than once, is None: its name is judged as written.
+    def _key_sourced(self, node: ast.expr, depth: int = 0) -> bool:
+        """whether a column list flows from a declared key source (:mod:`.keys`), where the walk is: a parameter of the
+        enclosing function, or a local, annotated ``KeyColumn`` / ``KeyColumns``; an attribute or a call of a name the
+        repo (or 3tears) declares as one; a local the function binds exactly once, never changing it after, to one of
+        these; a copy of one (``tuple(x)``, ``list(x)``, ``sorted(x)``). What the column list is named never counts.
 
-        :param columns: the batch's columns argument
-        :ptype columns: ast.expr
-        :return: the key-named expression it was bound from, or None
-        :rtype: ast.expr | None
+        :param node: the expression
+        :ptype node: ast.expr
+        :param depth: how deep the walk is
+        :ptype depth: int
+        :return: whether it does
+        :rtype: bool
         """
-        if (
-            isinstance(columns, ast.Call)
-            and isinstance(columns.func, ast.Name)
-            and columns.func.id in {"tuple", "list"}
-            and len(columns.args) == 1
-            and not columns.keywords
-        ):
-            columns = columns.args[0]
-        if not isinstance(columns, ast.Name) or _KEY_NAME.search(columns.id):
-            return None
-        bound = self._bound_once(columns.id)
-        if bound is None or len(bound) != 1:
-            return None
-        source = bound[0]
-        named = source.func if isinstance(source, ast.Call) else source
-        spelled = named.attr if isinstance(named, ast.Attribute) else named.id if isinstance(named, ast.Name) else None
-        if spelled is None or not _KEY_NAME.search(spelled):
-            return None
-        return ast.Name(id=spelled.lstrip("_"), ctx=ast.Load())
+        sourced = False
+        if depth > _KEY_DEPTH:
+            sourced = False
+        elif isinstance(node, ast.Call):
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id in {"tuple", "list", "sorted"}
+                and len(node.args) == 1
+                and not node.keywords
+            ):
+                sourced = self._key_sourced(node.args[0], depth + 1)
+            else:
+                sourced = _final(node) in self._key_sources.names
+        elif isinstance(node, ast.Attribute):
+            sourced = node.attr in self._key_sources.names
+        elif isinstance(node, ast.Subscript):
+            # one entry of a declared mapping of keys (``self._keyless[table]``, ``Annotated[dict[str, ...], ...]``)
+            sourced = self._key_sourced(node.value, depth + 1)
+        elif isinstance(node, ast.Name):
+            sourced = self._name_key_sourced(node.id, depth)
+        return sourced
+
+    def _name_key_sourced(self, name: str, depth: int) -> bool:
+        """whether a name the enclosing function reads is a declared key source: its parameter annotated as one (the
+        innermost function binding the name decides), a local annotated as one, or a local bound once to one.
+
+        :param name: the name
+        :ptype name: str
+        :param depth: how deep the walk is
+        :ptype depth: int
+        :return: whether it is
+        :rtype: bool
+        """
+        for function in reversed(self._function_nodes):
+            arguments = function.args
+            for argument in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+                arguments.vararg,
+                arguments.kwarg,
+            ):
+                if argument is not None and argument.arg == name:
+                    return annotated_key(argument.annotation)
+        if not self._function_nodes:
+            return False
+        # once per function and name: a name read many times (and a cycle of locals) is followed once
+        held = (id(self._function_nodes[-1]), name)
+        if held not in self._key_locals:
+            self._key_locals[held] = False
+            self._key_locals[held] = self._derived_from_key(name, depth)
+        return self._key_locals[held]
+
+    def _derived_from_key(self, name: str, depth: int) -> bool:
+        """whether every value the enclosing function gives a local is written from a declared key source, or holds
+        nothing it reads at run time, and one is: bound (``pk_where = " AND ".join(... for c in pk_cols)``), unpacked
+        from a call handed one (``keys, join = unnest_key_join(table.key, ...)``), added to (``+=``, ``.append``,
+        ``.extend``), annotated as one (``key: KeyColumn = ...``), or a loop's name over one (``for c in pk_cols``,
+        ``enumerate(pk_cols)``'s second, ``zip(pk_cols, ...)``'s first).
+
+        :param name: the local
+        :ptype name: str
+        :param depth: how deep the walk is
+        :ptype depth: int
+        :return: whether it is
+        :rtype: bool
+        """
+        given: list[ast.expr] = []
+        sourced = False
+        binding = next(
+            (function for function in reversed(self._function_nodes) if _binds_local(function, name)),
+            self._function_nodes[-1],
+        )
+        for node in _scope_nodes(binding):
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
+                if annotated_key(node.annotation):
+                    return True
+                if node.value is not None:
+                    given.append(node.value)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == name:
+                        given.append(node.value)
+                    elif isinstance(target, ast.Tuple | ast.List) and any(
+                        isinstance(element, ast.Name) and element.id == name for element in target.elts
+                    ):
+                        # unpacked from one call declared to answer the key (``build_where_pk``, ``unnest_key_join``)
+                        if not (isinstance(node.value, ast.Call) and self._key_sourced(node.value, depth + 1)):
+                            return False
+                        sourced = True
+            elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
+                given.append(node.value)
+            elif isinstance(node, ast.For | ast.AsyncFor) and any(
+                isinstance(element, ast.Name) and element.id == name for element in ast.walk(node.target)
+            ):
+                if not self._loops_over_key(node.target, node.iter, name, depth):
+                    return False
+                sourced = True
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == name
+                and node.func.attr not in _READING_METHODS
+            ):
+                if node.func.attr not in {"append", "extend", "insert"}:
+                    return False
+                given.extend(node.args)
+            elif isinstance(node, ast.arg) and node.arg == name:
+                return False
+        for value in given:
+            if self._key_expression(value, depth + 1):
+                sourced = True
+            elif not _closed(value):
+                return False
+        return sourced
+
+    def _loops_over_key(self, target: ast.expr, iterated: ast.expr, name: str, depth: int) -> bool:
+        """whether a loop's ``name`` takes the columns of a declared key source: ``for name in key``,
+        ``for _, name in enumerate(key)``, ``for name, _ in zip(key, ...)``.
+
+        :param target: the loop's target
+        :ptype target: ast.expr
+        :param iterated: what it loops over
+        :ptype iterated: ast.expr
+        :param name: the name
+        :ptype name: str
+        :param depth: how deep the walk is
+        :ptype depth: int
+        :return: whether it does
+        :rtype: bool
+        """
+        if isinstance(target, ast.Name):
+            return target.id == name and self._key_sourced(iterated, depth + 1)
+        if not (isinstance(target, ast.Tuple) and isinstance(iterated, ast.Call) and iterated.args):
+            return False
+        place = {"enumerate": 1, "zip": 0}.get(_final(iterated) or "")
+        if place is None or place >= len(target.elts):
+            return False
+        element = target.elts[place]
+        source = iterated.args[0] if _final(iterated) == "enumerate" else iterated.args[place]
+        return isinstance(element, ast.Name) and element.id == name and self._key_sourced(source, depth + 1)
+
+    def _key_expression(self, node: ast.expr, depth: int = 0) -> bool:
+        """whether an interpolated expression holds a column list that flows from a declared key source
+        (``{self._key_column}``, ``{", ".join(quote(c) for c in columns)}`` with ``columns`` one): a name a
+        comprehension inside it binds is its own, never read.
+
+        :param node: the expression
+        :ptype node: ast.expr
+        :param depth: how deep the walk is
+        :ptype depth: int
+        :return: whether it does
+        :rtype: bool
+        """
+        if depth > _KEY_DEPTH:
+            return False
+        bound = {
+            target.id
+            for found in ast.walk(node)
+            if isinstance(found, ast.comprehension)
+            for target in ast.walk(found.target)
+            if isinstance(target, ast.Name)
+        }
+        pending: list[ast.AST] = [node]
+        while pending:
+            found = pending.pop()
+            if isinstance(found, ast.Name | ast.Attribute | ast.Call) and not (
+                isinstance(found, ast.Name) and found.id in bound
+            ):
+                if self._key_sourced(found, depth + 1):
+                    return True
+            if isinstance(found, ast.Call) and _final(found) not in _SPELLING_CALLS:
+                # a call is a key source only when it is declared one: what an undeclared call is handed says
+                # nothing of what it answers (``self._predicate(selection, pk_columns)``)
+                continue
+            pending.extend(ast.iter_child_nodes(found))
+        return False
+
+    def _key_column(self, columns: ast.expr) -> ast.expr:
+        """a key batch's (or a pin's) columns as the helper's statement is written from them: a literal stays; one
+        named at run time is ``pk`` (the key, :data:`PK_TOKEN`) when it flows from a declared key source, else
+        ``unsourced`` (a predicate the walk cannot see).
+
+        :param columns: the columns argument
+        :ptype columns: ast.expr
+        :return: the argument as judged
+        :rtype: ast.expr
+        """
+        if isinstance(columns, ast.Constant | ast.Tuple | ast.List):
+            return columns
+        return ast.Name(id="pk" if self._key_sourced(columns) else "unsourced", ctx=ast.Load())
+
+    def _key_pins(self, by: ast.expr) -> ast.expr:
+        """a ``by`` whose columns are named at run time (``{pk_column: i}``, ``dict(zip(columns, key))``,
+        ``dict(pk)``), each such column as :meth:`_key_column` judges it.
+
+        :param by: the ``by`` argument, as the walk reads it
+        :ptype by: ast.expr
+        :return: it, its run-time columns judged
+        :rtype: ast.expr
+        """
+        if isinstance(by, ast.Dict):
+            keys: list[ast.expr | None] = [
+                key if key is None or isinstance(key, ast.Constant | ast.Call) else self._key_column(key)
+                for key in by.keys
+            ]
+            return ast.Dict(keys=keys, values=by.values)
+        if isinstance(by, ast.Call) and _final(by) == "dict" and len(by.args) == 1 and not by.keywords:
+            inner = by.args[0]
+            if isinstance(inner, ast.Name | ast.Attribute):
+                return ast.Call(func=by.func, args=[self._key_column(inner)], keywords=[])
+            if isinstance(inner, ast.Call) and _final(inner) == "zip" and inner.args:
+                zipped = ast.Call(
+                    func=inner.func, args=[self._key_column(inner.args[0]), *inner.args[1:]], keywords=inner.keywords
+                )
+                return ast.Call(func=by.func, args=[zipped], keywords=[])
+        return by
 
     def _bound_shape(self, name: str) -> ast.Dict | ast.Tuple | ast.List | ast.Call | ast.IfExp | None:
         """the literal mapping or sequence the enclosing function binds ``name`` to, if it binds it exactly once and
@@ -4149,7 +4535,11 @@ class _ModuleWalk(ast.NodeVisitor):
         :return: nothing
         :rtype: None
         """
-        head = _string_text(node.args[1], self._envs[-1], self._produced_by) if len(node.args) > 1 else None
+        head = (
+            _string_text(node.args[1], self._envs[-1], self._produced_by, self._key_expression)
+            if len(node.args) > 1
+            else None
+        )
         key_node = node.args[2] if len(node.args) > 2 else _keyword_value(node, "key")
         key = [
             e.value for e in getattr(key_node, "elts", []) if isinstance(e, ast.Constant) and isinstance(e.value, str)
@@ -4371,7 +4761,7 @@ class _ModuleWalk(ast.NodeVisitor):
                 return declared
             # a copy renamed onto the same table in another schema (``f"{audit_schema}.audit_events"``) is that table;
             # one renamed onto any other table is not the declaration's
-            text = _string_text(renamed, self._envs[-1], self._produced_by)
+            text = _string_text(renamed, self._envs[-1], self._produced_by, self._key_expression)
             return declared if text is not None and bare_table(text) == bare_table(declared) else None
         function = self._function_node
         if isinstance(node, ast.Name) and function is not None:
@@ -6844,6 +7234,7 @@ def scan_whole_reads(
     match_builders = _match_builders([(relative, trees[relative]) for relative, _ in modules], strings)
     never_none = _never_none_parameters([(relative, trees[relative]) for relative, _ in modules])
     sentinel_templates = declared_templates([(relative, trees[relative]) for relative, _ in modules], strings)
+    key_sources = declared_key_sources(trees.values())
     walked: list[tuple[str, Path]] = []
     for relative, path in modules:
         excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
@@ -6889,6 +7280,7 @@ def scan_whole_reads(
             declared=declared_parameters,
             bounded=bounded,
             sentinels=sentinel_templates.get(relative),
+            key_sources=key_sources,
         )
 
     # the repo's step builders, by name across every walked module: a call of one is a step judged where it is

@@ -24,9 +24,10 @@ import json
 from collections.abc import Callable, Collection, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import Annotated, Any, TYPE_CHECKING
 from uuid import UUID
 
+from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumn
 from threetears.core.serialization import json_datetime
 from threetears.core.sql_fragments import as_written, equality_conditions
 
@@ -473,7 +474,7 @@ def pull_value(schema: TableSchema, data: dict[str, Any], column: Column) -> Any
 # ── SQL generation ───────────────────────────────────────────────────────────────
 
 
-def build_where_pk(schema: TableSchema, start: int = 1) -> tuple[str, tuple[str, ...]]:
+def build_where_pk(schema: TableSchema, start: int = 1) -> tuple[Annotated[str, DeclaredKey], tuple[str, ...]]:
     """build ``WHERE pk...`` fragment for fetch / delete / CAS.
 
     :param schema: table schema
@@ -839,7 +840,7 @@ def _required_array_type(schema: TableSchema, column: str) -> str:
     return cast
 
 
-def build_key_led_delete_sql(schema: TableSchema, *, varying: str) -> str:
+def build_key_led_delete_sql(schema: TableSchema, *, varying: KeyColumn) -> str:
     """build one DELETE of the rows whose key is ``varying`` in an array and the rest of the key as given.
 
     ``DELETE FROM t WHERE <varying> = ANY($1::<type>[]) AND <k2> = $2 ...``: ``$1`` is the varying

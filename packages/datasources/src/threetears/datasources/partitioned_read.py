@@ -29,8 +29,9 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from typing import Any, Final, TypeVar
+from typing import Annotated, Any, Final, TypeVar
 
+from threetears.core.keyed import DeclaredKey
 from threetears.core.keyed import Selected
 from threetears.observe import get_logger
 
@@ -135,7 +136,7 @@ async def read_parts(
     *,
     columns: Sequence[str | Selected],
     relation: str,
-    key: Sequence[str],
+    key: Annotated[Sequence[str], DeclaredKey],
     parts: Sequence[Mapping[str, str]],
     concurrency: int = DEFAULT_PART_CONCURRENCY,
     page_size: int | None = None,
@@ -230,7 +231,7 @@ async def _boundaries(
     datasource_name: str,
     *,
     relation: str,
-    key: Sequence[str],
+    key: Annotated[Sequence[str], DeclaredKey],
     partition_by: str,
     parts: Sequence[str],
     page_size: int,
@@ -277,7 +278,7 @@ async def _read_pages(
     *,
     columns: Sequence[str | Selected],
     relation: str,
-    key: Sequence[str],
+    key: Annotated[Sequence[str], DeclaredKey],
     partition_by: str,
     part: str,
     starts: Sequence[tuple[Any, ...]],
@@ -375,7 +376,7 @@ async def read_partitions(
     *,
     columns: Sequence[str | Selected],
     relation: str,
-    key: Sequence[str],
+    key: Annotated[Sequence[str], DeclaredKey],
     partition_by: str,
     parts: Sequence[str] | None = None,
     concurrency: int = DEFAULT_PART_CONCURRENCY,
@@ -624,7 +625,7 @@ async def _read_named_partitions(
     *,
     columns: Sequence[str | Selected],
     relation: str,
-    key: Sequence[str],
+    key: Annotated[Sequence[str], DeclaredKey],
     partition_by: str,
     parts: Sequence[str],
     concurrency: int,

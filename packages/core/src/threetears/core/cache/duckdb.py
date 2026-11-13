@@ -26,13 +26,14 @@ from datetime import time as time_of_day
 from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Annotated, Any, Final
 
 from sqlalchemy import Boolean, Date, DateTime, Float, Integer, LargeBinary, String, Text, Time
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR, UUID
 from sqlalchemy.sql.sqltypes import ARRAY
 from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
 
+from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumn, KeyColumns
 from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
 from threetears.core.cache.duckdb_binds import run_bound
 from threetears.core.cache.base import (
@@ -110,7 +111,7 @@ class PartitionReplacement:
     value: Any
     rows: Sequence[Mapping[str, Any]] | None = None
     arrow: Any = None
-    primary_key: str | tuple[str, ...] = "id"
+    primary_key: KeyColumn | KeyColumns = "id"
     append: bool = False
 
 
@@ -140,7 +141,7 @@ class StagedChange:
     """
 
     table: str
-    key: tuple[str, ...]
+    key: KeyColumns
     keys: str | None = None
     rows: str | None = None
     whole: bool = False
@@ -645,7 +646,7 @@ class DuckDBBackend:
             raise ImportError("DuckDB backend requires the 'duckdb' package. Install with: pip install 3tears[duckdb]")
         self._keyless_names: frozenset[str] = frozenset(keyless)
         #: every key-less table created, with the key this backend keeps for it
-        self._keyless: dict[str, tuple[str, ...]] = {}
+        self._keyless: dict[str, KeyColumns] = {}
         #: every table created, with the columns it holds NOT NULL (its primary key's)
         self._not_null: dict[str, frozenset[str]] = {}
         self._db: Any = None  # duckdb.DuckDBPyConnection
@@ -826,7 +827,7 @@ class DuckDBBackend:
         return conn
 
     @staticmethod
-    def _pk_columns(primary_key: str | tuple[str, ...]) -> tuple[str, ...]:
+    def _pk_columns(primary_key: KeyColumn | KeyColumns) -> KeyColumns:
         """normalize pk argument to tuple of column names."""
         if isinstance(primary_key, tuple):
             return primary_key
@@ -870,7 +871,7 @@ class DuckDBBackend:
             for col, value in zip(pk_cols, self._pk_values(entity_id, pk_cols), strict=True)
         ]
 
-    def upsert(self, table: str, data: dict[str, Any], primary_key: str | tuple[str, ...] = "id") -> None:
+    def upsert(self, table: str, data: dict[str, Any], primary_key: KeyColumn | KeyColumns = "id") -> None:
         """insert or update row.
 
         duckdb supports ``INSERT OR REPLACE INTO`` for tables with
@@ -883,14 +884,14 @@ class DuckDBBackend:
         :param data: row data keyed by column name
         :ptype data: dict[str, Any]
         :param primary_key: pk column name or tuple of pk column names
-        :ptype primary_key: str | tuple[str, ...]
+        :ptype primary_key: KeyColumn | KeyColumns
         :return: nothing
         :rtype: None
         """
         self.upsert_many(table, [data], primary_key)
 
     def upsert_many(
-        self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...] = "id"
+        self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: KeyColumn | KeyColumns = "id"
     ) -> int:
         """insert or update many rows in one columnar statement, as ``upsert`` would one by one.
 
@@ -903,7 +904,7 @@ class DuckDBBackend:
         :param rows: the rows, each keyed by column name, every pk column present
         :ptype rows: Sequence[Mapping[str, Any]]
         :param primary_key: pk column name or tuple of pk column names
-        :ptype primary_key: str | tuple[str, ...]
+        :ptype primary_key: KeyColumn | KeyColumns
         :return: how many rows were written
         :rtype: int
         :raises ValueError: when the rows do not all name the same columns
@@ -937,7 +938,7 @@ class DuckDBBackend:
                 self._db.execute("ROLLBACK")
 
     def _serialized(
-        self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]
+        self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: KeyColumn | KeyColumns
     ) -> tuple[list[str], list[list[Any]]]:
         """the columns ``rows`` name, and each one's values in its storage form, the last row of each key kept.
 
@@ -946,7 +947,7 @@ class DuckDBBackend:
         :param rows: the rows, each keyed by column name, every pk column present
         :ptype rows: Sequence[Mapping[str, Any]]
         :param primary_key: pk column name or tuple of pk column names
-        :ptype primary_key: str | tuple[str, ...]
+        :ptype primary_key: KeyColumn | KeyColumns
         :return: the columns, and one list of values per column (empty lists for no rows)
         :rtype: tuple[list[str], list[list[Any]]]
         :raises ValueError: when the rows do not all name the same columns
@@ -968,7 +969,7 @@ class DuckDBBackend:
         return columns, [[self.serialize_value(row[c], schema.get(c, "VARCHAR")) for row in latest] for c in columns]
 
     def _insert_rows(
-        self, connection: Any, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]
+        self, connection: Any, table: str, rows: Sequence[Mapping[str, Any]], primary_key: KeyColumn | KeyColumns
     ) -> None:
         """insert or replace ``rows`` in one columnar statement on ``connection``; the caller holds the lock.
 
@@ -979,7 +980,7 @@ class DuckDBBackend:
         :param rows: the rows, each keyed by column name, every pk column present
         :ptype rows: Sequence[Mapping[str, Any]]
         :param primary_key: pk column name or tuple of pk column names
-        :ptype primary_key: str | tuple[str, ...]
+        :ptype primary_key: KeyColumn | KeyColumns
         :return: nothing
         :rtype: None
         :raises ValueError: when the rows do not all name the same columns
@@ -1189,7 +1190,7 @@ class DuckDBBackend:
             # read a piece at a time, so the export's buffers fit the scope without counting it first
             return _fetch_arrow_pieces(self._db.execute(sql, params))
 
-    def storage_arrow(self, table: str, rows: Any, primary_key: str | tuple[str, ...]) -> tuple[list[str], Any]:
+    def storage_arrow(self, table: str, rows: Any, primary_key: KeyColumn | KeyColumns) -> tuple[list[str], Any]:
         """an Arrow table's rows in ``table``'s storage forms, the last row of each key kept: what
         :meth:`export_rows` makes of dict rows, never making a row a Python object where the column
         allows.
@@ -1207,7 +1208,7 @@ class DuckDBBackend:
         :param rows: the rows
         :ptype rows: pyarrow.Table
         :param primary_key: the table's key, as :meth:`upsert_many` takes it
-        :ptype primary_key: str | tuple[str, ...]
+        :ptype primary_key: KeyColumn | KeyColumns
         :return: the columns written, and the rows in them, in that order
         :rtype: tuple[list[str], pyarrow.Table]
         :raises KeyError: when a key column is not among the rows' columns, as a dict row lacking it is refused
@@ -1283,7 +1284,7 @@ class DuckDBBackend:
         value: Any,
         rows: Sequence[Mapping[str, Any]] | Any,
         *,
-        primary_key: str | tuple[str, ...],
+        primary_key: KeyColumn | KeyColumns,
         order_by: Sequence[str],
     ) -> Any:
         """the Arrow table one scope WOULD hold with ``rows``, as :meth:`export_partition` would
@@ -1305,7 +1306,7 @@ class DuckDBBackend:
             typed alike (:meth:`storage_arrow`) and gives the same export as the same rows as dicts
         :ptype rows: Sequence[Mapping[str, Any]] | pyarrow.Table
         :param primary_key: the table's key, as :meth:`upsert_many` takes it
-        :ptype primary_key: str | tuple[str, ...]
+        :ptype primary_key: KeyColumn | KeyColumns
         :param order_by: the columns ordering the rows, the table's key
         :ptype order_by: Sequence[str]
         :return: the rows
@@ -1363,7 +1364,9 @@ class DuckDBBackend:
                     self._db.unregister("_export_rows")
         return exported
 
-    def held_keys(self, table: str, column: str, value: Any, arrow: Any, *, key: Sequence[str]) -> int:
+    def held_keys(
+        self, table: str, column: str, value: Any, arrow: Any, *, key: Annotated[Sequence[str], DeclaredKey]
+    ) -> int:
         """how many of ``arrow``'s rows have a key one scope of ``table`` already holds.
 
         For a writer about to add rows to a table rows are only ever added to: a row whose key is held
@@ -1378,7 +1381,7 @@ class DuckDBBackend:
         :param arrow: the rows, as :meth:`export_rows` types them
         :ptype arrow: pyarrow.Table
         :param key: the table's key columns
-        :ptype key: Sequence[str]
+        :ptype key: Annotated[Sequence[str], DeclaredKey]
         :return: how many are held
         :rtype: int
         :raises ValueError: when the table or column is unknown
@@ -1470,7 +1473,7 @@ class DuckDBBackend:
         self._stage_name(stage)
         return stage[len(STAGE_PREFIX) :].replace('"', '""')
 
-    def stage_rows(self, stage: str, table: str, rows: Any, key: Sequence[str]) -> int:
+    def stage_rows(self, stage: str, table: str, rows: Any, key: Annotated[Sequence[str], DeclaredKey]) -> int:
         """add rows to the staging table ``stage``, shaped as ``table`` and made on first use: rows no reader of
         ``table`` sees until :meth:`apply_staged` moves them in.
 
@@ -1485,7 +1488,7 @@ class DuckDBBackend:
         :param rows: the rows
         :ptype rows: pyarrow.Table
         :param key: the table's key columns
-        :ptype key: Sequence[str]
+        :ptype key: Annotated[Sequence[str], DeclaredKey]
         :return: the rows staged
         :rtype: int
         :raises ValueError: when ``table`` is unknown or ``stage`` is not a staging table's name
@@ -1512,7 +1515,13 @@ class DuckDBBackend:
         return int(stored.num_rows)
 
     def stage_keys(
-        self, stage: str, table: str, key: Sequence[str], keys: Any, *, rows_stage: str | None = None
+        self,
+        stage: str,
+        table: str,
+        key: Annotated[Sequence[str], DeclaredKey],
+        keys: Any,
+        *,
+        rows_stage: str | None = None,
     ) -> int:
         """add keys to the staging table ``stage``: ``table``'s key columns, typed as the table types them, made on
         first use. The keys may be given as text (a change record names a key's values as strings); each is cast to
@@ -1525,7 +1534,7 @@ class DuckDBBackend:
         :param table: the table the keys are of
         :ptype table: str
         :param key: the key columns, in order
-        :ptype key: Sequence[str]
+        :ptype key: Annotated[Sequence[str], DeclaredKey]
         :param keys: the keys, one column per key column, named as they are
         :ptype keys: pyarrow.Table
         :param rows_stage: a staging table of ``table``'s rows to take these keys' rows out of; None for none
@@ -1745,7 +1754,7 @@ class DuckDBBackend:
         self,
         table: str,
         entity_id: Any,
-        primary_key: str | tuple[str, ...] = "id",
+        primary_key: KeyColumn | KeyColumns = "id",
         columns: Sequence[str] | None = None,
     ) -> dict[str, Any] | None:
         """select single row by primary key with type deserialization.
@@ -1755,7 +1764,7 @@ class DuckDBBackend:
         :param entity_id: pk value or tuple of pk values in declared order
         :ptype entity_id: Any
         :param primary_key: pk column name or tuple of pk column names
-        :ptype primary_key: str | tuple[str, ...]
+        :ptype primary_key: KeyColumn | KeyColumns
         :param columns: columns to select and deserialize; ``None``
             selects every column. Exactly the named columns come back --
             pk columns are NOT implicitly added.
@@ -1783,7 +1792,7 @@ class DuckDBBackend:
         self,
         table: str,
         entity_ids: list[Any],
-        primary_key: str | tuple[str, ...] = "id",
+        primary_key: KeyColumn | KeyColumns = "id",
         columns: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """select multiple rows by primary key with type deserialization.
@@ -1793,7 +1802,7 @@ class DuckDBBackend:
         :param entity_ids: list of pk values or list of tuples
         :ptype entity_ids: list[Any]
         :param primary_key: pk column name or tuple of pk column names
-        :ptype primary_key: str | tuple[str, ...]
+        :ptype primary_key: KeyColumn | KeyColumns
         :param columns: columns to select and deserialize; ``None``
             selects every column. Exactly the named columns come back --
             pk columns are NOT implicitly added.
@@ -1827,7 +1836,7 @@ class DuckDBBackend:
         self,
         table: str,
         entity_id: Any,
-        primary_key: str | tuple[str, ...] = "id",
+        primary_key: KeyColumn | KeyColumns = "id",
     ) -> None:
         """delete single row by primary key.
 
@@ -1836,7 +1845,7 @@ class DuckDBBackend:
         :param entity_id: pk value or tuple of pk values in declared order
         :ptype entity_id: Any
         :param primary_key: pk column name or tuple of pk column names
-        :ptype primary_key: str | tuple[str, ...]
+        :ptype primary_key: KeyColumn | KeyColumns
         :return: nothing
         :rtype: None
         """
@@ -1852,7 +1861,7 @@ class DuckDBBackend:
         self,
         table: str,
         entity_ids: Sequence[Any],
-        primary_key: str | tuple[str, ...] = "id",
+        primary_key: KeyColumn | KeyColumns = "id",
     ) -> None:
         """delete many rows by primary key, through ``delete_by_id`` a row at a time.
 
@@ -1865,7 +1874,7 @@ class DuckDBBackend:
         :param entity_ids: pk values or tuples of pk values in declared order
         :ptype entity_ids: Sequence[Any]
         :param primary_key: pk column name or tuple of pk column names
-        :ptype primary_key: str | tuple[str, ...]
+        :ptype primary_key: KeyColumn | KeyColumns
         :return: nothing
         :rtype: None
         """
