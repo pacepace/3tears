@@ -1042,6 +1042,21 @@ def _placeholder(value: ast.expr, constants: dict[str, str], produced: Produced 
 #: 3tears' keyed-helper connections over a local database (DuckDB in process): a helper handed one reads its tables
 _LOCAL_CONNECTIONS: Final[frozenset[str]] = frozenset({"InlineDuckDB"})
 
+#: 3tears' keyed-helper connections over a database in this process (DuckDB, SQLite), which hashes no index: a helper
+#: handed one is asked no ``index-hashed-range`` (a SQLite L1 table's ``delete_oldest(InlineSQLite(l1), ...)``)
+_IN_PROCESS_CONNECTIONS: Final[frozenset[str]] = _LOCAL_CONNECTIONS | {"InlineSQLite"}
+
+
+def _on_a_local_database(call: ast.Call) -> bool:
+    """whether a helper call's connection is one over a database in this process (``InlineSQLite(conn)``).
+
+    :param call: the helper call
+    :ptype call: ast.Call
+    :return: whether it is
+    :rtype: bool
+    """
+    return bool(call.args) and isinstance(call.args[0], ast.Call) and _final(call.args[0]) in _IN_PROCESS_CONNECTIONS
+
 
 #: how many bindings deep a family name is followed through a function's own names (``_declared_calls``)
 _INLINE_DEPTH: Final[int] = 3
@@ -3246,7 +3261,10 @@ class _ModuleWalk(ast.NodeVisitor):
                 if statement.sql is UNSEEN or statement.sql is None:
                     hits.setdefault(f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(site))
                     continue
-                for finding in judge_sql(statement.sql, self._reader(site)):
+                reader = self._reader(site)
+                if _on_a_local_database(call):
+                    reader = replace(reader, local=True)
+                for finding in judge_sql(statement.sql, reader):
                     if finding.kind in {HEAD, KEYED_COUNT} or self._transient_table(finding.table):
                         continue
                     symbol = f"{finding.kind} {finding.table}"

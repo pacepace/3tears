@@ -5501,3 +5501,24 @@ def test_a_trim_by_an_age_column_uses_the_index_that_age_leads(tmp_path: Path) -
     other = no_whole_reads_findings(_config(tmp_path, {"turns.py": _TRIMMED.replace("ORDER", '"kind"')}))
     assert any("index-purpose-unused -- src/turns.py::enforce_cap" in finding for finding in other), other
     assert any("enforce_cap" in finding and "index-" not in finding for finding in other), other
+
+
+@pytest.mark.parametrize(("conn", "hashed"), [("InlineSQLite(l1)", False), ("conn", True)], ids=["sqlite", "l3"])
+def test_a_trim_on_a_sqlite_connection_is_asked_no_range_sharding(tmp_path: Path, conn: str, hashed: bool) -> None:
+    """Flips if a trim handed a connection over SQLite in this process (``delete_oldest(InlineSQLite(l1), ...)``, the
+    SDK's L1 turn_dedup cap) is asked to declare its age index range-sharded for YugabyteDB, which never holds it, or
+    if the same trim on an L3 connection is not."""
+    _plans(tmp_path, "def test_updated(plan):\n    assert plan_uses_index(plan, 'turns_by_updated')\n")
+    module = (
+        _TRIMMED.replace(', asc="date_updated"', "")
+        .replace("ORDER", '"date_updated"')
+        .replace("delete_oldest(conn,", f"delete_oldest({conn},")
+        .replace("async def enforce_cap(conn, over):", "async def enforce_cap(conn, l1, over):")
+        .replace(
+            "from threetears.core.keyed import delete_oldest",
+            "from threetears.core.keyed import InlineSQLite, delete_oldest",
+        )
+    )
+    found = no_whole_reads_findings(_config(tmp_path, {"turns.py": module}))
+    assert any("index-hashed-range" in finding for finding in found) is hashed, found
+    assert not [finding for finding in found if "turns" in finding and "index-hashed-range" not in finding], found
