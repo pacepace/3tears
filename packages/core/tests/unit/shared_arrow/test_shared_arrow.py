@@ -20,7 +20,7 @@ import shutil
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
-from concurrent.futures.process import BrokenProcessPool
+from concurrent.futures.process import BrokenProcessPool, ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -1185,6 +1185,43 @@ class TestAWorkerDeathIsSaid:
         with pytest.raises(BrokenProcessPool):
             await single.run(jobs.die_mid_write, read=False, result_bytes=1 << 20)
         assert caplog.text.count("worker died") == 1
+
+    async def test_closing_while_the_dead_workers_pool_is_reaped_shuts_it_down_once_at_a_time(
+        self, single: SharedArrowPool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # the reaper and close() both shut the broken executor down; two at once closed its result pipe twice
+        # (OSError: [Errno 9] Bad file descriptor in close(), seen on the pool's runners)
+        shutdown = ProcessPoolExecutor.shutdown
+        in_flight: set[int] = set()
+        overlapped: list[int] = []
+        guard = threading.Lock()
+
+        def watched(executor: ProcessPoolExecutor, wait: bool = True, *, cancel_futures: bool = False) -> None:
+            if not wait:
+                shutdown(executor, wait=wait, cancel_futures=cancel_futures)
+                return
+            with guard:
+                if id(executor) in in_flight:
+                    overlapped.append(id(executor))
+                in_flight.add(id(executor))
+            try:
+                time.sleep(0.3)  # widen the window two unserialised shutdowns would share
+                shutdown(executor, wait=wait, cancel_futures=cancel_futures)
+            finally:
+                with guard:
+                    in_flight.discard(id(executor))
+
+        monkeypatch.setattr(ProcessPoolExecutor, "shutdown", watched)
+        with pytest.raises(BrokenProcessPool):
+            await single.run(jobs.die_mid_write, read=False, result_bytes=1 << 20)
+
+        await single.close()
+        await _until(
+            lambda: not any(t.name == "shared-arrow-reap-single" and t.is_alive() for t in threading.enumerate()),
+            "the reaper finishing",
+        )
+
+        assert overlapped == []
 
 
 class TestAWorkersResultBecomesAPart:

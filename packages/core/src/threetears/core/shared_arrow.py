@@ -3728,6 +3728,11 @@ class SharedArrowPool:
         #: executor's thread takes it while holding the executor's lock, which :meth:`_submit` takes under ``_lock``
         self._reaping: weakref.WeakSet[ProcessPoolExecutor] = weakref.WeakSet()
         self._reaping_lock = threading.Lock()
+        #: held across a waiting shutdown, so a broken pool's reaper (:meth:`_reap`) and :meth:`close` never shut
+        #: one executor down at once: ``ProcessPoolExecutor.shutdown`` closes its result queue unlocked, and two at
+        #: once close the same pipe twice -- ``OSError: [Errno 9] Bad file descriptor`` at best, or another file
+        #: that took the number in between. never taken under ``_lock``.
+        self._shutdown_lock = threading.Lock()
         self._jobs = 0
         self._replaced = 0
 
@@ -3929,7 +3934,7 @@ class SharedArrowPool:
         :rtype: None
         """
         try:
-            pool.shutdown(wait=True)
+            self._shut_down(pool)
             self._store.sweep()
         except Exception as exc:  # noqa: BLE001 -- a thread has no caller to raise to; contained, so it is counted
             contain(exc, log=log, what="a dead shared Arrow worker's hand-off, version or result could not be swept")
@@ -3951,5 +3956,18 @@ class SharedArrowPool:
         with self._lock:
             pool, self._pool = self._pool, None
         if pool is not None:
-            pool.shutdown(wait=True)
+            self._shut_down(pool)
         self._store.sweep()
+
+    def _shut_down(self, pool: ProcessPoolExecutor) -> None:
+        """shut *pool* down and wait for its processes, one waiting shutdown at a time (``_shutdown_lock``).
+
+        a second shutdown of the same executor, after the first, finds nothing left to close.
+
+        :param pool: the executor
+        :ptype pool: ProcessPoolExecutor
+        :return: nothing
+        :rtype: None
+        """
+        with self._shutdown_lock:
+            pool.shutdown(wait=True)
