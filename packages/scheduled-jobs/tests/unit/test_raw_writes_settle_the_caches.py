@@ -24,6 +24,7 @@ from threetears.core.config import DefaultCoreConfig
 
 from threetears.scheduled_jobs.collections import JobFireCollection, ScheduledJobCollection
 from threetears.scheduled_jobs.tables import job_fires_table, scheduled_jobs_table
+from threetears.core.backends.sql import SqlL3Backend
 
 
 def _now() -> datetime:
@@ -74,7 +75,7 @@ def _registry(pool: _ScriptedPool) -> CollectionRegistry:
     l1 = SQLiteBackend(db_name=f"scheduled_jobs_raw_writes_{uuid.uuid4().hex[:8]}")
     l1.initialize(metadata)
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l3_pool=pool)
+    registry.configure(l1_backend=l1, l3_pool=SqlL3Backend(pool))  # the registry's own wrap of a raw pool
     return registry
 
 

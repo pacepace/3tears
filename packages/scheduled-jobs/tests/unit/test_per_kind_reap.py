@@ -42,6 +42,7 @@ from threetears.scheduled_jobs.config import (
 )
 from threetears.scheduled_jobs.protocols import DueSchedule, FireStore, ScheduleStore
 from threetears.scheduled_jobs.types import JobFireResult, JobTrigger
+from threetears.core.backends.sql import SqlL3Backend
 
 
 _BILLING_KIND = "billing_export"
@@ -150,6 +151,7 @@ class _FakeFireStore(FireStore):
         *,
         error: str,
         latency_ms: int | None = None,
+        output: dict[str, Any] | None = None,
     ) -> None:
         return None
 
@@ -356,7 +358,7 @@ class TestStoreSweepIsKindScoped:
     async def test_sweep_sql_constrains_kind(self) -> None:
         pool = _RecordingPool(fetch_rows=[{"partition_key": uuid4(), "fire_id": uuid4()}])
         registry = CollectionRegistry()
-        registry.configure(l3_pool=pool)
+        registry.configure(l3_pool=SqlL3Backend(pool))  # the registry's own wrap of a raw pool
         cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
         collection = JobFireCollection(registry=registry, config=cfg, nats_client=None)
         now = _now()
@@ -378,7 +380,7 @@ class TestStoreSweepIsKindScoped:
         """An empty group must never widen to "every kind"."""
         pool = _RecordingPool()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=pool)
+        registry.configure(l3_pool=SqlL3Backend(pool))  # the registry's own wrap of a raw pool
         cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
         collection = JobFireCollection(registry=registry, config=cfg, nats_client=None)
 

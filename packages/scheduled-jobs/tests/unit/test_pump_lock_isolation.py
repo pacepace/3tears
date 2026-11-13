@@ -142,6 +142,7 @@ class _FakeFireStore(FireStore):
         *,
         error: str,
         latency_ms: int | None = None,
+        output: dict[str, Any] | None = None,
     ) -> None:
         return None
 

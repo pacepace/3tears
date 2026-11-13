@@ -28,6 +28,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from threetears.scheduled_jobs.types import ScheduleStatus
+
 from threetears.core.coordination import LockHeld
 from threetears.nats.errors import KvConfigMismatch, KvError, StreamSubjectsOverlapError
 
@@ -112,6 +114,7 @@ class _FakeFireStore(FireStore):
         *,
         error: str,
         latency_ms: int | None = None,
+        output: dict[str, Any] | None = None,
     ) -> None:
         self._arrive()
         self.failed.append({"fire_id": fire_id, "error": error, "latency_ms": latency_ms})
@@ -1197,7 +1200,7 @@ async def test_bring_back_cut_off_fire_is_the_undo_any_dispatcher_can_call() -> 
     ids=["moved_on", "store_raises", "no_store", "claim_unknown"],
 )
 async def test_bring_back_cut_off_fire_answers_false_and_never_raises_when_it_leaves_the_job(
-    store: _FakeScheduleStore | None, claimed_status: str | None
+    store: _FakeScheduleStore | None, claimed_status: ScheduleStatus | None
 ) -> None:
     trigger = dataclasses.replace(_trigger(kind="once", schedule_type="one_shot_at"), claimed_status=claimed_status)
 

@@ -25,6 +25,7 @@ import asyncio
 
 import inspect
 import itertools
+import time
 
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -37,6 +38,7 @@ from threetears.core.coordination import LockHeld
 from threetears.nats.errors import KvError
 
 from threetears.scheduled_jobs import tick as tick_mod
+from threetears.scheduled_jobs.events import EVENT_FIRE_FAILED, EVENT_FIRE_HANDED_OFF
 from threetears.scheduled_jobs.config import DEFAULT_DISPATCH_REAP_AFTER_SECONDS
 from threetears.scheduled_jobs.protocols import DueSchedule, FireStore, ScheduleStore
 from threetears.scheduled_jobs.tick import DispatchCallback
@@ -224,6 +226,7 @@ class _FakeFireStore(FireStore):
         *,
         error: str,
         latency_ms: int | None = None,
+        output: dict[str, Any] | None = None,
     ) -> None:
         self.failed.append({"fire_id": fire_id, "error": error, "latency_ms": latency_ms})
 
@@ -465,7 +468,21 @@ class TestPerRowFailureIsolation:
         """A store whose ``finalize_failed`` takes no ``output`` is not passed one."""
         _patch_lock(monkeypatch, _CtxHealthy())
         store = _FakeScheduleStore([_FakeDueSchedule()])
-        fires = _FakeFireStore()
+
+        class _OlderFireStore(_FakeFireStore):
+            """a store from before ``output``: its ``finalize_failed`` takes none, on purpose."""
+
+            async def finalize_failed(  # type: ignore[override]  # an older store's signature, the case under test
+                self,
+                partition_key: UUID,
+                fire_id: UUID,
+                *,
+                error: str,
+                latency_ms: int | None = None,
+            ) -> None:
+                self.failed.append({"fire_id": fire_id, "error": error, "latency_ms": latency_ms})
+
+        fires = _OlderFireStore()
         assert "output" not in inspect.signature(fires.finalize_failed).parameters
 
         async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
@@ -640,7 +657,7 @@ class TestFireLatencyIsMeasuredByTheEngine:
         # list would pin this test to the tick's internal call count and break on
         # any unrelated timing change.
         step = itertools.count()
-        monkeypatch.setattr(tick_mod.time, "monotonic", lambda: next(step) * 0.25)
+        monkeypatch.setattr(time, "monotonic", lambda: next(step) * 0.25)
 
         async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
             return JobFireResult(status="succeeded")
@@ -691,7 +708,7 @@ class TestHandedOffFire:
         assert fires.succeeded == []
         assert fires.failed == []
         assert counted == []
-        assert any(r.getMessage() == tick_mod.EVENT_FIRE_HANDED_OFF for r in caplog.records)
+        assert any(r.getMessage() == EVENT_FIRE_HANDED_OFF for r in caplog.records)
 
     async def test_a_fire_that_is_not_handed_off_still_finalizes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The default is unchanged: ``handed_off`` defaults to False and the engine finalizes."""
@@ -719,7 +736,7 @@ class TestReturnedFailureIsLogged:
         with caplog.at_level("ERROR"):
             await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
         assert fires.failed[0]["error"] == "downstream rejected"
-        assert [r.getMessage() for r in caplog.records].count(tick_mod.EVENT_FIRE_FAILED) == 1
+        assert [r.getMessage() for r in caplog.records].count(EVENT_FIRE_FAILED) == 1
 
 
 def _pin_tick_clock(monkeypatch: pytest.MonkeyPatch, instant: datetime) -> None:

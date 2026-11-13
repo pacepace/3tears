@@ -34,6 +34,7 @@ from threetears.scheduled_jobs.collections import (
 )
 from threetears.scheduled_jobs.entities import JobFireEntity, ScheduledJobEntity
 from threetears.scheduled_jobs.protocols import DueSchedule, FireStore, ScheduleStore
+from threetears.core.backends.sql import SqlL3Backend
 
 
 def _now() -> datetime:
@@ -87,14 +88,14 @@ class _RecordingPool:
 
 def _make_schedule_collection(pool: _RecordingPool) -> ScheduledJobCollection:
     registry = CollectionRegistry()
-    registry.configure(l3_pool=pool)
+    registry.configure(l3_pool=SqlL3Backend(pool))  # the registry's own wrap of a raw pool
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     return ScheduledJobCollection(registry=registry, config=cfg, nats_client=None)
 
 
 def _make_fire_collection(pool: _RecordingPool) -> JobFireCollection:
     registry = CollectionRegistry()
-    registry.configure(l3_pool=pool)
+    registry.configure(l3_pool=SqlL3Backend(pool))  # the registry's own wrap of a raw pool
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     return JobFireCollection(registry=registry, config=cfg, nats_client=None)
 
@@ -224,7 +225,11 @@ class TestFireStoreWrites:
         sql, args = pool.calls[-1]
         assert sql.startswith('UPDATE "job_fires" SET "status" = $1, "error" = $2')
         assert args[:2] == ("failed", "boom")
-        assert args[3] is None
+        # no latency: the column is set NULL; no output reported: the output bind is None, so COALESCE keeps the row's
+        assert '"latency_ms" = NULL' in sql
+        assert '"output" = COALESCE($3::jsonb, output)' in sql
+        assert args[2] is None
+        assert args[3:] == (partition, fire_id)
 
     async def test_finalize_failed_keeps_a_reported_output(self) -> None:
         pool = _RecordingPool()
