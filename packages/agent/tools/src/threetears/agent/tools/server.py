@@ -68,7 +68,7 @@ from threetears.agent.tools.config import (
 from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolver
 from threetears.agent.tools.object_resolver import HubObjectResolver, ObjectResolutionCache
 from threetears.core.namespaces import build_tool_namespace_name
-from threetears.core.coordination.replay_guard import ReplayGuard
+from threetears.core.coordination.replay_guard import ReplayGuard, ReplayLedger
 from threetears.core.security import (
     IDENTITY_REFUSED,
     IDENTITY_REFUSED_MESSAGE,
@@ -700,7 +700,7 @@ class ToolServer:
         customer_id: UUID | None = None,
         jwks_provider: Callable[[], dict[str, Any]] | None = None,
         jwks_refresh: Callable[[], Awaitable[bool]] | None = None,
-        assertion_replay_guard: "ReplayGuard | None" = None,
+        assertion_replay_guard: "ReplayLedger | None" = None,
         assertion_replay_anchor: "ReplayAnchor | None" = None,
         object_store: "ObjectStore | None" = None,
         object_resolver: "ObjectResolver | None" = None,
@@ -892,7 +892,7 @@ class ToolServer:
             verify time either way: a pod with no guard refuses every call rather than skipping
             single-use enforcement. An injected guard must be sized for this pod's assertion
             leeway
-        :ptype assertion_replay_guard: ReplayGuard | None
+        :ptype assertion_replay_guard: ReplayLedger | None
         :raises ValueError: when neither ``nats_url`` nor
             ``nats_client`` carries a usable value, ``max_concurrent_calls`` /
             ``max_call_seconds`` is set to a non-positive value, ``max_calls_in_flight`` is below 1,
@@ -1043,7 +1043,7 @@ class ToolServer:
         self._assertion_replay_anchor = assertion_replay_anchor
         if assertion_replay_guard is not None:
             assertion_replay_guard.require_covers(timedelta(seconds=_ASSERTION_LEEWAY_SECONDS))
-        self._assertion_replay_guard: ReplayGuard | None = assertion_replay_guard
+        self._assertion_replay_guard: ReplayLedger | None = assertion_replay_guard
         # leak-safe in-flight-requests gauge bracketed around every handle_call:
         # the tool-pod bootstrap serves it on the shared HealthServer's /metrics
         # route so KEDA's prometheus scaler can autoscale the pod's Deployment on
