@@ -553,7 +553,7 @@ class ModelListing:
     whose provider it reads no list of, and a factory without the method answers nothing: there is no check to make.
     A price taken from past runs never stands in for a listing.
 
-    :ivar provider: The provider whose list was read, as the factory names it (``openrouter``).
+    :ivar provider: The provider whose list was read, as the factory names it.
     :ivar listed: Whether the list names the model; ``None`` when no current list could be read.
     :ivar detail: The list and when it was read, or why no current one could be.
     """

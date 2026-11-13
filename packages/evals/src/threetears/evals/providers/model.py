@@ -1782,33 +1782,34 @@ class Clients:
         :return: The listing, or ``None`` when the model's provider has no list here.
         :rtype: ModelListing | None
         """
-        template = self._roles.get(role, self._default) if role is not None else None
-        # A role's Model built on Anthropic, OpenAI or a base_url derives every model of that role there; anything
-        # else goes where its id says, as Model builds it: a vendor/model id to OpenRouter.
-        if isinstance(template, Model) and (template.base_url is not None or template.provider != "openrouter"):
-            return None
         if "/" not in model:
+            return None
+        # A vendor/model id goes to the router whose list the catalogue is, as Model builds it; a role's Model built
+        # on another provider or a base_url derives every model of that role there, where no list is read.
+        routed = _provider_of(model, None, None)
+        template = self._roles.get(role, self._default) if role is not None else None
+        if isinstance(template, Model) and (template.base_url is not None or template.provider != routed):
             return None
         read = await self.catalogue.read()
         listed = self.catalogue.lists(model)
         if listed is None:
             return ModelListing(
-                provider="openrouter",
+                provider=routed,
                 listed=None,
-                detail=read.failure or "OpenRouter's model list (the price catalogue) has not been read",
+                detail=read.failure or "the provider's model list (the price catalogue) has not been read",
             )
         fetched = self.catalogue.fetched_at
         when = fetched.isoformat(timespec="seconds") if fetched is not None else "an unknown time"
         if self.catalogue.stale_since is not None:
             return ModelListing(
-                provider="openrouter",
+                provider=routed,
                 listed=None,
                 detail=(
-                    f"the OpenRouter model list held was read at {when} and reading it again failed "
+                    f"the provider's model list held was read at {when} and reading it again failed "
                     f"({self.catalogue.refresh_failure or 'no reason given'}), so it is not current"
                 ),
             )
-        return ModelListing(provider="openrouter", listed=listed, detail=f"OpenRouter's model list, read at {when}")
+        return ModelListing(provider=routed, listed=listed, detail=f"the provider's model list, read at {when}")
 
     async def aclose(self) -> None:
         """Close every model the factory built, and forget them, then the ``http`` client it owns; a failure to close

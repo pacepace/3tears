@@ -87,11 +87,15 @@ _FLASH_ROW = {"id": _FLASH, "pricing": {"prompt": "0.000001", "completion": "0.0
 #: A row for some other model, so a list without the judge's row is still a list that was read.
 _OTHER_ROW = {"id": "vendor/other", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}
 
+#: A model the judge role sends to Anthropic directly, shaped like a router id so only the role keeps it off the list.
+_DIRECT_MODEL = "vendor/direct-model"
+
 #: What OpenRouter reports each judge call cost: enough that one call passes the small cap a run is stopped by.
 _REPORTED_CALL_USD = 0.3
 
 
-class _FakeOpenRouter:  # parity-exempt: stands in for OpenRouter's HTTP endpoints behind httpx.MockTransport, not a Python protocol
+# parity-exempt: stands in for OpenRouter's HTTP endpoints behind httpx.MockTransport, not a Python protocol
+class _FakeOpenRouter:
     """OpenRouter's models list (``GET``) and chat completions (``POST``), scripted, counting the list's reads."""
 
     def __init__(self, rows: list[dict[str, Any]], *, list_fails: bool = False) -> None:
@@ -319,7 +323,7 @@ async def test_a_model_the_provider_no_longer_lists_is_refused_by_the_estimate_a
     assert arm.outcome == "refused"
     assert (
         f"names a model its provider no longer serves: candidate model {_FLASH!r} is not on openrouter's list of "
-        "the models it serves (OpenRouter's model list, read at "
+        "the models it serves (the provider's model list, read at "
     ) in arm.refusal
     assert "Every call to it would fail" in arm.refusal
     assert "name a model the provider lists" in arm.remedy
@@ -465,18 +469,18 @@ async def test_clients_read_openrouters_list_only_for_a_model_that_goes_to_openr
     http = httpx.AsyncClient(transport=httpx.MockTransport(provider))
     clients = Clients(
         _FLASH,
-        judge=Model("claude-haiku-5-5", provider="anthropic", api_key="sk-ant-test", http=http),
+        judge=Model(_DIRECT_MODEL, provider="anthropic", api_key="sk-ant-test", http=http),
         catalogue=Catalogue(http=http),
         http=http,
     )
 
-    assert await clients.model_listing("claude-haiku-5-5", role="judge") is None, "Anthropic's list is not read"
+    assert await clients.model_listing(_DIRECT_MODEL, role="judge") is None, "Anthropic's list is not read"
     assert await clients.model_listing("gpt-5-nano") is None, "a bare id names no OpenRouter model"
     assert provider.list_reads == 0
 
     listed = await clients.model_listing(_FLASH)
     assert listed is not None and (listed.provider, listed.listed) == ("openrouter", True)
-    assert listed.detail.startswith("OpenRouter's model list, read at ")
+    assert listed.detail.startswith("the provider's model list, read at ")
     routed = await clients.model_listing(f"{_FLASH}:nitro", role="simulator")
     assert routed is not None and routed.listed is True, "a routing suffix is no row of its own"
     gone = await clients.model_listing("inception/mercury-3")
