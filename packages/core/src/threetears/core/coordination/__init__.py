@@ -82,7 +82,7 @@ from threetears.core.coordination.lease import (
     SyncHeldLease,
 )
 from threetears.core.coordination.replay_anchor import CollectionReplayAnchor, ReplayAnchor
-from threetears.core.coordination.replay_guard import ReplayGuard
+from threetears.core.coordination.replay_guard import ReplayGuard, ReplayLedger
 from threetears.core.coordination.revocation import RedemptionLedger, RevocationGuard
 from threetears.core.coordination.token_bucket import (
     TokenBucket,
@@ -116,6 +116,7 @@ __all__ = [
     "RedemptionLedger",
     "ReplayAnchor",
     "ReplayGuard",
+    "ReplayLedger",
     "RevocationGuard",
     "TokenBucket",
     "TokenBucketConflict",

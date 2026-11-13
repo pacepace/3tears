@@ -55,7 +55,7 @@ except ModuleNotFoundError as _exc:
 
 if TYPE_CHECKING:
     # the caller builds and binds the guard, so this module only names its type
-    from threetears.core.coordination import ReplayGuard
+    from threetears.core.coordination import ReplayLedger
 
 __all__ = ["DpopError", "DpopProof", "validate_dpop_proof"]
 
@@ -125,7 +125,7 @@ async def validate_dpop_proof(
     *,
     expected_htm: str,
     expected_htu: str | Sequence[str],
-    replay_guard: ReplayGuard,
+    replay_guard: ReplayLedger,
     max_age: timedelta = DEFAULT_PROOF_MAX_AGE,
     future_tolerance: timedelta = CLIENT_ISSUE_TIME_FUTURE_TOLERANCE,
 ) -> DpopProof:
@@ -163,7 +163,7 @@ async def validate_dpop_proof(
         function with no startup step, so the service that owns the guard calls its
         :meth:`~threetears.core.coordination.ReplayGuard.bind` at startup; an unbound guard still
         works, but after a broker wipe it refuses every proof issued before its first use.
-    :ptype replay_guard: ReplayGuard
+    :ptype replay_guard: ReplayLedger
     :param max_age: how old the proof's ``iat`` may be -- the time a slow request has to arrive.
     :ptype max_age: timedelta
     :param future_tolerance: how far ahead of this server's clock the proof's ``iat`` may be.
